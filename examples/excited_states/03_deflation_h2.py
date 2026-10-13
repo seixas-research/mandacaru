@@ -6,7 +6,7 @@ atoms = molecule("H2")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="vqe",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
-                       h=0.25)
+                       grid_spacing=0.25)
 atoms.get_potential_energy()
 
 levels = atoms.calc.energy_levels(num_states=2, restarts=4)

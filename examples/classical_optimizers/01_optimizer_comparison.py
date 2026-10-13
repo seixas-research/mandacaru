@@ -8,7 +8,7 @@ atoms.center(vacuum=3.0)
 for method in ("SLSQP", "BFGS", "L-BFGS", "CG", "COBYLA", "Nelder-Mead", "SPSA"):
     atoms.calc = Mandacaru(method="vqe",
                            basis={"name": "PAW-LCAO", "size": "SZ"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            optimizer={"method": method, "maxiter": 500,
                                       "tol": 1e-8})
     energy = atoms.get_potential_energy()

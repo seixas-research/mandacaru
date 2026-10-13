@@ -4,7 +4,7 @@ from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]])
 atoms.center(vacuum=3.0)
-atoms.calc = Mandacaru(method="rhf", basis="HAO", h=0.35)
+atoms.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.35)
 print(f"RHF          {atoms.get_potential_energy():.8f} eV")
 problem = atoms.calc.result.as_quantum_problem()
 

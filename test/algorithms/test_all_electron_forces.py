@@ -29,9 +29,9 @@ from mandacaru.integrals import Grid
 from mandacaru.units import HARTREE_TO_EV
 
 
-def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
+def fixed_state_energy(atoms, basis, grid, grid_spacing, algebra, **options):
     """``E(S, h, g)`` at this geometry with the RDMs and orbitals frozen."""
-    integrals = build_basis_hamiltonian(atoms, basis, grid, h, 0, None,
+    integrals = build_basis_hamiltonian(atoms, basis, grid, grid_spacing, 0, None,
                                         **options)[4]["integrals"]
     external = integrals.external_potential()
     kinetic, potential = integrals._engine.one_body(
@@ -48,7 +48,7 @@ def fixed_state_energy(atoms, basis, grid, h, algebra, **options):
             + integrals.nuclear_repulsion + integrals.constant_energy)
 
 
-def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
+def analytic_and_numerical(atoms, basis, grid, grid_spacing, step=0.002, **options):
     """``(analytic forces, finite-difference forces)`` in eV/Angstrom.
 
     The analytic array is the **unprojected** one: the identity being checked is
@@ -57,7 +57,7 @@ def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
     default deliberately breaks it (see ``ForceResult.unprojected``).
     """
     atoms = atoms.copy()
-    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid=grid, h=h, profile=False,
+    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid=grid, grid_spacing=grid_spacing, profile=False,
                            convergence={"gradient": 1e-6}, **options)
     atoms.get_forces()
     forces = atoms.calc.force_result.unprojected
@@ -84,7 +84,7 @@ def analytic_and_numerical(atoms, basis, grid, h, step=0.002, **options):
             for sign in (+1, -1):
                 moved = atoms.copy()
                 moved.positions[atom, axis] += sign * step
-                shifted.append(fixed_state_energy(moved, basis, grid, h,
+                shifted.append(fixed_state_energy(moved, basis, grid, grid_spacing,
                                                   algebra, **build))
             numerical[atom, axis] = (-(shifted[0] - shifted[1]) / (2 * step)
                                      * HARTREE_TO_EV)
@@ -96,7 +96,7 @@ class TestAllElectronGradient:
     def test_h2_minimal_basis(self, kinetic):
         """Either Laplacian: the Pulay term differentiates the one the
         energy used (``forces.one_body_cross``)."""
-        grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.0, h=0.25,
+        grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.0, grid_spacing=0.25,
                     units="angstrom")
         atoms = Atoms("H2", positions=[[4.013, 3.979, 3.607],
                                        [4.013, 3.979, 4.407]], cell=[8.0] * 3)
@@ -107,7 +107,7 @@ class TestAllElectronGradient:
 
     def test_lih_with_a_frozen_core(self):
         """The inert core is refilled before the density matrices are used."""
-        grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.0, h=0.45,
+        grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.0, grid_spacing=0.45,
                     units="angstrom")
         atoms = Atoms("LiH", positions=[[4.013, 3.979, 3.207],
                                         [4.013, 3.979, 4.807]], cell=[8.0] * 3)
@@ -210,11 +210,11 @@ class TestOrbitalResponseResidual:
 
         from mandacaru.core.sector import ParticleSector
 
-        grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.5, h=0.3,
+        grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.5, grid_spacing=0.3,
                     units="angstrom")
         atoms = Atoms("H3", positions=[[4.0, 4.0, 4.0], [4.9, 4.0, 4.0],
                                        [4.3, 4.8, 4.0]], cell=[8.0, 8.0, 8.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid=grid, h=0.3,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid=grid, grid_spacing=0.3,
                                charge=1, pool="fermionic", profile=False,
                                trace=False, convergence={"gradient": 1e-8})
         atoms.get_potential_energy()

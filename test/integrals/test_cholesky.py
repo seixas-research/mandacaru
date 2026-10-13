@@ -43,7 +43,7 @@ def _hydrogenic(closed=True, real=True):
                 HydrogenicAtomicOrbital(3, 2, 2), HydrogenicAtomicOrbital(3, 2, 1),
                 HydrogenicAtomicOrbital(3, 2, 0), HydrogenicAtomicOrbital(3, 2, -1),
                 HydrogenicAtomicOrbital(3, 2, -2)]
-    engine = IntegralEngine(fns, Grid(box_size=6.0, h=0.5, center=(0, 0, 0)))
+    engine = IntegralEngine(fns, Grid(box_size=6.0, grid_spacing=0.5, center=(0, 0, 0)))
     solver = PoissonFFTSolver(engine.grid.shape, step=engine.grid.step)
     return engine, solver
 
@@ -200,6 +200,80 @@ class TestPAWWater:
         Jc, Kc = chol.jk(D)
         approx = np.real(0.5 * np.sum(D.T * Jc) - 0.25 * np.sum(D.T * Kc))
         assert abs(approx - exact) < 1e-6
+
+
+def _displaced(x):
+    """Three centers' worth of real functions, the second center moved by
+    ``x`` Bohr along x."""
+    c = (0.6 + x, 0.2, -0.3)
+    fns = [HydrogenicAtomicOrbital(1, 0, 0, real=True),
+           HydrogenicAtomicOrbital(2, 0, 0, center=c, real=True),
+           HydrogenicAtomicOrbital(2, 1, 1, center=c, real=True),
+           HydrogenicAtomicOrbital(2, 1, 0, center=c, real=True),
+           HydrogenicAtomicOrbital(3, 2, 0)]
+    engine = IntegralEngine(fns, Grid(box_size=6.0, grid_spacing=0.5,
+                                      center=(0, 0, 0)))
+    return engine, PoissonFFTSolver(engine.grid.shape, step=engine.grid.step)
+
+
+class TestFixedPivots:
+    """``pivots=``: the factors of a reference's pivots, which a displaced
+    geometry of an active-space force reuses."""
+
+    @pytest.mark.parametrize("tolerance", [1e-4, 1e-9])
+    def test_the_reference_pivots_reproduce_the_reference(self, hydrogenic,
+                                                          tolerance):
+        """Pivoted Cholesky on a given pivot order is ``C L_A^-T``: on the
+        reference's own functions it is the adaptive factorization."""
+        engine, solver, _eri = hydrogenic
+        adaptive = cholesky_two_body(engine._psi, solver, tolerance)
+        fixed = cholesky_two_body(engine._psi, solver, tolerance,
+                                  pivots=adaptive.pivot_pairs)
+        assert fixed.rank == adaptive.rank
+        assert np.array_equal(fixed.pivots, adaptive.pivots)
+        assert np.abs(fixed.vectors - adaptive.vectors).max() < 1e-12
+        assert np.isnan(fixed.max_residual)
+        assert fixed.profile["fixed pivots"] is True
+
+    def test_the_fitted_integrals_are_smooth_in_the_geometry(self):
+        """The central difference of the fixed-pivot integrals converges as
+        the step shrinks -- the rank cannot change between the two sides --
+        and stays near the dense tensor's derivative."""
+        engine, solver = _displaced(0.0)
+        reference = cholesky_two_body(engine._psi, solver, 1e-6)
+
+        def derivative(step, fixed):
+            sides = []
+            for sign in (1, -1):
+                engine, solver = _displaced(sign * step)
+                sides.append(
+                    cholesky_two_body(engine._psi, solver, 1e-6,
+                                      pivots=reference.pivot_pairs).dense()
+                    if fixed else
+                    engine.two_body(energy_units="Ha", solver=solver))
+            return (sides[0] - sides[1]) / (2 * step)
+
+        coarse, fine = derivative(1e-2, True), derivative(1e-3, True)
+        exact = derivative(1e-3, False)
+        assert np.abs(coarse - fine).max() < 1e-4 * np.abs(fine).max()
+        assert np.abs(fine - exact).max() < 1e-2 * np.abs(exact).max()
+
+    def test_a_pivot_outside_the_basis_is_refused(self, hydrogenic):
+        engine, solver, _eri = hydrogenic
+        M = engine._psi.shape[0]
+        with pytest.raises(ValueError, match="outside"):
+            cholesky_two_body(engine._psi, solver, pivots=[[0, M]])
+
+    def test_a_pivot_without_overlap_is_refused(self, hydrogenic):
+        """A pivot pair whose functions no longer meet has no density: the
+        displaced basis is not the reference's."""
+        engine, solver, _eri = hydrogenic
+        psi = np.array(engine._psi[:2])
+        half = psi.shape[1] // 2
+        psi[0, half:] = 0.0
+        psi[1, :half] = 0.0
+        with pytest.raises(ValueError, match="no overlapping support"):
+            cholesky_two_body(psi, solver, pivots=[[0, 1]])
 
 
 class TestRefusals:

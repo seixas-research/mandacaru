@@ -30,7 +30,7 @@ from mandacaru import Mandacaru
 
 
 def hydrogen_integrals(basis_size=1):
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=3.0, h=0.6, units="bohr")
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=3.0, grid_spacing=0.6, units="bohr")
     basis = [HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0.0, 0.0, 0.0],
                                units="bohr") for _ in range(basis_size)]
     return MolecularIntegrals([(1.0, [0.0, 0.0, 0.0])], basis, grid,
@@ -83,7 +83,7 @@ class TestBackendBuffers:
         assert _check_filled(out, np.ones((2, 5), dtype=complex), "x") is out
 
     def test_the_wrapper_validates_before_calling_the_kernel(self):
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=1.0, h=0.5, units="bohr")
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=1.0, grid_spacing=0.5, units="bohr")
         psi = np.ones((2, grid.size + 3), dtype=complex)
         potential = np.zeros(grid.size, dtype=float)
         with pytest.raises(ValueError, match="expected samples"):
@@ -189,7 +189,7 @@ class TestForceCapabilityGate:
 
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.5,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.5,
                                kinetic="spectral", profile=False,
                                max_iterations=1)
         forces = atoms.get_forces()
@@ -205,7 +205,7 @@ class TestStaleResultsAreCleared:
 
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.5, profile=False, max_iterations=2)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.5, profile=False, max_iterations=2)
         atoms.get_forces()
         assert atoms.calc.force_result is not None
         moved = atoms.copy()
@@ -229,37 +229,27 @@ class TestHermiticityCheck:
 
 
 class TestPseudoBasisOptions:
-    def test_split_norm_may_differ_per_element(self):
+    @pytest.mark.parametrize("option", ["split_norm", "tail_norm"])
+    def test_the_split_parameters_are_not_options(self, option):
+        # The split-valence scheme carries its own parameter: zeta_split
+        # derives the tail norms or the split norm, per element or not.
         from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
-        name, options = resolve_basis({"Li": {"name": "PAW-LCAO", "split_norm": 0.3},
-                                       "H": {"name": "PAW-LCAO",
-                                             "split_norm": 0.15}})
-        _family, merged = resolve_pseudo_basis(name, options, ["Li", "H"])
-        assert merged["split_norm"] == {"Li": 0.3, "H": 0.15}
+        name, options = resolve_basis({"Li": {"name": "PAW-LCAO", option: 0.3},
+                                       "H": "PAW-LCAO"})
+        with pytest.raises(ValueError, match="unknown option"):
+            resolve_pseudo_basis(name, options, ["Li", "H"])
 
-    def test_one_shared_value_stays_a_scalar(self):
+    def test_one_shared_zeta_split_is_merged(self):
         from mandacaru.algorithms._hamiltonian_from_atoms import (
             resolve_basis, resolve_pseudo_basis)
 
-        name, options = resolve_basis({"Li": {"name": "PAW-LCAO", "split_norm": 0.2},
-                                       "H": {"name": "PAW-LCAO",
-                                             "split_norm": 0.2}})
+        name, options = resolve_basis(
+            {"Li": {"name": "PAW-LCAO", "zeta_split": "last_zeta"},
+             "H": {"name": "PAW-LCAO", "zeta_split": "last-zeta"}})
         _family, merged = resolve_pseudo_basis(name, options, ["Li", "H"])
-        assert merged["split_norm"] == 0.2
-
-    def test_per_element_split_norm_reaches_the_basis(self):
-        from mandacaru.pseudopotentials import pseudo_basis
-        from mandacaru.pseudopotentials.paw import get_paw
-
-        potentials = {"H": get_paw("H")}
-        shared = pseudo_basis(["H"], [[0.0, 0.0, 0.0]], potentials, size="DZ",
-                              split_norm=0.15)[0]
-        split = pseudo_basis(["H"], [[0.0, 0.0, 0.0]], potentials, size="DZ",
-                             split_norm={"H": 0.45})[0]
-        # The second zeta is built from the split radius, so it must differ.
-        assert not np.allclose(shared[1].table.values, split[1].table.values)
+        assert merged["zeta_split"] == "last_zeta"
 
     def test_n_electrons_is_refused_with_a_pseudopotential_basis(self):
         from ase import Atoms

@@ -18,7 +18,7 @@ The extra zetas are generated from an existing zeta rather than from new
 eigenvalue problems, by the *split-valence* construction (Artacho *et al.*,
 1999).  Given a radial function :math:`R_1`, pick a **split radius**
 :math:`r_s` such that the norm carried by the tail beyond it is a prescribed
-fraction (``split_norm``):
+fraction (the split norm):
 
 .. math::
 
@@ -44,10 +44,14 @@ zeta repeat the construction, each new function shorter-ranged than the last.
 
 * ``"first_zeta"`` (the default) -- every extra zeta is split from the
   **first** one, at the radius leaving a tail of **norm**
-  ``tail_norm[k]`` outside (:data:`DEFAULT_TAIL_NORMS`);
+  :data:`DEFAULT_TAIL_NORMS` ``[k]`` outside;
 * ``"last_zeta"`` -- each extra zeta is split from the **previous** one, at
-  the radius leaving ``split_norm`` of its **squared** norm outside, the
-  fraction halved for every further zeta (:data:`DEFAULT_SPLIT_NORM`).
+  the radius leaving :data:`DEFAULT_SPLIT_NORM` of its **squared** norm
+  outside, the fraction halved for every further zeta.
+
+The scheme carries its parameter: :func:`resolve_split_scheme` derives the
+tail norms or the split norm from ``zeta_split``, and neither is a basis
+option of its own.
 
 Angular flexibility: polarization
 ---------------------------------
@@ -90,33 +94,6 @@ DEFAULT_SPLIT_NORM = 0.15
 DEFAULT_TAIL_NORMS = (0.16, 0.3, 0.6)
 
 
-def validate_tail_norm(spec):
-    """Normalize a ``tail_norm`` option to a tuple of tail **norms**.
-
-    The ``first_zeta`` convention: entry ``k`` is the norm of the tail the
-    ``k + 2``-th zeta leaves outside its split radius.  A single number
-    replaces the first entry of :data:`DEFAULT_TAIL_NORMS` and keeps the
-    defaults for the higher zetas.  ``None`` returns ``None``.
-    """
-    if spec is None:
-        return None
-    if isinstance(spec, bool):
-        raise ValueError(f"tail_norm must be a number or a sequence, got "
-                         f"{spec!r}")
-    if isinstance(spec, (int, float)):
-        values = (float(spec),) + tuple(DEFAULT_TAIL_NORMS[1:])
-    else:
-        try:
-            values = tuple(float(v) for v in spec)
-        except (TypeError, ValueError):
-            raise ValueError("tail_norm must be a number or a sequence of "
-                             f"numbers, got {spec!r}") from None
-    if not values or any(not 0.0 < v < 1.0 for v in values):
-        raise ValueError("every tail norm must lie in (0, 1), got "
-                         f"{values!r}")
-    return values
-
-
 def validate_zeta_split(spec):
     """Normalize a ``zeta_split`` option to one of :data:`ZETA_SPLITS`, or
     ``None`` when it was not written."""
@@ -129,43 +106,19 @@ def validate_zeta_split(spec):
     return key
 
 
-def resolve_split_scheme(split_norm=None, tail_norm=None, zeta_split=None):
-    """``(split_norm, tail_norms)`` of the split-valence scheme to use.
+def resolve_split_scheme(zeta_split=None):
+    """``(split_norm, tail_norms)`` of the split-valence scheme ``zeta_split``.
 
-    ``zeta_split`` names the scheme: ``"first_zeta"`` (the default) returns
-    ``tail_norms`` -- :data:`DEFAULT_TAIL_NORMS` or the validated
-    ``tail_norm`` -- with ``split_norm`` unused; ``"last_zeta"`` returns the
-    ``split_norm`` (``None`` for :data:`DEFAULT_SPLIT_NORM`) with
-    ``tail_norms = None``.  Left unwritten, the scheme is the one whose
-    parameter was given: ``split_norm`` alone means ``"last_zeta"``.  Each
-    parameter belongs to one scheme -- they measure the tail differently
-    (norm against squared norm) and split different functions -- so giving
-    the other scheme's parameter is refused.
+    The scheme fixes its own parameter, which is never written by hand:
+    ``"first_zeta"`` (the default) returns ``(None, DEFAULT_TAIL_NORMS)`` --
+    every extra zeta split from the first by the tail's **norm** -- and
+    ``"last_zeta"`` returns ``(DEFAULT_SPLIT_NORM, None)`` -- each zeta split
+    from the previous one by the tail's **squared** norm, halved per zeta.
     """
-    scheme = validate_zeta_split(zeta_split)
-    tail_norms = validate_tail_norm(tail_norm)
-    if scheme is None:
-        scheme = "last_zeta" if split_norm is not None else DEFAULT_ZETA_SPLIT
+    scheme = validate_zeta_split(zeta_split) or DEFAULT_ZETA_SPLIT
     if scheme == "first_zeta":
-        if split_norm is not None:
-            raise ValueError(
-                "'split_norm' is the parameter of zeta_split='last_zeta' (each "
-                "zeta split from the previous one, by the tail's squared "
-                "norm); zeta_split='first_zeta' takes 'tail_norm'")
-        return None, (tail_norms or DEFAULT_TAIL_NORMS)
-    if tail_norms is not None:
-        raise ValueError(
-            "'tail_norm' is the parameter of zeta_split='first_zeta' (every "
-            "zeta split from the first, by the tail's norm); "
-            "zeta_split='last_zeta' takes 'split_norm'")
-    if split_norm is None:
-        return None, None
-    if isinstance(split_norm, dict):
-        return split_norm, None
-    value = float(split_norm)
-    if not 0.0 < value < 1.0:
-        raise ValueError(f"split_norm must lie in (0, 1), got {value!r}")
-    return value, None
+        return None, DEFAULT_TAIL_NORMS
+    return DEFAULT_SPLIT_NORM, None
 
 #: Default NAO size.  Double zeta plus polarization: single zeta gives a shell
 #: no radial freedom (it cannot contract or expand) and no angular freedom (it

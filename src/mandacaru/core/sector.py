@@ -99,6 +99,24 @@ def flip_groups(operator: PauliSum) -> dict:
     return groups
 
 
+def group_amplitudes(members, states: np.ndarray) -> np.ndarray:
+    r"""Summed amplitude of one :func:`flip_groups` group on each of
+    ``states``: :math:`\sum_t c_t\, s_t(x)`, the coefficient of
+    :math:`|x \oplus f\rangle` in the group applied to :math:`|x\rangle`."""
+    values = np.zeros(states.size, dtype=complex)
+    counts = np.empty(states.size, dtype=np.uint8)
+    scratch = np.empty(states.size, dtype=np.int64)
+    for phase, factor in members:
+        if not phase:
+            # No Y and no Z: the sign is +1 on every state.
+            values += factor
+            continue
+        np.bitwise_and(states, phase, out=scratch)
+        np.bitwise_count(scratch, out=counts)
+        values += factor * (1 - 2 * (counts & 1).astype(np.int8))
+    return values
+
+
 def apply_pauli_sum(operator: PauliSum, indices, amplitudes):
     r"""Apply ``operator`` to the sparse state ``sum_x a_x |x>``.
 
@@ -327,17 +345,7 @@ class ParticleSector:
                 kept_rows = rows[inside]
                 kept_cols = columns[inside]
                 states = self.indices[inside]
-            values = np.zeros(states.size, dtype=complex)
-            counts = np.empty(states.size, dtype=np.uint8)
-            scratch = np.empty(states.size, dtype=np.int64)
-            for phase, factor in members:
-                if not phase:
-                    # No Y and no Z: the sign is +1 on every state.
-                    values += factor
-                    continue
-                np.bitwise_and(states, phase, out=scratch)
-                np.bitwise_count(scratch, out=counts)
-                values += factor * (1 - 2 * (counts & 1).astype(np.int8))
+            values = group_amplitudes(members, states)
             rows_all.append(kept_rows)
             cols_all.append(kept_cols)
             data_all.append(values)
@@ -360,18 +368,25 @@ class ParticleSector:
         term-by-term image test would reject operators whose leaking parts
         cancel, so the amplitudes of each image are summed first (per source
         state) and only a surviving amplitude outside the sector counts.
+
+        From one source state, terms with different flip masks reach
+        different images, so only a :func:`flip_groups` group can cancel:
+        each group is tested on every sector state at once, as
+        :meth:`restrict` builds it, rather than state by state.
         """
         if not operator.terms:
             return True
         if operator.num_qubits != self.n_qubits:
             raise ValueError(f"operator acts on {operator.num_qubits} qubits, "
                              f"the sector register on {self.n_qubits}")
-        for index in self.indices:
-            images, amplitudes = apply_pauli_sum(operator, [index], [1.0])
-            if images.size == 0:
+        for flip, members in flip_groups(operator).items():
+            if not flip:
+                continue                  # diagonal: every image is its source
+            outside = self.positions(self.indices ^ np.int64(flip)) < 0
+            if not outside.any():
                 continue
-            outside = self.positions(images) < 0
-            if np.any(np.abs(amplitudes[outside]) > atol):
+            values = group_amplitudes(members, self.indices[outside])
+            if np.any(np.abs(values) > atol):
                 return False
         return True
 

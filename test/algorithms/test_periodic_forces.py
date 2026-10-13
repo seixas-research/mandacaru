@@ -130,13 +130,13 @@ def solved_chain():
     """A periodic H2 chain, solved once: 4 qubits, an asymmetric geometry."""
     atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.8, 0.15, 0.0]],
                   cell=np.diag([3.0, 5.0, 5.0]), pbc=[True, False, False])
-    # h = 0.35 and a 5 Angstrom transverse cell rather than 0.30 and 7: the
+    # grid_spacing = 0.35 and a 5 Angstrom transverse cell rather than 0.30 and 7: the
     # comparison is analytic-against-finite-difference of the *same* energy on
     # the *same* grid, so neither a coarser grid nor a tighter box weakens it,
     # and every one of the twelve displaced rebuilds gets cheaper.
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": (1, 1, 1), "gamma": True},
-                           basis="HAO", h=0.35, trace=False, optimizer=SLSQP)
+                           basis="HAO", grid_spacing=0.35, trace=False, optimizer=SLSQP)
     atoms.get_potential_energy()
     return atoms
 
@@ -273,7 +273,7 @@ class TestTheStress:
                       cell=np.diag([3.0] * 3), pbc=True)
         atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                                kpts={"size": (1, 1, 1), "gamma": True},
-                               basis="HAO", h=0.35, trace=False,
+                               basis="HAO", grid_spacing=0.35, trace=False,
                                optimizer=SLSQP)
         atoms.get_potential_energy()
         return atoms
@@ -306,7 +306,7 @@ class TestTheStress:
         assert voigt == pytest.approx(expected)
 
     def test_an_even_grid_is_shear_free_too(self):
-        h, shape = 0.30, 10        # the grid with the largest original artifact
+        grid_spacing, shape = 0.30, 10        # the grid with the largest original artifact
         """The regression: the shear used to depend on the grid's parity.
 
         Before ``fft_g_squared`` symmetrized the Nyquist plane, this system --
@@ -318,7 +318,7 @@ class TestTheStress:
                       cell=np.diag([3.0] * 3), pbc=True)
         atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                                kpts={"size": (1, 1, 1), "gamma": True},
-                               basis="HAO", h=h, trace=False,
+                               basis="HAO", grid_spacing=grid_spacing, trace=False,
                                optimizer=SLSQP)
         atoms.get_potential_energy()
         assert atoms.calc.solver._gradient_context[
@@ -330,7 +330,7 @@ class TestTheStress:
     def test_a_molecular_method_has_no_stress(self):
         atoms = Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]],
                       cell=np.diag([8.0] * 3))
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.4,
                                trace=False, optimizer=SLSQP)
         atoms.get_potential_energy()
         with pytest.raises(NotImplementedError, match="not periodic"):

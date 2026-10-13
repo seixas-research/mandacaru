@@ -249,33 +249,26 @@ class NAOBasisSet(BasisSet):
         polarization because single zeta has no radial or angular freedom at
         all; pass ``size="SZ"`` for the older, much cheaper minimal basis.
     zeta_split : {"first_zeta", "last_zeta"}
-        Which function every extra zeta is split from: the **first** zeta
-        (the default) or the previous, **last** one.  Left unwritten, a
-        ``split_norm`` alone selects ``"last_zeta"``.
-    tail_norm : float or sequence
-        The parameter of ``"first_zeta"`` (default ``(0.16, 0.3, 0.6)``): the
-        *norm* of the tail each extra zeta leaves outside its split radius.
-    split_norm : float
-        The parameter of ``"last_zeta"`` (default ``0.15``): the fraction of
-        the orbital's *squared* norm left outside the split radius, halved for
-        every further zeta.  Each parameter is refused with the other
-        scheme.
+        Which function every extra zeta is split from, and so where: the
+        **first** zeta (the default), at the radius leaving a tail of *norm*
+        ``(0.16, 0.3, 0.6)`` outside for the second, third and fourth zeta,
+        or the previous, **last** one, at the radius leaving ``0.15`` of its
+        *squared* norm outside, halved for every further zeta
+        (:func:`~mandacaru.basis.multizeta.resolve_split_scheme`).
     """
 
     method = "NAO"
 
     def __init__(self, energy_shift: float = DEFAULT_ENERGY_SHIFT,
                  r_c: float | None = None, n_grid: int = 2000,
-                 size=DEFAULT_NAO_SIZE, split_norm: float | None = None,
-                 tail_norm=None, zeta_split: str | None = None):
+                 size=DEFAULT_NAO_SIZE, zeta_split: str | None = None):
         self.energy_shift = energy_shift
         self.r_c = float(r_c) if r_c is not None \
             else energy_shift_to_rc(energy_shift)
         self.n_grid = n_grid
         self.size = size
         self.n_zeta, self.n_polarization = resolve_zeta(size)
-        self.split_norm, self.tail_norms = resolve_split_scheme(
-            split_norm, tail_norm, zeta_split)
+        self.split_norm, self.tail_norms = resolve_split_scheme(zeta_split)
         self.zeta_split = ("first_zeta" if self.tail_norms is not None
                            else "last_zeta")
 

@@ -66,7 +66,7 @@ def lih(distance: float = 1.60) -> Atoms:
 
 def solved(atoms, provider=None, **options):
     """A calculator that has run once, with everything the measurement needs."""
-    atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.30,
+    atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30,
                            pool="qeb", max_iterations=3, trace=False,
                            measurement_provider=provider, **options)
     atoms.get_potential_energy()
@@ -199,7 +199,7 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
     def test_the_budget_refuses_an_oversized_job(self):
         atoms = h2()
         atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", h=0.30, pool="qeb",
+            method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
             max_iterations=2, trace=False,
             measurement_provider=QiskitProvider(device="statevector",
                                                 shots=1024),
@@ -213,7 +213,7 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
     def test_a_refused_job_keeps_the_optimized_state(self):
         atoms = h2()
         atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", h=0.30, pool="qeb",
+            method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
             max_iterations=2, trace=False,
             measurement_provider=QiskitProvider(device="statevector",
                                                 shots=1024),
@@ -279,7 +279,7 @@ class TestAFailedJobKeepsTheState:
         atoms = h2()
         provider = QiskitProvider(device="statevector", shots=1024)
         monkeypatch.setattr(type(provider), "energy", explode)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.30,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30,
                                pool="qeb", max_iterations=2, trace=False,
                                measurement_provider=provider)
         with pytest.raises(MeasurementFailed) as raised:
@@ -306,7 +306,7 @@ class TestAFailedJobKeepsTheState:
         assert again["rdms"] is not None
 
     def test_remeasure_before_anything_ran_is_refused(self):
-        calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.30, pool="qeb",
+        calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
                          trace=False,
                          measurement_provider=QiskitProvider(
                              device="statevector"))
@@ -691,7 +691,7 @@ class TestTheFactorizedMeasurement:
     def test_a_tapered_register_is_refused(self):
         atoms = h2()
         atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", h=0.30, pool="qeb",
+            method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
             mapping="parity_reduced", max_iterations=2, trace=False,
             measurement_scheme="double-factorized",
             measurement_provider=QiskitProvider(device="statevector"))
@@ -870,7 +870,7 @@ class TestTheRunBudget:
         job where the ceiling is crossed."""
         from mandacaru.backends.measurement import RunBudgetExceeded
 
-        calc = Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, shots=1000,
                          trace=False,
                          backend_options={"run_budget": {
                              "jobs": None, "total_shots": 50_000}})
@@ -885,7 +885,7 @@ class TestTheRunBudget:
         """Nelder-Mead has no evaluation bound, so the pre-flight lets it
         start; the ledger stops it at job 6 and the best point is the
         result, flagged unconverged -- not an exception that loses it."""
-        calc = Mandacaru(method=method, basis="HAO", h=0.4, shots=1000,
+        calc = Mandacaru(method=method, basis="HAO", grid_spacing=0.4, shots=1000,
                          optimizer={"method": "Nelder-Mead", "maxiter": 200},
                          trace=False,
                          backend_options={"seed": 3,
@@ -900,7 +900,7 @@ class TestTheRunBudget:
     def test_an_optimization_that_cannot_fit_is_refused_up_front(self):
         from mandacaru.backends.measurement import RunBudgetExceeded
 
-        calc = Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, shots=1000,
                          trace=False,
                          backend_options={"run_budget": {"jobs": 10}})
         with pytest.raises(RunBudgetExceeded, match="jobs 201 > 10"):

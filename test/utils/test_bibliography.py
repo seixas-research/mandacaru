@@ -275,7 +275,7 @@ class TestTheSelector:
         assert "Junquera2001" not in plain and "Anglada2006" not in plain
         assert "Artacho1999" not in plain
         rich = citation_keys(family="paw-lcao",
-                             basis_options={"size": "DZP", "filter": True,
+                             basis_options={"size": "DZP", "filter_cutoff": True,
                                             "energy_shift": 0.1})
         assert {"Junquera2001", "Sankey1989", "Anglada2006",
                 "Artacho1999"} <= set(rich)
@@ -347,7 +347,7 @@ class TestARunWritesIt:
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis="HAO",
-                               h=0.35,
+                               grid_spacing=0.35,
                                txt=str(tmp_path / "output.txt"),
                                trace=False)
         atoms.get_total_energy()
@@ -359,7 +359,7 @@ class TestARunWritesIt:
     def test_no_log_means_no_file(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.35, trace=False)
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False)
         atoms.get_total_energy()
         assert list(tmp_path.iterdir()) == []
 
@@ -367,7 +367,7 @@ class TestARunWritesIt:
                                                              monkeypatch):
         monkeypatch.chdir(tmp_path)
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.35, trace=False,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
                                references=True)
         atoms.get_total_energy()
         assert (tmp_path / DEFAULT_REFERENCES_FILE).is_file()
@@ -375,7 +375,7 @@ class TestARunWritesIt:
 
     def test_an_explicit_path_is_honored(self, tmp_path):
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.35, trace=False,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
                                references=str(tmp_path / "papers.bib"))
         atoms.get_total_energy()
         assert (tmp_path / "papers.bib").is_file()
@@ -385,7 +385,7 @@ class TestARunWritesIt:
         atoms = h2()
         atoms.calc = Mandacaru(method="vqe",
                                basis={"name": "PAW-LCAO", "size": "SZ"},
-                               h=0.35,
+                               grid_spacing=0.35,
                                trace=False)
         atoms.get_total_energy()
         keys = atoms.calc.citation_keys()
@@ -411,7 +411,7 @@ class TestARunWritesIt:
     def test_excited_states_add_their_own_reference(self, tmp_path):
         target = tmp_path / "papers.bib"
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.35, trace=False,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
                                references=str(target))
         atoms.get_total_energy()
         assert "Higgott2019" not in target.read_text()
@@ -422,7 +422,7 @@ class TestARunWritesIt:
         atoms = h2()
         # A directory where the file should be: opening it for writing fails.
         (tmp_path / "papers.bib").mkdir()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.35, trace=False,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
                                references=str(tmp_path / "papers.bib"))
         with pytest.warns(RuntimeWarning, match="could not write"):
             energy = atoms.get_total_energy()

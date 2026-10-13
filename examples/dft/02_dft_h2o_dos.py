@@ -14,7 +14,7 @@ atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="dft",
                        xc="lda",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       h=0.2)
+                       grid_spacing=0.2)
 atoms.get_potential_energy()
 
 scf = atoms.calc.result.scf

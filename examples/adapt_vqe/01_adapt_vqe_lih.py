@@ -6,7 +6,7 @@ atoms = molecule("LiH")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
-                       h=0.25,
+                       grid_spacing=0.25,
                        pool="qeb",
                        convergence={"gradient": 1e-3})
 

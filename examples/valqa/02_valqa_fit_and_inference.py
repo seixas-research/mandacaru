@@ -16,7 +16,7 @@ for method, options in (("valqa", {"proposal_model": os.path.join(STORE, "propos
                         ("mcas-vqe", {})):
     atoms.calc = Mandacaru(method=method,
                            basis={"name": "PAW-LCAO", "size": "SZ"},
-                           h=0.20,
+                           grid_spacing=0.20,
                            pool="qeb",
                            active_space={"orbitals": {"occupied": 3, "virtual": 3},
                                          "method": "mp2"},

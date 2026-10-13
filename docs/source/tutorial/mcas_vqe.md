@@ -17,7 +17,7 @@ atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
 atoms.center(vacuum=2.5)
 atoms.calc = Mandacaru(method="mcas-vqe",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
-                       h=0.20,
+                       grid_spacing=0.20,
                        pool="qeb",
                        max_steps=100,
                        max_length=10,
@@ -34,7 +34,7 @@ print(result.acceptance_by_move)   # {"insert": (accepted, proposed), ...}
 From the command line, the same run is
 
 ```console
-$ mandacaru H2 --cell 5.5 --h 0.25 --method mcas-vqe --pool qeb \
+$ mandacaru H2 --cell 5.5 --grid-spacing 0.25 --method mcas-vqe --pool qeb \
       --max-steps 100 --max-length 10 --temperature 0.1 0.001 \
       --length-penalty 1e-3 --seed 1234 --txt output.txt
 ```
@@ -199,7 +199,7 @@ atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.80]])
 atoms.center(vacuum=2.5)
 atoms.calc = Mandacaru(method="mcas-vqe",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        pool="qeb",
                        max_steps=30,          # the first geometry, from empty
                        transfer=True,

@@ -13,8 +13,8 @@ and linearized ones for Kohn-Sham.
 Atomic checks (radial, cheap) on freshly generated H, Li and O -- projector
 duality, the generalized eigenproblem, the reconstruction of the all-electron
 wave (the transformation the method is named after), logarithmic derivatives
--- and the molecular checks on H2 (0.74 A, h = 0.25 A, 6 A cell) and LiH
-(1.6 A, h = 0.30 / 0.25 A, 8 A cell) against pinned energies.  The overlap
+-- and the molecular checks on H2 (0.74 A, grid_spacing = 0.25 A, 6 A cell) and LiH
+(1.6 A, grid_spacing = 0.30 / 0.25 A, 8 A cell) against pinned energies.  The overlap
 correction makes these the first runs through the augmented overlap
 ``S + C q C^dagger`` with a nonzero ``q``.
 """
@@ -84,12 +84,12 @@ N_PROJECTORS = {"H2": 4, "LiH": 10}
 #: ``before_compensation_attraction``.
 #:
 #: Re-measured again 2026-09-20, when the **Fourier filter became the PAW
-#: default** (``default_options = {"filter": True}``): every basis function is
+#: default** (``default_options = {"filter_cutoff": True}``): every basis function is
 #: now band-limited to the grid's Nyquist wave-vector before it is sampled.
 #: The shift is tiny on these s-valence systems -- H2 -1.1 meV (the filtered
 #: function is marginally *better*), LiH +14.1 meV -- because their orbitals
 #: were nearly band-limited already; the oxygen-bearing systems move by
-#: hundreds of meV.  ``basis={"name": "paw-lcao", "filter": False}`` reproduces
+#: hundreds of meV.  ``basis={"name": "paw-lcao", "filter_cutoff": False}`` reproduces
 #: ``PAW_BEFORE_BASIS_FILTER`` exactly.
 #:
 #: These are the values of **both** 2026-09-20 defaults together: the filtered
@@ -173,11 +173,11 @@ PAW = {"H2": {"rhf": -1.063691, "adapt": -1.078462},
 PAW_FILTER_ONLY = {
     "H2": {"rhf": -1.063737, "adapt": -1.078509},
     "LiH": {"rhf": -0.745498, "adapt": -0.755261}}
-#: The exact local potential alone (``filter=False``).
+#: The exact local potential alone (``filter_cutoff=False``).
 PAW_EXACT_LOCAL_ONLY = {
     "H2": {"rhf": -1.063765, "adapt": -1.078565},
     "LiH": {"rhf": -0.745941, "adapt": -0.755682}}
-#: Neither: ``filter=False`` and ``exact_local_potential = False`` -- the
+#: Neither: ``filter_cutoff=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
@@ -258,13 +258,13 @@ def _unconfined(basis):
     return options
 
 
-def _build(name, basis, h=None):
+def _build(name, basis, grid_spacing=None):
     factory, default_h = SYSTEMS[name]
     basis = _unconfined(basis)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         return build_basis_hamiltonian(factory(), basis, None,
-                                       default_h if h is None else h, 0, None)
+                                       default_h if grid_spacing is None else grid_spacing, 0, None)
 
 
 def _total(integrals, n_electrons) -> float:
@@ -856,14 +856,14 @@ class TestLibrary:
     def test_copper_binds_hydrogen(self):
         """The PBE copper built at deficit 0.1 collapsed CuH as the hydrogen
         entered its sphere: -1555 eV at 1.30 Angstrom, 108 eV below 1.60 (RHF
-        SZ, h = 0.20).  At deficit 0, like the LDA one, 1.60 is the lower of
+        SZ, grid_spacing = 0.20).  At deficit 0, like the LDA one, 1.60 is the lower of
         the two, by a fraction of an eV."""
         energies = {}
         for distance in (1.3, 1.6):
             atoms = Atoms("CuH", positions=[[0, 0, 0], [0, 0, distance]],
                           cell=[8.0] * 3)
             atoms.center()
-            atoms.calc = Mandacaru(method="rhf", h=0.20, directory="lda-sr",
+            atoms.calc = Mandacaru(method="rhf", grid_spacing=0.20, directory="lda-sr",
                                    basis={"name": "PAW-LCAO", "size": "SZ"})
             energies[distance] = atoms.get_potential_energy()
         assert energies[1.6] < energies[1.3] < energies[1.6] + 5.0
@@ -913,7 +913,7 @@ class TestLibrary:
     @pytest.mark.slow
     def test_iron_hydride_does_not_collapse(self):
         """FeH fell 154 eV between 2.93 and 1.39 Angstrom with the 8-function
-        LDA iron (UHF SZ, h = 0.20).  A bound, not a bond curve -- the 3d shell
+        LDA iron (UHF SZ, grid_spacing = 0.20).  A bound, not a bond curve -- the 3d shell
         is not resolved on this grid -- and the UHF is solved to 1e-6 in up to
         1000 iterations, which every point reaches."""
         from mandacaru.algorithms.hartree_fock import UHF
@@ -1100,17 +1100,18 @@ class TestResolution:
         spec = PSEUDO_FAMILIES["paw-lcao"]
         assert spec.norm_conserving is False and spec.aliases == ()
         assert spec.label == "PAW-LCAO"
-        assert spec.options == ("size", "zeta_split", "split_norm", "tail_norm",
-                                "directory", "filter", "projector_basis",
-                                "energy_shift", "confinement", "polarization")
+        assert spec.options == ("size", "zeta_split", "directory",
+                                "filter_cutoff", "projector_basis",
+                                "energy_shift", "confinement_potential",
+                                "polarization_method")
         # PAW filters and confines its basis by default (the polarization
         # shell follows the confinement, so it is derived rather than listed);
         # writing an option wins either way.
-        defaults = {"filter": True, "energy_shift": 0.1}
+        defaults = {"filter_cutoff": "auto", "energy_shift": 0.1}
         assert spec.default_options == defaults
         assert spec.resolved_options() == defaults
-        assert spec.resolved_options({"filter": False}) == {
-            **defaults, "filter": False}
+        assert spec.resolved_options({"filter_cutoff": False}) == {
+            **defaults, "filter_cutoff": False}
         assert spec.resolved_options({"energy_shift": None}) == {
             **defaults, "energy_shift": None}
         assert spec.resolved_options({"size": "DZ"}) == {**defaults,
@@ -1144,11 +1145,11 @@ class TestResolution:
         assert dz.n_qubits == 8
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="paw-lcao",
-                               h=H2_H, dry_run=True)
+                               grid_spacing=H2_H, dry_run=True)
         assert np.isnan(atoms.get_potential_energy())
         assert atoms.calc.dry_run_result.n_qubits == 4
         assert Mandacaru(method="vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-                         h=LIH_H).dry_run(lih()).n_qubits == 8
+                         grid_spacing=LIH_H).dry_run(lih()).n_qubits == 8
 
 
 # --------------------------------------------------------------------------- #
@@ -1189,13 +1190,13 @@ class TestOverlap:
         """<phi~_1|p_i> = delta_i1 on the atom the function sits on, from the
         radial tables rather than the grid; the moments then reproduce q_11.
 
-        Built with ``filter=False``: the identity is the *dataset's* algebra
+        Built with ``filter_cutoff=False``: the identity is the *dataset's* algebra
         (chi_k was constructed from this exact phi~_1), so it holds only for
         the unfiltered first zeta.  The filtered case is checked below --
         the quadrature is still exact, it is the function that moved.
         """
         _H, _p, _n, _pr, context = _build("H2", {"name": "paw-lcao",
-                                                 "filter": False})
+                                                 "filter_cutoff": False})
         ints = context["integrals"]
         pp = get_paw("H")
         C = ints.projections()
@@ -1230,7 +1231,7 @@ class TestOverlap:
         <phi~_1|chi_k> is no longer exactly B_1k -- but the quadrature is
         still an exact on-site radial integral, not a grid sample.
 
-        Measured on H2 at h = 0.25: the deviation from the dataset's algebra
+        Measured on H2 at grid_spacing = 0.25: the deviation from the dataset's algebra
         goes 4.6e-6 (unfiltered) -> 3.1e-4 (filtered), i.e. the filter moves
         it by two orders of magnitude and it is still 1e-4-small.  A
         grid-sampled projection was off by 0.7-3x, which is what this number
@@ -1307,7 +1308,7 @@ class TestMolecular:
                                                   monkeypatch):
         """Both 2026-09-20 defaults can be switched off, one at a time.
 
-        ``filter=False`` and ``PAWIntegrals.exact_local_potential = False``
+        ``filter_cutoff=False`` and ``PAWIntegrals.exact_local_potential = False``
         together give back exactly the old numbers: the previous model is still
         reachable, and it is still *exactly* that model.  The tolerance is
         deliberately not ``PIN_TOL`` (2e-3 Ha, which every one of these shifts
@@ -1316,8 +1317,8 @@ class TestMolecular:
         """
         monkeypatch.setattr(PAWIntegrals, "exact_local_potential", exact_local)
         H, _p, _n, _pr, context = _build(name, {"name": "paw-lcao",
-                                                "filter": filtered})
-        assert (context["filter_cutoff"] is None) == (not filtered)
+                                                "filter_cutoff": filtered})
+        assert (context["filter_wavevector"] is None) == (not filtered)
         e_rhf = _total(context["integrals"], context["n_electrons"])
         e_fci = _fci(H)
         expected = globals()[table][name]
@@ -1336,7 +1337,7 @@ class TestMolecular:
     def test_adapt_vqe(self, name):
         factory, h = SYSTEMS[name]
         atoms = factory()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw-lcao", h=h,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw-lcao", grid_spacing=h,
                                pool="qeb", max_iterations=4,
                                profile=False)
         with warnings.catch_warnings():
@@ -1358,10 +1359,10 @@ class TestMolecular:
 
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_hardness_at_a_quarter_angstrom(self, name):
-        ints = _build(name, "paw-lcao", h=0.25)[4]["integrals"]
+        ints = _build(name, "paw-lcao", grid_spacing=0.25)[4]["integrals"]
         basis = ints.resolution_ratios
         projectors = ints.kb_resolution_ratios
-        print(f"\n{name} (h=0.25 A): PAW-LCAO basis T_grid/T_exact = "
+        print(f"\n{name} (grid_spacing=0.25 A): PAW-LCAO basis T_grid/T_exact = "
               f"{np.round(basis, 3)}, projector norm ratios = "
               f"{np.round(projectors, 3)}")
         assert np.all((basis > 0.75) & (basis < 1.25))
@@ -1371,9 +1372,9 @@ class TestMolecular:
     def test_lih_is_stable_against_the_grid(self):
         """The on-site projections being exact, the energy drifts smoothly
         with the grid (egg-box) instead of collapsing between nodes."""
-        e30 = _total(_build("LiH", "paw-lcao", h=0.30)[4]["integrals"], 2)
-        e25 = _total(_build("LiH", "paw-lcao", h=0.25)[4]["integrals"], 2)
-        print(f"\nLiH PAW RHF: h=0.30 {e30:.6f}, h=0.25 {e25:.6f} Ha")
+        e30 = _total(_build("LiH", "paw-lcao", grid_spacing=0.30)[4]["integrals"], 2)
+        e25 = _total(_build("LiH", "paw-lcao", grid_spacing=0.25)[4]["integrals"], 2)
+        print(f"\nLiH PAW RHF: grid_spacing=0.30 {e30:.6f}, grid_spacing=0.25 {e25:.6f} Ha")
         assert abs(e25 - e30) < 0.02
 
     def test_size_hierarchy_is_variational(self):
@@ -1390,7 +1391,7 @@ class TestMolecular:
     def test_first_zeta_is_the_smooth_partial_wave(self):
         """Unfiltered, the first zeta *is* the dataset's own partial wave."""
         _H, _p, _n, _pr, context = _build("H2", {"name": "paw-lcao",
-                                                 "filter": False})
+                                                 "filter_cutoff": False})
         fn = context["integrals"].basis[0]
         pp = get_paw("H")
         r = np.linspace(0.05, 4.0, 50)
@@ -1406,19 +1407,19 @@ class TestMolecular:
         driver builds is reproduced by calling the filter on the dataset's
         table (1e-4, the table-decimation floor the unfiltered case also
         has), and it is genuinely different from the raw table (1e-2 at
-        h = 0.25), so the test cannot pass by the filter doing nothing.
+        grid_spacing = 0.25), so the test cannot pass by the filter doing nothing.
         """
-        from mandacaru.basis.filtering import filter_cutoff, filter_radial
+        from mandacaru.basis.filtering import filter_radial, resolve_filter_cutoff
 
         context = _build("H2", "paw-lcao")[4]                    # default: filtered
         fn = context["integrals"].basis[0]
-        assert context["filter_cutoff"] == pytest.approx(
-            filter_cutoff(True, max(context["integrals"].grid.dx,
-                                    context["integrals"].grid.dy,
-                                    context["integrals"].grid.dz)))
+        assert context["filter_wavevector"] == pytest.approx(
+            resolve_filter_cutoff(True, max(context["integrals"].grid.dx,
+                                            context["integrals"].grid.dy,
+                                            context["integrals"].grid.dz)))
         pp = get_paw("H")
         want, _info = filter_radial(pp.r, pp.channels[0].pseudo_radial, 0,
-                                    context["filter_cutoff"])
+                                    context["filter_wavevector"])
         r = np.linspace(0.05, 4.0, 50)
         assert np.allclose(fn.radial(r), np.interp(r, pp.r, want), atol=2e-4)
         raw = np.interp(r, pp.r, pp.channels[0].pseudo_radial)
@@ -1429,10 +1430,10 @@ class TestMolecular:
 # The spheres of a Hartree-Fock Hamiltonian (one_center="exact").
 # --------------------------------------------------------------------------- #
 
-def _atom_integrals(symbol, size, h, vacuum, one_center, kinetic=None):
+def _atom_integrals(symbol, size, grid_spacing, vacuum, one_center, kinetic=None):
     atoms = Atoms(symbol, positions=[(0.0, 0.0, 0.0)])
     atoms.center(vacuum=vacuum)
-    *_, context = paw.build_paw(atoms, None, h, 0, 0,
+    *_, context = paw.build_paw(atoms, None, grid_spacing, 0, 0,
                                 {"size": size, "energy_shift": None},
                                 kinetic=kinetic, hamiltonian=False,
                                 one_center=one_center)

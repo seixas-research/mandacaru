@@ -52,7 +52,7 @@ def h2_hamiltonian():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.35)
+    grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.35)
     integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
@@ -385,7 +385,7 @@ class TestSystemBlock:
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
                       cell=[6.0] * 3, **atoms_options)
         atoms.center()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
                                pool="fermionic", max_iterations=1,
                                txt=out, trace=False, profile=False)
         atoms.get_potential_energy()
@@ -454,7 +454,7 @@ class TestElectronsBlock:
         out = str(tmp_path_factory.mktemp("electrons") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=2,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_potential_energy()
@@ -531,7 +531,7 @@ class TestBasisBlock:
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis={"name": "PAW-LCAO", "size": "DZ",
                                       "energy_shift": 0.1},
-                               h=0.30, pool="fermionic", max_iterations=1,
+                               grid_spacing=0.30, pool="fermionic", max_iterations=1,
                                txt=out)
         atoms.get_potential_energy()
         return out, atoms.calc
@@ -551,14 +551,14 @@ class TestBasisBlock:
         # than printing a bare number: a tail *norm* and a squared-norm
         # fraction are not comparable.
         assert block["zeta_split"].startswith(
-            "first_zeta: tail_norm 0.16, 0.3, 0.6 (norm")
+            "first_zeta: tail norms 0.16, 0.3, 0.6 (norm")
         # The shell follows the confinement: the Gaussian when confined.
-        assert block["polarization"].startswith("gaussian")
+        assert block["polarization_method"].startswith("gaussian")
         assert block["energy_shift"] == "0.1 eV"
         assert "A = 12 Ha" in block["confinement_potential"]
         # On by default for PAW-LCAO, with the cutoff the grid resolved it to.
-        assert block["filter"].startswith("filtered")
         assert "Bohr^-1" in block["filter_cutoff"]
+        assert block["filter_cutoff"].endswith("filtered (auto: 1 x Nyquist)")
         assert block["local_potential"].startswith("range-separated")
         assert block["dataset_xc"].startswith("LDA")
         # The folder is stated once, by name and path; the table names files.
@@ -600,7 +600,7 @@ class TestBasisBlock:
                       cell=[8.0, 8.0, 8.0])
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis={"name": "PAW-LCAO", "energy_shift": None},
-                               h=0.30, pool="fermionic", max_iterations=1,
+                               grid_spacing=0.30, pool="fermionic", max_iterations=1,
                                txt=out)
         atoms.get_potential_energy()
         block = parse_output(out)["basis"]
@@ -615,7 +615,7 @@ class TestBasisBlock:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis={"name": "HAO", "virtual_orbitals": 1},
-                               h=0.35, pool="fermionic", max_iterations=1,
+                               grid_spacing=0.35, pool="fermionic", max_iterations=1,
                                txt=out)
         atoms.get_potential_energy()
         block = parse_output(out)["basis"]
@@ -835,7 +835,7 @@ class TestNothingIsSaidTwice:
         out = str(tmp_path_factory.mktemp("owners") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=2, txt=out)
         atoms.get_forces()
         return out
@@ -957,7 +957,7 @@ class TestPerformanceBlock:
         out = str(tmp_path_factory.mktemp("perf") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-3}, txt=out)
         BFGS(atoms, logfile=None).run(fmax=0.05, steps=1)
@@ -1092,7 +1092,7 @@ class TestRelaxationLog:
         out = str(tmp_path_factory.mktemp("relax") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-3}, txt=out)
         opt = BFGS(atoms, logfile=None)
@@ -1153,7 +1153,7 @@ class TestGeometryOptimizationSummary:
         out = str(tmp_path_factory.mktemp("relaxsummary") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-3}, txt=out)
         opt = BFGS(atoms, logfile=None)
@@ -1223,7 +1223,7 @@ class TestGeometryOptimizationSummary:
         out = str(tmp_path / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=2,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
@@ -1248,7 +1248,7 @@ class TestStandardOutputIsTheASETable:
 
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=2,
                                convergence={"gradient": 1e-3}, **options)
         atoms.get_potential_energy()
@@ -1443,7 +1443,7 @@ class TestMeasurementBlock:
         out = str(tmp_path / "output.txt")
         atoms = h2()
         atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", h=0.45, pool="fermionic",
+            method="adapt-vqe", basis="HAO", grid_spacing=0.45, pool="fermionic",
             max_iterations=2, convergence={"gradient": 1e-3}, txt=out, profile=False,
             measurement_provider=QiskitProvider(device="statevector", shots=0))
         energy = atoms.get_potential_energy()
@@ -1458,7 +1458,7 @@ class TestCompletionIsNotAssumed:
     def test_the_exit_hook_does_not_claim_completion(self, tmp_path):
         out = str(tmp_path / "output.txt")
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
@@ -1482,7 +1482,7 @@ class TestCompletionIsNotAssumed:
     def test_a_failed_write_can_be_retried(self, tmp_path, monkeypatch):
         out = str(tmp_path / "output.txt")
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()

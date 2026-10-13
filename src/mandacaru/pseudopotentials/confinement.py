@@ -82,11 +82,13 @@ DEFAULT_ENERGY_SHIFT = 0.1
 
 #: The basis options this module provides to PAW-LCAO and UPAW-LCAO, whose
 #: datasets define ``channel_operator_on``, and their defaults (the polarization shell is derived from the
-#: confinement, :func:`resolve_polarization`, so it has none of its own).
-CONFINEMENT_OPTIONS = ("energy_shift", "confinement", "polarization")
+#: confinement, :func:`resolve_polarization_method`, so it has none of its own).
+CONFINEMENT_OPTIONS = ("energy_shift", "confinement_potential",
+                       "polarization_method")
 CONFINEMENT_DEFAULT_OPTIONS = {"energy_shift": DEFAULT_ENERGY_SHIFT}
 
-#: Which polarization shell a pseudopotential basis builds (``polarization=``).
+#: Which polarization shell a pseudopotential basis builds
+#: (``polarization_method=``).
 #: ``"gaussian"``: the quasi-Gaussian of :func:`gaussian_polarization` -- the
 #: default **wherever the orbital is confined**, since the Gaussian takes its
 #: cutoff from the confined orbital.  ``"orbital"``: :math:`r^k R_{outer}(r)`,
@@ -158,22 +160,23 @@ def validate_energy_shift(spec):
     return _validate_value(spec)
 
 
-def validate_polarization(kind):
-    """Normalize the ``polarization`` option to one of
+def validate_polarization_method(kind):
+    """Normalize the ``polarization_method`` option to one of
     :data:`POLARIZATION_KINDS`, or ``None`` when it was not written (the
-    default then depends on the confinement: :func:`resolve_polarization`)."""
+    default then depends on the confinement:
+    :func:`resolve_polarization_method`)."""
     if kind is None:
         return None
     key = str(kind).strip().lower().replace("-", "_")
     key = {"quasi_gaussian": "gaussian"}.get(key, key)
     if key not in POLARIZATION_KINDS:
         raise ValueError(
-            f"polarization must be one of {list(POLARIZATION_KINDS)}, got "
-            f"{kind!r}")
+            f"polarization_method must be one of {list(POLARIZATION_KINDS)}, "
+            f"got {kind!r}")
     return key
 
 
-def resolve_polarization(kind, energy_shift, symbol=None) -> str:
+def resolve_polarization_method(kind, energy_shift, symbol=None) -> str:
     """The polarization shell actually built.
 
     Written explicitly, it is what was written.  Left unwritten, it is
@@ -181,7 +184,7 @@ def resolve_polarization(kind, energy_shift, symbol=None) -> str:
     not -- for ``symbol`` when one is given, else for the basis as a whole
     (Gaussian as soon as any element is confined).
     """
-    kind = validate_polarization(kind)
+    kind = validate_polarization_method(kind)
     if kind is not None:
         return kind
     spec = validate_energy_shift(energy_shift)
@@ -190,8 +193,9 @@ def resolve_polarization(kind, energy_shift, symbol=None) -> str:
     return "gaussian" if confined else "orbital"
 
 
-def validate_confinement(spec) -> tuple[float, float]:
-    """Normalize the ``confinement`` option, ``(amplitude_Ha, r_i / r_c)``.
+def validate_confinement_potential(spec) -> tuple[float, float]:
+    """Normalize the ``confinement_potential`` option, ``(amplitude_Ha,
+    r_i / r_c)``.
 
     ``None`` is the default, ``(12.0, 0.6)``.
     """
@@ -201,14 +205,14 @@ def validate_confinement(spec) -> tuple[float, float]:
         amplitude, inner = (float(v) for v in spec)
     except (TypeError, ValueError):
         raise ValueError(
-            "confinement must be a pair (amplitude in Hartree, r_i / r_c), "
-            f"got {spec!r}") from None
+            "confinement_potential must be a pair (amplitude in Hartree, "
+            f"r_i / r_c), got {spec!r}") from None
     if not (np.isfinite(amplitude) and amplitude > 0.0):
-        raise ValueError(f"the confinement amplitude must be positive, got "
-                         f"{amplitude!r}")
+        raise ValueError(f"the confinement_potential amplitude must be "
+                         f"positive, got {amplitude!r}")
     if not 0.0 < inner < 1.0:
-        raise ValueError("the confinement inner radius is a fraction of r_c in "
-                         f"(0, 1), got {inner!r}")
+        raise ValueError("the confinement_potential inner radius is a "
+                         f"fraction of r_c in (0, 1), got {inner!r}")
     return amplitude, inner
 
 
@@ -506,11 +510,12 @@ _CACHE: dict = {}
 
 
 def confined_orbital(pp, l: int, energy_shift: float,
-                     confinement=None, state: int = 0) -> ConfinedOrbital:
+                     confinement_potential=None,
+                     state: int = 0) -> ConfinedOrbital:
     """The confined orbital of channel ``l`` for ``energy_shift`` (eV), cached
     per dataset -- the root search costs a second or two per channel and a
-    relaxation would otherwise repeat it at every geometry.  ``confinement`` is
-    the ``(amplitude, r_i / r_c)`` pair (``None`` = the default); ``state``
+    relaxation would otherwise repeat it at every geometry.
+    ``confinement_potential`` is the ``(amplitude, r_i / r_c)`` pair (``None`` = the default); ``state``
     the channel's eigenstate (1: a semicore channel's valence state)."""
     from scipy.interpolate import CubicSpline
 
@@ -518,7 +523,7 @@ def confined_orbital(pp, l: int, energy_shift: float,
     shift = _validate_value(energy_shift)
     if shift is None:
         raise ValueError("confined_orbital needs a positive energy_shift")
-    amplitude, inner = validate_confinement(confinement)
+    amplitude, inner = validate_confinement_potential(confinement_potential)
     state = int(state)
     key = (id(pp), l, round(shift, 12), amplitude, inner, state)
     entry = _CACHE.get(key)
@@ -547,7 +552,7 @@ def confined_orbital(pp, l: int, energy_shift: float,
 
 
 def first_zeta_factory(energy_shift, record: dict | None = None,
-                       confinement=None):
+                       confinement_potential=None):
     """The ``first_zeta`` hook of :func:`~.orbitals.pseudo_basis` for an
     ``energy_shift`` option, or ``None`` when the option is off.
 
@@ -557,13 +562,14 @@ def first_zeta_factory(energy_shift, record: dict | None = None,
     spec = validate_energy_shift(energy_shift)
     if spec is None:
         return None
-    confinement = validate_confinement(confinement)
+    confinement_potential = validate_confinement_potential(
+        confinement_potential)
 
     def first_zeta(symbol, pp, l, state=0):
         shift = energy_shift_of(spec, symbol)
         if shift is None:
             return None
-        orbital = confined_orbital(pp, l, shift, confinement, state)
+        orbital = confined_orbital(pp, l, shift, confinement_potential, state)
         if record is not None:
             record.setdefault(symbol, {})[(int(l), int(state))] = orbital
         return orbital.radial
@@ -615,8 +621,8 @@ class GaussianPolarization:
     radial: np.ndarray           # R(r) = r^l f(r), unit norm
 
 
-def gaussian_polarization(pp, energy_shift: float, confinement=None
-                          ) -> GaussianPolarization:
+def gaussian_polarization(pp, energy_shift: float,
+                          confinement_potential=None) -> GaussianPolarization:
     r"""The quasi-Gaussian polarization function for the dataset ``pp``.
 
     The shell has the angular momentum of
@@ -637,7 +643,8 @@ def gaussian_polarization(pp, energy_shift: float, confinement=None
             f"a Gaussian polarization shell with l = {l_pol} for "
             f"{pp.symbol} needs an l = {base} valence channel to size it from")
     index = valence[base]
-    r_cut = confined_orbital(pp, base, energy_shift, confinement, index).r_c
+    r_cut = confined_orbital(pp, base, energy_shift, confinement_potential,
+                             index).r_c
     reference = confined_orbital(pp, base, POLARIZATION_REFERENCE_SHIFT,
                                  state=index).r_c
     r_char = POLARIZATION_CHARACTER_FRACTION * reference
@@ -652,7 +659,7 @@ def gaussian_polarization(pp, energy_shift: float, confinement=None
 
 
 def polarization_factory(kind, energy_shift, record: dict | None = None,
-                         confinement=None):
+                         confinement_potential=None):
     """The ``polarization_shape`` hook of :func:`~.orbitals.pseudo_basis`, or
     ``None`` for the ``"orbital"`` shell that function builds itself.
 
@@ -662,11 +669,12 @@ def polarization_factory(kind, energy_shift, record: dict | None = None,
     option was left unwritten, an unconfined element quietly keeps the
     ``"orbital"`` shell instead (the hook returns ``None`` for it).
     """
-    if resolve_polarization(kind, energy_shift) != "gaussian":
+    if resolve_polarization_method(kind, energy_shift) != "gaussian":
         return None
-    explicit = validate_polarization(kind) is not None
+    explicit = validate_polarization_method(kind) is not None
     spec = validate_energy_shift(energy_shift)
-    confinement = validate_confinement(confinement)
+    confinement_potential = validate_confinement_potential(
+        confinement_potential)
 
     def polarization_shape(symbol, pp):
         shift = energy_shift_of(spec, symbol)
@@ -674,10 +682,10 @@ def polarization_factory(kind, energy_shift, record: dict | None = None,
             return None
         if shift is None:
             raise ValueError(
-                f"polarization='gaussian' needs an energy_shift for "
+                f"polarization_method='gaussian' needs an energy_shift for "
                 f"{symbol!r}: the Gaussian shell takes its cutoff from the "
                 "confined orbital, and an unconfined orbital has none")
-        shell = gaussian_polarization(pp, shift, confinement)
+        shell = gaussian_polarization(pp, shift, confinement_potential)
         if record is not None:
             record[symbol] = shell
         return shell.l, shell.radial

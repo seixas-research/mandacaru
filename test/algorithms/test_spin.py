@@ -90,7 +90,7 @@ class TestSpinAndInitialState:
 
         def energy(spin):
             atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                                   h=0.4, spin=spin, trace=False,
+                                   grid_spacing=0.4, spin=spin, trace=False,
                                    max_iterations=6, convergence={"gradient": 1e-3})
             return atoms.get_total_energy()
 

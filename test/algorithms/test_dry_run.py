@@ -126,7 +126,7 @@ class TestEstimate:
          "PAW-LCAO (DZP, filtered (auto: 1 x Nyquist), energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
         ({"name": "PAW-LCAO", "size": "DZ"}, 24, [("O", 8), ("H", 2), ("H", 2)],
          "PAW-LCAO (DZ, filtered (auto: 1 x Nyquist), energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
-        ({"name": "PAW-LCAO", "size": "DZ", "filter": False}, 24,
+        ({"name": "PAW-LCAO", "size": "DZ", "filter_cutoff": False}, 24,
          [("O", 8), ("H", 2), ("H", 2)],
          "PAW-LCAO (DZ, unfiltered, energy_shift 0.1 eV, gaussian polarization, pseudopotentials)"),
         ({"name": "UPAW-LCAO", "size": "DZP"}, 46, [("O", 13), ("H", 5), ("H", 5)],
@@ -246,7 +246,7 @@ class TestAgainstRealRuns:
         est = estimate_qubits(atoms, mapping="parity")
         path = str(tmp_path / "h2.json")
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", h=0.35, mapping="parity",
+                               basis="HAO", grid_spacing=0.35, mapping="parity",
                                trace=False, profile=False, max_iterations=1,
                                save_hamiltonian=path,
                                hamiltonian_format="json")
@@ -326,7 +326,7 @@ class TestEarlyStop:
         from mandacaru.integrals import Grid
         nuclei = [(1.0, np.array([0.0, 0.0, -0.37])),
                   (1.0, np.array([0.0, 0.0, 0.37]))]
-        grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.4)
+        grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.4)
         h = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei),
                                grid).molecular_hamiltonian(mo_basis=True,
                                                            n_electrons=2)
@@ -463,7 +463,7 @@ class TestCLI:
                                                   monkeypatch):
         path = str(tmp_path / "h2.json")
         atoms = _h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic", grid_spacing=0.35,
                                trace=False, profile=False, max_iterations=1,
                                save_hamiltonian=path,
                                hamiltonian_format="json")
@@ -509,7 +509,7 @@ class TestCLI:
 
     def test_full_run_through_the_cli(self, capsys):
         # A real (tiny) run: the same entry point without --dry-run.
-        assert main(["H2", "--method", "vqe", "--h", "0.4", "--cell", "5.0",
+        assert main(["H2", "--method", "vqe", "--grid-spacing", "0.4", "--cell", "5.0",
                      "--optimizer", "L-BFGS", "--quiet"]) == 0
         out = capsys.readouterr().out
         assert "Final energy:" in out

@@ -36,7 +36,7 @@ Three numerical points make this correct rather than merely fast:
 * **Nothing singular is sampled.** :math:`1/r` sampled at the nodes -- even
   with the voxel's own average at :math:`d = 0` -- integrates a smooth density
   with an :math:`O(h^2)` error that sits at the singularity (2 % of H2O's
-  exchange at h = 0.25 Angstrom).  The kernel is split at :math:`\mu`
+  exchange at grid_spacing = 0.25 Angstrom).  The kernel is split at :math:`\mu`
   (:data:`SPLIT_RESOLUTION` times the Nyquist wave number):
   :math:`\operatorname{erf}(\mu r)/r` is smooth and resolved, so it is
   sampled on the padded grid; :math:`\operatorname{erfc}(\mu r)/r` is applied

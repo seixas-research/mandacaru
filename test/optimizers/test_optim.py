@@ -48,7 +48,7 @@ def lih():
 
 
 def adapt(**kwargs):
-    options = dict(method="adapt-vqe", basis="HAO", h=0.35, pool="qubit",
+    options = dict(method="adapt-vqe", basis="HAO", grid_spacing=0.35, pool="qubit",
                    max_iterations=3, trace=False)
     options.update(kwargs)
     return Mandacaru(**options)
@@ -300,9 +300,9 @@ class TestAShotObjectiveGetsANoiseTolerantOptimizer:
         assert resolve_optimizer(method, shots=1000).method == method
 
     def test_the_driver_follows_its_shots(self):
-        calc = Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, shots=1000,
                          trace=False)
         assert calc.solver.optimizer.method == "SPSA"
         with pytest.raises(ValueError, match="shot noise"):
-            Mandacaru(method="vqe", basis="HAO", h=0.4, shots=1000,
+            Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, shots=1000,
                       optimizer="SLSQP", trace=False).solver

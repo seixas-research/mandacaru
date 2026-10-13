@@ -11,7 +11,7 @@ atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]])
 atoms.center(vacuum=4.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
-                       h=0.10,
+                       grid_spacing=0.10,
                        pool="ceo",
                        optimizer={"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12},
                        convergence={"gradient": 1e-5})

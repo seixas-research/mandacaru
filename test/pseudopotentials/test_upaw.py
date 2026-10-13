@@ -137,7 +137,7 @@ class TestUnitarity:
             build_basis_hamiltonian
         from mandacaru.integrals import Grid
 
-        grid = Grid(center=[CENTER] * 3, box_size=8.0, h=0.3, units="angstrom")
+        grid = Grid(center=[CENTER] * 3, box_size=8.0, grid_spacing=0.3, units="angstrom")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             context = build_basis_hamiltonian(h2(), "UPAW-LCAO", grid, 0.3, 0, None)[4]
@@ -160,7 +160,7 @@ class TestFamilyRegistration:
     def test_it_is_not_norm_conserving_and_takes_the_paw_options(self):
         spec = resolve_family("UPAW-LCAO")
         assert spec.norm_conserving is False
-        assert {"size", "split_norm", "directory", "projector_basis"} \
+        assert {"size", "zeta_split", "directory", "projector_basis"} \
             <= set(spec.options)
 
     def test_the_generator_refuses_a_norm_deficit(self):
@@ -192,7 +192,7 @@ class TestFamilyRegistration:
 class TestCalculatorPath:
     def test_the_basis_name_runs_end_to_end(self):
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="UPAW-LCAO", h=0.3,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="UPAW-LCAO", grid_spacing=0.3,
                                pool="fermionic", max_iterations=8,
                                convergence={"gradient": 1e-5}, profile=False,
                                trace=False)
@@ -251,7 +251,7 @@ class TestWhyItIsNotTheDefault:
                                         [CENTER, CENTER + 0.77, CENTER + 0.59],
                                         [CENTER, CENTER - 0.77, CENTER + 0.59]],
                       cell=[CELL] * 3)
-        grid = Grid(center=[CENTER] * 3, box_size=8.0, h=0.3, units="angstrom")
+        grid = Grid(center=[CENTER] * 3, box_size=8.0, grid_spacing=0.3, units="angstrom")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             integrals = build_basis_hamiltonian(water, "UPAW-LCAO", grid, 0.3, 0,

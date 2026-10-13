@@ -13,7 +13,7 @@ for fmt in ("parquet", "json"):
     path = os.path.join(DATA, f"lih_hamiltonian.{fmt}")
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW-LCAO", "size": "SZ"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            save_hamiltonian=path,
                            hamiltonian_format=fmt)
     print(f"{detect_format(path):8s} E = {atoms.get_potential_energy():.6f} eV  "

@@ -131,7 +131,7 @@ class TestTabulatedOrbital:
     def test_normalized_on_a_grid(self, hydrogen_1s):
         r, radial = hydrogen_1s
         orbital = TabulatedOrbital(RadialTable(r, radial, 1, 0), 0)
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.10)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.10)
         values = orbital.sample(grid)
         norm = float(np.sum(np.abs(values) ** 2) * grid.dV)
         assert norm == pytest.approx(1.0, abs=2e-2)
@@ -197,7 +197,7 @@ class TestVariationalQuality:
 
     @staticmethod
     def _rhf(size):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.20)
         basis = BasisSet.build("NAO", size=size)
         functions, nuclei = [], []
         for position in ([0, 0, -0.37], [0, 0, 0.37]):
@@ -220,7 +220,7 @@ class TestVariationalQuality:
 
     def test_overlap_stays_invertible(self):
         """Multiple zeta risks linear dependence; the basis must stay usable."""
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.20)
         basis = BasisSet.build("NAO", size="DZP")
         functions, nuclei = [], []
         for position in ([0, 0, -0.37], [0, 0, 0.37]):

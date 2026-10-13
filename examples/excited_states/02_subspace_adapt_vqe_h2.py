@@ -6,7 +6,7 @@ atoms = molecule("H2")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="subspace-adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
-                       h=0.25,
+                       grid_spacing=0.25,
                        pool="fermionic",
                        num_states=2,
                        convergence={"gradient": 1e-4})

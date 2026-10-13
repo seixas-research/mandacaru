@@ -12,7 +12,7 @@ The periodic drivers are reached through the single entry point, by name::
 
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": (2, 1, 1), "gamma": True},
-                           basis="HAO", h=0.35)
+                           basis="HAO", grid_spacing=0.35)
     energy_per_cell = atoms.get_potential_energy()   # eV, per primitive cell
     spectral = atoms.calc.get_spectral_function()    # A(E, k)
     epsilon = atoms.calc.bands(spectral=spectral)    # eV, (nk, n_bands)
@@ -41,13 +41,13 @@ The drivers provide the two things a periodic calculation needs:
 
   This is a finite-supercell estimate, and how tightly it settles depends on the
   gap.  An **insulating** H2 chain (a = 3.0, d = 0.74 Angstrom, 10 Angstrom
-  vacuum, HAO, h = 0.30, SLSQP) gives -29.315 / -28.142 / -28.156 / -28.108 eV
+  vacuum, HAO, grid_spacing = 0.30, SLSQP) gives -29.315 / -28.142 / -28.156 / -28.108 eV
   per cell at 1 to 4 k-points: the first refinement moves it by 1.2 eV and the
   rest stay inside a 0.05 eV band -- though not monotonically, so read it as a
   band rather than as a sequence converging from one side.  A **metal** swings
   an order of magnitude more, because meshes differ in whether they are
   degenerate at the Fermi level: the half-filled H chain (a = 1.0 Angstrom,
-  h = 0.35) gives -10.577 / -12.940 / -11.592 eV per cell at 4, 6 and 8
+  grid_spacing = 0.35) gives -10.577 / -12.940 / -11.592 eV per cell at 4, 6 and 8
   k-points, since 4 and 8 are degenerate at ``E_F`` while 6 is closed-shell.
   Read convergence off a gapped system, or off meshes of a single shell type.
 
@@ -315,7 +315,7 @@ class _BlochMixin:
         a whole number the grid is **not** invariant under the translation
         Bloch's theorem is built on: the repeated atoms sample it at different
         offsets, and sites that are copies of one another stop being
-        equivalent.  Measured on a 2x2x1 square lattice at ``h = 0.35`` (15
+        equivalent.  Measured on a 2x2x1 square lattice at ``grid_spacing = 0.35`` (15
         nodes, 7.5 steps per cell): the four equivalent sites' on-site energies
         spread by 0.10 Ha, a band pair that C4 makes degenerate came out
         1.8e-3 Ha apart, and ``A(E, k)`` at two C4-equivalent k-points differed

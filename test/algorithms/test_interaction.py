@@ -109,20 +109,20 @@ class TestInteractionEnergy:
     def test_fragment_validation(self):
         atoms = _two_h2(4.0)
         with pytest.raises(ValueError, match="partition"):
-            interaction_energy(atoms, [[0, 1], [2]], method="rhf", h=0.4)
+            interaction_energy(atoms, [[0, 1], [2]], method="rhf", grid_spacing=0.4)
         with pytest.raises(ValueError, match="at least two"):
-            interaction_energy(atoms, [[0, 1, 2, 3]], method="rhf", h=0.4)
+            interaction_energy(atoms, [[0, 1, 2, 3]], method="rhf", grid_spacing=0.4)
         with pytest.raises(ValueError, match="sum to"):
             interaction_energy(atoms, [[0, 1], [2, 3]], charges=[1, 0],
-                               method="rhf", h=0.4)
+                               method="rhf", grid_spacing=0.4)
         with pytest.raises(ValueError, match="one charge per fragment"):
             interaction_energy(atoms, [[0, 1], [2, 3]], charges=[0],
-                               method="rhf", h=0.4)
+                               method="rhf", grid_spacing=0.4)
 
     def test_far_apart_fragments_do_not_interact(self):
         atoms = _two_h2(5.0)
         result = interaction_energy(atoms, [[0, 1], [2, 3]], method="rhf",
-                                    h=0.35)
+                                    grid_spacing=0.35)
         assert isinstance(result, InteractionEnergy)
         assert result.energy_unit == "eV"
         assert abs(result.energy) < 0.02                  # eV
@@ -136,7 +136,7 @@ class TestInteractionEnergy:
         """The same fragments in their own re-centered boxes disagree."""
         atoms = _two_h2(5.0)
         shared = interaction_energy(atoms, [[0, 1], [2, 3]], method="rhf",
-                                    h=0.35)
+                                    grid_spacing=0.35)
         assert isinstance(shared.grid, Grid)
         # Re-centered fragment: a different sampling of the same molecule.
         from mandacaru.algorithms._hamiltonian_from_atoms import \
@@ -157,7 +157,7 @@ class TestInteractionEnergy:
                       cell=[8.0, 6.0, 6.0])
         atoms.center()
         result = interaction_energy(atoms, [[0, 1], [2]], charges=[0, 1],
-                                    charge=1, method="adapt-vqe", h=0.4,
+                                    charge=1, method="adapt-vqe", grid_spacing=0.4,
                                     profile=False, optimizer=LBFGS,
                                     convergence={"gradient": 1e-5})
         assert result.charges == [0, 1]
@@ -169,7 +169,7 @@ class TestInteractionEnergy:
 
     def test_calculator_method_reuses_its_options(self):
         atoms = _two_h2(5.0)
-        calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4,
                          optimizer=LBFGS)
         result = calc.interaction_energy(atoms, [[0, 1], [2, 3]])
         assert result.method == "vqe" and abs(result.in_units("eV")) < 0.05
@@ -194,7 +194,7 @@ class TestCounterpoise:
         and electrons are not."""
         atoms = _helium_pair()
         grid = Grid(center=list(atoms.get_cell().diagonal() / 2),
-                    box_size=list(atoms.get_cell().diagonal()), h=0.3)
+                    box_size=list(atoms.get_cell().diagonal()), grid_spacing=0.3)
         full = build_basis_hamiltonian(atoms, PAW_SZ, grid, 0.3, 0, None,
                                        hamiltonian=False)[4]
         ghosted = build_basis_hamiltonian(atoms, PAW_SZ, grid, 0.3, 0, None,
@@ -215,10 +215,10 @@ class TestCounterpoise:
         the pair's basis the isolated atom borrows them too, so the
         counterpoise energy is above the uncorrected one by that error."""
         atoms = _helium_pair()
-        plain = interaction_energy(atoms, [[0], [1]], method="rhf", h=0.3,
+        plain = interaction_energy(atoms, [[0], [1]], method="rhf", grid_spacing=0.3,
                                    basis=PAW_SZ)
         corrected = interaction_energy(atoms, [[0], [1]], method="rhf",
-                                       h=0.3, basis=PAW_SZ, counterpoise=True)
+                                       grid_spacing=0.3, basis=PAW_SZ, counterpoise=True)
         assert corrected.counterpoise and not plain.counterpoise
         # The complex is the same run either way; only the fragments move.
         assert corrected.complex_energy == pytest.approx(plain.complex_energy,
@@ -235,7 +235,7 @@ class TestCounterpoise:
 
     def test_forces_are_refused_with_ghosts(self):
         atoms = _helium_pair()
-        atoms.calc = Mandacaru(method="dft", h=0.3, basis=PAW_SZ,
+        atoms.calc = Mandacaru(method="dft", grid_spacing=0.3, basis=PAW_SZ,
                                ghosts=[1], trace=False)
         assert np.isfinite(atoms.get_potential_energy())
         with pytest.raises(NotImplementedError, match="ghost"):
@@ -248,7 +248,7 @@ class TestCounterpoise:
         the forces, is refused."""
         atoms = _helium_pair(separation=2.6, vacuum=2.5)
         atoms.pbc = True
-        options = dict(method="dft", h=0.3, basis=PAW_SZ, trace=False,
+        options = dict(method="dft", grid_spacing=0.3, basis=PAW_SZ, trace=False,
                        kpts={"size": (1, 1, 1), "gamma": True},
                        smearing={"method": "fermi-dirac", "width": 0.01})
         plain = interaction_energy(atoms, [[0], [1]], **options)
@@ -268,7 +268,7 @@ class TestCounterpoise:
     def test_an_all_electron_ghost_has_no_nucleus(self):
         atoms = _helium_pair()
         grid = Grid(center=list(atoms.get_cell().diagonal() / 2),
-                    box_size=list(atoms.get_cell().diagonal()), h=0.3)
+                    box_size=list(atoms.get_cell().diagonal()), grid_spacing=0.3)
         full = build_basis_hamiltonian(atoms, "HAO", grid, 0.3, 0, None,
                                        hamiltonian=False)[4]
         ghosted = build_basis_hamiltonian(atoms, "HAO", grid, 0.3, 0, None,
@@ -284,7 +284,7 @@ class TestCounterpoise:
                                     None, 0.3, 0, None, ghosts=[1])
         atoms.pbc = True
         with pytest.raises(NotImplementedError, match="Bloch"):
-            atoms.calc = Mandacaru(method="bloch-vqe", h=0.3, basis=PAW_SZ,
+            atoms.calc = Mandacaru(method="bloch-vqe", grid_spacing=0.3, basis=PAW_SZ,
                                    kpts={"size": (1, 1, 1), "gamma": True},
                                    ghosts=[1])
             atoms.get_potential_energy()
@@ -294,7 +294,7 @@ class TestCounterpoise:
         from mandacaru.algorithms.dft import d4_dispersion_energy
         atoms = _helium_pair()
         atoms.calc = Mandacaru(method="dft", xc="pbe", dispersion="d4",
-                               h=0.3, basis=PAW_SZ, ghosts=[1], trace=False)
+                               grid_spacing=0.3, basis=PAW_SZ, ghosts=[1], trace=False)
         atoms.get_potential_energy()
         assert atoms.calc.solver._scf.dispersion_energy == pytest.approx(
             d4_dispersion_energy(atoms[[0]], "pbe"), abs=1e-12)
@@ -303,7 +303,7 @@ class TestCounterpoise:
             self, tmp_path):
         atoms = _helium_pair()
         log = tmp_path / "run.log"
-        atoms.calc = Mandacaru(method="dft", h=0.3, basis=PAW_SZ, ghosts=[1],
+        atoms.calc = Mandacaru(method="dft", grid_spacing=0.3, basis=PAW_SZ, ghosts=[1],
                                txt=str(log))
         atoms.get_potential_energy()
         with pytest.raises(NotImplementedError, match="ghost"):

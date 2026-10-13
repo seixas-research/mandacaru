@@ -23,7 +23,7 @@ def h2():
 def test_rhf_is_classical_and_exports_the_same_quantum_reference():
     """The exported Hamiltonian starts ADAPT at the reported RHF energy."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     energy_ev = atoms.get_potential_energy()
     result = atoms.calc.result
     assert result.success
@@ -54,7 +54,7 @@ def test_rhf_is_classical_and_exports_the_same_quantum_reference():
 def test_uhf_closed_shell_exports_its_own_natural_orbital_model():
     """An even-shell UHF calculation passes a basis-consistent model on."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     energy_ev = atoms.get_potential_energy()
     result = atoms.calc.result
     assert result.success
@@ -76,12 +76,12 @@ def test_uhf_closed_shell_exports_its_own_natural_orbital_model():
 def test_uhf_handles_an_open_shell_that_rhf_rejects():
     """The hydrogen doublet is self-interaction-free and cannot use RHF."""
     atom = Atoms("H", positions=[[0, 0, 0]], cell=[6] * 3)
-    atom.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atom.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     energy = atom.get_potential_energy()
     assert np.isfinite(energy)
     assert atom.calc.result.num_particles == (1, 0)
     assert np.linalg.norm(atom.calc.result.scf_state()) == pytest.approx(1.0)
-    atom.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atom.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     with pytest.raises(ValueError, match="RHF requires"):
         atom.get_potential_energy()
 
@@ -90,7 +90,7 @@ def test_even_high_spin_uhf_export_uses_uhf_orbitals():
     """A triplet's exported Hamiltonian matches its natural-orbital state."""
     atoms = h2()
     atoms.set_initial_magnetic_moments([1, 1])
-    atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     result = atoms.calc.result
     assert result.num_particles == (2, 0)
@@ -104,9 +104,9 @@ def test_even_high_spin_uhf_export_uses_uhf_orbitals():
 def test_stretched_uhf_state_is_the_lower_broken_symmetry_solution():
     """The true spin-broken determinant is exported in each qubit encoding."""
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     rhf_energy = atoms.get_potential_energy()
-    atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     uhf_energy = atoms.get_potential_energy()
     result = atoms.calc.result
     assert uhf_energy < rhf_energy - 1.0
@@ -124,7 +124,7 @@ def test_stretched_uhf_state_is_the_lower_broken_symmetry_solution():
 def test_classical_force_request_is_refused_before_scf():
     """A missing orbital-response derivative cannot return a quantum force."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     with pytest.raises(NotImplementedError, match="orbital response"):
         atoms.get_forces()
     assert atoms.calc.result is None
@@ -145,7 +145,7 @@ def test_ghf_is_rhf_for_a_closed_shell_and_exports_its_spinor_problem():
     energies = {}
     for method in ("rhf", "ghf"):
         atoms = h2()
-        atoms.calc = Mandacaru(method=method, h=0.35, trace=False)
+        atoms.calc = Mandacaru(method=method, grid_spacing=0.35, trace=False)
         energies[method] = atoms.get_potential_energy()
     result = atoms.calc.result
     assert energies["ghf"] == pytest.approx(energies["rhf"], abs=1e-7)
@@ -169,7 +169,7 @@ def test_ghf_finds_the_spin_orbit_ground_configuration_of_lead():
 
     atom = Atoms("Pb", positions=[[0, 0, 0]], cell=[9.0] * 3)
     atom.center()
-    atom.calc = Mandacaru(method="ghf", h=0.25, directory="lda-dirac",
+    atom.calc = Mandacaru(method="ghf", grid_spacing=0.25, directory="lda-dirac",
                           basis={"name": "PAW-LCAO", "size": "SZ"},
                           trace=False)
     energy = atom.get_potential_energy()
@@ -195,7 +195,7 @@ def test_scf_writes_the_shared_run_log(method, tmp_path, capsys):
 
     path = str(tmp_path / f"{method}.txt")
     atoms = h2()
-    atoms.calc = Mandacaru(method=method, h=0.35, txt=path)
+    atoms.calc = Mandacaru(method=method, grid_spacing=0.35, txt=path)
     energy_ev = atoms.get_potential_energy()
     reset_log(path)
     # The file is the whole report: standard output stays quiet.
@@ -229,7 +229,7 @@ def test_rhf_summary_reports_the_frontier_orbitals(tmp_path):
 
     path = str(tmp_path / "rhf.txt")
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, txt=path)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, txt=path)
     atoms.get_potential_energy()
     reset_log(path)
     summary = parse_output(path)["summary"]
@@ -247,7 +247,7 @@ class TestTheDeterminantDensity:
         from ase.build import molecule
         atoms = molecule("H2O")
         atoms.center(vacuum=2.5)
-        atoms.calc = Mandacaru(method=method, h=0.3, trace=False,
+        atoms.calc = Mandacaru(method=method, grid_spacing=0.3, trace=False,
                                basis={"name": "PAW-LCAO", "size": "SZ"},
                                population="hirshfeld", **options)
         atoms.get_potential_energy()
@@ -282,7 +282,7 @@ class TestTheDeterminantDensity:
         atoms = molecule("O2")
         atoms.center(vacuum=2.5)
         atoms.set_initial_magnetic_moments([1.0, 1.0])
-        atoms.calc = Mandacaru(method="uhf", h=0.3, trace=False,
+        atoms.calc = Mandacaru(method="uhf", grid_spacing=0.3, trace=False,
                                basis={"name": "PAW-LCAO", "size": "SZ"},
                                population="hirshfeld")
         atoms.get_potential_energy()

@@ -59,7 +59,7 @@ class TestNumericalAtomicOrbital:
     def test_normalized_on_a_3d_grid(self):
         orb = NumericalAtomicOrbital(1, 0, 0, Z=1.0, r_c=6.0, units="bohr")
         # Even node count keeps the -1/r-free sampling smooth; box > r_c.
-        grid = Grid(center=[0, 0, 0], box_size=8.0, h=0.2, units="bohr")
+        grid = Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=0.2, units="bohr")
         psi = orb.evaluate(grid.X, grid.Y, grid.Z)
         norm = float(np.sum(np.abs(psi) ** 2) * grid.dV)
         assert abs(norm - 1.0) < 0.02

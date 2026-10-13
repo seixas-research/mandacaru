@@ -62,7 +62,7 @@ from mandacaru.algorithms import polarizability
 result = polarizability(water, method="dft", xc="pbe",
                         basis={"name": "PAW-LCAO", "size": "TZP",
                                "energy_shift": None},
-                        h=0.2)
+                        grid_spacing=0.2)
 result.tensor              # 3x3, Bohr^3 (atomic units)
 result.isotropic           # Tr(alpha)/3
 result.anisotropy
@@ -88,7 +88,7 @@ and small atom-centered sets underestimate $\alpha$ for that reason. Use an
 unconfined basis (`"energy_shift": None`) and check convergence with its
 size.
 
-Water (PAW-LCAO, h = 0.2 Å, 5 Å of vacuum), isotropic $\alpha$ in a.u.
+Water (PAW-LCAO, grid_spacing = 0.2 Å, 5 Å of vacuum), isotropic $\alpha$ in a.u.
 ($\alpha_{xx}, \alpha_{yy}, \alpha_{zz}$ in parentheses):
 
 | basis | PBE | Hartree–Fock |
@@ -102,7 +102,7 @@ The Hartree-Fock column is measured with the exact one-center Coulomb and
 exchange inside the PAW-LCAO spheres (2026-10-12; with the dataset's frozen
 LDA terms it was 4.88 and 6.62, see [Pseudopotentials](pseudopotentials.md)).
 Both columns use the finite-difference kinetic operator, which at
-h = 0.2 Å costs about 0.7 a.u.; `kinetic="spectral"` removes it.
+grid_spacing = 0.2 Å costs about 0.7 a.u.; `kinetic="spectral"` removes it.
 
 The confinement costs a third of the polarizability, and the
 out-of-plane component $\alpha_{xx}$ half of it. Even unconfined, an

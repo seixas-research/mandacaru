@@ -182,7 +182,7 @@ class TestMarkovChainOptions:
                      "0.1", "0.01", "--move-weight", "swap=0.5"]) == 0
 
     def test_a_short_chain_runs_end_to_end(self, capsys):
-        assert main(["H2", "--cell", "5", "--h", "0.4", "--method", "mcas-vqe",
+        assert main(["H2", "--cell", "5", "--grid-spacing", "0.4", "--method", "mcas-vqe",
                      "--max-steps", "4", "--seed", "3", "--quiet"]) == 0
 
 

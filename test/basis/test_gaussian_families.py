@@ -360,7 +360,7 @@ class TestIntegration:
         from mandacaru.core import MolecularIntegrals
         from mandacaru.integrals import Grid
         bset = BasisSet.build(name)
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.30)
         functions, nuclei = [], []
         for position in h2.positions:
             functions += bset.atom("H", center=position, units="angstrom")
@@ -379,7 +379,7 @@ class TestIntegration:
         """More flexibility cannot raise the variational minimum."""
         from mandacaru.core import MolecularIntegrals
         from mandacaru.integrals import Grid
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.25)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.25)
 
         def rhf(name):
             bset = BasisSet.build(name)
@@ -400,7 +400,7 @@ class TestIntegration:
         from mandacaru.algorithms import Mandacaru
         atoms = h2.copy()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="STO-4G",
-                                       pool="qeb", h=0.35,
+                                       pool="qeb", grid_spacing=0.35,
                                        profile=False, optimizer=LBFGS,
                                        convergence={"gradient": 1e-5})
         atoms.get_potential_energy()

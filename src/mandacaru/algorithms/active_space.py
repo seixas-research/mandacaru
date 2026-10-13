@@ -1134,7 +1134,7 @@ def _check_unsplit(sym, frozen, first_virtual, n_doubly=None) -> None:
                 f"degenerate set ({label}), so the determinant is not "
                 f"symmetric and no active space can be chosen by symmetry.  "
                 f"The SCF converged to a broken-symmetry solution; a finer "
-                f"grid (smaller h) or a larger basis usually restores it.  "
+                f"grid (smaller grid_spacing) or a larger basis usually restores it.  "
                 f"Drop 'symmetry' to run anyway.")
         occupied = [p for p in members if p < first_virtual]
         cut = [p for p in occupied if p in set(frozen)]

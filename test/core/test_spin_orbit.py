@@ -207,7 +207,7 @@ class TestTheIntegralsHook:
         from mandacaru.integrals.grid import Grid
 
         nuclei = [(1.0, np.zeros(3))]
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.4)
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.4)
         with pytest.raises(ValueError, match="needs projectors"):
             MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid,
                                spin_orbit_coupling={(0, 1): np.eye(2)})
@@ -218,7 +218,7 @@ class TestTheIntegralsHook:
         from mandacaru.integrals.grid import Grid
 
         nuclei = [(1.0, np.zeros(3))]
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.4)
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.4)
         integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
         assert not integrals.has_spin_orbit
         h = integrals.spin_orbit_matrix()

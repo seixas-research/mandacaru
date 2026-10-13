@@ -26,7 +26,7 @@ from mandacaru.integrals.poisson import (CUBE_SELF_CONSTANT, cell_self_potential
 
 def gaussian_grid(spacings, half=4.0):
     """An isotropic ``exp(-r^2)`` sampled on a grid with the given spacings."""
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=half, h=list(spacings),
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=half, grid_spacing=list(spacings),
                 units="bohr")
     r2 = grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2
     return grid, np.exp(-r2).reshape(-1).astype(complex)
@@ -115,7 +115,7 @@ class TestSkewedGrids:
 
     @pytest.mark.parametrize("skew", [True, False])
     def test_matches_the_closed_form(self, skew):
-        grid = Grid(center=[0.0, 0.0, 0.0], h=0.45, units="bohr",
+        grid = Grid(center=[0.0, 0.0, 0.0], grid_spacing=0.45, units="bohr",
                     cell=self.CELL, skew=skew)
         assert grid.is_orthogonal is not skew
         r2 = grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2
@@ -125,6 +125,6 @@ class TestSkewedGrids:
 
     def test_a_skewed_cell_beats_its_bounding_box_on_volume(self):
         """Sanity: the skewed sampling really uses the skewed voxel volume."""
-        grid = Grid(center=[0.0, 0.0, 0.0], h=0.9, units="bohr",
+        grid = Grid(center=[0.0, 0.0, 0.0], grid_spacing=0.9, units="bohr",
                     cell=self.CELL / 3.0, skew=True)
         assert grid.dV == pytest.approx(abs(np.linalg.det(grid.step)), rel=1e-12)

@@ -36,13 +36,13 @@ def _eri_00(grid):
 
 class TestNonCubicGrid:
     def test_cubic_backward_compatible(self):
-        g = Grid(center=[0, 0, 0], box_size=8.0, h=0.20, units="bohr")
+        g = Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=0.20, units="bohr")
         assert g.is_cubic
         assert g.shape == (g.points, g.points, g.points)
         assert g.size == g.points ** 3
 
     def test_anisotropic_box_is_non_cubic(self):
-        g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], h=0.20, units="bohr")
+        g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], grid_spacing=0.20, units="bohr")
         assert not g.is_cubic
         nx, ny, nz = g.shape
         assert nx != ny and ny != nz
@@ -50,7 +50,7 @@ class TestNonCubicGrid:
         assert g.X.shape == (nx, ny, nz)
 
     def test_uniform_spacing_on_non_cubic(self):
-        g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], h=0.20, units="bohr")
+        g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], grid_spacing=0.20, units="bohr")
         dx = np.diff(g.X[:, 0, 0])
         dy = np.diff(g.Y[0, :, 0])
         dz = np.diff(g.Z[0, 0, :])
@@ -60,7 +60,7 @@ class TestNonCubicGrid:
 
     def test_cell_tensor_orthorhombic(self):
         cell = np.diag([16.0, 18.0, 14.0])
-        g = Grid(center=[0, 0, 0], box_size=0.0, h=0.20, units="bohr", cell=cell)
+        g = Grid(center=[0, 0, 0], box_size=0.0, grid_spacing=0.20, units="bohr", cell=cell)
         assert not g.is_cubic
         assert g.shape[0] < g.shape[1]     # 16 < 18 -> fewer x nodes than y
 
@@ -69,16 +69,16 @@ class TestNonCubicGrid:
         cell = np.array([[16.0, 0.0, 0.0],
                          [2.0, 18.0, 0.0],
                          [0.0, 0.0, 14.0]])
-        g = Grid(center=[0, 0, 0], box_size=0.0, h=0.25, units="bohr", cell=cell)
+        g = Grid(center=[0, 0, 0], box_size=0.0, grid_spacing=0.25, units="bohr", cell=cell)
         assert g.size > 0
         assert g.dx == pytest.approx(0.25)
 
     def test_eri_matches_cubic_reference(self):
         # The H 1s self-repulsion must be 5/8 Ha independent of box shape.
-        cubic = _eri_00(Grid(center=[0, 0, 0], box_size=8.0, h=0.20, units="bohr"))
+        cubic = _eri_00(Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=0.20, units="bohr"))
         rect = _eri_00(Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0],
-                            h=0.20, units="bohr"))
-        cell = _eri_00(Grid(center=[0, 0, 0], box_size=0.0, h=0.20, units="bohr",
+                            grid_spacing=0.20, units="bohr"))
+        cell = _eri_00(Grid(center=[0, 0, 0], box_size=0.0, grid_spacing=0.20, units="bohr",
                             cell=np.diag([16.0, 18.0, 14.0])))
         assert cubic == pytest.approx(0.625, abs=2e-3)
         assert rect == pytest.approx(0.625, abs=2e-3)
@@ -88,7 +88,7 @@ class TestNonCubicGrid:
     def test_kinetic_energy_non_cubic(self):
         # <1s|-1/2 nabla^2|1s> = 1/2 Ha for hydrogen, on a non-cubic grid.
         orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
-        g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], h=0.20, units="bohr")
+        g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], grid_spacing=0.20, units="bohr")
         eng = IntegralEngine([orb], g)
         zero_v = lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape)
         T, _ = eng.one_body(zero_v, energy_units="Ha")
@@ -99,8 +99,8 @@ class TestVaryingResolution:
     """Per-axis (varying) resolution and non-orthogonal cells (C-backend req)."""
 
     def test_per_axis_resolution_grid(self):
-        # A length-3 h sets a different spacing on each axis.
-        g = Grid(center=[0, 0, 0], box_size=8.0, h=[0.20, 0.25, 0.30],
+        # A length-3 grid_spacing sets a different spacing on each axis.
+        g = Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=[0.20, 0.25, 0.30],
                  units="bohr")
         assert (g.dx, g.dy, g.dz) == pytest.approx((0.20, 0.25, 0.30))
         assert g.is_orthorhombic and not g.is_cubic
@@ -113,7 +113,7 @@ class TestVaryingResolution:
     def test_kinetic_energy_varying_resolution(self):
         # The generalized (per-axis) Laplacian still recovers <1s|T|1s> = 1/2 Ha.
         orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
-        g = Grid(center=[0, 0, 0], box_size=8.0, h=[0.20, 0.25, 0.30],
+        g = Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=[0.20, 0.25, 0.30],
                  units="bohr")
         T, _ = IntegralEngine([orb], g).one_body(
             lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape),
@@ -126,7 +126,7 @@ class TestVaryingResolution:
         cell = np.array([[16.0, 0.0, 0.0],
                          [3.0, 16.0, 0.0],
                          [0.0, 1.0, 16.0]])
-        g = Grid(center=[0, 0, 0], cell=cell, h=0.4, units="bohr", skew=True)
+        g = Grid(center=[0, 0, 0], cell=cell, grid_spacing=0.4, units="bohr", skew=True)
         assert not g.is_orthorhombic
         assert g.dV == pytest.approx(abs(np.linalg.det(g.step)))
         # Cross-term Laplacian recovers the hydrogen kinetic energy.
@@ -143,11 +143,11 @@ class TestVaryingResolution:
         if not backend.HAS_C_BACKEND:
             pytest.skip("C backend not built")
         orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0.2], units="bohr")
-        for g in (Grid(center=[0, 0, 0], box_size=6.0, h=[0.25, 0.30, 0.35],
+        for g in (Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=[0.25, 0.30, 0.35],
                        units="bohr"),
                   Grid(center=[0, 0, 0],
                        cell=np.array([[12., 0, 0], [3., 12., 0], [0, 1., 12.]]),
-                       h=0.4, units="bohr", skew=True)):
+                       grid_spacing=0.4, units="bohr", skew=True)):
             psi = np.stack([orb.sample(g)])
             vext = np.zeros(g.size)
             saved = backend.HAS_C_BACKEND
@@ -165,15 +165,15 @@ class TestGridFromCell:
     def test_grid_spans_the_cell_and_is_non_cubic(self):
         cell = [[10.0, 0, 0], [0, 12.0, 0], [0, 0, 8.0]]  # Angstrom, orthorhombic
         atoms = Atoms("H", positions=[[5, 6, 4]], cell=cell, pbc=True)
-        grid = grid_from_cell(atoms, h=0.25)
+        grid = grid_from_cell(atoms, grid_spacing=0.25)
         assert not grid.is_cubic          # 10 != 12 != 8
-        # h is Angstrom; the grid spacing is that value converted to Bohr.
+        # grid_spacing is in Angstrom; dx is that value converted to Bohr.
         assert grid.dx == pytest.approx(0.25 * 1.8897259886)
 
     def test_grid_requires_a_cell(self):
         atoms = Atoms("H", positions=[[0, 0, 0]])          # no unit cell
         with pytest.raises(ValueError, match="no unit cell"):
-            grid_from_cell(atoms, h=0.2)
+            grid_from_cell(atoms, grid_spacing=0.2)
 
 
 class TestPlacementInvariance:
@@ -184,7 +184,7 @@ class TestPlacementInvariance:
             atoms = Atoms("H2", positions=pos,
                           cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
             atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                                   h=0.35, trace=False, max_iterations=6,
+                                   grid_spacing=0.35, trace=False, max_iterations=6,
                                    convergence={"gradient": 1e-3})
             return atoms.get_total_energy()
 

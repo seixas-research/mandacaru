@@ -15,7 +15,7 @@ them by orbital energy -- and it is measured here against exact diagonalization
 in the particle-number sector.
 
 A note on the numbers below.  These fixtures put a Gaussian basis on a coarse
-real-space grid (``h = 0.3``), which under-resolves a compact core badly -- for
+real-space grid (``grid_spacing = 0.3``), which under-resolves a compact core badly -- for
 LiH the Li 1s resolution ratio is ~0.63, so absolute Hartree-Fock and full-CI
 energies here are Hartree away from published 6-31G values.  That is harmless
 for what is being tested, because every comparison is made between two
@@ -53,7 +53,7 @@ def spec(**options):
     """The resolved ``active_space`` option, as the driver hands it on."""
     return resolve_active_space_spec(options)
 
-def _integrals(formula, positions, basis, box=8.0, h=0.3):
+def _integrals(formula, positions, basis, box=8.0, grid_spacing=0.3):
     from mandacaru.basis import BasisSet
 
     atoms = Atoms(formula, positions=positions)
@@ -64,7 +64,7 @@ def _integrals(formula, positions, basis, box=8.0, h=0.3):
                                    atoms.get_chemical_symbols(), coordinates):
         functions += bset.atom(symbol, center=position, units="angstrom")
         nuclei.append((float(Z), position))
-    grid = Grid(center=coordinates.mean(axis=0), box_size=box, h=h,
+    grid = Grid(center=coordinates.mean(axis=0), box_size=box, grid_spacing=grid_spacing,
                 units="angstrom")
     return MolecularIntegrals(nuclei, functions, grid,
                               softening=0.5 * min(grid.dx, grid.dy, grid.dz))
@@ -626,7 +626,7 @@ def truncated_paw_run():
 
     atoms = _lih()
     atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis={"name": "PAW-LCAO", "size": "TZP"}, h=0.3,
+                           basis={"name": "PAW-LCAO", "size": "TZP"}, grid_spacing=0.3,
                            active_space={"orbitals": 4, "method": "mp2"},
                            optimizer={"method": "SLSQP", "maxiter": 200},
                            trace=False)
@@ -718,7 +718,7 @@ class TestThroughTheCalculator:
         atoms = _lih()
         grid = grid_from_cell(atoms, 0.35)
         atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="6-31G", grid=grid, h=0.35,
+            method="adapt-vqe", basis="6-31G", grid=grid, grid_spacing=0.35,
             active_space={"frozen": 1, "orbitals": 2},
             optimizer={"method": "SLSQP", "maxiter": 200},
             project_translation=False, trace=False)
@@ -744,7 +744,7 @@ class TestThroughTheCalculator:
             atoms = _lih()
             atoms.calc = Mandacaru(
                 method="adapt-vqe",
-                basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.3,
+                basis={"name": "PAW-LCAO", "size": "DZP"}, grid_spacing=0.3,
                 active_space=(None if width is None
                               else {"orbitals": width, "method": "mp2"}),
                 optimizer={"method": "SLSQP", "maxiter": 200}, trace=False)
@@ -760,7 +760,7 @@ class TestThroughTheCalculator:
         atoms, _energy = truncated_paw_run
         estimate = Mandacaru(
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "TZP"},
-            h=0.3, active_space={"orbitals": 4, "method": "mp2"},
+            grid_spacing=0.3, active_space={"orbitals": 4, "method": "mp2"},
             dry_run=True, trace=False).solver.estimate_qubits(atoms)
         assert estimate.n_qubits == atoms.calc.solver.n_qubits
         assert estimate.n_spatial_orbitals == 4
@@ -776,7 +776,7 @@ class TestThroughTheCalculator:
         atoms = _lih()
         atoms.calc = Mandacaru(
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZP"},
-            h=0.3, active_space={"orbitals": {"occupied": 1, "virtual": 3}},
+            grid_spacing=0.3, active_space={"orbitals": {"occupied": 1, "virtual": 3}},
             save_hamiltonian=str(path),
             optimizer={"method": "SLSQP", "maxiter": 50}, trace=False)
         atoms.get_potential_energy()
@@ -813,7 +813,7 @@ class TestThePeriodicAndFiniteSizePaths:
                       cell=np.diag([4.0, 8.0, 8.0]), pbc=[True, False, False])
         atoms.calc = Mandacaru(
             method="bloch-adapt-vqe", kpts={"size": (2, 1, 1), "gamma": True},
-            basis="HAO", h=0.4, active_space={"orbitals": 3}, trace=False,
+            basis="HAO", grid_spacing=0.4, active_space={"orbitals": 3}, trace=False,
             optimizer={"method": "SLSQP", "maxiter": 120})
         atoms.get_potential_energy()
         return atoms

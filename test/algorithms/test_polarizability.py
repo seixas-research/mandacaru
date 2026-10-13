@@ -34,7 +34,7 @@ def _water(vacuum=2.5):
 
 def _run(field=None, method="rhf", basis=PAW_SZP, **kwargs):
     atoms = _water()
-    atoms.calc = Mandacaru(method=method, basis=basis, h=0.3, trace=False,
+    atoms.calc = Mandacaru(method=method, basis=basis, grid_spacing=0.3, trace=False,
                            electric_field=field, **kwargs)
     energy = atoms.get_potential_energy() / HARTREE_TO_EV
     atoms.calc.get_dipole_moment()
@@ -78,7 +78,7 @@ class TestTheField:
     def test_the_log_names_the_field_once(self, tmp_path):
         atoms = _water()
         log = tmp_path / "run.log"
-        atoms.calc = Mandacaru(method="rhf", basis=PAW_SZP, h=0.3,
+        atoms.calc = Mandacaru(method="rhf", basis=PAW_SZP, grid_spacing=0.3,
                                electric_field=(0.0, 0.0, 1e-3), txt=str(log))
         atoms.get_potential_energy()
         lines = [l for l in log.read_text().splitlines() if "electric" in l]
@@ -91,14 +91,14 @@ class TestTheField:
             Mandacaru(method="vqe", load_hamiltonian="h.json",
                       electric_field=(0, 0, 1e-3))
         atoms = _water()
-        atoms.calc = Mandacaru(method="dft", basis=PAW_SZP, h=0.3,
+        atoms.calc = Mandacaru(method="dft", basis=PAW_SZP, grid_spacing=0.3,
                                electric_field=(0, 0, 1e-3), trace=False)
         with pytest.raises(NotImplementedError, match="electric field"):
             atoms.get_forces()
         # A crystal takes a field through the Berry phase (method="dft",
         # test_berry_phase.py); the Bloch supercell methods cannot.
         with pytest.raises(NotImplementedError, match="periodicity"):
-            Mandacaru(method="bloch-vqe", basis=PAW_SZP, h=0.4,
+            Mandacaru(method="bloch-vqe", basis=PAW_SZP, grid_spacing=0.4,
                       kpts={"size": (1, 1, 1), "gamma": True},
                       electric_field=(0, 0, 1e-3))
 
@@ -108,7 +108,7 @@ class TestThePolarizability:
     def water(self):
         atoms = _water()
         return atoms, polarizability(atoms, method="dft", basis=PAW_SZP,
-                                     h=0.3, trace=False)
+                                     grid_spacing=0.3, trace=False)
 
     @pytest.mark.slow
     def test_the_dipoles_and_the_energies_agree(self, water):
@@ -135,7 +135,7 @@ class TestThePolarizability:
         seen = {}
         monkeypatch.setattr(module, "polarizability",
                             lambda atoms, **kwargs: seen.update(kwargs))
-        calc = Mandacaru(method="dft", xc="pbe", basis=PAW_SZP, h=0.3,
+        calc = Mandacaru(method="dft", xc="pbe", basis=PAW_SZP, grid_spacing=0.3,
                          trace=False)
         calc.polarizability(_water(), field=1e-3)
         # The calculator's basis, which carries the folder of PBE's own
@@ -144,7 +144,7 @@ class TestThePolarizability:
         named = dict(seen["basis"])
         assert os.path.basename(named.pop("directory")) == "pbe-sr"
         assert named == PAW_SZP
-        assert seen["h"] == 0.3 and seen["xc"] == "pbe"
+        assert seen["grid_spacing"] == 0.3 and seen["xc"] == "pbe"
         assert seen["field"] == 1e-3
 
     def test_a_crystal_and_a_fixed_field_are_refused(self):

@@ -700,14 +700,15 @@ def carried_energy(solver, state, atoms, options, family, kpts,
     strained.set_cell(cell, scale_atoms=True)
     shape = tuple(c.grid.shape)
     spacing = np.linalg.norm(cell, axis=1) / np.asarray(shape, dtype=float)
-    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=spacing,
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=spacing,
                 units="angstrom", cell=cell, periodic=True)
     if tuple(grid.shape) != shape:
         raise RuntimeError(f"the strained grid has {grid.shape} nodes, not "
                            f"{shape}: the stress needs the same grid")
     pinned = dict(options)
-    if c.filter_cutoff is not None:
-        pinned["filter"] = 0.5 * c.filter_cutoff ** 2 * HARTREE_TO_EV
+    if c.filter_wavevector is not None:
+        pinned["filter_cutoff"] = (0.5 * c.filter_wavevector ** 2
+                                   * HARTREE_TO_EV)
     crystal, context = build_crystal(strained, 0.0, pinned, kpts=kpts,
                                      family=family, grid=grid,
                                      symmetry=symmetry)

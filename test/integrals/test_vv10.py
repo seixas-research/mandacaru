@@ -16,15 +16,15 @@ import pytest
 from mandacaru.integrals import vv10
 
 
-def _grid(shape, h, periodic):
-    return SimpleNamespace(shape=shape, dV=h ** 3, step=np.diag([h] * 3),
+def _grid(shape, grid_spacing, periodic):
+    return SimpleNamespace(shape=shape, dV=grid_spacing ** 3, step=np.diag([grid_spacing] * 3),
                            periodic=periodic)
 
 
-def _dimer(shape, h, separation, extra=0.0):
+def _dimer(shape, grid_spacing, separation, extra=0.0):
     """Two Ar-like Gaussian shells (and an optional perturbing one), with
     their analytic sigma = |grad n|^2."""
-    axes = [(np.arange(m) - (m - 1) / 2) * h for m in shape]
+    axes = [(np.arange(m) - (m - 1) / 2) * grid_spacing for m in shape]
     X, Y, Z = np.meshgrid(*axes, indexing="ij")
     n = np.zeros_like(X)
     grad = [np.zeros_like(X) for _ in range(3)]
@@ -88,9 +88,9 @@ class TestTheEnergy:
         sum of the rVV10 kernel with the same saturated q (the padding
         raised so that the kernel's images are out of the comparison)."""
         monkeypatch.setattr(vv10, "ISOLATED_PADDING", 4)
-        h, shape = 0.35, (26, 26, 26)
-        n, sigma, (X, Y, Z) = _dimer(shape, h, 3.2)
-        rps = vv10.nonlocal_correlation(_grid(shape, h, False), n, sigma)
+        grid_spacing, shape = 0.35, (26, 26, 26)
+        n, sigma, (X, Y, Z) = _dimer(shape, grid_spacing, 3.2)
+        rps = vv10.nonlocal_correlation(_grid(shape, grid_spacing, False), n, sigma)
         b, C = vv10.B_R2SCAN, vv10.C_VV10
         on = n > vv10.DENSITY_CUTOFF
         kappa = vv10.kappa_prefactor(b) * n[on] ** (1 / 6)
@@ -106,22 +106,22 @@ class TestTheEnergy:
             qa = q[start:start + 1024, None]
             phi = 1.0 / ((qa * d2 + 1) * (q * d2 + 1) * ((qa + q) * d2 + 2))
             total += theta[start:start + 1024] @ phi @ theta
-        exact = (-0.75 * total * h ** 6
-                 + vv10.beta(b) * float(np.sum(n)) * h ** 3)
+        exact = (-0.75 * total * grid_spacing ** 6
+                 + vv10.beta(b) * float(np.sum(n)) * grid_spacing ** 3)
         assert rps.energy == pytest.approx(exact, abs=2e-7)
 
     @pytest.mark.parametrize("periodic", [False, True])
     def test_the_partials_are_the_derivative(self, periodic):
         """d/de E[n + e dn] = int (dE/dn dn + dE/dsigma dsigma)."""
-        h, shape = 0.35, (32, 24, 24)
-        grid = _grid(shape, h, periodic)
-        n, sigma, _ = _dimer(shape, h, 3.6)
+        grid_spacing, shape = 0.35, (32, 24, 24)
+        grid = _grid(shape, grid_spacing, periodic)
+        n, sigma, _ = _dimer(shape, grid_spacing, 3.6)
         terms = vv10.nonlocal_correlation(grid, n, sigma)
         eps = 1e-4
-        plus, minus = _dimer(shape, h, 3.6, eps), _dimer(shape, h, 3.6, -eps)
+        plus, minus = _dimer(shape, grid_spacing, 3.6, eps), _dimer(shape, grid_spacing, 3.6, -eps)
         numeric = (vv10.nonlocal_correlation(grid, *plus[:2]).energy
                    - vv10.nonlocal_correlation(grid, *minus[:2]).energy) / (2 * eps)
         dn = (plus[0] - minus[0]) / (2 * eps)
         ds = (plus[1] - minus[1]) / (2 * eps)
-        analytic = float(np.sum(terms.d_density * dn + terms.d_sigma * ds)) * h ** 3
+        analytic = float(np.sum(terms.d_density * dn + terms.d_sigma * ds)) * grid_spacing ** 3
         assert analytic == pytest.approx(numeric, rel=1e-6)

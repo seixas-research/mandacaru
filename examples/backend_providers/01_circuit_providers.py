@@ -8,7 +8,7 @@ atoms.center(vacuum=3.0)
 for provider in ("qiskit", "braket", "cirq"):
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW-LCAO", "size": "SZ"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            backend_provider=provider,
                            execute_circuits=True)
     energy = atoms.get_potential_energy()

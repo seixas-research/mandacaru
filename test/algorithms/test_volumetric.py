@@ -67,7 +67,7 @@ def _molecule(symbols, positions, cell, center=True, **info):
 def _solved(atoms, **options):
     """Attach a calculator, evaluate the energy, return the calculator."""
     atoms.calc = Mandacaru(method="adapt-vqe", basis=options.pop("basis", "HAO"),
-                           h=options.pop("h", H), trace=False, **options)
+                           grid_spacing=options.pop("grid_spacing", H), trace=False, **options)
     atoms.get_potential_energy()
     return atoms.calc
 
@@ -447,7 +447,7 @@ class TestGridAlignment:
                                                              tmp_path):
         atoms, calc = h2
         skew = Grid(center=atoms.get_positions().mean(axis=0), box_size=0.0,
-                    h=0.5, units="angstrom",
+                    grid_spacing=0.5, units="angstrom",
                     cell=np.array([[6.0, 0.0, 0.0], [1.5, 6.0, 0.0],
                                    [0.0, 1.2, 6.0]]), skew=True)
         assert not skew.is_orthogonal
@@ -461,7 +461,7 @@ class TestGridAlignment:
     def test_a_finer_grid_resamples_the_basis(self, h2):
         atoms, calc = h2
         fine = Grid(center=atoms.get_positions().mean(axis=0), box_size=0.0,
-                    h=0.5 * H, units="angstrom", cell=atoms.get_cell())
+                    grid_spacing=0.5 * H, units="angstrom", cell=atoms.get_cell())
         field = calc.volumetric_field("density", grid=fine)
         assert field.data.shape == fine.shape
         assert field.data.shape != calc.volumetric_field("density").data.shape
@@ -504,7 +504,7 @@ class TestExcitedStates:
 
     def test_subspace_levels_have_their_own_density(self):
         atoms = _molecule("H2", [[0, 0, 0], [0, 0, 0.74]], [6, 6, 6])
-        atoms.calc = Mandacaru(method="subspace-vqe", basis="HAO", h=H,
+        atoms.calc = Mandacaru(method="subspace-vqe", basis="HAO", grid_spacing=H,
                                num_states=2, trace=False)
         atoms.get_potential_energy()
         ground = atoms.calc.volumetric_field("density", state=0)
@@ -600,7 +600,7 @@ class TestContracts:
             calc.volumetric_field("density", state=2)
 
     def test_before_a_run(self):
-        calc = Mandacaru(method="adapt-vqe", basis="HAO", h=H, trace=False)
+        calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=H, trace=False)
         with pytest.raises(RuntimeError, match="nothing has been solved yet"):
             calc.volumetric_field("density")
 
@@ -661,7 +661,7 @@ class TestDipoleMoment:
         atoms.positions += np.asarray(shift)
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis={"name": family, "size": "DZP"},
-                               h=0.3, active_space={"orbitals": 4},
+                               grid_spacing=0.3, active_space={"orbitals": 4},
                                max_iterations=0, trace=False)
         atoms.get_potential_energy()
         atoms.calc.get_dipole_moment()
@@ -701,7 +701,7 @@ class TestDipoleMoment:
         for basis in ("STO-3G", {"name": "PAW-LCAO", "size": "DZP"}):
             atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.595]])
             atoms.center(vacuum=3.5)
-            atoms.calc = Mandacaru(method="rhf", basis=basis, h=0.2,
+            atoms.calc = Mandacaru(method="rhf", basis=basis, grid_spacing=0.2,
                                    trace=False)
             atoms.get_potential_energy()
             atoms.calc.get_dipole_moment()

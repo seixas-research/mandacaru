@@ -49,7 +49,7 @@ def solved_chain():
                   cell=np.diag([2.0, 10.0, 10.0]), pbc=[True, False, False])
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": (2, 1, 1), "gamma": True},
-                           basis="HAO", h=0.35, trace=False, optimizer=SLSQP)
+                           basis="HAO", grid_spacing=0.35, trace=False, optimizer=SLSQP)
     atoms.get_potential_energy()
     return atoms
 

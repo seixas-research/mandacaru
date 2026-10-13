@@ -473,7 +473,7 @@ class SubspaceVQE(SubspaceMixin, VQE):
     """Subspace-search VQE: ground + first excited states in one optimization.
 
     Extends :class:`~mandacaru.algorithms.VQE`; every constructor argument of
-    ``VQE`` is accepted (including the ASE-calculator ``basis`` / ``h`` mode),
+    ``VQE`` is accepted (including the ASE-calculator ``basis`` / ``grid_spacing`` mode),
     plus:
 
     Parameters

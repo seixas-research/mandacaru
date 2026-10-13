@@ -25,8 +25,8 @@ Without it the full variational run is performed:
 
 .. code-block:: console
 
-    $ mandacaru water.xyz --method adapt-vqe --basis HAO --h 0.25 --frozen
-    $ mandacaru LiH --cell 10 --basis PAW-LCAO --h 0.25
+    $ mandacaru water.xyz --method adapt-vqe --basis HAO --grid-spacing 0.25 --frozen
+    $ mandacaru LiH --cell 10 --basis PAW-LCAO --grid-spacing 0.25
     $ mandacaru LiH --cell 10 --method mcas-vqe --pool qeb --max-steps 150 --seed 1
 
 A **crystal** -- a geometry whose cell is periodic, read from a CIF, a POSCAR
@@ -216,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
                "  mandacaru H2O --cell 8 --basis NAO --basis-option size=DZP --dry-run\n"
                "  mandacaru H2O --cell 8 --basis PAW-LCAO --basis-option size=DZP --dry-run\n"
                "  mandacaru --load-hamiltonian lih.parquet --dry-run --json\n"
-               "  mandacaru LiH --cell 10 --method adapt-vqe --pool qeb --h 0.3\n"
+               "  mandacaru LiH --cell 10 --method adapt-vqe --pool qeb --grid-spacing 0.3\n"
                "  mandacaru LiH --cell 10 --method mcas-vqe --pool qeb --max-steps "
                "150 --seed 1\n"
                "  mandacaru --build-backend\n"
@@ -322,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "datasets); default: the functional's own set, "
                             "pbe-sr for --xc pbe, hse06 and r2scan, lda-sr "
                             "otherwise")
-    basis.add_argument("--h", type=float, default=DEFAULT_GRID_SPACING,
+    basis.add_argument("--grid-spacing", type=float, default=DEFAULT_GRID_SPACING,
                        help="real-space grid spacing in Angstrom "
                             f"(default {DEFAULT_GRID_SPACING:.2f})")
     basis.add_argument("--frozen", nargs="?", const="auto", default=None,
@@ -616,7 +616,7 @@ def solver_options(args) -> dict:
 
     basis = args.basis if not args.basis_option else \
         {"name": args.basis, **dict(args.basis_option)}
-    options = dict(method=args.method, basis=basis, h=args.h,
+    options = dict(method=args.method, basis=basis, grid_spacing=args.grid_spacing,
                    charge=args.charge, spin=args.spin,
                    taper=args.taper,
                    mapping=args.mapping, optimizer=args.optimizer,

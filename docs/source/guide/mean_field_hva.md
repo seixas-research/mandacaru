@@ -13,7 +13,7 @@ from ase import Atoms
 from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6, 6, 6])
-atoms.calc = Mandacaru(method="rhf", basis="HAO", h=0.35)
+atoms.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.35)
 energy_ev = atoms.get_potential_energy()
 mean_field = atoms.calc.result
 
@@ -58,7 +58,7 @@ below theirs in the same Hamiltonian.
 ```python
 atoms = Atoms("Pb", positions=[[0, 0, 0]], cell=[9, 9, 9])
 atoms.calc = Mandacaru(method="ghf", basis={"name": "PAW-LCAO", "size": "SZ"},
-                       directory="lda-dirac", h=0.25)
+                       directory="lda-dirac", grid_spacing=0.25)
 ghf = atoms.calc.result
 correlated = Mandacaru(method="adapt-vqe", pool="spin-orbit",
                        **ghf.as_quantum_problem()).run()
@@ -153,7 +153,7 @@ fermionic group decomposition, which a cached qubit Hamiltonian does not carry.
 
 ```python
 atoms.calc = Mandacaru(method="vqe", ansatz={"name": "hva", "layers": 2},
-                       basis="HAO", h=0.35, mapping="parity_reduced")
+                       basis="HAO", grid_spacing=0.35, mapping="parity_reduced")
 energy_ev = atoms.get_potential_energy()
 ```
 
@@ -163,7 +163,7 @@ atoms.calc = Mandacaru(
     method="vqe",
     ansatz={"name": "hva", "layers": 2, "evolution": "trotter",
             "order": 2, "steps": 2},
-    basis="HAO", h=0.35, execute_circuits=True, taper=True,
+    basis="HAO", grid_spacing=0.35, execute_circuits=True, taper=True,
     checkpoint="hva.json")
 energy_ev = atoms.get_potential_energy()
 prepared_state = atoms.calc.solver.checkpoint.state_vector()

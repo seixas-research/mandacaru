@@ -25,7 +25,7 @@ for symbols, distances, bonds in (("H2", (0.65, 0.75, 0.85), 1),
         atoms = linear(symbols, [r] * bonds)
         atoms.calc = Mandacaru(method="mcas-vqe",
                                basis={"name": "PAW-LCAO", "size": "SZ"},
-                               h=0.20,
+                               grid_spacing=0.20,
                                pool="qeb",
                                max_steps=40,
                                max_length=12,

@@ -19,7 +19,8 @@ Why the cube writer is written here rather than taken from ASE
 ``ase.io.cube.write_cube`` derives the three voxel vectors from
 ``atoms.cell[i] / n_i``.  Mandacaru's grid is *not* the cell divided by the
 node count: it is centered on the molecule, its node count is
-``round(L / h) + 1`` so that the realized spacing is exactly ``h``, and it may
+``round(L / grid_spacing) + 1`` so that the realized spacing is exactly
+``grid_spacing``, and it may
 be skewed (:attr:`~mandacaru.integrals.grid.Grid.step` is a full 3x3 matrix of
 step *vectors*, not a diagonal).  Handing ASE our data would therefore write a
 header describing a different grid from the one the numbers were computed on,

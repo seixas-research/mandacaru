@@ -33,11 +33,11 @@ def silicon():
     """Diamond Si, SZ, coarse grid, 2x2x2 mesh (Gamma, X-type and L-type
     points in the wedge)."""
     atoms = bulk("Si", "diamond", a=5.43)
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.34,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.34,
                            kpts={"size": (2, 2, 2), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.01},
                            basis={"name": "PAW-LCAO", "size": "SZ",
-                                  "filter": 200}, trace=False)
+                                  "filter_cutoff": 200}, trace=False)
     atoms.get_potential_energy()
     return atoms
 
@@ -50,9 +50,9 @@ def oxygen():
     atoms.center()
     atoms.pbc = True
     atoms.set_initial_magnetic_moments([1.0, 1.0])
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.3, trace=False,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
                            basis={"name": "PAW-LCAO", "size": "SZ",
-                                  "filter": 300},
+                                  "filter_cutoff": 300},
                            smearing={"method": "fermi-dirac", "width": 0.01})
     atoms.get_potential_energy()
     return atoms
@@ -299,7 +299,7 @@ class TestTheRefusals:
     def test_a_molecule_takes_no_crystal_options(self):
         atoms = molecule("H2")
         atoms.center(vacuum=2.5)
-        atoms.calc = Mandacaru(method="dft", xc="lda", h=0.3, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
                                basis="HAO")
         atoms.get_potential_energy()
         with pytest.raises(ValueError, match="crystal"):

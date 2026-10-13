@@ -189,7 +189,7 @@ DEFAULT_N_BESSEL = 8
 #: atom.  At 8 functions the LDA pair is nodeless and the PBE pair has a
 #: node at 1.22 Bohr (both waves); with 9 the PBE pair is nodeless too.  The
 #: nodal PBE lithium passed every atomic check and still broke molecules:
-#: LiH (SZ, RHF, h = 0.15 Angstrom) had its minimum at 2.4 Angstrom instead
+#: LiH (SZ, RHF, grid_spacing = 0.15 Angstrom) had its minimum at 2.4 Angstrom instead
 #: of 1.6, and was 4 eV too high at 1.6.  LDA stays at 8, where it is
 #: nodeless and where the shipped library and its pinned energies were taken
 #: (HISTORY.md, 2026-09-27).
@@ -199,7 +199,7 @@ DEFAULT_N_BESSEL = 8
 #: represents a hydrogen orbital entering the sphere badly -- the projector
 #: expansion of a 1s tail at the sphere edge misses it by 2.4-13 times its
 #: own norm (Sn: 150) -- and the hydride collapses: CoH (RHF SZ,
-#: h = 0.20) fell 360 eV from 2.8 to 1.3 Angstrom, with 25-31 electrons in
+#: grid_spacing = 0.20) fell 360 eV from 2.8 to 1.3 Angstrom, with 25-31 electrons in
 #: cobalt's one-center density matrix of a 10-electron molecule.  At 9 the
 #: miss is 0.4-0.9 (Sn: 8.5) and CoH stays within 7 eV over the same range.
 DEFAULT_N_BESSEL_BY_DATASET = {
@@ -226,7 +226,7 @@ DEFAULT_NORM_DEFICIT = 0.1
 #: its s projectors missed an intruding hydrogen 1s by 0.55x its norm, at 0
 #: by 0.09 (HISTORY.md, 2026-10-07).  Copper is built unitary: at the default
 #: 0.1 its PBE dataset passed every atomic check and still collapsed CuH (RHF
-#: SZ, h = 0.20 Angstrom: -1555 eV at 1.30 Angstrom, falling 155 eV to 1.75
+#: SZ, grid_spacing = 0.20 Angstrom: -1555 eV at 1.30 Angstrom, falling 155 eV to 1.75
 #: with no minimum), while at 0 it binds like the LDA one (minimum at 1.6,
 #: HISTORY.md 2026-09-27).  The LDA copper already had deficit 0, reached
 #: through the ghost repair; built directly it differs by 1e-6 Ha.  Cobalt
@@ -292,13 +292,13 @@ DEFAULT_CUTOFFS = {
     # Co and Ni at 1.2-1.3x their defaults (0.86 / 0.82 Bohr), with the second
     # reference energy at +2 Ha (DEFAULT_ENERGY_OFFSETS): at the defaults the
     # LDA d projectors reach 17 and turn the Fourier filter's 3 % change of a
-    # 3d basis function at h = 0.20 Angstrom into a 32-40 % error in its
+    # 3d basis function at grid_spacing = 0.20 Angstrom into a 32-40 % error in its
     # projection (a d-shell occupation of 11 in a 10-electron CoH); now
-    # 2-5 % at h = 0.20 in both functionals (HISTORY.md, 2026-09-27).
+    # 2-5 % at grid_spacing = 0.20 in both functionals (HISTORY.md, 2026-09-27).
     "Co": {0: 2.85, 2: 1.04},
     "Ni": {0: 2.88, 2: 1.06},
     # Fe, Cu and Zn the same way (1.2x, 1.45x, 1.45x their defaults): the 3D
-    # projection of a filtered 3d basis function at h = 0.20 Angstrom was off
+    # projection of a filtered 3d basis function at grid_spacing = 0.20 Angstrom was off
     # by 0.18 / 0.42 (Fe LDA / PBE), 0.54 / 0.59 (Cu), 0.66 / 2.5 (Zn); now
     # 0.02, 0.09-0.10 and 0.04-0.05.
     "Fe": {2: 1.10},
@@ -306,7 +306,7 @@ DEFAULT_CUTOFFS = {
     "Zn": {2: 1.06},
     # Semicore Sc and Ti (DEFAULT_SEMICORE_SUBSHELLS) the same way, at 1.45x
     # their default d spheres and +2 Ha: at 1.43 / 1.28 Bohr a filtered 3d
-    # projected off by 0.21-0.22 / 0.35 at h = 0.20 Angstrom (both
+    # projected off by 0.21-0.22 / 0.35 at grid_spacing = 0.20 Angstrom (both
     # functionals), now 0.012 / 0.020 (HISTORY.md, 2026-10-11).
     "Sc": {2: 2.07},
     "Ti": {2: 1.86},
@@ -380,7 +380,7 @@ DEFAULT_CORE_RADII = {"Li": 1.5}
 #: (HISTORY.md, 2026-10-07 and 2026-10-11, "The PBE set").  Ag,
 #: Cd and Ir (flagged for an unprojected p of 0.21-0.42 rad or a miss of
 #: 1.15-1.26) also build clean with it, but their filtered 4d/5d basis
-#: function then projects 0.20-0.33 off its own wave at h = 0.20 Angstrom
+#: function then projects 0.20-0.33 off its own wave at grid_spacing = 0.20 Angstrom
 #: (0.003-0.009 without), and fcc Ag came out the same (4.067 A PBE): they
 #: keep their valence and their flag (HISTORY.md, 2026-10-11).  So do Lu,
 #: Hf, W and Re: semicore they build clean too, but bcc W comes out at
@@ -409,7 +409,7 @@ DEFAULT_SEMICORE_SUBSHELLS = {
 #:   shorter s sphere, bring it to 0.1-0.95;
 #: - the **semicore d** of Ga-Kr, I and Xe is so compact that its projectors
 #:   amplify the basis filter: a filtered 3d/4d function projected onto its own
-#:   wave at h = 0.20 Angstrom was off by 0.1-0.9; a larger d sphere with a
+#:   wave at grid_spacing = 0.20 Angstrom was off by 0.1-0.9; a larger d sphere with a
 #:   higher second reference energy brings it to 0.02-0.16.
 #:
 #: Hf, Lu, Th and W-PBE (and Mo, Nb, Sc, Tc, Ti-LDA and Zr-LDA, now
@@ -606,10 +606,10 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     is a plane-wave-basis problem.  (2) It does not remove the augmentation:
     the constraint fixes only the **norm**, i.e. the :math:`L = 0` moment, so the
     higher compensation multipoles survive and on oxygen :math:`L = 2` *grows*
-    (water, h = 0.25: :math:`|Q^{L=0}|` 3.2e-2 -> 8e-15 but :math:`|Q^{L=2}|`
+    (water, grid_spacing = 0.25: :math:`|Q^{L=0}|` 3.2e-2 -> 8e-15 but :math:`|Q^{L=2}|`
     1.4e-3 -> 2.2e-2).  (3) The waves are harder, which costs exactly what a
     real-space grid is most sensitive to: water's net force (the egg-box) is
-    **5x larger** at h = 0.25 and 0.20 (0.38 -> 1.92 and 0.042 -> 0.223 eV/A),
+    **5x larger** at grid_spacing = 0.25 and 0.20 (0.38 -> 1.92 and 0.042 -> 0.223 eV/A),
     and the energy converges ~19 % more slowly in h -- the same ordering the
     paper reports (PAW-LCAO converged at 400 eV, UPAW-LCAO at 600).  The physics agrees
     where it should: LiH's bond length differs by 0.002 A and its binding energy
@@ -2520,7 +2520,7 @@ class PAWIntegrals(MolecularIntegrals):
 
         **What this is not:** a cure for the egg-box.  The *long-range* half
         stays on the grid and keeps a ripple of its own, comparable to (and at
-        h >= 0.25 Angstrom larger than) the un-split potential's, because the
+        grid_spacing >= 0.25 Angstrom larger than) the un-split potential's, because the
         artifact is dominated by the sampling of the pair density rather than
         of the potential.  :mod:`.local_split` carries the measured per-term
         table and the width scan behind that statement.
@@ -2570,13 +2570,13 @@ class PAWIntegrals(MolecularIntegrals):
         The grid quadrature this replaces is poor for these functions: the dual
         projectors are sharp (the two reference waves are nearly parallel in
         the core, so :math:`B^{-1}` is large), and on an H\ :sub:`2` DZP basis
-        at h = 0.25 Angstrom rigidly translating the molecule by one grid step
+        at grid_spacing = 0.25 Angstrom rigidly translating the molecule by one grid step
         moved the nonlocal energy by 3.9 eV, the augmented overlap by 1.0 eV
         and the compensation Coulomb term by 1.4 eV -- an egg-box that swamps
         any force.  With the quadrature those ripples vanish; the remaining
         grid ripple (kinetic, local potential, Hartree) is 18 / 13 / 5 meV at
-        h = 0.25 / 0.20 / 0.15 Angstrom.  The quadrature is converged to
-        4e-7 and agrees with an h = 0.10 Angstrom grid to 1e-4.  The grid
+        grid_spacing = 0.25 / 0.20 / 0.15 Angstrom.  The quadrature is converged to
+        4e-7 and agrees with an grid_spacing = 0.10 Angstrom grid to 1e-4.  The grid
         values are still computed once, for :attr:`kb_resolution_ratios`.
         """
         if self._C is not None:
@@ -2679,7 +2679,7 @@ class PAWIntegrals(MolecularIntegrals):
         for atoms at ``centers`` (Bohr).
 
         Integrated on an **atom-centered** spherical quadrature, not the grid:
-        the shape spans only a few grid points at h = 0.20 Angstrom, so a grid
+        the shape spans only a few grid points at grid_spacing = 0.20 Angstrom, so a grid
         sum would be inaccurate and would put an egg-box straight into the
         force.  The on-site term (``B = A``) is left out -- the isolated atom's
         own compensation-ion interaction is already inside the dataset, which
@@ -3059,7 +3059,7 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
     return written
 
 
-def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None, **active):
+def build_upaw(atoms, grid, grid_spacing, charge, spin, options, kinetic=None, **active):
     """Valence-only Hamiltonian from UPAW-LCAO datasets (see :func:`build_paw`).
 
     The whole molecular path is PAW-LCAO's; only the loader and the recorded
@@ -3067,11 +3067,11 @@ def build_upaw(atoms, grid, h, charge, spin, options, kinetic=None, **active):
     where per-family option defaults live (``default_options``), so a UPAW-LCAO
     run must resolve *its own* spec, not PAW-LCAO's.
     """
-    return build_paw(atoms, grid, h, charge, spin, options, kinetic=kinetic,
+    return build_paw(atoms, grid, grid_spacing, charge, spin, options, kinetic=kinetic,
                      loader=get_upaw, family=UPAW_FAMILY, **active)
 
 
-def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
+def build_paw(atoms, grid, grid_spacing, charge, spin, options, kinetic=None,
               loader=None, family=None, **active):
     r"""Valence-only Hamiltonian from PAW-LCAO datasets.
 
@@ -3086,7 +3086,7 @@ def build_paw(atoms, grid, h, charge, spin, options, kinetic=None,
     from .families import build_valence_hamiltonian
 
     return build_valence_hamiltonian(
-        atoms, grid, h, charge, spin, options, kinetic, **active,
+        atoms, grid, grid_spacing, charge, spin, options, kinetic, **active,
         family=FAMILY if family is None else family,
         load=get_paw if loader is None else loader,
         projectors=lambda symbols, positions, datasets, opts: paw_projectors(
@@ -3370,14 +3370,14 @@ def from_payload(payload: dict) -> PAWDataset:
 #: *built* to be band-limited -- :func:`~.partial_waves.optimize_pseudo_waves` minimizes
 #: the kinetic energy beyond ``q_cut`` -- so removing what is left above the
 #: grid's Nyquist wave-vector costs little and takes most of the egg-box with
-#: it.  ``basis={"name": "PAW-LCAO", "filter": False}`` restores
+#: it.  ``basis={"name": "PAW-LCAO", "filter_cutoff": False}`` restores
 #: the unfiltered basis exactly.
 #:
 #: ``energy_shift = 0.1`` eV makes the default PAW-LCAO basis a
 #: **confined** one, as for every pseudopotential family
 #: (:data:`~.confinement.CONFINEMENT_DEFAULT_OPTIONS`); the polarization shell
 #: then defaults to the quasi-Gaussian.
-PAW_DEFAULT_OPTIONS = {"filter": True, **CONFINEMENT_DEFAULT_OPTIONS}
+PAW_DEFAULT_OPTIONS = {"filter_cutoff": "auto", **CONFINEMENT_DEFAULT_OPTIONS}
 
 #: What a PAW-LCAO / UPAW-LCAO basis dict may say beyond the family-independent
 #: options: which projector set is sampled, and the confinement options every
@@ -3432,7 +3432,7 @@ def _register_upaw():
         aliases=("unitary-paw-lcao",),
         options=PAW_OPTIONS,
         # UPAW-LCAO's partial waves are the harder ones (five times water's grid
-        # egg-box at h = 0.25), so if the filter earns its place for PAW-LCAO it
+        # egg-box at grid_spacing = 0.25), so if the filter earns its place for PAW-LCAO it
         # earns it for UPAW-LCAO a fortiori.
         default_options=dict(PAW_DEFAULT_OPTIONS),
     ))

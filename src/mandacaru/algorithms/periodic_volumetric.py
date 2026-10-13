@@ -36,7 +36,7 @@ Quantities
     **average over each voxel** (a Gauss-Legendre rule of
     :data:`VOXEL_POINTS` per axis): the file then integrates to the valence
     count, which point samples of those peaks would not (silicon at
-    h = 0.2 Angstrom: +0.21 e).
+    grid_spacing = 0.2 Angstrom: +0.21 e).
 ``natural_orbital``
     Natural orbital ``index`` (descending occupation) of the spin-summed
     density matrix at an SCF k-point (:func:`bloch_natural_orbitals`).

@@ -15,7 +15,7 @@ from mandacaru.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
 @pytest.fixture
 def h1s_engine():
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, h=0.51, units="bohr")
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, grid_spacing=0.51, units="bohr")
     basis = [HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, units="bohr")]
     return IntegralEngine(basis, grid)
 
@@ -28,8 +28,8 @@ class TestPoissonFFT:
 
     def test_converges_toward_exact_with_resolution(self):
         errs = []
-        for h in (1.04, 0.51):  # coarse -> fine spacing (Bohr)
-            grid = Grid(center=[0, 0, 0], box_size=12.0, h=h, units="bohr")
+        for grid_spacing in (1.04, 0.51):  # coarse -> fine spacing (Bohr)
+            grid = Grid(center=[0, 0, 0], box_size=12.0, grid_spacing=grid_spacing, units="bohr")
             eng = IntegralEngine([HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, units="bohr")],
                                  grid)
             J = eng.two_body(energy_units="Ha")[0, 0, 0, 0].real
@@ -42,7 +42,7 @@ class TestPoissonFFT:
         assert J.real > 0
 
     def test_eight_fold_symmetry(self):
-        grid = Grid(center=[0, 0, 0], box_size=8.0, h=0.84, units="bohr")
+        grid = Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=0.84, units="bohr")
         basis = [HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, units="bohr"),
                  HydrogenicAtomicOrbital(2, 1, 0, Z=1.0, units="bohr")]
         eri = IntegralEngine(basis, grid).two_body()
@@ -65,9 +65,9 @@ class TestUnits:
 
     def test_grid_angstrom_and_bohr_agree(self):
         # The same physical box, specified in Angstrom or Bohr, is identical.
-        g_bohr = Grid(center=[0, 0, 0], box_size=10.0, h=0.5, units="bohr")
+        g_bohr = Grid(center=[0, 0, 0], box_size=10.0, grid_spacing=0.5, units="bohr")
         g_ang = Grid(center=[0, 0, 0], box_size=10.0 * BOHR_TO_ANGSTROM,
-                     h=0.5 * BOHR_TO_ANGSTROM, units="angstrom")
+                     grid_spacing=0.5 * BOHR_TO_ANGSTROM, units="angstrom")
         assert g_ang.points == g_bohr.points
         assert np.isclose(g_ang.dx, g_bohr.dx)
         assert np.allclose(g_ang.X, g_bohr.X)
@@ -141,7 +141,7 @@ class TestPotentials:
 
     def test_bound_method_drives_the_engine(self):
         # The method is directly consumable as the one_body potential callable.
-        grid = Grid(center=[0, 0, 0], box_size=10.0, h=0.645, units="bohr")
+        grid = Grid(center=[0, 0, 0], box_size=10.0, grid_spacing=0.645, units="bohr")
         pot = Potentials([(1.0, np.array([0.0, 0.0, 0.0]))], units="bohr")
         eng = IntegralEngine([HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, units="bohr")],
                              grid)
@@ -155,7 +155,7 @@ class TestPoissonSolverSymmetry:
         conjugated density is the conjugated Phi, and <a, Phi[b]> =
         <Phi[a], b> -- on a tiny 6^3 grid, where the solver pads past the
         spectral part's reach."""
-        grid = Grid(center=[0, 0, 0], box_size=3.0, h=1.2, units="bohr")
+        grid = Grid(center=[0, 0, 0], box_size=3.0, grid_spacing=1.2, units="bohr")
         rng = np.random.default_rng(0)
         a, b = (rng.standard_normal(grid.size)
                 + 1j * rng.standard_normal(grid.size) for _ in range(2))
@@ -190,10 +190,10 @@ class TestSpectralLaplacian:
     integrates, shared with the nuclear gradient's Pulay term."""
 
     @staticmethod
-    def _engine(h=0.3):
+    def _engine(grid_spacing=0.3):
         from mandacaru.basis import GaussianOrbital
 
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, h=h, units="bohr")
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, grid_spacing=grid_spacing, units="bohr")
         basis = [GaussianOrbital(0, 0, [0.6], [1.0], center=[0.2, -0.1, 0.0],
                                  units="bohr"),
                  GaussianOrbital(1, 1, [0.4], [1.0], center=[-0.3, 0.1, 0.2],
@@ -216,7 +216,7 @@ class TestSpectralLaplacian:
         """``T = -1/2 <psi|lap psi>``, and ``<a|lap b> = <lap a|b>`` on the
         grid (the Nyquist plane is symmetrized), the identity the Pulay term
         relies on."""
-        engine = self._engine(h=0.5)
+        engine = self._engine(grid_spacing=0.5)
         zero = lambda x, y, z: np.zeros_like(x)
         T = engine.one_body(zero, energy_units="Ha", kinetic="spectral")[0]
         lap = engine.spectral_laplacian(engine._psi)

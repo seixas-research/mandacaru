@@ -8,7 +8,7 @@ atoms.center(vacuum=3.0)
 for pool in ("fermionic", "qubit", "qeb", "ceo", "ceo-ovp", "spin-orbit"):
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW-LCAO", "size": "DZ"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            active_space={"orbitals": 4, "method": "mp2"},
                            pool=pool)
     energy = atoms.get_potential_energy()

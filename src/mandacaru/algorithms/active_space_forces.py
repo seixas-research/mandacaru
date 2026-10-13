@@ -20,6 +20,7 @@ before a displaced Hamiltonian is contracted with the reference RDMs.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -145,6 +146,14 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
     to the *active* register before any frozen orbitals are refilled.  No VQE or
     hardware job is run at the displaced geometries.
 
+    Cholesky two-body integrals are rebuilt on the reference's pivots
+    (:func:`~mandacaru.integrals.cholesky.cholesky_two_body`), the
+    Coulomb-metric fitting those pivots define: a smooth function of the
+    nuclear positions, where an adaptive choice at each displacement could
+    change the pivots between the two sides of a difference.  The gradient
+    is that of the fitted energy; the factors themselves are never
+    differentiated.
+
     With a pseudopotential family only the internal directions are displaced
     (:func:`internal_directions`): the gradient of an isolated molecule has
     no component along a rigid translation or rotation, so ``3N - 6`` central
@@ -159,9 +168,9 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
     The shortcut rests on the invariance, which the fixed real-space grid
     breaks (the egg-box effect).  With a smooth pseudopotential and a
     filtered basis the break is negligible -- 1.7e-5 eV/Angstrom for O2 in
-    PAW-LCAO at h = 0.15 -- and dropping it is what the calculator's
+    PAW-LCAO at grid_spacing = 0.15 -- and dropping it is what the calculator's
     translation projection does anyway.  A bare all-electron nucleus on the
-    grid breaks it badly (all-electron LiH/6-31G at h = 0.35: moving Li put
+    grid breaks it badly (all-electron LiH/6-31G at grid_spacing = 0.35: moving Li put
     125 eV/Angstrom into the hydrogen's force), so an all-electron basis keeps
     the full ``3N`` Cartesian differences, each atom moved alone.
     """
@@ -173,17 +182,24 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
     reference = context["integrals"]
     active = tuple(context["active"])
     positions = np.asarray(atoms.get_positions(), dtype=float)
+    two_body = None
+    if getattr(reference, "cholesky_integrals", False):
+        # Every displaced geometry factors on the reference's pivots, so the
+        # truncated integrals move smoothly with the nuclei instead of
+        # jumping where an adaptive pivot choice would change.
+        two_body = replace(reference.two_body_spec, pivots=tuple(
+            map(tuple, reference.cholesky_two_body().pivot_pairs.tolist())))
 
     def energy(displacement: np.ndarray) -> float:
         shifted = atoms.copy()
         shifted.set_positions(positions + displacement)
         _hamiltonian, particles, n_orbitals, _profile, displaced = \
             build_basis_hamiltonian(
-                shifted, solver.basis, reference.grid, solver.h,
+                shifted, solver.basis, reference.grid, solver.grid_spacing,
                 solver.charge, solver.n_electrons, spin=solver.spin,
                 kinetic=solver.kinetic,
                 active_space=solver._active_space_request(),
-                ghosts=getattr(solver, "ghosts", ()))
+                ghosts=getattr(solver, "ghosts", ()), two_body=two_body)
         if (tuple(particles) != tuple(solver.num_particles)
                 or n_orbitals != len(active)
                 or tuple(displaced["frozen"]) != tuple(context["frozen"])):

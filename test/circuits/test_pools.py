@@ -255,7 +255,7 @@ class TestCEOGrouping:
             work.calc = Mandacaru(method="adapt-vqe", pool=pool,
                                   mapping="jordan_wigner",
                                   basis={"name": "GTO", "n_gaussians": 3},
-                                  h=0.15, optimizer=COBYLA_OPT,
+                                  grid_spacing=0.15, optimizer=COBYLA_OPT,
                                   max_iterations=14, convergence={"gradient": 1e-3},
                                   profile=True, trace=False)
             energy = work.get_potential_energy()
@@ -271,7 +271,7 @@ class TestSamePhysicsEverywhere:
     def run(mapping, pool, reduction=False):
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.4,
                                pool=pool, mapping=("parity_reduced"
                                                    if reduction else mapping),
                                trace=False,

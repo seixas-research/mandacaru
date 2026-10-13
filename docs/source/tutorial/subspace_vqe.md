@@ -46,7 +46,7 @@ atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
 
 atoms.calc = Mandacaru(method="subspace-vqe",
                        basis="HAO",
-                       h=0.20,
+                       grid_spacing=0.20,
                        num_states=2,
                        weights=[2.0, 1.0])
 atoms.get_potential_energy()               # ASE energy = ground state (eV)
@@ -77,7 +77,7 @@ were grown.
 ```python
 atoms.calc = Mandacaru(method="subspace-adapt-vqe",
                        basis="HAO",
-                       h=0.20,
+                       grid_spacing=0.20,
                        pool="fermionic",
                        num_states=2,
                        convergence={"gradient": 1e-4},

@@ -48,7 +48,7 @@ def h2_integrals():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.25)
     return MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
 
 
@@ -290,7 +290,7 @@ class TestADAPTVQECalculator:
         def builder(atoms):
             nuclei = [(float(Z), np.asarray(R)) for Z, R in
                       zip(atoms.get_atomic_numbers(), atoms.get_positions())]
-            grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.35)
+            grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.35)
             H = MolecularIntegrals(
                 nuclei, minimal_hao_basis(nuclei), grid
             ).molecular_hamiltonian(mo_basis=True, n_electrons=2)
@@ -318,7 +318,7 @@ class TestADAPTVQECalculator:
         # calculator builds the Hamiltonian from the geometry itself.
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.30),
+                               grid=Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.30),
                                max_iterations=6, convergence={"gradient": 1e-3})
         energy = atoms.get_total_energy()
         assert np.isfinite(energy)
@@ -336,7 +336,7 @@ class TestADAPTVQECalculator:
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                               h=0.30, max_iterations=6,
+                               grid_spacing=0.30, max_iterations=6,
                                convergence={"gradient": 1e-3})
         assert np.isfinite(atoms.get_total_energy())
         assert atoms.calc.n_qubits == 4
@@ -356,7 +356,7 @@ class TestArgumentSurface:
     def test_pool_options(self, pool):
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool=pool, basis="HAO",
-                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.3),
+                               grid=Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.3),
                                max_iterations=8, convergence={"gradient": 1e-3})
         assert np.isfinite(atoms.get_total_energy())
 
@@ -366,7 +366,7 @@ class TestArgumentSurface:
         atoms = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
                                basis="HAO", mapping=mapping,
-                               grid=Grid(center=[0, 0, 0], box_size=6.0, h=0.25),
+                               grid=Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.25),
                                max_iterations=8, convergence={"gradient": 1e-3})
         energy_ev = atoms.get_total_energy()
         h = atoms.calc.hamiltonian.to_matrix()
@@ -404,7 +404,7 @@ class TestArgumentSurface:
         # HAO on LiH -> Li{1s,2s} + H{1s} = 3 orbitals -> 6 qubits.
         atoms = Atoms("LiH", positions=[[0, 0, -0.8], [0, 0, 0.8]])
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                               grid=Grid(center=[0, 0, 0], box_size=7.0, h=0.3),
+                               grid=Grid(center=[0, 0, 0], box_size=7.0, grid_spacing=0.3),
                                max_iterations=4, convergence={"gradient": 1e-2})
         atoms.get_total_energy()
         assert atoms.calc.n_qubits == 6
@@ -524,7 +524,7 @@ class TestTheLogOpensBeforeTheBuild:
         monkeypatch.setattr(builder, "build_basis_hamiltonian", fail)
         path = tmp_path / "output.txt"
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", h=0.35, pool="qeb",
+        atoms.calc = Mandacaru(method="adapt-vqe", grid_spacing=0.35, pool="qeb",
                                txt=str(path))
         with pytest.raises(RuntimeError, match="stop before"):
             atoms.get_potential_energy()
@@ -594,7 +594,7 @@ def _lih_calculator(**options):
     # degenerate pair whole whatever the count, so the selection is a
     # physical one, never a choice the last bits make.
     return Mandacaru(method="adapt-vqe",
-                     basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.3,
+                     basis={"name": "PAW-LCAO", "size": "DZP"}, grid_spacing=0.3,
                      active_space={"orbitals": 4, "method": "mp2",
                                    "symmetry": True},
                      pool="qeb", max_iterations=20,
@@ -668,7 +668,7 @@ class TestTransfer:
         assert len(set(carried.operators)) == len(carried.operators)
 
     def test_a_different_system_is_not_carried(self):
-        calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                          pool="fermionic", max_iterations=4, transfer=True,
                          trace=False)
         h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])

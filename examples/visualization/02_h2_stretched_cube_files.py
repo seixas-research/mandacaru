@@ -9,7 +9,7 @@ os.makedirs(DATA, exist_ok=True)
 
 atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.60]], cell=[7.0, 7.0, 7.0])
 atoms.center()
-atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35, pool="fermionic")
+atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35, pool="fermionic")
 atoms.get_potential_energy()
 print(f"Natural occupations: {atoms.calc.natural_orbitals().occupations.round(4)}")
 

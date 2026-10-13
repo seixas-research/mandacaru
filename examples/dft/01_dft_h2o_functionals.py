@@ -10,7 +10,7 @@ for xc, dispersion in (("lda", None), ("pbe", "d4"), ("r2scan", "d4")):
                            xc=xc,
                            dispersion=dispersion,
                            basis={"name": "PAW-LCAO", "size": "DZP"},
-                           h=0.2)
+                           grid_spacing=0.2)
     energy = atoms.get_potential_energy()
     scf = atoms.calc.result.scf
     print(f"{xc:7s} E = {energy:.4f} eV  ({scf.n_iterations} SCF iterations)")

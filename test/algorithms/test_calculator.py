@@ -81,7 +81,7 @@ class TestReportingOptionsAreHonest:
     def test_a_run_without_a_file_keeps_its_trace(self, capsys, tmp_path):
         """The trap: no file *and* no trace is a run that reports nothing."""
         atoms = h2()
-        atoms.calc = Mandacaru(method="rhf", basis="HAO", h=0.45)
+        atoms.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.45)
         atoms.get_potential_energy()
         assert "[SCF SUMMARY]" in capsys.readouterr().out
 
@@ -190,13 +190,13 @@ class TestCholeskyTwoBody:
         for two_body in ("dense", {"method": "cholesky", "tolerance": 1e-9}):
             key = "dense" if two_body == "dense" else "cholesky"
             atoms = self._water()
-            atoms.calc = Mandacaru(method="rhf", basis=basis, h=0.35,
+            atoms.calc = Mandacaru(method="rhf", basis=basis, grid_spacing=0.35,
                                    trace=False, two_body=two_body)
             rhf = to_hartree(atoms.get_potential_energy(), "eV")
             integrals = atoms.calc.solver._gradient_context["integrals"]
             assert (integrals._eri_ao is None) == (key == "cholesky")
             atoms = self._water()
-            atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=0.35,
+            atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid_spacing=0.35,
                                    trace=False, two_body=two_body,
                                    active_space={"orbitals": 4},
                                    pool="fermionic",
@@ -208,6 +208,32 @@ class TestCholeskyTwoBody:
                                                         abs=1e-7)
         assert energies["cholesky"][1] == pytest.approx(energies["dense"][1],
                                                         abs=1e-7)
+
+    def test_integral_noise_stays_out_of_the_operator(self):
+        """Integrals that vanish by symmetry come out of the factors as noise
+        below the tolerance; the operator leaves them out, so the qubit
+        Hamiltonian stays near the dense one's size with the same energy."""
+        hamiltonians, energies = {}, {}
+        for key, two_body in (("dense", "dense"), ("cholesky", "cholesky")):
+            atoms = self._water()
+            atoms.calc = Mandacaru(method="adapt-vqe",
+                                   basis={"name": "PAW-LCAO", "size": "SZP"},
+                                   grid_spacing=0.35, trace=False,
+                                   two_body=two_body,
+                                   active_space={"orbitals": 6,
+                                                 "method": "mp2"},
+                                   max_iterations=4)
+            energies[key] = atoms.get_potential_energy()
+            hamiltonians[key] = atoms.calc.solver.hamiltonian
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        floor = integrals.two_body_spec.tolerance
+        # The reduced integrals the forces contract are kept whole.
+        assert np.any((np.abs(integrals.active_two_body) > 0)
+                      & (np.abs(integrals.active_two_body) < floor))
+        assert (len(hamiltonians["cholesky"].terms)
+                < 1.25 * len(hamiltonians["dense"].terms))
+        assert energies["cholesky"] == pytest.approx(energies["dense"],
+                                                     abs=1e-4)
 
     def test_the_option_is_validated(self):
         with pytest.raises(ValueError, match="unknown two_body method"):
@@ -224,13 +250,50 @@ class TestCholeskyTwoBody:
         with pytest.raises(NotImplementedError, match="dense"):
             Mandacaru(method=method, trace=False, two_body="cholesky")
 
-    def test_forces_are_refused(self):
+    def test_forces_without_an_active_space_are_refused(self):
+        """Without an active space the force would be the analytic gradient,
+        which differentiates the truncated factors themselves."""
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
                       cell=[6] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", h=0.35, trace=False,
+        atoms.calc = Mandacaru(method="adapt-vqe", grid_spacing=0.35, trace=False,
                                two_body="cholesky")
-        with pytest.raises(NotImplementedError, match="forces"):
+        with pytest.raises(NotImplementedError, match="need an active_space"):
             atoms.get_forces()
+
+    def test_active_space_forces_match_the_dense_tensor(self, monkeypatch):
+        """With deleted virtuals the force is the central difference of the
+        reduced Hamiltonian, each displaced geometry factored on the
+        reference's pivots: it equals the dense route's force, with no
+        tensor formed and no Hellmann-Feynman/Pulay split."""
+        import mandacaru.integrals.cholesky as cholesky
+
+        fixed = []
+        adaptive = cholesky.cholesky_two_body
+
+        def spy(*args, **kwargs):
+            fixed.append(kwargs.get("pivots") is not None)
+            return adaptive(*args, **kwargs)
+
+        monkeypatch.setattr(cholesky, "cholesky_two_body", spy)
+        forces = {}
+        for key, two_body in (("dense", "dense"),
+                              ("cholesky", {"method": "cholesky",
+                                            "tolerance": 1e-9})):
+            atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
+                          cell=[6] * 3)
+            atoms.calc = Mandacaru(
+                method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZP"},
+                grid_spacing=0.35, two_body=two_body,
+                active_space={"orbitals": 2, "method": "mp2"},
+                max_iterations=2, trace=False)
+            forces[key] = atoms.get_forces()
+        assert atoms.calc.force_result.hellmann_feynman is None
+        assert atoms.calc.solver._gradient_context["integrals"]._eri_ao is None
+        # The reference factors adaptively; both sides of H2's one internal
+        # direction reuse its pivots.
+        assert fixed == [False, True, True]
+        assert np.allclose(forces["cholesky"], forces["dense"], atol=1e-5)
+        assert np.abs(forces["dense"]).max() > 1e-2
 
     def test_a_crystal_is_refused(self):
         from mandacaru.algorithms.bloch import BLOCH_METHODS

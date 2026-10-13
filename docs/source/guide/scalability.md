@@ -180,7 +180,7 @@ factors, exactly.
 **The tolerance bounds every integral, not the energy.** Each residual
 Coulomb self-energy left out is below it, which bounds every integral's error
 (Cauchy-Schwarz). An energy sums many integrals, though. Measured against the
-dense tensor on the same grid (h = 0.3 Angstrom), the largest energy error
+dense tensor on the same grid (grid_spacing = 0.3 Angstrom), the largest energy error
 over the RHF, MP2 and active-space FCI energies of water (DZP), N2 (SZP) and
 LiH (DZP), and the RHF energy of benzene (DZP), was:
 
@@ -191,6 +191,16 @@ LiH (DZP), and the RHF energy of benzene (DZP), was:
 | **1e-7** (default) | 2.3e-7 | 8.4 / 9.9 |
 | 1e-8 | 7.0e-8 | 9.9 / 12.5 |
 
+The factors do not resolve an integral finer than the tolerance, so the ones
+that vanish by symmetry come out as noise up to about the tolerance instead
+of zero (ethanol, DZP: at most 1.3e-7 Ha at the default, against 1.6e-5 Ha
+for the smallest genuine active integral). The second-quantized operator
+leaves out every active integral below the tolerance. Kept, that noise
+doubled the qubit Hamiltonian: ethanol in TZP on 20 qubits had 14,251 Pauli
+terms against the dense tensor's 7,151, and every energy evaluation paid for
+them. Left out, it does not change the active-space FCI energy of water
+(DZP) at 1e-10 Ha.
+
 The default, 1e-7 Ha, is the loosest tolerance that kept every one of these
 energies within 1e-6 Ha. A larger molecule accumulates more: confirm the
 tolerance on your own system. For benzene at 1e-7 Ha the factors and the
@@ -198,7 +208,36 @@ compensation terms take 73 MB, against 2.2 GB for the tensor.
 
 The first version is for molecules, energies and active spaces. The cases
 that need the dense tensor are refused with the reason: a crystal (a periodic
-kernel and Bloch phases), forces (the gradient of a truncated factorization
-needs its own derivation), `method="dft"` (its Hartree term is a Poisson
+kernel and Bloch phases), `method="dft"` (its Hartree term is a Poisson
 solve of the density), GHF and a spin-orbit (`lda-dirac`) basis (a spinor
 tensor), and the plane-wave basis.
+
+### Forces from the factors
+
+Forces with the factors need an `active_space`. A factorization's pivots are
+chosen as it runs, so they can change when an atom moves: the truncated
+integrals are accurate at every geometry but not a smooth function of it.
+Their analytic gradient has to fix the pivots and differentiate the resulting
+fitting (Aquilante, Lindh and Pedersen 2008), which Mandacaru does not
+implement, so without an active space forces are refused.
+
+With an active space, the force is the central difference of the reduced
+Hamiltonian along each internal direction (the same route as `"dlpno-mp2"`,
+see {doc}`active_space`), so only energies are computed and no factor is
+differentiated. Each displaced geometry is factored on the **reference's
+pivots**: with `C` the Coulomb columns of the pivot pair densities and `A`
+their pivot rows, the integrals are `C A^-1 C^T`. That is density fitting in
+the Coulomb metric whose auxiliary functions are the pivot pair densities
+(Aquilante, Lindh and Pedersen 2008). At the reference geometry it is the
+factorization itself, to round-off. At a displaced one it moves smoothly with
+the nuclei, and it skips the diagonal, so a displaced build costs one Poisson
+solve per pivot. The force is the gradient of the fitted energy, and like
+every integral-direct active-space force it has no Hellmann-Feynman/Pulay
+breakdown.
+
+```python
+calc = Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "TZP"},
+                 active_space={"orbitals": {"occupied": 5, "virtual": 5},
+                               "method": "mp2"},
+                 two_body={"method": "cholesky", "tolerance": 1e-7})
+```

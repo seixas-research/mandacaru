@@ -25,7 +25,7 @@ def h2_hamiltonian():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.25)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, grid_spacing=0.25)
     return MolecularIntegrals(nuclei, minimal_hao_basis(nuclei),
                                grid).molecular_hamiltonian(mo_basis=True,
                                                            n_electrons=2)

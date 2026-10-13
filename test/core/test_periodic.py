@@ -57,7 +57,7 @@ def hydrogen_molecule(length, periodic=True):
     nuclei = [(1.0, np.array([length / 2 - BOND / 2, length / 2, length / 2])),
               (1.0, np.array([length / 2 + BOND / 2, length / 2, length / 2]))]
     basis = minimal_hao_basis(nuclei)
-    grid = Grid(center=[length / 2] * 3, box_size=0.0, h=SPACING,
+    grid = Grid(center=[length / 2] * 3, box_size=0.0, grid_spacing=SPACING,
                 units="angstrom", cell=cell, periodic=periodic)
     softening = 0.5 * min(grid.dx, grid.dy, grid.dz)
     if not periodic:
@@ -120,7 +120,7 @@ class TestTheSampledBasisIsPeriodic:
         cell = np.diag([length] * 3)
         nuclei = [(1.0, np.array([length / 2] * 3))]
         # periodic=False keeps the molecular convention: a repeated endpoint.
-        grid = Grid(center=[length / 2] * 3, box_size=0.0, h=SPACING,
+        grid = Grid(center=[length / 2] * 3, box_size=0.0, grid_spacing=SPACING,
                     units="angstrom", cell=cell, periodic=False)
         with pytest.raises(ValueError, match="not commensurate"):
             PeriodicIntegrals(nuclei, minimal_hao_basis(nuclei), grid, cell,
@@ -131,7 +131,7 @@ class TestTheGridIsOnePeriod:
     @pytest.mark.parametrize("length", [8.0, 10.0, 12.0])
     def test_shape_times_step_is_the_cell(self, length):
         cell = np.diag([length] * 3)
-        grid = Grid(center=[length / 2] * 3, box_size=0.0, h=SPACING,
+        grid = Grid(center=[length / 2] * 3, box_size=0.0, grid_spacing=SPACING,
                     units="angstrom", cell=cell, periodic=True)
         spanned = np.asarray(grid.step) @ np.diag(grid.shape)
         assert spanned == pytest.approx(to_bohr(cell, "angstrom"), abs=1e-10)
@@ -139,7 +139,7 @@ class TestTheGridIsOnePeriod:
     def test_the_molecular_grid_is_deliberately_not(self):
         """The molecular convention repeats the endpoint, and must keep doing so."""
         cell = np.diag([10.0] * 3)
-        grid = Grid(center=[5.0] * 3, box_size=0.0, h=SPACING,
+        grid = Grid(center=[5.0] * 3, box_size=0.0, grid_spacing=SPACING,
                     units="angstrom", cell=cell)
         spanned = np.asarray(grid.step) @ np.diag(grid.shape)
         assert not np.allclose(spanned, to_bohr(cell, "angstrom"), atol=1e-6)
@@ -161,11 +161,11 @@ class TestNonOrthogonalCells:
     """
 
     @staticmethod
-    def lattice(cell, h=0.4):
+    def lattice(cell, grid_spacing=0.4):
         cell = np.asarray(cell, dtype=float)
         center = 0.5 * cell.sum(axis=0)
         nuclei = [(1.0, center)]
-        grid = Grid(center=center, box_size=0.0, h=h, units="angstrom",
+        grid = Grid(center=center, box_size=0.0, grid_spacing=grid_spacing, units="angstrom",
                     cell=cell, periodic=True)
         return PeriodicIntegrals(
             nuclei, minimal_hao_basis(nuclei), grid, cell, n_electrons=1,
@@ -193,7 +193,7 @@ class TestNonOrthogonalCells:
         center = 0.5 * cell.sum(axis=0)
         nuclei = [(1.0, center)]
         # periodic=False keeps the molecular convention: a repeated endpoint.
-        grid = Grid(center=center, box_size=0.0, h=0.4, units="angstrom",
+        grid = Grid(center=center, box_size=0.0, grid_spacing=0.4, units="angstrom",
                     cell=cell, periodic=False)
         with pytest.raises(ValueError, match="not commensurate"):
             PeriodicIntegrals(nuclei, minimal_hao_basis(nuclei), grid, cell,
@@ -208,7 +208,7 @@ class TestNonOrthogonalCells:
         cell = np.array([[2.6, 0.0, 0.0], [0.9, 2.6, 0.0], [0.0, 0.0, 9.0]])
         center = 0.5 * cell.sum(axis=0)
         nuclei = [(1.0, center)]
-        grid = Grid(center=center, box_size=0.0, h=0.4, units="angstrom",
+        grid = Grid(center=center, box_size=0.0, grid_spacing=0.4, units="angstrom",
                     cell=cell, periodic=False)
         with pytest.raises(ValueError) as excinfo:
             PeriodicIntegrals(nuclei, minimal_hao_basis(nuclei), grid, cell,

@@ -8,7 +8,7 @@ atoms.center(vacuum=3.0)
 for basis in ("HAO", "STO-3G"):
     atoms.calc = Mandacaru(method="vqe",
                            basis=basis,
-                           h=0.10,
+                           grid_spacing=0.10,
                            optimizer={"method": "SLSQP", "maxiter": 1000,
                                       "tol": 1e-10})
     energy = atoms.get_potential_energy()

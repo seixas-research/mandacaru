@@ -20,7 +20,7 @@ therefore changes the kinetic energy, the local-potential integral and the
 electron repulsion -- the *egg-box* -- and :func:`atoms.get_forces` faithfully
 differentiates that artifact.  Measured on water / PAW-LCAO-SZ, the net force
 (which a free molecule's exact force must make vanish) is 1.85 / 0.86 / 0.41 /
-0.099 / 0.025 eV/Angstrom at ``h`` = 0.30 / 0.25 / 0.20 / 0.16 / 0.13.
+0.099 / 0.025 eV/Angstrom at ``grid_spacing`` = 0.30 / 0.25 / 0.20 / 0.16 / 0.13.
 
 The standard cure in real-space codes is to remove the unrepresentable
 components from the *radial functions*, once, **before** they are ever sampled
@@ -113,24 +113,24 @@ live.
 What it costs, and who gets it by default
 -----------------------------------------
 Filtering removes variational freedom, so the *reported* energy goes **up**:
-water / PAW-LCAO-SZ by 832 meV at ``h`` = 0.25 and 422 meV at ``h`` = 0.20.  That
+water / PAW-LCAO-SZ by 832 meV at ``grid_spacing`` = 0.25 and 422 meV at ``grid_spacing`` = 0.20.  That
 number looks alarming and mostly is not a loss.  Holding the cutoff **fixed**
 (602 eV) and refining the grid, the filtered-to-unfiltered gap shrinks with
-``h`` -- 530 / 422 / 294 / 237 meV at ``h`` = 0.25 / 0.20 / 0.16 / 0.13, close
-to linear in ``h`` -- so most of it is the *unfiltered* basis's own grid
+``grid_spacing`` -- 530 / 422 / 294 / 237 meV at ``grid_spacing`` = 0.25 / 0.20 / 0.16 / 0.13, close
+to linear in ``grid_spacing`` -- so most of it is the *unfiltered* basis's own grid
 error, not a smaller function space.  The finite-difference Laplacian
 under-estimates the kinetic energy of a function the grid does not resolve, so
 an unfiltered orbital is reported too low; filtering removes exactly the
 components that were being mis-integrated.  On H2, where both bases are
-resolved by ``h`` = 0.12, the gap is 2 meV and has the *opposite* sign (the
+resolved by ``grid_spacing`` = 0.12, the gap is 2 meV and has the *opposite* sign (the
 filtered function is slightly better).
 
 So the default is per family (:attr:`~mandacaru.pseudopotentials.families.FamilySpec.default_options`):
 **on for PAW-LCAO and UPAW-LCAO**, whose smooth partial waves are built band-limited
 (:func:`~mandacaru.pseudopotentials.partial_waves.optimize_pseudo_waves` minimizes the
 kinetic energy beyond ``q_cut``) so the filter has little to take.
-``basis={"name": "PAW-LCAO", "filter": False}`` restores the unfiltered basis
-exactly.  The measured prices and benefits are in
+``basis={"name": "PAW-LCAO", "filter_cutoff": False}`` restores the unfiltered
+basis exactly.  The measured prices and benefits are in
 ``docs/source/guide/pseudopotentials.md``.
 """
 
@@ -144,7 +144,7 @@ from scipy.special import spherical_jn
 
 from ..units import EV_TO_HARTREE
 
-#: ``filter=True`` / ``"auto"`` puts the cutoff at this fraction of the grid's
+#: ``filter_cutoff="auto"`` / ``True`` puts the cutoff at this fraction of the grid's
 #: Nyquist wave-vector :math:`\pi/h` -- i.e. **exactly at** it.  The principle
 #: is the whole point of the filter: remove what the grid cannot represent and
 #: keep everything it can.  It is also what the measurement says.  Water /
@@ -153,8 +153,8 @@ from ..units import EV_TO_HARTREE
 #:
 #: ::
 #:
-#:     k_c/k_N   h = 0.25 Angstrom       h = 0.20 Angstrom
-#:               ripple(meV) cost(meV)   ripple(meV) cost(meV)
+#:               grid_spacing = 0.25 A   grid_spacing = 0.20 A
+#:     k_c/k_N   ripple(meV) cost(meV)   ripple(meV) cost(meV)
 #:     off         268.7        0          132.8        0
 #:     1.3         142.8      489           17.2      273
 #:     1.2          94.4      584            7.2      326
@@ -225,11 +225,12 @@ FILTER_WEIGHT_WARN = 0.05
 
 
 # --------------------------------------------------------------------------- #
-# The option: what ``basis={"name": "PAW-LCAO", "filter": ...}`` may say.
+# The option: what ``basis={"name": "PAW-LCAO", "filter_cutoff": ...}`` may say.
 # --------------------------------------------------------------------------- #
 
-def validate_filter(spec):
-    """Normalize a ``filter`` basis option; raise ``ValueError`` on anything else.
+def validate_filter_cutoff(spec):
+    """Normalize a ``filter_cutoff`` basis option; raise ``ValueError`` on
+    anything else.
 
     Accepted spellings, and only these:
 
@@ -253,35 +254,36 @@ def validate_filter(spec):
         if spec.strip().lower() == "auto":
             return True
         raise ValueError(
-            f"unknown basis filter {spec!r}; use True or 'auto' to tie the "
+            f"unknown filter_cutoff {spec!r}; use 'auto' or True to tie the "
             "cutoff to the grid spacing, a positive number for an explicit "
             "kinetic-energy cutoff in eV, or False to switch filtering off")
     if isinstance(spec, (int, float, np.integer, np.floating)):
         value = float(spec)
         if not np.isfinite(value) or value <= 0.0:
             raise ValueError(
-                f"a basis filter cutoff must be a positive, finite energy in "
-                f"eV, got {spec!r}")
+                f"filter_cutoff must be a positive, finite energy in eV, got "
+                f"{spec!r}")
         return value
     raise ValueError(
-        f"unknown basis filter {spec!r} (type {type(spec).__name__}); use "
-        "True / 'auto', a positive kinetic-energy cutoff in eV, or False")
+        f"unknown filter_cutoff {spec!r} (type {type(spec).__name__}); use "
+        "'auto' / True, a positive kinetic-energy cutoff in eV, or False")
 
 
-def filter_cutoff(spec, spacing_bohr=None) -> float | None:
+def resolve_filter_cutoff(spec, spacing_bohr=None) -> float | None:
     """The cutoff wave-vector :math:`k_c` in Bohr\\ :sup:`-1`, or ``None`` when off.
 
     ``spacing_bohr`` is the **coarsest** grid spacing (the worst axis of an
     anisotropic grid is what limits the representable band), needed only for
     the ``True`` / ``"auto"`` form.
     """
-    spec = validate_filter(spec)
+    spec = validate_filter_cutoff(spec)
     if spec is False:
         return None
     if spec is True:
         if spacing_bohr is None:
             raise ValueError(
-                "filter='auto' needs the grid spacing; pass spacing_bohr (or "
+                "filter_cutoff='auto' needs the grid spacing; pass "
+                "spacing_bohr (or "
                 "give an explicit cutoff in eV)")
         spacing = float(spacing_bohr)
         if spacing <= 0.0:
@@ -292,7 +294,7 @@ def filter_cutoff(spec, spacing_bohr=None) -> float | None:
 
 def filter_label(spec) -> str:
     """One short phrase describing the option, for the dry run and the log."""
-    spec = validate_filter(spec)
+    spec = validate_filter_cutoff(spec)
     if spec is False:
         return "unfiltered"
     if spec is True:

@@ -37,7 +37,7 @@ def h2_hamiltonian():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.25)
     return MolecularIntegrals(nuclei, minimal_hao_basis(nuclei),
                                grid).molecular_hamiltonian()
 
@@ -233,7 +233,7 @@ class TestVQEAsASECalculator:
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
         atoms.calc = Mandacaru(method="vqe", basis="HAO", optimizer=COBYLA_OPT,
-                               h=0.30, trace=False)
+                               grid_spacing=0.30, trace=False)
         energy_ev = atoms.get_total_energy()
         result = atoms.calc.result
         # ASE returns eV, and so does the result (its unit is recorded).
@@ -252,7 +252,7 @@ class TestVQEAsASECalculator:
         def builder(atoms):
             nuclei = [(float(Z), np.asarray(R)) for Z, R in
                       zip(atoms.get_atomic_numbers(), atoms.get_positions())]
-            grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.35)
+            grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.35)
             H = MolecularIntegrals(
                 nuclei, minimal_hao_basis(nuclei), grid
             ).molecular_hamiltonian(mo_basis=True, n_electrons=2)
@@ -274,7 +274,7 @@ class TestVQEAsASECalculator:
         atoms = Atoms("LiH", positions=[(0, 0, 0), (0, 0, 1.6)],
                       cell=[10.0] * 3)
         atoms.center()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.30, trace=False)
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.30, trace=False)
         energy = atoms.get_total_energy()
 
         assert isinstance(atoms.calc.solver.ansatz, UCCSD)
@@ -323,7 +323,7 @@ class TestVQEProfiling:
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
         atoms.calc = Mandacaru(method="vqe", basis="HAO", optimizer=COBYLA_OPT,
-                               h=0.4, trace=True)
+                               grid_spacing=0.4, trace=True)
         atoms.get_total_energy()
         out = capsys.readouterr().out
         assert "integration:" in out              # integration stage is timed
@@ -340,7 +340,7 @@ class TestVQERunLog:
         path = str(tmp_path_factory.mktemp("vqe") / "out.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0] * 3)
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.40,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.40,
                                optimizer=COBYLA_OPT, txt=path)
         atoms.get_total_energy()
         reset_log(path)
@@ -382,7 +382,7 @@ class TestVQERunLog:
         """With ``txt=`` standard output stays quiet, as for ADAPT-VQE."""
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0] * 3)
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.45,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.45,
                                optimizer=COBYLA_OPT,
                                txt=str(tmp_path / "quiet.txt"))
         capsys.readouterr()

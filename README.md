@@ -65,7 +65,7 @@ atoms = Atoms("LiH",
 
 atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "ghf", "dft", "vqe" (ansatz="uccsd"|"hva"), subspace methods
                        basis="HAO",                          # Basis set
-                       h=0.10,                               # real-space grid spacing (Å)
+                       grid_spacing=0.10,                               # real-space grid spacing (Å)
                        pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
                        mapping="jordan_wigner",              # "jordan_wigner" | "parity" | "parity_reduced" | "bravyi_kitaev"
                        optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "CG" | "COBYLA" | "Nelder-Mead" | "SPSA"
@@ -101,7 +101,7 @@ for d in distances:
                            basis={"name": "PAW-LCAO",
                                   "size": "DZP",
                                   "energy_shift": 0.1},
-                           h=0.10,
+                           grid_spacing=0.10,
                            pool="fermionic",
                            mapping="jordan_wigner",
                            optimizer={"method": "SLSQP",
@@ -129,7 +129,7 @@ atoms.calc = Mandacaru(method="dft",
                        dispersion="d4",                       # None | "d4" (PBE and r2SCAN; pip install 'mandacaru[dispersion]')
                        basis={"name": "PAW-LCAO",
                               "size": "DZP"},
-                       h=0.2)
+                       grid_spacing=0.2)
 energy = atoms.get_potential_energy()                         # Energy (eV)
 gap = atoms.calc.result.scf.homo_lumo_gap                     # Kohn-Sham HOMO-LUMO gap (Hartree)
 ```

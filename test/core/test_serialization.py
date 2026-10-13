@@ -76,7 +76,7 @@ def h2_cache(tmp_path, h2_atoms):
     """A built H2 run that dumps its qubit Hamiltonian; yields (path, energy)."""
     path = str(tmp_path / "h2.parquet")
     h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                              basis="HAO", h=0.4, trace=False,
+                              basis="HAO", grid_spacing=0.4, trace=False,
                               max_iterations=4, save_hamiltonian=path)
     h2_atoms.get_total_energy()
     return path, h2_atoms.calc.result.optimal_energy
@@ -355,7 +355,7 @@ class TestDriverFileFormats:
                                                        h2_atoms, fmt):
         path = str(tmp_path / f"h2{FILE_EXTENSIONS[fmt]}")
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                                  basis="HAO", h=0.4, trace=False,
+                                  basis="HAO", grid_spacing=0.4, trace=False,
                                   max_iterations=4, save_hamiltonian=path,
                                   hamiltonian_format=fmt)
         h2_atoms.get_total_energy()
@@ -375,7 +375,7 @@ class TestDriverFileFormats:
                                                  h2_atoms):
         monkeypatch.chdir(tmp_path)
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                                  basis="HAO", h=0.4, trace=False,
+                                  basis="HAO", grid_spacing=0.4, trace=False,
                                   max_iterations=1, save_hamiltonian=True,
                                   hamiltonian_format="json")
         h2_atoms.get_total_energy()
@@ -391,7 +391,7 @@ class TestDriverFileFormats:
         """A file named '.json' must not be handed Parquet bytes."""
         path = str(tmp_path / "named.json")
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                                  basis="HAO", h=0.4, trace=False,
+                                  basis="HAO", grid_spacing=0.4, trace=False,
                                   max_iterations=1, save_hamiltonian=path)   # default: parquet
         h2_atoms.get_total_energy()
         assert open(path, "rb").read(1) == b"{"
@@ -422,7 +422,7 @@ class TestTaperedRecords:
     def _tapered(self, tmp_path, fmt, atoms):
         path = str(tmp_path / f"tapered{FILE_EXTENSIONS[fmt]}")
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", h=0.4,
+                               basis="HAO", grid_spacing=0.4,
                                mapping="parity_reduced", trace=False,
                                profile=False, max_iterations=4,
                                save_hamiltonian=path)
@@ -446,7 +446,7 @@ class TestTaperedRecords:
     def test_an_untapered_file_will_not_pretend(self, tmp_path, h2_atoms):
         path = str(tmp_path / "plain.json")
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                                  basis="HAO", h=0.4, trace=False,
+                                  basis="HAO", grid_spacing=0.4, trace=False,
                                   profile=False, max_iterations=1,
                                   save_hamiltonian=path)
         h2_atoms.get_total_energy()
@@ -548,7 +548,7 @@ class TestDriverSavesHamiltonian:
     def test_saved_operator_matches_the_live_one(self, tmp_path, h2_atoms):
         path = str(tmp_path / "h2.parquet")
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                                  basis="HAO", h=0.4, trace=False,
+                                  basis="HAO", grid_spacing=0.4, trace=False,
                                   max_iterations=2, save_hamiltonian=path)
         h2_atoms.get_total_energy()
         saved = load_hamiltonian(path).hamiltonian
@@ -561,7 +561,7 @@ class TestDriverSavesHamiltonian:
                                              h2_atoms):
         monkeypatch.chdir(tmp_path)
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                                  basis="HAO", h=0.4, trace=False,
+                                  basis="HAO", grid_spacing=0.4, trace=False,
                                   max_iterations=1, save_hamiltonian=True)
         h2_atoms.get_total_energy()
         assert (tmp_path / DEFAULT_FILENAME).is_file()

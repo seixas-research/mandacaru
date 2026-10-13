@@ -53,7 +53,7 @@ def backend_state(monkeypatch):
 
 def _engine():
     return IntegralEngine([HydrogenicAtomicOrbital(1, 0, 0)],
-                          Grid(box_size=4.0, h=1.0, center=(0, 0, 0)))
+                          Grid(box_size=4.0, grid_spacing=1.0, center=(0, 0, 0)))
 
 
 class TestStatus:

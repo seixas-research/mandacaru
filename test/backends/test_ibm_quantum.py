@@ -72,7 +72,7 @@ _H2_RUN = """
         atoms.center(vacuum=3.0)
         return atoms
     atoms = _h2()
-    calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO", h=0.4,
+    calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO", grid_spacing=0.4,
                      trace=False, profile=False, max_iterations=3)
     atoms.calc = calc
     atoms.get_total_energy()
@@ -84,7 +84,7 @@ _H2_RUN = """
 def h2_run():
     """An exact local ADAPT-VQE run on H2 (the driver keeps its ansatz)."""
     atoms = _h2()
-    calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO", h=0.4,
+    calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO", grid_spacing=0.4,
                      trace=False, profile=False, max_iterations=3)
     atoms.calc = calc
     atoms.get_total_energy()
@@ -306,7 +306,7 @@ class TestDriversEndToEnd:
         # test is about the shot-based path running end to end and landing near
         # the exact answer, not about the size of a particular noise draw.
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                               h=0.4, trace=False, profile=False,
+                               grid_spacing=0.4, trace=False, profile=False,
                                max_iterations=3, device="AER_simulator",
                                shots=4096, optimizer=COBYLA_OPT,
                                backend_options={"seed": 1234})
@@ -319,7 +319,7 @@ class TestDriversEndToEnd:
     def test_vqe_on_a_fake_ibm_backend(self):
         out = _isolated(_H2_RUN + """
     atoms = _h2()
-    atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.4, trace=False,
+    atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, trace=False,
                            device="fake_manila", shots=4096,
                            optimizer=Optimizer(method="COBYLA",
                                                maxiter=2000, tol=1e-12))

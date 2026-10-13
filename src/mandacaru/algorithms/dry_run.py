@@ -317,7 +317,7 @@ def _pseudo_basis_count(atoms, family, options):
     """Per-atom valence function counts, a label and the loaded potentials
     for a pseudopotential family (nothing sampled on a grid).
 
-    The Fourier filter (``basis={..., "filter": ...}``) cannot change a
+    The Fourier filter (``basis={..., "filter_cutoff": ...}``) cannot change a
     *count* -- it reshapes each radial function and adds none -- so the basis
     is built unfiltered here, which also keeps the estimate free of the
     spherical Bessel transforms.  The option is still **validated** and named
@@ -325,7 +325,8 @@ def _pseudo_basis_count(atoms, family, options):
     report the qubit count of a calculation that will not start.
 
     The label names the filter **always**, filtered or not, and reads the
-    family's own default (``filter`` is on for PAW-LCAO / UPAW-LCAO).  Printing
+    family's own default (``filter_cutoff="auto"`` for PAW-LCAO / UPAW-LCAO).
+    Printing
     it only when it differs from the
     default would make the reader work out each family's default before they
     could tell what basis the estimate describes.
@@ -351,17 +352,17 @@ def _pseudo_basis_count(atoms, family, options):
     size = options.get("size", "SZ")
     size_label = ("per-element sizes " + json.dumps(size, sort_keys=True)
                   if isinstance(size, dict) else str(size))
-    parts = [size_label, filter_label(options.get("filter"))]
+    parts = [size_label, filter_label(options.get("filter_cutoff"))]
     if "energy_shift" in family.options:
         # Named always, like the filter: "unconfined" is a statement about the
         # basis too, and the one a comparison with another LCAO code has to
         # get right.
         from ..pseudopotentials.confinement import energy_shift_label
         parts.append(energy_shift_label(options.get("energy_shift")))
-        from ..pseudopotentials.confinement import resolve_polarization
-        parts.append(resolve_polarization(options.get("polarization"),
-                                          options.get("energy_shift"))
-                     + " polarization")
+        from ..pseudopotentials.confinement import resolve_polarization_method
+        parts.append(resolve_polarization_method(
+            options.get("polarization_method"), options.get("energy_shift"))
+            + " polarization")
     parts.append("pseudopotentials")
     per_atom = [(s, int(c)) for s, c in zip(symbols, counts)]
     return per_atom, f"{family.label} ({', '.join(parts)})", potentials

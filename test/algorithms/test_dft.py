@@ -36,7 +36,7 @@ def _run(atoms, **options):
 def converged(request):
     """An H2 Kohn-Sham run in a basis with more than one function per atom."""
     atoms = h2()
-    energy = _run(atoms, xc=request.param, h=0.3, basis=NAO_DZ)
+    energy = _run(atoms, xc=request.param, grid_spacing=0.3, basis=NAO_DZ)
     return request.param, atoms, energy
 
 
@@ -101,7 +101,7 @@ class TestTheRun:
             np.vdot(state, operator.to_sparse_matrix() @ state).real, "eV")
         assert expectation == pytest.approx(result.reference_energy, abs=1e-6)
         rhf = h2()
-        rhf.calc = Mandacaru(method="rhf", h=0.3, trace=False, basis=NAO_DZ)
+        rhf.calc = Mandacaru(method="rhf", grid_spacing=0.3, trace=False, basis=NAO_DZ)
         assert expectation >= rhf.get_potential_energy() - 1e-6
         post = Mandacaru(method="adapt-vqe", trace=False,
                          **result.as_quantum_problem())
@@ -123,7 +123,7 @@ class TestTheRun:
 
     def test_a_paw_hybrid_cites_the_one_center_exchange(self):
         atoms = h2()
-        _run(atoms, xc="hse06", h=0.35, basis={"name": "PAW-LCAO",
+        _run(atoms, xc="hse06", grid_spacing=0.35, basis={"name": "PAW-LCAO",
                                                 "size": "SZ"})
         assert "Paier2005" in atoms.calc.citation_keys()
 
@@ -140,7 +140,7 @@ class TestConvergence:
             atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 4.0]],
                           cell=[8, 8, 12])
             atoms.center()
-            _run(atoms, xc=xc, h=0.25, basis={"name": "PAW-LCAO"})
+            _run(atoms, xc=xc, grid_spacing=0.25, basis={"name": "PAW-LCAO"})
             assert atoms.calc.result.scf.n_iterations < 30
 
     def test_the_log_holds_every_iteration(self, tmp_path):
@@ -149,7 +149,7 @@ class TestConvergence:
         from mandacaru.utils.logging import parse_output, reset_log
         path = str(tmp_path / "dft.txt")
         atoms = h2()
-        atoms.calc = Mandacaru(method="dft", xc="lda", h=0.35, txt=path,
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.35, txt=path,
                                trace=False)
         energy = atoms.get_potential_energy()
         reset_log(path)
@@ -179,7 +179,7 @@ class TestConvergence:
         atoms.center(vacuum=3.0)
         atoms.positions[1] += [0.03, -0.02, 0.04]
         atoms.positions[0, 2] -= 0.004
-        _run(atoms, xc="r2scan", h=0.25, basis={"name": "PAW-LCAO",
+        _run(atoms, xc="r2scan", grid_spacing=0.25, basis={"name": "PAW-LCAO",
                                                 "size": "DZP"})
         assert atoms.calc.result.success
 
@@ -201,7 +201,7 @@ def test_a_degenerate_shell_at_the_fermi_level_is_filled_equally():
 
 class TestFunctionals:
     def test_the_gradient_corrections_lower_the_energy_of_h2(self):
-        energies = {xc: _run(h2(), xc=xc, h=0.35)
+        energies = {xc: _run(h2(), xc=xc, grid_spacing=0.35)
                     for xc in ("lda", "pbe", "r2scan")}
         assert energies["pbe"] < energies["lda"]
         assert energies["r2scan"] < energies["lda"]
@@ -214,10 +214,10 @@ class TestPAWLCAO:
         With the unconfined single-zeta basis the Kohn-Sham solution *is* the
         reference atom, so the energy -- core correction and frozen one-center
         constant included -- is the dataset's ``reference_valence`` up to the
-        grid error (about 1 mHa at h = 0.2 Angstrom).
+        grid error (about 1 mHa at grid_spacing = 0.2 Angstrom).
         """
         atoms = Atoms("Be", positions=[[4.0] * 3], cell=[8.0] * 3)
-        energy = to_hartree(_run(atoms, xc="lda", h=0.2, basis=PAW_SZ_FREE),
+        energy = to_hartree(_run(atoms, xc="lda", grid_spacing=0.2, basis=PAW_SZ_FREE),
                             "eV")
         integrals = atoms.calc.solver._gradient_context["integrals"]
         dataset = integrals.pseudopotentials[0]
@@ -233,7 +233,7 @@ class TestPAWLCAO:
             warnings.simplefilter("error", RuntimeWarning)
             for xc in ("lda", "pbe", "r2scan"):
                 atoms = h2()
-                energy = _run(atoms, xc=xc, h=0.3, basis={"name": "PAW-LCAO"})
+                energy = _run(atoms, xc=xc, grid_spacing=0.3, basis={"name": "PAW-LCAO"})
                 assert np.isfinite(energy)
                 datasets = atoms.calc.solver._gradient_context[
                     "integrals"].pseudopotentials
@@ -244,11 +244,11 @@ class TestPAWLCAO:
         # The warning names the folder of the PBE datasets.
         with pytest.warns(RuntimeWarning, match="different functionals; "
                           r"Mandacaru\(directory='pbe-sr'\)"):
-            _run(h2(), xc="r2scan", h=0.3, basis={"name": "PAW-LCAO"},
+            _run(h2(), xc="r2scan", grid_spacing=0.3, basis={"name": "PAW-LCAO"},
                  directory="lda-sr")
         with pytest.warns(RuntimeWarning, match="different functionals; "
                           r"Mandacaru\(directory='lda-sr'\)"):
-            _run(h2(), xc="lda", h=0.3, basis={"name": "PAW-LCAO"},
+            _run(h2(), xc="lda", grid_spacing=0.3, basis={"name": "PAW-LCAO"},
                  directory="pbe-sr")
 
 
@@ -268,7 +268,7 @@ def lih_forces(request):
     if dispersion:
         pytest.importorskip("dftd4")
     atoms = lih()
-    atoms.calc = Mandacaru(method="dft", xc=xc, dispersion=dispersion, h=0.25,
+    atoms.calc = Mandacaru(method="dft", xc=xc, dispersion=dispersion, grid_spacing=0.25,
                            basis={"name": "PAW-LCAO", "size": "DZP"},
                            trace=False)
     forces = atoms.get_forces()
@@ -285,7 +285,7 @@ def test_the_rvv10_force_is_the_derivative_of_its_energy():
     the time budget)."""
     def run(xc):
         atoms = lih()
-        atoms.calc = Mandacaru(method="dft", xc=xc, h=0.25, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.25, trace=False,
                                basis={"name": "PAW-LCAO", "size": "DZP"})
         atoms.get_forces()
         # Kept now: moving the atoms below resets the calculator's result.
@@ -358,7 +358,7 @@ class TestForces:
         finite-difference check at the precision of the LDA and PBE ones.
         """
         atoms = h2()
-        atoms.calc = Mandacaru(method="dft", xc="r2scan", h=0.3, basis=NAO_DZ,
+        atoms.calc = Mandacaru(method="dft", xc="r2scan", grid_spacing=0.3, basis=NAO_DZ,
                                trace=False)
         forces = atoms.get_forces()
         assert np.all(np.isfinite(forces))
@@ -370,9 +370,9 @@ class TestDispersion:
         pytest.importorskip("dftd4")
         from mandacaru.algorithms.dft import d4_dispersion_energy
         bare = h2()
-        e_bare = _run(bare, xc="pbe", h=0.35)
+        e_bare = _run(bare, xc="pbe", grid_spacing=0.35)
         dressed = h2()
-        e_d4 = _run(dressed, xc="pbe", h=0.35, dispersion="d4")
+        e_d4 = _run(dressed, xc="pbe", grid_spacing=0.35, dispersion="d4")
         d4 = d4_dispersion_energy(dressed, "pbe")
         assert d4 < 0.0
         assert dressed.calc.result.scf.dispersion_energy == pytest.approx(d4)
@@ -446,7 +446,7 @@ class TestDispersion:
 
         atoms = bulk("Si", "diamond", a=5.43)
         atoms.positions[1] += [0.03, -0.02, 0.01]
-        atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.35, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.35, trace=False,
                                basis={"name": "PAW-LCAO", "size": "SZ"},
                                kpts={"size": (2, 2, 2), "gamma": True},
                                **options)
@@ -495,7 +495,7 @@ class TestDispersion:
         stresses = []
         for options in ({}, {"dispersion": "d4"}):
             atoms = bulk("Si", "diamond", a=5.43)
-            atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.35, trace=False,
+            atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.35, trace=False,
                                    basis={"name": "PAW-LCAO", "size": "SZ"},
                                    kpts={"size": (2, 2, 2), "gamma": True},
                                    **options)
@@ -533,7 +533,7 @@ class TestDispersion:
 class TestOptions:
     def test_the_device_is_ignored(self):
         atoms = h2()
-        energy = _run(atoms, h=0.35, device="AER_simulator")
+        energy = _run(atoms, grid_spacing=0.35, device="AER_simulator")
         assert np.isfinite(energy)
 
     def test_an_unknown_functional_is_refused_by_the_constructor(self):
@@ -544,7 +544,7 @@ class TestOptions:
         """One electron: an empty spin-down channel everywhere -- the
         full-polarization limit of the spin functionals, end to end."""
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[6] * 3)
-        atoms.calc = Mandacaru(method="dft", h=0.35, trace=False)
+        atoms.calc = Mandacaru(method="dft", grid_spacing=0.35, trace=False)
         energy = atoms.get_potential_energy()
         scf = atoms.calc.result.scf
         assert np.isfinite(energy) and atoms.calc.result.success
@@ -562,7 +562,7 @@ def water_szp():
     from ase.build import molecule
     atoms = molecule("H2O")
     atoms.center(vacuum=2.5)
-    _run(atoms, xc="lda", h=0.3, basis={"name": "PAW-LCAO", "size": "SZP"})
+    _run(atoms, xc="lda", grid_spacing=0.3, basis={"name": "PAW-LCAO", "size": "SZP"})
     return atoms
 
 
@@ -612,7 +612,7 @@ def _oxygen(moments):
 @pytest.fixture(scope="module")
 def oxygen_triplet():
     atoms = _oxygen([1.0, 1.0])
-    _run(atoms, xc="lda", h=0.3, basis={"name": "PAW-LCAO", "size": "SZ"},
+    _run(atoms, xc="lda", grid_spacing=0.3, basis={"name": "PAW-LCAO", "size": "SZ"},
          population="hirshfeld")
     return atoms
 
@@ -630,7 +630,7 @@ class TestUnrestricted:
         0.778 eV between its unpolarized and triplet O2 (Gamma, 1 mHa
         smearing)."""
         singlet = _oxygen([0.0, 0.0])
-        e_singlet = _run(singlet, xc="lda", h=0.3,
+        e_singlet = _run(singlet, xc="lda", grid_spacing=0.3,
                          basis={"name": "PAW-LCAO", "size": "SZ"})
         e_triplet = oxygen_triplet.get_potential_energy()
         assert -0.85 < e_triplet - e_singlet < -0.7
@@ -682,7 +682,7 @@ class TestUnrestricted:
         atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
                       cell=[6, 6, 7])
         atoms.center()
-        atoms.calc = Mandacaru(method="dft", xc=xc, h=0.3, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.3, trace=False,
                                basis={"name": "PAW-LCAO", "size": "SZ"})
         atoms.get_forces()
         result = atoms.calc.force_result
@@ -709,7 +709,7 @@ class TestUnrestricted:
 def h2_hybrid():
     """H2 with HSE06 in a basis with more than one function per atom."""
     atoms = h2()
-    _run(atoms, xc="hse06", h=0.3, basis=NAO_DZ)
+    _run(atoms, xc="hse06", grid_spacing=0.3, basis=NAO_DZ)
     return atoms
 
 
@@ -717,7 +717,7 @@ def h2_hybrid():
 def h2_paw():
     """H2 on PAW-LCAO (LDA): the integrals a hybrid's terms are built from."""
     atoms = h2()
-    _run(atoms, xc="lda", h=0.35, basis={"name": "PAW-LCAO"})
+    _run(atoms, xc="lda", grid_spacing=0.35, basis={"name": "PAW-LCAO"})
     return atoms
 
 
@@ -737,7 +737,7 @@ class TestHybrid:
         """The textbook effect: HSE06 - PBE moves the H2 HOMO down by ~1.2
         eV (an independent all-electron aug-cc-pVQZ calculation: -1.219 eV)."""
         pbe = h2()
-        _run(pbe, xc="pbe", h=0.3, basis=NAO_DZ)
+        _run(pbe, xc="pbe", grid_spacing=0.3, basis=NAO_DZ)
         shift = (h2_hybrid.calc.get_eigenvalues()[0]
                  - pbe.calc.get_eigenvalues()[0])
         assert -1.5 < shift < -0.9
@@ -779,7 +779,7 @@ class TestHybrid:
         minus the Hartree energy -- the contraction and its spin factor."""
         from mandacaru.algorithms import dft
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[6] * 3)
-        _run(atoms, h=0.35)
+        _run(atoms, grid_spacing=0.35)
         integrals = atoms.calc.solver._gradient_context["integrals"]
         scf = atoms.calc.result.scf
         solver = dft.kohn_sham_solver(integrals, 1, "hse06", spins=(1, 0),
@@ -795,7 +795,7 @@ class TestHybrid:
         channel's operator."""
         from mandacaru.algorithms import dft
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[6] * 3)
-        _run(atoms, h=0.35, xc="hse06", basis=NAO_DZ)
+        _run(atoms, grid_spacing=0.35, xc="hse06", basis=NAO_DZ)
         integrals = atoms.calc.solver._gradient_context["integrals"]
         scf = atoms.calc.result.scf
         solver = dft.kohn_sham_solver(integrals, 1, "hse06", spins=(1, 0))
@@ -870,7 +870,7 @@ class TestHybrid:
         components are nonzero)."""
         atoms = Atoms("H2", positions=[[0, 0, 0], [0.05, 0, 0.74]],
                       cell=[6] * 3)
-        _run(atoms, xc="hse06", h=0.3, basis=NAO_DZ)
+        _run(atoms, xc="hse06", grid_spacing=0.3, basis=NAO_DZ)
         atoms.get_forces()
         result = atoms.calc.force_result
         assert result.details["energy_hartree"] == pytest.approx(
@@ -907,14 +907,14 @@ PAW_SZP = {"name": "PAW-LCAO", "size": "SZP"}
 #: functionals with and without D4, the screened hybrid, an unrestricted
 #: run, the unitary family and an all-electron basis.
 SPECTRAL_FORCE_CASES = {
-    "lda/paw-lcao": (lih, dict(xc="lda", h=0.3, basis=PAW_SZP)),
-    "pbe+d4/paw-lcao": (lih, dict(xc="pbe", dispersion="d4", h=0.3,
+    "lda/paw-lcao": (lih, dict(xc="lda", grid_spacing=0.3, basis=PAW_SZP)),
+    "pbe+d4/paw-lcao": (lih, dict(xc="pbe", dispersion="d4", grid_spacing=0.3,
                                   basis=PAW_SZP)),
-    "lda/upaw-lcao": (_tilted_h2, dict(xc="lda", h=0.25,
+    "lda/upaw-lcao": (_tilted_h2, dict(xc="lda", grid_spacing=0.25,
                                        basis={"name": "UPAW-LCAO",
                                               "size": "SZ"})),
-    "hse06/nao": (_tilted_h2, dict(xc="hse06", h=0.3, basis=NAO_DZ)),
-    "uks-lda/paw-lcao": (_oh_radical, dict(xc="lda", h=0.3,
+    "hse06/nao": (_tilted_h2, dict(xc="hse06", grid_spacing=0.3, basis=NAO_DZ)),
+    "uks-lda/paw-lcao": (_oh_radical, dict(xc="lda", grid_spacing=0.3,
                                            basis={"name": "PAW-LCAO",
                                                   "size": "SZ"})),
 }
@@ -964,7 +964,7 @@ class TestSpectralKineticForces:
         calculator checks it to 1e-6 Ha) and the forces are finite.  Its
         energy surface is too rough (K1) for the finite-difference check."""
         atoms = h2()
-        atoms.calc = Mandacaru(method="dft", xc="r2scan", h=0.3,
+        atoms.calc = Mandacaru(method="dft", xc="r2scan", grid_spacing=0.3,
                                basis=NAO_DZ, kinetic="spectral", trace=False)
         forces = atoms.get_forces()
         assert np.all(np.isfinite(forces))
@@ -1027,7 +1027,7 @@ class TestTheHartreeTerm:
         energies, references = [], []
         for route in ("poisson", "tensor"):
             atoms = h2()
-            energies.append(_run(atoms, h=0.3, basis=NAO_DZ, hartree=route))
+            energies.append(_run(atoms, grid_spacing=0.3, basis=NAO_DZ, hartree=route))
             references.append(atoms.calc.result.reference_energy)
             integrals = atoms.calc.solver._gradient_context["integrals"]
             built = (integrals._eri is not None, integrals._eri_ao is not None)

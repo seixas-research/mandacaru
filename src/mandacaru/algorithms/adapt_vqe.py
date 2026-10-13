@@ -440,10 +440,10 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
     grid : Grid, optional
         Explicit real-space integration grid for the calculator-mode ``basis``
         builder.  When omitted the grid is generated automatically from the ASE
-        ``atoms.cell`` at resolution ``h``; a unit cell is then required.
-    h : float
+        ``atoms.cell`` at resolution ``grid_spacing``; a unit cell is then required.
+    grid_spacing : float
         Target grid spacing in **Angstrom** (default ``0.20``) for the automatic
-        cell-based grid used when ``grid`` is not given.  Finer ``h`` (e.g.
+        cell-based grid used when ``grid`` is not given.  Finer ``grid_spacing`` (e.g.
         ``0.10``) gives a denser grid and more accurate one-/two-body integrals.
     kpts : (int, int, int) or dict, optional
         Monkhorst-Pack k-point mesh, resolved with ASE
@@ -1834,7 +1834,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                  else "0 (exact expectation values)")
         rows = [
             ("basis", self._basis_description()),
-            ("grid spacing", f"{self.h:g} Angstrom"),
+            ("grid spacing", f"{self.grid_spacing:g} Angstrom"),
             ("kinetic operator", self.kinetic or "finite difference"),
             ("k-points", self._kpts_label()),
             ("spin-polarized", self._spin_polarized_label()),

@@ -71,7 +71,7 @@ def _space(name, orbitals, *, rotate=None, method="energy", **options):
         atoms.rotate(*rotate, center="COM")
     atoms.calc = Mandacaru(
         method=options.pop("solver", "adapt-vqe"),
-        basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.25,
+        basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.25,
         active_space={"orbitals": orbitals, "method": method,
                       "symmetry": True},
         max_iterations=1, trace=False, **options)
@@ -138,7 +138,7 @@ def _space_plain(name, orbitals):
     atoms = molecule(name)
     atoms.center(vacuum=3.0)
     atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.25,
+                           basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.25,
                            active_space={"orbitals": orbitals},
                            max_iterations=1, trace=False)
     atoms.get_potential_energy()
@@ -155,7 +155,7 @@ def water_orbitals():
     atoms = molecule("H2O")
     atoms.center(vacuum=3.0)
     atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.25,
+                           basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.25,
                            active_space={"orbitals": 6, "symmetry": True},
                            max_iterations=1, trace=False)
     atoms.get_potential_energy()
@@ -215,7 +215,7 @@ class TestTargetStates:
         atoms.center(vacuum=3.0)
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis={"name": "PAW-LCAO", "size": "DZP"},
-                               h=0.3, active_space={"orbitals": 2,
+                               grid_spacing=0.3, active_space={"orbitals": 2,
                                                     "symmetry": True},
                                max_iterations=2, trace=False)
         atoms.get_potential_energy()

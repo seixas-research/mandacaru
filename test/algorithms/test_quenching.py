@@ -32,7 +32,7 @@ def lih_cache(tmp_path_factory):
     path = str(tmp_path_factory.mktemp("ham") / "lih.parquet")
     atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
                   cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
-    atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", h=0.35,
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", grid_spacing=0.35,
                            trace=False, max_iterations=1,
                            save_hamiltonian=path)
     atoms.get_total_energy()

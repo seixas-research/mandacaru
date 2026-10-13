@@ -221,7 +221,7 @@ class TestVariationalPayoff:
             atoms = h2(cell=8.0)
             atoms.calc = Mandacaru(method="adapt-vqe",
                                    basis={"name": "HAO", "virtual_orbitals": k},
-                                   h=0.30,
+                                   grid_spacing=0.30,
                                    pool="fermionic",
                                    optimizer=LBFGS,
                                    max_iterations=40,

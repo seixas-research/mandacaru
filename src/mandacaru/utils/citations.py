@@ -190,7 +190,7 @@ def _pseudo_keys(family, options) -> list:
     # dataset it is applied to; an unconfined one is the free-atom orbital.
     if options.get("energy_shift"):
         keys += ["Sankey1989", "Junquera2001"]
-    if options.get("filter"):
+    if options.get("filter_cutoff"):
         keys.append("Anglada2006")
     return keys
 
@@ -199,7 +199,8 @@ def _pseudo_keys(family, options) -> list:
 #: integrals themselves; the Cholesky factors have their papers.
 _TWO_BODY_KEYS = {
     "dense": (),
-    "cholesky": ("BeebeLinderberg1977", "Koch2003", "Folkestad2019"),
+    "cholesky": ("BeebeLinderberg1977", "Koch2003", "Folkestad2019",
+                 "Aquilante2008"),
 }
 
 

@@ -32,7 +32,7 @@ MCAS-VQE's gradient proposal draws: the same chain for the same seed.
    file is saved into the same store:
 
    ```python
-   atoms.calc = Mandacaru(method="mcas-vqe", basis="HAO", h=0.30,
+   atoms.calc = Mandacaru(method="mcas-vqe", basis="HAO", grid_spacing=0.30,
                           active_space={"frozen": "auto"}, pool="qeb",
                           max_steps=150, warm_start=False, seed=1)
    atoms.get_potential_energy()
@@ -68,7 +68,7 @@ MCAS-VQE's gradient proposal draws: the same chain for the same seed.
 3. **Search.** VALQA takes the store's model without being told:
 
    ```python
-   atoms.calc = Mandacaru(method="valqa", basis="HAO", h=0.30, pool="qeb",
+   atoms.calc = Mandacaru(method="valqa", basis="HAO", grid_spacing=0.30, pool="qeb",
                           max_steps=150)
    ```
 
@@ -97,7 +97,7 @@ chain that start allows.
 from ase.optimize import BFGS
 
 atoms.calc = Mandacaru(method="valqa",
-                       basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.20,
+                       basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.20,
                        pool="qeb", max_steps=30, transfer=True,
                        transfer_steps=6, seed=1234)
 BFGS(atoms).run(fmax=0.05)
@@ -134,7 +134,7 @@ traded away:
 
 ```python
 atoms.calc = Mandacaru(method="valqa",
-                       basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.20,
+                       basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.20,
                        pool="qeb", max_steps=30, transfer=True,
                        transfer_steps=6, update_between_geometries=True,
                        seed=1234)
@@ -273,7 +273,7 @@ are what the next recordings should add.
 ### Trajectory data with screened insertions
 
 The second measurement (2026-10-01) recorded bond scans in the PAW-LCAO basis
-(SZ, h = 0.20 Angstrom), the basis whose forces and energy surfaces are smooth
+(SZ, grid_spacing = 0.20 Angstrom), the basis whose forces and energy surfaces are smooth
 enough to move atoms on. Each scan has five geometries, two seeds and
 `transfer=True` with `screen_insertions=4`, for H2, LiH, BeH2, H4, HF and
 H2O. That gave 4939 insertions, in 1170 states with several measured

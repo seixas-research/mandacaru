@@ -55,7 +55,7 @@ def h3(cell=8.0, **kwargs):
 
 def solved(atoms, **options):
     options.setdefault("basis", "HAO")
-    options.setdefault("h", 0.25)
+    options.setdefault("grid_spacing", 0.25)
     atoms.calc = Mandacaru(method="adapt-vqe", trace=False, profile=False,
                            **options)
     atoms.get_potential_energy()
@@ -94,7 +94,7 @@ class TestTheWeights:
 
     @pytest.mark.parametrize("method", WEIGHT_METHODS)
     def test_they_sum_to_one_everywhere(self, method):
-        calc = solved(lih(), h=0.30)
+        calc = solved(lih(), grid_spacing=0.30)
         integrals = calc.solver._gradient_context["integrals"]
         grid = integrals.grid
         positions = np.array([R for _Z, R in integrals._potentials.nuclei])
@@ -116,7 +116,7 @@ class TestChargesSumToTheSystemCharge:
 
     @pytest.mark.parametrize("method", PARTITION_METHODS)
     def test_a_neutral_molecule(self, method):
-        calc = solved(lih(), h=0.25)
+        calc = solved(lih(), grid_spacing=0.25)
         assert calc.atomic_partition(method).total_charge == \
             pytest.approx(0.0, abs=1e-8)
 
@@ -132,29 +132,29 @@ class TestSymmetry:
     """A homonuclear dimer is neutral on both atoms, by symmetry."""
 
     @pytest.mark.parametrize("method", ["hirshfeld", "voronoi"])
-    @pytest.mark.parametrize("h", [0.25, 0.20])
-    def test_the_smooth_and_the_geometric_partition_are_exact(self, method, h):
-        charges = solved(h2(), h=h).atomic_partition(method).charges
+    @pytest.mark.parametrize("grid_spacing", [0.25, 0.20])
+    def test_the_smooth_and_the_geometric_partition_are_exact(self, method, grid_spacing):
+        charges = solved(h2(), grid_spacing=grid_spacing).atomic_partition(method).charges
         assert np.allclose(charges, 0.0, atol=1e-9)
 
     def test_the_voronoi_tie_is_split_not_given_away(self):
         """The dividing plane lands on a node layer at some spacings.
 
         Handing that layer to the lower atom index charges H2 by 0.16 e at
-        h = 0.25 and by nothing at h = 0.15 -- a pure discretization artifact,
+        grid_spacing = 0.25 and by nothing at grid_spacing = 0.15 -- a pure discretization artifact,
         which splitting the tie removes.
         """
-        for h in (0.30, 0.25, 0.20, 0.15):
-            charges = solved(h2(), h=h).atomic_partition("voronoi").charges
-            assert np.allclose(charges, 0.0, atol=1e-9), h
+        for grid_spacing in (0.30, 0.25, 0.20, 0.15):
+            charges = solved(h2(), grid_spacing=grid_spacing).atomic_partition("voronoi").charges
+            assert np.allclose(charges, 0.0, atol=1e-9), grid_spacing
 
-    @pytest.mark.parametrize("h", [0.30, 0.25])
-    def test_bader_is_neutral_too(self, h):
+    @pytest.mark.parametrize("grid_spacing", [0.30, 0.25])
+    def test_bader_is_neutral_too(self, grid_spacing):
         """The continuous ascent with boundary refinement: the bond midplane
         is a whole plane of points exactly on the zero-flux surface, split
         evenly.  The on-grid ascent this replaced charged H2 by 0.1 e at
-        h = 0.25 (and by 0.08 e before the refinement)."""
-        charges = solved(h2(), h=h).atomic_partition("bader").charges
+        grid_spacing = 0.25 (and by 0.08 e before the refinement)."""
+        charges = solved(h2(), grid_spacing=grid_spacing).atomic_partition("bader").charges
         assert np.allclose(charges, 0.0, atol=1e-6)
 
 
@@ -162,13 +162,13 @@ class TestPolarity:
     def test_lithium_hydride_is_lithium_positive(self):
         """Li(+)H(-): every convention has to agree on the sign."""
         for method in PARTITION_METHODS:
-            charges = solved(lih(), h=0.20).atomic_partition(method).charges
+            charges = solved(lih(), grid_spacing=0.20).atomic_partition(method).charges
             assert charges[0] > 0.1, method            # Li
             assert charges[1] < -0.1, method           # H
 
     def test_hirshfeld_is_the_smallest_of_the_three(self):
         """Its reference is a neutral atom, so it famously understates."""
-        calc = solved(lih(), h=0.20)
+        calc = solved(lih(), grid_spacing=0.20)
         smooth = abs(calc.atomic_partition("hirshfeld").charges[0])
         basin = abs(calc.atomic_partition("bader").charges[0])
         assert smooth < basin
@@ -215,27 +215,27 @@ class TestMagneticMoments:
 class TestElectronsAreAllAccountedFor:
     def test_a_frozen_core_is_refilled(self):
         """The core is not in the RDM but is in the molecule."""
-        frozen = solved(lih(), h=0.20, active_space={"frozen": "auto"})
+        frozen = solved(lih(), grid_spacing=0.20, active_space={"frozen": "auto"})
         assert frozen.atomic_partition("hirshfeld").grid_electrons == \
             pytest.approx(4.0, abs=1e-8)
 
     def test_freezing_barely_moves_the_charges(self):
-        full = solved(lih(), h=0.20).atomic_partition("hirshfeld").charges
-        frozen = solved(lih(), h=0.20, active_space={"frozen": "auto"})
+        full = solved(lih(), grid_spacing=0.20).atomic_partition("hirshfeld").charges
+        frozen = solved(lih(), grid_spacing=0.20, active_space={"frozen": "auto"})
         assert frozen.atomic_partition("hirshfeld").charges == \
             pytest.approx(full, abs=0.05)
 
     def test_the_paw_augmentation_is_added_per_atom(self):
         """The smooth grid density does not integrate to N; the spheres hold
         the rest, and they are on-site so the split is exact."""
-        calc = solved(h2(), basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.20)
+        calc = solved(h2(), basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.20)
         partition = calc.atomic_partition("hirshfeld")
         assert np.all(partition.augmentation > 0.0)
         assert partition.grid_electrons == pytest.approx(2.0, abs=1e-8)
         assert any("augmentation" in note for note in partition.notes)
 
     def test_a_pseudopotential_run_is_measured_against_its_valence(self):
-        calc = solved(lih(), basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.20)
+        calc = solved(lih(), basis={"name": "PAW-LCAO", "size": "DZP"}, grid_spacing=0.20)
         partition = calc.atomic_partition("hirshfeld")
         # Li contributes one valence electron, H one.
         assert np.allclose(partition.reference_charges, [1.0, 1.0])
@@ -255,7 +255,7 @@ class TestTheASESurface:
         assert set(calc.results) >= {"charges", "magmoms", "magmom"}
 
     def test_the_method_is_selectable_on_the_getters(self):
-        calc = solved(lih(), h=0.20)
+        calc = solved(lih(), grid_spacing=0.20)
         assert not np.allclose(calc.get_charges(method="hirshfeld"),
                                calc.get_charges(method="bader"))
 
@@ -277,10 +277,10 @@ class TestTheASESurface:
 
 class TestTheCoarseGrid:
     def test_bader_still_separates_two_atoms(self):
-        """H2 at h = 0.30: the on-grid ascent merged the two basins and
+        """H2 at grid_spacing = 0.30: the on-grid ascent merged the two basins and
         handed one atom no electrons; the continuous one, on an
         interpolation of the density, separates them."""
-        calc = solved(h2(), h=0.30)
+        calc = solved(h2(), grid_spacing=0.30)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             partition = calc.atomic_partition("bader")
@@ -306,12 +306,12 @@ class TestWhatGetsWrittenToAFile:
 
     def test_one_energy_call_is_enough(self):
         atoms = h3(magmoms=[1, 0, 0])
-        calc = solved(atoms, h=0.30, population="hirshfeld")
+        calc = solved(atoms, grid_spacing=0.30, population="hirshfeld")
         assert set(calc.results) >= {"charges", "magmoms", "magmom"}
 
     def test_the_columns_and_the_header(self):
         atoms = h3(magmoms=[1, 0, 0])
-        solved(atoms, h=0.30, population="hirshfeld")
+        solved(atoms, grid_spacing=0.30, population="hirshfeld")
         text = self.written(atoms)
         header = text.splitlines()[1]
         # ASE names the per-atom charge column `charge`, singular.
@@ -323,7 +323,7 @@ class TestWhatGetsWrittenToAFile:
 
         from ase.io import read
         atoms = h3(magmoms=[1, 0, 0])
-        calc = solved(atoms, h=0.30, population="hirshfeld")
+        calc = solved(atoms, grid_spacing=0.30, population="hirshfeld")
         back = read(io.StringIO(self.written(atoms)), format="extxyz")
         assert back.get_charges() == pytest.approx(calc.results["charges"])
         assert back.get_magnetic_moments() == \
@@ -334,7 +334,7 @@ class TestWhatGetsWrittenToAFile:
     def test_off_by_default(self):
         """The partition costs a grid pass a relaxation has no use for."""
         atoms = h3(magmoms=[1, 0, 0])
-        calc = solved(atoms, h=0.30)
+        calc = solved(atoms, grid_spacing=0.30)
         assert calc.population is None
         assert not {"charges", "magmoms", "magmom"} & set(calc.results)
         assert ":charge:" not in self.written(atoms)
@@ -358,7 +358,7 @@ class TestWhatGetsWrittenToAFile:
     def test_the_getters_follow_it(self):
         """A run configured for Bader must not report Hirshfeld."""
         atoms = lih()
-        calc = solved(atoms, h=0.20, population="bader")
+        calc = solved(atoms, grid_spacing=0.20, population="bader")
         assert calc.get_charges() == pytest.approx(
             calc.atomic_partition("bader").charges)
         # ... and an explicit method still wins.
@@ -367,7 +367,7 @@ class TestWhatGetsWrittenToAFile:
 
 
 def test_the_summary_reports_every_atom():
-    calc = solved(lih(), h=0.25)
+    calc = solved(lih(), grid_spacing=0.25)
     text = calc.atomic_partition("hirshfeld").summary()
     assert "hirshfeld" in text and "total" in text
     assert len(text.splitlines()) >= 4
@@ -380,9 +380,9 @@ class TestCrystals:
     def _crystal(atoms, nodes):
         from mandacaru.pseudopotentials.periodic_paw import build_crystal
         from mandacaru.algorithms.periodic_dft import PeriodicKohnSham
-        h = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
-        crystal, context = build_crystal(atoms, h, {"size": "SZ",
-                                                    "filter": 400})
+        grid_spacing = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
+        crystal, context = build_crystal(atoms, grid_spacing, {"size": "SZ",
+                                                    "filter_cutoff": 400})
         solver = PeriodicKohnSham(crystal, context["n_electrons"], "lda")
         solver.run()
         return crystal, solver.density_matrices, atoms.get_atomic_numbers()
@@ -433,11 +433,11 @@ def test_crystal_bader_is_converged_and_shift_invariant():
 
     def lithium_charge(shift):
         atoms = bulk("LiH", "rocksalt", a=4.0)
-        h = float(np.linalg.norm(atoms.cell[0])) / 10
+        grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 10
         direction = np.array([1.0, 0.7, 0.4]) / np.linalg.norm([1.0, 0.7, 0.4])
-        atoms.positions += shift * h * direction
-        crystal, context = build_crystal(atoms, h, {"size": "SZ",
-                                                    "filter": 400},
+        atoms.positions += shift * grid_spacing * direction
+        crystal, context = build_crystal(atoms, grid_spacing, {"size": "SZ",
+                                                    "filter_cutoff": 400},
                                          kpts=(4, 4, 4))
         solver = PeriodicKohnSham(crystal, context["n_electrons"], "lda")
         solver.run()
@@ -473,7 +473,7 @@ class TestBaderOnTheAllElectronDensity:
         from ase.build import molecule
         atoms = molecule("H2O")
         atoms.center(vacuum=3.5)
-        atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.22,
+        atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.22,
                                basis={"name": "PAW-LCAO", "size": "DZP"},
                                trace=False)
         atoms.get_potential_energy()

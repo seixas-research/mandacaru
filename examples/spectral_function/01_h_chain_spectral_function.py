@@ -12,7 +12,7 @@ chain = Atoms("H", positions=[[0.0, 0.0, 0.0]],
               cell=[1.0, 10.0, 10.0], pbc=[True, False, False])
 chain.calc = Mandacaru(method="bloch-adapt-vqe",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        kpts={"size": (4, 1, 1), "gamma": True})
 chain.get_potential_energy()
 

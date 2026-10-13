@@ -64,7 +64,7 @@ class TestTimings:
 def h2_integrals():
     nuclei = [(1.0, np.array([0.0, 0.0, -0.37])),
               (1.0, np.array([0.0, 0.0, 0.37]))]
-    grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.3)
+    grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.3)
     return MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
 
 
@@ -74,7 +74,7 @@ def h2_hamiltonian():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0, 0, 0], box_size=5.0, h=0.35)
+    grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.35)
     integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
@@ -82,7 +82,7 @@ def h2_hamiltonian():
 class TestIntegrationProfile:
     def test_engine_times_one_and_two_body(self):
         orb = minimal_hao_basis([(1.0, np.array([0.0, 0.0, 0.0]))])
-        g = Grid(center=[0, 0, 0], box_size=5.0, h=0.4)
+        g = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.4)
         eng = IntegralEngine(orb, g)
         eng.one_body(lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape),
                      energy_units="Ha")
@@ -136,7 +136,7 @@ class TestADAPTProfiling:
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
         atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
-                               h=0.4, trace=True, max_iterations=4,
+                               grid_spacing=0.4, trace=True, max_iterations=4,
                                convergence={"gradient": 1e-3})
         atoms.get_total_energy()
         out = capsys.readouterr().out

@@ -33,17 +33,18 @@ behind the NAO-AE minimal basis (and behind the pseudopotential families
 in :mod:`mandacaru.pseudopotentials`), and
 :mod:`mandacaru.basis.filtering` is the radial **Fourier filter** that removes
 from a tabulated radial function the wave-vectors a real-space grid of spacing
-``h`` cannot represent -- the cure for the egg-box, opt-in through
-``basis={..., "filter": ...}`` on the pseudopotential families.
+``grid_spacing`` cannot represent -- the cure for the egg-box, opt-in through
+``basis={..., "filter_cutoff": ...}`` on the pseudopotential families.
 """
 
 from .atomic_solver import AtomicResult, solve_atom, solve_radial
 from .base import BasisFunction
 from .filtering import (FILTER_METHODS, FILTER_NYQUIST_FRACTION,
-                        cutoff_energy_ev, cutoff_window, filter_cutoff,
-                        filter_label, filter_radial, filter_table,
-                        inverse_spherical_bessel_transform, residual_weight,
-                        spherical_bessel_transform, validate_filter)
+                        cutoff_energy_ev, cutoff_window, filter_label,
+                        filter_radial, filter_table,
+                        inverse_spherical_bessel_transform,
+                        residual_weight, resolve_filter_cutoff,
+                        spherical_bessel_transform, validate_filter_cutoff)
 from .factory import (BasisSet, HAOBasisSet, GaussianBasisSet, GTOBasisSet,
                       NAOAEBasisSet, NAOBasisSet, PerElementBasisSet,
                       Pople631GBasisSet)
@@ -68,14 +69,14 @@ __all__ = [
     "FILTER_NYQUIST_FRACTION",
     "cutoff_energy_ev",
     "cutoff_window",
-    "filter_cutoff",
     "filter_label",
     "filter_radial",
     "filter_table",
     "inverse_spherical_bessel_transform",
     "residual_weight",
+    "resolve_filter_cutoff",
     "spherical_bessel_transform",
-    "validate_filter",
+    "validate_filter_cutoff",
     "HydrogenicAtomicOrbital",
     "NumericalAtomicOrbital",
     "GaussianOrbital",

@@ -47,7 +47,7 @@ def h2_cache(tmp_path_factory):
     atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                   cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
     atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
-                           h=0.4, trace=False, max_iterations=1,
+                           grid_spacing=0.4, trace=False, max_iterations=1,
                            save_hamiltonian=path)
     atoms.get_total_energy()
     return path

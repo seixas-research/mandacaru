@@ -39,7 +39,7 @@ def test_two_hamiltonian_layers_lower_the_hf_energy():
     """Two layers approach the exact ground energy in the same particle sector."""
     atoms = h2()
     atoms.calc = Mandacaru(method="vqe", ansatz=hva(layers=2),
-                           h=0.35, trace=False)
+                           grid_spacing=0.35, trace=False)
     energy = atoms.get_potential_energy()
     result = atoms.calc.result
     assert result.success
@@ -62,7 +62,7 @@ def test_hva_preserves_particle_number_under_every_mapping(mapping):
     """Full Hamiltonian groups keep the state in its declared sector."""
     atoms = h2()
     atoms.calc = Mandacaru(method="vqe", ansatz=hva(layers=2),
-                           mapping=mapping, h=0.35, trace=False)
+                           mapping=mapping, grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     solver = atoms.calc.solver
     psi = solver.ansatz.state(solver.result.optimal_parameters)
@@ -74,7 +74,7 @@ def test_hva_preserves_particle_number_under_every_mapping(mapping):
 def test_direct_hva_reuses_classical_integrals():
     """The RHF output is a complete direct-mode HVA problem."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     direct = Mandacaru(method="vqe", ansatz="hva", trace=False,
                        **atoms.calc.result.as_quantum_problem())
@@ -100,7 +100,7 @@ def test_custom_groups_must_reconstruct_the_hamiltonian():
 def test_spin_resolved_grouping_has_stable_parameter_order():
     """The spin preset names physical groups and keeps their Hamiltonian sum."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     calc = Mandacaru(method="vqe",
                      ansatz=hva(grouping="spin_resolved", layers=1),
@@ -134,7 +134,7 @@ def test_hva_refuses_gate_execution_without_a_group_trotter_rule():
 def test_hva_dry_run_does_not_construct_groups():
     """A size estimate stops before mapping or ansatz construction."""
     atoms = h2()
-    estimate = Mandacaru(method="vqe", ansatz="hva", h=0.35,
+    estimate = Mandacaru(method="vqe", ansatz="hva", grid_spacing=0.35,
                          trace=False).dry_run(atoms)
     assert estimate.n_qubits == 4
 
@@ -144,7 +144,7 @@ def test_product_formula_matches_provider_circuit():
     atoms = h2()
     atoms.calc = Mandacaru(method="vqe",
                            ansatz=hva(evolution="trotter", steps=2),
-                           h=0.35, trace=False)
+                           grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     solver = atoms.calc.solver
     theta = solver.result.optimal_parameters
@@ -163,7 +163,7 @@ def test_product_formula_matches_each_available_provider(provider_name):
     if not provider_available(provider_name):
         pytest.skip(f"{provider_name} is not installed")
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     calc = Mandacaru(method="vqe",
                      ansatz=hva(evolution="trotter", order=1),
@@ -179,7 +179,7 @@ def test_product_formula_matches_each_available_provider(provider_name):
 def test_product_formula_converges_to_exact_group_evolution():
     """Increasing Strang steps approaches full-group exponentials."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     problem = atoms.calc.result.as_quantum_problem()
     exact = Mandacaru(method="vqe", ansatz="hva", trace=False, **problem)
@@ -200,7 +200,7 @@ def test_product_formula_converges_to_exact_group_evolution():
 def test_product_formula_energy_agrees_across_encodings():
     """A finite-step physical HVA gives the same energy in every mapping."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     problem = atoms.calc.result.as_quantum_problem()
     theta = np.array([0.23, -0.17, 0.31, 0.12])
@@ -222,7 +222,7 @@ def test_hva_exact_and_product_formula_checkpoints(tmp_path):
         atoms = h2()
         atoms.calc = Mandacaru(method="vqe",
                                ansatz=hva(evolution=evolution),
-                               checkpoint=str(path), h=0.35, trace=False)
+                               checkpoint=str(path), grid_spacing=0.35, trace=False)
         atoms.get_potential_energy()
         solver = atoms.calc.solver
         assert path.is_file()
@@ -237,7 +237,7 @@ def test_hva_exact_and_product_formula_checkpoints(tmp_path):
         second = h2()
         second.calc = Mandacaru(method="vqe",
                                 ansatz=hva(evolution=evolution),
-                                resume=str(path), h=0.35, trace=False)
+                                resume=str(path), grid_spacing=0.35, trace=False)
         second.get_potential_energy()
         assert second.calc.result.optimal_energy == pytest.approx(
             solver.result.optimal_energy, abs=1e-7)
@@ -246,7 +246,7 @@ def test_hva_exact_and_product_formula_checkpoints(tmp_path):
                      if evolution == "exact"
                      else hva(evolution=evolution, steps=2))
         changed.calc = Mandacaru(method="vqe", ansatz=different,
-                                 resume=str(path), h=0.35, trace=False)
+                                 resume=str(path), grid_spacing=0.35, trace=False)
         with pytest.raises(ValueError, match="HVA checkpoint differs"):
             changed.get_potential_energy()
 
@@ -254,7 +254,7 @@ def test_hva_exact_and_product_formula_checkpoints(tmp_path):
 def test_hva_checkpoint_record_keeps_caller_labels_and_kinds():
     """Explicit ``labels=`` and ``kinds=`` are stored, not overwritten."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="vqe", ansatz="hva", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="vqe", ansatz="hva", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     solver = atoms.calc.solver
     parameters = solver.result.optimal_parameters
@@ -272,7 +272,7 @@ def test_hva_checkpoint_record_keeps_caller_labels_and_kinds():
 def test_hva_taper_keeps_all_fixed_groups():
     """Z2 reduction cannot remove a physical HVA group."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="vqe", ansatz="hva", taper=True, h=0.35,
+    atoms.calc = Mandacaru(method="vqe", ansatz="hva", taper=True, grid_spacing=0.35,
                            trace=False)
     tapered_energy = atoms.get_potential_energy()
     solver = atoms.calc.solver
@@ -280,7 +280,7 @@ def test_hva_taper_keeps_all_fixed_groups():
     assert solver.ansatz.n_qubits == solver.hamiltonian.num_qubits
     assert not solver._taper_info.dropped
     full = h2()
-    full.calc = Mandacaru(method="vqe", ansatz="hva", h=0.35, trace=False)
+    full.calc = Mandacaru(method="vqe", ansatz="hva", grid_spacing=0.35, trace=False)
     assert tapered_energy == pytest.approx(full.get_potential_energy(),
                                            abs=1e-6)
 
@@ -290,7 +290,7 @@ def test_hva_executes_compiled_qiskit_circuit():
     atoms = h2()
     atoms.calc = Mandacaru(method="vqe",
                            ansatz=hva(evolution="trotter"),
-                           execute_circuits=True, h=0.35, trace=False)
+                           execute_circuits=True, grid_spacing=0.35, trace=False)
     energy = atoms.get_potential_energy()
     assert energy < atoms.calc.result.reference_energy - 0.1
     solver = atoms.calc.solver
@@ -303,7 +303,7 @@ def test_hva_executes_compiled_qiskit_circuit():
 def test_hva_force_path_uses_its_optimized_state(reduction):
     """The inherited RDM gradient accepts each supported HVA register."""
     atoms = h2()
-    atoms.calc = Mandacaru(method="vqe", ansatz="hva", h=0.35, trace=False,
+    atoms.calc = Mandacaru(method="vqe", ansatz="hva", grid_spacing=0.35, trace=False,
                            **reduction)
     forces = atoms.get_forces()
     assert forces.shape == (2, 3)
@@ -315,7 +315,7 @@ def test_hva_respects_active_orbital_reduction():
     atoms = h2()
     atoms.calc = Mandacaru(method="vqe", ansatz="hva",
                            active_space={"orbitals": 1},
-                           h=0.35, trace=False)
+                           grid_spacing=0.35, trace=False)
     energy = atoms.get_potential_energy()
     assert np.isfinite(energy)
     assert atoms.calc.n_qubits == 2
@@ -327,7 +327,7 @@ def test_hva_final_measurement_uses_compiled_product_formula():
     from mandacaru.backends.providers import QiskitProvider
     atoms = h2()
     atoms.calc = Mandacaru(
-        method="vqe", ansatz=hva(evolution="trotter"), h=0.35, trace=False,
+        method="vqe", ansatz=hva(evolution="trotter"), grid_spacing=0.35, trace=False,
         measurement_provider=QiskitProvider(device="statevector"))
     measured = atoms.get_potential_energy()
     assert atoms.calc.measurement_plan is not None
@@ -355,7 +355,7 @@ def test_hva_rejects_a_symmetry_leaking_custom_group():
 def test_actual_uhf_reference_matches_unrestricted_state(mapping):
     """Spin-resolved Givens preparation reproduces broken-symmetry UHF."""
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
-    atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     uhf_energy = atoms.get_potential_energy()
     reference = atoms.calc.result
     calc = Mandacaru(method="vqe",
@@ -372,7 +372,7 @@ def test_actual_uhf_reference_matches_unrestricted_state(mapping):
 def test_actual_uhf_circuit_preparation_matches_local_state():
     """The same Givens network can be exported to a circuit provider."""
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
-    atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     calc = Mandacaru(method="vqe",
                      ansatz=hva(reference=atoms.calc.result,
@@ -390,7 +390,7 @@ def test_actual_uhf_circuit_preparation_matches_local_state():
 def test_uhf_reference_tapers_when_its_symmetry_sector_is_valid():
     """A spin-broken determinant can still conserve the available Z2 sector."""
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
-    atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     energy = atoms.get_potential_energy()
     calc = Mandacaru(method="vqe",
                      ansatz=hva(reference=atoms.calc.result),
@@ -415,7 +415,7 @@ def test_uhf_reference_tapers_when_its_symmetry_sector_is_valid():
 def test_actual_uhf_checkpoint_round_trip(evolution, tmp_path):
     """A checkpoint includes the fixed UHF preparation before HVA layers."""
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
-    atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     atoms.get_potential_energy()
     reference = atoms.calc.result
     path = tmp_path / "hva.json"
@@ -487,7 +487,7 @@ class TestTheSpec:
 class TestNamedUCCSD:
     def test_a_named_uccsd_is_the_default(self):
         atoms = h2()
-        atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+        atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
         atoms.get_potential_energy()
         problem = atoms.calc.result.as_quantum_problem()
         default = Mandacaru(method="vqe", trace=False, **problem).run()
@@ -498,7 +498,7 @@ class TestNamedUCCSD:
 
     def test_each_template_cites_its_own_paper(self):
         atoms = h2()
-        atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+        atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
         atoms.get_potential_energy()
         problem = atoms.calc.result.as_quantum_problem()
         uccsd = Mandacaru(method="vqe", trace=False, **problem)
@@ -522,7 +522,7 @@ class TestNamedUCCSD:
 
     def test_exact_evolution_has_no_circuit_problem(self):
         atoms = h2()
-        atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+        atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
         atoms.get_potential_energy()
         calc = Mandacaru(method="vqe", ansatz="hva", trace=False,
                          **atoms.calc.result.as_quantum_problem())

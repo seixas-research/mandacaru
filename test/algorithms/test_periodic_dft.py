@@ -82,11 +82,11 @@ class TestBandGap:
 def silicon():
     """Diamond Si, SZ, coarse grid and a 2x2x2 mesh: small but a crystal."""
     atoms = bulk("Si", "diamond", a=5.43)
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.34,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.34,
                            kpts={"size": (2, 2, 2), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.01},
                            basis={"name": "PAW-LCAO", "size": "SZ",
-                                  "filter": 200}, trace=False)
+                                  "filter_cutoff": 200}, trace=False)
     energy = atoms.get_potential_energy()
     return atoms, energy
 
@@ -94,14 +94,14 @@ def silicon():
 class TestTheCalculator:
     def test_an_explicit_grid_is_used_verbatim(self):
         """A crystal's ``grid=`` is the grid it runs on (it was silently
-        replaced by one built from ``h``), and one of another cell is
+        replaced by one built from ``grid_spacing``), and one of another cell is
         refused rather than used."""
         from mandacaru.integrals import Grid
         atoms = bulk("Si", "diamond", a=5.43)
         cell = np.asarray(atoms.cell)
-        grid = Grid(center=list(0.5 * cell.sum(0)), box_size=0.0, h=0.4,
+        grid = Grid(center=list(0.5 * cell.sum(0)), box_size=0.0, grid_spacing=0.4,
                     units="angstrom", cell=cell, periodic=True)
-        options = dict(method="dft", h=0.25, kpts={"size": (1, 1, 1),
+        options = dict(method="dft", grid_spacing=0.25, kpts={"size": (1, 1, 1),
                                                    "gamma": True},
                        smearing={"method": "fermi-dirac", "width": 0.01},
                        basis={"name": "PAW-LCAO", "size": "SZ"}, trace=False)
@@ -109,7 +109,7 @@ class TestTheCalculator:
         atoms.get_potential_energy()
         assert atoms.calc.solver._gradient_context["integrals"].grid.shape \
             == grid.shape
-        wrong = Grid(center=list(0.55 * cell.sum(0)), box_size=0.0, h=0.4,
+        wrong = Grid(center=list(0.55 * cell.sum(0)), box_size=0.0, grid_spacing=0.4,
                      units="angstrom", cell=1.1 * cell, periodic=True)
         with pytest.raises(ValueError, match="span its cell"):
             Mandacaru(grid=wrong, **options).get_potential_energy(atoms.copy())
@@ -158,7 +158,7 @@ class TestTheCalculator:
 #: Silicon on a grid commensurate with its primitive cell (8 nodes per
 #: lattice vector): small enough for the engine-level tests below.
 SILICON = bulk("Si", "diamond", a=5.43)
-SILICON_BASIS = {"size": "SZ", "filter": 200}
+SILICON_BASIS = {"size": "SZ", "filter_cutoff": 200}
 
 
 def test_crystal_forces_keep_the_cell_grid(monkeypatch):
@@ -167,7 +167,7 @@ def test_crystal_forces_keep_the_cell_grid(monkeypatch):
     refuses) must not be handed to a periodic Kohn-Sham run.  The forces
     themselves are checked in test_crystal_forces.py (slow)."""
     atoms = bulk("Si", "diamond", a=5.43)
-    atoms.calc = Mandacaru(method="dft", h=0.4,
+    atoms.calc = Mandacaru(method="dft", grid_spacing=0.4,
                            kpts={"size": (1, 1, 1), "gamma": True},
                            basis={"name": "PAW-LCAO", "size": "SZ"},
                            trace=False)
@@ -183,10 +183,10 @@ def test_crystal_forces_keep_the_cell_grid(monkeypatch):
     assert handed == [None]
 
 
-def _crystal(h=None, kpts=None):
+def _crystal(grid_spacing=None, kpts=None):
     from mandacaru.pseudopotentials.periodic_paw import build_crystal
-    h = float(np.linalg.norm(SILICON.cell[0])) / 8 if h is None else h
-    return build_crystal(SILICON, h, SILICON_BASIS,
+    grid_spacing = float(np.linalg.norm(SILICON.cell[0])) / 8 if grid_spacing is None else grid_spacing
+    return build_crystal(SILICON, grid_spacing, SILICON_BASIS,
                          kpts=kpts or {"size": (2, 1, 1), "gamma": True})
 
 
@@ -248,13 +248,13 @@ class TestTheEigenvalueReference:
         """The plane-wave zero: silicon's levels at two grid spacings.
 
         Before the reference, the lowest level moved by 1.7 eV between
-        h = 0.30 and 0.20 Angstrom while the energy stayed put (HISTORY.md,
+        grid_spacing = 0.30 and 0.20 Angstrom while the energy stayed put (HISTORY.md,
         2026-10-02).
         """
         spacing = float(np.linalg.norm(SILICON.cell[0]))
         levels = []
         for n in (8, 10):
-            crystal, context = _crystal(h=spacing / n)
+            crystal, context = _crystal(grid_spacing=spacing / n)
             result = pd.PeriodicKohnSham(crystal, context["n_electrons"],
                                          "lda").run()
             levels.append((min(e.min() for e in result.eigenvalues),
@@ -275,7 +275,7 @@ class TestTheMoleculeInABox:
     """
 
     @staticmethod
-    def _solve(atoms, h, basis):
+    def _solve(atoms, grid_spacing, basis):
         """``(molecule, crystal)`` of ``atoms`` (its cell is the box)."""
         out = []
         for pbc in (False, True):
@@ -284,7 +284,7 @@ class TestTheMoleculeInABox:
             extra = ({"kpts": {"size": (1, 1, 1), "gamma": True},
                       "smearing": {"method": "fermi-dirac", "width": 0.001}}
                      if pbc else {"kinetic": "spectral"})
-            system.calc = Mandacaru(method="dft", xc="lda", h=h, trace=False,
+            system.calc = Mandacaru(method="dft", xc="lda", grid_spacing=grid_spacing, trace=False,
                                     basis=basis, **extra)
             system.get_potential_energy()
             out.append(system)
@@ -297,7 +297,7 @@ class TestTheMoleculeInABox:
         from ase import Atoms
         atoms = Atoms("Ne", positions=[[3.5, 3.5, 3.5]], cell=[7.0] * 3)
         molecule, crystal = self._solve(
-            atoms, 0.25, {"name": "PAW-LCAO", "size": "SZ", "filter": 150})
+            atoms, 0.25, {"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 150})
         assert crystal.get_potential_energy() == pytest.approx(
             molecule.get_potential_energy(), abs=1e-4)
         # Levels from a common origin: the crystal's sit on the cell
@@ -565,11 +565,11 @@ def test_the_log_holds_every_crystal_iteration(name, tmp_path):
     else:
         atoms, extra = _oxygen_box(), {}
     path = str(tmp_path / f"{name}.txt")
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.34, txt=path,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.34, txt=path,
                            trace=False,
                            smearing={"method": "fermi-dirac", "width": 0.01},
                            basis={"name": "PAW-LCAO", "size": "SZ",
-                                  "filter": 200}, **extra)
+                                  "filter_cutoff": 200}, **extra)
     atoms.get_potential_energy()
     reset_log(path)
     parsed = parse_output(path)
@@ -623,9 +623,9 @@ class TestSpinPolarized:
             atoms.set_initial_magnetic_moments([1.0, 1.0])
             extra = ({"smearing": {"method": "fermi-dirac", "width": 0.01}}
                      if pbc else {})
-            atoms.calc = Mandacaru(method="dft", xc="lda", h=0.3, trace=False,
+            atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
                                    basis={"name": "PAW-LCAO", "size": "SZ",
-                                          "filter": 300},
+                                          "filter_cutoff": 300},
                                    population="hirshfeld", **extra)
             atoms.get_potential_energy()
             out[pbc] = atoms
@@ -677,7 +677,7 @@ def test_opposite_moments_keep_an_antiferromagnet():
     atoms = bulk("Si", "diamond", a=5.43)
     cell = atoms.cell.array
     grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
-                h=float(np.linalg.norm(cell[0])) / 12, units="angstrom",
+                grid_spacing=float(np.linalg.norm(cell[0])) / 12, units="angstrom",
                 cell=cell, periodic=True)
     plain = grid_symmetry(atoms, grid)
     atoms.set_initial_magnetic_moments([1.0, -1.0])
@@ -698,7 +698,7 @@ def test_a_small_starting_moment_reaches_the_ferromagnet():
     for start in (0.5, 2.5):
         atoms = bulk("Fe", "bcc", a=2.87)
         atoms.set_initial_magnetic_moments([start])
-        atoms.calc = Mandacaru(method="dft", xc="lda", h=0.25, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.25, trace=False,
                                basis={"name": "PAW-LCAO", "size": "SZP"},
                                kpts={"size": (4, 4, 4), "gamma": True},
                                smearing={"method": "fermi-dirac",
@@ -721,7 +721,7 @@ class TestScreenedHybrid:
     @pytest.fixture(scope="class")
     def pair(self):
         """``{xc: (solver, result)}`` for PBE and HSE06 on one crystal."""
-        crystal, context = _crystal(h=self.H, kpts=self.KPTS)
+        crystal, context = _crystal(grid_spacing=self.H, kpts=self.KPTS)
         out = {}
         for xc in ("pbe", "hse06"):
             solver = pd.PeriodicKohnSham(crystal, context["n_electrons"], xc)
@@ -776,7 +776,7 @@ class TestScreenedHybrid:
 
     def test_it_cites_the_one_center_exchange(self):
         atoms = SILICON.copy()
-        atoms.calc = Mandacaru(method="dft", xc="hse06", h=self.H,
+        atoms.calc = Mandacaru(method="dft", xc="hse06", grid_spacing=self.H,
                                trace=False,
                                basis={"name": "PAW-LCAO", **SILICON_BASIS},
                                kpts={"size": (2, 1, 1), "gamma": True})
@@ -799,7 +799,7 @@ class TestScreenedHybrid:
         monkeypatch.setattr(crystal_forces, "crystal_stress", known)
         from .test_crystal_forces import _li2h
         atoms = _li2h()
-        atoms.calc = Mandacaru(method="dft", xc="hse06", h=0.4, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc="hse06", grid_spacing=0.4, trace=False,
                                basis={"name": "PAW-LCAO", **SILICON_BASIS},
                                smearing={"method": "fermi-dirac",
                                          "width": 0.1})

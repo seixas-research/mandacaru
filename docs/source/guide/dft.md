@@ -18,7 +18,7 @@ atoms.calc = Mandacaru(method="dft",
                        xc="pbe",                  # "lda" (default) | "pbe" | "r2scan" | "hse06"
                        dispersion="d4",           # None (default) | "d4"
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       h=0.2)
+                       grid_spacing=0.2)
 energy_ev = atoms.get_potential_energy()
 ```
 
@@ -125,7 +125,7 @@ energy as `scf.exact_exchange_energy`, and the run log reports it.
   zero-padded grid, so neither carries a grid-sampling error of the $1/r$
   singularity. A molecule in a 12 Angstrom periodic box and the same
   molecule isolated then agree on the HSE06 - PBE energy to 0.1 mHa.
-- **Shifts against references** (DZP, h = 0.2 Angstrom, 3 Angstrom of
+- **Shifts against references** (DZP, grid_spacing = 0.2 Angstrom, 3 Angstrom of
   vacuum; HSE06 - PBE): H$_2$O HOMO -1.73 eV (PAW-LCAO) against -1.45 eV for an
   independent norm-conserving pseudopotential calculation and -1.42 eV
   all-electron (aug-cc-pVTZ; -1.51 eV in def2-TZVP); CH$_4$ -1.18 eV
@@ -190,7 +190,7 @@ uniform gas.
   forces and crystal stress against finite differences. Two free argon atoms
   reach the asymptotic $C_6$ of the model (76.3 a.u. for this argon density;
   the reference is 64.3, an overestimate of the VV10 model itself).
-- **Argon dimer** (TZP, unconfined basis, h = 0.2 Angstrom; reference
+- **Argon dimer** (TZP, unconfined basis, grid_spacing = 0.2 Angstrom; reference
   CCSD(T) $-12.3$ meV at 3.76 Angstrom): $-12.2$ meV at 3.76, $-11.1$ at
   4.0, $-5.9$ at 4.5, $-3.5$ at 5.0 and $-0.7$ meV at 6.0 Angstrom;
   r2SCAN alone gives $-6.3$ meV at the minimum.
@@ -263,21 +263,21 @@ they are not the answer of a consistent calculation.
 ## The grid
 
 Converge the grid before trusting a difference of functionals. A spacing of
-`h` between 0.15 and 0.2 Å is a sensible range for H$_2$O and similar light
+`grid_spacing` between 0.15 and 0.2 Å is a sensible range for H$_2$O and similar light
 molecules. Three points to keep in mind:
 
-- An absolute total energy on a real-space grid drifts with `h`: for H$_2$O it
-  moves by about 0.3 Ha between `h = 0.25` and `0.12` Å, for Hartree-Fock and
+- An absolute total energy on a real-space grid drifts with `grid_spacing`: for H$_2$O it
+  moves by about 0.3 Ha between `grid_spacing = 0.25` and `0.12` Å, for Hartree-Fock and
   DFT alike, while the difference between the two stays constant to about
-  8 mHa. Compare energies at one fixed `h`.
+  8 mHa. Compare energies at one fixed `grid_spacing`.
 - The kinetic-energy operator is a finite-difference Laplacian by default.
   `kinetic="spectral"` evaluates it in reciprocal space instead and reduces the
   error for a hard smooth wave: for the He atom the missing energy at
-  `h = 0.20` Å falls from about 108 mHa to about 9 mHa. It is shared by every
+  `grid_spacing = 0.20` Å falls from about 108 mHa to about 9 mHa. It is shared by every
   method, not only DFT, and the analytic forces differentiate either operator
   (see *Forces and relaxations*). The spectral operator is the one a crystal
-  uses, and it converges much faster with `h`: for H$_2$O (PAW-LCAO DZP, LDA)
-  the energy moves by 1.5 eV from `h = 0.30` to `0.15` Å against 14 eV with
+  uses, and it converges much faster with `grid_spacing`: for H$_2$O (PAW-LCAO DZP, LDA)
+  the energy moves by 1.5 eV from `grid_spacing = 0.30` to `0.15` Å against 14 eV with
   the stencil, and the oxygen force stays within 0.14 eV/Å while the
   stencil's changes sign. The molecular default is planned to move to it.
 - The noble-gas atoms Ne and Ar in a PAW-LCAO basis need a spacing of about
@@ -300,7 +300,7 @@ orbitals' integrals, which come from their own pair solves.
 give the same Fock matrix, energy, reference energy and forces to round-off
 (about $10^{-13}$ Ha), so the option exists to cross-check, not to choose an
 accuracy. The Poisson route is faster where the tensor dominates: on
-ethylene in PAW-LCAO DZP (46 functions, h = 0.2 Angstrom) the energy took
+ethylene in PAW-LCAO DZP (46 functions, grid_spacing = 0.2 Angstrom) the energy took
 42 s instead of 162 s and 0.40 GB instead of 0.71 GB, and benzene in DZP
 (108 functions), whose tensor alone needs about 6.5 GB, now runs in about
 2 minutes and 1.1 GB. A crystal's Hartree
@@ -331,7 +331,7 @@ the Kohn-Sham determinant inside the exported many-body Hamiltonian, which has
 neither the dispersion term nor the core-correction offset.
 `result.optimal_energy` is the Kohn-Sham total.
 
-On H$_2$O in a PAW-LCAO DZP basis at $h = 0.2$ Å with 3 Å of vacuum, the three
+On H$_2$O in a PAW-LCAO DZP basis at a grid spacing of 0.2 Å with 3 Å of vacuum, the three
 functionals of the first example give these totals and gaps (the setup of
 [the functionals example](../../../examples/dft/01_dft_h2o_functionals.py)):
 
@@ -499,7 +499,7 @@ surface can be relaxed with any ASE optimizer:
 ```python
 from ase.optimize import BFGS
 
-atoms.calc = Mandacaru(method="dft", xc="pbe", dispersion="d4", h=0.2,
+atoms.calc = Mandacaru(method="dft", xc="pbe", dispersion="d4", grid_spacing=0.2,
                        basis={"name": "PAW-LCAO", "size": "DZP"})
 BFGS(atoms).run(fmax=0.05)
 ```
@@ -513,7 +513,7 @@ dispersion correction is on. `atoms.calc.force_result` keeps the breakdown, as
 for the other methods. With forces requested the grid is frozen along the
 trajectory, so a finite difference of the reported energy on it reproduces the
 forces: to 1e-6 eV/Angstrom for LiH with LDA and with PBE+D4 (PAW-LCAO DZP,
-h = 0.25 Angstrom).
+grid_spacing = 0.25 Angstrom).
 
 The forces differentiate the kinetic operator the energy used, the stencil
 or `kinetic="spectral"`: the Pulay term contracts the moving basis functions
@@ -522,12 +522,12 @@ operator the same checks hold to the same precision (LiH, PAW-LCAO DZP: 1e-6
 eV/Angstrom with LDA and PBE+D4; HSE06, UPAW-LCAO, the unrestricted OH
 radical and the correlated `force_method="rdm"` states alike), and a
 molecule in a box has the forces of the same box solved as a crystal at
-Gamma, to the grid's egg-box (water, SZ, h = 0.3 Angstrom: 0.05
+Gamma, to the grid's egg-box (water, SZ, grid_spacing = 0.3 Angstrom: 0.05
 eV/Angstrom on forces of 5; the stencil's differ by 6.5). The egg-box itself
-is about the same with either operator: a rigid translation at h = 0.2
+is about the same with either operator: a rigid translation at grid_spacing = 0.2
 Angstrom ripples water's energy by 3.5 meV and CO's by 1.0 meV with both,
 while LiH's net force is about 1.5 times larger with the spectral operator
-(0.021 against 0.014 eV/Angstrom at h = 0.25).
+(0.021 against 0.014 eV/Angstrom at grid_spacing = 0.25).
 
 r2SCAN forces are analytic too, but its energy surface on a finite real-space
 grid is rough at the micro-Hartree level -- the kinetic-energy density enters
@@ -546,7 +546,7 @@ from ase.build import bulk
 from mandacaru import Mandacaru
 
 al = bulk("Al", "fcc", a=4.05)
-al.calc = Mandacaru(method="dft", xc="lda", h=0.25,
+al.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.25,
                     kpts={"size": (6, 6, 6), "gamma": True},
                     smearing={"method": "methfessel-paxton", "width": 0.2},
                     basis={"name": "PAW-LCAO", "size": "DZP"})
@@ -584,9 +584,9 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   Coulomb energy is summed in reciprocal space; the compact charges are
   Fourier-filtered where they meet the grid and summed exactly among
   themselves. The energy is then nearly independent of the grid: H2 in an
-  8 Angstrom cell changes by 0.08 mHa between h = 0.25 and 0.18 Angstrom and
+  8 Angstrom cell changes by 0.08 mHa between grid_spacing = 0.25 and 0.18 Angstrom and
   reproduces the converged molecular limit, which the molecular solver itself
-  reaches only by extrapolating from h <= 0.12 Angstrom.
+  reaches only by extrapolating from grid_spacing <= 0.12 Angstrom.
 - **Eigenvalues, the Fermi level and the gap.** Eigenvalues and
   `result.fermi_level` are measured from the cell average of the electrostatic
   potential of the electrons and point ions (each atom's non-Coulomb local
@@ -602,7 +602,7 @@ result.fermi_level, result.free_energy, result.scf.band_gap
   basis and kinetic operator. A crystal's kinetic energy is always spectral
   (it refuses `kinetic="fd"`), so compare it with a molecule run with
   `kinetic="spectral"`: Ne with a 150 eV basis filter agrees to 1 uHa, and
-  water, CO and HF in a 9 Angstrom box (SZP, h = 0.3 Angstrom) agree on the
+  water, CO and HF in a 9 Angstrom box (SZP, grid_spacing = 0.3 Angstrom) agree on the
   level spacings to 0.4 mHa, on the energy to 0.7 mHa and on the Hirshfeld
   charges to 0.001 e. The molecular default, the finite-difference stencil,
   differs from it by far more than that on these grids: 0.80 Ha for water,
@@ -626,7 +626,7 @@ $\mathbf G + \mathbf k - \mathbf q = 0$, so the screened hybrid needs no
 treatment of the Coulomb singularity.
 
 - **The exchange needs a denser mesh than the density.** The q-mesh is the
-  k-mesh. For silicon (PAW-LCAO DZP, h = 0.3 Angstrom) the HSE06 - PBE gap
+  k-mesh. For silicon (PAW-LCAO DZP, grid_spacing = 0.3 Angstrom) the HSE06 - PBE gap
   shift is +0.66 and +0.57 eV on 3x3x3 and 4x4x4 meshes (a 2x2x2 mesh
   overshoots by about a factor of two), against about +0.55-0.6 eV in the
   literature (HSE06 1.17 eV against PBE 0.59-0.62 eV): converge the shift,
@@ -672,13 +672,13 @@ together (only the total is Kerker-damped).
 from ase.build import bulk, molecule
 
 o2 = molecule("O2")                       # ASE gives it moments of 1 per atom
-o2.calc = Mandacaru(method="dft", xc="pbe", h=0.2,
+o2.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.2,
                     basis={"name": "PAW-LCAO", "size": "DZP"})
 o2.get_potential_energy()                 # the triplet: moment 2.000
 
 fe = bulk("Fe", "bcc", a=2.87)
 fe.set_initial_magnetic_moments([2.5])
-fe.calc = Mandacaru(method="dft", xc="lda", h=0.2,
+fe.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.2,
                     basis={"name": "PAW-LCAO", "size": "DZP"},
                     kpts={"size": (8, 8, 8), "gamma": True})
 fe.get_potential_energy()
@@ -713,7 +713,7 @@ fe.calc.get_total_magnetic_moment()       # N_up - N_down per cell
   that preserve it.
 - **Checked**: O2's triplet is 0.78 eV (LDA) / 0.92 eV (PBE) below the
   spin-restricted state, which holds the two π* electrons as an ensemble
-  (SZ, h = 0.3 Å); O2 in a periodic box reproduces the molecular
+  (SZ, grid_spacing = 0.3 Å); O2 in a periodic box reproduces the molecular
   unrestricted run (moment 2.000, 1.000 per atom, pi* exchange splitting
   1.555 vs 1.558 eV).
 
@@ -730,8 +730,8 @@ from ase.filters import FrechetCellFilter
 from ase.optimize import BFGS
 
 si = bulk("Si", "diamond", a=5.50)
-si.calc = Mandacaru(method="dft", xc="lda", h=0.25,
-                    basis={"name": "PAW-LCAO", "size": "DZP", "filter": 300},
+si.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.25,
+                    basis={"name": "PAW-LCAO", "size": "DZP", "filter_cutoff": 300},
                     kpts={"size": (4, 4, 4), "gamma": True})
 BFGS(FrechetCellFilter(si)).run(fmax=0.01)
 ```
@@ -744,7 +744,7 @@ BFGS(FrechetCellFilter(si)).run(fmax=0.01)
   keeps the breakdown. They match a finite difference of the self-consistent
   F to better than 1e-5 eV/Angstrom (LDA, PBE and r2SCAN). Their sum over the
   atoms is the grid's egg-box, not zero (about 1e-3 eV/Angstrom for LDA,
-  1e-2 for the gradient functionals at h = 0.25 Angstrom).
+  1e-2 for the gradient functionals at grid_spacing = 0.25 Angstrom).
 - **The stress** (eV/Angstrom^3, ASE's sign: negative for a compressed cell)
   strains the cell, the atoms and the grid together, with the converged
   states carried along -- no new SCF. Only the strains the space group
@@ -753,18 +753,18 @@ BFGS(FrechetCellFilter(si)).run(fmax=0.01)
   basis filter is held at the cutoff the run used, so the stress never
   includes the basis changing with the grid spacing (with the default
   grid-tied filter, a relaxation's *next* geometry will rebuild the basis
-  at its own spacing: give `filter` in eV to keep one basis throughout).
+  at its own spacing: give `filter_cutoff` in eV to keep one basis throughout).
 - **Fixed node counts.** The grid follows the cell during a relaxation with
-  the node counts set by `h`; when a count changes, the energy steps. Choose
-  `h` so the counts stay put over the range the cell explores (the check
-  below kept 15 nodes from a = 5.50 to 5.80 Angstrom with h = 0.265).
+  the node counts set by `grid_spacing`; when a count changes, the energy steps. Choose
+  `grid_spacing` so the counts stay put over the range the cell explores (the check
+  below kept 15 nodes from a = 5.50 to 5.80 Angstrom with grid_spacing = 0.265).
 - **Checked**: Si (SZ, 2x2x2) relaxed from a = 5.50 Angstrom with a distorted
   basis to a = 5.7179 Angstrom in 9 BFGS steps, where an E(a) scan on the
   same settings has its minimum at 5.7180 (an SZ number, not silicon's
   lattice constant).
 - **Cost**: both run on the SCF's irreducible k-points and are symmetrized
   (the force by the space group with its atom map); they equal the full
-  mesh's to round-off. Diamond Si, DZP, 4x4x4, h = 0.2 Angstrom: forces
+  mesh's to round-off. Diamond Si, DZP, 4x4x4, grid_spacing = 0.2 Angstrom: forces
   29 s, stress 7.5 s on 8 cores.
 
 ## Bands and densities of states
@@ -777,7 +777,7 @@ from ase.build import bulk
 from mandacaru import Mandacaru
 
 si = bulk("Si", "diamond", a=5.43)
-si.calc = Mandacaru(method="dft", xc="lda", h=0.25,
+si.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.25,
                     kpts={"size": (4, 4, 4), "gamma": True},
                     basis={"name": "PAW-LCAO", "size": "DZP"})
 si.get_potential_energy()
@@ -919,7 +919,7 @@ Two variants:
   at every strain with the crystal forces, to `fmax` (0.01 eV/Å). The
   centroid of the atoms is held fixed and the mean force removed. A
   crystal's exact forces sum to zero, but the real-space grid gives them a
-  net part (0.11 eV/Å for AlN at $h$ = 0.25 Å). Left in, that net force
+  net part (0.11 eV/Å for AlN at `grid_spacing = 0.25` Å). Left in, that net force
   drags the whole crystal along the grid and corrupts the internal
   coordinates.
 
@@ -965,7 +965,7 @@ different levels and densities in the crystal and the molecular paths
 (K20), so absolute $\varepsilon^\infty$ values for real solids wait for that
 to be resolved.
 
-Checks (LDA, PAW-LCAO SZP, h = 0.25 Å, a 4³ or 4×4×3 mesh):
+Checks (LDA, PAW-LCAO SZP, grid_spacing = 0.25 Å, a 4³ or 4×4×3 mesh):
 
 | | Mandacaru | literature |
 | :--- | ---: | ---: |

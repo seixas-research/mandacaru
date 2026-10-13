@@ -62,9 +62,9 @@ def dimer(symbols, distance, cell=10.0):
     return atoms
 
 
-def forces_of(symbols, distance, basis, cell=9.0, h=0.25, **options):
+def forces_of(symbols, distance, basis, cell=9.0, grid_spacing=0.25, **options):
     atoms = dimer(symbols, distance, cell)
-    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
+    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid_spacing=grid_spacing, pool="fermionic",
                            optimizer=LBFGS, max_iterations=60,
                            convergence={"gradient": 1e-6}, profile=False,
                            **options)
@@ -98,7 +98,7 @@ class TestGradientIsExact:
         finite difference of the *same* energy, so it tests internal
         consistency, not basis convergence.  Clipping the diffuse 2s tail
         changes both sides identically and keeps the grid cheap."""
-        grid = Grid(center=[3.0, 3.0, 3.0], box_size=6.0, h=0.35,
+        grid = Grid(center=[3.0, 3.0, 3.0], box_size=6.0, grid_spacing=0.35,
                     units="angstrom")
         atoms = Atoms("H2", positions=[[3.013, 2.979, 2.607],
                                        [3.013, 2.979, 3.407]], cell=[6.0] * 3)
@@ -111,7 +111,7 @@ class TestGradientIsExact:
 
     def test_lih(self):
         """Correct even where the surface it differentiates is not usable."""
-        grid = Grid(center=[3.5, 3.5, 3.5], box_size=7.0, h=0.35,
+        grid = Grid(center=[3.5, 3.5, 3.5], box_size=7.0, grid_spacing=0.35,
                     units="angstrom")
         atoms = Atoms("LiH", positions=[[3.513, 3.479, 2.607],
                                         [3.513, 3.479, 4.407]], cell=[7.0] * 3)
@@ -170,7 +170,7 @@ class TestLiHCoreArtifact:
 
     def test_mandacaru_warns(self):
         atoms = dimer("LiH", 2.19265)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.25,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.25,
                                pool="fermionic", optimizer=LBFGS,
                                max_iterations=60, convergence={"gradient": 1e-6}, profile=False)
         with pytest.warns(RuntimeWarning, match="do not sum to zero"):
@@ -187,7 +187,7 @@ class TestLiHCoreArtifact:
         """The PAW-LCAO-DZP run of the same geometry, done once (it is the
         heaviest calculation in this file)."""
         atoms = dimer("LiH", 2.19265)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis=PAW, h=0.25,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis=PAW, grid_spacing=0.25,
                                pool="fermionic", optimizer=LBFGS,
                                max_iterations=60, convergence={"gradient": 1e-6}, profile=False)
         with warnings.catch_warnings(record=True) as caught:
@@ -254,7 +254,7 @@ class TestTranslationProjectionPolicy:
     @staticmethod
     def _run(**options):
         atoms = dimer("H2", 0.74, 8.0)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-4}, profile=False,
                                **options)
@@ -282,7 +282,7 @@ class TestTranslationProjectionPolicy:
     def test_auto_leaves_a_periodic_system_alone(self):
         atoms = dimer("H2", 0.74, 8.0)
         atoms.pbc = True
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-4}, profile=False)
         with warnings.catch_warnings():
@@ -301,7 +301,7 @@ class TestTranslationProjectionPolicy:
     def test_explicit_true_on_a_periodic_system_says_it_is_ignored(self):
         atoms = dimer("H2", 0.74, 8.0)
         atoms.pbc = True
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-4}, profile=False,
                                project_translation=True)

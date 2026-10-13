@@ -979,8 +979,8 @@ class PeriodicKohnSham:
         :math:`-\int Z\,\mathrm{erfc}(r/\sqrt2\sigma)/r\,d^3r / \Omega =
         -2\pi Z\sigma^2/\Omega` per atom, the difference between a Gaussian
         and a point ion -- and :math:`\sigma` is tied to the grid spacing, so
-        it moved every eigenvalue with ``h`` (silicon's lowest level by
-        1.7 eV between h = 0.30 and 0.20 Angstrom).  Adding it back measures
+        it moved every eigenvalue with ``grid_spacing`` (silicon's lowest level by
+        1.7 eV between grid_spacing = 0.30 and 0.20 Angstrom).  Adding it back measures
         the eigenvalues from the point-ion average; the occupations, which
         depend only on :math:`\varepsilon - \mu`, are unaffected.
         """

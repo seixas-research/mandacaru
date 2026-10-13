@@ -68,7 +68,7 @@ def lih():
         atoms.positions += np.asarray(shift)
         if move is not None:
             atoms.positions[move[0], move[1]] += move[2]
-        atoms.calc = Mandacaru(method="dft", xc="lda", h=0.3, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
                                basis={"name": "PAW-LCAO", "size": "SZ"},
                                kpts={"size": (3, 3, 3), "gamma": True},
                                smearing={"method": "fermi-dirac",
@@ -119,7 +119,7 @@ class TestThePiezoelectricTensor:
         from mandacaru.algorithms import piezoelectric_tensor
         atoms = bulk("LiH", "rocksalt", a=4.0)
         result = piezoelectric_tensor(
-            atoms, components=(3,), method="dft", xc="lda", h=0.3,
+            atoms, components=(3,), method="dft", xc="lda", grid_spacing=0.3,
             basis={"name": "PAW-LCAO", "size": "SZ"}, trace=False,
             kpts={"size": (3, 3, 3), "gamma": True},
             smearing={"method": "fermi-dirac", "width": 0.001})
@@ -164,7 +164,7 @@ class TestTheFiniteField:
     """A finite electric field coupled through the Berry phase (the full
     mesh, the field term rebuilt from each iteration's states)."""
 
-    OPTIONS = dict(method="dft", xc="lda", h=0.35, trace=False,
+    OPTIONS = dict(method="dft", xc="lda", grid_spacing=0.35, trace=False,
                    basis={"name": "PAW-LCAO", "size": "SZ"},
                    kpts={"size": (2, 2, 2), "gamma": True},
                    smearing={"method": "fermi-dirac", "width": 0.001})

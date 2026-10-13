@@ -102,6 +102,6 @@ class TestMoleculeAndEngine:
     def test_diffuse_orbital_grid_normalized(self):
         # The diffuse hydrogen 1s is resolved on a modest grid -> S_aa ~ 1.
         orb = BasisSet.build(method="GTO").atom("H", units="bohr")[0]
-        grid = Grid(center=[0, 0, 0], box_size=12.0, h=0.25, units="bohr")
+        grid = Grid(center=[0, 0, 0], box_size=12.0, grid_spacing=0.25, units="bohr")
         psi = orb.evaluate(grid.X, grid.Y, grid.Z)
         assert abs(float(np.sum(np.abs(psi) ** 2) * grid.dV) - 1.0) < 0.02

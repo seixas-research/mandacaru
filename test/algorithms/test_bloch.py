@@ -44,7 +44,7 @@ _EXTRA = {"bloch-vqe": {}, "bloch-adapt-vqe": dict(max_iterations=10,
                                                    convergence={"gradient": 1e-3})}
 
 # ---- the reference values ------------------------------------------------- #
-# 1-D H chain, a = 2.0 A, HAO, h = 0.35, SLSQP(tol=1e-12), in eV per primitive
+# 1-D H chain, a = 2.0 A, HAO, grid_spacing = 0.35, SLSQP(tol=1e-12), in eV per primitive
 # cell.  Measured against the **periodic** engine: the electrostatics are
 # lattice sums (periodic Coulomb kernel, Ewald external potential and ion-ion,
 # Madelung constant, periodic basis images), so these are not the values the
@@ -95,7 +95,7 @@ def periodic(method="bloch-vqe", mesh=GAMMA2, **kwargs):
     atoms = chain()
     kwargs.setdefault("basis", "HAO")
     kwargs.setdefault("mapping", "jordan_wigner")
-    kwargs.setdefault("h", 0.35)
+    kwargs.setdefault("grid_spacing", 0.35)
     kwargs.setdefault("trace", False)
     atoms.calc = Mandacaru(method=method, kpts=mesh, **kwargs)
     return atoms
@@ -178,7 +178,7 @@ class TestUnsupportedCombinations:
         """
         atoms = chain()
         atoms.calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2,
-                               basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.35,
+                               basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.35,
                                trace=False)
         with pytest.raises(NotImplementedError, match="periodic lattice sum"):
             atoms.get_potential_energy()
@@ -208,12 +208,12 @@ class TestGeometryIsCheckedBeforeAnyWork:
     def test_a_non_periodic_geometry_is_refused(self):
         atoms = chain(pbc=[False, False, False])
         atoms.calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO",
-                               h=0.35, trace=False)
+                               grid_spacing=0.35, trace=False)
         with pytest.raises(ValueError, match="periodic boundary conditions"):
             atoms.get_potential_energy()
 
     def test_a_non_periodic_geometry_is_refused_in_the_dry_run_too(self):
-        calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO", h=0.35,
+        calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO", grid_spacing=0.35,
                          trace=False)
         with pytest.raises(ValueError, match="periodic boundary conditions"):
             calc.dry_run(chain(pbc=[False, False, False]))
@@ -227,7 +227,7 @@ class TestGeometryIsCheckedBeforeAnyWork:
         atoms = chain()
         atoms.calc = Mandacaru(method="bloch-vqe",
                                kpts={"size": (1, 2, 1), "gamma": True},
-                               basis="HAO", h=0.35, trace=False)
+                               basis="HAO", grid_spacing=0.35, trace=False)
         with pytest.raises(ValueError, match="direction b"):
             atoms.get_potential_energy()
 
@@ -237,7 +237,7 @@ class TestGeometryIsCheckedBeforeAnyWork:
                       pbc=[True, True, False])
         atoms.calc = Mandacaru(method="bloch-vqe",
                                kpts={"size": (2, 2, 1), "gamma": True},
-                               basis="HAO", h=0.35, trace=False)
+                               basis="HAO", grid_spacing=0.35, trace=False)
         with pytest.raises(ValueError, match="degenerate"):
             atoms.get_potential_energy()
 
@@ -255,7 +255,7 @@ class TestGeometryIsCheckedBeforeAnyWork:
             lambda *a, **k: pytest.fail("the Hamiltonian builder was reached"))
         atoms = chain(pbc=[False, False, False])
         atoms.calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO",
-                               h=0.35, trace=False)
+                               grid_spacing=0.35, trace=False)
         with pytest.raises(ValueError, match="periodic boundary conditions"):
             atoms.get_potential_energy()
 
@@ -333,7 +333,7 @@ class TestBands:
 
     def test_they_need_the_correlated_state(self):
         """Interacting bands cannot exist before the state does."""
-        calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO", h=0.35,
+        calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO", grid_spacing=0.35,
                          trace=False)
         with pytest.raises(ValueError, match="ground state"):
             calc.bands()
@@ -438,7 +438,7 @@ class TestTwoDimensional:
                       pbc=[True, True, False])
         atoms.calc = Mandacaru(method="bloch-vqe",
                                kpts={"size": (2, 2, 1), "gamma": True},
-                               basis="HAO", h=0.40, trace=False,
+                               basis="HAO", grid_spacing=0.40, trace=False,
                                optimizer=SLSQP)
         assert atoms.calc.dimension == 2
         assert atoms.calc.solver.n_supercells == 4
@@ -451,7 +451,7 @@ class TestTwoDimensional:
 # Bloch's theorem holds on the grid only if a primitive translation is a whole
 # number of grid steps.
 # --------------------------------------------------------------------------- #
-def square_supercell_grid(h, size=(2, 2, 1), a=2.6, commensurate=True):
+def square_supercell_grid(grid_spacing, size=(2, 2, 1), a=2.6, commensurate=True):
     """Just the grid of that supercell -- no sampling, no integrals.
 
     The node-count assertions need nothing else, and building the integrals for
@@ -463,13 +463,13 @@ def square_supercell_grid(h, size=(2, 2, 1), a=2.6, commensurate=True):
                       cell=[[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, 9.0]],
                       pbc=[True, True, False])
     cell = np.asarray(primitive.repeat(size).cell[:], dtype=float)
-    return Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=h,
+    return Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                 units="angstrom", cell=cell, periodic=True,
                 commensurate=size if commensurate else None)
 
 
 @functools.lru_cache(maxsize=8)
-def square_supercell_integrals(h, size=(2, 2, 1), a=2.6, commensurate=True):
+def square_supercell_integrals(grid_spacing, size=(2, 2, 1), a=2.6, commensurate=True):
     """Periodic integrals of an ``n x n`` square lattice of H atoms.
 
     Cached: the tests below want the same few grids, and building one is
@@ -485,7 +485,7 @@ def square_supercell_integrals(h, size=(2, 2, 1), a=2.6, commensurate=True):
     supercell = primitive.repeat(size)
     cell = np.asarray(supercell.cell[:], dtype=float)
     nuclei = [(1.0, position) for position in supercell.positions]
-    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=h,
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                 units="angstrom", cell=cell, periodic=True,
                 commensurate=size if commensurate else None)
     integrals = PeriodicIntegrals(
@@ -506,10 +506,10 @@ class TestTheGridIsCommensurateWithThePrimitiveCell:
     bands, the spectral function, the irreducible zone -- assumes they are.
     """
 
-    @pytest.mark.parametrize("h, divisible", [(0.35, False), (0.325, True)])
-    def test_the_node_count_is_rounded_up_to_a_multiple(self, h, divisible):
-        bare = square_supercell_grid(h, commensurate=False)
-        fixed = square_supercell_grid(h, commensurate=True)
+    @pytest.mark.parametrize("grid_spacing, divisible", [(0.35, False), (0.325, True)])
+    def test_the_node_count_is_rounded_up_to_a_multiple(self, grid_spacing, divisible):
+        bare = square_supercell_grid(grid_spacing, commensurate=False)
+        fixed = square_supercell_grid(grid_spacing, commensurate=True)
         assert (bare.shape[0] % 2 == 0) is divisible
         assert fixed.shape[0] % 2 == 0
         # Rounded *up*: the requested spacing is an upper bound, so the grid
@@ -519,7 +519,7 @@ class TestTheGridIsCommensurateWithThePrimitiveCell:
     def test_equivalent_sites_get_equal_on_site_energies(self):
         """The diagonal of ``h`` over four copies of one atom.
 
-        Measured at ``h = 0.35`` (15 nodes, 7.5 steps per cell) the four spread
+        Measured at ``grid_spacing = 0.35`` (15 nodes, 7.5 steps per cell) the four spread
         by 0.10 Ha; on the commensurate grid they agree to round-off.
         """
         _grid, broken = square_supercell_integrals(0.35, commensurate=False)
@@ -539,7 +539,7 @@ class TestTheGridIsCommensurateWithThePrimitiveCell:
 
         This is the single-particle problem ``h c = eps S c``, before any SCF,
         so it isolates the grid from the physics of the filling.  Measured at
-        ``h = 0.35``: the commensurate grid gives an **exact** degeneracy
+        ``grid_spacing = 0.35``: the commensurate grid gives an **exact** degeneracy
         (6e-16 Ha) and the incommensurate one gives 1.8e-3 Ha -- a near
         degeneracy, which is not the same thing and is what a plot would show
         as two bands where there is one.
@@ -564,12 +564,12 @@ class TestTheGridIsCommensurateWithThePrimitiveCell:
     def test_the_driver_asks_for_it(self):
         calc = Mandacaru(method="bloch-vqe",
                          kpts={"size": (3, 2, 1), "gamma": True},
-                         basis="HAO", h=0.4, trace=False, optimizer=SLSQP)
+                         basis="HAO", grid_spacing=0.4, trace=False, optimizer=SLSQP)
         assert calc.solver._grid_commensurate() == (3, 2, 1)
 
     def test_a_molecular_driver_asks_for_nothing(self):
         """The requirement is Bloch's, so no molecular path may inherit it."""
-        calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.4, trace=False,
+        calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.4, trace=False,
                          optimizer=SLSQP)
         assert calc.solver._grid_commensurate() is None
 
@@ -577,12 +577,12 @@ class TestTheGridIsCommensurateWithThePrimitiveCell:
 # --------------------------------------------------------------------------- #
 # 2-D and 3-D: the mesh is not a line, so a band plot needs a path.
 # --------------------------------------------------------------------------- #
-def square_lattice(size=(2, 2, 1), a=2.6, h=0.35, method="bloch-adapt-vqe"):
+def square_lattice(size=(2, 2, 1), a=2.6, grid_spacing=0.35, method="bloch-adapt-vqe"):
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=[[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, 9.0]],
                   pbc=[True, True, False])
     atoms.calc = Mandacaru(method=method, kpts={"size": size, "gamma": True},
-                           basis="HAO", h=h, trace=False, optimizer=SLSQP)
+                           basis="HAO", grid_spacing=grid_spacing, trace=False, optimizer=SLSQP)
     return atoms
 
 
@@ -651,7 +651,7 @@ class TestBandPathsNeedNoRun:
         assert calc.dry_run(square_lattice()).n_qubits == 8
 
 
-def hexagonal_lattice(size=(2, 2, 1), a=2.6, h=0.45):
+def hexagonal_lattice(size=(2, 2, 1), a=2.6, grid_spacing=0.45):
     """One H per primitive cell on a 2-D hexagonal lattice, in a tall box."""
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=[[a, 0.0, 0.0],
@@ -660,7 +660,7 @@ def hexagonal_lattice(size=(2, 2, 1), a=2.6, h=0.45):
                   pbc=[True, True, False])
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": size, "gamma": True},
-                           basis="HAO", h=h, trace=False, optimizer=SLSQP)
+                           basis="HAO", grid_spacing=grid_spacing, trace=False, optimizer=SLSQP)
     return atoms
 
 
@@ -778,7 +778,7 @@ class TestTheIrreducibleZoneIsAudited:
         # 6.7 s and two ~4 s, and the residual is the same 1e-15 in every case.
         atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                                kpts={"size": (6, 1, 1), "gamma": True},
-                               basis="HAO", h=0.35, trace=False,
+                               basis="HAO", grid_spacing=0.35, trace=False,
                                max_iterations=2, optimizer=SLSQP)
         atoms.get_potential_energy()
         full = atoms.calc.get_spectral_function(eta=0.3, points=80)
@@ -827,11 +827,11 @@ class TestDryRun:
     def test_the_qubit_count_scales_with_the_cells(self, cells, qubits):
         calc = Mandacaru(method="bloch-vqe",
                          kpts={"size": (cells, 1, 1), "gamma": True},
-                         basis="HAO", h=0.35, trace=False)
+                         basis="HAO", grid_spacing=0.35, trace=False)
         assert calc.dry_run(chain()).n_qubits == qubits
 
     def test_the_label_names_the_supercell(self):
-        calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO", h=0.35,
+        calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2, basis="HAO", grid_spacing=0.35,
                          trace=False)
         assert "2x1x1 Born-von Karman supercell" in calc.dry_run(chain()).basis
 
@@ -851,7 +851,7 @@ def forced_chain():
                   cell=np.diag([2.0, 6.0, 6.0]), pbc=[True, False, False])
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": (2, 1, 1), "gamma": True},
-                           basis="HAO", h=0.45, trace=False, optimizer=SLSQP)
+                           basis="HAO", grid_spacing=0.45, trace=False, optimizer=SLSQP)
     atoms.get_forces()
     return atoms
 

@@ -15,7 +15,7 @@ atoms.center(vacuum=3.0)
 for shots in (0, 1000, 10000):
     atoms.calc = Mandacaru(method="vqe",
                            basis={"name": "PAW-LCAO", "size": "SZ"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            mapping="parity_reduced",
                            device=DEVICE,
                            shots=shots,

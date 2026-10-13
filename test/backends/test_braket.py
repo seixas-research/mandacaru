@@ -55,7 +55,7 @@ def h2_problem():
     from ase import Atoms
     atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                   cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-    calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", h=0.4,
+    calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", grid_spacing=0.4,
                      trace=False, max_iterations=1)
     atoms.calc = calc
     atoms.get_total_energy()

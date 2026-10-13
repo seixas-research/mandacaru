@@ -6,13 +6,13 @@ potential by a smooth, valence-only problem. In Mandacaru a pseudopotential
 
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="PAW-LCAO",    # Bloechl's projector augmented wave
-                       h=0.25)
+                       grid_spacing=0.25)
 atoms.calc = Mandacaru(method="vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},   # polarized double zeta
-                       h=0.25)
+                       grid_spacing=0.25)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="UPAW-LCAO",   # the unitary PAW-LCAO variant
-                       h=0.25)
+                       grid_spacing=0.25)
 
 That basis turns an all-electron calculation into a valence-only one: the core
 electrons are removed (oxygen keeps 6 of its 8), the basis becomes the family's
@@ -37,13 +37,14 @@ radial atomic solver (`mandacaru.basis.atomic_solver`):
 | `"UPAW-LCAO"` | `"unitary-paw-lcao"` | the same, with a **unitary** transformation ($q = 0$, below) | two per channel, $2\times2$ coupling | $S$ (unaugmented) | generated on demand |
 
 Names are case-insensitive. Each family accepts the options `size`,
-`zeta_split` (`"first_zeta"` by default, or `"last_zeta"`) with its parameter
-`tail_norm` or `split_norm` (the split-valence scheme), `directory` (an alternative library folder) and `filter`
-(*Fourier filtering*, below); PAW-LCAO and UPAW-LCAO also take
-`projector_basis="raw"|"dual"`, `energy_shift`, `confinement` and
-`polarization` (*Confined orbitals*, below). Any other key — or an all-electron option such
-as `tier` — is refused before an integral is computed. A family may give an
-option a **default of its own**: PAW-LCAO and UPAW-LCAO declare `filter=True`.
+`zeta_split` (`"first_zeta"` by default, or `"last_zeta"`; the scheme fixes
+its own split radii), `directory` (an alternative library folder) and
+`filter_cutoff` (*Fourier filtering*, below); PAW-LCAO and UPAW-LCAO also take
+`projector_basis="raw"|"dual"`, `energy_shift`, `confinement_potential` and
+`polarization_method` (*Confined orbitals*, below). Any other key — or an
+all-electron option such as `tier` — is refused before an integral is
+computed. A family may give an option a **default of its own**: PAW-LCAO and
+UPAW-LCAO declare `filter_cutoff="auto"`.
 
 `"PAW-LCAO"` is the recommended pseudopotential family. `"UPAW-LCAO"` is an option — the
 same construction with a unitary transformation — and the measurements that
@@ -74,13 +75,14 @@ from mandacaru.pseudopotentials import (
 family_names()      # ['paw-lcao', 'upaw-lcao', 'unitary-paw-lcao']
 spec = resolve_family("unitary-paw-lcao")   # -> PSEUDO_FAMILIES["upaw-lcao"]
 spec.name, spec.aliases, spec.label    # "upaw-lcao", ("unitary-paw-lcao",), "UPAW-LCAO"
-spec.options       # (..., "filter", "energy_shift", "confinement", "polarization")
-spec.default_options       # {"filter": True, "energy_shift": 0.1}
+spec.options       # (..., "filter_cutoff", "energy_shift",
+                   #  "confinement_potential", "polarization_method")
+spec.default_options       # {"filter_cutoff": "auto", "energy_shift": 0.1}
 spec.resolved_options({"size": "DZ"})  # the defaults with the user's options on top
 spec.norm_conserving                   # False
 spec.generate("O")                     # generate_upaw("O")
 spec.get("O")                          # the (cached) library loader
-spec.build(atoms, grid, h, charge, spin, options, kinetic)
+spec.build(atoms, grid, grid_spacing, charge, spin, options, kinetic)
 lookup_family("HAO")                   # None -- an all-electron basis name
 ```
 
@@ -97,9 +99,9 @@ A new family is added by registering a `FamilySpec`:
 register_family(FamilySpec(name="gth", description="...",
                            generate=..., get=..., build=...,
                            norm_conserving=True, aliases=("goedecker",),
-                           options=("size", "split_norm", "tail_norm",
-                                    "directory", "filter"),
-                           default_options={"filter": True}))
+                           options=("size", "zeta_split", "directory",
+                                    "filter_cutoff"),
+                           default_options={"filter_cutoff": "auto"}))
 ```
 
 and its name immediately works as a basis name — `basis="GTH"` — on every
@@ -366,10 +368,10 @@ local potential of `mandacaru.pseudopotentials.partial_waves` (see
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="PAW-LCAO",
-                       h=0.25)
+                       grid_spacing=0.25)
 atoms.calc = Mandacaru(method="vqe",
                        basis={"name": "PAW-LCAO", "size": "DZ", "projector_basis": "raw"},
-                       h=0.25)
+                       grid_spacing=0.25)
 ```
 
 The name has no alias; `family_names()` lists `paw-lcao` first, then
@@ -511,10 +513,10 @@ subclass with two additions:
   the core, $B^{-1}$ large), and the grid values depended on where the nucleus
   sat between nodes: the on-site $\langle\tilde\varphi_1|\tilde p_i\rangle$ —
   exactly $\delta_{i1}$ — came out 0.7–3× that, and rigidly translating H₂ by
-  one grid step moved the nonlocal energy by 3.9 eV at h = 0.25 Å. The
+  one grid step moved the nonlocal energy by 3.9 eV at grid_spacing = 0.25 Å. The
   quadrature depends only on the separation of function and projector, so it
   is exactly translation invariant; the grid ripple left (kinetic, local and
-  Hartree terms) is 18 / 13 / 5 meV at h = 0.25 / 0.20 / 0.15 Å.
+  Hartree terms) is 18 / 13 / 5 meV at grid_spacing = 0.25 / 0.20 / 0.15 Å.
 * **Range-separated local potential.** The same idea applied to
   $V_{pq} = \sum_A\int\tilde\phi^*_p\tilde\phi_q\,v_A$ — see below.
 
@@ -531,7 +533,8 @@ v^{lr}_A(r) = -Z^{ion}_A\,\frac{\mathrm{erf}(r/\sqrt2\,\sigma)}{r},
 \qquad v^{sr}_A = v_A - v^{lr}_A ,
 ```
 
-with $\sigma = 1.4\,h$ (`SIGMA_FACTOR`), which puts
+with $\sigma = 1.4\,h$ (`SIGMA_FACTOR`; $h$ is the grid spacing,
+`grid_spacing`), which puts
 $e^{-(1.4\pi)^2/2}\approx 6\times10^{-5}$ of the Gaussian's weight past the
 grid's Nyquist wave-vector $\pi/h$. $v^{lr}$ carries the whole tail and stays
 on the grid — it is simply what `PAWIntegrals.external_potential()` hands the
@@ -567,11 +570,11 @@ Coulomb tensor are of the same size and larger at some spacings, and the total
 is set by how the three happen to cancel. The short-range half that moves to
 the sphere is exactly translation invariant ($3\times10^{-16}$), but the
 long-range half stays on the grid and keeps an egg-box of its own — one that is
-*larger* than the full potential's at $h \ge 0.25$ Å, because the Gaussian ion
+*larger* than the full potential's at grid spacings of 0.25 Å and above, because the Gaussian ion
 is a narrower well than the pseudized channel it replaces ($-7.2$ Ha at the
-origin against $-5.4$ Ha for oxygen at $h = 0.25$ Å). Widening $\sigma$ reduces
-that term monotonically (oxygen at $h = 0.30$ Å: 3425 / 2714 / 2097 / 1501 /
-1159 meV at $\sigma/h = 1/1.4/2/3/4$) but never to zero, because what remains is
+origin against $-5.4$ Ha for oxygen at a grid spacing of 0.25 Å). Widening $\sigma$ reduces
+that term monotonically (oxygen at a grid spacing of 0.30 Å: 3425 / 2714 / 2097 / 1501 /
+1159 meV at $\sigma$ = 1 / 1.4 / 2 / 3 / 4 grid spacings) but never to zero, because what remains is
 the sampling of the *pair density*, not of the potential — and it degrades the
 total by breaking the cancellation against the ERI term. The total egg-box is
 1.0–2.1× smaller at $\sigma = 1.4h$ and never larger in the four spacings
@@ -585,7 +588,7 @@ The projector functions can be either the dual $\tilde p_i$
 blocks $B^{-1}DB^{-T}$, $B^{-1}qB^{-T}$ (`"raw"`, the default,
 `PAWDataset.projector_set`). The $\chi_k$ are exact linear combinations of the
 $\tilde p_i$, so the energies are **identical to all digits** (tested); only
-the reported grid resolution ratio differs (H at h = 0.25 Å: raw 0.90/0.78,
+the reported grid resolution ratio differs (H at grid_spacing = 0.25 Å: raw 0.90/0.78,
 dual 0.78/0.77). The local potential is interpolated with a cubic spline
 (`PAWDataset.local_potential`), so its derivatives are continuous.
 
@@ -639,7 +642,7 @@ changes (HISTORY.md, 2026-10-12):
 
 | | frozen spheres | exact spheres | all-electron reference |
 | :--- | ---: | ---: | ---: |
-| H atom, UHF 1s (eV), spectral kinetic | -14.2 (h → 0: -13.98) | -13.59 | -13.606 |
+| H atom, UHF 1s (eV), spectral kinetic | -14.2 (`grid_spacing` → 0: -13.98) | -13.59 | -13.606 |
 | F UHF electron affinity (eV), QZ2P + diffuse shells | 2.39 | 1.05-1.20 | 1.18 (aug-cc-pVQZ) |
 | Cl UHF electron affinity (eV), same | 2.37 | 2.36 | 2.37 (aug-cc-pVQZ) |
 | water RHF $\alpha$ (a.u.), DZP + diffuse shells, spectral kinetic | 7.41 | 8.60 | 8.64 (aug-cc-pVQZ) |
@@ -694,7 +697,7 @@ ADAPT 62 meV above the ground state on H₂ PAW-LCAO-DZP). H₂ and LiH in PAW-L
 solved exactly in their (1, 1) particle-number sector (`core.sector`, 100
 states).
 
-On H₂ (h = 0.25 Å) the analytic force agrees with a central difference of the
+On H₂ (grid_spacing = 0.25 Å) the analytic force agrees with a central difference of the
 energy to 1e-4 eV/Å. Against a plane-wave PBE PAW calculation the force curves
 agree qualitatively: the H₂ minimum is near 0.81 Å instead of 0.750 Å — mostly
 from the H augmentation radius, 1.30 bohr, which two atoms 0.75 Å apart overlap
@@ -725,8 +728,8 @@ state above zero), $S$ bounded below by 1.02–1.35, $q$ positive definite and
 equal to $s$ times the AE inner Gram matrix, $D^{scr} = \Delta T + \Delta V$
 to 1e-15, smooth = AE beyond $r_c$ to 1e-14.
 
-Molecular (H₂ 0.74 Å at h = 0.25 Å, LiH 1.6 Å
-at h = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4
+Molecular (H₂ 0.74 Å at grid_spacing = 0.25 Å, LiH 1.6 Å
+at grid_spacing = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4
 iterations, unconfined; energies in eV as the user sees them, Hartree in
 parentheses; measured 2026-10-12 with the exact one-center spheres and pinned
 by `test_paw.py`):
@@ -742,12 +745,12 @@ Löwdin-orthonormalized overlap is the identity to 1e-16, and the augmented
 two-body tensor keeps the pair-density symmetries to 1e-12. DZ on H₂ (8
 qubits) is variational against SZ.
 
-**Hardness at h = 0.25 Å** (`resolution_ratios` of the basis,
+**Hardness at grid_spacing = 0.25 Å** (`resolution_ratios` of the basis,
 `kb_resolution_ratios` of the raw projectors): H₂ basis 0.98,
 projectors 0.90 / 0.78; LiH basis 1.219 / 0.975,
 projectors 1.00 / 1.00 / 0.88 / 0.85 — all inside the ±25 % band. The second
 H projector, built from the scattering wave, is the hardest object; at
-h = 0.35 Å (0.66 Bohr) the H projectors are not resolved and the result is
+grid_spacing = 0.35 Å (0.66 Bohr) the H projectors are not resolved and the result is
 nonsense.
 
 ### Library and files
@@ -961,11 +964,11 @@ computed anyway for the grid basis.
 |---|---|---|
 | overlap correction $\max\vert q_{ij}\vert$, H | $2.12\times10^{-2}$ | $3.0\times10^{-14}$ |
 | overlap minimum (H) | $1.055$ | $1.000000$ |
-| $\max\vert S - \tilde S\vert$, H₂ (h = 0.3 Å) | $2.8\times10^{-2}$ | $1.0\times10^{-13}$ |
+| $\max\vert S - \tilde S\vert$, H₂ (grid_spacing = 0.3 Å) | $2.8\times10^{-2}$ | $1.0\times10^{-13}$ |
 | O, $L=0$ compensation moment | $3.2\times10^{-2}$ | $7.7\times10^{-15}$ |
 | O, $L=2$ compensation moment | $1.4\times10^{-3}$ | $2.2\times10^{-2}$ |
-| H₂O net force, h = 0.25 Å | 0.380 eV/Å | 1.918 eV/Å |
-| H₂O net force, h = 0.20 Å | 0.0415 eV/Å | 0.2227 eV/Å |
+| H₂O net force, grid_spacing = 0.25 Å | 0.380 eV/Å | 1.918 eV/Å |
+| H₂O net force, grid_spacing = 0.20 Å | 0.0415 eV/Å | 0.2227 eV/Å |
 | LiH $d_{eq}$ / binding | 1.6782 Å / 3.2389 eV | 1.6802 Å / 3.1413 eV |
 | H₂ binding at 0.85 Å | 2.640 eV | 2.386 eV |
 | Hamiltonian one-norm $\lambda$, H₂ | 27.05 | 26.61 |
@@ -1134,7 +1137,7 @@ $4f$/$5f$), Cs, Ba, Fr and Ra (no $p$ or $f$), and Lu, Hf, W, Ag, Cd and Ir
 (an empty $p$ 0.21–0.67 rad off, Lu also an intruding-1s miss of 2.25);
 `mandacaru-paw/PBE.md` lists them. Light elements are built exactly as in
 LDA. With semicore Na or Mg, converge the grid: PBE MgO and NaCl are 1.2 %
-and 1.4 % long at h = 0.25 Å and within 0.3 % of all-electron PBE at 0.18 Å.
+and 1.4 % long at grid_spacing = 0.25 Å and within 0.3 % of all-electron PBE at 0.18 Å.
 `MANDACARU_UPAW_PATH` is the one optional variable: UPAW-LCAO is generated on
 demand without it (*Datasets* above).
 
@@ -1250,7 +1253,7 @@ from the outermost channel:
 ```python
 Mandacaru(method="adapt-vqe",
           basis={"name": "PAW-LCAO", "size": "DZP"},
-          h=0.15)
+          grid_spacing=0.15)
 ```
 
 Sizes are the same names as for [the NAO family](basis_sets.md). The default
@@ -1277,12 +1280,13 @@ is tight for a compact orbital and generous for a diffuse one.
 ```python
 Mandacaru(method="adapt-vqe",
           basis={"name": "PAW-LCAO", "size": "DZP", "energy_shift": 0.1},
-          h=0.20)
+          grid_spacing=0.20)
 ```
 
 `energy_shift` is in **eV** (as for [the NAO family](basis_sets.md)) and is accepted by every pseudopotential family:
 `"PAW-LCAO"` and `"UPAW-LCAO"`, together with
-`confinement` and `polarization`. **The default is 0.1 eV** for both
+`confinement_potential` and `polarization_method`. **The default is 0.1 eV**
+for both
 -- so a plain `basis="PAW-LCAO"` is a
 confined basis.
 `None`, `False` or `0` switch the confinement off and restore the free-atom
@@ -1332,9 +1336,9 @@ basis recipe fixed:
 | :--- | :--- | :--- |
 | size | `"size": "DZP"` | `"SZ"` |
 | energy shift | `"energy_shift": 0.1` | 0.1 eV |
-| confining potential | `"confinement": (12.0, 0.6)` | `(12.0, 0.6)` |
-| split-valence zetas | `"zeta_split": "first_zeta"`, `"tail_norm": (0.16, 0.3, 0.6)` | as written |
-| polarization function | `"polarization": "gaussian"` (quasi-Gaussian) | when confined |
+| confining potential | `"confinement_potential": (12.0, 0.6)` | `(12.0, 0.6)` |
+| split-valence zetas | `"zeta_split": "first_zeta"` (tail norms `(0.16, 0.3, 0.6)`) | as written |
+| polarization function | `"polarization_method": "gaussian"` (quasi-Gaussian) | when confined |
 | PAW-LCAO dataset | Mandacaru's own datasets (LDA) | -- |
 
 So the double-zeta-polarized basis of that recipe needs only its size:
@@ -1342,7 +1346,7 @@ So the double-zeta-polarized basis of that recipe needs only its size:
 ```python
 Mandacaru(method="adapt-vqe",
           basis={"name": "PAW-LCAO", "size": "DZP"},
-          h=0.20)
+          grid_spacing=0.20)
 ```
 
 and Mandacaru's own earlier construction -- free-atom orbitals, the
@@ -1354,7 +1358,7 @@ Mandacaru(method="adapt-vqe",
                  "size": "DZP",
                  "energy_shift": None,
                  "zeta_split": "last_zeta"},
-          h=0.20)
+          grid_spacing=0.20)
 ```
 
 Only the dataset cannot be made identical: each code pseudizes its own atom.
@@ -1384,7 +1388,7 @@ orbital is replaced by `r^l (a − b r²)` matched in value and slope, and the
 difference is the new zeta -- but **not the convention for what and where to
 split**, and the numbers are not comparable digit for digit:
 
-| | `"first_zeta"` (**default**): `tail_norm` | `"last_zeta"`: `split_norm` |
+| | `"first_zeta"` (**default**): tail norms | `"last_zeta"`: split norm |
 | :--- | :--- | :--- |
 | what the number measures | the **norm** of the tail outside the split radius | the **squared norm** of that tail |
 | default | `(0.16, 0.3, 0.6)` for the 2nd, 3rd, 4th zeta | `0.15`, halved for each further zeta |
@@ -1392,24 +1396,23 @@ split**, and the numbers are not comparable digit for digit:
 | H 1s second-zeta radius (0.1 eV) | 3.68 Bohr | 2.52 Bohr |
 
 A tail norm of 0.16 is a squared-norm fraction of 0.0256, so `first_zeta`'s
-second zeta is considerably **longer-ranged** than one made with
-`split_norm = 0.15`. `tail_norm` takes a number (the second zeta's; the
-defaults are kept for the higher ones) or the whole sequence.
-`"zeta_split": "last_zeta"` selects the other scheme (a `split_norm` written
-alone selects it too), and each parameter is refused with the other scheme. The choice applies to
+second zeta is considerably **longer-ranged** than one made with a split norm
+of 0.15. Each scheme carries its parameter: `zeta_split` alone fixes the split
+radii, and neither number is a basis option of its own.
+`"zeta_split": "last_zeta"` selects the other scheme. The choice applies to
 every family with a size hierarchy (`"PAW-LCAO"`, `"UPAW-LCAO"`
 and the all-electron `"NAO"`), and the log's `[BASIS]` block names the scheme
 in its `zeta_split:` line.
 
-The scheme is part of the model. H₂ in PAW-LCAO-DZP (h = 0.25), with free-atom
+The scheme is part of the model. H₂ in PAW-LCAO-DZP (grid_spacing = 0.25), with free-atom
 orbitals and the `r · R_outer` shell on both sides: `first_zeta` gives an
 equilibrium distance of **0.760 Å** and `last_zeta` **0.711 Å**
 (experiment 0.741, plane-wave PBE 0.750), while the `last_zeta` basis is about
 0.5 eV lower in absolute energy -- its tighter second zeta adds more freedom
 near the nucleus. The full default basis (`first_zeta`, the 0.1 eV confinement
 and the Gaussian polarization shell) lands at **0.733 Å**. Every DZ/DZP/TZP energy quoted in this guide outside
-this section was computed with `"zeta_split": "last_zeta"` (`split_norm =
-0.15`) rather than the current `first_zeta` default; pass it to reproduce
+this section was computed with `"zeta_split": "last_zeta"` (split norm
+0.15) rather than the current `first_zeta` default; pass it to reproduce
 them.
 
 #### The polarization function
@@ -1417,7 +1420,7 @@ them.
 The default follows the confinement: `"gaussian"` wherever the orbital is
 confined (so, by default, everywhere), and `"orbital"` for an unconfined
 element -- the Gaussian takes its cutoff from the confined orbital, so it cannot
-exist without one. `"polarization": "orbital"` raises the outermost valence orbital
+exist without one. `"polarization_method": "orbital"` raises the outermost valence orbital
 by one unit of angular momentum, `r · R_outer(r)`, and adds one shell per
 polarization count at `l_max + 1`, `l_max + 2`, ... `"gaussian"` is a
 **quasi-Gaussian**,
@@ -1444,10 +1447,10 @@ with its `r_c`, the free and the confined eigenvalue, and the shift achieved
 ### What it does to the energy
 
 A mild confinement *lowers* the energy of a small basis, because it contracts
-orbitals that were too diffuse for a molecule. H₂ (0.74 Å, 8 Å cell, h = 0.25,
+orbitals that were too diffuse for a molecule. H₂ (0.74 Å, 8 Å cell, grid_spacing = 0.25,
 ADAPT-VQE to the basis FCI), in eV:
 
-| `energy_shift` (eV) | `r_c` of H 1s (Bohr) | SZ | DZP | DZP, Gaussian polarization | DZP, `split_norm=0.15` |
+| `energy_shift` (eV) | `r_c` of H 1s (Bohr) | SZ | DZP | DZP, Gaussian polarization | DZP, `"zeta_split": "last_zeta"` |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | off | -- | −30.2425 | −32.8842 | -- | −33.3847 |
 | 0.01 | 8.97 | −30.3292 | −32.9375 | −33.2528 | −33.4102 |
@@ -1467,11 +1470,11 @@ radial table.
 
 ## Fourier filtering
 
-Every integral here is a sum over a grid of spacing `h`, so the grid can only
+Every integral here is a sum over a grid of spacing `grid_spacing`, so the grid can only
 represent wave-vectors up to its Nyquist value `k_N = π/h`. Whatever a basis
 function carries above `k_N` is **aliased**: it does not vanish, it folds back
 with a phase that depends on where the function's center falls between two
-nodes. Translate a molecule by a fraction of `h` and the energy changes — the
+nodes. Translate a molecule by a fraction of `grid_spacing` and the energy changes — the
 *egg-box* — and `atoms.get_forces()` faithfully differentiates that artifact.
 
 The cure is to remove those components from the **radial functions**, once,
@@ -1484,23 +1487,25 @@ function's own support so a split zeta stays short-ranged
 ```python
 Mandacaru(method="adapt-vqe",
           basis={"name": "PAW-LCAO", "size": "DZ"},          # filtered: the default
-          h=0.20)
+          grid_spacing=0.20)
 
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW-LCAO", "filter": False},       # today's raw basis
-          h=0.20)
+          basis={"name": "PAW-LCAO", "filter_cutoff": False},  # raw basis
+          grid_spacing=0.20)
 
 Mandacaru(method="adapt-vqe",
-          basis={"name": "PAW-LCAO", "filter": 800.0},       # explicit cutoff, in eV
-          h=0.20)
+          basis={"name": "PAW-LCAO", "filter_cutoff": 800.0},  # in eV
+          grid_spacing=0.20)
 ```
 
-`filter` takes `True` / `"auto"` (cutoff tied to the grid, `k_c = π/h`), a
+`filter_cutoff` takes `"auto"` / `True` (cutoff tied to the grid,
+`k_c = π/grid_spacing`), a
 positive **kinetic-energy cutoff in eV** (`k_c = sqrt(2E)` in atomic units),
 or `False`. Anything else raises at construction. It is **on by default for
 `PAW-LCAO` and `UPAW-LCAO`** — declared once per family as
 `FamilySpec.default_options`, so a new family states its own and the drivers
-need no edit. `filter=False` reproduces the unfiltered basis byte for byte.
+need no edit. `filter_cutoff=False` reproduces the unfiltered basis byte for
+byte.
 
 ### Why the cutoff sits exactly at Nyquist
 
@@ -1508,7 +1513,7 @@ Remove what the grid cannot carry, keep everything it can. The measurement
 agrees: water/PAW-LCAO-SZ, peak-to-peak RHF energy over one grid period under a
 rigid shift along (1,1,1), against the rise in the energy itself.
 
-| `k_c / k_N` | ripple, h = 0.25 | cost, h = 0.25 | ripple, h = 0.20 | cost, h = 0.20 |
+| `k_c / k_N` | ripple, `grid_spacing=0.25` | cost, `grid_spacing=0.25` | ripple, `grid_spacing=0.20` | cost, `grid_spacing=0.20` |
 |---|---|---|---|---|
 | off  | 268.7 meV | — | 132.8 meV | — |
 | 1.3  | 142.8 | 489 meV | 17.2 | 273 meV |
@@ -1526,14 +1531,14 @@ core where the local potential varies fastest. Every fraction below 1.0 is
 worse on both axes, so the only real choice is 1.0 or higher — and 1.0 is the
 one that leaves nothing aliased.
 
-Per term at h = 0.25, the ripple goes (unfiltered → filtered): kinetic
+Per term at grid_spacing = 0.25, the ripple goes (unfiltered → filtered): kinetic
 367.5 → 0.05 meV, local pseudopotential 1608.3 → 21.0, electron repulsion
 1321.5 → 7.1. The total is far smaller than its parts because they partly
 cancel. The nonlocal and compensation terms do not appear because they never
 aliased: PAW-LCAO evaluates both by atom-centered quadrature, not on the grid.
 
-**What is left is the local potential.** At h = 0.25 it is 21.0 of the
-remaining 27.1 meV, and at h = 0.20 it is 5.8 of 6.0 — the filter band-limits
+**What is left is the local potential.** At grid_spacing = 0.25 it is 21.0 of the
+remaining 27.1 meV, and at grid_spacing = 0.20 it is 5.8 of 6.0 — the filter band-limits
 the *basis*, but the grid integral `∫ φ*φ v_loc` still aliases through
 `v_loc`'s own high wave-vectors, which nothing here touches. Filtering the
 local channel too, or evaluating that term by quadrature, is the obvious next
@@ -1547,20 +1552,20 @@ so whatever is there is the egg-box):
 
 | | net force, unfiltered | net force, filtered | largest force |
 |---|---|---|---|
-| h = 0.25 | 2.394 eV/Å | **0.160** | ~2.9 |
-| h = 0.20 | 1.158 | **0.045** | ~2.4 |
+| grid_spacing = 0.25 | 2.394 eV/Å | **0.160** | ~2.9 |
+| grid_spacing = 0.20 | 1.158 | **0.045** | ~2.4 |
 
 The analytic gradient is still the derivative of the calculator's own energy:
-central-difference agreement is 1.0e-3 (H₂, h = 0.25) and 7.5e-4 eV/Å (water,
-h = 0.25) with the filter on, the same as without it.
+central-difference agreement is 1.0e-3 (H₂, grid_spacing = 0.25) and 7.5e-4 eV/Å (water,
+grid_spacing = 0.25) with the filter on, the same as without it.
 
-The reported energy goes **up** — water/PAW-LCAO-SZ by 832 meV at h = 0.25 — and
+The reported energy goes **up** — water/PAW-LCAO-SZ by 832 meV at grid_spacing = 0.25 — and
 most of that is not a loss. Hold the cutoff fixed at 602 eV and refine the
 grid: the filtered-to-unfiltered gap is 530 / 422 / 294 / 237 meV at
-h = 0.25 / 0.20 / 0.16 / 0.13, close to linear in `h`. It is the *unfiltered*
+grid_spacing = 0.25 / 0.20 / 0.16 / 0.13, close to linear in `grid_spacing`. It is the *unfiltered*
 basis's own grid error — the finite-difference Laplacian under-estimates the
 kinetic energy of a function the grid cannot resolve, so an unfiltered orbital
-is reported too low. On H₂, where both bases are resolved by h = 0.12, the gap
+is reported too low. On H₂, where both bases are resolved by grid_spacing = 0.12, the gap
 is 2 meV and has the opposite sign.
 
 And what a user actually reads off — geometry and binding — barely moves,
@@ -1569,9 +1574,9 @@ because the shift is nearly a constant offset that cancels in differences
 
 | | d_eq unfiltered | d_eq filtered | D_e unfiltered | D_e filtered |
 |---|---|---|---|---|
-| H₂ (h = 0.25)  | 0.9168 Å | 0.9167 Å | 2.801 eV | 2.807 eV |
-| LiH (h = 0.30) | 1.6536 Å | 1.6538 Å | 1.879 eV | 1.876 eV |
-| OH (h = 0.20)  | 1.0423 Å | 1.0442 Å | 3.466 eV | 3.429 eV |
+| H₂ (grid_spacing = 0.25)  | 0.9168 Å | 0.9167 Å | 2.801 eV | 2.807 eV |
+| LiH (grid_spacing = 0.30) | 1.6536 Å | 1.6538 Å | 1.879 eV | 1.876 eV |
+| OH (grid_spacing = 0.20)  | 1.0423 Å | 1.0442 Å | 3.466 eV | 3.429 eV |
 
 OH's total energy moves 379 meV while its bond moves 0.002 Å and its binding
 energy 0.037 eV.
@@ -1582,13 +1587,13 @@ choice, not a numerical detail: the filtered first zeta is no longer exactly
 the pseudo-orbital the projectors were built from, so the atomic reference is
 no longer reproduced exactly. It is on by default for PAW-LCAO and UPAW-LCAO
 because `optimize_pseudo_waves` already minimizes the kinetic energy beyond
-`q_cut` and the filter has little left to take. Set `filter=False` to
+`q_cut` and the filter has little left to take. Set `filter_cutoff=False` to
 compare against an unfiltered result.
 ```
 
 ## Limits
 
-The residual force on an isolated atom is still ~30 eV/Å at `h = 0.10 Å`. That
+The residual force on an isolated atom is still ~30 eV/Å at `grid_spacing = 0.10 Å`. That
 remainder is basis-set incompleteness — a minimal valence s+p shell per atom —
 not the core, and it *shrinks* with grid refinement. A polarized multiple-zeta
 basis addresses it directly; see [Basis sets](basis_sets.md).
@@ -1597,14 +1602,14 @@ basis addresses it directly; see [Basis sets](basis_sets.md).
 **Relaxation works, and oxygen needs a finer grid than lithium.**
 LiH relaxes cleanly (five BFGS steps from
 2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å; `examples/relaxation/02_lih_relaxation.py` sets up the same relaxation), and so do H₂, OH, CH and H₂O.
-Water from a 90°, 1.0 Å start converges in **three BFGS steps** (h = 0.16 Å,
+Water from a 90°, 1.0 Å start converges in **three BFGS steps** (grid_spacing = 0.16 Å,
 PAW-LCAO-SZ, 123 s) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
 104.52° in experiment: the bond length is good, and the 13° on the angle is
 the minimal valence s+p shell, not the gradient — a polarized basis is what
 addresses it (see [Basis sets](basis_sets.md)).
 
 * **Check that the energy binds before relaxing.** A symmetric O–H scan at
-  h = 0.16 Å gives −480.80, −481.92, −482.20, **−482.29**, −482.21, −481.63 eV
+  grid_spacing = 0.16 Å gives −480.80, −481.92, −482.20, **−482.29**, −482.21, −481.63 eV
   at 0.85, 0.92, 0.96, **1.00**, 1.05 and 1.15 Å — a clean minimum. (Earlier
   releases did *not* bind water: the compensation charge was missing its
   electron–ion attraction, and every bond to a p-valence atom came out
@@ -1614,8 +1619,8 @@ addresses it (see [Basis sets](basis_sets.md)).
   a faithful derivative of that non-invariant discretized energy, and it is the
   honest measure of whether a force is good enough for geometry. Unfiltered,
   for water it falls as `|sum F|` = 1.85, 0.86, 0.41, 0.099, 0.025 eV/Å at
-  h = 0.30, 0.25, 0.20, 0.16, 0.13 Å — oxygen then needs h ≤ 0.16 Å for
-  geometry, finer than the h ≤ 0.25 Å that suffices for energies.
+  grid_spacing = 0.30, 0.25, 0.20, 0.16, 0.13 Å — oxygen then needs grid_spacing ≤ 0.16 Å for
+  geometry, finer than the grid_spacing ≤ 0.25 Å that suffices for energies.
   *Fourier filtering* (above), on by default for PAW-LCAO, removes most
   of it (15–26× on water) and is the reason a coarser grid is now usable.
 * **`project_translation=True`** subtracts the mean force so the molecule

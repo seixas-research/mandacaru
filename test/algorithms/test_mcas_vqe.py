@@ -31,7 +31,7 @@ def h2_hamiltonian():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.25)
     mints = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return mints.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
@@ -330,7 +330,7 @@ class TestCalculatorMode:
     def test_energy_and_forces_from_a_geometry(self):
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
         atoms.center(vacuum=2.5)
-        atoms.calc = Mandacaru(method="mcas-vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="mcas-vqe", basis="HAO", grid_spacing=0.4,
                                max_steps=10, seed=3, profile=False,
                                trace=False)
         energy = atoms.get_potential_energy()
@@ -354,7 +354,7 @@ class TestTransferBetweenGeometries:
     previous geometry reported."""
 
     def _calc(self, **options):
-        options = {"basis": "HAO", "h": 0.4, "pool": "qeb", "max_steps": 15,
+        options = {"basis": "HAO", "grid_spacing": 0.4, "pool": "qeb", "max_steps": 15,
                    "max_length": 4, "seed": 3, "profile": False,
                    "trace": False, "record": False, **options}
         return Mandacaru(method="mcas-vqe", **options)
@@ -397,7 +397,7 @@ class TestTransferBetweenGeometries:
         assert "edit_distance_from_start" in text
 
     def test_only_a_chain_of_the_same_method_passes_its_ansatz_on(self):
-        valqa = Mandacaru(method="valqa", basis="HAO", h=0.4, transfer=True,
+        valqa = Mandacaru(method="valqa", basis="HAO", grid_spacing=0.4, transfer=True,
                           proposal_model=False, record=False, trace=False)
         mcas_vqe = self._calc(transfer=True)
         atoms = _h2_at(0.74)

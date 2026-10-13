@@ -51,10 +51,10 @@ def coherent_positions(atoms) -> np.ndarray:
     return pos
 
 
-def grid_from_cell(atoms, h: float, center=None):
+def grid_from_cell(atoms, grid_spacing: float, center=None):
     """Build the real-space integration grid from the ASE ``atoms.cell``.
 
-    The cell's lattice vectors fix the extent (and shape) of the box and ``h``
+    The cell's lattice vectors fix the extent (and shape) of the box and ``grid_spacing``
     (Angstrom) sets the uniform node spacing.  The box is **centered on the
     molecule** (``center``, defaulting to the minimum-image centroid) rather than
     on the cell, so wherever the atoms are placed the orbitals stay inside the
@@ -67,13 +67,14 @@ def grid_from_cell(atoms, h: float, center=None):
 
     cell = np.asarray(atoms.get_cell(), dtype=float)      # Angstrom (ASE)
     if not np.any(cell):
-        raise ValueError(missing_cell_message(h))
+        raise ValueError(missing_cell_message(grid_spacing))
     if center is None:
         center = coherent_positions(atoms).mean(axis=0)   # center on the molecule
-    return Grid(center=center, box_size=0.0, h=h, units="angstrom", cell=cell)
+    return Grid(center=center, box_size=0.0, grid_spacing=grid_spacing,
+                units="angstrom", cell=cell)
 
 
-def missing_cell_message(h=None) -> str:
+def missing_cell_message(grid_spacing=None) -> str:
     """The error text for a geometry without a unit cell.
 
     The real-space box is the geometry's cell -- nothing else pads it -- so
@@ -81,7 +82,8 @@ def missing_cell_message(h=None) -> str:
     on the ASE side, ``atoms.cell = [Lx, Ly, Lz]``, or an extended-XYZ file
     whose header carries a ``Lattice``.
     """
-    spacing = f" at h = {h:g} Angstrom" if h is not None else ""
+    spacing = (f" at grid_spacing = {grid_spacing:g} Angstrom"
+               if grid_spacing is not None else "")
     return (
         "the geometry has no unit cell, and the real-space box is built from "
         f"the cell{spacing}.  Define the cell in the geometry: "
@@ -365,8 +367,8 @@ def pseudopotential_family(name):
 #: Pseudo-basis options that describe the *construction* (one recipe for the
 #: whole basis): a per-element basis may write them on any element, but every
 #: element that does must say the same thing.
-SHARED_PSEUDO_OPTIONS = ("zeta_split", "tail_norm", "polarization",
-                         "confinement")
+SHARED_PSEUDO_OPTIONS = ("zeta_split", "polarization_method",
+                         "confinement_potential")
 
 
 def resolve_pseudo_basis(name, options, symbols):
@@ -374,7 +376,7 @@ def resolve_pseudo_basis(name, options, symbols):
     when it is all-electron.
 
     A single family name passes its options through (``size``,
-    ``split_norm``, ``directory``, ... -- validated against
+    ``zeta_split``, ``directory``, ... -- validated against
     ``family.options`` by :func:`_pseudopotential_hamiltonian`).  A
     **per-element mapping** must name one pseudopotential family for every
     element (the ``"*"`` default counts): the first zeta of each atom is the
@@ -411,33 +413,36 @@ def resolve_pseudo_basis(name, options, symbols):
             "their projectors and overlap treatment and cannot share one "
             "Hamiltonian")
     family = next(iter(pseudo.values()))
-    sizes, splits, merged = {}, {}, {}
+    sizes, merged = {}, {}
     shifts = {}
     shared = {}
     filters = {}
     for symbol, (_sub_name, sub_options) in resolved.items():
+        unknown = sorted(set(sub_options) - set(family.options))
+        if unknown:
+            raise ValueError(
+                f"unknown option(s) {unknown} for the {family.label} basis of "
+                f"{symbol!r}; it accepts {list(family.options)}")
         extra = {k: v for k, v in sub_options.items()
-                 if k not in ("size", "split_norm", "filter",
+                 if k not in ("size", "filter_cutoff",
                               "energy_shift") + SHARED_PSEUDO_OPTIONS}
         if extra:
             raise ValueError(
                 f"per-element basis options {extra!r} for {symbol!r} cannot "
                 f"differ per element with the {family.label} family; only "
-                "'size', 'split_norm', 'energy_shift' and 'filter' may be "
+                "'size', 'energy_shift' and 'filter_cutoff' may be "
                 "written per element "
                 "(give the other options in a single {'name': ..., ...} basis "
                 "dict)")
         sizes[symbol] = sub_options.get("size", "SZ")
-        if "split_norm" in sub_options:
-            splits[symbol] = sub_options["split_norm"]
         if "energy_shift" in sub_options:
             if "energy_shift" not in family.options:
                 raise ValueError(
                     f"the {family.label} family has no 'energy_shift' option; "
                     f"it accepts {list(family.options)}")
             shifts[symbol] = sub_options["energy_shift"]
-        if "filter" in sub_options:
-            filters[symbol] = sub_options["filter"]
+        if "filter_cutoff" in sub_options:
+            filters[symbol] = sub_options["filter_cutoff"]
         for key in SHARED_PSEUDO_OPTIONS:
             if key in sub_options:
                 if key not in family.options:
@@ -453,11 +458,12 @@ def resolve_pseudo_basis(name, options, symbols):
         distinct = {repr(v) for v in filters.values()}
         if len(distinct) > 1 or len(filters) != len(resolved):
             raise ValueError(
-                f"the basis filter must be the same for every element, got "
-                f"{filters!r}: the cutoff is set by the real-space grid, which "
-                "all the atoms share.  Write it once as "
-                "basis={'name': ..., 'filter': ..., 'size': {<per element>}}.")
-        merged["filter"] = next(iter(filters.values()))
+                f"the basis filter_cutoff must be the same for every element, "
+                f"got {filters!r}: the cutoff is set by the real-space grid, "
+                "which all the atoms share.  Write it once as "
+                "basis={'name': ..., 'filter_cutoff': ..., "
+                "'size': {<per element>}}.")
+        merged["filter_cutoff"] = next(iter(filters.values()))
     for key, values in shared.items():
         if key == "zeta_split":
             # Compare the schemes, not their spellings.
@@ -478,13 +484,6 @@ def resolve_pseudo_basis(name, options, symbols):
         default = family.default_options.get("energy_shift")
         merged["energy_shift"] = ({**shifts} if default is None
                                   else {"*": default, **shifts})
-    if splits:
-        # Keep a scalar when every element agrees; otherwise the per-element
-        # mapping travels on (it used to be silently overwritten by the last
-        # element in the loop).
-        distinct = set(splits.values())
-        merged["split_norm"] = (distinct.pop() if len(distinct) == 1
-                                and len(splits) == len(resolved) else splits)
     return family, merged
 
 
@@ -497,7 +496,7 @@ def resolve_pseudo_basis(name, options, symbols):
 DEFAULT_KINETIC = {"all-electron": "fd", "pseudopotentials": "fd"}
 
 
-def _warn_unresolved(integrals, basis_fns, h):
+def _warn_unresolved(integrals, basis_fns, grid_spacing):
     """Warn about basis functions / projectors the grid does not resolve."""
     import warnings
     functions, projectors = integrals.unresolved()
@@ -523,14 +522,15 @@ def _warn_unresolved(integrals, basis_fns, h):
                      f"grid norm is off ({', '.join(ratios)}"
                      f"{', ...' if len(projectors) > 6 else ''})")
     warnings.warn(
-        f"the real-space grid (h = {h:g} Angstrom) does not resolve "
+        f"the real-space grid (grid_spacing = {grid_spacing:g} Angstrom) does "
+        "not resolve "
         + " and ".join(parts)
-        + ".  Energies involving them are not trustworthy: refine h, or drop "
-        "the compact functions (a smaller basis size / no polarization).",
+        + ".  Energies involving them are not trustworthy: refine "
+        "grid_spacing, or drop the compact functions (a smaller basis size / no polarization).",
         RuntimeWarning, stacklevel=3)
 
 
-def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
+def _pseudopotential_hamiltonian(atoms, grid, grid_spacing, charge, spin, family,
                                  options, kinetic=None, active_space=None,
                                  hamiltonian: bool = True, ghosts=(),
                                  electric_field=None, two_body=None,
@@ -568,7 +568,7 @@ def _pseudopotential_hamiltonian(atoms, grid, h, charge, spin, family,
         extra["two_body"] = two_body
     if one_center is not None:
         extra["one_center"] = one_center
-    return family.build(atoms, grid, h, charge, spin, dict(options), kinetic,
+    return family.build(atoms, grid, grid_spacing, charge, spin, dict(options), kinetic,
                         active_space=active_space, hamiltonian=hamiltonian,
                         **extra)
 
@@ -593,7 +593,7 @@ def validate_ghosts(ghosts, n_atoms: int) -> frozenset:
     return indices
 
 
-def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
+def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int,
                             n_electrons, spin: bool = False,
                             kinetic=None, periodic: bool = False,
                             commensurate=None, active_space=None,
@@ -702,7 +702,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                 "the valence electron count comes from the pseudopotentials "
                 "themselves.  Use `charge` to add or remove electrons.")
         return _pseudopotential_hamiltonian(
-            atoms, grid, h, charge, spin, family, options, kinetic=kinetic,
+            atoms, grid, grid_spacing, charge, spin, family, options, kinetic=kinetic,
             active_space=spec, hamiltonian=hamiltonian, ghosts=ghosts,
             electric_field=electric_field, two_body=two_body,
             one_center=one_center)
@@ -763,12 +763,12 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
         # sum, so where the atoms sit inside the cell does not matter, but the
         # grid reproducing the cell exactly does.
         g = (grid if grid is not None
-             else Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=h,
+             else Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                        units="angstrom", cell=cell, periodic=True,
                        commensurate=commensurate))
     else:
         g = (grid if grid is not None
-             else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
+             else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0)))
 
     n_unpaired = resolve_num_unpaired(atoms[real], spin, n_el)
     n_alpha, n_beta = _num_particles(n_el, n_unpaired, name)
@@ -808,7 +808,7 @@ def build_basis_hamiltonian(atoms, basis, grid, h: float, charge: int,
                       else replace(spec, frozen=tuple(frozen) or None)),
         two_body=two_body)
         if hamiltonian else None)
-    _warn_unresolved(integrals, basis_fns, h)
+    _warn_unresolved(integrals, basis_fns, grid_spacing)
     # The selector may freeze more than `resolve_frozen` did (the dict form of
     # the 'orbitals' names a count of active occupied orbitals), so the
     # active electron count is read back from the partition it actually built

@@ -1566,7 +1566,7 @@ class DFTDriver(_MeanFieldDriver):
                 f"got {self.basis!r}")
         options = {k: v for k, v in dict(spec or {}).items() if k != "name"}
         crystal, context = build_crystal(
-            atoms, self.h, options,
+            atoms, self.grid_spacing, options,
             kpts={"size": tuple(self.kpts), "gamma": self.kpts_gamma},
             family=family.name, grid=self.grid, ghosts=self.ghosts,
             full_mesh=self.electric_field is not None)
@@ -1591,7 +1591,7 @@ class DFTDriver(_MeanFieldDriver):
 
         (_none, num_particles, n_orbitals, profile,
          context) = build_basis_hamiltonian(
-            atoms, self.basis, self.grid, self.h, self.charge,
+            atoms, self.basis, self.grid, self.grid_spacing, self.charge,
             self.n_electrons, spin=self.spin, kinetic=self.kinetic,
             commensurate=self._grid_commensurate(),
             active_space=self.active_space, hamiltonian=False,

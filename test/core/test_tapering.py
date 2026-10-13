@@ -42,7 +42,7 @@ from mandacaru.integrals import Grid
 # --------------------------------------------------------------------------- #
 
 def molecular_pauli(symbols, positions, basis, n_electrons, num_particles,
-                    box=8.0, h=0.35):
+                    box=8.0, grid_spacing=0.35):
     """``(PauliSum, reference_bits, num_particles)`` for a real molecule."""
     atoms = Atoms(symbols, positions=positions)
     coordinates = atoms.get_positions()
@@ -52,7 +52,7 @@ def molecular_pauli(symbols, positions, basis, n_electrons, num_particles,
                                    atoms.get_chemical_symbols(), coordinates):
         functions += bset.atom(symbol, center=position, units="angstrom")
         nuclei.append((float(Z), position))
-    grid = Grid(center=coordinates.mean(axis=0), box_size=box, h=h,
+    grid = Grid(center=coordinates.mean(axis=0), box_size=box, grid_spacing=grid_spacing,
                 units="angstrom")
     integrals = MolecularIntegrals(
         nuclei, functions, grid,
@@ -380,7 +380,7 @@ def _run(symbols, positions, basis, cell, **kwargs):
 
     atoms = Atoms(symbols, positions=positions, cell=cell)
     atoms.center()
-    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=0.35,
+    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid_spacing=0.35,
                            optimizer=OPTIMIZER, trace=False, **kwargs)
     energy = atoms.get_potential_energy()
     return atoms, energy, atoms.calc.solver

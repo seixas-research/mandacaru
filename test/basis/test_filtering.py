@@ -19,7 +19,7 @@ Four things are pinned here, in this order:
    accepted, everything else refused with a clear message, in the single-family
    and the per-element form and in the dry run;
 3. **the default** -- on for PAW-LCAO and UPAW-LCAO, declared in the
-   registry, and ``filter=False`` reproducing the unfiltered basis **byte for
+   registry, and ``filter_cutoff=False`` reproducing the unfiltered basis **byte for
    byte** (this is what makes the PAW-LCAO flip auditable);
 4. **what it buys** -- the rigid-shift energy ripple shrinks, and the analytic
    force is still the derivative of the calculator's own energy.
@@ -44,12 +44,13 @@ from mandacaru.basis.filtering import (DEFAULT_FILTER_METHOD, FILTER_METHODS,
                                        FILTER_NYQUIST_FRACTION,
                                        ROLLOFF_FRACTION, bessel_matrix,
                                        cutoff_energy_ev, cutoff_window,
-                                       filter_cutoff, filter_label,
-                                       filter_radial, filter_table,
+                                       filter_label, filter_radial,
+                                       filter_table,
                                        inverse_spherical_bessel_transform,
                                        radial_norm, residual_weight,
+                                       resolve_filter_cutoff,
                                        spherical_bessel_transform,
-                                       support_radius, validate_filter)
+                                       support_radius, validate_filter_cutoff)
 from mandacaru.basis.multizeta import RadialTable, zeta_tables
 from mandacaru.pseudopotentials.families import PSEUDO_FAMILIES, FamilySpec
 from mandacaru.pseudopotentials.orbitals import pseudo_basis
@@ -79,10 +80,10 @@ def water(cell=10.0):
                  positions=[[5.0, 5.0, 5.0], [5.0, 6.0, 5.0], [5.0, 5.0, 6.0]])
 
 
-def build(atoms, basis, h):
+def build(atoms, basis, grid_spacing):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        return build_basis_hamiltonian(atoms, basis, None, h, 0, None)
+        return build_basis_hamiltonian(atoms, basis, None, grid_spacing, 0, None)
 
 
 def paw_tables(symbol="O"):
@@ -118,7 +119,7 @@ class TestTransform:
         is 8.0e-5 at k_max = 10, 2.7e-4 at 15, 6.4e-4 at 20 and 1.2e-3 at
         25, and refining the *k* grid changes none of them -- it is the r
         grid that limits.  The cutoffs the filter actually uses are 6.6-8.3
-        Bohr^-1 (h = 0.25-0.20), i.e. inside the 1e-4 regime.
+        Bohr^-1 (grid_spacing = 0.25-0.20), i.e. inside the 1e-4 regime.
         """
         values = gaussian(R_GRID, l, 1.0)
         k = np.linspace(0.0, 10.0, 400)
@@ -278,34 +279,34 @@ class TestOption:
         ("AUTO", True), (" auto ", True), (500.0, 500.0), (500, 500.0),
     ])
     def test_accepted_spellings(self, spec, expected):
-        assert validate_filter(spec) == expected
+        assert validate_filter_cutoff(spec) == expected
 
     @pytest.mark.parametrize("spec", ["yes", "on", "nyquist", "", 0.0, -1.0,
                                       [1], {"k": 1}, np.nan, np.inf, object()])
     def test_refused_values(self, spec):
         with pytest.raises(ValueError, match="filter"):
-            validate_filter(spec)
+            validate_filter_cutoff(spec)
 
     def test_true_is_not_a_one_electronvolt_cutoff(self):
         """``isinstance(True, int)`` is True in Python, so the bool has to be
-        caught before the number or ``filter=True`` would mean 1 eV."""
-        assert validate_filter(True) is True
-        assert validate_filter(1) == 1.0
+        caught before the number or ``filter_cutoff=True`` would mean 1 eV."""
+        assert validate_filter_cutoff(True) is True
+        assert validate_filter_cutoff(1) == 1.0
 
     def test_the_cutoff_is_the_nyquist_wave_vector(self):
         spacing = 0.20 * ANGSTROM_TO_BOHR
-        assert filter_cutoff(False, spacing) is None
-        assert filter_cutoff(True, spacing) == pytest.approx(
+        assert resolve_filter_cutoff(False, spacing) is None
+        assert resolve_filter_cutoff(True, spacing) == pytest.approx(
             FILTER_NYQUIST_FRACTION * np.pi / spacing)
         # A number is a kinetic-energy cutoff in eV: k_c = sqrt(2E).
-        assert filter_cutoff(500.0, spacing) == pytest.approx(
+        assert resolve_filter_cutoff(500.0, spacing) == pytest.approx(
             np.sqrt(2.0 * 500.0 * EV_TO_HARTREE))
-        assert cutoff_energy_ev(filter_cutoff(500.0, spacing)) == \
+        assert cutoff_energy_ev(resolve_filter_cutoff(500.0, spacing)) == \
             pytest.approx(500.0)
         with pytest.raises(ValueError, match="needs the grid spacing"):
-            filter_cutoff(True, None)
+            resolve_filter_cutoff(True, None)
         with pytest.raises(ValueError, match="must be positive"):
-            filter_cutoff(True, -0.1)
+            resolve_filter_cutoff(True, -0.1)
 
     def test_the_default_removes_exactly_the_unrepresentable_band(self):
         """``FILTER_NYQUIST_FRACTION == 1`` is the whole principle: what the
@@ -316,9 +317,9 @@ class TestOption:
     @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
     def test_every_family_accepts_the_option(self, family):
         spec = PSEUDO_FAMILIES[family.lower()]
-        assert "filter" in spec.options
-        _name, options = resolve_basis({"name": family, "filter": True})
-        assert options["filter"] is True
+        assert "filter_cutoff" in spec.options
+        _name, options = resolve_basis({"name": family, "filter_cutoff": True})
+        assert options["filter_cutoff"] is True
 
     def test_an_unknown_option_is_still_refused(self):
         with pytest.raises(ValueError, match="unknown option"):
@@ -329,7 +330,7 @@ class TestOption:
     def test_a_bad_value_is_refused_at_construction(self, bad):
         with pytest.raises(ValueError, match="filter"):
             Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO",
-                                                 "filter": bad})
+                                                 "filter_cutoff": bad})
 
     @pytest.mark.parametrize("bad", ["yes", -1.0])
     def test_a_bad_value_in_the_per_element_form_is_refused_too(self, bad):
@@ -337,21 +338,21 @@ class TestOption:
         *value* does not, so it is checked in the constructor either way."""
         with pytest.raises(ValueError, match="filter"):
             Mandacaru(method="adapt-vqe",
-                      basis={"O": {"name": "PAW-LCAO", "filter": bad},
-                             "H": {"name": "PAW-LCAO", "filter": bad}})
+                      basis={"O": {"name": "PAW-LCAO", "filter_cutoff": bad},
+                             "H": {"name": "PAW-LCAO", "filter_cutoff": bad}})
 
     def test_the_per_element_form_merges_one_shared_filter(self):
         family, options = resolve_pseudo_basis(
-            "per-element", {"O": {"name": "PAW-LCAO", "size": "DZ", "filter": 700.0},
-                            "H": {"name": "PAW-LCAO", "filter": 700.0}},
+            "per-element", {"O": {"name": "PAW-LCAO", "size": "DZ", "filter_cutoff": 700.0},
+                            "H": {"name": "PAW-LCAO", "filter_cutoff": 700.0}},
             ["O", "H", "H"])
         assert family is PSEUDO_FAMILIES["paw-lcao"]
-        assert options == {"size": {"O": "DZ", "H": "SZ"}, "filter": 700.0}
+        assert options == {"size": {"O": "DZ", "H": "SZ"}, "filter_cutoff": 700.0}
 
     @pytest.mark.parametrize("mapping", [
-        {"O": {"name": "PAW-LCAO", "filter": True},
-         "H": {"name": "PAW-LCAO", "filter": False}},
-        {"O": {"name": "PAW-LCAO", "filter": True}, "H": "PAW-LCAO"},
+        {"O": {"name": "PAW-LCAO", "filter_cutoff": True},
+         "H": {"name": "PAW-LCAO", "filter_cutoff": False}},
+        {"O": {"name": "PAW-LCAO", "filter_cutoff": True}, "H": "PAW-LCAO"},
     ])
     def test_a_per_element_filter_must_agree(self, mapping):
         """The cutoff is a property of the grid, which every atom shares."""
@@ -362,7 +363,7 @@ class TestOption:
         with pytest.raises(ValueError, match="does not accept"):
             FamilySpec(name="bogus", description="", generate=None, get=None,
                        build=None, options=("size",),
-                       default_options={"filter": True})
+                       default_options={"filter_cutoff": True})
 
 
 # --------------------------------------------------------------------------- #
@@ -371,30 +372,31 @@ class TestOption:
 
 class TestDefault:
     @pytest.mark.parametrize("family, expected", [
-        ("paw-lcao", True), ("upaw-lcao", True),
+        ("paw-lcao", "auto"), ("upaw-lcao", "auto"),
     ])
     def test_declared_in_the_registry(self, family, expected):
         """The default lives in one place -- the family spec -- so a new
         family declares its own with no driver edit.  (Only the filter is
         looked at: PAW-LCAO's spec also declares its confinement.)"""
         spec = PSEUDO_FAMILIES[family]
-        assert spec.default_options.get("filter") is expected
-        assert spec.resolved_options().get("filter") is expected
-        assert spec.resolved_options({"filter": False})["filter"] is False
+        assert spec.default_options.get("filter_cutoff") == expected
+        assert spec.resolved_options().get("filter_cutoff") == expected
+        assert spec.resolved_options(
+            {"filter_cutoff": False})["filter_cutoff"] is False
 
     @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
     def test_the_default_really_filters(self, family):
         context = build(h2(), family, 0.25)[4]
-        assert context["filter_cutoff"] is not None
-        assert context["filter_cutoff"] == pytest.approx(
+        assert context["filter_wavevector"] is not None
+        assert context["filter_wavevector"] == pytest.approx(
             FILTER_NYQUIST_FRACTION * np.pi / (0.25 * ANGSTROM_TO_BOHR),
             rel=0.05)              # the realized spacing, not exactly h
 
     @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
     def test_filter_off_is_byte_identical_to_an_unfiltered_basis(self, family):
-        """``filter=False`` must reproduce the historical basis **exactly**.
+        """``filter_cutoff=False`` must reproduce the historical basis **exactly**.
 
-        Not against another ``filter=False`` run -- that would compare a thing
+        Not against another ``filter_cutoff=False`` run -- that would compare a thing
         to itself.  Against what the construction was *before* the option
         existed: the SZ first zeta is the dataset's own ``pseudo_radial``, and
         the DZP tables are exactly what ``zeta_tables`` returns from it.  This
@@ -433,11 +435,11 @@ class TestDefault:
 
     @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
     def test_filter_false_restores_the_unfiltered_hamiltonian(self, family):
-        """End to end: ``filter=False`` builds the Hamiltonian from the raw
+        """End to end: ``filter_cutoff=False`` builds the Hamiltonian from the raw
         tables, and the default builds a different one.
 
         The 'raw' side is assembled here from the dataset's own radial
-        functions rather than from a second ``filter=False`` call, so the
+        functions rather than from a second ``filter_cutoff=False`` call, so the
         comparison has independent content.
         """
         atoms = h2()
@@ -445,10 +447,10 @@ class TestDefault:
         # by default is switched off on both sides: the raw table below is the
         # dataset's free-atom partial wave.
         free = {"name": family, "energy_shift": None}
-        off = build(atoms, {**free, "filter": False}, 0.25)
+        off = build(atoms, {**free, "filter_cutoff": False}, 0.25)
         on = build(atoms, free, 0.25)
-        assert off[4]["filter_cutoff"] is None
-        assert on[4]["filter_cutoff"] is not None
+        assert off[4]["filter_wavevector"] is None
+        assert on[4]["filter_wavevector"] is not None
 
         pp = PSEUDO_FAMILIES[family].get("H")
         r = np.asarray(pp.r)[:-1]                   # the table's own nodes
@@ -456,7 +458,7 @@ class TestDefault:
         assert np.array_equal(off[4]["integrals"].basis[0].radial(r), raw)
         filtered = on[4]["integrals"].basis[0].radial(r)
         assert not np.array_equal(filtered, raw)
-        # 1.1e-2 at h = 0.25 -- 0.9 % of the peak, small but not nothing.
+        # 1.1e-2 at grid_spacing = 0.25 -- 0.9 % of the peak, small but not nothing.
         assert np.abs(filtered - raw).max() > 1e-3
 
         # The Hamiltonians differ, and by little on H2: max|dH| = 2.4e-3 Ha
@@ -469,17 +471,17 @@ class TestDefault:
     def test_the_dry_run_names_the_filter_and_counts_the_same(self):
         """Filtering reshapes functions; it never adds or removes one."""
         on = estimate_qubits(water(), basis="PAW-LCAO")
-        off = estimate_qubits(water(), basis={"name": "PAW-LCAO", "filter": False})
+        off = estimate_qubits(water(), basis={"name": "PAW-LCAO", "filter_cutoff": False})
         assert on.n_qubits == off.n_qubits and on.per_atom == off.per_atom
         assert "filtered (auto: 1 x Nyquist)" in on.basis
         assert "unfiltered" in off.basis
         explicit = count_basis_functions(water(),
-                                         {"name": "PAW-LCAO", "filter": 700.0})[1]
+                                         {"name": "PAW-LCAO", "filter_cutoff": 700.0})[1]
         assert "filtered (700 eV)" in explicit
 
     def test_the_dry_run_refuses_a_bad_value(self):
         with pytest.raises(ValueError, match="filter"):
-            count_basis_functions(water(), {"name": "PAW-LCAO", "filter": "yes"})
+            count_basis_functions(water(), {"name": "PAW-LCAO", "filter_cutoff": "yes"})
 
     @pytest.mark.parametrize("spec, text", [
         (False, "unfiltered"), (True, "auto"), (500.0, "500 eV")])
@@ -491,7 +493,7 @@ class TestDefault:
 # (4) What it buys: less egg-box, and forces that still differentiate E.
 # --------------------------------------------------------------------------- #
 
-def rigid_shift_ripple(basis, h, fractions=(0.0, 0.25, 0.5, 0.75)):
+def rigid_shift_ripple(basis, grid_spacing, fractions=(0.0, 0.25, 0.5, 0.75)):
     """Peak-to-peak RHF energy of water rigidly shifted on a FROZEN grid.
 
     The grid is built once and passed explicitly, which is exactly what the
@@ -499,15 +501,15 @@ def rigid_shift_ripple(basis, h, fractions=(0.0, 0.25, 0.5, 0.75)):
     the egg-box is invisible by construction.
     """
     atoms = water()
-    grid = grid_from_cell(atoms, h)
+    grid = grid_from_cell(atoms, grid_spacing)
     energies = []
     for f in fractions:
         moved = atoms.copy()
-        moved.positions += f * h
+        moved.positions += f * grid_spacing
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             _H, _p, _n, _pr, context = build_basis_hamiltonian(
-                moved, basis, grid, h, 0, None)
+                moved, basis, grid, grid_spacing, 0, None)
         ints = context["integrals"]
         rhf = ints.hartree_fock(context["n_electrons"])
         energies.append(rhf.electronic_energy + ints.nuclear_repulsion
@@ -517,11 +519,11 @@ def rigid_shift_ripple(basis, h, fractions=(0.0, 0.25, 0.5, 0.75)):
 
 class TestWhatItBuys:
     def test_the_rigid_shift_ripple_shrinks(self):
-        """Water / PAW-LCAO-SZ at h = 0.25: 268.7 meV of ripple unfiltered against
-        27.1 meV with the default, a factor 9.9 (22x at h = 0.20).  The margin
+        """Water / PAW-LCAO-SZ at grid_spacing = 0.25: 268.7 meV of ripple unfiltered against
+        27.1 meV with the default, a factor 9.9 (22x at grid_spacing = 0.20).  The margin
         asked for here is a factor 3 -- well inside what was measured, and
         loose enough to survive a change in the compensation quadrature."""
-        off = rigid_shift_ripple({"name": "PAW-LCAO", "filter": False}, 0.25)
+        off = rigid_shift_ripple({"name": "PAW-LCAO", "filter_cutoff": False}, 0.25)
         on = rigid_shift_ripple("PAW-LCAO", 0.25)
         assert off > 2e-3                       # there is an egg-box to fix
         assert on < off / 3.0
@@ -530,7 +532,7 @@ class TestWhatItBuys:
         """The cleanest single signal, and it needs no density: ``tr(T)`` in
         the raw atomic-orbital basis depends on where the nuclei fall between
         grid nodes and on nothing else, so its rigid-shift ripple *is* the
-        kinetic aliasing.  Measured at h = 0.25: **197.3 -> 0.19 meV**, a
+        kinetic aliasing.  Measured at grid_spacing = 0.25: **197.3 -> 0.19 meV**, a
         factor of 1041.
 
         (``resolution_ratios`` was tried here first and is a poor proxy --
@@ -556,7 +558,7 @@ class TestWhatItBuys:
                 traces.append(float(np.trace(T).real))
             return max(traces) - min(traces)
 
-        off = kinetic_ripple({"name": "PAW-LCAO", "filter": False})
+        off = kinetic_ripple({"name": "PAW-LCAO", "filter_cutoff": False})
         on = kinetic_ripple("PAW-LCAO")
         assert off > 1e-3                       # ~7 mHa of aliasing to remove
         assert on < off / 100.0
@@ -573,7 +575,7 @@ class TestWhatItBuys:
         has had that component projected out.
         """
         atoms = h2(0.75)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", h=0.25,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", grid_spacing=0.25,
                                pool="fermionic", profile=False, trace=False,
                                project_translation=False)
         step = 0.005
@@ -599,10 +601,10 @@ class TestWhatItBuys:
         magnitude.
         """
         forces = {}
-        for label, basis in (("off", {"name": "PAW-LCAO", "filter": False}),
+        for label, basis in (("off", {"name": "PAW-LCAO", "filter_cutoff": False}),
                              ("on", "PAW-LCAO")):
             atoms = h2(0.90)
-            atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, h=0.25,
+            atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid_spacing=0.25,
                                    pool="fermionic", profile=False,
                                    trace=False)
             with warnings.catch_warnings():

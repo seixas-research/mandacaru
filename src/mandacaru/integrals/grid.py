@@ -17,7 +17,7 @@ Grid shapes supported, in increasing generality:
 * **Cubic** (the historical default) -- a single ``box_size`` half-edge and an
   equal node count and spacing on every axis.
 * **Orthorhombic** -- either a length-3 ``box_size`` (per-axis half-extents), a
-  length-3 ``h`` (per-axis spacing, i.e. *varying resolution along each axis*),
+  length-3 ``grid_spacing`` (per-axis spacing, i.e. *varying resolution along each axis*),
   or a diagonal ``cell`` tensor.  The three axes stay mutually orthogonal but may
   differ in both extent and spacing.
 * **Non-orthogonal** -- a full ``cell`` tensor with ``skew=True`` samples on the
@@ -47,7 +47,7 @@ class Grid:
 
     The grid is specified by a physical **spacing** rather than a node count: the
     node count on each axis is derived so the realized spacing is as close as
-    possible to ``h`` (per axis).
+    possible to ``grid_spacing`` (per axis).
 
     Lengths are given in ``units`` (**Angstrom** by default).  Internally the grid
     is built in atomic units: the sampled coordinate arrays :attr:`X`, :attr:`Y`,
@@ -62,11 +62,11 @@ class Grid:
         Half-edge length of the cube, in ``units`` (the box spans
         ``center ± box_size``).  A length-3 value gives an orthorhombic box with
         per-axis half-extents.  Ignored when ``cell`` is given.
-    h : float or array_like, shape (3,)
+    grid_spacing : float or array_like, shape (3,)
         Target grid spacing, in ``units`` (default ``0.20``).  A length-3 value
         sets a **different resolution along each axis**.
     units : {"angstrom", "bohr"}
-        Unit of ``center``, ``box_size``, ``h`` and ``cell`` (default
+        Unit of ``center``, ``box_size``, ``grid_spacing`` and ``cell`` (default
         ``"angstrom"``).
     cell : array_like, shape (3, 3), optional
         Full lattice/cell tensor (rows are lattice vectors, ASE convention).
@@ -94,7 +94,7 @@ class Grid:
 
     center: np.ndarray
     box_size: float = 5.0
-    h: float = DEFAULT_GRID_SPACING
+    grid_spacing: float = DEFAULT_GRID_SPACING
     units: str = "angstrom"
     cell: np.ndarray | None = None
     skew: bool = False
@@ -133,7 +133,8 @@ class Grid:
     def __post_init__(self):
         # Convert the user-facing lengths to the atomic units the backend uses.
         center_bohr = np.asarray(to_bohr(self.center, self.units), dtype=float)
-        h_bohr = np.abs(np.asarray(to_bohr(self.h, self.units), dtype=float))
+        h_bohr = np.abs(np.asarray(to_bohr(self.grid_spacing, self.units),
+                                   dtype=float))
         h_scalar = h_bohr.ndim == 0
         h_axes = np.broadcast_to(h_bohr, (3,)).astype(float)
 
@@ -218,13 +219,13 @@ class Grid:
             half = self._half_extents_from_cell()
         else:
             half = np.abs(np.asarray(to_bohr(box, self.units), dtype=float))
-            if half.ndim == 0:                      # scalar box, per-axis h
+            if half.ndim == 0:                      # scalar box, per-axis spacing
                 half = np.full(3, float(half))
             elif half.shape != (3,):
                 raise ValueError(
                     "box_size must be a scalar or a length-3 array of per-axis "
                     f"half-extents, got shape {half.shape}")
-        # Keep the per-axis spacing exactly at the target ``h`` (as the historical
+        # Keep the per-axis spacing exactly at the target ``grid_spacing`` (as the historical
         # non-cubic path did): choose the node count nearest that spacing, then
         # realize each half-extent from the count so ``dx`` stays exact.
         counts = [max(2, int(round(2.0 * L / h)) + 1)

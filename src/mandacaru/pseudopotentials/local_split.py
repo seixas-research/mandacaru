@@ -53,8 +53,8 @@ What it is worth, measured
 --------------------------
 Water in PAW-LCAO-SZ (10 Angstrom cell), shifted rigidly by fractions of :math:`h`
 along :math:`(1,1,1)/\sqrt3` with the molecular orbitals and the density
-frozen, one term at a time (peak-to-peak, meV).  ``h`` is the grid spacing in
-Angstrom, ``V_grid`` / ``V_split`` the local-potential term with
+frozen, one term at a time (peak-to-peak, meV).  :math:`h` is the grid
+spacing (``grid_spacing``) in Angstrom, ``V_grid`` / ``V_split`` the local-potential term with
 ``exact_local_potential`` off and on, ``E_grid`` / ``E_split`` the total:
 
 ======  ======  ======  ========  ========  ======  ========  ========
@@ -75,11 +75,12 @@ Read that honestly, because it does not say what one would hope.
   three happen to cancel.
 * The half that moves to the sphere is exactly translation invariant
   (3e-16), but the long-range half **stays on the grid and keeps an egg-box of
-  its own** -- larger than the full potential's at h >= 0.25 Angstrom, because
+  its own** -- larger than the full potential's at grid_spacing >= 0.25 Angstrom, because
   a Gaussian ion of width 1.4 h is a narrower well than the pseudized channel
-  it replaces (-7.2 Ha at the origin against -5.4 Ha for oxygen at h = 0.25).
+  it replaces (-7.2 Ha at the origin against -5.4 Ha for oxygen at grid_spacing =
+  0.25).
 * Widening sigma shrinks that term monotonically but never to zero (oxygen at
-  h = 0.30 Angstrom: 3425 / 2714 / 2097 / 1501 / 1159 meV at
+  grid_spacing = 0.30 Angstrom: 3425 / 2714 / 2097 / 1501 / 1159 meV at
   ``SIGMA_FACTOR`` = 1 / 1.4 / 2 / 3 / 4), because what is left is the sampling
   of the **pair density**, not of the potential -- and it makes the *total*
   worse by breaking the cancellation against the electron-repulsion term
@@ -87,12 +88,12 @@ Read that honestly, because it does not say what one would hope.
 
 What it does buy: the total egg-box is 1.0-2.1x smaller at the default
 ``SIGMA_FACTOR`` and was not larger at any spacing measured; the net force on
-water falls from 2.39 to 1.80 eV/Angstrom at h = 0.25; and the analytic
+water falls from 2.39 to 1.80 eV/Angstrom at grid_spacing = 0.25; and the analytic
 gradient agrees with a central difference of the calculator's own energy 3.5x
 better (2.6e-3 -> 7.5e-4 eV/Angstrom), because one more term is differentiated
 analytically instead of through a grid sum.  The energy itself moves by
-<= 4e-5 Hartree on the pinned H2 and LiH cases and the convergence with ``h``
-is unchanged (split minus grid is <= 1 meV for h <= 0.16 Angstrom on H2 and
+<= 4e-5 Hartree on the pinned H2 and LiH cases and the convergence with ``grid_spacing``
+is unchanged (split minus grid is <= 1 meV for grid_spacing <= 0.16 Angstrom on H2 and
 water).  Treat it as one term integrated exactly instead of approximately, not
 as a cure for the egg-box.
 """
@@ -119,7 +120,7 @@ RADIUS_SIGMAS = 6.5
 #: converges algebraically instead of exponentially.
 #:
 #: The orders below are what a convergence study on the *energy* asked for --
-#: water PAW-LCAO-DZ at h = 0.25 Angstrom (12 orbitals, the oxygen sphere holding
+#: water PAW-LCAO-DZ at grid_spacing = 0.25 Angstrom (12 orbitals, the oxygen sphere holding
 #: both hydrogens), ``tr(D V^sr)`` against a 240x64x128 reference:
 #: ``20x16x32`` +2.2e-6, ``32x24x48`` +7.9e-7, ``40x32x64`` +1.8e-7,
 #: ``64x32x64`` ~3e-7, ``80x40x80`` -9.5e-8 Hartree.  Below ~32 angular points
@@ -255,10 +256,10 @@ def short_range_radius(dataset, sigma: float) -> float:
     """Radius (Bohr) of the sphere that holds all of ``v^sr`` for this dataset.
 
     :data:`RADIUS_SIGMAS` widths of the Gaussian, but never less than the
-    dataset's own local cutoff: on a fine grid ``sigma`` shrinks with ``h``
+    dataset's own local cutoff: on a fine grid ``sigma`` shrinks with ``grid_spacing``
     while the pseudized region does not, and truncating inside it would throw
     away the part of ``v^sr`` that is *not* the erfc tail (Li's local cutoff is
-    2.34 Bohr against ``6.5 sigma = 1.7`` Bohr at h = 0.10 Angstrom).
+    2.34 Bohr against ``6.5 sigma = 1.7`` Bohr at grid_spacing = 0.10 Angstrom).
     """
     return max(RADIUS_SIGMAS * float(sigma), local_cutoff(dataset))
 

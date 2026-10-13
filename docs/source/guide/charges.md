@@ -63,7 +63,7 @@ $N_A = \int w_A n\, d^3r$ and $q_A = Z_A - N_A$.
   directions: it underestimated cation charges by 0.04--0.2 e at ordinary
   spacings and moved them with a shift of the atoms against the grid.)
 
-LiH at 1.6 Å, HAO, `h=0.20` — same state, three answers:
+LiH at 1.6 Å, HAO, `grid_spacing=0.20` — same state, three answers:
 
 | method | q(Li) | q(H) |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ Hirshfeld's weights are smooth, so it is exact on a symmetric molecule at any
 spacing. The hard partitions cut at a surface the grid has to resolve. H₂,
 whose charges must both be zero:
 
-| `h` (Å) | hirshfeld | voronoi | bader |
+| `grid_spacing` (Å) | hirshfeld | voronoi | bader |
 | --- | --- | --- | --- |
 | 0.30 | 0 | 0 | 0 |
 | 0.25 | 0 | 0 | 0 |
@@ -94,8 +94,8 @@ symmetric grid puts a whole plane of them exactly on the bond midplane, where
 round-off alone would pick the side (0.08 e of charge before the refinement).
 
 A partition can only be as converged as the density it cuts: in the
-all-electron `HAO` basis LiH's density itself moves with `h` (Hirshfeld
-+0.68 / +0.63 / +0.69 at h = 0.30 / 0.25 / 0.20), and Bader follows it. In a
+all-electron `HAO` basis LiH's density itself moves with `grid_spacing` (Hirshfeld
++0.68 / +0.63 / +0.69 at grid_spacing = 0.30 / 0.25 / 0.20), and Bader follows it. In a
 crystal at fixed density, the continuous ascent is converged by about ten
 nodes per lattice vector (rocksalt LiH +0.843 / +0.847 / +0.847 at 10 / 12 / 16)
 and moves by about 1e-3 e with a shift of the atoms against the grid.
@@ -150,7 +150,7 @@ evaluation:
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.20,
+                       grid_spacing=0.20,
                        population="hirshfeld")
 
 atoms.get_potential_energy()

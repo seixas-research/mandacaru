@@ -8,7 +8,7 @@ chain = Atoms("H", positions=[[0.0, 0.0, 0.0]],
 for method in ("bloch-vqe", "bloch-adapt-vqe"):
     chain.calc = Mandacaru(method=method,
                            basis="HAO",
-                           h=0.25,
+                           grid_spacing=0.25,
                            kpts={"size": (4, 1, 1), "gamma": True},
                            optimizer={"method": "L-BFGS", "maxiter": 2000,
                                       "tol": 1e-12})

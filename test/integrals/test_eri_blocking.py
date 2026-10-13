@@ -34,7 +34,7 @@ def _engine(real=False):
            HydrogenicAtomicOrbital(2, 1, 1, center=c, real=real),
            HydrogenicAtomicOrbital(2, 1, -1, center=c, real=real),
            HydrogenicAtomicOrbital(2, 1, 0, real=real)]
-    return IntegralEngine(fns, Grid(box_size=6.0, h=0.5, center=(0, 0, 0)))
+    return IntegralEngine(fns, Grid(box_size=6.0, grid_spacing=0.5, center=(0, 0, 0)))
 
 
 def _dense_reference(eng):
@@ -90,7 +90,7 @@ class TestBlockedHermitianERI:
         fns = [HydrogenicAtomicOrbital(1, 0, 0),
                HydrogenicAtomicOrbital(2, 1, 1, center=(0.5, 0.0, 0.2)),
                HydrogenicAtomicOrbital(2, 1, -1, center=(0.5, 0.0, 0.2))]
-        grid = Grid(box_size=5.0, h=0.5, center=(0, 0, 0))
+        grid = Grid(box_size=5.0, grid_spacing=0.5, center=(0, 0, 0))
         eng = IntegralEngine(fns, grid)
         solver = PeriodicPoissonSolver(grid.shape, step=grid.step)
         psi, M = eng._psi, len(fns)

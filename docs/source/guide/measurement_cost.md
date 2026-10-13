@@ -16,7 +16,7 @@ and a converged 75-operator optimization thrown away with it.
 
 ## The three walls, in the order you hit them
 
-Measured on LiH/PAW-LCAO at `h = 0.25`, `pool="ceo-ovp"`, Jordan-Wigner:
+Measured on LiH/PAW-LCAO at `grid_spacing = 0.25`, `pool="ceo-ovp"`, Jordan-Wigner:
 
 | basis | qubits | H Pauli strings | submitted with RDMs | QWC bases | ADAPT ops | 2q gates | fidelity |
 |---|---|---|---|---|---|---|---|
@@ -54,7 +54,7 @@ for and not otherwise:
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZ"},
-                       h=0.25,
+                       grid_spacing=0.25,
                        pool="ceo-ovp",
                        measurement_provider=QiskitProvider(device="ibm_fez",
                                                            shots=4096))
@@ -246,7 +246,7 @@ Turn it on with `measurement_scheme`:
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZ"},
-                       h=0.25,
+                       grid_spacing=0.25,
                        pool="ceo-ovp",
                        measurement_scheme="double-factorized",
                        measurement_provider=QiskitProvider(device="ibm_fez",

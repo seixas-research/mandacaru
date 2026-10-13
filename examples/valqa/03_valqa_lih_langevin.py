@@ -12,7 +12,7 @@ atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]])
 atoms.center(vacuum=4.0)
 atoms.calc = Mandacaru(method="valqa",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
-                       h=0.20,
+                       grid_spacing=0.20,
                        pool="qeb",
                        max_steps=40,
                        transfer=True,

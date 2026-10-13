@@ -12,7 +12,7 @@ atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7, 7, 7])
 atoms.center()
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.30)
+                       grid_spacing=0.30)
 atoms.get_potential_energy()
 
 atoms.calc.write_cube("density.cube")
@@ -93,11 +93,11 @@ stretched bond is half broken, and a single determinant — which would report
 
 Everything in a cube file is in **Bohr**, and a density is in electrons per
 Bohr³. The data is written on the calculation's **own** grid -- the real-space
-box the integrals used, centered on the molecule and with the node spacing `h`
+box the integrals used, centered on the molecule and with the node spacing `grid_spacing`
 asked for -- and the header carries that grid's origin and its three step
 vectors, so the atoms and the data line up whatever the geometry. That matters
 because Mandacaru's grid is not the cell divided by the node count (it is
-centered on the molecule, the node count is `round(L / h) + 1`, and a
+centered on the molecule, the node count is `round(L / grid_spacing) + 1`, and a
 non-orthogonal cell gives step *vectors*, not a diagonal); a writer that
 assumed otherwise would put every nucleus in the wrong place. This is why the
 format is written by `mandacaru.utils.cube` rather than taken from ASE.
@@ -110,7 +110,7 @@ picture, a coarser one for a smaller file. The basis functions are
 from mandacaru.integrals import Grid
 
 fine = Grid(center=atoms.get_positions().mean(axis=0),
-            box_size=0.0, h=0.08, units="angstrom", cell=atoms.get_cell())
+            box_size=0.0, grid_spacing=0.08, units="angstrom", cell=atoms.get_cell())
 atoms.calc.write_cube("density_fine.cube", grid=fine)
 ```
 
@@ -118,7 +118,7 @@ On the calculation's own grid the electron count comes out exact to machine
 precision, because that same quadrature is what defines the overlap the
 orbitals are orthonormal under. On any other grid the integral instead shows
 the difference between the two quadratures, which is a real measure of how well
-`h` resolved the basis.
+`grid_spacing` resolved the basis.
 
 A cube file is one text number per node, so size grows as $1/h^3$: a 21³ grid
 is about 120 kB, a 101³ grid about 14 MB.
@@ -132,7 +132,7 @@ and the state vector is passed directly:
 ```python
 atoms.calc = Mandacaru(method="subspace-vqe",
                        basis="HAO",
-                       h=0.30,
+                       grid_spacing=0.30,
                        num_states=2)
 atoms.get_potential_energy()
 atoms.calc.write_cube("excited.cube", state=1)
@@ -245,11 +245,11 @@ optimized parameters through `volumetric_field`, exactly as above -- or a
 from mandacaru import Camera, Viewer3D
 
 # Antibonding natural orbital as a point cloud, sampled on a finer grid.
-viewer = Viewer3D(atoms.calc, quantity="natural_orbital", index=1, h=0.12)
+viewer = Viewer3D(atoms.calc, quantity="natural_orbital", index=1, grid_spacing=0.12)
 viewer.save("no1.png")
 
 # The same orbital as an isosurface, turning once while zooming in and out.
-Viewer3D(atoms.calc, quantity="natural_orbital", index=1, h=0.12,
+Viewer3D(atoms.calc, quantity="natural_orbital", index=1, grid_spacing=0.12,
          mode="isosurface").animate("no1.gif", frames=120, fps=12,
                                     zoom=(1.0, 1.8, 1.0))
 ```
@@ -264,10 +264,10 @@ Two modes are available:
 Orbitals, `spin_density` and `difference_density` are drawn with both signs;
 `density` and the spin channels are non-negative and are drawn with one.
 
-`h=` (in Angstrom) re-evaluates the basis functions on a finer grid over the
+`grid_spacing=` (in Angstrom) re-evaluates the basis functions on a finer grid over the
 same box, like `grid=` above: the calculation's own grid is chosen for the
 integrals, not for pictures, and is usually coarse. An isosurface takes longer
-to render as `h` shrinks; `h=0.10`–`0.15` is a good range for small
+to render as `grid_spacing` shrinks; `grid_spacing=0.10`–`0.15` is a good range for small
 molecules.
 
 ### Camera paths

@@ -295,7 +295,7 @@ class TestPBELibrary:
 
     @pytest.mark.parametrize("symbol", ["Sc", "Ti", "Ga", "Ge"])
     def test_a_filtered_3d_function_projects_onto_its_own_wave(self, symbol):
-        """The filtered (h = 0.20 Angstrom) 3d basis function of a single
+        """The filtered (grid_spacing = 0.20 Angstrom) 3d basis function of a single
         atom projects onto its own first d projector as 1 and onto the
         second as 0, to 0.1.  The semicore Sc and Ti at their default d
         spheres were off by 0.21 / 0.35, the PBE Ga and Ge without the d
@@ -341,7 +341,7 @@ class TestPBELibrary:
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]],
                       cell=[6.0] * 3)
         atoms.center()
-        atoms.calc = Mandacaru(method="dft", xc="pbe", h=0.3,
+        atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.3,
                                basis={"name": "PAW-LCAO", "size": "SZ"},
                                directory="pbe-sr")
         with warnings.catch_warnings():

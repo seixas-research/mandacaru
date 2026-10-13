@@ -45,7 +45,7 @@ Registered today:
     = False``), compensation multipoles in the one- and two-body terms and a
     frozen one-center constant.  Registered when :mod:`.paw` is imported
     (the package does so).  It and its ``"upaw-lcao"`` variant declare
-    ``default_options = {"filter": True}``: their smooth partial waves are
+    ``default_options = {"filter_cutoff": "auto"}``: their smooth partial waves are
     built to be band-limited, so filtering them to the grid's Nyquist
     wave-vector is nearly free and removes most of the egg-box.
 
@@ -56,8 +56,8 @@ the user does not.  :meth:`FamilySpec.resolved_options` is the single merge
 (defaults first, the user's basis dict on top), consulted by
 :func:`build_valence_hamiltonian` and by the dry run, so a default is visible
 in one place, a new family declares its own, and writing the option explicitly
-always wins -- ``basis={"name": "PAW-LCAO", "filter": False}`` is exactly the
-unfiltered calculation.
+always wins -- ``basis={"name": "PAW-LCAO", "filter_cutoff": False}`` is
+exactly the unfiltered calculation.
 """
 
 from __future__ import annotations
@@ -70,11 +70,11 @@ from typing import Callable
 DEFAULT_FAMILY = "paw-lcao"
 
 #: Basis options every family accepts: the size hierarchy built on the
-#: pseudo-orbitals, the library directory and the Fourier filter
-#: (:mod:`mandacaru.basis.filtering`) that removes from each radial function
-#: the wave-vectors the real-space grid cannot represent.
-COMMON_OPTIONS = ("size", "zeta_split", "split_norm", "tail_norm",
-                  "directory", "filter")
+#: pseudo-orbitals and its split-valence scheme, the library directory and the
+#: cutoff of the Fourier filter (:mod:`mandacaru.basis.filtering`) that
+#: removes from each radial function the wave-vectors the real-space grid
+#: cannot represent.
+COMMON_OPTIONS = ("size", "zeta_split", "directory", "filter_cutoff")
 
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ class FamilySpec:
         ``get(symbol, directory=None) -> PseudoPotential`` -- the (cached)
         library loader.
     build : callable
-        ``build(atoms, grid, h, charge, spin, options, kinetic, *,
+        ``build(atoms, grid, grid_spacing, charge, spin, options, kinetic, *,
         active_space=None, hamiltonian=True)`` returning the driver
         5-tuple ``(hamiltonian, num_particles, n_spatial_orbitals,
         integration_profile, context)`` -- exactly what
@@ -116,7 +116,7 @@ class FamilySpec:
         before any integral is computed.
     default_options : dict
         Option values this family uses when the user does not say
-        (``{"filter": True}`` for PAW-LCAO / UPAW-LCAO, whose smooth partial waves are
+        (``{"filter_cutoff": "auto"}`` for PAW-LCAO / UPAW-LCAO, whose smooth partial waves are
         built to be band-limited and lose little by being filtered).  Declaring the default **here** rather
         than in the builder is what keeps it discoverable: one place says what
         every family does, a new family declares its own, and
@@ -151,9 +151,9 @@ class FamilySpec:
         """The family's :attr:`default_options` with the user's ``options`` on top.
 
         Every consumer of a basis dict goes through this, so
-        ``basis="PAW-LCAO"`` and ``basis={"name": "PAW-LCAO", "filter": True}`` are the
-        same calculation and ``{"name": "PAW-LCAO", "filter": False}`` is exactly
-        the unfiltered one.
+        ``basis="PAW-LCAO"`` and ``basis={"name": "PAW-LCAO", "filter_cutoff":
+        "auto"}`` are the same calculation and ``{"name": "PAW-LCAO",
+        "filter_cutoff": False}`` is exactly the unfiltered one.
         """
         merged = dict(self.default_options)
         merged.update(options or {})
@@ -269,30 +269,28 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
     the hooks resolve -- each orbital's cutoff radius, the polarization
     shell's -- for the run log.
 
-    The split-valence scheme is ``zeta_split`` -- ``"first_zeta"`` unless
-    written, or ``"last_zeta"`` when only ``split_norm`` is
+    The split-valence scheme is ``zeta_split`` (``"first_zeta"`` unless
+    written), and the scheme fixes its own tail norms or split norm
     (:func:`~mandacaru.basis.multizeta.resolve_split_scheme`).
     """
     from ..basis.multizeta import resolve_split_scheme
 
     spec = resolve_family(family)
-    split_norm, tail_norms = resolve_split_scheme(options.get("split_norm"),
-                                                  options.get("tail_norm"),
-                                                  options.get("zeta_split"))
+    split_norm, tail_norms = resolve_split_scheme(options.get("zeta_split"))
     arguments = {"size": options.get("size", "SZ"), "split_norm": split_norm,
                  "tail_norms": tail_norms}
     if "energy_shift" in spec.options:
         from .confinement import first_zeta_factory, polarization_factory
         arguments["first_zeta"] = first_zeta_factory(
             options.get("energy_shift"), confinement,
-            options.get("confinement"))
+            options.get("confinement_potential"))
         arguments["polarization_shape"] = polarization_factory(
-            options.get("polarization"), options.get("energy_shift"),
-            polarization, options.get("confinement"))
+            options.get("polarization_method"), options.get("energy_shift"),
+            polarization, options.get("confinement_potential"))
     return arguments
 
 
-def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
+def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, kinetic, *,
                               active_space=None, hamiltonian: bool = True,
                               family: str, load, projectors, coupling,
                               overlap=None, spin_orbit=None,
@@ -314,7 +312,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     the integral class (``integrals_class``, default
     :class:`~mandacaru.core.MolecularIntegrals`; ``potentials_keyword`` names
     its datasets argument).  The basis (with its ``size`` hierarchy and its
-    optional ``filter``), the grid, the electron count, the spin state and the
+    optional ``filter_cutoff``), the grid, the electron count, the spin state and the
     returned ``context`` are built here once.
 
     ``ghosts`` are atom indices that keep their basis functions but carry no
@@ -328,7 +326,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
         grid_from_cell, resolve_num_unpaired)
-    from ..basis.filtering import filter_cutoff
+    from ..basis.filtering import resolve_filter_cutoff
     from ..core import MolecularIntegrals
     from .orbitals import pseudo_basis, valence_electrons
 
@@ -350,19 +348,19 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
     real_positions = positions[real]
 
     n_el = int(round(valence_electrons(real_symbols, potentials))) - int(charge)
-    # The grid comes first now: ``filter="auto"`` ties its cutoff to the
+    # The grid comes first now: ``filter_cutoff="auto"`` ties its cutoff to the
     # *realized* spacing (the coarsest axis -- an anisotropic grid can only
     # represent what its worst direction can), which is known only once the
     # grid exists.  Nothing else about the grid depends on the basis.
     g = (grid if grid is not None
-         else grid_from_cell(atoms, h, center=positions.mean(axis=0)))
-    k_c = filter_cutoff(options.get("filter"),
-                        max(g.dx, g.dy, g.dz))
+         else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0)))
+    k_c = resolve_filter_cutoff(options.get("filter_cutoff"),
+                                max(g.dx, g.dy, g.dz))
 
     confinement: dict = {}
     polarization: dict = {}
     basis_fns, atom_of_orbital = pseudo_basis(
-        symbols, positions, potentials, filter_cutoff=k_c,
+        symbols, positions, potentials, filter_wavevector=k_c,
         **pseudo_basis_arguments(family, options, confinement=confinement,
                                  polarization=polarization))
     kb = projectors(real_symbols, real_positions, potentials, options)
@@ -400,7 +398,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
         mo_basis=True, n_electrons=n_el, num_particles=num_particles,
         active_space=active_space, two_body=two_body)
         if hamiltonian else None)
-    _warn_unresolved(integrals, basis_fns, h)
+    _warn_unresolved(integrals, basis_fns, grid_spacing)
 
     # A valence-only basis has no core to freeze, but it does have virtual
     # orbitals to delete, and the selector may also fold valence occupied
@@ -422,7 +420,7 @@ def build_valence_hamiltonian(atoms, grid, h, charge, spin, options, kinetic, *,
                "ghosts": tuple(sorted(ghosts)),
                "pseudopotentials": potentials, "kb_projectors": kb,
                "nonlocal_coupling": coupling_blocks, "family": family,
-               "filter_cutoff": k_c, "options": dict(options),
+               "filter_wavevector": k_c, "options": dict(options),
                "confinement": confinement, "polarization": polarization,
                "active_space": space}
     if space is not None:

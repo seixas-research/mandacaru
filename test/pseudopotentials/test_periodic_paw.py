@@ -20,12 +20,12 @@ from mandacaru.pseudopotentials import periodic_paw as pp
 #: its 2x1x1 supercell (10 nodes per primitive lattice vector).
 SILICON = bulk("Si", "diamond", a=5.43)
 SILICON_H = float(np.linalg.norm(SILICON.cell[0])) / 10
-SILICON_BASIS = {"size": "SZ", "filter": 200}
+SILICON_BASIS = {"size": "SZ", "filter_cutoff": 200}
 
 
-def _energy(atoms, h, options, kpts=None):
+def _energy(atoms, grid_spacing, options, kpts=None):
     """Extrapolated energy (Hartree per cell) of a periodic ``atoms``."""
-    crystal, context = pp.build_crystal(atoms, h, options, kpts=kpts)
+    crystal, context = pp.build_crystal(atoms, grid_spacing, options, kpts=kpts)
     constant = (sum(d.one_center_energy for d in crystal.datasets)
                 + sum(xc_grid.core_correction_offset(d)
                       for d in crystal.datasets))
@@ -98,8 +98,8 @@ class TestEnergies:
         """H2 at Gamma in an 8 Angstrom cell: the converged molecular energy.
 
         The molecular PAW-LCAO-DZP LDA energy, with the spectral kinetic
-        operator, extrapolates as h^2 from h = 0.25 ... 0.10 Angstrom to
-        -1.1269 Ha; the periodic, Fourier-filtered one gives it at h = 0.25
+        operator, extrapolates as h^2 from grid_spacing = 0.25 ... 0.10 Angstrom to
+        -1.1269 Ha; the periodic, Fourier-filtered one gives it at grid_spacing = 0.25
         (HISTORY.md, 2026-10-01).
         """
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
@@ -113,7 +113,7 @@ def _grid(atoms, nodes):
     from mandacaru.integrals import Grid
     cell = np.asarray(atoms.cell)
     return Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
-                h=float(np.linalg.norm(cell[0])) / nodes, units="angstrom",
+                grid_spacing=float(np.linalg.norm(cell[0])) / nodes, units="angstrom",
                 cell=cell, periodic=True)
 
 
@@ -161,7 +161,7 @@ class TestGridSymmetry:
 
         atoms = bulk("Au", "fcc", a=4.08)
         atoms.calc = Mandacaru(
-            method="dft", xc="lda", h=0.3, trace=False,
+            method="dft", xc="lda", grid_spacing=0.3, trace=False,
             basis={"name": "PAW-LCAO", "size": "SZ"},
             kpts={"size": (2, 2, 2), "gamma": True},
             smearing={"method": "fermi-dirac", "width": 0.1})
@@ -182,12 +182,12 @@ class TestGridSymmetry:
 
 class TestTheIrreducibleWedge:
     @pytest.mark.parametrize("atoms, nodes, kpts, options, functional", [
-        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}, "lda"),
+        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter_cutoff": 200}, "lda"),
         (bulk("Mg", "hcp", a=3.21, c=5.21), 10, (3, 3, 2),
-         {"size": "SZP", "filter": 200}, "lda"),
+         {"size": "SZP", "filter_cutoff": 200}, "lda"),
         (bulk("Mg", "hcp", a=3.21, c=5.21), 10, (3, 3, 2),
-         {"size": "SZP", "filter": 200}, "pbe"),
-        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter": 200}, "r2scan"),
+         {"size": "SZP", "filter_cutoff": 200}, "pbe"),
+        (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter_cutoff": 200}, "r2scan"),
     ], ids=["diamond-Si", "hcp-Mg", "hcp-Mg-pbe", "diamond-Si-r2scan"])
     def test_it_reproduces_the_time_reversed_mesh(self, atoms, nodes, kpts,
                                                   options, functional):
@@ -207,11 +207,11 @@ class TestTheIrreducibleWedge:
         charges and the short-range sphere rule did not commute with the
         operations either (K13b, :class:`TestTheOperationsCommute`).
         """
-        h = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
+        grid_spacing = float(np.linalg.norm(np.asarray(atoms.cell)[0])) / nodes
         energies = []
         for symmetry in (True, False):
             crystal, context = pp.build_crystal(
-                atoms, h, options, kpts={"size": kpts, "gamma": True},
+                atoms, grid_spacing, options, kpts={"size": kpts, "gamma": True},
                 symmetry=symmetry)
             result = PeriodicKohnSham(
                 crystal, context["n_electrons"], functional,
@@ -237,9 +237,9 @@ class TestTheOperationsCommute:
 
     @pytest.fixture(scope="class")
     def magnesium(self):
-        h = float(np.linalg.norm(MAGNESIUM.cell[0])) / 10
+        grid_spacing = float(np.linalg.norm(MAGNESIUM.cell[0])) / 10
         crystal, context = pp.build_crystal(
-            MAGNESIUM, h, {"size": "SZP", "filter": 200},
+            MAGNESIUM, grid_spacing, {"size": "SZP", "filter_cutoff": 200},
             kpts={"size": (3, 3, 2), "gamma": True}, symmetry=False)
         return crystal, context, pp.grid_symmetry(MAGNESIUM, crystal.grid)
 

@@ -132,7 +132,7 @@ class TestAdaptEndToEndStillWorks:
     def test_h2_reaches_its_fci_energy(self):
         atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
                       cell=[8.0] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.4,
                                pool="fermionic", trace=False, profile=False,
                                convergence={"gradient": 1e-6})
         energy = atoms.get_potential_energy()

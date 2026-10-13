@@ -189,7 +189,7 @@ class KBProjector(_RadialTabulated):
 # --------------------------------------------------------------------------- #
 
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
-                 size="SZ", split_norm=None, filter_cutoff=None,
+                 size="SZ", split_norm=None, filter_wavevector=None,
                  first_zeta=None, tail_norms=None, polarization_shape=None,
                  *, real: bool = True):
     """Valence pseudo-atomic basis for a molecule (real spherical
@@ -232,8 +232,9 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     Further polarization functions are then split-valence refinements of that
     shape with the *same* ``l``, instead of shells of higher ``l``.
 
-    ``filter_cutoff`` (a wave-vector in Bohr\\ :sup:`-1`, ``None`` = off) runs
-    every radial table through the Fourier filter of
+    ``filter_wavevector`` (the cutoff wave-vector :math:`k_c` in
+    Bohr\\ :sup:`-1` that the ``filter_cutoff`` option resolves to, ``None``
+    = off) runs every radial table through the Fourier filter of
     :mod:`mandacaru.basis.filtering` before it becomes a basis function, so the
     grid sampling, the PAW-LCAO atom-centered projection quadrature and the displaced
     sampling the forces are built from all see one band-limited function.  The
@@ -258,7 +259,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                                    orbitals_from_tables, resolve_zeta,
                                    zeta_tables)
 
-    k_c = None if filter_cutoff is None else float(filter_cutoff)
+    k_c = None if filter_wavevector is None else float(filter_wavevector)
+    split = DEFAULT_SPLIT_NORM if split_norm is None else float(split_norm)
     # One filter evaluation per (element, radial function), not per atom and
     # not per m: water's two hydrogens are the same element, and a p shell is
     # three functions off one table.
@@ -300,15 +302,6 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                              if radial is None
                              else np.asarray(radial, dtype=float))
         return confined[key]
-
-    def split_norm_of(symbol):
-        """``split_norm`` may be one value or ``{symbol: value}`` (with ``*``)."""
-        spec = split_norm
-        if isinstance(spec, dict):
-            table = {(k if k == "*" else k.capitalize()): v
-                     for k, v in spec.items()}
-            spec = table.get(symbol.capitalize(), table.get("*"))
-        return DEFAULT_SPLIT_NORM if spec is None else float(spec)
 
     def size_of(symbol):
         """``size`` may be one spec for all atoms or ``{symbol: spec}`` with an
@@ -363,7 +356,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                                                   state.index, state.empty),
                                      state.n, state.l,
                                      1 if state.semicore else n_zeta,
-                                     split_norm_of(symbol),
+                                     split,
                                      tail_norms=tail_norms):
                 tables.append(filtered_table(
                     symbol, ("z", state.l, state.index, table.zeta), table))
@@ -390,7 +383,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                 # polarization zetas too, rather than mixing conventions.
                 norms = None
             for table in zeta_tables(pp.r, shape, l + 1, l, n_polarization,
-                                     split_norm_of(symbol),
+                                     split,
                                      tail_norms=norms):
                 table.polarization = True
                 tables.append(filtered_table(symbol, ("pol", l, table.zeta),
@@ -402,7 +395,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             shape = shape / np.sqrt(np.trapezoid(shape * shape * r_table ** 2,
                                                  r_table))
             for table in zeta_tables(pp.r, shape, l + 1, l, 1,
-                                     split_norm_of(symbol)):
+                                     split):
                 table.polarization = True
                 # `filter_table` copies the record, `polarization` included.
                 tables.append(filtered_table(symbol, ("pol", l, table.zeta),

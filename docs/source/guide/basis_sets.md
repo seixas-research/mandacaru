@@ -60,8 +60,8 @@ basis={"name": "NAO", "size": "DZP", "energy_shift": 0.03}
 $r_c = \pi/\sqrt{2\delta E}$ in atomic units (convert the energy shift to
 Hartree to evaluate this expression); a smaller shift means a longer-ranged, more
 diffuse orbital. `zeta_split` (`"first_zeta"`, the default, or `"last_zeta"`)
-says which function each extra zeta is split from, and `tail_norm` or
-`split_norm` where -- see *How the extra zetas are built* below.
+says which function each extra zeta is split from, and so where -- see *How
+the extra zetas are built* below.
 
 The cost is set by how many functions each size produces, and **every function
 becomes two spin orbitals, hence two qubits**:
@@ -94,9 +94,10 @@ $R_2$ is strictly shorter-ranged than $R$ and vanishes smoothly at $r_s$, so it
 is cheap to integrate and injects no discontinuity.
 
 *What* to split, and *where*, is a convention, and LCAO codes do not share
-one. `zeta_split` names the two Mandacaru offers:
+one. `zeta_split` names the two Mandacaru offers, and each scheme carries its
+own parameter -- the split radii follow from `zeta_split` alone:
 
-| | `"first_zeta"` (**default**), parameter `tail_norm` | `"last_zeta"`, parameter `split_norm` |
+| | `"first_zeta"` (**default**): tail norms | `"last_zeta"`: split norm |
 | :--- | :--- | :--- |
 | the number is | the **norm** of the tail, $\bigl(\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr\bigr)^{1/2}$ | its **squared norm**, $\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr$ |
 | values | `(0.16, 0.3, 0.6)` for zetas 2, 3, 4 | `0.15`, halved for each further zeta |
@@ -104,19 +105,15 @@ one. `zeta_split` names the two Mandacaru offers:
 
 ```python
 basis={"name": "NAO", "size": "TZP"}                             # first_zeta
-basis={"name": "NAO", "size": "TZP", "tail_norm": 0.2}           # ... a longer tail
-basis={"name": "NAO", "size": "TZP", "zeta_split": "last_zeta"}  # last_zeta, 0.15
-basis={"name": "NAO", "size": "TZP", "split_norm": 0.1}          # last_zeta, 0.1
+basis={"name": "NAO", "size": "TZP", "zeta_split": "last_zeta"}  # last_zeta
 ```
 
 The numbers are not comparable digit for digit: a tail norm of 0.16 is a
 squared-norm fraction of 0.0256, so `first_zeta`'s extra zetas are
-**longer-ranged**. Each parameter belongs to its scheme: `tail_norm` with
-`"last_zeta"`, or `split_norm` with `"first_zeta"`, is refused, and a
-`split_norm` written without `zeta_split` selects `"last_zeta"`. Where each hydrogen 1s zeta ends (a₀, default
+**longer-ranged**. Where each hydrogen 1s zeta ends (a₀, default
 `energy_shift`):
 
-| Zeta | `tail_norm` (default) | `split_norm=0.15` |
+| Zeta | `"first_zeta"` (default) | `"last_zeta"` |
 |------|-----------|------|
 | 2 | 3.58 | 2.34 |
 | 3 | 2.71 | 1.34 |
@@ -134,7 +131,7 @@ stay compact.
 
 Hartree–Fock total energy of H₂ at 0.74 Å (eV), on a uniform real-space grid:
 
-| Size | Orbitals | E (h=0.20 Å) | E (h=0.12 Å) |
+| Size | Orbitals | E (grid_spacing=0.20 Å) | E (grid_spacing=0.12 Å) |
 |------|----------|--------------|--------------|
 | SZ  | 2  | −28.953922 | −29.356514 |
 | DZ  | 4  | −29.723378 | −30.221129 |
@@ -147,11 +144,11 @@ adds essentially nothing — and the reason is not that it is redundant.
 ```{warning}
 Extra zetas are short-ranged **by construction**, and Mandacaru samples every
 basis function on a uniform real-space grid. The third hydrogen zeta extends to
-0.65 Å, which is 3.2 grid points at `h = 0.20 Å`. A function three points wide is
+0.65 Å, which is 3.2 grid points at `grid_spacing = 0.20 Å`. A function three points wide is
 not represented, it is aliased.
 
-Its contribution does grow as the grid is refined (3e-5 eV at `h = 0.20 Å`,
-1e-3 eV at `h = 0.12 Å`), so this is a resolution limit rather than a defect.
+Its contribution does grow as the grid is refined (3e-5 eV at `grid_spacing = 0.20 Å`,
+1e-3 eV at `grid_spacing = 0.12 Å`), so this is a resolution limit rather than a defect.
 On a uniform mesh, though, it is the binding constraint: **there is no point
 paying for TZ or QZ unless the grid can resolve them.** DZP is the practical
 sweet spot.
@@ -232,7 +229,7 @@ basis is 2 spatial orbitals, 4 qubits, and a single double excitation.
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "HAO", "virtual_orbitals": 1},
-                       h=0.30)
+                       grid_spacing=0.30)
 ```
 
 It appends the *k* lowest **unoccupied** subshells of each atom, in aufbau
@@ -259,7 +256,7 @@ any element, and the [dry run](dry_run.md) reports the qubit total before
 anything is integrated.
 
 The payoff is variational: the smaller basis is a strict subset of the larger,
-so the correlated energy must fall. H₂ at 0.74 Å in an 8 Å cell (`h = 0.30`,
+so the correlated energy must fall. H₂ at 0.74 Å in an 8 Å cell (`grid_spacing = 0.30`,
 ADAPT-VQE to its basis FCI):
 
 | `virtual_orbitals` | qubits | E (eV) | gain |

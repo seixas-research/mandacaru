@@ -34,7 +34,7 @@ class TestNormalization:
 
     def test_3d_grid_normalization(self):
         orb = GaussianOrbital(0, 0, [1.3], [1.0], units="bohr")
-        grid = Grid(center=[0, 0, 0], box_size=12.0, h=0.30, units="bohr")
+        grid = Grid(center=[0, 0, 0], box_size=12.0, grid_spacing=0.30, units="bohr")
         psi = orb.evaluate(grid.X, grid.Y, grid.Z)
         assert abs(float(np.sum(np.abs(psi) ** 2) * grid.dV) - 1.0) < 0.02
 

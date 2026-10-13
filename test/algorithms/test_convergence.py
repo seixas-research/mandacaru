@@ -107,7 +107,7 @@ def _lih(**options):
     atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[8.0] * 3)
     atoms.center()
     options = {"max_iterations": 30, **options}
-    atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.30,
+    atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30,
                            pool="qubit", trace=False, **options)
     atoms.get_potential_energy()
     return atoms.calc.result
@@ -133,7 +133,7 @@ class TestGrowth:
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
                       cell=[8.0] * 3)
         atoms.center()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.30,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30,
                                pool="fermionic", trace=False)
         atoms.get_potential_energy()
         result = atoms.calc.result

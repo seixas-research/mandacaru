@@ -13,7 +13,7 @@ atoms = molecule("H2")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        pool="fermionic",
                        checkpoint=CHECKPOINT)
 print(f"ADAPT-VQE: {atoms.get_potential_energy():.6f} eV")

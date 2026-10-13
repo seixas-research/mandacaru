@@ -28,7 +28,7 @@ come from a quantum variational eigensolver:
     water.center(vacuum=3.0)          # the cell is the real-space box
     water.calc = Mandacaru(method="adapt-vqe",
                            basis="HAO",
-                           h=0.30,
+                           grid_spacing=0.30,
                            active_space={"frozen": "auto"})
     BFGS(water).run(fmax=0.05)
 
@@ -319,7 +319,7 @@ def _watchable_stdout() -> None:
 #: it vanishes at **both** ends of the correlation range: for the Hartree-Fock
 #: determinant (RHF is orbital-stationary) and for the exact ground state of the
 #: same orbital space (a full CI there is invariant under any rotation of those
-#: orbitals).  Measured on H2O / PAW-LCAO-SZ at h = 0.25: 1.2e-9 Ha for the HF
+#: orbitals).  Measured on H2O / PAW-LCAO-SZ at grid_spacing = 0.25: 1.2e-9 Ha for the HF
 #: determinant, 1.8e-9 for the sector FCI, and 1.0e-2 for the ADAPT state that
 #: stalls 5.4e-4 Ha above it.  So a nonzero residual says the ansatz stopped
 #: short of that exact state -- to *first* order in the state error, where the
@@ -406,7 +406,7 @@ class Mandacaru(Calculator):
         ``"lda-dirac"`` reads the PAW-LCAO set with the spin-orbit term.  A
         basis that names its own ``directory`` option keeps it.  Not ASE's working directory: the
         calculator's ``directory`` attribute is left to ASE.
-    h : float
+    grid_spacing : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
         per-geometry grid built from ``atoms.cell`` and for the frozen force
         grid.  The box itself is always ``atoms.cell`` -- the geometry must
@@ -525,8 +525,10 @@ class Mandacaru(Calculator):
         times ``M``.  The tolerance (Hartree) bounds every integral's error,
         not an energy's; see the "Memory and scale" guide for what it does to
         energies.  Molecules, energies and active spaces only: crystals,
-        forces, ``method="dft"`` and ``"ghf"`` and a spin-orbit basis need
-        the dense tensor and are refused.
+        ``method="dft"`` and ``"ghf"`` and a spin-orbit basis need the dense
+        tensor and are refused.  Forces need an ``active_space``: they are
+        the central difference of the reduced Hamiltonian, each displaced
+        geometry factored on the reference's pivots.
     charge, active_space, mapping, pool, ... :
         Forwarded to the solver selected by ``method``.
     dry_run : bool
@@ -558,7 +560,7 @@ class Mandacaru(Calculator):
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
                  directory: str | None = None,
-                 h: float = DEFAULT_GRID_SPACING, grid=None,
+                 grid_spacing: float = DEFAULT_GRID_SPACING, grid=None,
                  include_pulay: bool = True, force_method: str = "rdm",
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
@@ -606,7 +608,7 @@ class Mandacaru(Calculator):
             basis = with_library_folder(basis, self.library_folder,
                                         required=named)
         self.basis = basis
-        self.h = float(h)
+        self.grid_spacing = float(grid_spacing)
         self.include_pulay = bool(include_pulay)
         # `1 in (True, False, "auto")` is True in Python, so the check is by
         # type: an int is a typo for a boolean, not a boolean.
@@ -1109,7 +1111,8 @@ class Mandacaru(Calculator):
 
     def _make_solver(self, grid, **overrides):
         options = {**self.solver_kwargs, **overrides}
-        solver = self._solver_class(basis=self.basis, grid=grid, h=self.h,
+        solver = self._solver_class(basis=self.basis, grid=grid,
+                                    grid_spacing=self.grid_spacing,
                                     verbose=self._show_trace(), **options)
         # A periodic driver keeps the primitive cell aside (its own `atoms`
         # becomes the supercell once it runs); hand over the attached geometry
@@ -1155,7 +1158,7 @@ class Mandacaru(Calculator):
         charge = int(options.pop("charge", charge))
         return interaction_energy(atoms, fragments, charges, charge=charge,
                                   method=self.method, basis=self.basis,
-                                  h=self.h, grid=self._grid,
+                                  grid_spacing=self.grid_spacing, grid=self._grid,
                                   **options)
 
     def polarizability(self, atoms=None, **overrides):
@@ -1174,7 +1177,7 @@ class Mandacaru(Calculator):
         options = dict(self.solver_kwargs)
         options.update(overrides)
         return polarizability(geometry, method=self.method, basis=self.basis,
-                              h=self.h, grid=self._grid, **options)
+                              grid_spacing=self.grid_spacing, grid=self._grid, **options)
 
     def born_effective_charges(self, atoms=None, **overrides):
         """Born effective charges of the crystal ``atoms`` (default: the
@@ -1190,7 +1193,8 @@ class Mandacaru(Calculator):
                              "atoms or attach the calculator to an Atoms "
                              "object")
         options = dict(self.solver_kwargs)
-        options.update(method=self.method, basis=self.basis, h=self.h)
+        options.update(method=self.method, basis=self.basis,
+                       grid_spacing=self.grid_spacing)
         if self._grid is not None:
             options["grid"] = self._grid
         options.update(overrides)
@@ -1210,7 +1214,8 @@ class Mandacaru(Calculator):
                              "atoms or attach the calculator to an Atoms "
                              "object")
         options = dict(self.solver_kwargs)
-        options.update(method=self.method, basis=self.basis, h=self.h)
+        options.update(method=self.method, basis=self.basis,
+                       grid_spacing=self.grid_spacing)
         if self._grid is not None:
             options["grid"] = self._grid
         options.update(overrides)
@@ -1230,7 +1235,8 @@ class Mandacaru(Calculator):
             raise ValueError("dielectric_tensor needs a geometry: pass atoms "
                              "or attach the calculator to an Atoms object")
         options = dict(self.solver_kwargs)
-        options.update(method=self.method, basis=self.basis, h=self.h)
+        options.update(method=self.method, basis=self.basis,
+                       grid_spacing=self.grid_spacing)
         if self._grid is not None:
             options["grid"] = self._grid
         options.update(overrides)
@@ -1263,7 +1269,7 @@ class Mandacaru(Calculator):
             return self._grid
         from ._hamiltonian_from_atoms import grid_from_cell
 
-        self._grid = grid_from_cell(atoms, self.h)
+        self._grid = grid_from_cell(atoms, self.grid_spacing)
         return self._grid
 
     @staticmethod
@@ -1319,12 +1325,18 @@ class Mandacaru(Calculator):
         if want_forces:
             self._require_atom_centered_basis(self.basis)
             if getattr(getattr(self.solver, "two_body", None), "cholesky",
-                       False):
+                       False) and getattr(self.solver, "active_space",
+                                          None) is None:
+                # With an active space the force is the central difference
+                # of the reduced Hamiltonian, rebuilt from factors on the
+                # reference's pivots; without one it would be the analytic
+                # gradient, which differentiates the integrals themselves.
                 raise NotImplementedError(
-                    "nuclear forces are not available with the Cholesky "
-                    "two-body integrals: the gradient of a truncated "
-                    "factorization needs its own derivation.  Use "
-                    "two_body='dense' (the default) for forces")
+                    "nuclear forces with the Cholesky two-body integrals need "
+                    "an active_space: they are the central difference of the "
+                    "reduced active Hamiltonian, and the analytic gradient of "
+                    "the factors is not implemented.  Give an active_space, "
+                    "or use two_body='dense' (the default)")
             # Forces measure the RDMs: a provider that cannot return many
             # expectation values of one state is refused now, before the
             # optimization it would otherwise fail after.
@@ -2159,8 +2171,9 @@ class Mandacaru(Calculator):
 
     def _direct_active_space_gradient(self, solver, context, rdms,
                                       reference_energy):
-        """Forces of an integral-direct active space (``"dlpno-mp2"``, or a
-        build that took the direct route for memory).
+        """Forces of an integral-direct active space (``"dlpno-mp2"``,
+        Cholesky two-body integrals, or a build that took the direct route
+        for memory).
 
         The whole gradient is the central difference of the reduced
         Hamiltonian (:func:`~mandacaru.algorithms.active_space_forces.active_space_gradient`),
@@ -2441,7 +2454,7 @@ class Mandacaru(Calculator):
         The block covers the **whole** step, which is why the calculator writes
         it and not the solver: on a real relaxation the nuclear gradient is the
         largest single stage -- a six-step water relaxation in PAW-LCAO-SZ at
-        h = 0.10 spends 62 % of its 325 s on forces against 19 % on the
+        grid_spacing = 0.10 spends 62 % of its 325 s on forces against 19 % on the
         variational optimization -- so a block closed when the solver finished
         would account for the smaller part of the time.  ``stages`` carries what
         this method's caller timed -- the gradient, and the provider measurement
@@ -2543,7 +2556,7 @@ class Mandacaru(Calculator):
         way, so it can be checked without catching a warning.
 
         A sharp all-electron core is where this matters: LiH in the ``HAO``
-        basis at ``h = 0.25`` reports ~480 eV/Angstrom of net force -- larger
+        basis at ``grid_spacing = 0.25`` reports ~480 eV/Angstrom of net force -- larger
         than any real force in the problem -- while its energy, its RDMs and
         its orbital-response residual all look healthy.
         """
@@ -2564,7 +2577,7 @@ class Mandacaru(Calculator):
                 f"crystal's atoms in their cell -- changes nothing physical, "
                 f"so this is grid artifact, not physics. The frozen-grid "
                 f"energy is not translation "
-                f"invariant at this spacing. Refine h and check both energy "
+                f"invariant at this spacing. Refine grid_spacing and check both energy "
                 f"and forces across grid spacings and molecular positions; "
                 f"a pseudopotential can reduce, but does not eliminate, "
                 f"this sampling error.",
@@ -2768,7 +2781,7 @@ class Mandacaru(Calculator):
 
             atoms.calc = Mandacaru(method="adapt-vqe",
                                    basis={"name": "PAW-LCAO", "size": "DZP"},
-                                   h=0.20)
+                                   grid_spacing=0.20)
             atoms.get_potential_energy()
             atoms.calc.write_cube("density.cube")
             atoms.calc.write_cube("spin.cube", quantity="spin_density")
@@ -3322,4 +3335,4 @@ class Mandacaru(Calculator):
 
     def __repr__(self) -> str:
         return (f"Mandacaru(method={self.method!r}, "
-                f"basis={self.basis!r}, h={self.h})")
+                f"basis={self.basis!r}, grid_spacing={self.grid_spacing})")

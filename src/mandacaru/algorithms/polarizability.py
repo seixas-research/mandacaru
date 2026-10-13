@@ -102,7 +102,7 @@ class Polarizability:
 
 def polarizability(atoms, *, field: float = DEFAULT_FIELD,
                    method: str = "dft", basis="HAO",
-                   h: float = DEFAULT_GRID_SPACING,
+                   grid_spacing: float = DEFAULT_GRID_SPACING,
                    grid=None, **solver_kwargs) -> Polarizability:
     """The static dipole polarizability of the molecule ``atoms``.
 
@@ -112,7 +112,7 @@ def polarizability(atoms, *, field: float = DEFAULT_FIELD,
         A molecule (no periodic direction).
     field : float
         The finite-difference field strength (Hartree per e Bohr).
-    method, basis, h, grid, **solver_kwargs :
+    method, basis, grid_spacing, grid, **solver_kwargs :
         Forwarded to every run, as for any ``Mandacaru`` calculation.  The
         seven runs share one grid, built from ``atoms`` unless ``grid`` is
         given.
@@ -130,16 +130,16 @@ def polarizability(atoms, *, field: float = DEFAULT_FIELD,
     field = float(field)
     if not np.isfinite(field) or field <= 0.0:
         raise ValueError(f"field must be a positive number; got {field!r}")
-    h = float(h)
+    grid_spacing = float(grid_spacing)
     # Energies come back in eV unless the runs are in atomic units.
     to_hartree = 1.0 if solver_kwargs.get("atomic_units") else 1.0 / HARTREE_TO_EV
     method_key = str(method).strip().lower()
-    shared = _shared_grid(atoms, h, grid, method_key)
+    shared = _shared_grid(atoms, grid_spacing, grid, method_key)
 
     def run(vector):
         geometry = atoms.copy()
         geometry.calc = Mandacaru(
-            method=method, basis=basis, h=h, grid=shared,
+            method=method, basis=basis, grid_spacing=grid_spacing, grid=shared,
             electric_field=None if vector is None else tuple(vector),
             **solver_kwargs)
         energy = geometry.get_potential_energy() * to_hartree

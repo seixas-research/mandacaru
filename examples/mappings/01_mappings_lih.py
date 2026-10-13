@@ -8,7 +8,7 @@ atoms.center(vacuum=3.0)
 for mapping in ("jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev"):
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW-LCAO", "size": "SZ"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            pool="fermionic",
                            mapping=mapping)
     energy = atoms.get_potential_energy()

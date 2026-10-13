@@ -62,11 +62,11 @@ atoms.calc = Mandacaru(method="bloch-vqe",
                        kpts={"size": (4, 1, 1), "gamma": True},
                        basis="HAO",
                        mapping="jordan_wigner",
-                       h=0.20)
+                       grid_spacing=0.20)
 print(atoms.calc.dimension, "D crystal,", atoms.calc.n_bands, "band(s)")
 ```
 
-`kpts` is the Brillouin-zone sampling and `h` the real-space grid spacing
+`kpts` is the Brillouin-zone sampling and `grid_spacing` the real-space grid spacing
 (Ångström). `n_bands` is a property of the basis, so it answers before anything
 runs; the bands themselves need the correlated state, so they come after
 `get_potential_energy()`. The constructor is the same for every method — swap
@@ -97,7 +97,7 @@ for mapping in ("bravyi_kitaev", "parity_reduced"):
     trial = atoms.copy()
     trial.calc = Mandacaru(method="bloch-vqe",
                            kpts={"size": (2, 1, 1), "gamma": True},
-                           basis="HAO", h=0.35, mapping=mapping)
+                           basis="HAO", grid_spacing=0.35, mapping=mapping)
     trial.get_potential_energy()
     spectral = trial.calc.get_spectral_function(eta=0.2)
     print(mapping, spectral.sum_rule)
@@ -158,7 +158,7 @@ method (the box is the supercell's own cell), and divides by the number of cells
 # Fixed-ansatz VQE.
 atoms.calc = Mandacaru(method="bloch-vqe",
                        kpts={"size": (4, 1, 1), "gamma": True},
-                       basis="HAO", h=0.20,
+                       basis="HAO", grid_spacing=0.20,
                        optimizer={"method": "L-BFGS", "maxiter": 2000,
                                   "tol": 1e-12})
 e_cell = atoms.get_potential_energy()
@@ -166,24 +166,24 @@ e_cell = atoms.get_potential_energy()
 # Adaptive ADAPT-VQE (extra adaptive controls).
 atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                        kpts={"size": (4, 1, 1), "gamma": True},
-                       basis="HAO", h=0.20,
+                       basis="HAO", grid_spacing=0.20,
                        max_iterations=10, convergence={"gradient": 1e-3})
 e_cell = atoms.get_potential_energy()
 print(atoms.calc.result.num_operators, "operators grown")
 ```
 
 The remaining options are the selected solver's own, so which are valid depends on
-the method (`optimizer`/`h` for all; `pool`/`max_iterations`/`convergence` for
+the method (`optimizer`/`grid_spacing` for all; `pool`/`max_iterations`/`convergence` for
 the adaptive ones). This is a finite-supercell estimate
 that converges to the bulk total energy as the mesh is refined (exact in the
 infinite-mesh limit), and how tightly it settles depends on the gap. An
-insulating H₂ chain (a = 3.0 Å, d = 0.74 Å, 10 Å vacuum, HAO, h = 0.30) gives
+insulating H₂ chain (a = 3.0 Å, d = 0.74 Å, 10 Å vacuum, HAO, grid_spacing = 0.30) gives
 −29.315, −28.142, −28.156 and −28.108 eV per cell at 1 to 4 k-points: the first
 refinement moves it by 1.2 eV and the rest stay inside a 0.05 eV band, though
 the steps change sign, so read it as a band rather than a one-sided approach. A
 **metal** swings an order of magnitude more, because meshes differ in whether
 they are degenerate at the Fermi level: the half-filled hydrogen chain
-(a = 1.0 Å, h = 0.35) gives −10.577, −12.940 and −11.592 eV per cell at 4, 6 and
+(a = 1.0 Å, grid_spacing = 0.35) gives −10.577, −12.940 and −11.592 eV per cell at 4, 6 and
 8 k-points, since 4 and 8 are degenerate at `E_F` while 6 is closed-shell. Read
 convergence off a gapped system, or off meshes of a single shell type. Note the supercell size — and therefore the qubit count —
 grows with the mesh, so a dense mesh such as `(10, 1, 1)` (a 20-qubit supercell) is
@@ -355,7 +355,7 @@ square = Atoms("H", positions=[[0.0, 0.0, 0.0]],
 square.calc = Mandacaru(method="bloch-vqe",
                         kpts={"size": (2, 2, 1), "gamma": True},
                         basis="HAO",
-                        h=0.35)
+                        grid_spacing=0.35)
 square.get_potential_energy()          # the bands need the correlated state
 
 # The four commensurate k-points of the (2, 2, 1) mesh -- and no others.

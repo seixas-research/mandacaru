@@ -280,7 +280,7 @@ class TestBasisSet:
         assert all(not o.polarization for o in orbitals if o.l < 2)
 
     def test_normalized_on_a_real_space_grid(self):
-        grid = Grid(center=[0, 0, 0], box_size=8.0, h=0.20)
+        grid = Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=0.20)
         orbitals = BasisSet.build("NAO-AE", tier=1).atom("H")
         for o in orbitals:
             psi = o.sample(grid)
@@ -334,7 +334,7 @@ class TestBasisSet:
 class TestVariational:
     @staticmethod
     def _rhf(**options):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.20)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.20)
         basis = BasisSet.build("NAO-AE", **options)
         functions, nuclei = [], []
         for position in ([0, 0, -0.37], [0, 0, 0.37]):

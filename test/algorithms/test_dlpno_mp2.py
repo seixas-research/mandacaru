@@ -19,19 +19,19 @@ from mandacaru.algorithms.orbital_integrals import (DirectOrbitalIntegrals,
 from mandacaru.core.hamiltonian import molecular_orbital_integrals
 
 
-def _problem(name, size="DZP", h=0.3):
+def _problem(name, size="DZP", grid_spacing=0.3):
     from mandacaru.algorithms._hamiltonian_from_atoms import \
         build_basis_hamiltonian
 
     atoms = molecule(name)
     atoms.center(vacuum=3.0)
     _none, particles, _M, _profile, context = build_basis_hamiltonian(
-        atoms, {"name": "PAW-LCAO", "size": size}, None, h, 0, None,
+        atoms, {"name": "PAW-LCAO", "size": size}, None, grid_spacing, 0, None,
         hamiltonian=False)
     integrals = context["integrals"]
     n = sum(particles)
-    h, g, C = molecular_orbital_integrals(integrals, n, particles, None)
-    return integrals, n // 2, h, g, C
+    grid_spacing, g, C = molecular_orbital_integrals(integrals, n, particles, None)
+    return integrals, n // 2, grid_spacing, g, C
 
 
 @pytest.fixture(scope="module")
@@ -129,7 +129,7 @@ class TestTheActiveSpaceMethod:
             atoms.center(vacuum=3.0)
             atoms.calc = Mandacaru(
                 method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZP"},
-                h=0.3, active_space={"orbitals": 6, "method": method},
+                grid_spacing=0.3, active_space={"orbitals": 6, "method": method},
                 max_iterations=1, trace=False)
             atoms.get_potential_energy()
             context = atoms.calc.solver._gradient_context
@@ -155,7 +155,7 @@ class TestTheActiveSpaceMethod:
             atoms.center(vacuum=3.0)
             atoms.calc = Mandacaru(
                 method="adapt-vqe",
-                basis={"name": "PAW-LCAO", "size": "DZP"}, h=0.35,
+                basis={"name": "PAW-LCAO", "size": "DZP"}, grid_spacing=0.35,
                 active_space={"orbitals": 2, "method": method},
                 max_iterations=2, trace=False)
             forces[method] = atoms.get_forces()

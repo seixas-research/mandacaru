@@ -19,7 +19,7 @@ atoms = Atoms(
     positions=[[0.0, 0.0, -0.8], [0.0, 0.0, 0.8]],
     pbc=False,
 )
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, grid_spacing=0.12)
 
 atoms.calc = Mandacaru(
     method="adapt-vqe",

@@ -51,8 +51,8 @@ def dimer(symbols, distance, cell):
                  cell=[cell] * 3)
 
 
-def calculator(h, basis=BASIS):
-    return Mandacaru(method="adapt-vqe", basis=basis, h=h, pool="fermionic",
+def calculator(grid_spacing, basis=BASIS):
+    return Mandacaru(method="adapt-vqe", basis=basis, grid_spacing=grid_spacing, pool="fermionic",
                      optimizer=LBFGS, max_iterations=80,
                      convergence={"gradient": 1e-5}, profile=False)
 
@@ -71,7 +71,7 @@ def h2():
     newer geometry).
     """
     atoms = dimer("H2", 0.75, 8.0)
-    atoms.calc = calculator(h=0.25)
+    atoms.calc = calculator(grid_spacing=0.25)
     forces = atoms.get_forces()
     return SimpleNamespace(atoms=atoms, forces=forces,
                            raw=atoms.calc.force_result.unprojected,
@@ -123,7 +123,7 @@ def test_hellmann_feynman_and_pulay(h2):
     # split and free-atom orbitals (> 1.0; kept reproducible below), 0.760 A
     # with the first_zeta split alone (< 0).  Since 2026-10-12 the spheres of
     # a wave-function Hamiltonian are exact, and the minimum moved out to
-    # 0.772 A (h = 0.25, FCI): the frozen LDA spheres had put H2 26 mHa below
+    # 0.772 A (grid_spacing = 0.25, FCI): the frozen LDA spheres had put H2 26 mHa below
     # the exact energy and the exact ones put it 16 mHa above, the excess
     # growing as the two hydrogen spheres (r_c 1.30 Bohr) overlap -- 1 mHa at
     # R = 2.6 Bohr, 16 at 1.4 (HISTORY.md "PAW-LCAO Hamiltonian: one-center
@@ -133,8 +133,9 @@ def test_hellmann_feynman_and_pulay(h2):
 
 def test_the_last_zeta_split_is_still_available():
     atoms = dimer("H2", 0.75, 8.0)
-    atoms.calc = calculator(h=0.25, basis={**BASIS, "split_norm": 0.15,
-                                           "energy_shift": None})
+    atoms.calc = calculator(grid_spacing=0.25,
+                            basis={**BASIS, "zeta_split": "last_zeta",
+                                   "energy_shift": None})
     # Outside that basis's minimum (0.711 A) with the frozen spheres, the
     # pre-2026-09-20 behavior (> 1.0); with the exact spheres (2026-10-12) the
     # minimum moved past 0.75 A (-0.22 eV/Angstrom), as for the default basis.
@@ -151,7 +152,7 @@ def test_spectral_kinetic_forces_are_the_derivative_of_the_energy(family):
     stencil's)."""
     atoms = dimer("LiH", 1.6, 8.0)
     atoms.positions[1, 0] += 0.05
-    atoms.calc = Mandacaru(method="adapt-vqe", h=0.25, pool="fermionic",
+    atoms.calc = Mandacaru(method="adapt-vqe", grid_spacing=0.25, pool="fermionic",
                            basis={"name": family, "size": "SZ"},
                            kinetic="spectral", optimizer=LBFGS,
                            convergence={"gradient": 1e-6}, profile=False)
@@ -182,7 +183,7 @@ def test_h2_force_curve_follows_the_plane_wave_reference():
     """
     for distance, reference in PLANE_WAVE_H2.items():
         atoms = dimer("H2", distance, 8.0)
-        atoms.calc = calculator(h=0.25)
+        atoms.calc = calculator(grid_spacing=0.25)
         force = bond_force(atoms.get_forces())
         if abs(reference) > 2.0:
             assert np.sign(force) == np.sign(reference), distance
@@ -194,7 +195,7 @@ def test_h2_force_curve_follows_the_plane_wave_reference():
 def test_lih_force_curve_follows_the_plane_wave_reference():
     for distance, reference in PLANE_WAVE_LIH.items():
         atoms = dimer("LiH", distance, 10.0)
-        atoms.calc = calculator(h=0.25)
+        atoms.calc = calculator(grid_spacing=0.25)
         force = bond_force(atoms.get_forces())
         assert force == pytest.approx(reference, rel=0.25), distance
 
@@ -207,7 +208,7 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
 
     def run(**options):
         atoms = dimer("H2", 1.0, 8.0)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", h=0.25,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", grid_spacing=0.25,
                                pool="fermionic", optimizer=LBFGS,
                                max_iterations=10, convergence={"gradient": 1e-6},
                                profile=False, **options)
@@ -235,7 +236,7 @@ def test_reduced_active_space_force_tracks_optimized_energy(taper):
     grid = grid_from_cell(atoms, 0.35)
     atoms.calc = Mandacaru(
         method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-        grid=grid, h=0.35, active_space={"orbitals": 2, "method": "mp2"},
+        grid=grid, grid_spacing=0.35, active_space={"orbitals": 2, "method": "mp2"},
         taper=taper, pool="fermionic", optimizer=LBFGS,
         max_iterations=20, convergence={"gradient": 1e-6},
         project_translation=False, profile=False)
@@ -260,7 +261,7 @@ def test_reduced_active_space_force_tracks_optimized_energy(taper):
         measured = dimer("H2", 0.92, 8.0)
         measured.calc = Mandacaru(
             method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-            grid=grid, h=0.35, active_space={"orbitals": 2, "method": "mp2"},
+            grid=grid, grid_spacing=0.35, active_space={"orbitals": 2, "method": "mp2"},
             taper=True, pool="fermionic", optimizer=LBFGS,
             max_iterations=20, convergence={"gradient": 1e-6},
             project_translation=False, profile=False,
@@ -288,9 +289,9 @@ def water(cell=8.0):
                  cell=[cell] * 3)
 
 
-def water_calculator(h=0.25):
+def water_calculator(grid_spacing=0.25):
     return Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "SZ"},
-                     h=h, pool="fermionic", optimizer=LBFGS,
+                     grid_spacing=grid_spacing, pool="fermionic", optimizer=LBFGS,
                      max_iterations=60, convergence={"gradient": 1e-4}, profile=False)
 
 

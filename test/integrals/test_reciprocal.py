@@ -19,7 +19,7 @@ SKEWED = np.array([[6.0, 0.0, 0.0], [3.0, 5.196, 0.0], [0.0, 0.0, 7.0]])
 
 @pytest.fixture(scope="module")
 def grid():
-    return Grid(center=0.5 * SKEWED.sum(axis=0), box_size=0.0, h=0.25,
+    return Grid(center=0.5 * SKEWED.sum(axis=0), box_size=0.0, grid_spacing=0.25,
                 units="angstrom", cell=SKEWED, periodic=True)
 
 
@@ -113,7 +113,7 @@ ALIASING_CELLS = {
 def _periodic_grid(cell, nodes):
     cell = np.asarray(cell, dtype=float)
     return Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
-                h=np.linalg.norm(cell, axis=1) / np.asarray(nodes),
+                grid_spacing=np.linalg.norm(cell, axis=1) / np.asarray(nodes),
                 units="angstrom", cell=cell, periodic=True)
 
 
@@ -134,7 +134,7 @@ class TestSymmetricAliases:
                    for P in operations for Q in operations)
 
     def test_a_box_cube_has_the_full_cubic_group(self):
-        grid = Grid(center=np.zeros(3), box_size=6.0, h=0.4, units="bohr")
+        grid = Grid(center=np.zeros(3), box_size=6.0, grid_spacing=0.4, units="bohr")
         assert len(rc.lattice_operations(grid)) == 48
 
     @pytest.mark.parametrize("name", sorted(ALIASING_CELLS))

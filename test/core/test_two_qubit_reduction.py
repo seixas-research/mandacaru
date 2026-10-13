@@ -43,7 +43,7 @@ def _h2():
 @pytest.fixture(scope="module")
 def reference():
     atoms = _h2()
-    atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO", h=0.4,
+    atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO", grid_spacing=0.4,
                            trace=False, profile=False, max_iterations=4)
     atoms.get_total_energy()
     return atoms.calc.result.optimal_energy, atoms.calc.result.reference_energy
@@ -106,7 +106,7 @@ class TestDrivers:
         exact, hf = reference
         atoms = _h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", h=0.4,
+                               basis="HAO", grid_spacing=0.4,
                                mapping="parity_reduced", trace=False,
                                profile=True, max_iterations=4)
         atoms.get_total_energy()
@@ -123,7 +123,7 @@ class TestDrivers:
     def test_vqe_reaches_the_untapered_energy(self, reference):
         exact, _hf = reference
         atoms = _h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4,
                                mapping="parity_reduced",
                                optimizer=LBFGS, trace=False)
         atoms.get_total_energy()
@@ -155,7 +155,7 @@ class TestDrivers:
         exact, _hf = reference
         atoms = _h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", h=0.4,
+                               basis="HAO", grid_spacing=0.4,
                                mapping="parity_reduced", trace=False,
                                profile=False, max_iterations=4)
         atoms.get_total_energy()

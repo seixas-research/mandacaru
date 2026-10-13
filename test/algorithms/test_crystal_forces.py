@@ -30,7 +30,7 @@ from mandacaru.integrals import exchange_correlation as xc_grid
 from mandacaru.pseudopotentials.periodic_paw import build_crystal
 from mandacaru.units import HARTREE_TO_EV, to_bohr
 
-OPTIONS = {"size": "SZ", "filter": 300}
+OPTIONS = {"size": "SZ", "filter_cutoff": 300}
 SMEARING = {"method": "fermi-dirac", "width": 0.1}
 
 
@@ -64,11 +64,11 @@ def _li2h():
     return atoms
 
 
-def _solve(atoms, h, kpts=None, functional="lda", grid=None,
+def _solve(atoms, grid_spacing, kpts=None, functional="lda", grid=None,
            symmetry=False, charge=0):
     """The converged crystal: spin-polarized when ``atoms`` carry initial
     moments, as the calculator runs it; ``charge`` electrons removed."""
-    crystal, context = build_crystal(atoms, h, OPTIONS, kpts=kpts, grid=grid,
+    crystal, context = build_crystal(atoms, grid_spacing, OPTIONS, kpts=kpts, grid=grid,
                                      symmetry=symmetry)
     constant = float(sum(d.one_center_energy for d in crystal.datasets)
                      + sum(xc_grid.core_correction_offset(d)
@@ -88,7 +88,7 @@ def _strained(atoms, epsilon, shape):
     cell = atoms.cell.array @ (np.eye(3) + epsilon).T
     moved.set_cell(cell, scale_atoms=True)
     grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
-                h=np.linalg.norm(cell, axis=1) / np.asarray(shape),
+                grid_spacing=np.linalg.norm(cell, axis=1) / np.asarray(shape),
                 units="angstrom", cell=cell, periodic=True)
     return moved, grid
 
@@ -101,8 +101,8 @@ def test_the_force_is_the_derivative_of_the_free_energy(functional):
     component of each atom), on a fixed grid: 1e-5 eV/Angstrom.  Si on a
     2x2x2 mesh reached 8e-7 (LDA), 8e-7 (PBE) and 4e-6 (r2SCAN)."""
     atoms = _lih()
-    h = float(np.linalg.norm(atoms.cell[0])) / 10
-    solver, _result = _solve(atoms, h, functional=functional)
+    grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 10
+    solver, _result = _solve(atoms, grid_spacing, functional=functional)
     gradient = crystal_gradient(solver)
     assert np.all(np.abs(gradient.hellmann_feynman) > 0.0)
     assert np.any(np.abs(gradient.pulay) > 1e-4)
@@ -112,7 +112,7 @@ def test_the_force_is_the_derivative_of_the_free_energy(functional):
         for sign in (+1.0, -1.0):
             moved = atoms.copy()
             moved.positions[atom, d] += sign * step
-            values.append(_solve(moved, h, functional=functional,
+            values.append(_solve(moved, grid_spacing, functional=functional,
                                  grid=solver.crystal.grid)[1].free_energy)
         numeric = (values[0] - values[1]) / (2.0 * step) * HARTREE_TO_EV
         assert gradient.gradient[atom, d] == pytest.approx(numeric, abs=1e-5)
@@ -131,15 +131,15 @@ def test_a_k_mesh_force_is_the_derivative_of_the_free_energy(functional,
     atoms = build("Si", "diamond", a=5.43)
     atoms.positions[1] += [0.05, 0.02, -0.03]
     kpts = {"size": size, "gamma": True}
-    h = float(np.linalg.norm(atoms.cell[0])) / 10
-    solver, _result = _solve(atoms, h, kpts=kpts, functional=functional)
+    grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 10
+    solver, _result = _solve(atoms, grid_spacing, kpts=kpts, functional=functional)
     gradient = crystal_gradient(solver)
     step = 1e-3
     values = []
     for sign in (+1.0, -1.0):
         moved = atoms.copy()
         moved.positions[1, 0] += sign * step
-        values.append(_solve(moved, h, kpts=kpts, functional=functional,
+        values.append(_solve(moved, grid_spacing, kpts=kpts, functional=functional,
                              grid=solver.crystal.grid)[1].free_energy)
     numeric = (values[0] - values[1]) / (2.0 * step) * HARTREE_TO_EV
     assert gradient.gradient[1, 0] == pytest.approx(numeric, abs=1e-5)
@@ -152,8 +152,8 @@ def test_the_stress_is_the_strain_derivative_of_the_free_energy(functional):
     crystals (same node counts, pinned filter): a diagonal and a shear
     component to 1e-5 relative."""
     atoms = _lih()
-    h = float(np.linalg.norm(atoms.cell[0])) / 10
-    solver, _result = _solve(atoms, h, functional=functional)
+    grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 10
+    solver, _result = _solve(atoms, grid_spacing, functional=functional)
     stress = crystal_stress(solver, atoms, OPTIONS, "paw-lcao", None)
     volume = abs(np.linalg.det(to_bohr(atoms.cell.array, "angstrom")))
     step = 1e-3
@@ -165,7 +165,7 @@ def test_the_stress_is_the_strain_derivative_of_the_free_energy(functional):
             epsilon[b, a] += 0.5 * sign * step
             moved, grid = _strained(atoms, epsilon,
                                     solver.crystal.grid.shape)
-            values.append(_solve(moved, h, grid=grid,
+            values.append(_solve(moved, grid_spacing, grid=grid,
                                  functional=functional)[1].free_energy)
         numeric = (values[0] - values[1]) / (2.0 * step) / volume
         assert stress[a, b] == pytest.approx(numeric, rel=1e-5, abs=1e-9)
@@ -177,7 +177,7 @@ class TestTheCalculator:
         atoms = _lih()
         atoms.calc = Mandacaru(method="dft", basis={"name": "PAW-LCAO",
                                                     **OPTIONS},
-                               h=float(np.linalg.norm(atoms.cell[0])) / 10,
+                               grid_spacing=float(np.linalg.norm(atoms.cell[0])) / 10,
                                smearing=SMEARING, trace=False)
         atoms.get_potential_energy()
         return atoms
@@ -224,9 +224,9 @@ def _c3v_silicon(functional, h_divisor):
     atoms = bulk("Si", "diamond", a=5.43)
     atoms.positions[1] += 0.04 * np.ones(3)
     kpts = {"size": (2, 2, 2), "gamma": True}
-    h = float(np.linalg.norm(atoms.cell[0])) / h_divisor
-    full, _ = _solve(atoms, h, kpts=kpts, functional=functional)
-    reduced, _ = _solve(atoms, h, kpts=kpts, grid=full.crystal.grid,
+    grid_spacing = float(np.linalg.norm(atoms.cell[0])) / h_divisor
+    full, _ = _solve(atoms, grid_spacing, kpts=kpts, functional=functional)
+    reduced, _ = _solve(atoms, grid_spacing, kpts=kpts, grid=full.crystal.grid,
                         symmetry=True, functional=functional)
     assert len(_operations(reduced.crystal)) == 6
     assert len(invariant_strains(reduced.crystal)) == 2
@@ -281,7 +281,7 @@ class TestTheIrreducibleKPointsOfAHybrid:
 # Spin-polarized crystals.
 # --------------------------------------------------------------------------- #
 
-def _doublet_gradient(atoms, h, solver, atom, d, functional, kpts=None,
+def _doublet_gradient(atoms, grid_spacing, solver, atom, d, functional, kpts=None,
                       step=1e-3):
     """Central difference (eV/Angstrom) of the doublet's free energy on
     ``solver``'s grid; every displaced crystal keeps its moment."""
@@ -289,7 +289,7 @@ def _doublet_gradient(atoms, h, solver, atom, d, functional, kpts=None,
     for sign in (+1.0, -1.0):
         moved = atoms.copy()
         moved.positions[atom, d] += sign * step
-        _s, result = _solve(moved, h, kpts=kpts, functional=functional,
+        _s, result = _solve(moved, grid_spacing, kpts=kpts, functional=functional,
                             grid=solver.crystal.grid, charge=1)
         assert result.magnetic_moment == pytest.approx(1.0, abs=1e-3)
         values.append(result.free_energy)
@@ -307,14 +307,14 @@ def test_a_spin_crystal_force_is_the_derivative_of_the_free_energy(
     only at the nodes the functional does not clip.  1e-5 eV/Angstrom;
     measured 3e-7 to 4e-7 for every functional."""
     atoms = _doublet()
-    h = float(np.linalg.norm(atoms.cell[0])) / 10
-    solver, result = _solve(atoms, h, functional=functional, charge=1)
+    grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 10
+    solver, result = _solve(atoms, grid_spacing, functional=functional, charge=1)
     assert solver.n_spins == 2
     assert result.magnetic_moment == pytest.approx(1.0, abs=1e-3)
     gradient = crystal_gradient(solver)
     assert np.any(np.abs(gradient.pulay) > 1e-4)
     for atom, d in ((1, 0), (0, 2)):
-        numeric = _doublet_gradient(atoms, h, solver, atom, d, functional)
+        numeric = _doublet_gradient(atoms, grid_spacing, solver, atom, d, functional)
         assert gradient.gradient[atom, d] == pytest.approx(numeric, abs=1e-5)
 
 
@@ -328,14 +328,14 @@ def test_a_spin_k_mesh_force_is_the_derivative_of_the_free_energy(
     hole's band at a = 4 is too wide for it."""
     atoms = _doublet(a=6.0)
     kpts = {"size": (2, 1, 1), "gamma": True}
-    h = float(np.linalg.norm(atoms.cell[0])) / 14
-    solver, result = _solve(atoms, h, kpts=kpts, functional=functional,
+    grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 14
+    solver, result = _solve(atoms, grid_spacing, kpts=kpts, functional=functional,
                             charge=1)
     assert len(solver.crystal.kpoints) == 2
     assert result.magnetic_moment == pytest.approx(1.0, abs=1e-3)
     gradient = crystal_gradient(solver)
     for atom, d in ((1, 0), (0, 2)):
-        numeric = _doublet_gradient(atoms, h, solver, atom, d, functional,
+        numeric = _doublet_gradient(atoms, grid_spacing, solver, atom, d, functional,
                                     kpts)
         assert gradient.gradient[atom, d] == pytest.approx(numeric, abs=1e-5)
 
@@ -351,8 +351,8 @@ def test_a_spin_crystal_stress_is_the_strain_derivative(functional):
     finite difference itself carries a 1e-4 relative error there (the
     analytic stress matches its step -> 0 limit, HISTORY 2026-10-04)."""
     atoms = _li2h()
-    h = 0.33
-    solver, _result = _solve(atoms, h, functional=functional)
+    grid_spacing = 0.33
+    solver, _result = _solve(atoms, grid_spacing, functional=functional)
     stress = crystal_stress(solver, atoms, OPTIONS, "paw-lcao", None)
     volume = abs(np.linalg.det(to_bohr(atoms.cell.array, "angstrom")))
     step = 1e-3
@@ -364,7 +364,7 @@ def test_a_spin_crystal_stress_is_the_strain_derivative(functional):
             epsilon[b, a] += 0.5 * sign * step
             moved, grid = _strained(atoms, epsilon,
                                     solver.crystal.grid.shape)
-            _s, result = _solve(moved, h, grid=grid, functional=functional)
+            _s, result = _solve(moved, grid_spacing, grid=grid, functional=functional)
             assert result.magnetic_moment == pytest.approx(1.0, abs=1e-2)
             values.append(result.free_energy)
         numeric = (values[0] - values[1]) / (2.0 * step) / volume
@@ -383,11 +383,11 @@ def test_a_spin_crystal_that_loses_its_moment_has_the_restricted_derivatives(
     from mandacaru.algorithms.crystal_forces import (carried_energy,
                                                      kpoint_state)
     atoms = _lih()
-    h = float(np.linalg.norm(atoms.cell[0])) / 6
-    restricted, plain = _solve(atoms, h, functional=functional)
+    grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 6
+    restricted, plain = _solve(atoms, grid_spacing, functional=functional)
     polarized = atoms.copy()
     polarized.set_initial_magnetic_moments([0.2, 0.2])
-    spin, result = _solve(polarized, h, functional=functional,
+    spin, result = _solve(polarized, grid_spacing, functional=functional,
                           grid=restricted.crystal.grid)
     assert spin.n_spins == 2
     assert abs(result.magnetic_moment) < 1e-6
@@ -418,7 +418,7 @@ def test_spin_crystal_forces_reach_ase():
     atoms.positions[1] += [0.05, -0.03, 0.02]
     atoms.calc = Mandacaru(method="dft", basis={"name": "PAW-LCAO",
                                                 **OPTIONS},
-                           h=4.0 / 14, smearing=SMEARING, trace=False)
+                           grid_spacing=4.0 / 14, smearing=SMEARING, trace=False)
     forces = atoms.get_forces()
     assert atoms.calc.get_number_of_spins() == 2
     result = atoms.calc.force_result

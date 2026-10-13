@@ -64,7 +64,7 @@ def solved_chain():
                   cell=np.diag([2.0, 10.0, 10.0]), pbc=[True, False, False])
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",
                            kpts={"size": (2, 1, 1), "gamma": True},
-                           basis="HAO", h=0.35, trace=False, optimizer=SLSQP)
+                           basis="HAO", grid_spacing=0.35, trace=False, optimizer=SLSQP)
     atoms.get_potential_energy()
     return atoms
 
@@ -238,7 +238,7 @@ class TestTheSecondTensorIsComparable:
 
         cell = np.diag([6.0, 6.0, 6.0])
         nuclei = [(1.0, np.array([3.0, 3.0, 3.0]))]
-        grid = Grid(center=[3.0] * 3, box_size=0.0, h=0.6, units="angstrom",
+        grid = Grid(center=[3.0] * 3, box_size=0.0, grid_spacing=0.6, units="angstrom",
                     cell=cell)
         integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid,
                                        units="angstrom")
@@ -282,7 +282,7 @@ class TestTheCorrectionOnARun:
         """A molecule has no images, so there is nothing to remove."""
         atoms = Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]],
                       cell=np.diag([8.0] * 3))
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.4,
                                trace=False, optimizer=SLSQP)
         atoms.get_potential_energy()
         with pytest.raises(ValueError, match="not periodic"):

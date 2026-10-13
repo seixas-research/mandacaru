@@ -46,7 +46,7 @@ import numpy as np
 from mandacaru.integrals import Grid
 from mandacaru.units import BOHR_TO_ANGSTROM
 
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, grid_spacing=0.12)
 spacing = grid.dz * BOHR_TO_ANGSTROM  # Grid stores its spacing in bohr.
 distances = 1.12 + 2 * spacing * np.arange(8)
 ```

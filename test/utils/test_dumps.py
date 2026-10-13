@@ -35,7 +35,7 @@ def h2_hamiltonian():
 
     nuclei = [(1.0, np.array([0.0, 0.0, -0.37])),
               (1.0, np.array([0.0, 0.0, +0.37]))]
-    grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.25)
+    grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.25)
     integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
@@ -179,7 +179,7 @@ class TestCalculator:
         atoms.center()
         atoms.calc = Mandacaru(method="adapt-vqe",
                                basis="HAO",
-                               h=0.35,
+                               grid_spacing=0.35,
                                verbose_operators=str(tmp_path / "pool.json"),
                                verbose_hamiltonian=str(tmp_path / "h.json"))
         atoms.get_potential_energy()

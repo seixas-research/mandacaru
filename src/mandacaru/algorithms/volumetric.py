@@ -628,7 +628,7 @@ def volumetric_field(integrals, gamma, *, quantity: str = "density",
         same quadrature is what defines the overlap the orbitals are
         orthonormal under; on any other grid the integral instead shows the
         difference between the two quadratures, which is a real measure of how
-        well ``h`` resolved the basis.
+        well ``grid_spacing`` resolved the basis.
     numbers : sequence of int, optional
         Atomic numbers to write for the nuclei.  Defaults to the charges the
         Hamiltonian carries, which for a pseudopotential run are the *valence*

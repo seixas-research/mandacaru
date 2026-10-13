@@ -77,7 +77,7 @@ class TestNormalization:
         from mandacaru.integrals import Grid
         b = BasisSet.build("6-31G(d)")
         orb = b.atom("H", center=[0.0, 0.0, 0.0])[0]
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=8.0, h=0.12)
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=8.0, grid_spacing=0.12)
         psi = orb.evaluate(grid.X, grid.Y, grid.Z)
         norm = float(np.sum(np.abs(psi) ** 2) * grid.dV)
         assert norm == pytest.approx(1.0, abs=0.02)

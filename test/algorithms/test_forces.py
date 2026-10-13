@@ -43,7 +43,7 @@ BOX, SPACING = 6.0, 0.20
 @pytest.fixture(scope="module")
 def fixed_grid():
     """One grid, shared by every geometry -- see the module docstring."""
-    return Grid(center=[0.0, 0.0, 0.0], box_size=BOX, h=SPACING)
+    return Grid(center=[0.0, 0.0, 0.0], box_size=BOX, grid_spacing=SPACING)
 
 
 def h2(distance: float) -> Atoms:
@@ -284,7 +284,7 @@ def isolated_atom_force(symbol, n_electrons, spacing, box=5.0, offset=0.37,
     from mandacaru.core import MolecularIntegrals
     from mandacaru.units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
 
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=box, h=spacing)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=box, grid_spacing=spacing)
     position = np.array([0.0, 0.0, offset * grid.dx * BOHR_TO_ANGSTROM])
     functions = BasisSet.build("HAO").atom(symbol, center=position,
                                            units="angstrom")
@@ -446,7 +446,7 @@ class TestByPartsMode:
 
 class TestMandacaru:
     def test_implements_energy_and_forces(self):
-        calc = Mandacaru(method="vqe", basis="HAO", h=SPACING)
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=SPACING)
         assert "energy" in calc.implemented_properties
         assert "forces" in calc.implemented_properties
 
@@ -511,7 +511,7 @@ class TestMandacaru:
 
     def test_grid_is_frozen_across_geometries(self):
         """The grid must not follow the atoms, or forces stop matching energies."""
-        calc = Mandacaru(method="vqe", basis="HAO", h=SPACING)
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=SPACING)
         atoms = h2(0.74)
         atoms.center(vacuum=2.5)            # the cell is the frozen box
         atoms.calc = calc
@@ -573,7 +573,7 @@ class TestProjectedForcesAreQualified:
         # profile=False: this file reads Parquet above, and building Qiskit
         # circuits in the same process then crashes in Qiskit's allocator (the
         # documented pandas/pyarrow interaction).  The forces need no circuits.
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.45, charge=1,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45, charge=1,
                                pool="fermionic", max_iterations=3, profile=False,
                                convergence={"gradient": 1e-3}, txt=out)
         with warnings.catch_warnings():
@@ -628,7 +628,7 @@ class TestTheKineticCrossBlock:
                                                  orbital_derivatives)
         from mandacaru.integrals import IntegralEngine
 
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, h=0.4,
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=10.0, grid_spacing=0.4,
                     units="bohr")
         vext = (-1.0 / np.maximum(np.sqrt(grid.X ** 2 + grid.Y ** 2
                                           + grid.Z ** 2), 0.5)).ravel()
@@ -656,7 +656,7 @@ class TestTheKineticCrossBlock:
     def test_an_unknown_operator_or_a_missing_laplacian_is_refused(self):
         from mandacaru.algorithms.forces import one_body_cross
 
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, h=0.5, units="bohr")
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, grid_spacing=0.5, units="bohr")
         psi = np.ones((1, grid.size), dtype=complex)
         vext = np.zeros(grid.size)
         with pytest.raises(ValueError, match="unknown kinetic"):
@@ -671,7 +671,7 @@ class TestStreamedPairPotentials:
 
     @staticmethod
     def _orbitals(M=4, seed=0):
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, h=0.4, units="bohr")
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.0, grid_spacing=0.4, units="bohr")
         rng = np.random.default_rng(seed)
         r2 = (grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2).ravel()
         psi = np.stack([np.exp(-(0.6 + 0.3 * m) * r2)

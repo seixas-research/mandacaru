@@ -36,11 +36,11 @@ These are independent choices.
 ```python
 from mandacaru.integrals import Grid
 
-grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, h=0.12)
+grid = Grid(center=[0.0, 0.0, 0.0], box_size=4.8, grid_spacing=0.12)
 ```
 
 `box_size` is a **half-width**: this box extends from −4.8 to +4.8 Å along
-each axis. `h` is the requested spacing in ångströms. An explicit grid means
+each axis. `grid_spacing` is the requested spacing in ångströms. An explicit grid means
 that this example does not need an ASE unit cell. These modest settings are
 for learning; check finer grids and larger boxes before interpreting energies
 quantitatively.

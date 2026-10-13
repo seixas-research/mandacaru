@@ -7,7 +7,7 @@ atoms = Atoms("O2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.208]],
 atoms.center(vacuum=3.4)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        pool="fermionic",
                        active_space={"frozen": [0, 1, 2, 3, 4]},
                        max_iterations=12,

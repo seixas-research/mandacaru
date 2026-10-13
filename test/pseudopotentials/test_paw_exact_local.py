@@ -70,7 +70,7 @@ def water(cell=8.0):
 
     Swapping y and z maps the molecule onto itself and exchanges the hydrogens,
     and the cubic grid shares that symmetry, so exact forces must obey it -- and
-    the oxygen sphere (4.3 Bohr at h = 0.25 Angstrom) holds *both* hydrogens,
+    the oxygen sphere (4.3 Bohr at grid_spacing = 0.25 Angstrom) holds *both* hydrogens,
     which is what makes this the interesting case for a sphere quadrature: most
     of what it integrates is not centered on its own atom.
     """
@@ -79,13 +79,13 @@ def water(cell=8.0):
                  cell=[cell] * 3)
 
 
-def context_of(atoms, h, basis=SZ, grid=None):
-    grid = grid_from_cell(atoms, h) if grid is None else grid
-    return build_basis_hamiltonian(atoms, basis, grid, h, 0, None)[4]
+def context_of(atoms, grid_spacing, basis=SZ, grid=None):
+    grid = grid_from_cell(atoms, grid_spacing) if grid is None else grid
+    return build_basis_hamiltonian(atoms, basis, grid, grid_spacing, 0, None)[4]
 
 
-def integrals_of(atoms, h, basis=SZ, grid=None):
-    return context_of(atoms, h, basis, grid)["integrals"]
+def integrals_of(atoms, grid_spacing, basis=SZ, grid=None):
+    return context_of(atoms, grid_spacing, basis, grid)["integrals"]
 
 
 def rhf_total(integrals, n_electrons=None):
@@ -175,8 +175,8 @@ class TestRangeSeparation:
 
     def test_the_width_follows_the_grid(self):
         atoms = h2()
-        for h in (0.30, 0.20, 0.10):
-            grid = grid_from_cell(atoms, h)
+        for grid_spacing in (0.30, 0.20, 0.10):
+            grid = grid_from_cell(atoms, grid_spacing)
             sigma = ls.split_width(grid)
             assert sigma == pytest.approx(ls.SIGMA_FACTOR * ls.grid_spacing(grid))
             # The Nyquist weight the factor was chosen for.
@@ -212,15 +212,15 @@ class TestTranslationInvariance:
         This is the point of the whole construction: the integral depends only
         on the separations of the basis functions from the sphere's center, so
         no grid enters it.  The grid-sampled local potential moved by 24-634 meV
-        over the same shifts (water PAW-LCAO-SZ, h = 0.16-0.25 Angstrom).
+        over the same shifts (water PAW-LCAO-SZ, grid_spacing = 0.16-0.25 Angstrom).
         """
-        h = 0.25
+        grid_spacing = 0.25
         atoms = water()
-        grid = grid_from_cell(atoms, h)          # frozen: only the molecule moves
-        reference = integrals_of(atoms, h, grid=grid).short_range_local()
+        grid = grid_from_cell(atoms, grid_spacing)          # frozen: only the molecule moves
+        reference = integrals_of(atoms, grid_spacing, grid=grid).short_range_local()
         shifted = atoms.copy()
-        shifted.positions += 0.5 * h * np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
-        moved = integrals_of(shifted, h, grid=grid).short_range_local()
+        shifted.positions += 0.5 * grid_spacing * np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+        moved = integrals_of(shifted, grid_spacing, grid=grid).short_range_local()
         assert np.abs(moved - reference).max() < 1e-9
         assert np.abs(reference).max() > 0.1     # not trivially zero
 
@@ -264,9 +264,9 @@ class TestTranslationInvariance:
         """
         from mandacaru.units import BOHR_TO_ANGSTROM
 
-        h, atoms = 0.25, water()
-        grid = grid_from_cell(atoms, h)
-        context = context_of(atoms, h, grid=grid)
+        grid_spacing, atoms = 0.25, water()
+        grid = grid_from_cell(atoms, grid_spacing)
+        context = context_of(atoms, grid_spacing, grid=grid)
         integrals = context["integrals"]
         owners = np.asarray(context["atom_of_orbital"])
         gradients = integrals.short_range_local_matrices(gradients=True)[1]
@@ -279,7 +279,7 @@ class TestTranslationInvariance:
                     shifted = atoms.copy()
                     shifted.positions[atom, k] += (sign * delta
                                                    * BOHR_TO_ANGSTROM)
-                    moved.append(integrals_of(shifted, h, grid=grid)
+                    moved.append(integrals_of(shifted, grid_spacing, grid=grid)
                                  .short_range_local())
                 numerical = (moved[0] - moved[1]) / (2.0 * delta)
                 analytic = (_pulay(gradients, owners, atom, k, M)
@@ -293,21 +293,21 @@ class TestTranslationInvariance:
 # --------------------------------------------------------------------------- #
 
 class TestAgreesWithTheGrid:
-    @pytest.mark.parametrize("h, tolerance", [(0.16, 2e-4), (0.13, 1e-4)])
-    def test_fine_grid_limit(self, h, tolerance):
+    @pytest.mark.parametrize("grid_spacing, tolerance", [(0.16, 2e-4), (0.13, 1e-4)])
+    def test_fine_grid_limit(self, grid_spacing, tolerance):
         """Both forms integrate the same potential, so they must converge together.
 
         Measured on H2 PAW-LCAO-SZ: ``split - grid`` is -2.35e-4 Hartree at
-        h = 0.30 Angstrom, -4.1e-7 at 0.16 and +5.3e-8 at 0.09 -- the grid's own
+        grid_spacing = 0.30 Angstrom, -4.1e-7 at 0.16 and +5.3e-8 at 0.09 -- the grid's own
         error on the short-range part, which is what the quadrature removes.
         """
         atoms = h2()
         PAWIntegrals.exact_local_potential = False
         try:
-            on_grid = rhf_total(integrals_of(atoms, h))
+            on_grid = rhf_total(integrals_of(atoms, grid_spacing))
         finally:
             PAWIntegrals.exact_local_potential = True
-        split = rhf_total(integrals_of(atoms, h))
+        split = rhf_total(integrals_of(atoms, grid_spacing))
         assert split == pytest.approx(on_grid, abs=tolerance)
 
     def test_the_energy_moves_by_less_than_a_milli_hartree(self):
@@ -384,8 +384,8 @@ class TestInertElsewhere:
 # Forces.
 # --------------------------------------------------------------------------- #
 
-def water_calculator(h=0.25):
-    return Mandacaru(method="adapt-vqe", basis=SZ, h=h, pool="fermionic",
+def water_calculator(grid_spacing=0.25):
+    return Mandacaru(method="adapt-vqe", basis=SZ, grid_spacing=grid_spacing, pool="fermionic",
                      optimizer=LBFGS, max_iterations=60,
                      convergence={"gradient": 1e-4}, profile=False)
 
@@ -448,7 +448,7 @@ class TestForces:
             PAWIntegrals.exact_local_potential = split
             try:
                 atoms = h2(distance=0.80)
-                atoms.calc = Mandacaru(method="adapt-vqe", basis=SZ, h=0.25,
+                atoms.calc = Mandacaru(method="adapt-vqe", basis=SZ, grid_spacing=0.25,
                                        pool="fermionic", optimizer=LBFGS,
                                        max_iterations=10,
                                        convergence={"gradient": 1e-6},
@@ -468,7 +468,7 @@ class TestForces:
         about the sphere integrals, so it must fail loudly rather than
         differentiate an energy nobody evaluated."""
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis=SZ, h=0.3,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis=SZ, grid_spacing=0.3,
                                force_method="scf-response", profile=False)
         with pytest.raises(NotImplementedError, match="range-separated"):
             atoms.get_forces()

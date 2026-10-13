@@ -727,6 +727,20 @@ _ALGORITHMS = [
   doi     = {10.1063/1.5083802}
 }""", "the batched two-step pivots of the Cholesky integrals (two_body "
          "cholesky)", verified=False, topics=("cholesky", "integrals")),
+    _ref("Aquilante2008", """
+@article{Aquilante2008,
+  author  = {Aquilante, Francesco and Lindh, Roland and Pedersen, Thomas
+             Bondo},
+  title   = {Analytic derivatives for the {C}holesky representation of the
+             two-electron integrals},
+  journal = {J. Chem. Phys.},
+  volume  = {129},
+  pages   = {034106},
+  year    = {2008},
+  doi     = {10.1063/1.2955755}
+}""", "fixed Cholesky pivots as a Coulomb-metric fitting basis, smooth in "
+         "the nuclear positions (two_body cholesky forces)", verified=False,
+         topics=("cholesky", "integrals", "forces")),
 ]
 
 # --------------------------------------------------------------------------- #
@@ -924,7 +938,7 @@ _BASES = [
   year    = {1999},
   doi     = {10.1002/(SICI)1521-3951(199909)215:1<809::AID-PSSB809>3.0.CO;2-0}
 }""", "the split-valence multiple-zeta construction", verified=False,
-         topics=("multizeta", "split_norm")),
+         topics=("multizeta", "zeta_split")),
     _ref("Anglada2006", """
 @article{Anglada2006,
   author  = {Anglada, Emilio and Soler, Jos{\\'e} M.},
@@ -935,7 +949,7 @@ _BASES = [
   pages   = {115122},
   year    = {2006},
   doi     = {10.1103/PhysRevB.73.115122}
-}""", "Fourier filtering of the radial basis (filter=)", verified=False,
+}""", "Fourier filtering of the radial basis (filter_cutoff=)", verified=False,
          topics=("filter",)),
     _ref("Slater1930", """
 @article{Slater1930,

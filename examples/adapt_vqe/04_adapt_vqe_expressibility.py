@@ -8,7 +8,7 @@ from mandacaru.algorithms.expressivity import (active_space_dimension,
 
 atoms = molecule("LiH")
 atoms.center(vacuum=3.0)
-atoms.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"}, h=0.25)
+atoms.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.25)
 atoms.get_potential_energy()
 
 calc = Mandacaru(method="adapt-vqe", pool="qeb", max_iterations=10,

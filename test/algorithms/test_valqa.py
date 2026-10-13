@@ -27,7 +27,7 @@ def h2_hamiltonian():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.25)
     mints = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return mints.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
@@ -245,7 +245,7 @@ class TestAlongATrajectory:
     ``update_between_geometries`` on its insertions too."""
 
     def _run(self, tmp_path, distances=(0.74, 0.78), **options):
-        options = {"basis": "HAO", "h": 0.4, "pool": "qeb", "max_steps": 12,
+        options = {"basis": "HAO", "grid_spacing": 0.4, "pool": "qeb", "max_steps": 12,
                    "max_length": 4, "seed": 3, "profile": False,
                    "trace": False, "record": str(tmp_path / "edits"),
                    "proposal_model": _model(tmp_path / "m.npz"), **options}
@@ -290,7 +290,7 @@ class TestAlongATrajectory:
     def test_another_molecule_starts_a_new_trajectory(self, tmp_path):
         from ase import Atoms
         from mandacaru.algorithms.proposal_data import load_edits
-        calc = Mandacaru(method="valqa", basis="HAO", h=0.4, pool="qeb",
+        calc = Mandacaru(method="valqa", basis="HAO", grid_spacing=0.4, pool="qeb",
                          max_steps=4, max_length=3, seed=3, profile=False,
                          trace=False, record=str(tmp_path / "edits"),
                          update_between_geometries=True,

@@ -572,7 +572,7 @@ def grid_symmetry(atoms, grid, max_L: int = 4, symprec: float | None = None):
     species and initial magnetic moment.  Those operations form a subgroup
     (a composition of two that land on nodes lands on nodes), and the k-mesh
     must be reduced with that subgroup and no larger one: the grid decides
-    it, through ``h``.
+    it, through ``grid_spacing``.
     """
     from dataclasses import replace as dc_replace
 
@@ -689,15 +689,15 @@ class PeriodicPAW:
         The dataset blocks of the molecular builder
         (:func:`~.paw.paw_coupling_blocks`, :func:`~.paw.paw_overlap_blocks`,
         :func:`~.paw.paw_multipole_blocks`).
-    filter_cutoff : float, optional
-        The basis' Fourier-filter cutoff (Bohr^-1), recorded so a strained
+    filter_wavevector : float, optional
+        The basis' Fourier-filter cutoff wave-vector (Bohr^-1), recorded so a strained
         cell rebuilds the same basis.  The partial core is *not* filtered
         with it (:meth:`core_density`).
     """
 
     def __init__(self, basis, atom_of_orbital, projectors, datasets, centers,
                  grid, kpoints, weights, coupling, overlap_blocks,
-                 multipole_blocks, filter_cutoff=None, symmetry=None):
+                 multipole_blocks, filter_wavevector=None, symmetry=None):
         from ..core.hamiltonian import assemble_block_matrix
         from .local_split import split_width
 
@@ -712,7 +712,7 @@ class PeriodicPAW:
         self.kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
         self.weights = np.asarray(weights, dtype=float)
         self.sigma = split_width(grid)
-        self.filter_cutoff = filter_cutoff
+        self.filter_wavevector = filter_wavevector
         #: :class:`GridSymmetry` the k-points were reduced with, or ``None``
         #: (time reversal only).  Every density assembled from the wedge is
         #: symmetrized with it.
@@ -1421,7 +1421,7 @@ def reduce_mesh(mesh, operations=None):
 
 
 @single_threaded_blas
-def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
+def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=None,
                   family: str = "paw-lcao", grid=None, ghosts=(),
                   symmetry: bool = True, full_mesh: bool = False):
     r"""``(crystal, context)`` for a periodic ``atoms`` with a PAW-LCAO basis.
@@ -1445,7 +1445,7 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     whole mesh and breaks the symmetry the reduction relies on.
     """
     from ..algorithms._hamiltonian_from_atoms import monkhorst_pack_kpts
-    from ..basis.filtering import filter_cutoff
+    from ..basis.filtering import resolve_filter_cutoff
     from ..integrals import Grid
     from ..units import to_bohr
     from .families import pseudo_basis_arguments, resolve_family
@@ -1469,7 +1469,7 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     cell = np.asarray(atoms.get_cell(), dtype=float)
     potentials = {s: load(s, options.get("directory")) for s in set(symbols)}
     if grid is None:
-        g = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=h,
+        g = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                  units="angstrom", cell=cell, periodic=True)
     else:
         g = grid
@@ -1482,7 +1482,8 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
             raise ValueError(
                 "an explicit grid for a crystal must be periodic and span "
                 "its cell (Grid(..., cell=atoms.cell, periodic=True))")
-    k_c = filter_cutoff(options.get("filter"), max(g.dx, g.dy, g.dz))
+    k_c = resolve_filter_cutoff(options.get("filter_cutoff"),
+                                max(g.dx, g.dy, g.dz))
     confinement: dict = {}
     polarization: dict = {}
     # Ghosts lend their basis functions; everything physical is the real
@@ -1494,7 +1495,7 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
     # A crystal's Bloch sums, its C kernel and its Wannier code index the
     # harmonics by m: complex ones, where a molecule uses real ones.
     basis, atom_of_orbital = pseudo_basis(
-        symbols, positions, potentials, filter_cutoff=k_c,
+        symbols, positions, potentials, filter_wavevector=k_c,
         **pseudo_basis_arguments(family, options, confinement=confinement,
                                  polarization=polarization), real=False)
     projectors = paw_projectors(
@@ -1522,14 +1523,14 @@ def build_crystal(atoms, h: float, options: dict | None = None, kpts=None,
         [to_bohr(p, "angstrom") for p in positions[real]], g, kpoints, weights,
         paw_coupling_blocks(projectors, real_symbols, potentials),
         paw_overlap_blocks(projectors, real_symbols, potentials),
-        paw_multipole_blocks(projectors, datasets), filter_cutoff=k_c,
+        paw_multipole_blocks(projectors, datasets), filter_wavevector=k_c,
         symmetry=operations)
     context = {"crystal": crystal, "atom_of_orbital": atom_of_orbital,
                "n_electrons": float(valence_electrons(real_symbols,
                                                       potentials)),
                "ghosts": tuple(sorted(ghosts)),
                "pseudopotentials": potentials, "family": family,
-               "filter_cutoff": k_c, "options": dict(options),
+               "filter_wavevector": k_c, "options": dict(options),
                "confinement": confinement, "polarization": polarization,
                "kpts_size": size, "kpts_gamma": gamma,
                "kpoints_fractional": reduced}

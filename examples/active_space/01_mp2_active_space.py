@@ -6,7 +6,7 @@ atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       h=0.25,
+                       grid_spacing=0.25,
                        active_space={"orbitals": 6, "method": "mp2",
                                      "symmetry": True})
 

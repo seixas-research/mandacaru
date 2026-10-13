@@ -519,7 +519,7 @@ class MolecularIntegrals(MeanFieldMixin):
                 f"{OVERLAP_EIGENVALUE_FLOOR:.1e}), so S^(-1/2) would amplify "
                 f"integration noise by {1.0 / np.sqrt(max(smallest, 1e-300)):.1e}. "
                 f"Drop the redundant functions (a smaller basis `size`) or "
-                f"refine the grid (smaller h).")
+                f"refine the grid (smaller grid_spacing).")
         if smallest < OVERLAP_EIGENVALUE_WARN:
             warnings.warn(
                 f"nearly linearly dependent basis: smallest overlap eigenvalue "
@@ -1053,7 +1053,9 @@ class MolecularIntegrals(MeanFieldMixin):
         (:func:`~mandacaru.integrals.cholesky.cholesky_two_body`) at the
         tolerance of :attr:`two_body_spec`, with the family augmentation kept
         structured beside them; built once (timed as the "two-body
-        integrals (cholesky)" stage)."""
+        integrals (cholesky)" stage).  A spec carrying a reference's pivots
+        builds the factors of those pivots instead (the displaced geometries
+        of an active-space force)."""
         from ..integrals.cholesky import cholesky_two_body
         from ..integrals.poisson import PoissonFFTSolver
 
@@ -1071,7 +1073,8 @@ class MolecularIntegrals(MeanFieldMixin):
             with self._engine.timings.time("two-body integrals (cholesky)"):
                 self._cholesky = cholesky_two_body(
                     self._engine._psi, solver, tolerance,
-                    augmentation=augmentation)
+                    augmentation=augmentation,
+                    pivots=self.two_body_spec.pivots)
         return self._cholesky
 
     def ao_two_body(self) -> np.ndarray:
@@ -1256,8 +1259,19 @@ class MolecularIntegrals(MeanFieldMixin):
             h, g = self.one_body(), self.two_body()
             if self.spin_orbit_coupling:
                 h_spin = self.spin_orbit_matrix()
-        H = (Fermion.from_spatial_integrals(h, g, h_spin) if spin_blocked
-             else Fermion.from_integrals(h, g))
+        if self.cholesky_integrals:
+            # The factors do not resolve an integral below their tolerance:
+            # the symmetry-forbidden ones come out as noise up to about the
+            # tolerance (ethanol TZP: 14,251 Pauli terms against the dense
+            # 7,151), not as zeros.  Only the operator drops them: the
+            # reduced integrals kept below for the forces stay whole, so a
+            # central difference never sees one cross the cut.
+            H = Fermion.from_spatial_integrals(
+                h, g, h_spin, tol=self.two_body_spec.tolerance)
+        elif spin_blocked:
+            H = Fermion.from_spatial_integrals(h, g, h_spin)
+        else:
+            H = Fermion.from_integrals(h, g)
         n_modes = 2 * h.shape[0] if spin_blocked else h.shape[0]
         const = core_energy + self.constant_energy + (
             self.nuclear_repulsion if include_nuclear_repulsion else 0.0)

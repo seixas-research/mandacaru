@@ -39,7 +39,7 @@ atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
 # Local Braket simulator, shot-based (identical protocol to a QPU).
 atoms.calc = Mandacaru(method="vqe",
                        basis="HAO",
-                       h=0.35,
+                       grid_spacing=0.35,
                        device="braket-local",
                        shots=8192)
 atoms.get_total_energy()
@@ -47,14 +47,14 @@ atoms.get_total_energy()
 # The AWS managed simulator.
 atoms.calc = Mandacaru(method="vqe",
                        basis="HAO",
-                       h=0.35,
+                       grid_spacing=0.35,
                        device="braket-sv1",
                        shots=8192)
 
 # A real trapped-ion QPU.
 atoms.calc = Mandacaru(method="vqe",
                        basis="HAO",
-                       h=0.35,
+                       grid_spacing=0.35,
                        device="braket-ionq-aria",
                        shots=8192)
 ```

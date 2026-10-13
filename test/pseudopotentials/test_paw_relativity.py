@@ -358,7 +358,7 @@ class TestSpinOrbitInTheMolecularHamiltonian:
         jz = (np.kron(np.eye(2), lz)
               + np.kron(np.diag([0.5, -0.5]), np.eye(3)))
         commutator = jz @ block - block @ jz
-        # Only the cubic grid mixes m (6e-5 here at h = 0.25 Angstrom); a
+        # Only the cubic grid mixes m (6e-5 here at grid_spacing = 0.25 Angstrom); a
         # wrong L.S or basis would break it at order one.
         assert np.linalg.norm(commutator) < 1e-3 * np.linalg.norm(block)
 

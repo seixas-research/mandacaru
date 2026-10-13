@@ -194,7 +194,7 @@ SILICON_SPACING = 0.32
 @pytest.fixture(scope="module")
 def silicon():
     atoms = bulk("Si", "diamond", a=5.43)
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=SILICON_SPACING,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=SILICON_SPACING,
                            trace=False,
                            basis={"name": "PAW-LCAO", "size": "SZP"},
                            kpts={"size": (3, 3, 3), "gamma": True},
@@ -578,7 +578,7 @@ def copper():
     """fcc Cu, a metal whose d bands cross its s band: the nine s, p and d
     functions of the atom from the bands of a single-zeta basis."""
     atoms = bulk("Cu", "fcc", a=3.61)
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.2, trace=False,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.2, trace=False,
                            basis={"name": "PAW-LCAO", "size": "SZP"},
                            kpts={"size": (4, 4, 4), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.05})
@@ -710,7 +710,7 @@ class TestCopperDShell:
 def vanadate_crystal():
     """Cubic SrVO3 (LDA, PAW-LCAO SZP, h 0.2 A, 3^3), converged."""
     atoms = perovskite()
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.2, trace=False,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.2, trace=False,
                            basis={"name": "PAW-LCAO", "size": "SZP"},
                            kpts={"size": (3, 3, 3), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.05})
@@ -803,7 +803,7 @@ def iron():
     spread minimization would turn them into hybrids off the atom)."""
     atoms = bulk("Fe", "bcc", a=2.87)
     atoms.set_initial_magnetic_moments([2.5])
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.2, trace=False,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.2, trace=False,
                            basis={"name": "PAW-LCAO", "size": "DZP"},
                            kpts={"size": (4, 4, 4), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.05})
@@ -907,7 +907,7 @@ def hydrogen_chain():
                   pbc=True)
     atoms.center(axis=(1, 2))
     atoms.set_initial_magnetic_moments([1.0])
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.3, trace=False,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
                            basis={"name": "PAW-LCAO", "size": "SZP"},
                            kpts={"size": (6, 1, 1), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.01})
@@ -1023,7 +1023,7 @@ def test_the_unpolarized_limit_is_the_restricted_result(silicon):
     atoms, restricted = silicon
     spin = bulk("Si", "diamond", a=5.43)
     spin.set_initial_magnetic_moments([0.2, 0.2])
-    spin.calc = Mandacaru(method="dft", xc="lda", h=SILICON_SPACING,
+    spin.calc = Mandacaru(method="dft", xc="lda", grid_spacing=SILICON_SPACING,
                           trace=False,
                           basis={"name": "PAW-LCAO", "size": "SZP"},
                           kpts={"size": (3, 3, 3), "gamma": True},

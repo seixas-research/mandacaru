@@ -42,7 +42,7 @@ Three conventions are implemented, and they disagree by design:
     -- on a cubic-spline interpolation of the density, from every point of a
     refined grid (:func:`bader_populations`) -- not a walk between grid
     nodes: an on-grid ascent steers along the grid's own directions and
-    underestimated cation charges by 0.04-0.2 e at h = 0.18-0.30 Angstrom,
+    underestimated cation charges by 0.04-0.2 e at grid_spacing = 0.18-0.30 Angstrom,
     moving by 0.01 e when the atoms were shifted against the grid
     (HISTORY.md, 2026-10-03).  A pseudopotential's valence density need not
     peak at the nuclei (covalent silicon's maxima sit at the bond centers), so
@@ -239,7 +239,7 @@ def voronoi_weights(grid, positions, lattice=None) -> np.ndarray:
     plane falls on a node layer whenever the grid has an odd number of them
     between the atoms, and handing that layer to one side is a pure
     discretization charge.  With the split, H2 comes out neutral at every
-    ``h``.  In a crystal (``lattice``) the distance is to the nearest image.
+    ``grid_spacing``.  In a crystal (``lattice``) the distance is to the nearest image.
     """
     positions = np.asarray(positions, dtype=float)
     distances = np.stack([_nearest_distances(grid, position, lattice)
@@ -723,7 +723,7 @@ def bader_populations(grid, fields, positions, *, lattice=None, cores=None,
         starved = [int(a) for a in np.nonzero(owner.sum(axis=0) == 0.0)[0]]
         warnings.warn(
             f"the Bader partition gave atom(s) {starved} no basin: no "
-            "trajectory reached them.  Refine h.", RuntimeWarning,
+            "trajectory reached them.  Refine grid_spacing.", RuntimeWarning,
             stacklevel=2)
     return out
 

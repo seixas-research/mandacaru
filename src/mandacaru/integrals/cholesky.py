@@ -104,10 +104,18 @@ NEGATIVE_RESIDUAL = 1e-9
 @dataclass(frozen=True)
 class TwoBodySpec:
     """A resolved ``two_body`` option: the method and, for ``"cholesky"``,
-    its tolerance (Hartree)."""
+    its tolerance (Hartree).
+
+    ``pivots`` is internal, never read from the user's option: the ordered
+    ``(i, j)`` basis-function pairs of a reference factorization
+    (:attr:`CholeskyERI.pivot_pairs`), which a displaced geometry reuses so
+    that its factors are a smooth function of the nuclear positions
+    (:func:`cholesky_two_body`).
+    """
 
     method: str = "dense"
     tolerance: float | None = None
+    pivots: tuple[tuple[int, int], ...] | None = None
 
     @property
     def cholesky(self) -> bool:
@@ -181,7 +189,8 @@ class CholeskyERI:
         The pair function of each factor.
     max_residual : float
         The largest residual diagonal left (Hartree): every integral's error
-        is below it.
+        is below it.  ``nan`` for factors built on given pivots, which skip
+        the diagonal.
     augmentation : tuple or None
         ``(Q, W, U)`` of the family's compensation charges (AO basis).
     profile : dict
@@ -205,6 +214,14 @@ class CholeskyERI:
     @property
     def rank(self) -> int:
         return int(self.vectors.shape[1])
+
+    @property
+    def pivot_pairs(self) -> np.ndarray:
+        """``(R, 2)``: the ``(i, j)`` basis functions of each factor's pivot,
+        in factor order -- what :func:`cholesky_two_body` takes as
+        ``pivots``."""
+        return np.column_stack([self.rows[self.pivots],
+                                self.cols[self.pivots]])
 
     @property
     def nbytes(self) -> int:
@@ -468,8 +485,23 @@ class _PairFunctions:
 def cholesky_two_body(psi, solver, tolerance: float = DEFAULT_TOLERANCE, *,
                       augmentation=None, batch: int = CHOLESKY_BATCH,
                       span: float = CHOLESKY_SPAN,
-                      max_memory_mb: float | None = None) -> CholeskyERI:
+                      max_memory_mb: float | None = None,
+                      pivots=None) -> CholeskyERI:
     r"""Cholesky factors of the grid two-electron integrals of ``psi``.
+
+    Without ``pivots`` the pivots are chosen as the factorization runs, which
+    makes them -- and the truncated integrals -- jump as the geometry moves.
+    With ``pivots`` (``(R, 2)`` basis-function pairs in factor order, a
+    reference's :attr:`CholeskyERI.pivot_pairs`) the factors are those of
+    the given pivots: with :math:`C` the Coulomb columns of the pivot pair
+    densities and :math:`A` their pivot rows,
+    :math:`(ac|bd) \approx [C A^{-1} C^T]_{ac,bd}`, the Coulomb-metric
+    density fitting whose auxiliary functions are the pivot pair densities
+    (Aquilante, Lindh and Pedersen 2008).  On the reference's own functions
+    that is the reference factorization to round-off; on displaced
+    functions it is a smooth function of the nuclear positions, which is
+    what a central-difference force needs.  The diagonal is not computed,
+    so :attr:`CholeskyERI.max_residual` is ``nan``.
 
     Parameters
     ----------
@@ -516,6 +548,9 @@ def cholesky_two_body(psi, solver, tolerance: float = DEFAULT_TOLERANCE, *,
               else float(max_memory_mb)) * 2 ** 20
     profile = {"pair functions": P, "screened pairs": pairs.n_screened,
                "kept pair functions": pairs.keep_all(0.5 * budget)}
+    if pivots is not None:
+        return _fixed_pivot_factors(pairs, solver, tolerance, pivots, batch,
+                                    augmentation, profile, t_start)
 
     # The exact diagonal, by Parseval: forward transforms only.
     t0 = perf_counter()
@@ -596,3 +631,56 @@ def cholesky_two_body(psi, solver, tolerance: float = DEFAULT_TOLERANCE, *,
                        pairs.chi.shape[0], tolerance,
                        pivots, float(diagonal.max(initial=0.0)),
                        augmentation=augmentation, profile=profile)
+
+
+def _fixed_pivot_factors(pairs, solver, tolerance, pivots, batch,
+                         augmentation, profile, t_start) -> CholeskyERI:
+    """The factors of given pivots (:func:`cholesky_two_body`): their Coulomb
+    columns ``C``, the Cholesky factor ``L_A`` of the pivot rows, and
+    ``C L_A^{-T}``."""
+    from scipy.linalg import solve_triangular
+
+    pivots = np.asarray(pivots, dtype=np.int64).reshape(-1, 2)
+    M = pairs.chi.shape[0]
+    if pivots.size and (pivots.min() < 0 or pivots.max() >= M):
+        raise ValueError(f"a pivot names a basis function outside the "
+                         f"{M} of this basis")
+    lookup = np.full((M, M), -1, dtype=np.int64)
+    lookup[pairs.rows, pairs.cols] = np.arange(pairs.size)
+    index = lookup[np.minimum(pivots[:, 0], pivots[:, 1]),
+                   np.maximum(pivots[:, 0], pivots[:, 1])]
+    if np.any(index < 0):
+        i, j = pivots[int(np.argmax(index < 0))]
+        raise ValueError(
+            f"pivot pair ({i}, {j}) has no overlapping support here: the "
+            "displaced basis no longer resembles the reference whose pivots "
+            "were given")
+    R, G = index.size, pairs.chi.shape[1]
+    t0 = perf_counter()
+    C = np.empty((pairs.size, R), order="F")
+    densities = np.empty((min(batch, max(R, 1)), G))
+    potentials = np.empty_like(densities)
+    for start in range(0, R, batch):
+        block = index[start:start + batch]
+        k = block.size
+        solver.solve_stack(pairs.evaluate(block, densities[:k]),
+                           out=potentials[:k])
+        C[:, start:start + k] = pairs.columns(potentials[:k])
+    t1 = perf_counter()
+    A = C[index]
+    try:
+        L_A = np.linalg.cholesky(0.5 * (A + A.T))
+    except np.linalg.LinAlgError:
+        raise FloatingPointError(
+            "the Coulomb matrix of the given pivots is not positive definite "
+            "here: the displaced basis is too far from the reference whose "
+            "pivots were given") from None
+    vectors = np.asfortranarray(
+        solve_triangular(L_A, C.T, lower=True, check_finite=False).T)
+    profile.update({"fixed pivots": True, "columns seconds": t1 - t0,
+                    "updates seconds": perf_counter() - t1,
+                    "columns computed": R, "rounds": 0,
+                    "total seconds": perf_counter() - t_start})
+    return CholeskyERI(vectors, pairs.rows, pairs.cols, M, tolerance, index,
+                       float("nan"), augmentation=augmentation,
+                       profile=profile)

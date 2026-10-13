@@ -16,7 +16,7 @@ spin-orbital expressions are implemented independently here and the two are
 pinned against each other.
 
 A note on the numbers below.  These fixtures put a Gaussian basis on a coarse
-real-space grid (``h = 0.3``), which under-resolves a compact core badly -- for
+real-space grid (``grid_spacing = 0.3``), which under-resolves a compact core badly -- for
 LiH the Li 1s resolution ratio is ~0.63, so absolute Hartree-Fock and full-CI
 energies here are Hartree away from published 6-31G values.  That is harmless
 for what is being tested, because every comparison is made between two
@@ -45,7 +45,7 @@ from mandacaru.algorithms.mp2 import (MIN_DENOMINATOR, fock_matrix,
 # Fixtures: one grid-based problem, built once.
 # --------------------------------------------------------------------------- #
 
-def _h2_integrals(basis="6-31G", distance=0.74, box=8.0, h=0.3):
+def _h2_integrals(basis="6-31G", distance=0.74, box=8.0, grid_spacing=0.3):
     atoms = Atoms("H2", positions=[(0, 0, 0), (0, 0, distance)])
     positions = atoms.get_positions()
     from mandacaru.basis import BasisSet
@@ -56,7 +56,7 @@ def _h2_integrals(basis="6-31G", distance=0.74, box=8.0, h=0.3):
                                    atoms.get_chemical_symbols(), positions):
         functions += bset.atom(symbol, center=position, units="angstrom")
         nuclei.append((float(Z), position))
-    grid = Grid(center=positions.mean(axis=0), box_size=box, h=h,
+    grid = Grid(center=positions.mean(axis=0), box_size=box, grid_spacing=grid_spacing,
                 units="angstrom")
     return MolecularIntegrals(nuclei, functions, grid,
                               softening=0.5 * min(grid.dx, grid.dy, grid.dz))
@@ -553,7 +553,7 @@ def _h3_doublet_integrals():
     for symbol, position in zip(atoms.get_chemical_symbols(), positions):
         functions += bset.atom(symbol, center=position, units="angstrom")
         nuclei.append((1.0, position))
-    grid = Grid(center=positions.mean(axis=0), box_size=8.0, h=0.3,
+    grid = Grid(center=positions.mean(axis=0), box_size=8.0, grid_spacing=0.3,
                 units="angstrom")
     return MolecularIntegrals(nuclei, functions, grid,
                               softening=0.5 * min(grid.dx, grid.dy, grid.dz))

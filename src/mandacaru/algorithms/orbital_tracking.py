@@ -159,7 +159,7 @@ class OrbitalSnapshot:
 #: orbitals form one degenerate cluster for :func:`degenerate_gauge`.  The
 #: grid keeps a symmetry-degenerate pair degenerate to round-off (LiH's pi
 #: pair: 12 digits along a grid axis), and breaks it far above this when it
-#: does break it (6e-4 for LiH tilted off the axes at h 0.3).
+#: does break it (6e-4 for LiH tilted off the axes at grid_spacing 0.3).
 DEGENERATE_SPREAD = 1e-6
 #: Magnitude below which a value is round-off around zero (an empty natural
 #: orbital of a single determinant), not a ranking.

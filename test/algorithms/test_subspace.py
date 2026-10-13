@@ -74,7 +74,7 @@ def h2_hamiltonian():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, h=0.25)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.25)
     mints = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
     return mints.molecular_hamiltonian(mo_basis=True, n_electrons=2)
 
@@ -185,7 +185,7 @@ class TestSubspaceVQE:
         from ase import Atoms
         atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
                       cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-        atoms.calc = Mandacaru(method="subspace-vqe", basis="HAO", h=0.30,
+        atoms.calc = Mandacaru(method="subspace-vqe", basis="HAO", grid_spacing=0.30,
                                num_states=2, trace=False)
         energy_ev = atoms.get_potential_energy()
         result = atoms.calc.result
@@ -227,7 +227,7 @@ class TestSubspaceADAPTVQE:
         atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
                       cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
         atoms.calc = Mandacaru(method="subspace-adapt-vqe", basis="HAO",
-                               h=0.30, num_states=2, pool="fermionic",
+                               grid_spacing=0.30, num_states=2, pool="fermionic",
                                trace=False, profile=False,
                                convergence={"gradient": 1e-4}, max_iterations=20)
         atoms.get_potential_energy()
@@ -273,7 +273,7 @@ class TestSubspaceForces:
     ])
     def test_forces_use_the_ground_state_energy(self, method, options):
         atoms = h2()
-        atoms.calc = Mandacaru(method=method, h=0.4, trace=False, **options)
+        atoms.calc = Mandacaru(method=method, grid_spacing=0.4, trace=False, **options)
         forces = atoms.get_forces()                   # it raised ValueError
         assert forces.shape == (2, 3) and np.all(np.isfinite(forces))
         assert forces[0, 2] == pytest.approx(-forces[1, 2], abs=1e-6)
@@ -306,7 +306,7 @@ class TestSubspaceExportFollowsTheSortedLevels:
 
     def test_the_grown_ansatz_is_kept_for_export(self):
         atoms = h2()
-        atoms.calc = Mandacaru(method="subspace-adapt-vqe", h=0.4, trace=False,
+        atoms.calc = Mandacaru(method="subspace-adapt-vqe", grid_spacing=0.4, trace=False,
                                profile=False, max_iterations=2)
         atoms.get_potential_energy()
         n, occupied, generators, theta, _h = atoms.calc.solver.ansatz_problem()
@@ -324,7 +324,7 @@ class TestSpinAdaptedReferencesWithTheHVA:
     @pytest.fixture(scope="class")
     def problem(self):
         atoms = h2()
-        atoms.calc = Mandacaru(method="rhf", h=0.35, trace=False)
+        atoms.calc = Mandacaru(method="rhf", grid_spacing=0.35, trace=False)
         atoms.get_potential_energy()
         problem = atoms.calc.result.as_quantum_problem()
         n = 2 * problem["n_spatial_orbitals"]
@@ -383,7 +383,7 @@ class TestSpinAdaptedReferencesWithTheHVA:
 
     def test_a_uhf_reference_is_refused(self):
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
-        atoms.calc = Mandacaru(method="uhf", h=0.35, trace=False)
+        atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
         atoms.get_potential_energy()
         with pytest.raises(ValueError, match="UHF"):
             Mandacaru(method="subspace-vqe", multiplicity=1,

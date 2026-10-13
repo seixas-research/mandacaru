@@ -32,7 +32,7 @@ def converged():
     from mandacaru.pseudopotentials.periodic_paw import build_crystal
     crystal, context = build_crystal(
         SILICON, float(np.linalg.norm(SILICON.cell[0])) / 9,
-        {"size": "SZ", "filter": 200},
+        {"size": "SZ", "filter_cutoff": 200},
         kpts={"size": (MESH,) * 3, "gamma": True})
     solver = PeriodicKohnSham(crystal, context["n_electrons"], "lda")
     result = solver.run()

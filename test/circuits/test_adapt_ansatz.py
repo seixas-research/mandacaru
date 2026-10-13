@@ -31,7 +31,7 @@ class TestSparsePool:
 
     def _energy(self, atoms, sparse):
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", h=0.5, sparse=sparse, trace=False,
+                               basis="HAO", grid_spacing=0.5, sparse=sparse, trace=False,
                                max_iterations=6, convergence={"gradient": 1e-4})
         return atoms.get_total_energy()
 
@@ -52,7 +52,7 @@ class TestSparsePool:
 
     def test_sparse_flag_stored(self, lih):
         lih.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
-                             h=0.5, sparse=True, trace=False, max_iterations=2)
+                             grid_spacing=0.5, sparse=True, trace=False, max_iterations=2)
         lih.get_total_energy()
         assert lih.calc.solver._sparse is True
 
@@ -65,7 +65,7 @@ class TestMatrixFree:
 
     def _run(self, atoms, **options):
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", h=0.5, trace=False,
+                               basis="HAO", grid_spacing=0.5, trace=False,
                                max_iterations=6,
                                convergence={"gradient": 1e-4}, **options)
         return atoms.get_total_energy()
@@ -90,13 +90,13 @@ class TestMatrixFree:
         # reads the real machine, so only the choice of form is affected.
         monkeypatch.setattr(base, "memory_limit_bytes", lambda: 2 ** 16)
         lih.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
-                             h=0.5, trace=False, max_iterations=1)
+                             grid_spacing=0.5, trace=False, max_iterations=1)
         lih.get_total_energy()
         assert lih.calc.solver._matrix_free is True
 
     def test_auto_keeps_the_stored_matrices_when_they_fit(self, lih):
         lih.calc = Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
-                             h=0.5, trace=False, max_iterations=1)
+                             grid_spacing=0.5, trace=False, max_iterations=1)
         lih.get_total_energy()
         assert lih.calc.solver._matrix_free is False
 

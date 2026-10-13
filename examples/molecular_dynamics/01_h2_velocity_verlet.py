@@ -7,7 +7,7 @@ atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.80]])
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
-                       h=0.25,
+                       grid_spacing=0.25,
                        # Five MP2 natural orbitals: the bonding and
                        # antibonding pair, the next sigma and the whole pi
                        # pair.  Four would split the degenerate pi pair, and

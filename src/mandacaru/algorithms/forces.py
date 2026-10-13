@@ -270,12 +270,12 @@ def _electronic_by_parts(rho, grid, nuclei_bohr, charges, softening,
        (analytic) density gradient is no better than the standard one, and often
        worse:
 
-       ===========  ==========  =========================  =============================
-       isolated Be  analytic    by-parts (finite-diff rho) by-parts (analytic grad rho)
-       ===========  ==========  =========================  =============================
-       h = 0.20     1167        157                        4427
-       h = 0.10     1593        50                         1600
-       ===========  ==========  =========================  =============================
+       ===================  ==========  =========================  =============================
+       isolated Be          analytic    by-parts (finite-diff rho) by-parts (analytic grad rho)
+       ===================  ==========  =========================  =============================
+       grid_spacing = 0.20  1167        157                        4427
+       grid_spacing = 0.10  1593        50                         1600
+       ===================  ==========  =========================  =============================
 
        The apparently excellent finite-difference column is a **smoothing
        artifact**, not accuracy: differencing the sampled density across the

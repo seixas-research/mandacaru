@@ -44,7 +44,7 @@ def calculate(output: Path, spacing: float, half_width: float,
     from mandacaru.integrals import Grid
     from mandacaru.units import BOHR_TO_ANGSTROM
 
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=half_width, h=spacing)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=half_width, grid_spacing=spacing)
     actual_spacing = float(grid.dz * BOHR_TO_ANGSTROM)
     distances = 1.12 + 2 * actual_spacing * np.arange(points)
     if distances[-1] / 2 >= half_width:
@@ -102,7 +102,7 @@ def calculate(output: Path, spacing: float, half_width: float,
                         )
                         if pool == POOLS[0]:
                             calc = Mandacaru(
-                                **settings, basis=basis, grid=grid, h=spacing,
+                                **settings, basis=basis, grid=grid, grid_spacing=spacing,
                                 active_space={"frozen": "auto"}, mapping="jordan_wigner",
                                 save_hamiltonian=cache, hamiltonian_format="json",
                             )

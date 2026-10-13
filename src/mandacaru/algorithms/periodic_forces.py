@@ -328,7 +328,7 @@ def strained_energy(integrals, D, Gamma, mo_coefficients, strain_matrix,
                              np.asarray(function.center, float) @ strain_matrix.T)
              for function in integrals.basis]
 
-    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, h=spacing,
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=spacing,
                 units="bohr", cell=cell, periodic=True)
     strained = PeriodicIntegrals(
         nuclei, basis, grid, cell, n_electrons=n_electrons, units="bohr",

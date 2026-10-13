@@ -31,7 +31,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
 
 def _analytic(quantity="natural_orbital", positions=((0.0, 0.0, 0.0),)):
     """A hydrogen 2p_z orbital (or its square, as a density) on a Bohr grid."""
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, h=0.5, units="bohr")
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=12.0, grid_spacing=0.5, units="bohr")
     r = np.sqrt(grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2)
     orbital = grid.Z * np.exp(-r / 2.0) / np.sqrt(32.0 * np.pi)
     density = quantity not in ("natural_orbital", "molecular_orbital")
@@ -237,7 +237,7 @@ class TestContracts:
 
     def test_a_field_cannot_be_resampled(self, p_orbital):
         with pytest.raises(ValueError, match="calculator"):
-            Viewer3D(p_orbital, h=0.1)
+            Viewer3D(p_orbital, grid_spacing=0.1)
 
     def test_anything_else_is_refused(self):
         with pytest.raises(TypeError, match="VolumetricField"):
@@ -251,7 +251,7 @@ class TestFromTheCalculator:
     def calc(self):
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[6, 6, 6])
         atoms.center()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.30,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30,
                                trace=False)
         atoms.get_potential_energy()
         return atoms.calc
@@ -265,7 +265,7 @@ class TestFromTheCalculator:
 
     def test_h_resamples_on_a_finer_grid_of_the_same_box(self, calc, tmp_path):
         coarse = calc.volumetric_field("natural_orbital", 1)
-        viewer = Viewer3D(calc, "natural_orbital", 1, h=0.2, mode="isosurface",
+        viewer = Viewer3D(calc, "natural_orbital", 1, grid_spacing=0.2, mode="isosurface",
                           figsize=(2, 2))
         assert viewer.field.data.size > coarse.data.size
         assert viewer.field.norm == pytest.approx(1.0, abs=0.05)

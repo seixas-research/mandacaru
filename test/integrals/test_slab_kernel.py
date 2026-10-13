@@ -323,7 +323,7 @@ class TestTheHamiltonianRefusesItForNow:
 
         cell = np.diag([6.0, 6.0, 12.0])
         nuclei = [(1.0, np.array([3.0, 3.0, 6.0]))]
-        grid = Grid(center=[3, 3, 6], box_size=0.0, h=0.6, units="bohr",
+        grid = Grid(center=[3, 3, 6], box_size=0.0, grid_spacing=0.6, units="bohr",
                     cell=cell, periodic=True)
         with pytest.raises(NotImplementedError, match="one boundary condition"):
             PeriodicIntegrals(nuclei, minimal_hao_basis(nuclei, "bohr"), grid,

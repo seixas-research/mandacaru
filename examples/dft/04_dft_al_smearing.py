@@ -9,7 +9,7 @@ for method in ("fermi-dirac", "gaussian", "methfessel-paxton"):
         atoms.calc = Mandacaru(method="dft",
                                xc="lda",
                                basis={"name": "PAW-LCAO", "size": "DZP"},
-                               h=0.25,
+                               grid_spacing=0.25,
                                kpts={"size": (8, 8, 8), "gamma": True},
                                smearing={"method": method, "width": width})
         estimate = atoms.get_potential_energy()

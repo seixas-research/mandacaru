@@ -10,7 +10,7 @@ for active_space in ({"orbitals": 4, "method": "energy"},
                      {"threshold": 1e-4, "method": "mp2"}):
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW-LCAO", "size": "TZP"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            active_space=active_space)
     energy = atoms.get_potential_energy()
     print(f"{str(active_space):40s} {energy:.6f} eV on {atoms.calc.n_qubits} qubits")

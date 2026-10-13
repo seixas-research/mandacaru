@@ -35,9 +35,9 @@ from mandacaru.optimizers import Optimizer
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
 
 
-def _integrals(nuclei, h=0.30, box=6.0):
+def _integrals(nuclei, grid_spacing=0.30, box=6.0):
     grid = Grid(center=np.mean([p for _z, p in nuclei], axis=0), box_size=box,
-                h=h)
+                grid_spacing=grid_spacing)
     return MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid,
                               softening=0.5 * min(grid.dx, grid.dy, grid.dz))
 
@@ -64,7 +64,7 @@ def _sector_ground_state(hamiltonian, num_particles, mapping="jordan_wigner"):
 
 @pytest.fixture(scope="module")
 def h_atom():
-    return _integrals([(1.0, np.array([0.0, 0.0, 0.0]))], h=0.25, box=5.0)
+    return _integrals([(1.0, np.array([0.0, 0.0, 0.0]))], grid_spacing=0.25, box=5.0)
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +73,7 @@ def h3():
     R = 0.9
     return _integrals([(1.0, np.array([0.0, 0.0, -R])),
                        (1.0, np.array([0.0, 0.0, 0.0])),
-                       (1.0, np.array([0.0, 0.0, R]))], h=0.30, box=6.5)
+                       (1.0, np.array([0.0, 0.0, R]))], grid_spacing=0.30, box=6.5)
 
 
 # --------------------------------------------------------------------------- #
@@ -247,7 +247,7 @@ class TestGeometryPath:
 class TestSolvers:
     def test_adapt_vqe_hydrogen_atom(self):
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[5.0] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.25, profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.25, profile=False)
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (1, 0) and calc.n_qubits == 2
@@ -272,7 +272,7 @@ class TestSolvers:
     def test_vqe_h3_doublet_through_the_calculator(self):
         atoms = Atoms("H3", positions=[[0, 0, -0.9], [0, 0, 0], [0, 0, 0.9]],
                       cell=[6.5] * 3)
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.30,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.30,
                                optimizer=LBFGS)
         atoms.get_potential_energy()
         calc = atoms.calc

@@ -66,7 +66,7 @@ def h4():
 
 def run(atoms, optimizer=LBFGS, max_iterations=40, **options):
     work = atoms.copy()
-    work.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35, pool="qeb",
+    work.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35, pool="qeb",
                           optimizer=optimizer, max_iterations=max_iterations,
                           convergence={"gradient": 1e-5}, profile=True, trace=False,
                           **options)
@@ -99,7 +99,7 @@ class TestOptions:
             out = str(tmp_path / f"{growth}_{pruning}.txt")
             atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                           cell=[6.0] * 3)
-            atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+            atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                    pool="fermionic", max_iterations=2,
                                    txt=out, trace=False, profile=False,
                                    **options)
@@ -120,7 +120,7 @@ class TestTetris:
         rule is exercised with every operator live instead.
         """
         atoms = beh2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="qeb", max_iterations=1, tetris=True,
                                trace=False, profile=False)
         atoms.get_potential_energy()
@@ -141,7 +141,7 @@ class TestTetris:
     def test_it_falls_back_to_one_operator(self):
         """A pool whose gradients all vanish but one still grows by one."""
         atoms = beh2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="qeb", max_iterations=1, tetris=True,
                                trace=False, profile=False)
         atoms.get_potential_energy()
@@ -193,7 +193,7 @@ class TestPruning:
     def test_the_decision_factor_prefers_early_small_parameters(self):
         """``f = exp(-alpha x) / theta^2``: small amplitude, early position."""
         atoms = beh2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="qeb", max_iterations=1, prune=True,
                                trace=False, profile=False)
         atoms.get_potential_energy()
@@ -221,7 +221,7 @@ class TestPruning:
 
     def test_nothing_is_pruned_when_every_amplitude_matters(self):
         atoms = beh2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="qeb", max_iterations=1, prune=True,
                                trace=False, profile=False)
         solver = atoms.calc.solver
@@ -240,7 +240,7 @@ class TestPruning:
 
     def test_a_short_ansatz_is_left_alone(self):
         atoms = beh2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="qeb", max_iterations=1, prune=True,
                                trace=False, profile=False)
         solver = atoms.calc.solver
@@ -259,7 +259,7 @@ class TestPruning:
         """It was just selected on the largest gradient; removing it would make
         the loop cycle on the same choice."""
         atoms = beh2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
                                pool="qeb", max_iterations=1, prune=True,
                                trace=False, profile=False)
         solver = atoms.calc.solver

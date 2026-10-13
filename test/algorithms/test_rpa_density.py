@@ -118,7 +118,7 @@ class TestTheRingAmplitudes:
 @pytest.fixture(scope="module")
 def silicon():
     atoms = bulk("Si", "diamond", a=5.43)
-    atoms.calc = Mandacaru(method="dft", xc="lda", h=0.35, trace=False,
+    atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.35, trace=False,
                            basis={"name": "PAW-LCAO", "size": "SZP"},
                            kpts={"size": (2, 2, 2), "gamma": True},
                            smearing={"method": "fermi-dirac",

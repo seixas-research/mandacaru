@@ -16,7 +16,7 @@ def h2_integrals():
     R = 0.74
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.20)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, grid_spacing=0.20)
     return MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
 
 
@@ -45,7 +45,7 @@ class TestUHF:
     def test_hydrogen_atom_energy(self):
         # A single electron: UHF is self-interaction-free, E -> the exact H 1s.
         c = np.array([0.03, 0.017, 0.023])          # offset from any grid node
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=8.0, h=0.15)
+        grid = Grid(center=[0.0, 0.0, 0.0], box_size=8.0, grid_spacing=0.15)
         ig = MolecularIntegrals([(1.0, c)],
                                  minimal_hao_basis([(1.0, c)]), grid)
         e = UHF(ig.one_body(), ig.two_body(), 1, 0).run()

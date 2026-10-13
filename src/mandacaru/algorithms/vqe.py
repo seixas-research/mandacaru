@@ -141,11 +141,11 @@ class VQE(DeflationMixin, VariationalDriver):
     verbose : bool
         Print the run configuration (the qubit Hamiltonian as a term count) and
         a timing / resources summary to standard output (default ``True``).
-    basis, mapping, device, grid, h, kpts, charge, n_electrons, hamiltonian_builder, ansatz_builder, run_options :
+    basis, mapping, device, grid, grid_spacing, kpts, charge, n_electrons, hamiltonian_builder, ansatz_builder, run_options :
         Calculator-mode options mirroring
         :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`: ``basis`` (a name or a
         ``{"name": ..., <options>}`` dict, including the periodic ``"PW"`` plane-wave
-        family ``{"name": "PW", "energy_cutoff": 300}``) and grid resolution ``h``
+        family ``{"name": "PW", "energy_cutoff": 300}``) and grid resolution ``grid_spacing``
         build the Hamiltonian from the ASE geometry (the grid is generated from
         ``atoms.cell`` unless ``grid`` is given), ``ansatz_builder`` -- a
         callable ``(n_spatial_orbitals, num_particles, mapping) -> ansatz`` --

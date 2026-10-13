@@ -18,8 +18,8 @@ from mandacaru.integrals import exchange_correlation as xc_grid
 ALPHA = 0.8
 
 
-def _grid(h=0.15, box=6.0):
-    return Grid(center=np.zeros(3), box_size=box, h=h, units="bohr")
+def _grid(grid_spacing=0.15, box=6.0):
+    return Grid(center=np.zeros(3), box_size=box, grid_spacing=grid_spacing, units="bohr")
 
 
 def _gaussian(grid, alpha=ALPHA, electrons=2.0):
@@ -117,7 +117,7 @@ class TestEnergies:
             / (2.0 * eps) == pytest.approx(directional, rel=1e-5)
 
     def test_a_meta_gga_needs_tau(self):
-        grid = _grid(h=0.4)
+        grid = _grid(grid_spacing=0.4)
         rho, _r2 = _gaussian(grid)
         with pytest.raises(ValueError, match="kinetic-energy density"):
             xc_grid.evaluate(grid, rho, "r2scan")
@@ -149,12 +149,12 @@ class TestCoreDensities:
     def test_without_a_core_correction_there_is_nothing_to_add(self):
         dataset = _dataset(core_density=np.ones(2001), nlcc={"applied": False})
         assert xc_grid.xc_core_density(dataset) is None
-        assert xc_grid.core_density_on_grid(_grid(h=0.4), [dataset],
+        assert xc_grid.core_density_on_grid(_grid(grid_spacing=0.4), [dataset],
                                             [np.zeros(3)]) is None
         assert xc_grid.core_correction_offset(dataset) == 0.0
 
     def test_the_core_lands_on_the_grid_at_its_atom(self):
-        grid = _grid(h=0.4)
+        grid = _grid(grid_spacing=0.4)
         r = np.linspace(0.0, 10.0, 2001)
         dataset = _dataset(core_density=np.exp(-9.0 * r * r),
                            smooth_core_density=np.exp(-r * r),
@@ -247,7 +247,7 @@ class TestHybrid:
     SCREENING = xc_grid.HYBRIDS["hse06"]
 
     def test_without_its_exact_exchange_it_is_refused(self):
-        grid = _grid(h=0.4)
+        grid = _grid(grid_spacing=0.4)
         rho, _r2 = _gaussian(grid)
         with pytest.raises(ValueError, match="hybrid"):
             xc_grid.evaluate(grid, rho, "hse06")
@@ -344,7 +344,7 @@ class TestCrystalSymmetry:
         atoms = bulk("AlN", "wurtzite", a=3.11, c=4.98, u=0.382)
         cell = atoms.cell.array
         grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
-                    h=np.linalg.norm(cell, axis=1) / np.asarray(self.NODES),
+                    grid_spacing=np.linalg.norm(cell, axis=1) / np.asarray(self.NODES),
                     units="angstrom", cell=cell, periodic=True)
         symmetry = grid_symmetry(atoms, grid)
         assert symmetry.n_operations == 12
@@ -431,7 +431,7 @@ class TestCrystalSymmetry:
         def energy(eps):
             moved = cell @ (np.eye(3) + 0.5 * eps * shear).T
             strained = Grid(center=0.5 * moved.sum(axis=0), box_size=0.0,
-                            h=np.linalg.norm(moved, axis=1)
+                            grid_spacing=np.linalg.norm(moved, axis=1)
                             / np.asarray(self.NODES),
                             units="angstrom", cell=moved, periodic=True)
             assert tuple(strained.shape) == self.NODES
@@ -447,7 +447,7 @@ class TestCrystalSymmetry:
         real field never kept: a molecule's gradients are unchanged."""
         from mandacaru.integrals import reciprocal as rc
 
-        grid = _grid(h=12.0 / 31.0)                         # 32 nodes
+        grid = _grid(grid_spacing=12.0 / 31.0)                         # 32 nodes
         assert all(n % 2 == 0 for n in grid.shape)
         rng = np.random.default_rng(3)
         field = rng.standard_normal(grid.size)

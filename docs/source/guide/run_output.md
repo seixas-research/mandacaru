@@ -258,7 +258,7 @@ does not. {func}`mandacaru.utils.logging.parse_output` reads it back.
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 h=0.25,
+                 grid_spacing=0.25,
                  txt="output.txt")
 ```
 
@@ -322,13 +322,12 @@ read off the left margin:
     name: PAW-LCAO
     family: PAW-LCAO (projector augmented wave (Bloechl 1994), frozen core, ...)
     size: SZ
-    zeta_split: first_zeta: tail_norm 0.16, 0.3, 0.6 (norm of the tail, every zeta split from the first)
+    zeta_split: first_zeta: tail norms 0.16, 0.3, 0.6 (norm of the tail, every zeta split from the first)
     projector_basis: raw
     energy_shift: 0.1 eV
     confinement_potential: A exp(-(r_c - r_i)/(r - r_i)) / (r_c - r), A = 12 Ha, r_i = 0.6 r_c
-    polarization: gaussian (quasi-Gaussian: r^l [exp(-r^2/r_char^2) - (a - b r^2)], further shells split from it)
-    filter: filtered (auto: 1 x Nyquist)
-    filter_cutoff: 16.6244 Bohr^-1 (3760.30 eV)
+    polarization_method: gaussian (quasi-Gaussian: r^l [exp(-r^2/r_char^2) - (a - b r^2)], further shells split from it)
+    filter_cutoff: 16.6244 Bohr^-1 (3760.30 eV), filtered (auto: 1 x Nyquist)
     local_potential: range-separated: long range on the grid, short range on atom-centered quadrature (sigma = 0.2646 Bohr)
     dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
     one_center: exact: one-center Coulomb and exchange in the two-body operator, frozen-core exchange
@@ -581,7 +580,7 @@ select the same estimator and all log `parameter_shift`:
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 h=0.25,
+                 grid_spacing=0.25,
                  gradient="parameter_shift",
                  txt="output.txt")
 ```
@@ -749,7 +748,7 @@ Every evaluation closes with where its time and memory went:
 
 The **calculator** writes this block, not the solver, and that is why it comes
 after `[FORCES]`: on a real relaxation the nuclear gradient is the largest single
-stage. A six-step water relaxation in PAW-LCAO-SZ at `h = 0.10` spends **62 %** of its
+stage. A six-step water relaxation in PAW-LCAO-SZ at `grid_spacing = 0.10` spends **62 %** of its
 325 s on forces and **19 %** on the variational optimization, so a block closed
 when the solver finished would account for the smaller part of the step.
 
@@ -797,7 +796,7 @@ Two options write what the blocks leave out, as JSON, once per run:
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 h=0.25,
+                 grid_spacing=0.25,
                  verbose_operators=True,      # -> pool.json
                  verbose_hamiltonian=True)    # -> hamiltonian.inspect.json
 ```
@@ -814,7 +813,7 @@ own file:
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 h=0.25,
+                 grid_spacing=0.25,
                  verbose_operators=f"data/pool_{distance:.2f}.json",
                  verbose_hamiltonian=f"data/hamiltonian_{distance:.2f}.json")
 ```
@@ -867,7 +866,7 @@ default, so
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis={"name": "PAW-LCAO", "size": "SZ"},
-                 h=0.25,
+                 grid_spacing=0.25,
                  pool="ceo")
 ```
 
@@ -897,7 +896,7 @@ happen, and the file already on disk is rewritten so it does not go stale.
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="PAW-LCAO",
-                 h=0.20,
+                 grid_spacing=0.20,
                  pool="qubit",
                  txt="run/output.txt")      # -> run/references.bib
 ```

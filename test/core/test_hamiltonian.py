@@ -15,7 +15,7 @@ R = 0.74  # H2 bond length, Angstrom
 def h2_integrals():
     nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
               (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, h=0.18)
+    grid = Grid(center=[0.0, 0.0, 0.0], box_size=6.0, grid_spacing=0.18)
     basis = minimal_hao_basis(nuclei)
     return MolecularIntegrals(nuclei, basis, grid, units="angstrom")
 
@@ -178,7 +178,7 @@ class TestShortRangeTwoBody:
             h2_integrals.short_range_two_body(-0.1)
 
 
-def _molecule_integrals(name, basis, h=0.35, vacuum=2.5):
+def _molecule_integrals(name, basis, grid_spacing=0.35, vacuum=2.5):
     """Fresh integrals (nothing built yet) and the electron count."""
     import warnings
 
@@ -191,7 +191,7 @@ def _molecule_integrals(name, basis, h=0.35, vacuum=2.5):
     atoms.center(vacuum=vacuum)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        context = build_basis_hamiltonian(atoms, basis, None, h, 0, None,
+        context = build_basis_hamiltonian(atoms, basis, None, grid_spacing, 0, None,
                                           hamiltonian=False)[4]
     return context["integrals"], context["n_electrons"]
 
@@ -297,7 +297,7 @@ class TestEarlyActiveSpace:
         # Ethane in DZP on a coarse grid: M = 56, so one complex M^4 tensor
         # is 157 MB while the sampled basis is 2 MB.
         integrals, n_electrons = _molecule_integrals(
-            "C2H6", {"name": "PAW-LCAO", "size": "DZP"}, h=0.45, vacuum=2.0)
+            "C2H6", {"name": "PAW-LCAO", "size": "DZP"}, grid_spacing=0.45, vacuum=2.0)
         integrals.one_body()                       # samples the basis
         M = integrals.n_orbitals
         tracemalloc.start()

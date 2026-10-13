@@ -32,7 +32,7 @@ complex_.center(vacuum=4.0)
 result = interaction_energy(complex_, fragments=[[0, 1, 2], [3]],
                             charges=[0, 1], charge=1,
                             method="adapt-vqe", basis="HAO",
-                            active_space={"frozen": "auto"}, h=0.25)
+                            active_space={"frozen": "auto"}, grid_spacing=0.25)
 result.energy              # eV (every Mandacaru result is eV)
 result.in_units("Ha")      # the atomic-unit view
 result.fragment_energies   # one per fragment, eV
@@ -54,7 +54,7 @@ basis and options:
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
                  active_space={"frozen": "auto"},
-                 h=0.25)
+                 grid_spacing=0.25)
 calc.interaction_energy(complex_, [[0, 1, 2], [3]], charges=[0, 1], charge=1)
 ```
 
@@ -76,7 +76,7 @@ the error cancels between the complex and its fragments.
 result = interaction_energy(dimer, fragments=[[0], [1]], method="dft",
                             xc="pbe", basis={"name": "PAW-LCAO",
                                              "size": "DZP"},
-                            h=0.2, counterpoise=True)
+                            grid_spacing=0.2, counterpoise=True)
 ```
 
 | Ar$_2$, PBE, DZP, 3.76 Å | plain | counterpoise |
@@ -94,7 +94,7 @@ feel them.
 
 What the helper cannot do is make an under-resolved core converge: the
 sodium ion above is still a bare nucleus of charge 11 on a 0.25 Å grid, and
-its interaction energy will not converge with `h`. Pair the helper with a
+its interaction energy will not converge with `grid_spacing`. Pair the helper with a
 basis that keeps such atoms cheap (a per-element mapping, see
 {doc}`basis_sets`) and check the mean-field number first.
 

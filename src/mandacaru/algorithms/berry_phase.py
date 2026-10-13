@@ -413,7 +413,7 @@ class _FixedCentroid:
 
     A crystal's forces sum to zero exactly: moving every atom together
     changes nothing.  The real-space grid breaks that symmetry (the
-    egg-box), and wurtzite AlN at h = 0.25 Angstrom carries a net force of
+    egg-box), and wurtzite AlN at grid_spacing = 0.25 Angstrom carries a net force of
     0.12 eV/Angstrom, as large as the forces of the internal strain.  Left
     in, it drags the whole crystal along the grid during a relaxation (0.1
     Angstrom in seven extra BFGS steps) before the internal coordinates

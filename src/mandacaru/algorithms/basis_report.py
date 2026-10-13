@@ -62,12 +62,11 @@ def _per_element(spec, symbol, default):
 
 def _pseudo_report(name, context, symbols, fields, tables):
     from ..basis.filtering import cutoff_energy_ev, filter_label
-    from ..basis.multizeta import DEFAULT_SPLIT_NORM, resolve_zeta
-    from ..pseudopotentials.confinement import (energy_shift_label, free_energy,
-                                                resolve_polarization,
-                                                validate_confinement)
-    from ..pseudopotentials.families import (pseudo_basis_arguments,
-                                             resolve_family)
+    from ..basis.multizeta import resolve_split_scheme, resolve_zeta
+    from ..pseudopotentials.confinement import (
+        energy_shift_label, free_energy, resolve_polarization_method,
+        validate_confinement_potential)
+    from ..pseudopotentials.families import resolve_family
     from ..pseudopotentials.orbitals import basis_states
 
     family = resolve_family(context["family"])
@@ -80,17 +79,16 @@ def _pseudo_report(name, context, symbols, fields, tables):
     # Which split-valence scheme built the extra zetas.  The two are not
     # comparable digit for digit (a tail *norm* of 0.16 is a squared-norm
     # fraction of 0.0256), so the line names the scheme, not just a number.
-    tail_norms = pseudo_basis_arguments(family.name, options).get("tail_norms")
+    split_norm, tail_norms = resolve_split_scheme(options.get("zeta_split"))
     if tail_norms is not None:
         fields["zeta_split"] = (
-            "first_zeta: tail_norm " + ", ".join(f"{t:g}" for t in tail_norms)
+            "first_zeta: tail norms " + ", ".join(f"{t:g}" for t in tail_norms)
             + " (norm of the tail, every zeta split from the first)")
     else:
         fields["zeta_split"] = (
-            "last_zeta: split_norm " + _option_text(options.get("split_norm")
-                                                    or DEFAULT_SPLIT_NORM)
-            + " (squared norm of the tail, each zeta split from the previous"
-              " one, halved per zeta)")
+            f"last_zeta: split norm {split_norm:g}"
+            " (squared norm of the tail, each zeta split from the previous"
+            " one, halved per zeta)")
     if "projector_basis" in family.options:
         from ..pseudopotentials.paw import DEFAULT_PROJECTOR_BASIS
         fields["projector_basis"] = options.get("projector_basis",
@@ -102,24 +100,25 @@ def _pseudo_report(name, context, symbols, fields, tables):
         fields["energy_shift"] = energy_shift_label(
             options.get("energy_shift")).removeprefix("energy_shift ")
         if context.get("confinement"):
-            amplitude, inner = validate_confinement(options.get("confinement"))
+            amplitude, inner = validate_confinement_potential(
+                options.get("confinement_potential"))
             fields["confinement_potential"] = (
                 f"A exp(-(r_c - r_i)/(r - r_i)) / (r_c - r), "
                 f"A = {amplitude:g} Ha, r_i = {inner:g} r_c")
-        kind = resolve_polarization(options.get("polarization"),
-                                    options.get("energy_shift"))
-        fields["polarization"] = (
+        kind = resolve_polarization_method(options.get("polarization_method"),
+                                           options.get("energy_shift"))
+        fields["polarization_method"] = (
             "gaussian (quasi-Gaussian: r^l [exp(-r^2/r_char^2) - "
             "(a - b r^2)], further shells split from it)"
             if kind == "gaussian" else
             "orbital (r^k R_outer(r), one shell per added l)")
 
-    # The filter: the option, and the cutoff the grid resolved it to.
-    fields["filter"] = filter_label(options.get("filter"))
-    k_c = context.get("filter_cutoff")
-    if k_c is not None:
-        fields["filter_cutoff"] = (f"{k_c:.4f} Bohr^-1 "
-                                   f"({cutoff_energy_ev(k_c):.2f} eV)")
+    # The filter: the cutoff the grid resolved the option to, and the option.
+    k_c = context.get("filter_wavevector")
+    fields["filter_cutoff"] = (
+        "unfiltered" if k_c is None else
+        f"{k_c:.4f} Bohr^-1 ({cutoff_energy_ev(k_c):.2f} eV), "
+        + filter_label(options.get("filter_cutoff")))
 
     # How the local potential is integrated (PAW-LCAO's range separation).
     if getattr(integrals, "split_local_potential", False):

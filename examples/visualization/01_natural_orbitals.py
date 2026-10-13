@@ -10,11 +10,11 @@ atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
-                       h=0.25)
+                       grid_spacing=0.25)
 atoms.get_potential_energy()
 
 for index in range(6):
     path = os.path.join(DATA, f"h2o_natural_orbital_{index}.png")
-    Viewer3D(atoms.calc, quantity="natural_orbital", index=index, h=0.12,
+    Viewer3D(atoms.calc, quantity="natural_orbital", index=index, grid_spacing=0.12,
              mode="scatter").save(path)
     print(f"Wrote {path}")

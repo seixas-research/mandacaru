@@ -117,7 +117,7 @@ def _h4(spacing=0.95):
 
 
 def _calc(**options):
-    options = {"basis": "HAO", "h": 0.4, "pool": "fermionic",
+    options = {"basis": "HAO", "grid_spacing": 0.4, "pool": "fermionic",
                "max_steps": 20, "transfer_steps": 0, "max_length": 6,
                "seed": 1, "transfer": True, "temperature": 0.0,
                "profile": False, "trace": False, "record": False, **options}

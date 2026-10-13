@@ -6,7 +6,7 @@ atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.30,
+                       grid_spacing=0.30,
                        pool="fermionic",
                        active_space={"frozen": "auto"},
                        max_iterations=20,

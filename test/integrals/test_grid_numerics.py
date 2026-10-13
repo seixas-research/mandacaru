@@ -48,7 +48,7 @@ from mandacaru.optimizers import Optimizer
 LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
 
 
-def _water_integrals(h=0.30, orthogonalize=True, real=True, **kw):
+def _water_integrals(grid_spacing=0.30, orthogonalize=True, real=True, **kw):
     """Water in HAO; ``real=False`` builds it in complex harmonics, the
     convention of a crystal, so the conjugation pattern is exercised."""
     water = molecule("H2O"); water.set_cell([8.0, 8.0, 8.0]); water.center()
@@ -56,7 +56,7 @@ def _water_integrals(h=0.30, orthogonalize=True, real=True, **kw):
     fns, nuclei = [], []
     for Z, s, p in zip(water.get_atomic_numbers(), water.get_chemical_symbols(), pos):
         fns += bset.atom(s, center=p, real=real); nuclei.append((float(Z), p))
-    grid = Grid(center=water.cell.diagonal() / 2, box_size=0.0, h=h,
+    grid = Grid(center=water.cell.diagonal() / 2, box_size=0.0, grid_spacing=grid_spacing,
                 units="angstrom", cell=water.cell)
     return MolecularIntegrals(nuclei, fns, grid, softening=0.3,
                               orthogonalize=orthogonalize, **kw)
@@ -165,7 +165,7 @@ class TestSCF:
     def test_occupied_orbital_energies_are_physical(self):
         # Water's valence levels sit between -1.5 and -0.2 Ha; the broken
         # transform produced a positive occupied level here.
-        r = _water_integrals(h=0.25).hartree_fock(10)
+        r = _water_integrals(grid_spacing=0.25).hartree_fock(10)
         assert np.all(r.mo_energies[:4] < 0.0)
 
 
@@ -175,9 +175,9 @@ class TestSCF:
 
 class TestSpectralKinetic:
     @staticmethod
-    def _ratios(alpha, h, box=6.0):
+    def _ratios(alpha, grid_spacing, box=6.0):
         g = GaussianOrbital(0, 0, [alpha], [1.0])
-        grid = Grid(center=[0, 0, 0], box_size=box, h=h)
+        grid = Grid(center=[0, 0, 0], box_size=box, grid_spacing=grid_spacing)
         eng = IntegralEngine([g], grid)
         zero = lambda x, y, z: np.zeros_like(x)
         exact = 1.5 * alpha
@@ -191,13 +191,13 @@ class TestSpectralKinetic:
         assert fd < 0.99                              # the stencil is biased low
 
     def test_never_underestimates_an_unresolved_function(self):
-        for alpha, h in ((2.0, 0.30), (8.0, 0.20), (8.0, 0.30)):
-            fd, sp = self._ratios(alpha, h)
+        for alpha, grid_spacing in ((2.0, 0.30), (8.0, 0.20), (8.0, 0.30)):
+            fd, sp = self._ratios(alpha, grid_spacing)
             assert sp >= 1.0 - 1e-6
             assert sp >= fd
 
     def test_hermitian_and_agrees_with_fd_on_smooth_functions(self):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.25)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.25)
         fns = [GaussianOrbital(0, 0, [0.4], [1.0], center=[0, 0, 0]),
                GaussianOrbital(1, 0, [0.6], [1.0], center=[0.3, 0, 0])]
         eng = IntegralEngine(fns, grid)
@@ -208,7 +208,7 @@ class TestSpectralKinetic:
         assert np.allclose(T_sp, T_fd, rtol=0.1, atol=0.02)
 
     def test_requires_an_orthogonal_grid_and_known_name(self):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.4)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.4)
         eng = IntegralEngine([GaussianOrbital(0, 0, [0.5], [1.0])], grid)
         with pytest.raises(ValueError):
             eng.one_body(lambda x, y, z: np.zeros_like(x), "Ha", "fft")
@@ -220,10 +220,10 @@ class TestSpectralKinetic:
     def test_drivers_accept_the_option(self):
         from ase import Atoms
         h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
-        h2.calc = Mandacaru(method="vqe", basis="HAO", h=0.35,
+        h2.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35,
                             kinetic="spectral", optimizer=LBFGS)
         e_sp = h2.get_potential_energy()
-        h2.calc = Mandacaru(method="vqe", basis="HAO", h=0.35,
+        h2.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35,
                             kinetic="fd", optimizer=LBFGS)
         e_fd = h2.get_potential_energy()
         assert abs(e_sp - e_fd) < 2.0                # same physics, finite grid
@@ -243,7 +243,7 @@ class TestZetasAndResolution:
                 1.0, rel=1e-6)
 
     def test_resolution_ratios_flag_a_compact_function(self):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, h=0.30)
+        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.30)
         fns = [GaussianOrbital(0, 0, [0.4], [1.0]),
                GaussianOrbital(0, 0, [12.0], [1.0])]          # width 0.1 A
         eng = IntegralEngine(fns, grid)

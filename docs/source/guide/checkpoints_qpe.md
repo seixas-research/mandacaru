@@ -25,7 +25,7 @@ atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6.0] * 3)
 atoms.center()
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        checkpoint="examples/qpe/data/h2_wavefunction.json",
                        checkpoint_every=1)
 atoms.get_potential_energy()
@@ -46,7 +46,7 @@ The record is also kept on the driver as `calc.solver.checkpoint` (or
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        resume="examples/qpe/data/h2_wavefunction.json",
                        checkpoint="examples/qpe/data/h2_wavefunction.json",
                        max_iterations=40)

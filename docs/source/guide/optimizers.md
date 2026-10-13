@@ -12,7 +12,7 @@ from mandacaru import Mandacaru
 
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 h=0.30,
+                 grid_spacing=0.30,
                  pool="qubit",
                  optimizer="L-BFGS")
 ```
@@ -22,7 +22,7 @@ A **dict** sets them, with nothing extra to import:
 ```python
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 h=0.30,
+                 grid_spacing=0.30,
                  pool="qubit",
                  optimizer={"method": "L-BFGS",
                             "maxiter": 2000,
@@ -41,7 +41,7 @@ configuration across runs, reuse the dict:
 spsa = {"method": "SPSA", "maxiter": 500, "tol": 1e-6, "options": {"a": 0.1}}
 calc = Mandacaru(method="adapt-vqe",
                  basis="HAO",
-                 h=0.30,
+                 grid_spacing=0.30,
                  pool="qubit",
                  optimizer=spsa)
 ```
@@ -198,7 +198,7 @@ operator in 4 steps and 9 evaluations. If you override `tol`, keep it tight.
 ## Measured: a realistic system
 
 The same comparison on water — H₂O, `basis={"name": "PAW-LCAO", "size": "SZ"}`,
-`h=0.25`, `pool="qubit"`, Jordan-Wigner (12 qubits, a 640-operator pool, sector
+`grid_spacing=0.25`, `pool="qubit"`, Jordan-Wigner (12 qubits, a 640-operator pool, sector
 dimension 225), ADAPT-VQE to `max_iterations=40`; sector FCI = −492.521982 eV.
 No run reaches the gradient threshold here, so all seven stop on ADAPT's
 `max_iterations=40` and the comparison is at equal circuit length:

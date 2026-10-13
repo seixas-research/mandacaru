@@ -15,7 +15,7 @@ for distance in distances:
     atoms.center(vacuum=3.0)
     atoms.calc = Mandacaru(method="adapt-vqe",
                            basis={"name": "PAW-LCAO", "size": "SZ"},
-                           h=0.25,
+                           grid_spacing=0.25,
                            pool="qeb")
     energies.append(atoms.get_potential_energy())
     print(f"d = {distance:.2f} A  E = {energies[-1]:.6f} eV")

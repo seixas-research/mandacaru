@@ -13,7 +13,7 @@ r"""Shared base for the variational state-vector drivers.
 :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`, and their subspace variants)
 have in common, so a new method only writes its own optimization loop:
 
-* **problem setup** -- the ASE-calculator surface (``basis`` / ``grid`` / ``h`` /
+* **problem setup** -- the ASE-calculator surface (``basis`` / ``grid`` / ``grid_spacing`` /
   ``kpts`` / ``spin`` / ``active_space`` / ...) and the geometry-to-Hamiltonian
   builder;
 * **the state-vector backend** -- materializing the qubit Hamiltonian as a dense
@@ -299,7 +299,7 @@ class VariationalDriver(Calculator):
     def __init__(self, *, optimizer=None,
                  mapping: str = "jordan_wigner",
                  basis="HAO", device: str = "AER_simulator", grid=None,
-                 h: float = DEFAULT_GRID_SPACING, kpts=None, spin: bool = False,
+                 grid_spacing: float = DEFAULT_GRID_SPACING, kpts=None, spin: bool = False,
                  initial_state: str | None = "hartree-fock", charge: int = 0,
                  n_electrons=None, active_space=None, taper: bool = False,
                  hamiltonian_builder=None,
@@ -362,7 +362,7 @@ class VariationalDriver(Calculator):
         self.basis = basis
         self.device = normalize_device(device)      # raises on unknown device
         self.grid = grid
-        self.h = float(h)
+        self.grid_spacing = float(grid_spacing)
         self.spin = bool(spin)
         # Which spatial orbitals reach the register: the frozen core, the
         # virtual truncation and how the virtuals are ranked.  Resolved here
@@ -1581,7 +1581,7 @@ class VariationalDriver(Calculator):
     def _check_pseudo_basis(basis, active_space):
         """Validate a pseudopotential basis spec up front (names, options,
         option *values*, no frozen core); all-electron specs pass untouched."""
-        from ..basis.filtering import validate_filter
+        from ..basis.filtering import validate_filter_cutoff
         from ..pseudopotentials.confinement import validate_energy_shift
         from ._hamiltonian_from_atoms import (PER_ELEMENT,
                                               pseudopotential_family,
@@ -1590,11 +1590,12 @@ class VariationalDriver(Calculator):
         if name == PER_ELEMENT:
             # Which element gets which family is only checkable against a
             # geometry (at build time), but an option *value* is not: a
-            # mistyped filter is a mistyped filter whatever the atoms are, and
-            # finding out after the integrals is finding out too late.
+            # mistyped filter cutoff is a mistyped filter cutoff whatever the
+            # atoms are, and finding out after the integrals is finding out
+            # too late.
             for spec in options.values():
-                if isinstance(spec, dict) and "filter" in spec:
-                    validate_filter(spec["filter"])
+                if isinstance(spec, dict) and "filter_cutoff" in spec:
+                    validate_filter_cutoff(spec["filter_cutoff"])
                 if isinstance(spec, dict) and "energy_shift" in spec:
                     validate_energy_shift(spec["energy_shift"])
                 if isinstance(spec, dict) and "zeta_split" in spec:
@@ -1609,28 +1610,28 @@ class VariationalDriver(Calculator):
             raise ValueError(
                 f"unknown option(s) {unknown} for the {family.label} basis; "
                 f"it accepts {list(family.options)}")
-        if "filter" in options:
-            validate_filter(options["filter"])
+        if "filter_cutoff" in options:
+            validate_filter_cutoff(options["filter_cutoff"])
         if "energy_shift" in options:
             validate_energy_shift(options["energy_shift"])
-        from ..basis.multizeta import resolve_split_scheme
-        resolve_split_scheme(options.get("split_norm"),
-                             options.get("tail_norm"),
-                             options.get("zeta_split"))
-        if "polarization" in family.options:
+        from ..basis.multizeta import validate_zeta_split
+        validate_zeta_split(options.get("zeta_split"))
+        if "polarization_method" in family.options:
             from ..pseudopotentials.confinement import (
-                validate_confinement, validate_polarization)
-            validate_confinement(options.get("confinement"))
+                validate_confinement_potential, validate_polarization_method)
+            validate_confinement_potential(
+                options.get("confinement_potential"))
             # Only an *explicit* request can conflict: left unwritten, the
             # shell follows the confinement.  The family default counts as a
-            # confinement, so `{"polarization": "gaussian"}` alone is fine.
+            # confinement, so `{"polarization_method": "gaussian"}` alone is
+            # fine.
             resolved = family.resolved_options(options)
-            if (validate_polarization(options.get("polarization"))
-                    == "gaussian"
+            if (validate_polarization_method(
+                    options.get("polarization_method")) == "gaussian"
                     and validate_energy_shift(
                         resolved.get("energy_shift")) is None):
                 raise ValueError(
-                    "polarization='gaussian' needs an energy_shift: the "
+                    "polarization_method='gaussian' needs an energy_shift: the "
                     "Gaussian shell takes its cutoff from the confined "
                     "orbital, and an unconfined orbital has none")
         if active_space is not None and active_space.frozen is not None:
@@ -1749,7 +1750,7 @@ class VariationalDriver(Calculator):
         from ._hamiltonian_from_atoms import build_basis_hamiltonian
         (hamiltonian, num_particles, n_orbitals, profile,
          context) = build_basis_hamiltonian(
-            atoms, self.basis, self.grid, self.h, self.charge, self.n_electrons,
+            atoms, self.basis, self.grid, self.grid_spacing, self.charge, self.n_electrons,
             spin=self.spin, kinetic=self.kinetic,
             periodic=self.periodic_hamiltonian,
             commensurate=self._grid_commensurate(),
@@ -2047,7 +2048,7 @@ class VariationalDriver(Calculator):
                                  for d in (grid.dx, grid.dy, grid.dz))
             realized = (f"{grid.nx} x {grid.ny} x {grid.nz} "
                         f"(spacing {spacing} Angstrom)")
-        return {"grid spacing": f"{self.h:g} Angstrom (requested)",
+        return {"grid spacing": f"{self.grid_spacing:g} Angstrom (requested)",
                 "grid points": realized}
 
     #: What the ``[ACTIVE SPACE]`` occupation column is, per selector.  The

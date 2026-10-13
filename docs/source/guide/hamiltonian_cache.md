@@ -20,7 +20,7 @@ atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
 atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="qeb",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        save_hamiltonian="lih.parquet")
 atoms.get_total_energy()
 
@@ -174,7 +174,7 @@ from mandacaru.algorithms import Mandacaru
 # Build once ...
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis="HAO",
-                       h=0.25,
+                       grid_spacing=0.25,
                        save_hamiltonian="lih.parquet",
                        max_iterations=1)
 atoms.get_total_energy()

@@ -78,7 +78,7 @@ def lih(distance=1.6):
 
 
 def adapt(**options):
-    return Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", h=0.4,
+    return Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", grid_spacing=0.4,
                      trace=False, profile=False, convergence={"gradient": 1e-6},
                      **options)
 
@@ -248,7 +248,7 @@ class TestAdaptResume:
         fermionic = str(tmp_path / "fermionic.json")
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", h=0.4, trace=False, profile=False,
+                               basis="HAO", grid_spacing=0.4, trace=False, profile=False,
                                max_iterations=1, checkpoint=fermionic)
         atoms.get_total_energy()
         atoms = h2()
@@ -262,7 +262,7 @@ class TestAdaptResume:
         pauli = str(tmp_path / "pauli.json")
         atoms = h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="qubit", basis="HAO",
-                               h=0.4, trace=False, profile=False,
+                               grid_spacing=0.4, trace=False, profile=False,
                                max_iterations=1, checkpoint=pauli)
         atoms.get_total_energy()
         stored = load(pauli)
@@ -313,7 +313,7 @@ class TestVQEResume:
     def test_checkpoint_and_warm_start(self, tmp_path):
         path = str(tmp_path / "vqe.json")
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4,
                                optimizer=LBFGS, trace=False,
                                checkpoint=path, checkpoint_every=5)
         energy = atoms.get_total_energy()
@@ -324,12 +324,12 @@ class TestVQEResume:
                                               abs=1e-12)
 
         cold = h2()
-        cold.calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
+        cold.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4,
                               optimizer=LBFGS_CERTIFIED, trace=False)
         cold.get_total_energy()
 
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4,
                                optimizer=LBFGS_CERTIFIED, trace=False,
                                resume=path)
         assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
@@ -343,7 +343,7 @@ class TestVQEResume:
     def test_the_best_point_is_what_gets_checkpointed(self, tmp_path):
         path = str(tmp_path / "best.json")
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.4,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4,
                                optimizer=COBYLA_OPT, trace=False,
                                checkpoint=path, checkpoint_every=1)
         atoms.get_total_energy()
@@ -356,7 +356,7 @@ class TestVQEResume:
         atoms.calc = adapt(max_iterations=1, checkpoint=path)
         atoms.get_total_energy()
         atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", h=0.4, trace=False,
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, trace=False,
                                resume=path)
         with pytest.raises(ValueError, match="not this ansatz"):
             atoms.get_total_energy()
@@ -371,7 +371,7 @@ class TestCalculator:
         path = str(tmp_path / "relax.json")
         atoms = h2(0.74)
         atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO",
-                               h=0.4, profile=False,
+                               grid_spacing=0.4, profile=False,
                                max_iterations=6, checkpoint=path, resume=None)
         atoms.get_potential_energy()
         first = load_checkpoint(path)
@@ -380,7 +380,7 @@ class TestCalculator:
 
         # A second geometry resumes from the first one's state (same file).
         atoms.calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO",
-                               h=0.4, profile=False,
+                               grid_spacing=0.4, profile=False,
                                max_iterations=8, checkpoint=path, resume=path)
         atoms.positions[1, 2] += 0.05
         atoms.get_potential_energy()

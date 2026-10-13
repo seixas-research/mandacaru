@@ -45,7 +45,7 @@ signs; the electron density and its spin channels are non-negative and draw one.
 
 Units
 -----
-Everything the viewer takes or reports -- ``focus``, ``extent``, ``h`` and the
+Everything the viewer takes or reports -- ``focus``, ``extent``, ``grid_spacing`` and the
 sampled coordinates -- is in **Angstrom**, like the rest of Mandacaru's user
 surface.  The field itself stays in the units it was computed in.
 """
@@ -237,11 +237,11 @@ class Viewer3D:
 
     .. code-block:: python
 
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", h=0.30)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30)
         atoms.get_potential_energy()
 
         viewer = Viewer3D(atoms.calc, quantity="natural_orbital", index=1,
-                          h=0.12)
+                          grid_spacing=0.12)
         viewer.save("no1.png")
         viewer.animate("no1.gif", frames=120, zoom=(1.0, 1.8, 1.0))
         Viewer3D(atoms.calc, quantity="difference_density",
@@ -257,13 +257,13 @@ class Viewer3D:
         :meth:`~mandacaru.algorithms.calculator.Mandacaru.volumetric_field`;
         see :mod:`mandacaru.algorithms.volumetric` for what each quantity is.
         Ignored when ``source`` is a field.
-    h : float, optional
+    grid_spacing : float, optional
         Re-evaluate the basis functions on a grid of this spacing (Angstrom)
         over the same box, for a smoother picture than the calculation's own
         grid gives.  Nothing is interpolated.  Needs a calculator as
-        ``source``.  Rendering time of an isosurface grows as ``1/h^2``.
+        ``source``.  Rendering time of an isosurface grows as ``1/grid_spacing^2``.
     grid : Grid, optional
-        An explicit grid to sample on instead (exclusive with ``h``).
+        An explicit grid to sample on instead (exclusive with ``grid_spacing``).
     mode : {"scatter", "isosurface"}
         How the field is drawn; see the module documentation.
     points : int
@@ -294,7 +294,7 @@ class Viewer3D:
     """
 
     def __init__(self, source, quantity: str = "density", index: int = 0, *,
-                 state=0, component: str = "auto", h=None, grid=None,
+                 state=0, component: str = "auto", grid_spacing=None, grid=None,
                  mode: str = "scatter", points: int = 30000, isovalue=None,
                  enclosed: float = 0.85, camera: Camera | None = None,
                  extent=None, background=None, figsize=(6.0, 6.0),
@@ -302,10 +302,10 @@ class Viewer3D:
                  bonds: bool = True, seed: int | None = 0):
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
-        if h is not None and grid is not None:
-            raise ValueError("give either h= or grid=, not both")
+        if grid_spacing is not None and grid is not None:
+            raise ValueError("give either grid_spacing= or grid=, not both")
         self.field = self._build_field(source, quantity, index, state,
-                                       component, h, grid)
+                                       component, grid_spacing, grid)
         self.mode = mode
         self.points = int(points)
         if self.points < 1:
@@ -330,12 +330,13 @@ class Viewer3D:
     # -- the field ---------------------------------------------------------- #
 
     @staticmethod
-    def _build_field(source, quantity, index, state, component, h, grid):
+    def _build_field(source, quantity, index, state, component, grid_spacing, grid):
         if hasattr(source, "data") and hasattr(source, "grid") \
                 and hasattr(source, "positions"):
-            if h is not None or grid is not None:
+            if grid_spacing is not None or grid is not None:
                 raise ValueError(
-                    "h= and grid= re-evaluate the basis functions, which needs "
+                    "grid_spacing= and grid= re-evaluate the basis functions, "
+                    "which needs "
                     "the calculator; a VolumetricField can only be drawn on "
                     "the grid it was sampled on")
             return source
@@ -343,14 +344,14 @@ class Viewer3D:
             raise TypeError(
                 f"Viewer3D draws a Mandacaru calculator or a VolumetricField, "
                 f"not {type(source).__name__}")
-        if h is not None:
-            h = float(h)
-            if h <= 0.0:
-                raise ValueError(f"h must be positive, got {h!r}")
+        if grid_spacing is not None:
+            grid_spacing = float(grid_spacing)
+            if grid_spacing <= 0.0:
+                raise ValueError(f"grid_spacing must be positive, got {grid_spacing!r}")
             own = source.volumetric_field(quantity, index, state=state,
                                           component=component).grid
             grid = dataclasses.replace(
-                own, h=to_bohr(h, "angstrom") / to_bohr(1.0, own.units))
+                own, grid_spacing=to_bohr(grid_spacing, "angstrom") / to_bohr(1.0, own.units))
         return source.volumetric_field(quantity, index, state=state,
                                        component=component, grid=grid)
 

@@ -158,6 +158,52 @@ class TestFlipMaskGrouping:
                            dense.toarray(), atol=1e-12)
 
 
+class TestConserves:
+    """``conserves`` tests each flip-mask group on every state at once; it
+    must answer what the state-by-state image test answers."""
+
+    @staticmethod
+    def _state_by_state(sector, operator, atol=1e-12):
+        from mandacaru.core.sector import apply_pauli_sum
+
+        for index in sector.indices:
+            images, amplitudes = apply_pauli_sum(operator, [index], [1.0])
+            outside = sector.positions(images) < 0
+            if np.any(np.abs(amplitudes[outside]) > atol):
+                return False
+        return True
+
+    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
+                                         "bravyi_kitaev"])
+    @pytest.mark.parametrize("seed", range(6))
+    def test_it_agrees_with_the_state_by_state_test(self, mapping, seed):
+        """Random Pauli sums, half of them with a number-conserving
+        Hamiltonian added, so both answers occur."""
+        rng = np.random.default_rng(seed)
+        sector = ParticleSector(2 * M, (1, 1), mapping)
+        labels = ["".join(rng.choice(list("IXYZ"), 2 * M))
+                  for _ in range(int(rng.integers(1, 5)))]
+        operator = PauliSum({label: complex(*rng.normal(size=2))
+                             for label in labels})
+        if seed % 2:
+            operator = random_hamiltonian(seed).map_to_qubits(mapping)
+        assert sector.conserves(operator) == self._state_by_state(sector,
+                                                                  operator)
+
+    def test_strings_that_leak_alone_can_conserve_together(self):
+        """``a+_1 a_0 - h.c.`` maps to ``X0 Y1`` and ``Y0 X1``, which share a
+        flip mask.  From an alpha electron in orbital 2 each string alone
+        fills orbitals 0 and 1; only their sum cancels that."""
+        excitation = Fermion({((1, True), (0, False)): 1.0,
+                              ((0, True), (1, False)): -1.0}, n_modes=2 * M)
+        generator = excitation.map_to_qubits("jordan_wigner")
+        sector = ParticleSector(2 * M, (1, 1), "jordan_wigner")
+        assert sector.conserves(generator)
+        assert self._state_by_state(sector, generator)
+        assert not all(sector.conserves(PauliSum({label: coeff}))
+                       for label, coeff in generator.terms.items())
+
+
 def test_restrict_of_nothing_is_empty():
     sector = ParticleSector(4, (1, 1), "jordan_wigner")
     empty = sector.restrict(PauliSum({}, num_qubits=4))
