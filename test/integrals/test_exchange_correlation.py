@@ -56,7 +56,10 @@ class TestSpectralDerivatives:
         rho, r2 = _gaussian(grid, electrons=1.0)
         laplacian = xc_grid.divergence(grid, xc_grid.gradient(grid, rho))
         expected = (4.0 * ALPHA ** 2 * r2 - 6.0 * ALPHA) * rho
-        assert np.max(np.abs(laplacian - expected)) < 1e-6 * np.max(np.abs(expected))
+        # The molecular grid's derivative is the order-8 central difference
+        # (``XC_STENCIL``): 4.5e-6 here, against the spectral 6e-7 it replaced
+        # for the Li GGA force fix (HISTORY, 2026-10-13).
+        assert np.max(np.abs(laplacian - expected)) < 1e-5 * np.max(np.abs(expected))
 
 
 class TestEnergies:
@@ -441,17 +444,31 @@ class TestCrystalSymmetry:
         assert abs(slopes[0]) > 1e-4
         assert slopes[1] == pytest.approx(slopes[0], rel=1e-5)
 
-    def test_a_real_field_on_a_box_is_differentiated_as_before(self):
-        """On an orthorhombic grid the averaged wave-vectors are the box's but
-        for an even axis' Nyquist plane, whose derivative along that axis a
-        real field never kept: a molecule's gradients are unchanged."""
+    def test_a_real_field_on_a_box_is_differentiated_by_the_stencil(self):
+        """A molecule's grid (orthorhombic, not periodic) differentiates with
+        the order-8 central difference of ``XC_STENCIL``, nine points per
+        axis on the circular box.  A periodic grid of the same nodes keeps the
+        spectral derivative: a crystal resolves its density, a molecule's
+        under-resolved tail rings through the spectral one (HISTORY,
+        2026-10-13, the Li GGA force fix)."""
         from mandacaru.integrals import reciprocal as rc
 
         grid = _grid(grid_spacing=12.0 / 31.0)                         # 32 nodes
         assert all(n % 2 == 0 for n in grid.shape)
         rng = np.random.default_rng(3)
         field = rng.standard_normal(grid.size)
-        transform = np.fft.fftn(field.reshape(grid.shape))
+        cube = field.reshape(grid.shape)
+        stencil = sum(c * (np.roll(cube, -(m + 1), axis=0)
+                           - np.roll(cube, m + 1, axis=0))
+                      for m, c in enumerate(xc_grid.XC_STENCIL)) / grid.dx
+        assert np.max(np.abs(xc_grid.gradient(grid, field)[0]
+                             - stencil.ravel())) < 1e-12
+
+        crystal = Grid(center=np.zeros(3), box_size=0.0,
+                       grid_spacing=np.full(3, grid.dx), units="bohr",
+                       cell=np.diag(np.full(3, 32 * grid.dx)), periodic=True)
+        assert crystal.shape == grid.shape
+        transform = np.fft.fftn(cube)
         box = np.stack([np.real(np.fft.ifftn(1j * k * transform)).ravel()
-                        for k in rc.wavevectors(grid)])
-        assert np.max(np.abs(xc_grid.gradient(grid, field) - box)) < 1e-12
+                        for k in rc.wavevectors(crystal)])
+        assert np.max(np.abs(xc_grid.gradient(crystal, field) - box)) < 1e-12

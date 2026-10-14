@@ -353,7 +353,7 @@ read off the left margin:
 [ELECTRONS]
     grid spacing: 0.1 Angstrom (requested)
     grid points: 101 x 101 x 101 (spacing 0.1000 x 0.1000 x 0.1000 Angstrom)
-    kinetic operator: finite difference
+    kinetic operator: spectral
     k-points: Gamma (1x1x1 Monkhorst-Pack)
     charge: 0
     spin-polarized: False (multiplicity 1)

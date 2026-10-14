@@ -160,22 +160,11 @@ class BasisGradient:
 def radial_slope(function, r) -> np.ndarray:
     """``dR/dr`` of a tabulated function's radial spline, with its
     continuation ``R(r_0)(r / r_0)^l`` below the first breakpoint and zero
-    past its cutoff -- the derivative of ``function.radial``."""
-    breaks, coeffs, rc_ = _radial_spline(function)
-    r = np.asarray(r, dtype=float)
-    x0, x_end = float(breaks[0]), float(breaks[-1])
-    index = np.clip(np.searchsorted(breaks, r, side="right") - 1, 0,
-                    len(breaks) - 2)
-    t = r - breaks[index]
-    c = coeffs[index]
-    slope = (3.0 * c[:, 0] * t + 2.0 * c[:, 1]) * t + c[:, 2]
-    l = int(function.l)
-    if x0 > 0.0:
-        edge = float(function.radial(np.array([x0]))[0])
-        inner = (l * edge * (np.maximum(r, 0.0) / x0) ** (l - 1) / x0
-                 if l > 0 else np.zeros_like(r))
-        slope = np.where(r < x0, inner, slope)
-    return np.where((r > x_end) | (r >= rc_), 0.0, slope)
+    past its cutoff -- the derivative of ``function.radial``, which the
+    function itself provides (``radial_slope``)."""
+    if isinstance(function, BasisGradient):
+        return radial_slope(function.parent, r)
+    return function.radial_slope(r)
 
 
 def _radial_table(function):

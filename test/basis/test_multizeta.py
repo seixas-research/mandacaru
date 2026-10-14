@@ -137,6 +137,88 @@ class TestTabulatedOrbital:
         assert norm == pytest.approx(1.0, abs=2e-2)
 
 
+class TestAnalyticGradient:
+    """``gradient`` is the derivative of the samples -- the spline's and the
+    harmonic's -- not a finite-difference estimate of them."""
+
+    CENTER = np.array([0.1, -0.2, 0.3])
+
+    @staticmethod
+    def _orbital(l, m, real):
+        r = np.linspace(0.05, 6.0, 300)
+        return TabulatedOrbital(RadialTable(r, r ** l * np.exp(-r), l + 1, l),
+                                m, center=TestAnalyticGradient.CENTER,
+                                units="bohr", real=real)
+
+    @pytest.mark.parametrize("real", [True, False])
+    @pytest.mark.parametrize("l, m", [(0, 0), (1, -1), (1, 0), (1, 1),
+                                      (2, -2), (2, 1), (2, 2), (3, -2)])
+    def test_it_is_the_derivative_of_the_samples(self, l, m, real):
+        orbital = self._orbital(l, m, real)
+        rng = np.random.default_rng(10 * l + m + 5)
+        points = self.CENTER[:, None] + rng.uniform(-4.0, 4.0, size=(3, 120))
+        # Inside the first table point (the power-law continuation), a few
+        # hundredths of a Bohr from the center, and on the center itself.
+        points = np.hstack([points,
+                            self.CENTER[:, None]
+                            + 0.02 * rng.normal(size=(3, 20)),
+                            self.CENTER[:, None]])
+        step = 1e-5
+        numeric = np.stack([
+            (orbital.evaluate(*(points + step * np.eye(3)[k][:, None]))
+             - orbital.evaluate(*(points - step * np.eye(3)[k][:, None])))
+            / (2.0 * step) for k in range(3)])
+        analytic = orbital.gradient(*points)
+        assert analytic.dtype == (np.float64 if real else np.complex128)
+        assert np.abs(analytic - numeric).max() < 1e-7
+
+    def test_sampling_it_on_a_grid_matches_the_central_difference(
+            self, hydrogen_1s):
+        """The base class's difference (what a function without a closed
+        form gets) agrees with the closed form on the whole grid."""
+        from mandacaru.basis.base import BasisFunction
+
+        r, radial = hydrogen_1s
+        orbital = TabulatedOrbital(RadialTable(r, radial, 1, 0), 0,
+                                   center=[0.11, 0.037, 0.21], units="bohr")
+        grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.25,
+                    units="bohr")
+        analytic = orbital.sample_gradient(grid)
+        difference = BasisFunction.gradient(
+            orbital, grid.X.ravel(), grid.Y.ravel(), grid.Z.ravel(), 1e-6)
+        assert analytic.shape == (3, grid.size)
+        assert np.allclose(analytic, difference, atol=1e-6)
+
+    def test_zeta_partners_share_the_harmonic_without_changing_a_number(self):
+        """``values_and_gradients`` evaluates a shell's harmonic once; every
+        function still gets exactly its own samples and gradient, whatever
+        else (a function with no closed form, another center) is in the
+        list."""
+        from mandacaru.basis import GaussianOrbital
+        from mandacaru.basis.base import values_and_gradients
+
+        r = np.linspace(0.05, 6.0, 300)
+        center = [0.1, -0.2, 0.3]
+        functions = [
+            TabulatedOrbital(RadialTable(r, r * np.exp(-z * r), 2, 1, zeta=k),
+                             m, center=center, units="bohr")
+            for k, z in ((1, 1.0), (2, 1.7)) for m in (-1, 0)]
+        functions.append(TabulatedOrbital(
+            RadialTable(r, np.exp(-r), 1, 0), 0, center=[-0.5, 0.2, 0.0],
+            units="bohr"))
+        functions.append(GaussianOrbital(0, 0, [0.9], [1.0], center=center,
+                                         units="bohr"))
+        rng = np.random.default_rng(4)
+        points = rng.uniform(-3.0, 3.0, size=(3, 60))
+        values, gradients = values_and_gradients(functions, *points)
+        for i, function in enumerate(functions):
+            assert np.allclose(values[i], function.evaluate(*points),
+                               atol=1e-13)
+            assert np.allclose(gradients[i], function.gradient(*points),
+                               atol=1e-6 if i == len(functions) - 1 else 1e-12)
+        assert values_and_gradients(functions, *points, values=False)[0] is None
+
+
 class TestBasisConstruction:
     """What ``BasisSet.build("NAO", size=...)`` actually produces."""
 

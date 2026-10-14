@@ -323,6 +323,17 @@ def bound_valence(atom) -> bool:
         u = atom.orbitals.get(state)
         if u is not None and atom.r[int(np.argmax(np.abs(u)))] > edge:
             return False
+    # A Dirac atom has one level per j.  The (2j+1) average can be bound
+    # while one branch is not (Pa's 5f: +0.001 / +0.005 Ha), and a branch
+    # cannot be built on an unbound state.
+    for (n, l, kappa), eps in atom.eigenvalues_j.items():
+        if (n, l) not in valence:
+            continue
+        if eps > BOUND_STATE_CEILING:
+            return False
+        u = atom.orbitals_j.get((n, l, kappa))
+        if u is not None and atom.r[int(np.argmax(np.abs(u)))] > edge:
+            return False
     return True
 
 

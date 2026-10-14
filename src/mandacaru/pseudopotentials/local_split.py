@@ -70,7 +70,8 @@ Read that honestly, because it does not say what one would hope.
 
 * The nonlocal and compensation terms are already 0.000 meV -- the atom-centered
   quadratures of :mod:`~.paw`.  ``V_loc`` is **not** the dominant remaining
-  term: the finite-difference kinetic stencil and the grid Coulomb tensor are
+  term: the finite-difference kinetic stencil (these numbers were measured
+  with ``kinetic="fd"``) and the grid Coulomb tensor are
   of the same size and larger at some spacings, and the total is set by how the
   three happen to cancel.
 * The half that moves to the sphere is exactly translation invariant
@@ -102,6 +103,8 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.special import erf
+
+from ..basis.base import values_and_gradients
 
 #: Width of the Gaussian ion, in units of the grid spacing (Bohr).  At 1.4 the
 #: long-range potential's Fourier weight at the Nyquist wave-vector ``pi/h`` is
@@ -328,26 +331,20 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
         points = tuple(center[i] + r_block[:, None] * directions[i][None, :]
                        for i in range(3))
         w_block = weight[start:stop].ravel()
-        psi = np.stack([np.asarray(fn.evaluate(*points)).ravel()
-                        for fn in basis])
-        I[block_ix] += (np.conj(psi) * w_block) @ psi.T
+        flat = tuple(p.ravel() for p in points)
         if not gradients:
+            psi = np.stack([np.asarray(fn.evaluate(*flat)).ravel()
+                            for fn in basis])
+            I[block_ix] += (np.conj(psi) * w_block) @ psi.T
             continue
+        # d phi / d R_k is minus the function's gradient (as
+        # `atom_centered_projection_gradients` has it for the projectors):
+        # analytic for the tabulated functions, a step-`delta` central
+        # difference for the rest.
+        psi, gradient = values_and_gradients(basis, *flat, float(delta))
+        I[block_ix] += (np.conj(psi) * w_block) @ psi.T
         for k in range(3):
-            shift = [0.0, 0.0, 0.0]
-            shift[k] = float(delta)
-            # d phi / d R_k: displacing the center by +delta is the same as
-            # sampling the unchanged function at r - delta (as
-            # `atom_centered_projection_gradients` does for the projectors).
-            plus = np.stack([
-                np.asarray(fn.evaluate(*(points[i] - shift[i]
-                                         for i in range(3)))).ravel()
-                for fn in basis])
-            minus = np.stack([
-                np.asarray(fn.evaluate(*(points[i] + shift[i]
-                                         for i in range(3)))).ravel()
-                for fn in basis])
-            dpsi = (plus - minus) / (2.0 * float(delta))
+            dpsi = -gradient[:, k]
             G[block_ix + (k,)] += (np.conj(dpsi) * w_block) @ psi.T
     return I, G
 

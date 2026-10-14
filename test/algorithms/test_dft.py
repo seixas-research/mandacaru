@@ -351,6 +351,33 @@ class TestForces:
             assert np.allclose(result.details["dispersion_gradient"].sum(axis=0),
                                0.0, atol=1e-10)
 
+    def test_a_semilocal_gradient_never_forms_the_two_electron_tensor(
+            self, lih_forces):
+        """Hartree enters through its potential and the compensation
+        charges' scalars: the SCF's Poisson route is all the gradient reads."""
+        atoms, _forces, _result = lih_forces
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        assert integrals._eri_ao is None
+
+    def test_it_is_the_gradient_through_the_tensor(self):
+        """The linearized Hartree term against ``hartree="tensor"``, which
+        differentiates the dense tensor and its pair-density derivatives:
+        the same forces, up to the dense route's finite-difference step."""
+        gradients = {}
+        for route in ("poisson", "tensor"):
+            atoms = lih()
+            atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.25,
+                                   hartree=route, trace=False,
+                                   basis={"name": "PAW-LCAO", "size": "DZP"})
+            atoms.get_forces()
+            gradients[route] = atoms.calc.force_result
+        linearized, dense = gradients["poisson"], gradients["tensor"]
+        assert np.allclose(linearized.gradient, dense.gradient, atol=1e-5)
+        assert np.allclose(linearized.hellmann_feynman,
+                           dense.hellmann_feynman, atol=1e-5)
+        assert linearized.details["energy_hartree"] == pytest.approx(
+            dense.details["energy_hartree"], abs=1e-9)
+
     def test_a_meta_gga_returns_forces_of_its_reported_energy(self):
         """r2SCAN: the rebuilt energy matches and the forces are finite.
 
@@ -363,6 +390,89 @@ class TestForces:
         forces = atoms.get_forces()
         assert np.all(np.isfinite(forces))
         assert forces[1, 2] == pytest.approx(-forces[0, 2])
+
+
+class TestForcesAfterTheEnergy:
+    """ASE asks for the forces of a geometry whose energy it already has:
+    the converged state serves them, a new geometry or a changed setting
+    converges its own."""
+
+    @staticmethod
+    def _calculator(monkeypatch, calls, **options):
+        calc = Mandacaru(method="dft", xc=options.pop("xc", "lda"),
+                         grid_spacing=0.35, basis=NAO_DZ, trace=False,
+                         **options)
+        original = calc._single_point
+
+        def counting(solver, atoms):
+            calls.append(solver)
+            return original(solver, atoms)
+
+        monkeypatch.setattr(calc, "_single_point", counting)
+        return calc
+
+    def test_the_forces_do_not_repeat_the_scf(self, monkeypatch):
+        calls = []
+        atoms = h2()
+        atoms.calc = self._calculator(monkeypatch, calls)
+        energy = atoms.get_potential_energy()
+        forces = atoms.get_forces()
+        assert len(calls) == 1
+        assert atoms.calc.solver is calls[0]
+        assert atoms.get_potential_energy() == energy
+        fresh = h2()
+        fresh.calc = self._calculator(monkeypatch, calls)
+        assert np.allclose(forces, fresh.get_forces(), atol=1e-9)
+        assert len(calls) == 2                    # the fresh calculator's own
+
+    def test_a_moved_atom_converges_again(self, monkeypatch):
+        calls = []
+        atoms = h2()
+        atoms.calc = self._calculator(monkeypatch, calls)
+        atoms.get_potential_energy()
+        before = atoms.get_forces().copy()
+        atoms.positions[1, 2] += 0.05
+        atoms.get_forces()
+        assert len(calls) == 2
+        assert not np.allclose(before, atoms.get_forces())
+        atoms.get_potential_energy()
+        assert len(calls) == 2
+
+    def test_forces_first_then_energy_run_once(self, monkeypatch):
+        calls = []
+        atoms = h2()
+        atoms.calc = self._calculator(monkeypatch, calls)
+        atoms.get_forces()
+        atoms.get_potential_energy()
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("setting, value", [("xc", "pbe"), ("kinetic", "spectral")])
+    def test_a_changed_setting_converges_again(self, monkeypatch, setting,
+                                               value):
+        """Assigning a setting does not tell ASE anything changed; the
+        forces must not come from the state of the old one."""
+        calls = []
+        atoms = h2()
+        atoms.calc = self._calculator(monkeypatch, calls)
+        atoms.get_potential_energy()
+        atoms.calc.solver_kwargs[setting] = value
+        forces = atoms.get_forces()
+        assert len(calls) == 2
+        reference = h2()
+        reference.calc = self._calculator(monkeypatch, [], **{setting: value})
+        assert np.allclose(forces, reference.get_forces(), atol=1e-9)
+
+    def test_cleared_results_never_serve_forces(self, monkeypatch):
+        calls = []
+        atoms = h2()
+        atoms.calc = self._calculator(monkeypatch, calls)
+        atoms.get_potential_energy()
+        atoms.calc.reset()
+        atoms.get_forces()
+        assert len(calls) == 2
+        atoms.calc.results.clear()
+        atoms.get_forces()
+        assert len(calls) == 3
 
 
 class TestDispersion:
@@ -1047,3 +1157,178 @@ class TestTheHartreeTerm:
                                basis={"name": "PAW-LCAO", "size": "SZ"})
         with pytest.raises(ValueError, match="molecular"):
             atoms.get_potential_energy()
+
+
+class TestAnalyticTwoCenter:
+    """``two_center="analytic"``: the overlap, the kinetic energy and the
+    projections from the Fourier-Bessel tables instead of the grid
+    (``integrals/two_center.py``); the matrices themselves are in
+    ``test/integrals/test_two_center.py``."""
+
+    PAW = {"name": "PAW-LCAO", "size": "DZP"}
+
+    @staticmethod
+    def _lih():
+        atoms = Atoms("LiH", positions=[[0, 0, 0], [0.03, 0.02, 1.60]],
+                      cell=[7, 7, 8])
+        atoms.center()
+        return atoms
+
+    @pytest.fixture(scope="class", params=["lda", "pbe"])
+    def runs(self, request):
+        """LiH at h = 0.3 on both routes, forces taken."""
+        out = {}
+        for route in ("grid", "analytic"):
+            atoms = self._lih()
+            atoms.calc = Mandacaru(method="dft", xc=request.param,
+                                   grid_spacing=0.3, basis=self.PAW,
+                                   two_center=route, trace=False)
+            atoms.get_forces()
+            # An energy-only evaluation clears the result: keep the gradient.
+            atoms.raw = atoms.calc.force_result.unprojected.copy()
+            out[route] = atoms
+        return request.param, out
+
+    @staticmethod
+    def _numerical(atoms, atom, k):
+        def energy(step):
+            moved = atoms.copy()
+            moved.positions[atom, k] += step
+            moved.calc = atoms.calc
+            return moved.get_potential_energy()
+
+        coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
+                        for s in (0.004, 0.002))
+        return fine + (fine - coarse) / 3.0
+
+    def test_the_forces_are_the_derivative_of_the_energy(self, runs):
+        """Richardson-extrapolated central differences of the same energy on
+        the frozen grid: the analytic tables are differentiated exactly."""
+        _xc, out = runs
+        atoms = out["analytic"]
+        for atom, k in ((1, 2), (1, 0), (0, 2)):
+            assert atoms.raw[atom, k] == pytest.approx(
+                self._numerical(atoms, atom, k), abs=2e-5)
+
+    def test_the_energy_is_the_grids_to_the_grid_s_error(self, runs):
+        _xc, out = runs
+        grid, analytic = (out[r].calc.result.optimal_energy
+                          for r in ("grid", "analytic"))
+        assert abs(analytic - grid) < 5e-3                     # eV
+        assert analytic != grid
+
+    def test_the_log_and_the_integrals_name_the_route(self, runs):
+        _xc, out = runs
+        solver = out["analytic"].calc.solver
+        integrals = solver._gradient_context["integrals"]
+        assert (integrals.two_center, integrals.kinetic) == (
+            "analytic", "analytic")
+        assert solver._kinetic_label() == "analytic (two-center)"
+        assert out["grid"].calc.solver._kinetic_label() == "spectral"
+
+    def test_the_analytic_matrices_are_the_ones_the_energy_used(self, runs):
+        """S is the tables', not the grid's: the overlap of the converged
+        calculation is the analytic one to round-off, and differs from the
+        grid's by the grid's own error."""
+        _xc, out = runs
+        integrals = out["analytic"].calc.solver._gradient_context["integrals"]
+        tables = integrals.two_center_tables()
+        assert np.allclose(integrals.bare_overlap(),
+                           tables.matrix("overlap"), atol=1e-14)
+        psi = integrals._engine._psi
+        grid_overlap = psi @ psi.T * integrals.grid.dV
+        assert 1e-8 < np.abs(integrals.bare_overlap() - grid_overlap).max() < 2e-2
+
+    def test_the_net_force_shrinks(self, runs):
+        """A free molecule's forces sum to zero; the grid's do not
+        (egg-box).  The three-center terms stay on the grid, so a remainder
+        is left, but the two-center part of it is gone."""
+        _xc, out = runs
+        net = {r: np.abs(out[r].raw.sum(axis=0)).max() for r in out}
+        assert net["analytic"] < 0.5 * net["grid"]
+
+    def test_the_unrestricted_forces_are_the_derivative_of_the_energy(self):
+        """The OH radical (open shell, the magnetization term as well)."""
+        atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
+                      cell=[6, 6, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3,
+                               trace=False, two_center="analytic",
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        atoms.get_forces()
+        assert atoms.calc.result.num_particles == (4, 3)
+        result = atoms.calc.force_result
+        for atom, k in ((1, 2), (1, 0)):
+            assert result.unprojected[atom, k] == pytest.approx(
+                self._numerical(atoms, atom, k), abs=2e-5)
+
+    def test_the_run_log_states_it_once(self, tmp_path):
+        """One owner block: the ``[ELECTRONS]`` line of the kinetic operator,
+        which the analytic route owns; no second field repeats it."""
+        from mandacaru.utils.logging import parse_output, reset_log
+        path = str(tmp_path / "analytic.txt")
+        atoms = h2()
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.35,
+                               txt=path, trace=False, two_center="analytic",
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        atoms.get_potential_energy()
+        reset_log(path)
+        assert parse_output(path)["electrons"]["kinetic operator"] == \
+            "analytic (two-center)"
+        with open(path) as handle:
+            text = handle.read()
+        assert text.count("two-center") == 1
+        assert "two_center" not in text         # not echoed by a second block
+
+    def test_it_is_refused_with_a_kinetic_operator(self):
+        with pytest.raises(ValueError, match="kinetic"):
+            Mandacaru(method="dft", basis=self.PAW, two_center="analytic",
+                      kinetic="spectral")
+
+    @pytest.mark.parametrize("basis", ["NAO", "HAO", "6-31G", "PW"])
+    def test_it_needs_a_pseudopotential_basis(self, basis):
+        with pytest.raises(NotImplementedError, match="PAW-LCAO"):
+            Mandacaru(method="dft", basis=basis, two_center="analytic")
+
+    def test_an_unknown_route_is_refused(self):
+        with pytest.raises(ValueError, match="two_center"):
+            Mandacaru(method="dft", basis=self.PAW, two_center="exact")
+
+    def test_scf_response_forces_are_refused_at_construction(self):
+        """The legacy gradient differentiates the grid matrices; the
+        combination fails in the constructor, before any SCF."""
+        with pytest.raises(ValueError, match="scf-response"):
+            Mandacaru(method="dft", basis=self.PAW, two_center="analytic",
+                      force_method="scf-response")
+
+    def test_spin_orbit_datasets_are_refused_before_the_grid_is_sampled(self):
+        """Their projections are still quadratures.  The dataset is known
+        only when the integrals are built, where the refusal comes first:
+        before the basis is sampled on the grid (1 s, not an SCF)."""
+        atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[6, 6, 7])
+        atoms.calc = Mandacaru(method="rhf", grid_spacing=0.4, trace=False,
+                               two_center="analytic", paw_dataset="lda-fr",
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        with pytest.raises(NotImplementedError, match="spin-orbit"):
+            atoms.get_potential_energy()
+        assert atoms.calc.solver._gradient_context is None
+
+    def test_a_periodic_method_is_refused_at_construction(self):
+        with pytest.raises(NotImplementedError, match="molecular"):
+            Mandacaru(method="bloch-vqe", basis=self.PAW, two_center="analytic",
+                      kpts={"size": (1, 1, 1), "gamma": True})
+
+    def test_a_crystal_is_refused(self):
+        from ase.build import bulk
+        atoms = bulk("Al", "fcc", a=4.05)
+        atoms.calc = Mandacaru(method="dft", trace=False,
+                               two_center="analytic",
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        with pytest.raises(NotImplementedError, match="molecular"):
+            atoms.get_potential_energy()
+
+    def test_a_loaded_hamiltonian_would_ignore_it(self, tmp_path):
+        with pytest.raises(ValueError, match="two_center"):
+            Mandacaru(method="adapt-vqe", basis=self.PAW,
+                      two_center="analytic",
+                      load_hamiltonian=str(tmp_path / "missing.json"))

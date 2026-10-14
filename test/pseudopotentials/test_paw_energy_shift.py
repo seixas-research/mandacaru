@@ -206,14 +206,19 @@ class TestBasis:
 #: free -30.187777 -> -29.408554, confined -30.651012 -> -29.829699 (gain
 #: 0.4632 -> 0.4211 eV), DZP Gaussian -33.290822 -> -32.146900, DZP
 #: unconfined -32.805738 -> -31.707244.
-UNCONFINED_EV = -29.408554
-CONFINED_EV = -29.829699
+#: Re-measured 2026-10-13, when the molecular default kinetic operator became
+#: spectral (HISTORY.md "Phase N step 3: the spectral molecular default"):
+#: free -29.408554 -> -29.043049, confined -29.829699 -> -29.436117 (gain
+#: 0.4211 -> 0.3931 eV), DZP Gaussian -32.146900 -> -31.458701, DZP
+#: unconfined -31.707244 -> -31.079967.
+UNCONFINED_EV = -29.043049
+CONFINED_EV = -29.436117
 #: The same molecule in the DZP basis with a Gaussian polarization shell,
 #: 20 qubits.  Re-measured in the same rebuild: -33.374833 -> -33.360087.
-DZP_GAUSSIAN_EV = -32.146900
+DZP_GAUSSIAN_EV = -31.458701
 #: The same, with the confinement switched off (orbital polarization).
 #: -32.884195 -> -32.869555 in the same rebuild.
-DZP_UNCONFINED_EV = -31.707244
+DZP_UNCONFINED_EV = -31.079967
 
 
 @needs_library
@@ -247,7 +252,7 @@ class TestMolecule:
         confined, _ = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
         assert free == pytest.approx(UNCONFINED_EV, abs=2e-5)
         assert confined == pytest.approx(CONFINED_EV, abs=2e-5)
-        assert free - confined == pytest.approx(0.4211, abs=1e-3)
+        assert free - confined == pytest.approx(0.3931, abs=1e-3)
 
     def test_the_context_reports_the_radii(self):
         _, atoms = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})

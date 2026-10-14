@@ -16,7 +16,8 @@ and a converged 75-operator optimization thrown away with it.
 
 ## The three walls, in the order you hit them
 
-Measured on LiH/PAW-LCAO at `grid_spacing = 0.25`, `pool="ceo-ovp"`, Jordan-Wigner:
+Measured on LiH/PAW-LCAO at `grid_spacing = 0.25`, `pool="ceo-ovp"`, Jordan-Wigner
+(with `kinetic="fd"`):
 
 | basis | qubits | H Pauli strings | submitted with RDMs | QWC bases | ADAPT ops | 2q gates | fidelity |
 |---|---|---|---|---|---|---|---|

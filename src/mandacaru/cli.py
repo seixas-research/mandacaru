@@ -205,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .core.mapping import MAPPINGS
     from .integrals.cholesky import TWO_BODY_METHODS
     from .integrals.exchange_correlation import GRID_FUNCTIONALS
+    from .integrals.two_center import TWO_CENTER_METHODS
     from .optimizers.optim import DEFAULT_OPTIMIZER, NAMED_OPTIMIZERS
 
     parser = argparse.ArgumentParser(
@@ -389,6 +390,13 @@ def build_parser() -> argparse.ArgumentParser:
                        metavar="HARTREE",
                        help="truncation of the Cholesky factors (Hartree; "
                             "implies --two-body cholesky)")
+    basis.add_argument("--two-center", default=None,
+                       choices=TWO_CENTER_METHODS,
+                       help="overlap, kinetic and projector matrices of a "
+                            "PAW-LCAO or UPAW-LCAO molecule: sampled on the "
+                            "real-space grid (default) or analytic, from the "
+                            "Fourier-Bessel transforms of the radial "
+                            "functions")
     basis.add_argument("--mapping", default="jordan_wigner",
                        choices=MAPPINGS,
                        help="fermion-to-qubit mapping (default jordan_wigner)")
@@ -663,6 +671,8 @@ def solver_options(args) -> dict:
         if args.cholesky_tolerance is not None:
             two_body["tolerance"] = args.cholesky_tolerance
         options["two_body"] = two_body
+    if args.two_center is not None:
+        options["two_center"] = args.two_center
     criteria = {name: getattr(args, f"convergence_{name}")
                 for name in ("gradient", "energy")
                 if getattr(args, f"convergence_{name}") is not None}

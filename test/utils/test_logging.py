@@ -479,7 +479,7 @@ class TestElectronsBlock:
         assert "frozen core" not in block and "active space" not in block
         assert "active_space" not in parse_output(out)
         assert block["Z2 tapering"] == "none"
-        assert block["kinetic operator"] == "finite difference"
+        assert block["kinetic operator"] == "spectral"
         assert "Monkhorst-Pack" in block["k-points"]
         assert block["spin-polarized"] == "False (multiplicity 1)"
         # The transformation's own name, not the identifier the code uses.

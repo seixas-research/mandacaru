@@ -304,7 +304,7 @@ class IntegralEngine:
     # -- one body ---------------------------------------------------------- #
 
     def one_body(self, potential: PotentialFn, energy_units: str = "eV",
-                 kinetic: str = "fd"):
+                 kinetic: str | None = "spectral"):
         """Kinetic ``T`` and potential ``V`` matrices over the basis.
 
         Parameters
@@ -315,16 +315,19 @@ class IntegralEngine:
         energy_units : {"eV", "Ha"}
             Unit of the returned matrices (default ``"eV"``); the integrals are
             computed in Hartree and converted on return.
-        kinetic : {"fd", "spectral"}
-            How the Laplacian is discretized.  ``"fd"`` (default) is the
-            3-point finite-difference stencil of the C backend.  ``"spectral"``
+        kinetic : {"spectral", "fd"}
+            How the Laplacian is discretized.  ``"spectral"`` (default)
             applies the exact Laplacian of the trigonometric interpolant of
-            the samples (``-k^2`` in Fourier space): the finite-difference
-            symbol ``(2 - 2 cos kh)/h^2`` never exceeds ``k^2``, so the stencil
+            the samples (``-k^2`` in Fourier space).  ``"fd"`` is the 3-point
+            finite-difference stencil of the C backend: its symbol
+            ``(2 - 2 cos kh)/h^2`` never exceeds ``k^2``, so the stencil
             *under*-estimates the kinetic energy of any function that is not
             smooth on the grid scale -- which is what lets compact functions
             collapse into a deep potential ("ghost states").  The spectral
-            operator has no such bias.  Orthogonal grids only.
+            operator has no such bias.  Orthogonal grids only.  ``None``
+            computes no kinetic matrix (``T`` is returned as ``None``): the
+            caller has it from the analytic two-center tables
+            (:mod:`~mandacaru.integrals.two_center`).
 
         Returns
         -------
@@ -340,11 +343,15 @@ class IntegralEngine:
             elif kinetic == "spectral":
                 T = self._spectral_kinetic()
                 V = (np.conj(self._psi) * Vext) @ self._psi.T * self.grid.dV
+            elif kinetic is None:
+                T = None
+                V = (np.conj(self._psi) * Vext) @ self._psi.T * self.grid.dV
             else:
                 raise ValueError(
                     f"unknown kinetic operator {kinetic!r}; use 'fd' or "
                     "'spectral'")
-        return from_hartree(T, energy_units), from_hartree(V, energy_units)
+        return (None if T is None else from_hartree(T, energy_units),
+                from_hartree(V, energy_units))
 
     def _g_squared(self) -> np.ndarray:
         r""":math:`|G|^2` on the grid's FFT mesh.
@@ -429,8 +436,22 @@ class IntegralEngine:
             T[:, b0:b0 + step] = -0.5 * grid.dV * (conj_psi @ lap.T)
         return 0.5 * (T + T.conj().T)
 
+    def _spectral_kinetic_diagonal(self) -> np.ndarray:
+        r"""``T[a,a]`` of :meth:`_spectral_kinetic` alone: one transform per
+        function and no ``M x M`` product (the grid-resolution check of the
+        analytic two-center route, which has no use for the rest)."""
+        M = self._psi.shape[0]
+        diagonal = np.empty(M)
+        step = self._workspace().batch(16)
+        for b0 in range(0, M, step):
+            block = self._psi[b0:b0 + step]
+            lap = self.spectral_laplacian(block)
+            diagonal[b0:b0 + step] = np.real(
+                -0.5 * self.grid.dV * np.einsum("ag,ag->a", np.conj(block), lap))
+        return diagonal
+
     def resolution(self, T: np.ndarray | None = None,
-                   kinetic: str = "fd") -> np.ndarray:
+                   kinetic: str = "spectral") -> np.ndarray:
         r"""Grid-resolution check of every basis function: ``T_grid / T_exact``.
 
         For each function with a radial part (``radial(r)`` and ``l``), the
@@ -441,9 +462,12 @@ class IntegralEngine:
         spacing -- and any energy it enters is unreliable.  Functions without
         a radial part get ``nan``.
         """
-        if T is None:
+        if T is None and kinetic == "spectral":
+            T = self._spectral_kinetic_diagonal()
+        elif T is None:
             T = self.one_body(lambda x, y, z: np.zeros_like(x),
                               energy_units="Ha", kinetic=kinetic)[0]
+        diagonal = np.real(np.diag(T) if np.ndim(T) == 2 else T)
         norms = np.real(np.einsum("ag,ag->a", np.conj(self._psi), self._psi)
                         * self.grid.dV)
         ratios = np.full(len(self.basis), np.nan)
@@ -454,7 +478,7 @@ class IntegralEngine:
                 continue
             exact = radial_kinetic_energy(radial, int(l))
             if exact and norms[a] > 0:
-                ratios[a] = float(np.real(T[a, a])) / norms[a] / exact
+                ratios[a] = float(diagonal[a]) / norms[a] / exact
         return ratios
 
     # -- two body ---------------------------------------------------------- #

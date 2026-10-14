@@ -1,9 +1,9 @@
 {
   "description": "Calculated LiH total energies; numerical teaching example",
-  "mandacaru_version": "26.9.19",
-  "python_version": "3.14.6",
-  "numpy_version": "2.4.6",
-  "scipy_version": "1.18.0",
+  "mandacaru_version": "26.10.16",
+  "python_version": "3.14.7",
+  "numpy_version": "2.5.3",
+  "scipy_version": "1.18.1",
   "ase_version": "3.29.0",
   "basis_sets": [
     "STO-3G",
@@ -16,7 +16,9 @@
     "ceo"
   ],
   "mapping": "jordan_wigner",
-  "active_space": {"frozen": "auto"},
+  "active_space": {
+    "frozen": "auto"
+  },
   "charge": 0,
   "active_electrons": 2,
   "box_half_width_A": 4.8,

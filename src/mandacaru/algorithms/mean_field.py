@@ -397,7 +397,7 @@ class _MeanFieldDriver(VariationalDriver):
         """
         return {
             **self._grid_fields(),
-            "kinetic operator": self.kinetic or "finite difference",
+            "kinetic operator": self._kinetic_label(),
             "k-points": self._kpts_label(),
             "charge": str(self.charge),
             "spin-polarized": self._spin_polarized_label(),

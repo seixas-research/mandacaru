@@ -37,7 +37,9 @@ Gradients and divergences are spectral (FFT) derivatives over the grid, with
 the reciprocal vectors of the cell it spans, so skewed cells are handled
 exactly.  A molecular grid is a zero-padded box rather than a period, which is
 harmless because the density and every flux vanish at its faces long before
-the box ends; a crystal's grid *is* the period.
+the box ends; a crystal's grid *is* the period.  A molecular grid takes the
+derivative with the symbol of an order-8 central difference (:data:`XC_STENCIL`)
+in place of ``i k``; a crystal keeps the spectral one.
 
 Partial core densities
 ----------------------
@@ -92,6 +94,15 @@ HYBRIDS = {"hse06": (hse.OMEGA, hse.EXACT_FRACTION)}
 #: Functionals with rVV10 nonlocal correlation (:mod:`.vv10`): the semilocal
 #: functional they add it to, and rVV10's ``b`` for that pairing.
 NONLOCAL = {"r2scan-rvv10": ("r2scan", vv10.B_R2SCAN)}
+
+#: Central-difference coefficients (order 8) of the density derivative the
+#: semilocal functionals take on a molecular grid (:func:`_wavevectors`).  The
+#: spectral derivative of a density the grid does not resolve rings over the
+#: whole box, and the gradient functionals weight that ringing most where the
+#: density is small: on LiH at grid_spacing = 0.3 Angstrom it put a
+#: 3e-4 eV/Angstrom ripple on the PBE force surface at the 1e-3 Angstrom scale
+#: (HISTORY, "The Li GGA force fix").
+XC_STENCIL = (4.0 / 5.0, -1.0 / 5.0, 4.0 / 105.0, -1.0 / 280.0)
 
 #: Below this density the gradient terms are dropped on the grid.  The reduced
 #: gradient diverges in the exponential tail, where the density carries no
@@ -194,13 +205,30 @@ def _wavevectors(grid):
     gradient-dependent functional is exactly as symmetric as the density it
     is given.  On an orthorhombic grid this is the box, and a real field's
     derivatives are the box's.
+
+    A molecule's grid (orthorhombic, not periodic) is the exception: there the
+    multiplier is the symbol of the central difference of order
+    ``2 len(XC_STENCIL)`` instead of ``i k``.  It equals ``i k`` to that
+    order at low frequency and falls smoothly to zero at the Nyquist
+    frequency, so the derivative is local (nine points per axis) and the
+    unresolved density of an atom no longer reaches every node of the box
+    through the spectral derivative's slow tail.  Every gradient, divergence
+    and orbital gradient the semilocal functionals take (energy, potential,
+    tau of a meta-GGA, forces) goes through here, so they all differentiate
+    the same discrete energy.
     """
     from .reciprocal import symmetric_wavevectors
-    return tuple(symmetric_wavevectors(grid))
+    k = tuple(symmetric_wavevectors(grid))
+    if grid.periodic or not grid.is_orthorhombic:
+        return k
+    return tuple(sum(2.0 * c * np.sin((m + 1) * kx * hx)
+                     for m, c in enumerate(XC_STENCIL)) / hx
+                 for kx, hx in zip(k, np.diag(grid.step)))
 
 
 def gradient(grid, field: np.ndarray) -> np.ndarray:
-    """Spectral gradient of flat fields: ``(..., ngrid) -> (3, ..., ngrid)``.
+    """Gradient of flat fields: ``(..., ngrid) -> (3, ..., ngrid)``
+    (:func:`_wavevectors`: spectral on a crystal, a stencil on a molecule).
 
     Real input gives a real gradient; complex input (orbitals) a complex one.
     """
@@ -216,7 +244,8 @@ def gradient(grid, field: np.ndarray) -> np.ndarray:
 
 
 def divergence(grid, vector: np.ndarray) -> np.ndarray:
-    """Spectral divergence of a flat ``(3, ngrid)`` real vector field."""
+    """Divergence of a flat ``(3, ngrid)`` real vector field: minus the adjoint
+    of :func:`gradient`."""
     total = np.zeros(grid.shape, dtype=complex)
     for component, k in zip(vector, _wavevectors(grid)):
         total += 1j * k * np.fft.fftn(component.reshape(grid.shape))

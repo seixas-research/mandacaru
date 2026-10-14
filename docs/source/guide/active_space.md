@@ -203,7 +203,7 @@ large one for.
 ### What it recovers
 
 Exact diagonalization in the particle-number sector, correlation energy
-recovered against the untruncated basis:
+recovered against the untruncated basis (measured with `kinetic="fd"`):
 
 | system | active / total | energy order | mp2 order |
 |---|---|---|---|
@@ -213,7 +213,7 @@ recovered against the untruncated basis:
 | LiH / 6-31G | 4 of 5 | 18 % | **97 %** |
 
 And through the full ADAPT-VQE stack on the basis this was built for, LiH in
-PAW-LCAO-TZP at 1.60 Å:
+PAW-LCAO-TZP at 1.60 Å (measured with `kinetic="fd"`):
 
 | active orbitals | qubits | ADAPT operators | error vs. the full basis |
 |---|---|---|---|
@@ -286,7 +286,7 @@ step itself took under 10 ms on every molecule measured.
    core from its own Coulomb and exchange, and the two-electron integrals of
    the $n$ active orbitals, $n^2/2$ Poisson solves.
 
-Measured:
+Measured (with `kinetic="fd"`):
 
 | | |
 |---|---|

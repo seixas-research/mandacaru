@@ -73,7 +73,8 @@ from time import perf_counter as _perf
 from typing import TYPE_CHECKING
 
 import numpy as np
-from ase.calculators.calculator import Calculator, all_changes
+from ase.calculators.calculator import (Calculator, all_changes,
+                                        compare_atoms)
 
 from .ansatz_spec import resolve_ansatz
 from .bloch import BLOCH_METHODS
@@ -620,6 +621,13 @@ class Mandacaru(Calculator):
             raise ValueError(f"force_method must be 'rdm' or 'scf-response', "
                              f"got {force_method!r}")
         self.force_method = str(force_method)
+        from ..integrals.two_center import validate_two_center
+        if (validate_two_center(solver_kwargs.get("two_center")) == "analytic"
+                and self.force_method == "scf-response"):
+            raise ValueError(
+                "force_method='scf-response' differentiates the grid overlap "
+                "and kinetic matrices; two_center='analytic' needs the "
+                "default force_method='rdm'")
         # Population analysis on every evaluation, so a written file carries
         # it.  Off by default: the partition costs a grid pass (and a basin
         # search, for Bader) that a relaxation has no use for.
@@ -676,6 +684,8 @@ class Mandacaru(Calculator):
         self.trajectory: list[dict] = []
         self._summary_written = False
         self._exit_hook = False
+        #: The geometry whose energy the current solver converged, or ``None``.
+        self._energy_state = None
         # Options are validated *now*, by building the solver once with its
         # dry-run switch on: every constructor check runs, but nothing is
         # configured -- no pool, no Hamiltonian matrix, not even the terms of a
@@ -1357,19 +1367,32 @@ class Mandacaru(Calculator):
             periodic = bool(decides(atoms))
         grid = (self._frozen_grid(atoms)
                 if want_forces and not periodic else self._grid)
-        solver = self._make_solver(grid=grid)
-        # A Markov-chain search with ``transfer=True`` starts from the ansatz
-        # the previous geometry reported.  Read through __dict__: see
-        # _make_solver on why ``self.solver`` must not be touched here.
-        previous = self.__dict__.get("_solver")
-        inherit = getattr(solver, "inherit_ansatz", None)
-        if inherit is not None and previous is not None:
-            inherit(previous)
-        # This step's performance block is written here, once the gradient and
-        # any measurement have been timed too (see :meth:`_log_performance`).
-        solver.defer_performance = True
-        energy_ev = self._single_point(solver, atoms)
-        self.solver = solver
+        # Forces asked for the geometry whose energy was just converged (ASE
+        # calls `calculate` again for the missing property): the SCF is the
+        # same, so the gradient reads it instead of repeating it.
+        reused = (self._converged_solver(atoms, grid)
+                  if want_forces and not periodic and not system_changes
+                  else None)
+        if reused is not None:
+            solver, energy_ev = reused, self.results["energy"]
+        else:
+            solver = self._make_solver(grid=grid)
+            # A Markov-chain search with ``transfer=True`` starts from the
+            # ansatz the previous geometry reported.  Read through __dict__:
+            # see _make_solver on why ``self.solver`` must not be touched
+            # here.
+            previous = self.__dict__.get("_solver")
+            inherit = getattr(solver, "inherit_ansatz", None)
+            if inherit is not None and previous is not None:
+                inherit(previous)
+            # This step's performance block is written here, once the
+            # gradient and any measurement have been timed too (see
+            # :meth:`_log_performance`).
+            solver.defer_performance = True
+            energy_ev = self._single_point(solver, atoms)
+            self.solver = solver
+            self._energy_state = (atoms.copy(), solver,
+                                  self._scf_signature())
 
         stages: dict[str, float] = {}
         measured = None
@@ -1411,12 +1434,14 @@ class Mandacaru(Calculator):
             stages["nuclear gradient (forces)"] = _perf() - t0
             self.results["forces"] = self.force_result.forces
             self._log_forces(solver, atoms)
-        if self.population is not None and not solver.dry_run:
+        if (self.population is not None and not solver.dry_run
+                and reused is None):
             t0 = _perf()
             self._store_population()
             stages["population analysis"] = _perf() - t0
         step_seconds = _perf() - step_t0
-        self._log_performance(solver, stages, step_seconds)
+        self._log_performance(solver, stages, step_seconds,
+                              solver_ran=reused is None)
         if want_forces and not solver.dry_run:
             self._record_step(atoms, energy_ev, step_seconds)
         # The optimizer's line for the *previous* step is written after its
@@ -1426,6 +1451,54 @@ class Mandacaru(Calculator):
             sys.stdout.flush()
         except Exception:
             pass
+
+    def _converged_solver(self, atoms, grid):
+        """The solver whose converged state is ``atoms``' own, or ``None``.
+
+        Only a Kohn-Sham calculation on a molecule is reused (its gradient
+        reads the converged state and nothing else): the energy of this very
+        geometry was computed by the current solver, no measurement replaced
+        it, and its integrals sit on the grid the forces would use -- the
+        frozen one, which an energy-only run builds the same way from the
+        cell.  A moved atom, a changed cell or a new solver never qualifies.
+        """
+        state = self.__dict__.get("_energy_state")
+        solver = self.__dict__.get("_solver")
+        if state is None or solver is None or "energy" not in self.results:
+            return None
+        converged_atoms, converged_solver, signature = state
+        if (grid is None or converged_solver is not solver
+                or signature != self._scf_signature()
+                or compare_atoms(converged_atoms, atoms)
+                or self.measurement_provider is not None
+                or not getattr(solver, "analytic_gradient", False)
+                or getattr(solver, "dry_run", False)
+                or getattr(solver, "result", None) is None):
+            return None
+        context = getattr(solver, "_gradient_context", None)
+        used = None if context is None else context["integrals"].grid
+        if (used is None or tuple(used.shape) != tuple(grid.shape)
+                or not np.allclose(used.step, grid.step)
+                or not np.allclose([used.X[0], used.Y[0], used.Z[0]],
+                                   [grid.X[0], grid.Y[0], grid.Z[0]])):
+            return None
+        return solver
+
+    def _scf_signature(self) -> tuple:
+        """What defines the SCF besides the geometry: the method, basis,
+        dataset folder, grid spacing and every solver keyword (charge, spin,
+        functional, ...) -- the inputs of :meth:`_make_solver`.  A change made
+        to any of them by attribute assignment, which ASE does not see, must
+        not be served from the old state."""
+        return (self.method, repr(self.basis), self.grid_spacing,
+                self.library_folder,
+                repr(sorted(self.solver_kwargs.items(),
+                            key=lambda item: item[0])))
+
+    def reset(self) -> None:
+        """ASE's reset, which also forgets the converged state to reuse."""
+        super().reset()
+        self._energy_state = None
 
     def _single_point(self, solver, atoms):
         """Attach the solver to a copy of ``atoms`` and get the energy in eV."""
@@ -2446,7 +2519,8 @@ class Mandacaru(Calculator):
         self._summary_written = True
         return True
 
-    def _log_performance(self, solver, stages, wall_time_s) -> None:
+    def _log_performance(self, solver, stages, wall_time_s,
+                         solver_ran: bool = True) -> None:
         """Append this step's ``[PERFORMANCE]`` block to the run's report.
 
         The block covers the **whole** step, which is why the calculator writes
@@ -2464,8 +2538,10 @@ class Mandacaru(Calculator):
         from ..utils.logging import append_performance
         from ..utils.profiling import Timings, backend_cores
 
+        # A step that read the energy's converged state ran no solver: the
+        # energy's own block already carries those stages.
         reported = (getattr(solver.result, "timings", None) or {}) \
-            if solver.result is not None else {}
+            if solver.result is not None and solver_ran else {}
         timings = Timings(n_cores=reported.get("n_cores", backend_cores()),
                           backend=reported.get("backend"))
         for name, seconds in (reported.get("stages_s") or {}).items():

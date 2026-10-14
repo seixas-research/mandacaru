@@ -33,7 +33,8 @@ from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _ANSATZ_KEYS,
                                        _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
                                        _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS,
-                                       _TWO_BODY_KEYS, citation_keys,
+                                       _TWO_BODY_KEYS, _TWO_CENTER_KEYS,
+                                       citation_keys,
                                        provenance_keys,
                                        resolve_references_path,
                                        write_references)
@@ -143,6 +144,15 @@ class TestEveryRegisteredChoiceIsCitable:
             citation_keys(two_body="cholesky"))
         assert citation_keys(two_body="dense") == citation_keys()
 
+    def test_every_two_center_route(self):
+        """The grid integrals need no paper; the analytic tables cite theirs."""
+        from mandacaru.integrals.two_center import TWO_CENTER_METHODS
+        for name in TWO_CENTER_METHODS:
+            assert name in _TWO_CENTER_KEYS, name
+        assert set(_TWO_CENTER_KEYS["analytic"]) <= set(
+            citation_keys(two_center="analytic"))
+        assert citation_keys(two_center="grid") == citation_keys()
+
     def test_every_stable_method(self):
         from mandacaru.algorithms.calculator import STABLE_METHODS
         for method in STABLE_METHODS:
@@ -163,7 +173,7 @@ class TestEveryRegisteredChoiceIsCitable:
 
     def test_every_key_in_every_table_exists(self):
         tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _ANSATZ_KEYS,
-                  _OPTIMIZER_KEYS,
+                  _OPTIMIZER_KEYS, _TWO_CENTER_KEYS,
                   _FAMILY_KEYS, _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS)
         for table in tables:
             for name, keys in table.items():
@@ -390,6 +400,15 @@ class TestARunWritesIt:
         atoms.get_total_energy()
         keys = atoms.calc.citation_keys()
         assert {"Bloechl1994", "Anglada2006", "Junquera2001"} <= set(keys)
+
+    def test_the_analytic_two_center_route_cites_its_paper(self):
+        atoms = h2()
+        atoms.calc = Mandacaru(method="vqe",
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
+                               grid_spacing=0.35, two_center="analytic",
+                               trace=False)
+        atoms.get_total_energy()
+        assert "Larsen2009" in atoms.calc.citation_keys()
 
     def test_a_bad_value_is_refused_at_construction(self):
         with pytest.raises(ValueError, match="is not a path"):

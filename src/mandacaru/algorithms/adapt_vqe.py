@@ -1855,7 +1855,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         rows = [
             ("basis", self._basis_description()),
             ("grid spacing", f"{self.grid_spacing:g} Angstrom"),
-            ("kinetic operator", self.kinetic or "finite difference"),
+            ("kinetic operator", self._kinetic_label()),
             ("k-points", self._kpts_label()),
             ("spin-polarized", self._spin_polarized_label()),
             ("reference state", str(self.initial_state)),

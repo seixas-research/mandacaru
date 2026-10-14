@@ -1061,12 +1061,20 @@ class KohnShamEnergy(AlgebraicEnergy):
     energy is stationary with respect to orbital rotations at convergence,
     at the occupations the SCF converged with (an ensemble's fractional ones
     included: ``D`` is rebuilt with them).
+
+    With ``two_body=False`` the Hartree term is linearized the same way: the
+    matrix :math:`V_{xc}` is then the whole effective potential's
+    :math:`V_{xc} + J[P_0]`, the constant gains :math:`E_H - \operatorname{tr}
+    (P_0 J[P_0])`, and ``g`` is not used (the gradient never forms it).  What
+    the linearization drops, :math:`\tfrac12 P_0 P_0\,dg`, is the gradient's
+    to contract.
     """
 
-    def __init__(self, D, V_xc, constant: float):
+    def __init__(self, D, V_xc, constant: float, two_body: bool = True):
         self.D = np.asarray(D, dtype=complex)
         self.V_xc = np.asarray(V_xc, dtype=complex)
         self.constant = float(constant)
+        self.two_body = bool(two_body)
 
     def density(self, S) -> np.ndarray:
         """The AO density matrix ``P`` at overlap ``S``."""
@@ -1076,6 +1084,8 @@ class KohnShamEnergy(AlgebraicEnergy):
     def __call__(self, S, h, g) -> float:
         P = self.density(S)
         one = np.sum(P * (h + self.V_xc).T)
+        if not self.two_body:
+            return float(np.real(one)) + self.constant
         hartree = 0.5 * np.einsum("ca,db,abcd->", P, P, g, optimize=True)
         return float(np.real(one + hartree)) + self.constant
 
@@ -1216,20 +1226,32 @@ def _core_tau_functions(datasets):
 
 
 def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
-                       orbital_delta=None, include_pulay: bool = True):
+                       orbital_delta=None, include_pulay: bool = True,
+                       hartree: str = DEFAULT_HARTREE):
     r"""Hellmann-Feynman + Pulay gradient of a converged Kohn-Sham energy.
 
     Every integral derivative -- overlap (augmented), kinetic, local,
-    nonlocal, PAW-LCAO compensation charges and the two-electron tensor --
-    is :func:`~mandacaru.algorithms.pseudo_forces.pseudo_nuclear_gradient`'s,
+    nonlocal and PAW-LCAO compensation charges -- is
+    :func:`~mandacaru.algorithms.pseudo_forces.pseudo_nuclear_gradient`'s,
     contracted with :class:`KohnShamEnergy` instead of a many-body state.
     :class:`KohnShamField` adds the exchange-correlation potential acting on
-    moving basis functions and the moving partial core.  Returns a
+    moving basis functions and the moving partial core.
+
+    A semilocal functional's Hartree term is linearized about the converged
+    density like the exchange-correlation potential: the Hartree potential
+    :math:`V_H` (one Poisson solve) joins the field's potential, the
+    compensation charges' :math:`J` joins the fixed one-body matrix, and the
+    change of the two-electron tensor is contracted with the fixed density
+    matrix to scalars.  The tensor, its pair-density derivatives and the
+    ``M^2`` Poisson solves behind them are never formed: the cost is
+    :math:`O(M^2 G)` and the memory :math:`O(M G)`.  Returns a
     :class:`~mandacaru.algorithms.forces.ForceResult` (eV/Angstrom) whose
     ``details["energy_hartree"]`` is the rebuilt total energy without the
     dispersion and core-correction constants.
 
-    A hybrid's exact exchange is linearized like the semilocal potential:
+    A hybrid's exact exchange is linearized like the semilocal potential
+    (its Hartree term keeps the tensor, which the short-range exchange
+    needs as well):
     its derivative with respect to the density matrix, :math:`-\tfrac a2
     K^{\rm SR}` plus the PAW-LCAO one-center operator :math:`C O
     C^\dagger`, joins the fixed one-body matrix (which carries the overlap
@@ -1238,6 +1260,9 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     :class:`~mandacaru.algorithms.pseudo_forces.ScreenedExchange`'s.  The
     partial core moves under the potential without the semilocal
     short-range exchange, which is the valence density's.
+
+    ``hartree="tensor"`` (the SCF's cross-check route) differentiates the
+    dense tensor for any functional, to the same forces.
     """
     from .forces import DEFAULT_ORBITAL_DELTA
     from .pseudo_forces import pseudo_nuclear_gradient
@@ -1246,7 +1271,7 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
         orbital_delta)
     if isinstance(scf, KohnShamUResult):
         return _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
-                                      include_pulay)
+                                      include_pulay, hartree)
     n_electrons = 2 * scf.n_occupied
     solver = kohn_sham_solver(integrals, n_electrons, scf.functional)
     C = scf.mo_coefficients
@@ -1254,6 +1279,8 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     # (each spin's half of the stored ones) or the aufbau determinant.
     D = solver._density_matrix(
         C, None if scf.occupations is None else 0.5 * scf.occupations)
+    X = integrals._lowdin_x()
+    P0 = X @ D @ X.conj().T
     valence = rho = solver.density(D)
     if solver.core_density is not None:
         rho = rho + solver.core_density
@@ -1272,18 +1299,23 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
             integrals.grid, rho, solver.functional,
             relativistic=solver.relativistic,
             screening=(solver.screening[0], 0.0)).potential
+    semilocal = solver.screening is None and hartree == "poisson"
+    potential, J_aug, e_xc = terms.potential, 0.0, terms.energy
+    if semilocal:
+        # The core density moves under the exchange-correlation potential
+        # alone; the Hartree potential acts on the orbitals.
+        core_potential = potential
+        V_H, J_aug, e_hartree = _hartree_linearization(integrals, valence, P0)
+        potential, e_xc = potential + V_H, e_xc + e_hartree
     datasets = integrals.pseudopotentials or []
     nothing = [None] * len(integrals.nuclei)
     field = KohnShamField(
         integrals.grid, np.ascontiguousarray(integrals._engine._psi),
-        terms.potential, terms.tau_potential,
+        potential, terms.tau_potential,
         _core_functions(datasets) if datasets else nothing,
         _core_tau_functions(datasets) if datasets else nothing,
         _centers(integrals), delta, core_potential=core_potential)
-    V_xc = field.matrix()
-    X = integrals._lowdin_x()
-    P0 = X @ D @ X.conj().T
-    e_xc = terms.energy
+    V_xc = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:
         e_exact, V_exact, operators = _exact_exchange_terms(solver, [D])
@@ -1292,12 +1324,34 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
         V_xc = V_xc + root @ V_exact[0] @ root
         exchange = _screened_exchange(solver, [(-0.25, P0)], operators)
     constant = e_xc - float(np.real(np.sum(P0 * V_xc.T)))
-    energy = KohnShamEnergy(D, V_xc, constant)
+    energy = KohnShamEnergy(D, V_xc, constant, two_body=not semilocal)
     return pseudo_nuclear_gradient(
         integrals, None, None, atom_of_orbital=atom_of_orbital,
         orbital_delta=delta, include_pulay=include_pulay,
         orbital_gradient=False, energy=energy, field=field,
         exchange=exchange)
+
+
+def _hartree_linearization(integrals, density, P0):
+    r"""``(V_H, J_aug, E_H)`` of the valence density ``density`` on the grid
+    (atomic-orbital matrix ``P0``): the Hartree potential of the grid
+    density, the matrix :math:`J` of the PAW-LCAO compensation charges and
+    spheres (the family augmentation of
+    :class:`~mandacaru.integrals.direct.DirectCoulomb`) and the Hartree
+    energy :math:`\tfrac12\operatorname{tr}(P_0 J[P_0])` -- the pieces the
+    SCF's Poisson route builds at every iteration."""
+    from ..integrals.direct import augmentation_coulomb
+
+    direct = integrals.direct_coulomb()
+    density = np.ascontiguousarray(density, dtype=float)
+    potential = np.array(direct.potential(density[None, :])[0])
+    augmentation = direct.augmentation()
+    J_aug = (0.0 if augmentation is None
+             else augmentation_coulomb(augmentation, P0))
+    energy = 0.5 * float(np.sum(density * potential)) * direct.dV
+    if augmentation is not None:
+        energy += 0.5 * float(np.real(np.sum(P0 * np.asarray(J_aug).T)))
+    return potential, J_aug, energy
 
 
 def _exact_exchange_terms(solver, densities):
@@ -1343,7 +1397,7 @@ def _screened_exchange(solver, densities, operators):
 
 
 def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
-                           include_pulay):
+                           include_pulay, hartree):
     """:func:`kohn_sham_gradient` of a :class:`KohnShamUResult`."""
     from .pseudo_forces import pseudo_nuclear_gradient
 
@@ -1367,6 +1421,9 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         tau_dn=tau[1], screening=solver.screening,
         exchange_densities=valence)
     meta = terms.tau_potential_up is not None
+    X = integrals._lowdin_x()
+    D = Da + Db
+    P0 = X @ D @ X.conj().T
     core_potential = None
     if solver.screening is not None and solver.core_density is not None:
         bare = xc_grid.evaluate_spin(
@@ -1381,11 +1438,21 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
     def half(a, b):
         return None if a is None else 0.5 * (a - b)
 
+    semilocal = solver.screening is None and hartree == "poisson"
+    v_mean = mean(terms.potential_up, terms.potential_dn)
+    J_aug, e_xc = 0.0, terms.energy
+    if semilocal:
+        # As in the closed shell: the core sees the exchange-correlation
+        # potential alone, the orbitals the Hartree one as well.
+        core_potential = v_mean
+        V_H, J_aug, e_hartree = _hartree_linearization(
+            integrals, valence[0] + valence[1], P0)
+        v_mean, e_xc = v_mean + V_H, e_xc + e_hartree
     datasets = integrals.pseudopotentials or []
     nothing = [None] * len(integrals.nuclei)
     field = UnrestrictedKohnShamField(
         integrals.grid, np.ascontiguousarray(integrals._engine._psi),
-        mean(terms.potential_up, terms.potential_dn),
+        v_mean,
         mean(terms.tau_potential_up, terms.tau_potential_dn) if meta else None,
         half(terms.potential_up, terms.potential_dn),
         half(terms.tau_potential_up, terms.tau_potential_dn) if meta else None,
@@ -1393,11 +1460,7 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         _core_functions(datasets) if datasets else nothing,
         _core_tau_functions(datasets) if datasets else nothing,
         _centers(integrals), delta, core_potential=core_potential)
-    V_mean = field.matrix()
-    X = integrals._lowdin_x()
-    D = Da + Db
-    P0 = X @ D @ X.conj().T
-    e_xc = terms.energy
+    V_mean = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:
         e_exact, (Va, Vb), operators = _exact_exchange_terms(solver,
@@ -1414,7 +1477,7 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
     # magnetization part's value stays in it, its derivative comes from
     # `field.spin_term`.
     constant = e_xc - float(np.real(np.sum(P0 * V_mean.T)))
-    energy = KohnShamEnergy(D, V_mean, constant)
+    energy = KohnShamEnergy(D, V_mean, constant, two_body=not semilocal)
     return pseudo_nuclear_gradient(
         integrals, None, None, atom_of_orbital=atom_of_orbital,
         orbital_delta=delta, include_pulay=include_pulay,
@@ -1546,6 +1609,9 @@ class DFTDriver(_MeanFieldDriver):
                 f"hartree={self.hartree!r} is molecular: a crystal's Hartree "
                 "potential is always the periodic Poisson solve; drop it for "
                 "a periodic geometry")
+        if self.two_center == "analytic":
+            from ..integrals.two_center import PERIODIC_REFUSAL
+            raise NotImplementedError(PERIODIC_REFUSAL)
         if self.kinetic == "fd":
             # It used to be ignored: the crystal's kinetic energy is always
             # spectral, and a crystal compared with a molecule run on the
@@ -1554,7 +1620,7 @@ class DFTDriver(_MeanFieldDriver):
                 "a crystal's kinetic energy is spectral, exact on its Bloch "
                 "sums; kinetic='fd' is the molecular finite-difference "
                 "stencil -- drop it for a periodic geometry (a molecule "
-                "compared with a crystal should use kinetic='spectral')")
+                "compared with a crystal uses the spectral default)")
         from ..pseudopotentials.periodic_paw import build_crystal
         from ._hamiltonian_from_atoms import pseudopotential_family, resolve_basis
 
@@ -1596,7 +1662,7 @@ class DFTDriver(_MeanFieldDriver):
             commensurate=self._grid_commensurate(),
             active_space=self.active_space, hamiltonian=False,
             ghosts=self.ghosts, electric_field=self.electric_field,
-            one_center="frozen")
+            one_center="frozen", two_center=self.two_center)
         self._integration_profile = profile
         self._gradient_context = context
         self._basis_symbols = list(atoms.get_chemical_symbols())
@@ -1759,7 +1825,8 @@ class DFTDriver(_MeanFieldDriver):
         result = kohn_sham_gradient(
             context["integrals"], scf,
             atom_of_orbital=context["atom_of_orbital"],
-            orbital_delta=orbital_delta, include_pulay=include_pulay)
+            orbital_delta=orbital_delta, include_pulay=include_pulay,
+            hartree=self.hartree)
         if self.dispersion:
             dispersion = (d4_dispersion_gradient(self.atoms, self.xc)
                           * HA_BOHR_TO_EV_ANGSTROM)

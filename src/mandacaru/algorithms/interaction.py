@@ -138,12 +138,13 @@ def _shared_grid(atoms, grid_spacing, grid, method_key):
 
 
 def _rhf_energy(atoms, charge, grid, grid_spacing, basis, active_space, spin,
-                kinetic=None, ghosts=()):
+                kinetic=None, ghosts=(), two_center=None):
     """Hartree-Fock total energy of ``atoms`` on ``grid`` (Hartree)."""
     from ._hamiltonian_from_atoms import build_basis_hamiltonian
     _H, particles, _n, _profile, context = build_basis_hamiltonian(
         atoms, basis, grid, grid_spacing, charge, None, spin=spin,
-        active_space=active_space, kinetic=kinetic, ghosts=ghosts)
+        active_space=active_space, kinetic=kinetic, ghosts=ghosts,
+        two_center=two_center)
     if context is None:
         raise NotImplementedError(
             "interaction energies need an atom-centered basis")
@@ -226,7 +227,8 @@ def interaction_energy(atoms, fragments, charges=None, *, charge: int = 0,
                 sub, q, shared, grid_spacing, basis,
                 solver_kwargs.get("active_space"),
                 solver_kwargs.get("spin", False),
-                solver_kwargs.get("kinetic"), ghosts=ghosts)
+                solver_kwargs.get("kinetic"), ghosts=ghosts,
+                two_center=solver_kwargs.get("two_center"))
             energy = float(from_hartree(energy, unit))   # RHF works in Hartree
             results.append(None)
         else:

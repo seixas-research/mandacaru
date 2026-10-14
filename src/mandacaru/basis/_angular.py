@@ -62,6 +62,49 @@ def sample_dtype(real: bool):
     return np.float64 if real else np.complex128
 
 
+#: Offsets closer than this to a function's center are moved out to it along
+#: z: the gradient of ``R(r) Y_lm`` is a smooth Cartesian function there
+#: (``r Y_1m`` is linear), but its direction-dependent pieces are 0/0.
+NODE_OFFSET = 1e-12
+
+
+def angular_factor(l: int, m: int, x, y, z, *, real: bool):
+    """``(r, offsets, Y, (dY/dx, dY/dy, dY/dz))`` at the Cartesian offsets
+    ``x, y, z`` (Bohr) from a center: the part of ``R(r) Y_lm`` and of its
+    gradient that does not depend on the radial function, so the zeta
+    partners of one shell share it.  ``offsets`` are the (flat) offsets
+    after a point on the center is moved out to :data:`NODE_OFFSET`."""
+    x, y, z = (np.array(c, dtype=float).reshape(-1) for c in (x, y, z))
+    r = np.sqrt(x * x + y * y + z * z)
+    node = r < NODE_OFFSET
+    if np.any(node):
+        z[node] = NODE_OFFSET
+        r[node] = NODE_OFFSET
+    value, slopes = spherical_harmonic_gradient(l, m, x, y, z, real=real)
+    return r, (x, y, z), value, slopes
+
+
+def radial_angular_gradient(radial, radial_slope, l: int, m: int, x, y, z, *,
+                            real: bool) -> np.ndarray:
+    r"""``(3, n)`` gradient of :math:`R(r)\,Y_{lm}` at the Cartesian
+    offsets ``x, y, z`` (Bohr) from its center, analytically:
+
+    .. math::
+
+        \nabla\,(R\,Y) = R'(r)\,\hat{\mathbf r}\,Y + R\,\nabla Y ,
+
+    with ``radial`` and ``radial_slope`` the callables :math:`R(r)` and
+    :math:`R'(r)` and :math:`\nabla Y` from :func:`spherical_harmonic_gradient`
+    (``float64`` for ``real`` harmonics, ``complex128`` otherwise).
+    """
+    r, offsets, value, slopes = angular_factor(l, m, x, y, z, real=real)
+    R, dR = radial(r), radial_slope(r)
+    out = np.empty((3, r.size), dtype=np.float64 if real else np.complex128)
+    for axis, (offset, dY) in enumerate(zip(offsets, slopes)):
+        out[axis] = dR * offset / r * value + R * dY
+    return out
+
+
 def real_harmonic_transform(l: int) -> np.ndarray:
     r"""``(2l+1, 2l+1)`` unitary :math:`U` with :math:`S_{lm} = \sum_{m'}
     U_{mm'} Y_l^{m'}`, rows and columns indexed by ``m + l``.

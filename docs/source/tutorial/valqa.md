@@ -256,7 +256,7 @@ help.
 
 ### What the first data showed
 
-The first measurement (2026-09-30) recorded 942 insertions from MCAS-VQE chains
+The first measurement (2026-09-30, with `kinetic="fd"`) recorded 942 insertions from MCAS-VQE chains
 on H2, LiH, BeH2, H4, HF and H2O (HAO, frozen core, QEB pool). Holding out
 each molecule in turn, the gradient heuristic ranked the held-out insertions
 at a Spearman correlation of 0.78. The Gaussian process (`"gp"`) reached
@@ -272,7 +272,7 @@ are what the next recordings should add.
 
 ### Trajectory data with screened insertions
 
-The second measurement (2026-10-01) recorded bond scans in the PAW-LCAO basis
+The second measurement (2026-10-01, with `kinetic="fd"`) recorded bond scans in the PAW-LCAO basis
 (SZ, grid_spacing = 0.20 Angstrom), the basis whose forces and energy surfaces are smooth
 enough to move atoms on. Each scan has five geometries, two seeds and
 `transfer=True` with `screen_insertions=4`, for H2, LiH, BeH2, H4, HF and

@@ -64,7 +64,8 @@ the handoff below).
 
 PBE and r2SCAN use the Perdew-Wang 1992 parameterization of the uniform-gas
 correlation energy. The exchange-correlation energy and its potential are
-evaluated on the grid from the density, with spectral gradients; r2SCAN also
+evaluated on the grid from the density, with spectral gradients on a crystal's
+grid and central-difference ones on a molecule's (below); r2SCAN also
 builds the kinetic-energy density
 $\tau = \tfrac12\sum_{pq}D_{pq}\nabla\phi_p\cdot\nabla\phi_q^*$ from the
 gradients of the orbitals and feeds its derivative back into the Kohn-Sham
@@ -139,7 +140,25 @@ energy as `scf.exact_exchange_energy`, and the run log reports it.
 - The relativistic exchange factor of a relativistic dataset is not applied,
   as for r2SCAN.
 
-The density gradients PBE and r2SCAN need are spectral derivatives built
+A molecule's grid (orthorhombic, not periodic) takes those gradients, the
+divergence of the potential and the orbital gradients of r2SCAN's
+$\tau$ with the symbol of an order-8 central difference (nine points per
+axis) in place of $i\mathbf{k}$. A spectral derivative of a density the grid
+does not resolve rings over the whole box, and the gradient functionals
+weight that ringing most where the density is small: on LiH at
+`grid_spacing = 0.3` Å it put a 3e-4 eV/Å ripple on the PBE force surface at the
+1e-3 Å scale, so the force and the finite difference of the energy disagreed
+by 5.5e-4 eV/Å, and r2SCAN's H$_2$O energy was rough at 0.9 µHa. With the
+stencil the ripple is 1.6e-7 eV/Å, the disagreement 1e-6 eV/Å and the
+roughness 0.005 µHa. The energy, the potential, the forces and
+rVV10 all differentiate the same operator, so the forces remain the
+derivative of the reported energy. Every molecular GGA energy moved by a
+fraction of a milli-Hartree against the spectral gradient (H$_2$O, DZP,
+`grid_spacing = 0.2` Å: PBE+D4 -0.26 mHa, r2SCAN+D4 -0.40 mHa; LDA has no
+gradient and is unchanged). Crystals keep the spectral derivative described
+next.
+
+The density gradients PBE and r2SCAN need on a crystal are spectral derivatives built
 from the reciprocal vectors of the cell, so a skewed cell -- hexagonal,
 monoclinic, triclinic -- is handled as exactly as an orthogonal one. The
 FFT box's wave-vectors are averaged over the point operations of the grid's
@@ -270,18 +289,58 @@ molecules. Three points to keep in mind:
   moves by about 0.3 Ha between `grid_spacing = 0.25` and `0.12` Å, for Hartree-Fock and
   DFT alike, while the difference between the two stays constant to about
   8 mHa. Compare energies at one fixed `grid_spacing`.
-- The kinetic-energy operator is a finite-difference Laplacian by default.
-  `kinetic="spectral"` evaluates it in reciprocal space instead and reduces the
-  error for a hard smooth wave: for the He atom the missing energy at
-  `grid_spacing = 0.20` Å falls from about 108 mHa to about 9 mHa. It is shared by every
-  method, not only DFT, and the analytic forces differentiate either operator
-  (see *Forces and relaxations*). The spectral operator is the one a crystal
-  uses, and it converges much faster with `grid_spacing`: for H$_2$O (PAW-LCAO DZP, LDA)
-  the energy moves by 1.5 eV from `grid_spacing = 0.30` to `0.15` Å against 14 eV with
-  the stencil, and the oxygen force stays within 0.14 eV/Å while the
-  stencil's changes sign. The molecular default is planned to move to it.
+- The kinetic-energy operator is spectral by default (`kinetic="spectral"`):
+  the Laplacian is evaluated in reciprocal space, the operator a crystal
+  uses, for molecules and crystals alike. `kinetic="fd"` selects the 3-point
+  finite-difference stencil instead, which under-estimates the kinetic energy
+  of a hard smooth wave: for the He atom the missing energy at
+  `grid_spacing = 0.20` Å is about 108 mHa with the stencil and about 9 mHa
+  with the spectral operator. The choice is shared by every method, not only
+  DFT, and the analytic forces differentiate either operator (see *Forces and
+  relaxations*). The spectral operator converges from above and much faster
+  with `grid_spacing`: for H$_2$O (PAW-LCAO DZP, LDA) the energy moves by
+  1.5 eV from `grid_spacing = 0.30` to `0.15` Å against 14 eV with the
+  stencil, and the oxygen force stays within 0.14 eV/Å while the stencil's
+  changes sign. The other molecular numbers in this guide were measured with
+  `kinetic="fd"`, unless they say otherwise. The semilocal functionals' molecular numbers
+  dated before the stencil gradient (v26.10.16 and earlier) also took their
+  density gradient spectrally; the stencil moves a GGA total by a fraction of a
+  milli-Hartree (the H$_2$O table below was re-measured).
 - The noble-gas atoms Ne and Ar in a PAW-LCAO basis need a spacing of about
   0.06 Å or smaller, well below the range above.
+
+## Analytic two-center integrals
+
+`two_center="analytic"` (command line `--two-center analytic`) integrates the
+matrices that involve only two centers analytically instead of sampling them
+on the grid: the basis overlap $S$, the kinetic energy $T$ and the
+projections $P_{p\mu} = \langle\tilde p_p|\phi_\mu\rangle$ on the PAW-LCAO
+projectors. Each radial function (the one the basis really uses, Fourier
+filter included) is Fourier-Bessel transformed once; the integral at a
+separation $\mathbf R$ is a sum over multipoles $L$ of a radial table
+$s_L(|\mathbf R|)$, kept as a cubic spline, times a real Gaunt coefficient
+times $S_{LM}(\hat{\mathbf R})$, for the atom pairs within the sum of the
+cutoffs only. The forces differentiate the same splines, so they are the
+exact derivative of the energy computed and the Pulay terms of $S$, $T$ and
+$P$ are analytic. The three-center terms (the local potential, the Hartree
+and exchange-correlation potentials, the two-electron tensor) stay on the
+grid, as does every method reading the one-body integrals: Hartree-Fock, VQE
+and ADAPT-VQE use the same matrices.
+
+The default is `two_center="grid"`; nothing changes unless the option is
+written. The analytic route computes its own kinetic energy, so `kinetic=`
+with it is an error, and the `kinetic operator` line of `[ELECTRONS]` reads
+`analytic (two-center)`. It is refused for crystals, for the spin-orbit
+`lda-fr` set, for any basis but PAW-LCAO and UPAW-LCAO, and for
+`force_method="scf-response"`.
+
+The matrices agree with the grid's as the grid is refined (1e-6 and better
+from `grid_spacing` = 0.20 Å for a Fourier-filtered basis), and the energies
+of the two routes converge to the same limit. It removes the two-center part
+of the egg-box, which is only part of it: water's translation ripple is
+unchanged, because the local, Hartree and exchange-correlation terms keep
+theirs. The option is a gain in accuracy and a modest one in time, not a
+cure for the egg-box; the measurements are in `HISTORY.md`.
 
 ## The Hartree term
 
@@ -291,8 +350,10 @@ with the same spectral isolated Coulomb kernel the two-body tensor is built
 with. On a PAW-LCAO basis the compensation charges, every multipole the
 datasets carry, enter as their low-rank matrices, exactly as they enter the
 tensor. A semilocal Kohn-Sham run therefore never forms the $M^4$ two-body
-tensor; it is built only when something reads it: the forces, a hybrid's
+tensor; it is built only when something reads it: a hybrid's forces and
 exact exchange (its short-range tensor), or the export to a quantum method.
+The forces of a semilocal functional read the Hartree potential of the
+converged density instead (*Forces and relaxations*).
 The reference energy of the exported Hamiltonian needs only the occupied
 orbitals' integrals, which come from their own pair solves.
 
@@ -332,14 +393,15 @@ neither the dispersion term nor the core-correction offset.
 `result.optimal_energy` is the Kohn-Sham total.
 
 On H$_2$O in a PAW-LCAO DZP basis at a grid spacing of 0.2 Å with 3 Å of vacuum, the three
-functionals of the first example give these totals and gaps (the setup of
+functionals of the first example give these totals and gaps with the
+spectral kinetic default (the setup of
 [the functionals example](../../../examples/dft/01_dft_h2o_functionals.py)):
 
 | Functional | Total energy (Ha) | HOMO-LUMO gap (eV) |
 | :--- | ---: | ---: |
-| LDA | -17.501159 | 7.70 |
-| PBE + D4 | -17.538301 | 7.67 |
-| r2SCAN + D4 | -17.528924 | 9.04 |
+| LDA | -17.133249 | 7.66 |
+| PBE + D4 | -17.172320 | 7.65 |
+| r2SCAN + D4 | -17.164458 | 9.05 |
 
 The D4 term is $-1.97\times10^{-4}$ Ha for PBE and $-4.7\times10^{-5}$ Ha for
 r2SCAN. The PBE and r2SCAN rows read the PBE datasets, so neither warns.
@@ -515,10 +577,24 @@ trajectory, so a finite difference of the reported energy on it reproduces the
 forces: to 1e-6 eV/Angstrom for LiH with LDA and with PBE+D4 (PAW-LCAO DZP,
 grid_spacing = 0.25 Angstrom).
 
-The forces differentiate the kinetic operator the energy used, the stencil
-or `kinetic="spectral"`: the Pulay term contracts the moving basis functions
-against the reciprocal-space Laplacian of the fixed ones. With the spectral
-operator the same checks hold to the same precision (LiH, PAW-LCAO DZP: 1e-6
+The Hartree term of a semilocal functional (LDA, PBE, r2SCAN) enters the
+gradient the way the exchange-correlation potential does: linearized about the
+converged density. Its potential, the one Poisson solve the SCF already
+performs, acts on the moving basis functions, the PAW-LCAO compensation
+charges' matrix joins the fixed one-body matrix, and what is left of the
+two-electron tensor's derivative is contracted with the fixed density matrix
+to a handful of scalars. The $M^4$ tensor, its pair-density derivatives and
+the $M^2$ Poisson solves behind them are never formed, so a force costs
+$O(M^2 G)$ and $O(M G)$ memory ($M$ basis functions, $G$ grid points) instead
+of $O(M^4 G)$ and $O(M^4)$. A hybrid keeps the tensor route, since its
+short-range exchange needs the tensor anyway. Forces asked for right after
+the energy of the same geometry read the converged state instead of repeating
+the SCF; a moved atom or a changed cell converges its own.
+
+The forces differentiate the kinetic operator the energy used, the spectral
+default or the stencil (`kinetic="fd"`): for the spectral one the Pulay term
+contracts the moving basis functions against the reciprocal-space Laplacian
+of the fixed ones. With either operator the same checks hold to the same precision (LiH, PAW-LCAO DZP: 1e-6
 eV/Angstrom with LDA and PBE+D4; HSE06, UPAW-LCAO, the unrestricted OH
 radical and the correlated `force_method="rdm"` states alike), and a
 molecule in a box has the forces of the same box solved as a crystal at
@@ -600,11 +676,11 @@ result.fermi_level, result.free_energy, result.scf.band_gap
 - **A molecule in a box is the same Hamiltonian.** Solved as a crystal at
   Gamma, a molecule in a box reproduces the molecular run on the same nodes,
   basis and kinetic operator. A crystal's kinetic energy is always spectral
-  (it refuses `kinetic="fd"`), so compare it with a molecule run with
-  `kinetic="spectral"`: Ne with a 150 eV basis filter agrees to 1 uHa, and
+  (it refuses `kinetic="fd"`), and so is the molecular default: Ne with a
+  150 eV basis filter agrees to 1 uHa, and
   water, CO and HF in a 9 Angstrom box (SZP, grid_spacing = 0.3 Angstrom) agree on the
   level spacings to 0.4 mHa, on the energy to 0.7 mHa and on the Hirshfeld
-  charges to 0.001 e. The molecular default, the finite-difference stencil,
+  charges to 0.001 e. The finite-difference stencil (`kinetic="fd"`)
   differs from it by far more than that on these grids: 0.80 Ha for water,
   with a dipole 1.6 times larger. Water's density cube files agree node
   for node to 6e-4 of the peak.
@@ -982,18 +1058,61 @@ quantum along $c$, $e/A$. A centrosymmetric crystal comes out on 0 or half a
 quantum, and a rigid shift of all atoms changes $\mathbf P$ only by whole
 quanta.
 
-For AlN's clamped-ion tensor this basis gives $e_{33} = -0.44$ and
-$e_{31} = +0.25$ C/m², against about $-0.47$ for $e_{33}$ in the
-literature; the components symmetry forbids come out at $10^{-13}$. On the
-experimental lattice the relaxed-ion tensor is $e_{33} = +1.78$ and
-$e_{31} = -0.84$ C/m², against the literature's 1.46 and −0.60: still
-about 20 % (e33) and 40 % (e31) large, so it is **not yet validated**. The
-lattice is a suspect again, now a much smaller one: the experimental cell
-is about 10 GPa from this model's equilibrium (stress −10.4 / −9.8 GPa in
-the plane and along $c$), and fcc Al comes out at 4.12 Å against about
-4.0 Å in LDA. A compressed cell stiffens the internal mode and inflates
-the coupling. Compare relaxed-ion tensors only for crystals whose lattice
-this basis and dataset reproduce.
+For AlN's clamped-ion tensor the basis gives $e_{33} = -0.44$ to $-0.48$
+and $e_{31} = +0.25$ to $+0.27$ C/m² (table below), against about $-0.47$ for
+$e_{33}$ in the literature; the components symmetry forbids come out at
+$10^{-13}$.
+
+The relaxed-ion tensor is the clamped one plus the ions' response,
+
+$$e_{3\mu} = e^{clamped}_{3\mu} + \frac{4e}{\sqrt3\,a^2}\,Z^*_N\,
+\frac{\partial u}{\partial\eta_\mu},\qquad
+\frac{\partial u}{\partial\eta_\mu} = \frac{1}{k_u}\frac{\partial F_u}{\partial\eta_\mu},$$
+
+(Bernardini, Fiorentini and Vanderbilt), with $u$ the internal parameter,
+$F_u = -\partial E/\partial u$ and $k_u = -\partial F_u/\partial u$. Each
+piece is its own set of central differences, so the table shows where a
+number comes from. All rows are LDA, PAW-LCAO, grid_spacing = 0.25 Å, a
+4×4×3 mesh, Fermi-Dirac 0.001 eV; $a$, $c$ in Å, $k_u$ in eV per unit of
+$u$, $e$ in C/m²:
+
+| basis | lattice ($a$, $c$, $u$) | $Z^*_N$ | $k_u$ | clamped $e_{33}$ / $e_{31}$ | ionic $e_{33}$ / $e_{31}$ | relaxed $e_{33}$ / $e_{31}$ |
+|---|---|---:|---:|---:|---:|---:|
+| SZP | 3.1600, 5.0639, 0.38171 (SZP equilibrium) | −2.692 | 623.8 | −0.475 / +0.268 | +2.000 / −0.934 | 1.525 / −0.666 |
+| DZP | 3.1600, 5.0639, 0.38171 (SZP's) | −2.706 | 572.6 | −0.479 / +0.265 | +1.927 / −0.900 | 1.448 / −0.635 |
+| TZP | 3.1600, 5.0639, 0.38171 (SZP's) | −2.706 | 576.5 | −0.457 / +0.264 | +1.907 / −0.895 | 1.450 / −0.631 |
+| DZP | 3.1408, 5.0299, 0.38221 (DZP equilibrium) | −2.704 | 594.3 | −0.463 / +0.260 | +2.047 / −0.968 | 1.584 / −0.709 |
+| SZP | 3.1100, 4.9800, 0.38200 (experimental) | −2.689 | 686.7 | −0.441 / +0.254 | +2.304 / −1.020 | 1.863 / −0.766 |
+
+(The ionic column is the second term of the equation, from
+$\partial u/\partial\eta_3$ / $\partial u/\partial\eta_1$ = −0.2005 /
++0.0936 (SZP), −0.1922 / +0.0898 (DZP), −0.1901 / +0.0892 (TZP), −0.2018 /
++0.0955 (DZP, own lattice) and −0.2240 / +0.0992 (SZP, experimental).)
+A direct finite difference of the relaxed-ion tensor (every strain relaxed
+with the crystal forces, SZP, first row's lattice) gives 1.480 / −0.682
+with `fmax=0.002` against the pieces' 1.525 / −0.666, so the two routes
+agree to 3 % in $e_{33}$ and 2 % in $e_{31}$. The default `fmax=0.01` stops
+too early for $e_{31}$ (−0.594) and leaves $e_{33}$ unchanged: tighten
+`fmax` when $e_{31}$ matters.
+
+The literature's 1.46 and −0.60 (Bernardini, Fiorentini and Vanderbilt,
+*Phys. Rev. B* **56**, R10024, 1997) are matched only by DZP and TZP on SZP's
+lattice. That agreement is not a validation: it is 0.6 % in $a$ away from
+their own equilibrium (stress +3.6 / +3.4 GPa in DZP, +4.2 / +4.0 GPa in
+TZP, which wants a smaller cell), and at DZP's own equilibrium the tensor is
+**1.58 / −0.71, 8 % (e33) and 18 % (e31) above the literature**. The
+tensor is steep in the lattice: from 3.16 to 3.11 Å (SZP) $e_{33}$ rises
+by 0.34, about 0.2 C/m² per 1 % of $a$. A calculation at the experimental
+lattice is therefore not a fair test (SZP: 1.86 / −0.77, 28 % high in both);
+neither is a comparison closer than the lattice is reproduced. The excess
+sits in the ions' term, not in $Z^*$ (2.69–2.71, against 2.65–2.70) or the
+clamped $e_{33}$ (−0.46 to −0.48, against −0.47). These models' cell is 1 %
+too large (DZP: $a$ 3.141 Å against 3.11 measured; fcc Al comes out at
+4.12 Å against about 4.0 Å in LDA), and a softer internal mode ($k_u$) raises
+$\partial u/\partial\eta$. Untested causes: the basis, the grid
+(the egg-box), the k-mesh and the frozen core of the dataset. Treat the
+relaxed-ion tensor as good to about 20 % for the response and to about 3 %
+for the numerical route.
 
 ## Wannier functions
 
@@ -1407,40 +1526,77 @@ U, U_, J = g[0, 0, 0, 0], g[0, 1, 0, 1], g[0, 1, 1, 0]   # Hubbard-Kanamori
   $\langle aa|bb\rangle$, because the functions are real. The model
   holds one electron.
 
-SrVO3 (LDA, PAW-LCAO SZP, h 0.2 Å, the shipped library):
+SrVO3 (LDA, PAW-LCAO SZP, grid_spacing = 0.2 Å, a 3.84 Å, the shipped
+library, Fermi-Dirac 0.05 eV, windows $E_F$ −2 to +2 eV with the states up
+to $E_F$ + 0.5 eV frozen, cRPA with the default 3 Bohr⁻¹ cutoff and all 49
+bands):
 
 | mesh | spread (Å²) | U bare | U′ bare | J bare | U cRPA | U′ cRPA | J cRPA |
 |---|---|---|---|---|---|---|---|
-| 3³ | 1.63 | 15.32 | 14.31 | 0.465 | 5.04 | 4.13 | 0.433 |
-| 4³ | 1.84 | 15.25 | 14.25 | 0.462 | 4.63 | 3.72 | 0.430 |
-| 5³ | 1.96 | 15.23 | 14.23 | 0.461 | | | |
-| 6³ | 2.03 | 15.23 | 14.23 | 0.463 | | | |
+| 3³ | 1.63 | 15.32 | 14.31 | 0.465 | 5.040 | 4.133 | 0.433 |
+| 4³ | 1.84 | 15.25 | 14.25 | 0.462 | 4.625 | 3.725 | 0.430 |
+| 5³ | 1.96 | 15.23 | 14.23 | 0.461 | 4.439 | 3.541 | 0.429 |
+| 6³ | 2.03 | 15.23 | 14.23 | 0.463 | 4.348 | 3.449 | 0.429 |
 
-(eV.) The three orbitals agree to 1e-4 eV in $U$ and $U'$, and to 0.5 %
+(eV; the 6³ cRPA took 6 h and 4.9 GB, the 5³ 1 h 50 min and 3.2 GB.) The
+three orbitals agree to 1e-4 eV in $U$ and $U'$, and to 0.5 %
 in $J$, which the cell grid's discretization sets. $(U - U')/2$ is
 0.50 eV bare and 0.45 eV screened, 5 % above $J$: the relation
 $U' = U - 2J$ is exact only for a spherical atom. The interpolated bands
-inside the frozen window are within 144, 48, 25 and 11 meV of the true
-ones on 3³ to 6³ meshes (root mean square 68, 13, 9.4 and 5.6 meV).
+inside the frozen window are within 144, 48, 25 and 8.6 meV of the true
+ones on 3³ to 6³ meshes (root mean square 68, 13, 9.4 and 3.3 meV).
 
-Vaugier, Jiang and Biermann's cRPA for the same three-band model gives
-$U$ = 3.2 eV, $J$ = 0.44 eV and $U' = U - 2J$ = 2.3 eV, with a bare
-$V$ = 16.1 eV and $J_{bare}$ = 0.55 eV. The bare values here are close,
-and so is $J$. The screened $U$ is about 1.4 eV too large on 4³: here
-cRPA keeps 30 % of the bare $U$, against a fifth in their calculation.
-The mesh is not converged either: $U$ falls by 0.41 eV from 3³ to 4³.
-Two other settings, measured with the earlier valence-only Sr dataset,
-moved it too little to close the gap:
+**The mesh.** $U$ keeps falling, but more slowly each time (−0.41, −0.19,
+−0.09 eV for 3³→4³→5³→6³). Four points on $N_k = N^3$ fit best as
+$U_\infty + A/N^2$ (residuals under 7 meV), which is $N_k^{-2/3}$; a free
+exponent gives $N_k^{-0.74}$, and $1/N_k$ alone leaves 27 meV. A fit in
+$1/N$ ($N_k^{-1/3}$) leaves 40 meV and is the one to discard. The
+extrapolated values are
 
-- **The empty states.** Keeping 28 of the 40 bands raises $U$ by
-  0.03 eV; a double-zeta basis (59 bands) lowers it by 0.13 eV.
-- **The cutoff.** The default 3 Bohr⁻¹ is converged: 4 Bohr⁻¹ lowers $U$
-  by 6 meV, while 2 Bohr⁻¹ raises it by 0.29 eV.
+| | $N_k^{-2/3}$ | free exponent | $1/N_k$ | adopted |
+|---|---|---|---|---|
+| $U$ | 4.11 | 4.16 | 4.27 | 4.15 ± 0.15 |
+| $U'$ | 3.21 | 3.25 | 3.37 | 3.25 ± 0.15 |
+| $J$ | 0.427 | 0.429 | 0.428 | 0.43 |
 
-The Sr dataset carries the 4s and 4p semicore in valence (since
-2026-10-11). Its screening lowers $U$ by only 0.2 eV on 3³ (from 5.25 eV
-with the valence-only dataset), so it is not what separates this model
-from the literature.
+The uncertainty is the spread among the fits; four points cannot give a
+statistical error. The 5³ run, predicted at 4.44 to 4.47 before it ran,
+did not tell the forms apart (they differ by 0.03 eV there); only a larger
+mesh would. $J$ is converged on every mesh.
+
+**The literature.** Vaugier, Jiang and Biermann (*Phys. Rev. B* **86**,
+165105, 2012, Table III) give, for the same three-band model, $U$ = 3.2 eV,
+$J$ = 0.44 eV and $U' = U - 2J$ = 2.3 eV, with a bare $V$ = 16.1 eV and
+$J_{bare}$ = 0.55 eV. Miyake and Aryasetiawan (*Phys. Rev. B* **77**, 085122,
+2008) report $U$ = 3.0 eV and $J$ = 0.43 eV, and Sakakibara and Kotani
+(arXiv:1812.03731, 2018) $U$ = 3.12, $U'$ = 2.17 and $J$ = 0.448 eV. Here
+$J$ agrees (0.43), and the bare $V$ is 6 % lower (15.2 against 16.1 eV). The
+extrapolated $U$ is **about 1.0 eV (30 %) above them** and $U'$ about
+1.0 eV; on 3³ the excess was 1.8 eV, so the mesh accounts for about half
+of it. The cause is the screening: cRPA keeps 27 % of the bare $U$ here,
+against 20 % in Vaugier et al., so 11.1 eV of the bare 15.2 eV is
+screened away here, against 12.9 eV there.
+
+Three settings were tried on 4³ (reference 4.625 eV, all 49 bands, a cutoff
+of 3 Bohr⁻¹) and none closes it:
+
+- **The empty states.** Keeping the lowest 37 of the 49 bands raises $U$
+  by 0.013 eV; a double-zeta basis (73 bands)
+  lowers it by 0.049 eV, to 4.576 eV ($U'$ 3.695, $J$ 0.421).
+- **The cutoff.** 4 Bohr⁻¹ changes $U$ by 0.0001 eV, while 2 Bohr⁻¹ raises
+  it by 0.32 eV (4.947 eV). 3 Bohr⁻¹ is converged.
+- **The Sr dataset.** The 4s and 4p semicore are in valence (since
+  2026-10-11); that lowered $U$ by only 0.2 eV on 3³ (from 5.25 eV with the
+  valence-only dataset).
+
+So neither the empty states nor the cutoff nor the mesh explains the
+remaining 1 eV, and it is not shown to be an artifact. What would settle
+it: the mesh at 8³ or a second family of extrapolation points (the Wannier
+spread, 1.6 to 2.0 Å², still grows with the mesh); DZP or TZP on 5³ and 6³,
+since the single-zeta basis places a V p band 1 eV above $E_F$ at R,
+inside the t2g range, and the d-to-eg and O 2p-to-V d transitions that do
+the screening depend on the basis; a larger frozen window; and the position
+of those bands against the literature's LDA band structure.
 
 bcc Fe is the spin-polarized check (DZP, h 0.2 Å, moment 2.01 μB on a
 6³ mesh). The projected s, p and d functions of each channel

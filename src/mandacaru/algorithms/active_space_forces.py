@@ -199,7 +199,8 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
                 solver.charge, solver.n_electrons, spin=solver.spin,
                 kinetic=solver.kinetic,
                 active_space=solver._active_space_request(),
-                ghosts=getattr(solver, "ghosts", ()), two_body=two_body)
+                ghosts=getattr(solver, "ghosts", ()), two_body=two_body,
+                two_center=solver.two_center)
         if (tuple(particles) != tuple(solver.num_particles)
                 or n_orbitals != len(active)
                 or tuple(displaced["frozen"]) != tuple(context["frozen"])):

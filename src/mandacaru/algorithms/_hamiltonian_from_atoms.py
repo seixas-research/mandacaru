@@ -487,13 +487,14 @@ def resolve_pseudo_basis(name, options, symbols):
     return family, merged
 
 
-#: Default Laplacian per molecular path.  Both keep the finite-difference
-#: stencil for now; the nuclear gradient differentiates either operator
-#: (``forces.one_body_cross``).  ``kinetic="spectral"`` is the operator a
-#: crystal uses, exact on the Fourier-filtered basis, and the more accurate
-#: one on a coarse grid (the stencil under-estimates the kinetic energy of
-#: compact functions by up to ~15% at 0.2-0.3 Angstrom).
-DEFAULT_KINETIC = {"all-electron": "fd", "pseudopotentials": "fd"}
+#: Default Laplacian per molecular path: the FFT Laplacian on both, the
+#: operator a crystal uses, so a molecule and a crystal are one Hamiltonian.
+#: It is exact on the Fourier-filtered basis and converges from above with
+#: the grid; the finite-difference stencil (``kinetic="fd"``) under-estimates
+#: the kinetic energy of compact functions by up to ~15% at 0.2-0.3 Angstrom.
+#: The nuclear gradient differentiates either operator
+#: (``forces.one_body_cross``).
+DEFAULT_KINETIC = {"all-electron": "spectral", "pseudopotentials": "spectral"}
 
 
 def _warn_unresolved(integrals, basis_fns, grid_spacing):
@@ -534,7 +535,7 @@ def _pseudopotential_hamiltonian(atoms, grid, grid_spacing, charge, spin, family
                                  options, kinetic=None, active_space=None,
                                  hamiltonian: bool = True, ghosts=(),
                                  electric_field=None, two_body=None,
-                                 one_center=None):
+                                 one_center=None, two_center=None):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -568,6 +569,8 @@ def _pseudopotential_hamiltonian(atoms, grid, grid_spacing, charge, spin, family
         extra["two_body"] = two_body
     if one_center is not None:
         extra["one_center"] = one_center
+    if two_center is not None:
+        extra["two_center"] = two_center
     return family.build(atoms, grid, grid_spacing, charge, spin, dict(options), kinetic,
                         active_space=active_space, hamiltonian=hamiltonian,
                         **extra)
@@ -599,7 +602,7 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
                             commensurate=None, active_space=None,
                             hamiltonian: bool = True, ghosts=(),
                             electric_field=None, two_body=None,
-                            one_center=None):
+                            one_center=None, two_center=None):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``hamiltonian=False`` stops after the integrals: the first element of the
@@ -667,7 +670,14 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
     ``None`` / ``"exact"`` is the Hartree-Fock one-center Coulomb and
     exchange every wave-function method uses, ``"frozen"`` the dataset's own
     functional, which is what Kohn-Sham DFT asks for.
+
+    ``two_center`` (a pseudopotential family only) says how the overlap, the
+    kinetic energy and the projections are integrated: on the grid (``None``
+    / ``"grid"``) or analytically (``"analytic"``, which takes the place of
+    ``kinetic``); see
+    :func:`~mandacaru.integrals.two_center.validate_two_center`.
     """
+    from ..integrals.two_center import validate_two_center
     from .active_space import resolve_active_space_spec
 
     spec = resolve_active_space_spec(active_space)
@@ -705,7 +715,13 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
             atoms, grid, grid_spacing, charge, spin, family, options, kinetic=kinetic,
             active_space=spec, hamiltonian=hamiltonian, ghosts=ghosts,
             electric_field=electric_field, two_body=two_body,
-            one_center=one_center)
+            one_center=one_center, two_center=two_center)
+
+    if validate_two_center(two_center) == "analytic":
+        raise NotImplementedError(
+            "two_center='analytic' is for the PAW-LCAO and UPAW-LCAO "
+            "bases, whose radial functions it transforms; "
+            f"{name!r} integrates its overlap and kinetic energy on the grid")
 
     real = [i for i in range(len(symbols)) if i not in ghosts]
     numbers = atoms.get_atomic_numbers()

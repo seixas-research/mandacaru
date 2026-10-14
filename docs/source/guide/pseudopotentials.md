@@ -516,7 +516,8 @@ subclass with two additions:
   one grid step moved the nonlocal energy by 3.9 eV at grid_spacing = 0.25 Å. The
   quadrature depends only on the separation of function and projector, so it
   is exactly translation invariant; the grid ripple left (kinetic, local and
-  Hartree terms) is 18 / 13 / 5 meV at grid_spacing = 0.25 / 0.20 / 0.15 Å.
+  Hartree terms) is 18 / 13 / 5 meV at grid_spacing = 0.25 / 0.20 / 0.15 Å
+  (measured with `kinetic="fd"`).
 * **Range-separated local potential.** The same idea applied to
   $V_{pq} = \sum_A\int\tilde\phi^*_p\tilde\phi_q\,v_A$ — see below.
 
@@ -554,7 +555,8 @@ sphere holding both hydrogens) and better than $10^{-9}$ Ha on H₂.
 
 **What it buys, measured.** Rigidly translating water (PAW-LCAO-SZ, 10 Å cell) by
 fractions of $h$ along $(1,1,1)/\sqrt3$ with the orbitals and density frozen,
-peak-to-peak per term in meV:
+peak-to-peak per term in meV (measured with `kinetic="fd"`, the
+finite-difference stencil):
 
 | $h$ (Å) | $S$ | $T$ | $V_{loc}$ grid → split | ERI | total grid → split |
 |---|---|---|---|---|---|
@@ -648,6 +650,8 @@ changes (HISTORY.md, 2026-10-12):
 | water RHF $\alpha$ (a.u.), DZP + diffuse shells, spectral kinetic | 7.41 | 8.60 | 8.64 (aug-cc-pVQZ) |
 | hydrogen fluoride RHF bond length (Å), DZP | 0.853 | 0.906 | 0.897 (HF limit) |
 
+The rows not marked "spectral kinetic" were measured with `kinetic="fd"`.
+
 Cl does not move because its 3p lives outside its sphere, in the smooth
 part, where exchange was always exact; F's compact 2p puts a third of an
 hartree of exchange inside it.
@@ -731,13 +735,13 @@ to 1e-15, smooth = AE beyond $r_c$ to 1e-14.
 Molecular (H₂ 0.74 Å at grid_spacing = 0.25 Å, LiH 1.6 Å
 at grid_spacing = 0.30 Å, SZ basis, 4 qubits, ADAPT-VQE with the `qeb` pool, ≤ 4
 iterations, unconfined; energies in eV as the user sees them, Hartree in
-parentheses; measured 2026-10-12 with the exact one-center spheres and pinned
-by `test_paw.py`):
+parentheses; measured 2026-10-13 with the exact one-center spheres and the
+spectral kinetic default, and pinned by `test_paw.py`):
 
 | | PAW-LCAO RHF | PAW-LCAO FCI = ADAPT |
 |---|---|---|
-| H₂ | −28.945 eV (−1.063691) | −29.346 eV (−1.078462) |
-| LiH | −20.287 eV (−0.745519) | −20.552 eV (−0.755279) |
+| H₂ | −28.706 eV (−1.054916) | −29.084 eV (−1.068832) |
+| LiH | −19.812 eV (−0.728080) | −20.160 eV (−0.740849) |
 
 On H₂ the augmented
 overlap has eigenvalues 0.203 / 1.809 (bare 0.199 / 1.757), the
@@ -746,8 +750,9 @@ two-body tensor keeps the pair-density symmetries to 1e-12. DZ on H₂ (8
 qubits) is variational against SZ.
 
 **Hardness at grid_spacing = 0.25 Å** (`resolution_ratios` of the basis,
-`kb_resolution_ratios` of the raw projectors): H₂ basis 0.98,
-projectors 0.90 / 0.78; LiH basis 1.219 / 0.975,
+`kb_resolution_ratios` of the raw projectors; the basis ratios with the
+spectral kinetic default, 0.98 and 1.219 / 0.975 on the stencil): H₂ basis
+1.001, projectors 0.90 / 0.78; LiH basis 1.072 / 1.000,
 projectors 1.00 / 1.00 / 0.88 / 0.85 — all inside the ±25 % band. The second
 H projector, built from the scattering wave, is the hardest object; at
 grid_spacing = 0.35 Å (0.66 Bohr) the H projectors are not resolved and the result is
@@ -1504,7 +1509,8 @@ or `False`. Anything else raises at construction. It is **on by default for
 `PAW-LCAO` and `UPAW-LCAO`** — declared once per family as
 `FamilySpec.default_options`, so a new family states its own and the drivers
 need no edit. `filter_cutoff=False` reproduces the unfiltered basis byte for
-byte.
+byte. The measurements in the rest of this section were made with
+`kinetic="fd"`, the finite-difference stencil.
 
 ### Why the cutoff sits exactly at Nyquist
 
@@ -1561,7 +1567,7 @@ grid_spacing = 0.25) with the filter on, the same as without it.
 The reported energy goes **up** — water/PAW-LCAO-SZ by 832 meV at grid_spacing = 0.25 — and
 most of that is not a loss. Hold the cutoff fixed at 602 eV and refine the
 grid: the filtered-to-unfiltered gap is 530 / 422 / 294 / 237 meV at
-grid_spacing = 0.25 / 0.20 / 0.16 / 0.13, close to linear in `grid_spacing`. It is the *unfiltered*
+grid_spacing = 0.25 / 0.20 / 0.16 / 0.13 (measured with `kinetic="fd"`), close to linear in `grid_spacing`. It is the *unfiltered*
 basis's own grid error — the finite-difference Laplacian under-estimates the
 kinetic energy of a function the grid cannot resolve, so an unfiltered orbital
 is reported too low. On H₂, where both bases are resolved by grid_spacing = 0.12, the gap
@@ -1599,16 +1605,19 @@ basis addresses it directly; see [Basis sets](basis_sets.md).
 
 ```{note}
 **Relaxation works, and oxygen needs a finer grid than lithium.**
-LiH relaxes cleanly (five BFGS steps from
-2.0 Å to d = 1.6876 Å, final fmax 0.002 eV/Å; `examples/relaxation/02_lih_relaxation.py` sets up the same relaxation), and so do H₂, OH, CH and H₂O.
+LiH relaxes cleanly: `examples/relaxation/02_lih_relaxation.py` takes five
+BFGS steps from 2.0 Å to d = 1.7383 Å, final fmax 0.014 eV/Å (2026-10-13,
+the spectral kinetic default and the exact one-center spheres; September's
+1.6876 Å was measured with `kinetic="fd"` and the frozen spheres),
+and so do H₂, OH, CH and H₂O.
 Water from a 90°, 1.0 Å start converges in **three BFGS steps** (grid_spacing = 0.16 Å,
-PAW-LCAO-SZ, 123 s) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
+PAW-LCAO-SZ, 123 s, measured with `kinetic="fd"`) to d = 0.992 Å and an angle of 117.3°, against 0.9572 Å and
 104.52° in experiment: the bond length is good, and the 13° on the angle is
 the minimal valence s+p shell, not the gradient — a polarized basis is what
 addresses it (see [Basis sets](basis_sets.md)).
 
 * **Check that the energy binds before relaxing.** A symmetric O–H scan at
-  grid_spacing = 0.16 Å gives −480.80, −481.92, −482.20, **−482.29**, −482.21, −481.63 eV
+  grid_spacing = 0.16 Å (`kinetic="fd"`) gives −480.80, −481.92, −482.20, **−482.29**, −482.21, −481.63 eV
   at 0.85, 0.92, 0.96, **1.00**, 1.05 and 1.15 Å — a clean minimum. (Earlier
   releases did *not* bind water: the compensation charge was missing its
   electron–ion attraction, and every bond to a p-valence atom came out

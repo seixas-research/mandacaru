@@ -126,10 +126,13 @@ class TestTheSymmetryConstraint:
         assert "displaced" in note and "left empty" in note
 
     def test_a_broken_symmetry_reference_is_refused(self):
-        # N2 / SZ at this grid converges to a determinant that occupies one
-        # pi* component: no active space can be chosen by its symmetry.
+        # N2 / SZ at this grid converges, on the finite-difference stencil,
+        # to a determinant that occupies one pi* component: no active space
+        # can be chosen by its symmetry.  The spectral default converges to
+        # the symmetric determinant, so the defect this refusal guards
+        # against is reproduced with `kinetic="fd"` (Phase N, 2026-10-13).
         with pytest.raises(ValueError, match="breaks the molecule's Dinfh"):
-            _space("N2", 6)
+            _space("N2", 6, kinetic="fd")
 
 
 def _space_plain(name, orbitals):
@@ -203,9 +206,12 @@ class TestTargetStates:
     def test_a_count_too_small_for_every_target_is_refused(
             self, water_orbitals):
         # B1 needs 3a1 and A2 needs 2b2; one virtual slot cannot hold both.
+        # Five states: with the spectral kinetic default (2026-10-13) the
+        # fourth is 1b2->3a1 (B2, reached by 3a1 too) and the A2 excitation
+        # 1b1->2b2 comes fifth; on the stencil it came fourth.
         with pytest.raises(ValueError, match="raise 'orbitals' by 1"):
-            _targeted(water_orbitals, 4, orbitals=5)
-        wide = _targeted(water_orbitals, 4, orbitals=6)
+            _targeted(water_orbitals, 5, orbitals=5)
+        wide = _targeted(water_orbitals, 5, orbitals=6)
         assert wide.n_active == 6
 
     def test_deflation_warns_beyond_the_targeted_states(self):

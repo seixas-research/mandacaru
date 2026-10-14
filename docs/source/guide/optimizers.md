@@ -181,7 +181,7 @@ sweep back. The tables below were measured with the finite difference, which
 LiH at 1.6 Å, HAO, `pool="qubit"`, Jordan-Wigner (6 qubits), ADAPT-VQE to
 `max_iterations=12`, every optimizer on the shipped defaults `maxiter=1000`
 and `tol=1e-12` (FCI = −162.953987 eV; `examples/classical_optimizers/01_optimizer_comparison.py`
-runs the same seven optimizers on the smaller H₂ problem):
+runs the same seven optimizers on the smaller H₂ problem; measured with `kinetic="fd"`):
 
 | optimizer | steps | evaluations | operators | E − E(FCI) (eV) | CNOTs | s | converged |
 |---|---|---|---|---|---|---|---|
@@ -228,7 +228,7 @@ The same comparison on water — H₂O, `basis={"name": "PAW-LCAO", "size": "SZ"
 `grid_spacing=0.25`, `pool="qubit"`, Jordan-Wigner (12 qubits, a 640-operator pool, sector
 dimension 225), ADAPT-VQE to `max_iterations=40`; sector FCI = −492.521982 eV.
 No run reaches the gradient threshold here, so all seven stop on ADAPT's
-`max_iterations=40` and the comparison is at equal circuit length:
+`max_iterations=40` and the comparison is at equal circuit length (measured with `kinetic="fd"`):
 
 | optimizer | steps | evaluations | E − E(FCI) (eV) | CNOTs | s | uncertified steps |
 |---|---|---|---|---|---|---|

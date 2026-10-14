@@ -124,12 +124,12 @@ Three further numerical safeguards came out of the same investigation:
 
 - the SCF is **DIIS-extrapolated with a level shift** and run from two
   starting guesses, keeping the lower converged solution;
-- `kinetic="spectral"` evaluates the Laplacian by FFT instead of the
-  3-point stencil, which under-estimates the kinetic energy of compact
-  functions (by up to 15% at 0.2–0.3 Å); it is exact for resolved
-  functions and never underestimates an unresolved one. It is opt-in for
-  molecules (the analytic forces differentiate either operator), and it is
-  the operator a crystal always uses;
+- the kinetic energy is evaluated by FFT (`kinetic="spectral"`, the
+  default for molecules and the operator a crystal always uses) instead of
+  the 3-point stencil (`kinetic="fd"`), which under-estimates the kinetic
+  energy of compact functions (by up to 15% at 0.2–0.3 Å); the spectral
+  Laplacian is exact for resolved functions and never underestimates an
+  unresolved one, and the analytic forces differentiate either operator;
 - every Hamiltonian build compares each basis function's grid kinetic energy
   (and each pseudopotential projector's grid norm) with the exact radial
   value and **warns** about functions the grid cannot resolve, naming them.

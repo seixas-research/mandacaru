@@ -10,7 +10,7 @@
 
 Mandacaru computes in **atomic units** internally -- lengths in Bohr, energies in
 Hartree -- because that is what the real-space integral kernels, the
-finite-difference Laplacian and the HAO (Hydrogenic Atomic Orbital) orbitals are written in.  Users,
+grid Laplacians and the HAO (Hydrogenic Atomic Orbital) orbitals are written in.  Users,
 however, usually think in **Angstrom** and **electronvolts**.
 
 This module is the single source of truth for the conversion factors and small

@@ -61,6 +61,17 @@ class TestCommandLineOptions:
         assert self._options("--method", "rhf", *argv).get(
             "two_body") == expected
 
+    @pytest.mark.parametrize("argv, expected", [
+        ([], None),
+        (["--two-center", "grid"], "grid"),
+        (["--two-center", "analytic"], "analytic"),
+    ])
+    def test_the_two_center_flag_builds_the_option(self, argv, expected):
+        """``--two-center`` is ``Mandacaru(two_center=...)``; without it
+        nothing is forwarded and the calculator keeps the grid default."""
+        options = self._options("--basis", "PAW-LCAO", *argv)
+        assert options.get("two_center") == expected
+
     def test_an_adaptive_method_gets_the_default_pool(self):
         assert self._options("--method", "adapt-vqe")["pool"] == "fermionic"
         assert "pool" not in self._options("--method", "vqe")

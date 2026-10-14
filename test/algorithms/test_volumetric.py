@@ -372,8 +372,9 @@ class TestNaturalOrbitals:
         close = tight.natural_orbitals().occupations
         atoms = _molecule("H2", [[0, 0, 0], [0, 0, 2.5]], [8, 8, 8])
         far = _solved(atoms).natural_orbitals().occupations
-        assert close[0] == pytest.approx(1.9749, abs=2e-3)
-        assert close[1] == pytest.approx(0.0251, abs=2e-3)
+        # 1.9749 / 0.0251 on the stencil; spectral default since 2026-10-13.
+        assert close[0] == pytest.approx(1.9803, abs=2e-3)
+        assert close[1] == pytest.approx(0.0197, abs=2e-3)
         # At 2.5 Angstrom the bond is broken: the two orbitals share the pair.
         assert far[1] > 0.5
         assert far[0] - far[1] < close[0] - close[1]
@@ -646,8 +647,10 @@ class TestDipoleMoment:
     augmentation's monopole and dipole included.
 
     Hartree-Fock water (the active space is the four occupied orbitals):
-    PAW-LCAO-DZP gives 2.29 D (the literature value of that model is about
-    2.2 D).  A minimal SZ basis overshoots to 3.2 D.
+    PAW-LCAO-DZP at grid_spacing 0.3 gives 1.89 D with the spectral kinetic
+    default (2.29 D on the finite-difference stencil, whose dipoles run
+    large on coarse grids; the Hartree-Fock limit is about 2.0 D and
+    experiment 1.85 D).  A minimal SZ basis overshoots to 3.2 D (stencil).
     """
 
     @staticmethod
@@ -679,7 +682,7 @@ class TestDipoleMoment:
         assert result.debye[2] < 0
         assert result.augmentation_charge > 0.5     # PAW augmentation is in
         assert result.n_electrons == pytest.approx(8.0, abs=1e-8)
-        assert 1.9 < result.magnitude_debye < 2.7
+        assert 1.7 < result.magnitude_debye < 2.3
 
     def test_a_neutral_molecule_does_not_care_where_it_is(self, water):
         moved = self._water(shift=(0.3, -0.2, 0.25))

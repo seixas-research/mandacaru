@@ -204,13 +204,22 @@ _TWO_BODY_KEYS = {
 }
 
 
+#: What a ``two_center`` route cites: the grid integrals need no paper; the
+#: analytic Fourier-Bessel tables are Larsen et al.'s.
+_TWO_CENTER_KEYS = {
+    "grid": (),
+    "analytic": ("Larsen2009",),
+}
+
+
 def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
                   basis=None,
                   family=None, basis_options=None, optimizer=None,
                   backend_provider=None, shots=0, execute_circuits=False,
                   profile=False, tetris=False, prune=False,
                   has_geometry=True, built_basis=True, extras=(),
-                  datasets=(), active_method=None, two_body=None) -> list:
+                  datasets=(), active_method=None, two_body=None,
+                  two_center=None) -> list:
     """The bibliography keys a run with this configuration should cite.
 
     Every argument is optional: what is not known is not cited.  ``family`` and
@@ -238,6 +247,7 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     keys += list(_OPTIMIZER_KEYS.get(_key(optimizer), ()))
     keys += list(_ACTIVE_METHOD_KEYS.get(_key(active_method), ()))
     keys += list(_TWO_BODY_KEYS.get(_key(two_body), ()))
+    keys += list(_TWO_CENTER_KEYS.get(_key(two_center), ()))
 
     options = dict(basis_options or {})
     if family:

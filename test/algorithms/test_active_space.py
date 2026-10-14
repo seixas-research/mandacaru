@@ -557,7 +557,9 @@ class TestWhatItCosts:
         # The claim the selector is for.  At two of four orbitals -- half the
         # register -- the second-order ranking keeps a virtual that carries most
         # of the pair correlation, and the canonical ranking keeps one that
-        # carries almost none.  Measured on this basis: ~92 % against ~6 %.
+        # carries almost none.  Measured on this basis: ~92 % against ~6 % on
+        # the finite-difference stencil, 83 % against 8.5 % with the spectral
+        # kinetic default (2026-10-13).
         reference = h2.hartree_fock(2)
         e_hf = (reference.electronic_energy + h2.constant_energy
                 + h2.nuclear_repulsion)
@@ -572,7 +574,7 @@ class TestWhatItCosts:
             energy = self._energies(h2, 2, (1, 1), 2, selection)
             recovered[selection] = (energy - e_hf) / correlation
 
-        assert recovered["mp2"] > 0.85, recovered
+        assert recovered["mp2"] > 0.80, recovered
         assert recovered["energy"] < 0.20, recovered
         assert recovered["mp2"] > 4.0 * recovered["energy"], recovered
 

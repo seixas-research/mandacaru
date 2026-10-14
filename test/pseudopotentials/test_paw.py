@@ -167,22 +167,35 @@ N_PROJECTORS = {"H2": 4, "LiH": 10}
 #:                            LiH -0.762302 / -0.769787 -> -0.745941 / -0.755682
 #:   PAW_BEFORE_BASIS_FILTER  H2 -1.093013 / -1.107148 -> -1.063758 / -1.078557
 #:                            LiH -0.762339 / -0.769822 -> -0.745976 / -0.755714
-PAW = {"H2": {"rhf": -1.063691, "adapt": -1.078462},
-       "LiH": {"rhf": -0.745519, "adapt": -0.755279}}
+#:
+#: Re-measured 2026-10-13: the molecular default kinetic operator became
+#: spectral (HISTORY.md "Phase N step 3: the spectral molecular default").
+#: The stencil had under-estimated the kinetic energy: H2 rises by 8.8 mHa,
+#: LiH by 17.4 mHa.  Old -> new, rhf / adapt:
+#:   PAW                      H2 -1.063691 / -1.078462 -> -1.054916 / -1.068832
+#:                            LiH -0.745519 / -0.755279 -> -0.728080 / -0.740849
+#:   PAW_FILTER_ONLY          H2 -1.063737 / -1.078509 -> -1.054962 / -1.068879
+#:                            LiH -0.745498 / -0.755261 -> -0.728060 / -0.740832
+#:   PAW_EXACT_LOCAL_ONLY     H2 -1.063765 / -1.078565 -> -1.054969 / -1.068908
+#:                            LiH -0.745941 / -0.755682 -> -0.728270 / -0.741042
+#:   PAW_BEFORE_BASIS_FILTER  H2 -1.063758 / -1.078557 -> -1.054962 / -1.068900
+#:                            LiH -0.745976 / -0.755714 -> -0.728303 / -0.741072
+PAW = {"H2": {"rhf": -1.054916, "adapt": -1.068832},
+       "LiH": {"rhf": -0.728080, "adapt": -0.740849}}
 #: The filter alone (``exact_local_potential = False``).
 PAW_FILTER_ONLY = {
-    "H2": {"rhf": -1.063737, "adapt": -1.078509},
-    "LiH": {"rhf": -0.745498, "adapt": -0.755261}}
+    "H2": {"rhf": -1.054962, "adapt": -1.068879},
+    "LiH": {"rhf": -0.728060, "adapt": -0.740832}}
 #: The exact local potential alone (``filter_cutoff=False``).
 PAW_EXACT_LOCAL_ONLY = {
-    "H2": {"rhf": -1.063765, "adapt": -1.078565},
-    "LiH": {"rhf": -0.745941, "adapt": -0.755682}}
+    "H2": {"rhf": -1.054969, "adapt": -1.068908},
+    "LiH": {"rhf": -0.728270, "adapt": -0.741042}}
 #: Neither: ``filter_cutoff=False`` and ``exact_local_potential = False`` -- the
 #: pre-2026-09-20 model.  Not wrong, just grid-sampled throughout; pinned so
 #: both flips are auditable.
 PAW_BEFORE_BASIS_FILTER = {
-    "H2": {"rhf": -1.063758, "adapt": -1.078557},
-    "LiH": {"rhf": -0.745976, "adapt": -0.755714}}
+    "H2": {"rhf": -1.054962, "adapt": -1.068900},
+    "LiH": {"rhf": -0.728303, "adapt": -0.741072}}
 #: The family's **default basis** since 2026-09-20: the four tables above with
 #: the first zeta *confined* (``energy_shift = 0.1`` eV; H 1s at
 #: 6.68 Bohr, Li 2s at 11.20).  A mild confinement lowers a minimal basis's
@@ -207,8 +220,14 @@ PAW_BEFORE_BASIS_FILTER = {
 #: (as above; ``rhf`` with the confined basis):
 #:   H2  rhf -1.118043 -> -1.080995, adapt -1.126352 -> -1.096169
 #:   LiH rhf -0.761345 -> -0.745614, adapt -0.769610 -> -0.756290
-PAW_DEFAULT = {"H2": {"rhf": -1.080995, "adapt": -1.096169},
-               "LiH": {"rhf": -0.745614, "adapt": -0.756290}}
+#: and 2026-10-13, the spectral kinetic default (as above):
+#:   H2  rhf -1.080995 -> -1.067378, adapt -1.096169 -> -1.081798
+#:   LiH rhf -0.745614 -> -0.726425, adapt -0.756290 -> -0.739036
+#: With the spectral operator the confinement still lowers H2 (by 13.0
+#: mHa) but raises LiH (by 1.8 mHa): the free-atom lithium orbitals are no
+#: longer too diffuse for this minimal basis.
+PAW_DEFAULT = {"H2": {"rhf": -1.067378, "adapt": -1.081798},
+               "LiH": {"rhf": -0.726425, "adapt": -0.739036}}
 #: Same table before the 2026-09-17 fix (do not restore -- they are wrong).
 PAW_BEFORE_COMPENSATION_ATTRACTION = {
     "H2": {"rhf": -1.053292, "adapt": -1.067402},
@@ -915,7 +934,13 @@ class TestLibrary:
         """FeH fell 154 eV between 2.93 and 1.39 Angstrom with the 8-function
         LDA iron (UHF SZ, grid_spacing = 0.20).  A bound, not a bond curve -- the 3d shell
         is not resolved on this grid -- and the UHF is solved to 1e-6 in up to
-        1000 iterations, which every point reaches."""
+        1000 iterations, which every point reaches.
+
+        The collapse was a finite-difference one (the stencil under-estimates
+        the kinetic energy of the unresolved 3d functions), so the guard runs
+        on ``kinetic="fd"``: 26.7 eV between the two points there.  With the
+        spectral default the gap is 1.3 eV, but the UHF at 1.39 Angstrom does
+        not converge in 1000 iterations (Phase N, 2026-10-13)."""
         from mandacaru.algorithms.hartree_fock import UHF
 
         pp = get_paw("Fe")
@@ -927,7 +952,7 @@ class TestLibrary:
             _H, _p, _n, _profile, context = build_basis_hamiltonian(
                 atoms, {"name": "PAW-LCAO", "size": "SZ",
                         "paw_dataset": os.path.dirname(pp.source)},
-                None, 0.20, 0, None, spin=True)
+                None, 0.20, 0, None, spin=True, kinetic="fd")
             integrals = context["integrals"]
             electrons = context["n_electrons"]
             result = UHF(integrals.one_body(), integrals.two_body(),
@@ -1325,7 +1350,12 @@ class TestMolecular:
         assert e_rhf == pytest.approx(expected["rhf"], abs=1e-6)
         assert e_fci == pytest.approx(expected["adapt"], abs=1e-6)
 
-    @pytest.mark.parametrize("name", sorted(SYSTEMS))
+    # LiH only since 2026-10-13: with the spectral kinetic default the
+    # filter moves H2's RHF energy by 1.6e-7 Ha (-1.1 meV on the stencil),
+    # below the six decimals the tables are written at.  Hydrogen's
+    # functions are nearly band-limited already, and the spectral operator,
+    # unlike the stencil, is not biased by what the filter removes.
+    @pytest.mark.parametrize("name", ["LiH"])
     def test_the_filter_default_is_not_a_no_op(self, name):
         """The pinned tables really differ: the filter moves the energy."""
         old = PAW_BEFORE_BASIS_FILTER[name]
@@ -1354,8 +1384,14 @@ class TestMolecular:
         # basis, confined since 2026-09-20.
         assert energy == pytest.approx(PAW_DEFAULT[name]["adapt"], abs=1e-5)
         assert energy <= PAW_DEFAULT[name]["rhf"] + PIN_TOL
-        # ... and the confinement is what moved it from the unconfined pin.
-        assert energy < PAW[name]["adapt"]
+        # ... and the confinement is what moved it from the unconfined pin:
+        # down for H2.  For LiH it moves the energy up since the spectral
+        # kinetic default (2026-10-13, see PAW_DEFAULT), so only the move
+        # is checked there.
+        if name == "H2":
+            assert energy < PAW[name]["adapt"]
+        else:
+            assert abs(energy - PAW[name]["adapt"]) > 1e-4
 
     @pytest.mark.parametrize("name", sorted(SYSTEMS))
     def test_hardness_at_a_quarter_angstrom(self, name):
@@ -1448,7 +1484,9 @@ def _mom_uhf(h, eri, n_alpha, n_beta, start, hole):
     oa = start[:, :n_alpha]
     ob = start[:, [i for i in range(n_alpha) if i != hole][:n_beta]]
     history, errors, last = [], [], None
-    for _ in range(300):
+    # 1000, not 300: with the spectral kinetic default chlorine's holes need
+    # up to 351 (exact spheres) and 778 iterations (frozen) (2026-10-13).
+    for _ in range(1000):
         Da, Db = oa @ oa.T, ob @ ob.T
         Jt = J(Da + Db)
         Fa, Fb = h + Jt - K(Da), h + Jt - K(Db)
@@ -1524,7 +1562,7 @@ class TestExactSpheres:
 
     def test_the_chlorine_affinity_does_not_move(self):
         """Cl's 3p lives outside its sphere: the two treatments agree to
-        0.1 eV (2.15 / 2.20; all-electron 2.37 eV at aug-cc-pVQZ)."""
+        0.1 eV (2.23 / 2.27; all-electron 2.37 eV at aug-cc-pVQZ)."""
         exact, _homo = _electron_affinity("Cl", "exact")
         frozen, _homo = _electron_affinity("Cl", "frozen")
         assert exact == pytest.approx(EXACT_SPHERES_EA["Cl"], abs=2e-3)
@@ -1542,5 +1580,7 @@ class TestExactSpheres:
             _atom_integrals("O", "SZ", 0.3, 3.0, "lda")
 
 
-#: UHF Delta-SCF affinities (eV) of `_electron_affinity`, measured 2026-10-12.
-EXACT_SPHERES_EA = {"F": 1.0157, "Cl": 2.1539}
+#: UHF Delta-SCF affinities (eV) of `_electron_affinity`, measured 2026-10-12;
+#: re-measured 2026-10-13 with the spectral kinetic default: F 1.0157 ->
+#: 1.0255, Cl 2.1539 -> 2.2326.
+EXACT_SPHERES_EA = {"F": 1.0255, "Cl": 2.2326}

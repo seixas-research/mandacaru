@@ -33,6 +33,48 @@ SUPPORT_FLOOR = 1e-14
 SUPPORT_MARGIN = 1.0
 
 
+def values_and_gradients(functions, x, y, z, delta: float = 1e-3, *,
+                         values: bool = True):
+    """``(values, gradients)`` of ``functions`` at the flat points ``x, y,
+    z`` (Bohr): ``(n, N)`` and ``(n, 3, N)``, ``values`` being ``None`` when
+    not asked for.
+
+    Functions with a closed form (a tabulated radial function times a
+    harmonic: ``radial``, ``radial_slope``, ``l``, ``m``, ``real`` and
+    ``center``) share the harmonic and its gradient with the others of
+    their center and ``(l, m)`` -- the zeta partners of a shell -- so those
+    are evaluated once per group; the others use :meth:`~BasisFunction.evaluate`
+    and :meth:`~BasisFunction.gradient`.
+    """
+    from ._angular import angular_factor
+
+    x, y, z = (np.asarray(c, dtype=float).reshape(-1) for c in (x, y, z))
+    dtype = (np.float64 if all(getattr(f, "real", False) for f in functions)
+             else np.complex128)
+    gradients = np.empty((len(functions), 3, x.size), dtype=dtype)
+    samples = np.empty((len(functions), x.size), dtype=dtype) if values else None
+    groups: dict = {}
+    for i, function in enumerate(functions):
+        if hasattr(function, "radial_slope"):
+            key = (tuple(np.asarray(function.center, dtype=float)),
+                   function.l, function.m, bool(function.real))
+            groups.setdefault(key, []).append(i)
+            continue
+        gradients[i] = function.gradient(x, y, z, delta)
+        if values:
+            samples[i] = np.asarray(function.evaluate(x, y, z)).reshape(-1)
+    for (center, l, m, real), members in groups.items():
+        r, offsets, harmonic, slopes = angular_factor(
+            l, m, x - center[0], y - center[1], z - center[2], real=real)
+        for i in members:
+            R, dR = functions[i].radial(r), functions[i].radial_slope(r)
+            if values:
+                samples[i] = R * harmonic
+            for axis, (offset, slope) in enumerate(zip(offsets, slopes)):
+                gradients[i, axis] = dR * offset / r * harmonic + R * slope
+    return samples, gradients
+
+
 class BasisFunction(ABC):
     """A localized single-particle function :math:`\\phi(\\mathbf r)`.
 
@@ -92,6 +134,42 @@ class BasisFunction(ABC):
         out = np.zeros(grid.size, dtype=dtype)
         if inside.size:
             out[inside] = self.evaluate(X[inside], Y[inside], Z[inside])
+        return out
+
+    def gradient(self, x, y, z, delta: float = 1e-3) -> np.ndarray:
+        """``(3, n)`` gradient of the function at the points ``x, y, z``
+        (flat arrays, Bohr), by central differences of :meth:`evaluate` with
+        step ``delta``; a function with a closed form overrides it."""
+        x, y, z = (np.asarray(c, dtype=float) for c in (x, y, z))
+        out = []
+        for axis in range(3):
+            step = np.zeros(3)
+            step[axis] = delta
+            plus = self.evaluate(x + step[0], y + step[1], z + step[2])
+            minus = self.evaluate(x - step[0], y - step[1], z - step[2])
+            out.append((plus - minus) / (2.0 * delta))
+        return np.stack(out)
+
+    def sample_gradient(self, grid, delta: float = 1e-3) -> np.ndarray:
+        """``(3, grid.size)`` gradient of the function on ``grid`` (the
+        flattened layout of :meth:`sample`): ``float64`` for a real
+        function, ``complex128`` otherwise.  Like :meth:`sample`, only the
+        points inside the support are evaluated."""
+        dtype = np.float64 if self.real else np.complex128
+        radius = self.support_radius
+        X, Y, Z = (grid.X.reshape(-1), grid.Y.reshape(-1),
+                   grid.Z.reshape(-1))
+        out = np.zeros((3, grid.size), dtype=dtype)
+        if radius is None:
+            out[:] = self.gradient(X, Y, Z, delta)
+            return out
+        center = np.asarray(self.center, dtype=float)
+        reach = radius + delta
+        dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
+        inside = np.flatnonzero(dx * dx + dy * dy + dz * dz <= reach * reach)
+        if inside.size:
+            out[:, inside] = self.gradient(X[inside], Y[inside], Z[inside],
+                                           delta)
         return out
 
     @property

@@ -255,7 +255,7 @@ ansatz searches for the full `max_steps`, and the lowest-cost state of both is
 reported. The transferred chain runs first and unchanged, so a rebuild can
 only keep or improve the reported state. It costs one full search every N
 geometries. `result.rebuild` and the run log's summary say whether the
-transferred or the rebuilt ansatz won. On the PAW-LCAO H2O scan (2026-10-01,
+transferred or the rebuilt ansatz won. On the PAW-LCAO H2O scan (2026-10-01, `kinetic="fd"`,
 `rebuild_every=2`), the transferred ansatz was kept at all four rebuild
 geometries, at 40 % more evaluations: there the carried basin was the better
 one.

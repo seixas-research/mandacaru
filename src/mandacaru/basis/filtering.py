@@ -118,7 +118,8 @@ number looks alarming and mostly is not a loss.  Holding the cutoff **fixed**
 (602 eV) and refining the grid, the filtered-to-unfiltered gap shrinks with
 ``grid_spacing`` -- 530 / 422 / 294 / 237 meV at ``grid_spacing`` = 0.25 / 0.20 / 0.16 / 0.13, close
 to linear in ``grid_spacing`` -- so most of it is the *unfiltered* basis's own grid
-error, not a smaller function space.  The finite-difference Laplacian
+error, not a smaller function space (these numbers were measured with
+``kinetic="fd"``).  The finite-difference Laplacian
 under-estimates the kinetic energy of a function the grid does not resolve, so
 an unfiltered orbital is reported too low; filtering removes exactly the
 components that were being mis-integrated.  On H2, where both bases are

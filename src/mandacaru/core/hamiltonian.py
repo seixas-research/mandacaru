@@ -43,6 +43,8 @@ import numpy as np
 from ..basis import HydrogenicAtomicOrbital
 from ..integrals import Grid, IntegralEngine, Potentials
 from ..integrals.cholesky import TwoBodySpec, resolve_two_body
+from ..integrals.two_center import (PERIODIC_REFUSAL, TwoCenter,
+                                     validate_two_center)
 from ..units import to_bohr
 from .mapping import Fermion
 
@@ -318,12 +320,26 @@ class MolecularIntegrals(MeanFieldMixin):
         bounds the singularity a nucleus samples when it sits on (or very near) a
         grid node.  The ASE-calculator path sets it to a fraction of the grid step
         so heavier-atom cores stay numerically finite on a coarse grid.
-    kinetic : {"fd", "spectral"}
-        Discretization of the Laplacian (default ``"fd"``, the 3-point
-        finite-difference stencil).  ``"spectral"`` uses the FFT Laplacian,
-        which never underestimates a function's kinetic energy and so prevents
-        the collapse of compact functions into deep potentials; see
-        :meth:`mandacaru.integrals.IntegralEngine.one_body`.
+    kinetic : {"spectral", "fd"}, optional
+        Discretization of the Laplacian (default ``"spectral"``, the FFT
+        Laplacian, the operator of a crystal), which never underestimates a
+        function's kinetic energy and so prevents the collapse of compact
+        functions into deep potentials.  ``"fd"`` is the 3-point
+        finite-difference stencil; see
+        :meth:`mandacaru.integrals.IntegralEngine.one_body`.  With
+        ``two_center="analytic"`` the kinetic energy is analytic and this
+        option is refused.
+    two_center : {"grid", "analytic"}
+        How the two-center matrices -- the basis overlap, the kinetic
+        energy and the projections on the projectors -- are integrated:
+        sampled on the real-space grid (default) or analytically, from the
+        Fourier-Bessel transforms of the radial functions
+        (:mod:`mandacaru.integrals.two_center`).  The analytic route has
+        neither the grid's discretization error nor its egg-box in those
+        matrices; the three-center terms (the local potential, the Hartree
+        and exchange-correlation potentials, the two-body tensor) stay on
+        the grid.  It needs real, confined ``radial(r) Y_lm`` functions
+        (a pseudopotential family's basis) and is molecular only.
     kb_projectors : sequence, optional
         Nonlocal projector functions :math:`\chi_p` (sampled like basis
         functions), each carrying ``atom_index``, ``channel = (l, m)`` and a
@@ -353,13 +369,36 @@ class MolecularIntegrals(MeanFieldMixin):
                  basis, grid: Grid, units: str = "angstrom",
                  orthogonalize: bool = True, softening: float = 1e-12,
                  pseudos=None, kb_projectors=None,
-                 kinetic: str = "fd", nonlocal_coupling=None,
+                 kinetic: str | None = None, nonlocal_coupling=None,
                  nonlocal_overlap=None, periodic: bool = False,
-                 spin_orbit_coupling=None, spin_orbit_projectors=None):
-        if kinetic not in ("fd", "spectral"):
+                 spin_orbit_coupling=None, spin_orbit_projectors=None,
+                 two_center: str = "grid"):
+        two_center = validate_two_center(two_center)
+        if two_center == "analytic":
+            if periodic:
+                raise NotImplementedError(PERIODIC_REFUSAL)
+            if spin_orbit_coupling:
+                raise NotImplementedError(
+                    "two_center='analytic' has no spin-orbit term: its "
+                    "projections are still grid quadratures")
+            if kinetic is not None:
+                raise ValueError(
+                    "two_center='analytic' computes the kinetic energy "
+                    f"analytically; kinetic={kinetic!r} would be ignored. "
+                    "Drop kinetic=, or use two_center='grid'")
+            kinetic = "analytic"
+        elif kinetic is None:
+            kinetic = "spectral"
+        if kinetic not in ("fd", "spectral", "analytic"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
-                             "'fd' or 'spectral'")
+                             "'fd' or 'spectral' (or two_center='analytic')")
+        #: How the two-center matrices are integrated: ``"grid"`` or
+        #: ``"analytic"``.
+        self.two_center = two_center
+        #: The kinetic operator: ``"spectral"``, ``"fd"`` or, with
+        #: ``two_center="analytic"``, ``"analytic"``.
         self.kinetic = kinetic
+        self._tables: dict = {}
         #: Whether the Coulomb kernel and the external potential are
         #: periodic (see :class:`~mandacaru.core.periodic.PeriodicIntegrals`).
         self.periodic = bool(periodic)
@@ -464,8 +503,21 @@ class MolecularIntegrals(MeanFieldMixin):
 
     # -- overlap and orthogonalization ------------------------------------ #
 
+    def two_center_tables(self, projectors: bool = False) -> TwoCenter:
+        """The analytic two-center integrals of the basis with itself (or,
+        ``projectors``, with the projector functions), built once."""
+        key = "projectors" if projectors else "basis"
+        if key not in self._tables:
+            self._tables[key] = TwoCenter(
+                self.basis, self.kb_projectors if projectors else None)
+        return self._tables[key]
+
     def bare_overlap(self) -> np.ndarray:
-        r"""Grid overlap ``S_pq = <p|q>`` of the (generally non-orthogonal) basis."""
+        r"""Overlap ``S_pq = <p|q>`` of the (generally non-orthogonal) basis,
+        sampled on the grid or, with ``two_center="analytic"``, exact."""
+        if self._S_bare is None and self.two_center == "analytic":
+            S = self.two_center_tables().matrix("overlap")
+            self._S_bare = 0.5 * (S + S.T)
         if self._S_bare is None:
             if self.periodic:
                 # The periodic basis is the image sum the engine sampled; the
@@ -584,6 +636,9 @@ class MolecularIntegrals(MeanFieldMixin):
             M = len(self.basis)
             if not self.kb_projectors:
                 self._C = np.zeros((M, 0), dtype=self._engine._psi.dtype)
+                return self._C
+            if self.two_center == "analytic":
+                self._C = self.two_center_tables(True).matrix("overlap")
                 return self._C
             from ..integrals import _backend
 
@@ -783,9 +838,13 @@ class MolecularIntegrals(MeanFieldMixin):
         """
         if self._h1 is not None:
             return
-        T, V = self._engine.one_body(self.external_potential(),
-                                     energy_units="Ha", kinetic=self.kinetic)
-        self.resolution_ratios = self._engine.resolution(T, kinetic=self.kinetic)
+        T, V = self.kinetic_and_local()
+        # The grid's kinetic energy is the resolution test, even when T is
+        # analytic: the three-center terms stay on the grid.
+        self.resolution_ratios = (
+            self._engine.resolution(None, kinetic="spectral")
+            if self.two_center == "analytic"
+            else self._engine.resolution(T, kinetic=self.kinetic))
         one = T + V + self.kb_nonlocal()
         short_range = self.short_range_local()
         if short_range is not None:
@@ -804,6 +863,22 @@ class MolecularIntegrals(MeanFieldMixin):
             X = self._lowdin_x()
             h = X.conj().T @ h @ X
         self._h1 = h
+
+    def kinetic_and_local(self):
+        """``(T, V)`` in Hartree: the kinetic energy and the local external
+        potential sampled on the grid (the long-range half of it when the
+        family splits its local channel).
+
+        ``T`` follows :attr:`kinetic`; with ``two_center="analytic"`` it is
+        the analytic two-center matrix and the grid supplies ``V`` alone.
+        """
+        if self.two_center == "analytic":
+            V = self._engine.one_body(self.external_potential(),
+                                      energy_units="Ha", kinetic=None)[1]
+            T = self.two_center_tables().matrix("kinetic")
+            return 0.5 * (T + T.T), V
+        return self._engine.one_body(self.external_potential(),
+                                     energy_units="Ha", kinetic=self.kinetic)
 
     def _compute_two_body(self):
         """The electron-repulsion tensor only."""

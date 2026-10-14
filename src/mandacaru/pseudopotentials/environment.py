@@ -22,12 +22,12 @@ family                variable                    set it with
 Inside a checkout the datasets sit one folder per set, named for its
 functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): PAW-LCAO
 ships ``lda-sr/`` (scalar-relativistic LDA), ``lda-fr/`` (with the
-spin-orbit term) and ``pbe-sr/`` (scalar-relativistic PBE).  A calculation
+spin-orbit term), ``pbe-sr/`` (scalar-relativistic PBE) and ``pbe-fr/``
+(PBE with the spin-orbit term).  A calculation
 reads the set of its functional (:func:`default_library_folder`): ``pbe-sr/``
 for PBE, HSE06, r2SCAN and r2SCAN+rVV10, ``lda-sr/`` for LDA and every
 method without a functional.  A set without an entry sits in the folder
-named for the functional (``pbe/`` for a PBE Dirac set, which is not
-shipped).
+named for the functional.
 UPAW-LCAO is the one optional library: without ``MANDACARU_UPAW_PATH`` its
 datasets are generated on demand (a few seconds per element), so an unset
 variable is not an error for it (:data:`OPTIONAL_FAMILIES`).
@@ -62,7 +62,8 @@ DEFAULT_XC = "lda"
 #: named for its functional.
 LIBRARY_FOLDERS = {("paw-lcao", "lda", "scalar"): "lda-sr",
                    ("paw-lcao", "lda", "dirac"): "lda-fr",
-                   ("paw-lcao", "pbe", "scalar"): "pbe-sr"}
+                   ("paw-lcao", "pbe", "scalar"): "pbe-sr",
+                   ("paw-lcao", "pbe", "dirac"): "pbe-fr"}
 #: The folder a calculation without a functional (Hartree-Fock, the
 #: quantum solvers) or with LDA reads, the scalar-relativistic LDA set.
 DEFAULT_LIBRARY_FOLDER = "lda-sr"

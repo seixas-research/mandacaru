@@ -46,9 +46,10 @@ How each piece is obtained
   :math:`\partial\phi_\mu/\partial R_{A,k}` is evaluated by central differences of
   the analytic orbital on a displaced grid.  No integral is recomputed.
 * **Integral derivatives.** :math:`\partial S`, :math:`\partial T` and
-  :math:`\partial V` follow from one call to the *same* one-body kernel on the
-  stacked ``[phi; dphi]`` basis, so the finite-difference Laplacian matches the
-  one the energy used.  The two-body derivative never builds a
+  :math:`\partial V` follow from the energy's own Laplacian
+  (:func:`one_body_cross`): the FFT Laplacian of the unmoved functions for
+  ``kinetic="spectral"`` (the default), the *same* finite-difference kernel on
+  the stacked ``[phi; dphi]`` basis for ``kinetic="fd"``.  The two-body derivative never builds a
   :math:`\partial g` tensor: it is contracted on the fly against the Coulomb
   potentials of the pair densities, streamed a block at a time (see
   :func:`_two_body_pulay`).
@@ -152,23 +153,20 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
     carries (:func:`atom_rows` takes an atom's array back out of it).
 
     Because :math:`\phi_\mu(\mathbf r) = f(\mathbf r - \mathbf R_A)`, displacing
-    the center by :math:`+\delta` equals evaluating the unchanged function at
-    :math:`\mathbf r - \delta`, so this needs no rebuilt basis objects -- only two
-    extra samplings per direction.
+    the center is minus the gradient of the unchanged function
+    (:meth:`~mandacaru.basis.base.BasisFunction.sample_gradient`): analytic
+    for the tabulated radial functions, a central difference of step
+    ``delta`` for the others.  Only the points inside a function's support
+    are evaluated, and the array is ``float64`` when every function is real.
     """
     delta = DEFAULT_ORBITAL_DELTA if delta is None else float(delta)
-    X, Y, Z = grid.X, grid.Y, grid.Z
     M = len(basis)
-    out = np.zeros((3, M, grid.size), dtype=complex)
-    for k in range(3):
-        shift = [np.zeros_like(X), np.zeros_like(Y), np.zeros_like(Z)]
-        shift[k] = np.full_like(X, delta)
-        for mu, fn in enumerate(basis):
-            if atom is not None and atom_of_orbital[mu] != atom:
-                continue
-            plus = fn.evaluate(X - shift[0], Y - shift[1], Z - shift[2])
-            minus = fn.evaluate(X + shift[0], Y + shift[1], Z + shift[2])
-            out[k, mu] = ((plus - minus) / (2.0 * delta)).ravel()
+    real = all(getattr(fn, "real", False) for fn in basis)
+    out = np.zeros((3, M, grid.size), dtype=np.float64 if real else complex)
+    for mu, fn in enumerate(basis):
+        if atom is not None and atom_of_orbital[mu] != atom:
+            continue
+        out[:, mu] = -fn.sample_gradient(grid, delta)
     return out
 
 
@@ -205,15 +203,11 @@ def orbital_gradients(basis, grid, delta=None):
     regardless of which atom they sit on.
     """
     delta = DEFAULT_ORBITAL_DELTA if delta is None else float(delta)
-    X, Y, Z = grid.X, grid.Y, grid.Z
-    out = np.zeros((3, len(basis), grid.size), dtype=complex)
-    for k in range(3):
-        shift = [np.zeros_like(X), np.zeros_like(Y), np.zeros_like(Z)]
-        shift[k] = np.full_like(X, delta)
-        for mu, fn in enumerate(basis):
-            plus = fn.evaluate(X + shift[0], Y + shift[1], Z + shift[2])
-            minus = fn.evaluate(X - shift[0], Y - shift[1], Z - shift[2])
-            out[k, mu] = ((plus - minus) / (2.0 * delta)).ravel()
+    real = all(getattr(fn, "real", False) for fn in basis)
+    out = np.zeros((3, len(basis), grid.size),
+                   dtype=np.float64 if real else complex)
+    for mu, fn in enumerate(basis):
+        out[:, mu] = fn.sample_gradient(grid, delta)
     return out
 
 
@@ -516,12 +510,13 @@ def hellmann_feynman_gradient(density_ao, psi_grid, grid, nuclei_bohr, charges,
 # Pulay terms.
 # --------------------------------------------------------------------------- #
 
-def one_body_cross(psi_grid, dpsi, vext, grid, kinetic="fd", laplacian=None):
+def one_body_cross(psi_grid, dpsi, vext, grid, kinetic, laplacian=None):
     r"""``<dphi_a| T + V |phi_b>``: the cross block of the one-body matrix.
 
     The Pulay derivative of a one-body matrix is this block plus its
     Hermitian conjugate, and it has to use the *same* Laplacian as the
-    energy:
+    energy, so ``kinetic`` has no default: the caller passes the
+    integrals' own operator (``integrals.kinetic``).
 
     * ``kinetic="fd"`` runs the energy's own finite-difference kernel on the
       stacked basis ``[phi; dphi]`` and reads the cross block;
@@ -531,11 +526,17 @@ def one_body_cross(psi_grid, dpsi, vext, grid, kinetic="fd", laplacian=None):
       computed once per gradient.  The FFT Laplacian is real symmetric on
       the grid, so :math:`\langle\partial\phi_a|\nabla^2\phi_b\rangle` and
       :math:`\langle\phi_a|\nabla^2\partial\phi_b\rangle^*` are the same
-      numbers and the moved functions are never transformed.
+      numbers and the moved functions are never transformed;
+    * ``kinetic="analytic"`` (``two_center="analytic"``) leaves the kinetic
+      energy to the two-center tables
+      (:class:`~mandacaru.integrals.two_center.TwoCenter`): the block is the
+      local potential's alone.
     """
     from ..integrals import _backend
 
     M = psi_grid.shape[0]
+    if kinetic == "analytic":
+        return (dpsi.conj() * vext) @ psi_grid.T * grid.dV
     if kinetic == "fd":
         stacked = np.ascontiguousarray(np.vstack([psi_grid, dpsi]))
         T_full, V_full = _backend.one_body_matrices(stacked, vext, grid)
@@ -552,7 +553,7 @@ def one_body_cross(psi_grid, dpsi, vext, grid, kinetic="fd", laplacian=None):
 
 
 def _one_body_pulay(engine, psi_grid, dpsi, vext, grid, de_dh, de_ds,
-                    kinetic="fd", laplacian=None):
+                    kinetic, laplacian=None):
     r"""Basis-motion part of ``<dE/dh, dh/dR> + <dE/dS, dS/dR>``.
 
     ``dh/dR`` and ``dS/dR`` are evaluated from the cross blocks
@@ -570,18 +571,20 @@ def _one_body_pulay(engine, psi_grid, dpsi, vext, grid, de_dh, de_ds,
 
 
 def _pair_block_size(n_orbitals: int, ngrid: int, n_pairs: int,
-                     max_memory_mb: float | None = None) -> int:
+                     max_memory_mb: float | None = None,
+                     itemsize: int = 16) -> int:
     """Pairs per block so the block's working set stays in the two-body
     budget (:func:`~mandacaru.integrals.engine.eri_memory_budget_mb`): per
     pair its density and potential plus the two ``(M, G)`` products
-    :func:`pair_derivative_integrals` forms, complex.  At most ``M`` pairs,
-    so a small system's block (``2 M^2 G`` products) is never larger than
-    the pair-potential stack it replaces."""
+    :func:`pair_derivative_integrals` forms, ``itemsize`` bytes a number (16
+    complex, 8 real).  At most ``M`` pairs, so a small system's block
+    (``2 M^2 G`` products) is never larger than the pair-potential stack it
+    replaces."""
     from ..integrals.engine import eri_memory_budget_mb
 
     budget = (eri_memory_budget_mb() if max_memory_mb is None
               else float(max_memory_mb)) * 2 ** 20
-    per_pair = 16.0 * ngrid * (2 + 2 * n_orbitals)
+    per_pair = float(itemsize) * ngrid * (2 + 2 * n_orbitals)
     return int(max(1, min(n_pairs, n_orbitals, budget // per_pair)))
 
 
@@ -598,15 +601,20 @@ def pair_potential_blocks(psi_grid, grid, solver=None,
     stack of all pair potentials never exists.  ``solver`` defaults to the
     isolated :class:`~mandacaru.integrals.poisson.PoissonFFTSolver` of
     ``grid``; it solves on its shared FFT workspace into ``phi``
-    (``solve_stack(rho, out=...)``).
+    (``solve_stack(rho, out=...)``).  Real orbitals on an even kernel (a
+    molecule) keep the densities and potentials ``float64``.
     """
     M, ngrid = psi_grid.shape
     if solver is None:
         solver = PoissonFFTSolver(grid.shape, step=grid.step)
     n_pairs = M * M
-    size = _pair_block_size(M, ngrid, n_pairs, max_memory_mb)
-    rho = np.empty((size, ngrid), dtype=complex)
-    phi = np.empty((size, ngrid), dtype=complex)
+    real = not np.iscomplexobj(psi_grid)
+    potential_real = real and bool(getattr(solver, "even", False))
+    size = _pair_block_size(M, ngrid, n_pairs, max_memory_mb,
+                            8 if potential_real else 16)
+    rho = np.empty((size, ngrid), dtype=np.float64 if real else complex)
+    phi = np.empty((size, ngrid),
+                   dtype=np.float64 if potential_real else complex)
     conj = np.conj(psi_grid)
     for start in range(0, n_pairs, size):
         stop = min(start + size, n_pairs)
@@ -634,8 +642,9 @@ def pair_derivative_integrals(psi_grid, derivatives, phi):
     right = (phi[:, None, :] * psi_grid[None, :, :]).reshape(n * M, ngrid)
     left = (phi[:, None, :] * np.conj(psi_grid)[None, :, :]).reshape(n * M,
                                                                      ngrid)
-    T1 = np.empty((3, M, M, n), dtype=complex)
-    T2 = np.empty((3, M, M, n), dtype=complex)
+    dtype = np.result_type(right, derivatives)
+    T1 = np.empty((3, M, M, n), dtype=dtype)
+    T2 = np.empty((3, M, M, n), dtype=dtype)
     for k in range(3):
         T1[k] = (np.conj(derivatives[k]) @ right.T).reshape(M, n, M
                                                             ).transpose(0, 2, 1)
@@ -656,10 +665,12 @@ def pair_derivative_tensors(psi_grid, derivatives, grid, solver=None):
     of pair potentials, in place of the ``M^2 G`` potential stack.
     """
     M = psi_grid.shape[0]
-    T1 = np.empty((3, M, M, M * M), dtype=complex)
-    T2 = np.empty((3, M, M, M * M), dtype=complex)
+    T1 = T2 = None
     for start, stop, phi in pair_potential_blocks(psi_grid, grid, solver):
         block1, block2 = pair_derivative_integrals(psi_grid, derivatives, phi)
+        if T1 is None:
+            T1 = np.empty((3, M, M, M * M), dtype=block1.dtype)
+            T2 = np.empty((3, M, M, M * M), dtype=block2.dtype)
         T1[..., start:stop] = block1
         T2[..., start:stop] = block2
     T1 *= grid.dV
@@ -770,7 +781,7 @@ def nuclear_gradient(integrals, gamma, gamma2, *, n_electrons, atom_of_orbital,
     # term included: `de_dh` and friends are derivatives of *this* h_ao, so any
     # term missing here makes them derivatives of an energy nobody evaluated.
     S = np.real(integrals.overlap())
-    kinetic = getattr(integrals, "kinetic", "fd")
+    kinetic = integrals.kinetic
     T, V = integrals._engine.one_body(external, energy_units="Ha",
                                       kinetic=kinetic)
     one_body = T + V + integrals.kb_nonlocal()

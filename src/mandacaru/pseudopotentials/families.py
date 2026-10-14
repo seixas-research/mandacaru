@@ -298,7 +298,7 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
                               integrals_class=None,
                               potentials_keyword: str = "pseudos",
                               ghosts=(), electric_field=None, two_body=None,
-                              one_center=None):
+                              one_center=None, two_center=None):
     """The driver 5-tuple of a pseudopotential family -- the part every family
     shares.
 
@@ -322,6 +322,11 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
     ``one_center`` is handed to the integral class when given (PAW-LCAO's
     ``"exact"`` or ``"frozen"`` spheres,
     :class:`~mandacaru.pseudopotentials.paw.PAWIntegrals`).
+
+    ``two_center`` (``"grid"``, the default, or ``"analytic"``) says how the
+    overlap, the kinetic energy and the projections are integrated
+    (:class:`~mandacaru.core.MolecularIntegrals`).  The analytic route owns
+    the kinetic operator, so ``kinetic`` must be left at ``None`` with it.
     """
     from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
@@ -387,7 +392,9 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
         nonlocal_overlap=overlap_blocks,
         spin_orbit_coupling=spin_orbit_blocks,
         spin_orbit_projectors=so_projectors or None,
-        kinetic=kinetic or DEFAULT_KINETIC["pseudopotentials"],
+        kinetic=(kinetic if two_center == "analytic"
+                 else kinetic or DEFAULT_KINETIC["pseudopotentials"]),
+        **({} if two_center is None else {"two_center": two_center}),
         **({} if one_center is None else {"one_center": one_center}),
         **{potentials_keyword: [potentials[s] for s in real_symbols]})
     if electric_field is not None:

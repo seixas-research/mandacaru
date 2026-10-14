@@ -6,8 +6,7 @@ the molecule back. With virtual orbitals deleted, the force is the central
 difference of the reduced Hamiltonian along the 21 internal directions; the
 two-electron integrals are Cholesky factors, and every displaced geometry is
 factored on the reference's pivots. Those 42 rebuilds per step are why the
-basis is DZP on a 0.30 Angstrom grid; the spectral kinetic operator keeps
-the forces converged at that spacing, where the default stencil's are not.
+basis is DZP on a 0.30 Angstrom grid.
 The deformed start, the trajectory and the run log (with the forces on every
 atom at every step) are written to ``data/``.
 """
@@ -37,7 +36,6 @@ write(os.path.join(DATA, "ethanol_deformed.xyz"), atoms)
 atoms.calc = Mandacaru(method="adapt-vqe",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
                        grid_spacing=0.30,
-                       kinetic="spectral",
                        two_body={"method": "cholesky", "tolerance": 1e-7},
                        active_space={"orbitals": {"occupied": 5, "virtual": 5},
                                      "method": "mp2"},

@@ -914,6 +914,20 @@ _BASES = [
   doi     = {10.1103/PhysRevB.40.3979}
 }""", "confined numerical atomic orbitals", verified=False,
          topics=("nao", "energy_shift")),
+    _ref("Larsen2009", """
+@article{Larsen2009,
+  author  = {Larsen, Ask Hjorth and Vanin, Marco and Mortensen, Jens
+             J{\\o}rgen and Thygesen, Kristian S. and Jacobsen, Karsten W.},
+  title   = {Localized atomic basis set in the projector augmented wave
+             method},
+  journal = {Phys. Rev. B},
+  volume  = {80},
+  pages   = {195112},
+  year    = {2009},
+  doi     = {10.1103/PhysRevB.80.195112}
+}""", "analytic two-center integrals of atom-centered radial functions "
+         "(two_center=)", verified=False,
+         topics=("two_center", "paw-lcao")),
     _ref("Junquera2001", """
 @article{Junquera2001,
   author  = {Junquera, Javier and Paz, {\\'O}scar and S{\\'a}nchez-Portal,

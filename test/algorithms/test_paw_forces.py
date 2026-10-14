@@ -13,7 +13,7 @@ functions, i.e. 20 qubits, solved exactly in the (1, 1) particle-number sector.
 
 The reference numbers are a *qualitative* guide only: they are PBE-DFT in
 plane waves, Mandacaru is ADAPT-VQE in a localized basis, so the curves differ
-in detail (Mandacaru's H2 minimum is 0.712 A against the reference's 0.750 A).
+in detail (Mandacaru's H2 minimum is 0.785 A against the reference's 0.750 A).
 """
 
 from types import SimpleNamespace
@@ -127,8 +127,12 @@ def test_hellmann_feynman_and_pulay(h2):
     # the exact energy and the exact ones put it 16 mHa above, the excess
     # growing as the two hydrogen spheres (r_c 1.30 Bohr) overlap -- 1 mHa at
     # R = 2.6 Bohr, 16 at 1.4 (HISTORY.md "PAW-LCAO Hamiltonian: one-center
-    # exact exchange").  0.75 A is now *inside* the minimum.
-    assert -1.2 < bond_force(forces) < -0.5
+    # exact exchange").  0.75 A is now *inside* the minimum.  Since
+    # 2026-10-13 the kinetic operator is spectral, which the stencil had
+    # under-estimated: the minimum moved out again to 0.785 A (bond force
+    # -1.352 / -0.173 / +0.495 eV/Angstrom at 0.75 / 0.78 / 0.80 A), and the
+    # force here from -0.5 ... -1.2 to -1.35.
+    assert -1.6 < bond_force(forces) < -1.1
 
 
 def test_the_last_zeta_split_is_still_available():
@@ -138,8 +142,10 @@ def test_the_last_zeta_split_is_still_available():
                                    "energy_shift": None})
     # Outside that basis's minimum (0.711 A) with the frozen spheres, the
     # pre-2026-09-20 behavior (> 1.0); with the exact spheres (2026-10-12) the
-    # minimum moved past 0.75 A (-0.22 eV/Angstrom), as for the default basis.
-    assert -0.5 < bond_force(atoms.get_forces()) < 0.0
+    # minimum moved past 0.75 A (-0.22 eV/Angstrom), as for the default basis,
+    # and with the spectral kinetic default (2026-10-13) to 0.776 A
+    # (-0.954 / +0.141 eV/Angstrom at 0.75 / 0.78 A).
+    assert -1.2 < bond_force(atoms.get_forces()) < -0.7
 
 
 @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
@@ -158,6 +164,42 @@ def test_spectral_kinetic_forces_are_the_derivative_of_the_energy(family):
                            convergence={"gradient": 1e-6}, profile=False)
     atoms.get_forces()
     raw = atoms.calc.force_result.unprojected.copy()
+
+    def energy(step):
+        moved = atoms.copy()
+        moved.positions[1, 2] += step
+        moved.calc = atoms.calc
+        return moved.get_potential_energy()
+
+    coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
+                    for s in (0.004, 0.002))
+    numerical = fine + (fine - coarse) / 3.0
+    assert abs(numerical) > 0.1
+    assert raw[1, 2] == pytest.approx(numerical, abs=1e-4)
+
+
+@pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
+def test_analytic_two_center_forces_are_the_derivative_of_the_energy(family):
+    """``two_center="analytic"`` through the RDM gradient: the many-body
+    path reads the same one-body integrals as Kohn-Sham, so ADAPT-VQE runs
+    on the analytic overlap, kinetic energy and projections and its forces
+    differentiate them through the tables.  LiH as above, against the
+    Richardson-extrapolated central difference of the reported energy."""
+    atoms = dimer("LiH", 1.6, 8.0)
+    atoms.positions[1, 0] += 0.05
+    atoms.calc = Mandacaru(method="adapt-vqe", grid_spacing=0.25, pool="fermionic",
+                           basis={"name": family, "size": "SZ"},
+                           two_center="analytic", optimizer=LBFGS,
+                           convergence={"gradient": 1e-6}, profile=False)
+    atoms.get_forces()
+    raw = atoms.calc.force_result.unprojected.copy()
+    integrals = atoms.calc.solver._gradient_context["integrals"]
+    assert integrals.two_center == "analytic"
+    solver = atoms.calc.solver
+    matrix = solver._h_matrix
+    exact = np.linalg.eigvalsh(
+        matrix.toarray() if hasattr(matrix, "toarray") else matrix)[0]
+    assert abs(solver.result.in_units("Ha") - exact) < 1e-6    # the sector FCI
 
     def energy(step):
         moved = atoms.copy()
@@ -349,8 +391,9 @@ def test_forces_respect_the_c2v_symmetry(h2o):
     assert forces[0, 1] == pytest.approx(forces[0, 2], abs=5e-3)   # O
     assert forces[1, 1] == pytest.approx(forces[2, 2], abs=5e-3)   # H1 <-> H2
     assert forces[1, 2] == pytest.approx(forces[2, 1], abs=5e-3)
-    # A real force, not a coincidence: 0.71 eV/Angstrom since the exact
-    # spheres (2026-10-12; it was > 1).
+    # A real force, not a coincidence: 3.44 eV/Angstrom with the spectral
+    # kinetic default (2026-10-13; 0.71 on the stencil with the exact spheres
+    # of 2026-10-12, > 1 before them).
     assert abs(forces[0, 1]) > 0.5
     assert np.abs(forces[:, 0]).max() < 1e-3  # x is empty for this geometry
 

@@ -146,6 +146,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from scipy.integrate import simpson
 
+from ..basis.base import values_and_gradients
 from ..basis.relativity import relativistic_exchange
 from ..basis.xc import _resolve as _resolve_xc
 from ..basis.xc import xc_potential
@@ -2336,10 +2337,12 @@ def atom_centered_projection_gradients(basis, projectors,
     r"""``G[mu, p, k] = <d phi_mu / d R_k | p_p>``, the basis function moving.
 
     Same quadrature as :func:`atom_centered_projections`; the orbital
-    derivative with respect to its center is a central difference of the
-    analytic function (step ``delta``, Bohr).  Because the projection depends
-    only on the separation, moving the projector instead gives ``-G``.
-    Returns an ``(M, P, 3)`` array.
+    derivative with respect to its center is minus the function's gradient
+    (:meth:`~mandacaru.basis.base.BasisFunction.gradient`: analytic for the
+    tabulated functions, a central difference of step ``delta``, Bohr, for
+    the rest).  Because the projection depends only on the separation,
+    moving the projector instead gives ``-G``.  Returns an ``(M, P, 3)``
+    array.
     """
     real = all(getattr(f, "real", False) for f in (*basis, *projectors))
     G = np.zeros((len(basis), len(projectors), 3),
@@ -2347,16 +2350,12 @@ def atom_centered_projection_gradients(basis, projectors,
     for p, projector in enumerate(projectors):
         points, weights = _projector_sphere(projector,
                                             split_radial=split_radial)
-        values = projector.evaluate(*points) * weights
-        for mu in _reaching(basis, projector.center, points, margin=delta):
-            fn = basis[mu]
-            for k in range(3):
-                shift = [0.0, 0.0, 0.0]
-                shift[k] = delta
-                plus = fn.evaluate(*(points[i] - shift[i] for i in range(3)))
-                minus = fn.evaluate(*(points[i] + shift[i] for i in range(3)))
-                G[mu, p, k] = np.sum(np.conj((plus - minus) / (2.0 * delta))
-                                     * values)
+        values = (projector.evaluate(*points) * weights).ravel()
+        reaching = _reaching(basis, projector.center, points, margin=delta)
+        _none, gradient = values_and_gradients(
+            [basis[mu] for mu in reaching], *(c.ravel() for c in points),
+            delta, values=False)                            # (n, 3, N)
+        G[reaching, p, :] = -np.conj(gradient) @ values
     return G
 
 
@@ -2582,8 +2581,23 @@ class PAWIntegrals(MolecularIntegrals):
         if self._C is not None:
             return self._C
         super().projections()               # grid values: resolution ratios
-        self._C = atom_centered_projections(self.basis, self.kb_projectors)
+        if self.two_center == "grid":
+            self._C = atom_centered_projections(self.basis, self.kb_projectors)
         return self._C
+
+    def projection_gradients(self, delta: float) -> np.ndarray:
+        r"""``G[mu, p, k] = <d phi_mu / d R_k | p_p>``, the basis function
+        moving: the analytic derivative of the two-center tables with
+        ``two_center="analytic"`` (exactly the derivative of
+        :meth:`projections`), else the quadrature of
+        :func:`atom_centered_projection_gradients` with step ``delta``.
+        The projector moving is minus this."""
+        if self.two_center == "analytic":
+            tables = self.two_center_tables(True)
+            return np.moveaxis(-tables.gradient("overlap"), 0, -1)
+        return atom_centered_projection_gradients(
+            self.basis, self.kb_projectors, delta,
+            split_radial=bool(getattr(self, "projection_split_radial", False)))
 
     def _atom_positions(self):
         groups = projector_blocks(self.kb_projectors)

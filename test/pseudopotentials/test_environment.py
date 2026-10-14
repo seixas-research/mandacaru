@@ -58,27 +58,27 @@ def test_the_functional_picks_the_subfolder(monkeypatch, checkout):
     # For writing, a missing set folder is simply where to create it.
     assert paw_dataset_folder("paw-lcao", "PBE", must_exist=False) == \
         os.path.join(str(checkout), "pbe-sr")
-    # A set without a folder of its own (a PBE Dirac set is not shipped)
-    # sits in the folder named for the functional.
     assert paw_dataset_folder("paw-lcao", "pbe", must_exist=False,
                              relativity="dirac") == \
-        os.path.join(str(checkout), "pbe")
+        os.path.join(str(checkout), "pbe-fr")
     with pytest.raises(ValueError, match="xc must be one of"):
         paw_dataset_folder("paw-lcao", "b3lyp")
 
 
-def test_paw_ships_scalar_and_dirac_lda_and_scalar_pbe(monkeypatch,
-                                                      paw_checkout):
+def test_paw_ships_scalar_and_dirac_lda_and_pbe(monkeypatch, paw_checkout):
     """PAW-LCAO's folders are named for the set, not the functional: the
     scalar-relativistic ``lda-sr/`` is the default, ``lda-fr/`` carries
-    the spin-orbit term and ``pbe-sr/`` is the scalar-relativistic PBE set.
-    There is no ``lda/`` or ``pbe/`` alias."""
+    the spin-orbit term, and ``pbe-sr/`` and ``pbe-fr/`` are the PBE sets
+    without and with it.  There is no ``lda/`` or ``pbe/`` alias."""
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     assert paw_dataset_folder("paw-lcao") == str(paw_checkout / "lda-sr")
     assert paw_dataset_folder("paw-lcao", relativity="dirac") == \
         str(paw_checkout / "lda-fr")
     (paw_checkout / "pbe-sr").mkdir()
     assert paw_dataset_folder("paw-lcao", "pbe") == str(paw_checkout / "pbe-sr")
+    (paw_checkout / "pbe-fr").mkdir()
+    assert paw_dataset_folder("paw-lcao", "pbe", relativity="dirac") == \
+        str(paw_checkout / "pbe-fr")
     (paw_checkout / "lda").mkdir()
     (paw_checkout / "pbe").mkdir()
     assert paw_dataset_folder("paw-lcao") == str(paw_checkout / "lda-sr")

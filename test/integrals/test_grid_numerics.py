@@ -164,8 +164,12 @@ class TestSCF:
 
     def test_occupied_orbital_energies_are_physical(self):
         # Water's valence levels sit between -1.5 and -0.2 Ha; the broken
-        # transform produced a positive occupied level here.
-        r = _water_integrals(grid_spacing=0.25).hartree_fock(10)
+        # transform produced a positive occupied level here.  On the stencil
+        # the guard was found on: the HAO oxygen (hydrogenic Z = 8 shells)
+        # is not resolved at 0.25 Angstrom, and the spectral default, which
+        # does not under-estimate its kinetic energy as the stencil does,
+        # puts the fourth level at +0.57 Ha there (2026-10-13).
+        r = _water_integrals(grid_spacing=0.25, kinetic="fd").hartree_fock(10)
         assert np.all(r.mo_energies[:4] < 0.0)
 
 
@@ -250,7 +254,10 @@ class TestZetasAndResolution:
         ratios = eng.resolution(kinetic="fd")
         assert abs(ratios[0] - 1.0) < 0.1
         assert abs(ratios[1] - 1.0) > 0.25
-        mi = MolecularIntegrals([(1.0, np.zeros(3))], fns, grid)
+        # The check reads the integrals' own operator: the stencil's ratio
+        # for the compact function is 0.50, flagged; the spectral default's
+        # is 0.81, inside the 25 % band (2026-10-13).
+        mi = MolecularIntegrals([(1.0, np.zeros(3))], fns, grid, kinetic="fd")
         bad_fns, bad_proj = mi.unresolved()
         assert bad_fns == [1] and bad_proj == []
 

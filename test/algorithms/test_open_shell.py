@@ -64,7 +64,10 @@ def _sector_ground_state(hamiltonian, num_particles, mapping="jordan_wigner"):
 
 @pytest.fixture(scope="module")
 def h_atom():
-    return _integrals([(1.0, np.array([0.0, 0.0, 0.0]))], grid_spacing=0.25, box=5.0)
+    # grid_spacing 0.15: with the spectral kinetic default (2026-10-13) the
+    # 1s energy converges from above, -0.441 / -0.462 / -0.483 Ha at 0.25 /
+    # 0.20 / 0.15 with this softening (half a grid step).
+    return _integrals([(1.0, np.array([0.0, 0.0, 0.0]))], grid_spacing=0.15, box=5.0)
 
 
 @pytest.fixture(scope="module")
@@ -246,8 +249,13 @@ class TestGeometryPath:
 
 class TestSolvers:
     def test_adapt_vqe_hydrogen_atom(self):
+        # grid_spacing 0.20: with the spectral default (2026-10-13) the HAO 1s
+        # converges from above, -0.442 Ha at 0.25 and -0.472 at 0.20 (the
+        # stencil, which under-estimates the cusp's kinetic energy, gave
+        # -0.477 / -0.481).
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[5.0] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.25, profile=False)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.20,
+                               profile=False)
         atoms.get_potential_energy()
         calc = atoms.calc
         assert calc.num_particles == (1, 0) and calc.n_qubits == 2

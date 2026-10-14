@@ -141,6 +141,10 @@ MAPPING_LABELS = {"jordan_wigner": "Jordan-Wigner", "parity": "parity",
                   "parity_reduced": "reduced parity",
                   "bravyi_kitaev": "Bravyi-Kitaev"}
 
+#: The ``kinetic operator`` log line for ``two_center="analytic"`` (the
+#: log's only mention of the option).
+ANALYTIC_KINETIC_LABEL = "analytic (two-center)"
+
 
 
 def _checked_field(field):
@@ -264,15 +268,26 @@ class VariationalDriver(Calculator):
         variational parameters at every iteration.  ``False`` optimizes only the
         most recently added parameter, freezing all previous ones at their
         already-optimized values.
-    kinetic : {"fd", "spectral"}, optional
-        Laplacian discretization of the real-space integrals: the 3-point
-        finite-difference stencil (``"fd"``) or the FFT Laplacian
-        (``"spectral"``), which never underestimates a compact function's
-        kinetic energy.  ``None`` (default) means ``"fd"`` for a molecule.
-        The analytic forces differentiate either operator.  A crystal
-        (``method="dft"`` on a periodic geometry) is always spectral and
-        refuses ``"fd"``, so a molecule compared with it in a box needs
-        ``"spectral"``.
+    kinetic : {"spectral", "fd"}, optional
+        Laplacian discretization of the real-space integrals: the FFT
+        Laplacian (``"spectral"``), which never underestimates a compact
+        function's kinetic energy and converges from above with the grid, or
+        the 3-point finite-difference stencil (``"fd"``).  ``None`` (default)
+        means ``"spectral"``, molecules and crystals alike, so a molecule in a
+        box and the crystal are one Hamiltonian.  The analytic forces
+        differentiate either operator.  A crystal (``method="dft"`` on a
+        periodic geometry) is always spectral and refuses ``"fd"``.
+    two_center : {"grid", "analytic"}, optional
+        How a PAW-LCAO or UPAW-LCAO molecule integrates its two-center
+        matrices -- the basis overlap, the kinetic energy and the projections
+        on the projectors.  ``None`` (default) is ``"grid"``: sampled on the
+        real-space grid, with its discretization error and egg-box.
+        ``"analytic"`` computes them from the Fourier-Bessel transforms of
+        the radial functions, to about 1e-8 and without a grid, and
+        differentiates them analytically in the forces; the local potential,
+        the Hartree and exchange-correlation potentials and the two-body
+        tensor stay on the grid.  The analytic route has its own kinetic
+        energy, so it refuses ``kinetic=``.  Molecular only.
     atomic_units : bool
         Output-unit convention (default ``False``): every energy the driver
         *returns or prints* -- the result object, the energy levels, the verbose
@@ -335,7 +350,7 @@ class VariationalDriver(Calculator):
                  backend_options: dict | None = None, shots: int = 0,
                  quenching: bool = True, dry_run: bool = False,
                  kinetic: str | None = None, ghosts=None,
-                 electric_field=None, two_body=None,
+                 electric_field=None, two_body=None, two_center=None,
                  atomic_units: bool = False,
                  checkpoint: str | None = None, checkpoint_every: int = 1,
                  resume: str | None = None, references="auto",
@@ -419,11 +434,19 @@ class VariationalDriver(Calculator):
         # after the grid.  It replaces the core + the -Z/r singularity with a
         # smooth valence-only problem and subsumes the frozen core.
         self._check_pseudo_basis(basis, self.active_space)
-        # Laplacian discretization ("fd" / "spectral"; None = path default).
+        # Laplacian discretization ("spectral" / "fd"; None = the spectral
+        # default of `DEFAULT_KINETIC`).
         if kinetic not in (None, "fd", "spectral"):
             raise ValueError(f"unknown kinetic operator {kinetic!r}; use "
                              "'fd', 'spectral' or None")
         self.kinetic = kinetic
+        # How the overlap, kinetic and projection matrices are integrated
+        # ("grid" or "analytic"); the analytic route owns the kinetic
+        # operator, so the two options cannot both be written.
+        from ..integrals.two_center import validate_two_center
+        self.two_center = validate_two_center(two_center)
+        if self.two_center == "analytic":
+            self._check_two_center(basis, kinetic)
         # The two-body representation: the dense tensor or Cholesky factors
         # (`two_body={"method": "cholesky", "tolerance": ...}`), validated now.
         from ..integrals.cholesky import resolve_two_body
@@ -462,6 +485,13 @@ class VariationalDriver(Calculator):
             # and a cached file does not record one.
             raise ValueError(
                 "electric_field acts on the integrals built from the "
+                "geometry; a loaded or user-built Hamiltonian would ignore "
+                "it")
+        if self.two_center == "analytic" and (
+                self.load_hamiltonian is not None
+                or hamiltonian_builder is not None):
+            raise ValueError(
+                "two_center='analytic' acts on the integrals built from the "
                 "geometry; a loaded or user-built Hamiltonian would ignore "
                 "it")
         self.save_hamiltonian = save_hamiltonian
@@ -1169,6 +1199,7 @@ class VariationalDriver(Calculator):
                     if self.active_space is not None
                     and self.active_space.truncates else None),
                 "two_body": self.two_body.method,
+                "two_center": self.two_center,
                 "extras": tuple(sorted(self._citation_extras))}
 
     def citation_keys(self) -> list:
@@ -1628,6 +1659,29 @@ class VariationalDriver(Calculator):
             asked.append(f"occupation >= {spec.threshold:g}")
         return f"{' and '.join(asked)} by {spec.method}"
 
+    def _check_two_center(self, basis, kinetic) -> None:
+        """Refuse a ``two_center="analytic"`` request that cannot run, at
+        construction: the analytic tables transform the radial functions of
+        a PAW-LCAO or UPAW-LCAO basis, on a molecule, and compute the
+        kinetic energy themselves."""
+        from ..integrals.two_center import PERIODIC_REFUSAL
+        from ._hamiltonian_from_atoms import (PER_ELEMENT,
+                                              pseudopotential_family,
+                                              resolve_basis)
+        if kinetic is not None:
+            raise ValueError(
+                "two_center='analytic' computes the kinetic energy "
+                f"analytically; kinetic={kinetic!r} would be ignored. Drop "
+                "kinetic=, or use two_center='grid'")
+        if self.periodic_hamiltonian:
+            raise NotImplementedError(PERIODIC_REFUSAL)
+        name, _options = resolve_basis(basis)
+        family = pseudopotential_family(name) if name != PER_ELEMENT else None
+        if family is None or family.name not in ("paw-lcao", "upaw-lcao"):
+            raise NotImplementedError(
+                "two_center='analytic' is for the PAW-LCAO and UPAW-LCAO "
+                f"bases; got basis={basis!r}")
+
     @staticmethod
     def _check_pseudo_basis(basis, active_space):
         """Validate a pseudopotential basis spec up front (names, options,
@@ -1807,7 +1861,8 @@ class VariationalDriver(Calculator):
             commensurate=self._grid_commensurate(),
             active_space=self._active_space_request(), ghosts=self.ghosts,
             electric_field=self.electric_field,
-            two_body=self.two_body if self.two_body.cholesky else None)
+            two_body=self.two_body if self.two_body.cholesky else None,
+            two_center=self.two_center)
         self._integration_profile = profile
         # Kept for the nuclear gradient: the integral engine that produced this
         # Hamiltonian, and which atom each basis function belongs to.
@@ -2069,7 +2124,7 @@ class VariationalDriver(Calculator):
         # new field means updating that tuple in the same change.
         return {
             **self._grid_fields(),
-            "kinetic operator": self.kinetic or "finite difference",
+            "kinetic operator": self._kinetic_label(),
             "k-points": self._kpts_label(),
             "charge": str(self.charge),
             "spin-polarized": self._spin_polarized_label(),
@@ -2082,6 +2137,31 @@ class VariationalDriver(Calculator):
             "electrons (alpha, beta)": str(self.num_particles),
             "qubits": str(self.n_qubits),
         }
+
+    def _kinetic_label(self) -> str:
+        """The Laplacian the integrals ran with, for the run log.
+
+        The built integrals' own operator when there are any; otherwise the
+        option, ``None`` resolved through
+        :data:`~mandacaru.algorithms._hamiltonian_from_atoms.DEFAULT_KINETIC`
+        for the basis's path.
+        """
+        integrals = (getattr(self, "_gradient_context", None)
+                     or {}).get("integrals")
+        ran = getattr(integrals, "kinetic", None)
+        if ran == "analytic":
+            return ANALYTIC_KINETIC_LABEL
+        if ran is not None:
+            return str(ran)
+        if self.kinetic is not None:
+            return str(self.kinetic)
+        from ._hamiltonian_from_atoms import (DEFAULT_KINETIC,
+                                              pseudopotential_family,
+                                              resolve_basis)
+        name, _options = resolve_basis(self.basis)
+        path = ("pseudopotentials" if pseudopotential_family(name) is not None
+                else "all-electron")
+        return DEFAULT_KINETIC[path]
 
     def _grid_fields(self) -> dict:
         """The ``[ELECTRONS]`` lines of the real-space grid.

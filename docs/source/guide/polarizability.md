@@ -101,8 +101,9 @@ Water (PAW-LCAO, grid_spacing = 0.2 Å, 5 Å of vacuum), isotropic $\alpha$ in a
 The Hartree-Fock column is measured with the exact one-center Coulomb and
 exchange inside the PAW-LCAO spheres (2026-10-12; with the dataset's frozen
 LDA terms it was 4.88 and 6.62, see [Pseudopotentials](pseudopotentials.md)).
-Both columns use the finite-difference kinetic operator, which at
-grid_spacing = 0.2 Å costs about 0.7 a.u.; `kinetic="spectral"` removes it.
+Both columns were measured with `kinetic="fd"`, the finite-difference
+kinetic operator, which at grid_spacing = 0.2 Å costs about 0.7 a.u.; the
+spectral default removes it.
 
 The confinement costs a third of the polarizability, and the
 out-of-plane component $\alpha_{xx}$ half of it. Even unconfined, an

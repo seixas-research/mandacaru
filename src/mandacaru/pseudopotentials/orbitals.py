@@ -33,7 +33,8 @@ from scipy.interpolate import CubicSpline
 
 from ..units import to_bohr
 from ..basis._angular import sample_dtype as _dtype
-from ..basis._angular import spherical_coords, spherical_harmonic
+from ..basis._angular import (radial_angular_gradient, spherical_coords,
+                              spherical_harmonic)
 from ..basis.base import BasisFunction
 
 
@@ -53,6 +54,7 @@ class _RadialTabulated(BasisFunction):
         self._values = np.asarray(radial, dtype=float)
         self._r_max = float(self._r[-1])
         self._spline = CubicSpline(self._r, self._values, extrapolate=False)
+        self._slope_spline = self._spline.derivative()
 
     def radial(self, r) -> np.ndarray:
         """Interpolated radial function; zero beyond the tabulated range.
@@ -73,6 +75,21 @@ class _RadialTabulated(BasisFunction):
                               ** self.l, values)
         return np.where((r > self._r_max) | np.isnan(values), 0.0, values)
 
+    def radial_slope(self, r) -> np.ndarray:
+        """``dR/dr`` of :meth:`radial`: the spline's derivative, and the
+        derivative of the power-law continuation below the first table
+        point."""
+        r = np.asarray(r, dtype=float)
+        r0 = float(self._r[0])
+        slope = self._slope_spline(np.clip(r, r0, self._r_max))
+        if r0 > 0.0 and self.l > 0:
+            below = (self._spline(r0) * self.l
+                     * np.maximum(r, 0.0) ** (self.l - 1) / r0 ** self.l)
+            slope = np.where(r < r0, below, slope)
+        elif r0 > 0.0:
+            slope = np.where(r < r0, 0.0, slope)
+        return np.where((r > self._r_max) | np.isnan(slope), 0.0, slope)
+
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample the function on Cartesian coordinates (Bohr)."""
         r, theta, phi = spherical_coords(x, y, z, self.center)
@@ -80,6 +97,14 @@ class _RadialTabulated(BasisFunction):
                           * spherical_harmonic(self.l, self.m, theta, phi,
                                                real=self.real),
                           dtype=_dtype(self.real))
+
+    def gradient(self, x, y, z, delta: float = 1e-3) -> np.ndarray:
+        """Analytic gradient (``delta`` is unused)."""
+        return radial_angular_gradient(
+            self.radial, self.radial_slope, self.l, self.m,
+            np.asarray(x, dtype=float) - self.center[0],
+            np.asarray(y, dtype=float) - self.center[1],
+            np.asarray(z, dtype=float) - self.center[2], real=self.real)
 
 
 class PseudoAtomicOrbital(_RadialTabulated):

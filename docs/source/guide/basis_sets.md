@@ -129,7 +129,8 @@ stay compact.
 
 ## What it buys, and the catch
 
-Hartree–Fock total energy of H₂ at 0.74 Å (eV), on a uniform real-space grid:
+Hartree–Fock total energy of H₂ at 0.74 Å (eV), on a uniform real-space grid
+(measured with `kinetic="fd"`):
 
 | Size | Orbitals | E (grid_spacing=0.20 Å) | E (grid_spacing=0.12 Å) |
 |------|----------|--------------|--------------|
@@ -160,7 +161,17 @@ ones they were split from. The overlap matrix stays comfortably invertible at DZ
 high sizes are specialist tools.
 
 See `examples/basis_nao/01_nao_multizeta_h2.py`, which runs H₂ at Hartree-Fock
-in SZ, DZ, TZ and DZP.
+in SZ, DZ, TZ and DZP. With the spectral kinetic default it gives
+−29.0951 / −29.7455 / −29.8188 / −29.7642 eV at `grid_spacing = 0.12 Å`
+(2026-10-13); with this operator the third zeta lowers the energy by
+0.07 eV at that spacing.
+
+Every zeta and polarization shell of a PAW-LCAO or UPAW-LCAO basis is a
+radial function times a harmonic, which is what lets
+`Mandacaru(two_center="analytic")` integrate the overlap, the kinetic energy
+and the projections on the projectors without the grid (see *Analytic
+two-center integrals* in the Kohn-Sham guide). The Gaussian families below
+have no such tables and always integrate on the grid.
 
 
 ## Named Gaussian families: Pople, Dunning, Karlsruhe
@@ -257,7 +268,8 @@ anything is integrated.
 
 The payoff is variational: the smaller basis is a strict subset of the larger,
 so the correlated energy must fall. H₂ at 0.74 Å in an 8 Å cell (`grid_spacing = 0.30`,
-ADAPT-VQE to its basis FCI):
+ADAPT-VQE to its basis FCI;
+measured with `kinetic="fd"`):
 
 | `virtual_orbitals` | qubits | E (eV) | gain |
 |---|---|---|---|
