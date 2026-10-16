@@ -41,7 +41,8 @@ mandacaru --pseudo-status             # each variable, where it points, and how 
 
 Datasets sit one folder per set inside the checkout
 (`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic LDA set);
-PAW-LCAO also has `lda-fr/` (spin-orbit) and `pbe-sr/` (PBE). A
+PAW-LCAO also has `lda-fr/` (spin-orbit), `pbe-sr/` (PBE) and `pbe-fr/`
+(PBE with spin-orbit). A
 calculation reads the set of its functional — `pbe-sr/` for PBE, HSE06 and
 r2SCAN, `lda-sr/` for LDA and every other method — and another folder with
 `Mandacaru(..., paw_dataset="lda-fr")`; a dataset whose

@@ -71,8 +71,8 @@ different value; open a new terminal, or `source` the file, for the variable
 to take effect in your shell. Inside a checkout the datasets sit one folder
 per set (`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic
 LDA set); PAW-LCAO also has
-`lda-fr/` (the spin-orbit set) and `pbe-sr/` (the scalar-relativistic
-PBE set). A calculation reads the set of its functional — `pbe-sr/` for
+`lda-fr/` (the spin-orbit set), `pbe-sr/` (the scalar-relativistic
+PBE set) and `pbe-fr/` (PBE with the spin-orbit term). A calculation reads the set of its functional — `pbe-sr/` for
 `method="dft"` with PBE, HSE06 or r2SCAN, `lda-sr/` for LDA and every other
 method — unless the calculator names another folder (`--paw-dataset` on the
 command line):

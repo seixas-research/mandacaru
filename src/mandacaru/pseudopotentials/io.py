@@ -376,7 +376,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     recipe to fill it; one that lacks the element names what it does hold.  A
     file of another family is refused, and so is one whose functional or
     relativistic treatment is not the one its folder names (``lda-sr/``,
-    ``lda-fr/``, ``pbe/``, ...).
+    ``lda-fr/``, ``pbe-sr/``, ``pbe-fr/``, ...).
 
     The cache is keyed by the file and its identity (modification time and
     size), so a dataset replaced on disk -- a library rebuilt under a running

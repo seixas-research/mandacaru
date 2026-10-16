@@ -764,7 +764,7 @@ nonsense.
 0.02 Bohr; 9.6 s to regenerate with `build_paw_library()`; `get_paw(symbol,
 paw_dataset, xc)` is the family's loader, `paw_library_path()` its folder
 (`$MANDACARU_PAW_PATH/lda-sr` by default, `lda-fr` for
-`relativity="dirac"`, `pbe-sr` for `xc="pbe"`). The record is `PAWDataset` (a `PseudoPotential` subclass:
+`relativity="dirac"`, `pbe-sr` for `xc="pbe"`, `pbe-fr` for both). The record is `PAWDataset` (a `PseudoPotential` subclass:
 `channels[l]` are `PAWChannel`s with `reference_energies`, `ae_waves`,
 `pseudo_waves`, `projectors` (dual), `raw_projectors`, `overlap_correction`
 $q$, `kinetic_difference` $\Delta T$, `potential_difference`,
@@ -1127,16 +1127,26 @@ shell. Inside a checkout the datasets sit one folder per set:
 | folder | set | elements |
 |---|---|---|
 | `lda-sr/` | scalar-relativistic LDA, the default for LDA and every method without a functional | H–U (92) |
-| `lda-fr/` | LDA with the spin-orbit term | H–U without Pa (91) |
+| `lda-fr/` | LDA with the spin-orbit term | H–U (92) |
 | `pbe-sr/` | scalar-relativistic PBE, the default for PBE, HSE06 and r2SCAN | H–U (92) |
+| `pbe-fr/` | PBE with the spin-orbit term | H–U (92) |
 
-There is no PBE Dirac set. In the PBE set the reference atom, the
+`pbe-fr/` is the PBE counterpart of `lda-fr/` (`mandacaru-paw/FR.md`): the
+reference atom is the radial Dirac atom in PBE. It is read like `lda-fr/`,
+with `paw_dataset="pbe-fr"` and `method="ghf"` or a spin-orbit pool;
+`method="dft"` has no spin-orbit term and refuses it, so a Kohn-Sham PBE
+calculation reads `pbe-sr/`. Protactinium is built in both Dirac sets on the
+reference $5f^2 6d^1 7s^2$, where all its $j$ branches are bound (the scalar
+$5f^3 7s^2$ leaves one unbound). `pbe-fr/` flags 24 elements, none for a ghost: Ag, Cd, Cs, Ba, Fr, La, Ce–Yb, Lu,
+Hf, W, Ir and Ac, for the same structural reasons as `pbe-sr/`.
+
+In the PBE sets the reference atom, the
 unscreening and the one-center energies are PBE (Perdew-Wang 1992 correlation,
-MacDonald-Vosko relativistic exchange), so it is the set for
+MacDonald-Vosko relativistic exchange), so `pbe-sr/` is the set for
 `Mandacaru(method="dft", xc="pbe")` and the hybrid built on PBE, which read
 it by default (r2SCAN too, having no set of its own); on the LDA set, named
 with `paw_dataset="lda-sr"`, a PBE calculation runs but warns that the
-functionals differ, and the warning names `paw_dataset="pbe-sr"`. The PBE set flags 27
+functionals differ, and the warning names `paw_dataset="pbe-sr"`. `pbe-sr/` flags 27
 elements, none for a ghost: La–Yb, Ac, Pa and U (no projectors under their
 $4f$/$5f$), Cs, Ba, Fr and Ra (no $p$ or $f$), and Lu, Hf, W, Ag, Cd and Ir
 (an empty $p$ 0.21–0.67 rad off, Lu also an intruding-1s miss of 2.25);
@@ -1149,7 +1159,8 @@ demand without it (*Datasets* above).
 A calculation reads the set of its functional -- `pbe-sr/` for
 `method="dft"` with PBE, HSE06 or r2SCAN, `lda-sr/` for LDA and every other
 method -- unless the calculator names another folder with `paw_dataset=`,
-resolved against the family's own variable:
+resolved against the family's own variable (`paw_dataset="pbe-fr"` is the
+PBE set with spin-orbit coupling):
 
 ```python
 atoms.calc = Mandacaru(method="adapt-vqe",

@@ -352,6 +352,88 @@ class TestPBELibrary:
         assert {d.xc for d in integrals.pseudopotentials} == {"pbe"}
 
 
+def _pbe_dirac_library():
+    """``$MANDACARU_PAW_PATH/pbe-fr``, or a skip when the checkout has no
+    PBE spin-orbit set (an older ``mandacaru-paw``)."""
+    from mandacaru.pseudopotentials.environment import (LibraryPathError,
+                                                        library_folder)
+
+    try:
+        folder = library_folder("paw-lcao", "pbe-fr")
+    except (LibraryPathError, FileNotFoundError, ValueError) as error:
+        pytest.skip(str(error))
+    if not os.path.isdir(folder):
+        pytest.skip(f"no PBE spin-orbit PAW-LCAO set at {folder}")
+    return folder
+
+
+class TestPBEDiracLibrary:
+    """The shipped PBE set with the spin-orbit term, ``pbe-fr/``."""
+
+    def test_every_element_is_present(self):
+        assert set(available_elements(_pbe_dirac_library())) == set(
+            library_elements())
+
+    @pytest.mark.parametrize("symbol", ["H", "O", "Ti", "Au", "Pb", "Bi",
+                                        "Pa", "U"])
+    def test_a_sample_loads_as_dirac_pbe_without_ghosts(self, symbol):
+        """Recorded as a PBE dataset with the Dirac treatment and the
+        relativistic exchange, a spin-orbit term for every channel with
+        l >= 1 (the j = l - 1/2 reference not above the j = l + 1/2 one),
+        and no ghost."""
+        from mandacaru.pseudopotentials.paw import _paw_levels
+        from mandacaru.pseudopotentials.partial_waves import ghost_errors
+
+        folder = _pbe_dirac_library()
+        pp = get_paw(symbol, paw_dataset=folder)
+        assert os.path.dirname(pp.source) == os.path.realpath(folder)
+        assert (pp.xc, pp.relativity) == ("pbe", "dirac")
+        assert pp.relativistic_exchange
+        assert set(pp.spin_orbit) == {l for l in pp.channels if l >= 1}
+        for l, term in pp.spin_orbit.items():
+            down, up = term["reference_energies"]
+            assert down[0] <= up[0]
+        assert not (pp.defects or {}).get("ghosts")
+        assert ghost_errors(pp, _paw_levels, with_atom=False) == {}
+
+    def test_protactinium_is_built_on_bound_branches(self):
+        """One 5f branch of Pa's scalar configuration is unbound in the Dirac
+        atom; ``pbe-fr/`` builds it on 5f2 6d1 7s2, with a d channel and both
+        5f branches bound."""
+        pp = get_paw("Pa", paw_dataset=_pbe_dirac_library())
+        assert sorted(pp.channels) == [0, 2, 3]
+        assert all(energy[0] < 0.0
+                   for energy in pp.spin_orbit[3]["reference_energies"])
+
+    def test_lda_fr_holds_protactinium_too(self):
+        """``lda-fr/`` has all 92 elements since Pa was added on the same
+        reference (2026-10-14)."""
+        from mandacaru.pseudopotentials.environment import (LibraryPathError,
+                                                            library_folder)
+
+        try:
+            folder = library_folder("paw-lcao", "lda-fr")
+        except (LibraryPathError, FileNotFoundError, ValueError) as error:
+            pytest.skip(str(error))
+        if not os.path.isdir(folder):
+            pytest.skip(f"no spin-orbit LDA set at {folder}")
+        assert set(available_elements(folder)) == set(library_elements())
+        pp = get_paw("Pa", paw_dataset=folder)
+        assert (pp.xc, pp.relativity) == ("lda", "dirac")
+        assert sorted(pp.channels) == [0, 2, 3] and not pp.defects
+        assert all(energy[0] < 0.0
+                   for energy in pp.spin_orbit[3]["reference_energies"])
+
+    def test_the_set_is_not_the_scalar_one(self):
+        """Same functional, different folder: the spin-orbit term is the
+        difference, and a Kohn-Sham calculation still reads ``pbe-sr/``."""
+        folder = _pbe_dirac_library()
+        scalar, dirac = get_paw("Au", xc="pbe"), get_paw("Au", paw_dataset=folder)
+        assert (scalar.relativity, dirac.relativity) == ("scalar", "dirac")
+        assert not scalar.spin_orbit and dirac.spin_orbit
+        assert paw_library_path(xc="pbe", relativity="dirac").endswith("pbe-fr")
+
+
 class TestLibraryLoader:
     """``load_library_dataset`` behind ``get_paw``: the folder's name is a
     promise about what is in it, and the cache follows the file."""

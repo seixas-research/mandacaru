@@ -319,8 +319,9 @@ def build_parser() -> argparse.ArgumentParser:
                             "energy_cutoff=300, ...)")
     basis.add_argument("--paw-dataset", default=None, metavar="FOLDER",
                        help="PAW-LCAO dataset folder inside the library: "
-                            "lda-sr, lda-fr (spin-orbit) or pbe-sr (PBE "
-                            "datasets); default: the functional's own set, "
+                            "lda-sr, lda-fr (spin-orbit), pbe-sr (PBE "
+                            "datasets) or pbe-fr (PBE with spin-orbit); "
+                            "default: the functional's own set, "
                             "pbe-sr for --xc pbe, hse06 and r2scan, lda-sr "
                             "otherwise")
     basis.add_argument("--grid-spacing", type=float, default=DEFAULT_GRID_SPACING,
