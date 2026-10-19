@@ -76,14 +76,15 @@ from . import vv10
 from ..basis.xc import DENSITY_FLOOR, xc_partials, xc_potential
 
 #: Functionals the grid evaluator accepts, as ``Mandacaru(method="dft", xc=...)``.
-GRID_FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06", "r2scan-rvv10")
+GRID_FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06", "pbe+rvv10",
+                    "r2scan+rvv10")
 
 #: Spellings accepted for each functional.
 _ALIASES = {"lda": "lda", "pz": "lda", "pz81": "lda", "ldapz": "lda",
             "pbe": "pbe", "gga": "pbe", "ggapbe": "pbe",
             "r2scan": "r2scan", "r²scan": "r2scan", "mggar2scan": "r2scan",
             "hse06": "hse06", "hse": "hse06",
-            "r2scanrvv10": "r2scan-rvv10", "r2scan+rvv10": "r2scan-rvv10"}
+            "pbe+rvv10": "pbe+rvv10", "r2scan+rvv10": "r2scan+rvv10"}
 
 #: Screened hybrids: ``(omega, fraction)`` -- the range separation (1/Bohr)
 #: and the fraction of short-range exchange that is exact.  The grid
@@ -93,7 +94,8 @@ HYBRIDS = {"hse06": (hse.OMEGA, hse.EXACT_FRACTION)}
 
 #: Functionals with rVV10 nonlocal correlation (:mod:`.vv10`): the semilocal
 #: functional they add it to, and rVV10's ``b`` for that pairing.
-NONLOCAL = {"r2scan-rvv10": ("r2scan", vv10.B_R2SCAN)}
+NONLOCAL = {"pbe+rvv10": ("pbe", vv10.B_PBE),
+            "r2scan+rvv10": ("r2scan", vv10.B_R2SCAN)}
 
 #: Central-difference coefficients (order 8) of the density derivative the
 #: semilocal functionals take on a molecular grid (:func:`_wavevectors`).  The
@@ -111,8 +113,8 @@ GRADIENT_DENSITY_FLOOR = 1e-10
 
 
 def resolve_functional(name: str) -> str:
-    """Canonical name (``"lda"``, ``"pbe"``, ``"r2scan"``, ``"hse06"`` or
-    ``"r2scan-rvv10"``) of a spec."""
+    """Canonical name (``"lda"``, ``"pbe"``, ``"r2scan"``, ``"hse06"``,
+    ``"pbe+rvv10"`` or ``"r2scan+rvv10"``) of a spec."""
     key = str(name).strip().lower().replace("-", "").replace("_", "")
     if key not in _ALIASES:
         raise ValueError(
@@ -294,8 +296,8 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         Electron density on the flat grid (electrons per Bohr^3), any partial
         core already added.
     functional : str
-        ``"lda"``, ``"pbe"``, ``"r2scan"``, ``"hse06"`` or
-        ``"r2scan-rvv10"`` (:func:`resolve_functional`); the last adds rVV10
+        ``"lda"``, ``"pbe"``, ``"r2scan"``, ``"hse06"``, ``"pbe+rvv10"`` or
+        ``"r2scan+rvv10"`` (:func:`resolve_functional`); the last two add rVV10
         nonlocal correlation of ``density`` (:mod:`.vv10`).
     relativistic : bool
         The relativistic exchange factor of a relativistic reference atom

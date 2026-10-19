@@ -32,7 +32,8 @@ def _run(atoms, **options):
 
 
 @pytest.fixture(scope="module",
-                params=["lda", "pbe", "r2scan", "hse06", "r2scan-rvv10"])
+                params=["lda", "pbe", "r2scan", "hse06", "pbe+rvv10",
+                                 "r2scan+rvv10"])
 def converged(request):
     """An H2 Kohn-Sham run in a basis with more than one function per atom."""
     atoms = h2()
@@ -115,7 +116,9 @@ class TestTheRun:
         expected = {"lda": {"PerdewZunger1981"}, "pbe": {"PBE1996"},
                     "r2scan": {"Furness2020"},
                     "hse06": {"Heyd2003", "Krukau2006", "PBE1996"},
-                    "r2scan-rvv10": {"Furness2020", "Vydrov2010",
+                    "pbe+rvv10": {"PBE1996", "Vydrov2010", "Sabatini2013",
+                                  "RomanPerez2009"},
+                    "r2scan+rvv10": {"Furness2020", "Vydrov2010",
                                      "Sabatini2013", "RomanPerez2009",
                                      "Ning2022"}}[xc]
         assert expected <= set(keys)
@@ -264,11 +267,11 @@ def lih():
 @pytest.fixture(scope="module", params=[("lda", None), ("pbe", "d4")],
                 ids=["lda", "pbe+d4"])
 def lih_forces(request):
-    xc, dispersion = request.param
-    if dispersion:
+    xc, vdw = request.param
+    if vdw == "d4":
         pytest.importorskip("dftd4")
     atoms = lih()
-    atoms.calc = Mandacaru(method="dft", xc=xc, dispersion=dispersion, grid_spacing=0.25,
+    atoms.calc = Mandacaru(method="dft", xc=xc, vdw=vdw, grid_spacing=0.25,
                            basis={"name": "PAW-LCAO", "size": "DZP"},
                            trace=False)
     forces = atoms.get_forces()
@@ -276,22 +279,26 @@ def lih_forces(request):
 
 
 @pytest.mark.slow
-def test_the_rvv10_force_is_the_derivative_of_its_energy():
-    """rVV10's own part of the force: (F[r2SCAN+rVV10] - F[r2SCAN]) against
-    the central difference of the energy difference.  The difference
-    isolates it from r2SCAN's molecular force error (2.3e-4 eV/Angstrom on
-    this LiH, identical with and without rVV10); rVV10's part
-    agreed to 2e-6 (one component: two SCFs and eight energies are most of
-    the time budget)."""
-    def run(xc):
+@pytest.mark.parametrize("semilocal", ["pbe", "r2scan"])
+def test_the_rvv10_force_is_the_derivative_of_its_energy(semilocal):
+    """rVV10's own part of the force: (F[X+rVV10] - F[X]) against the
+    central difference of the energy difference.  The difference isolates it
+    from the semilocal functional's molecular force error; the part is one
+    component, along the bond, where it is largest (two SCFs and eight
+    energies are most of the time budget).  Asked as ``vdw="rvv10"``."""
+    rvv10 = f"{semilocal}+rvv10"
+
+    def run(vdw):
         atoms = lih()
-        atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.25, trace=False,
+        atoms.calc = Mandacaru(method="dft", xc=semilocal, vdw=vdw,
+                               grid_spacing=0.25, trace=False,
                                basis={"name": "PAW-LCAO", "size": "DZP"})
         atoms.get_forces()
         # Kept now: moving the atoms below resets the calculator's result.
         return atoms, atoms.calc.force_result.unprojected.copy()
 
-    runs = {xc: run(xc) for xc in ("r2scan", "r2scan-rvv10")}
+    runs = {semilocal: run(None), rvv10: run("rvv10")}
+    assert runs[rvv10][0].calc.solver.xc == rvv10
     pair = {xc: atoms for xc, (atoms, _gradient) in runs.items()}
 
     def energy(xc, atom, k, step):
@@ -300,23 +307,95 @@ def test_the_rvv10_force_is_the_derivative_of_its_energy():
         moved.calc = pair[xc].calc
         return moved.get_potential_energy()
 
-    for atom, k in ((1, 2),):          # along the bond, where it is largest
+    for atom, k in ((1, 2),):
         def part(step):
-            return -((energy("r2scan-rvv10", atom, k, step)
-                      - energy("r2scan-rvv10", atom, k, -step))
-                     - (energy("r2scan", atom, k, step)
-                        - energy("r2scan", atom, k, -step))) / (2 * step)
+            return -((energy(rvv10, atom, k, step)
+                      - energy(rvv10, atom, k, -step))
+                     - (energy(semilocal, atom, k, step)
+                        - energy(semilocal, atom, k, -step))) / (2 * step)
         coarse, fine = part(0.004), part(0.002)
         numerical = fine + (fine - coarse) / 3.0
-        analytic = runs["r2scan-rvv10"][1][atom, k] - runs["r2scan"][1][atom, k]
+        analytic = runs[rvv10][1][atom, k] - runs[semilocal][1][atom, k]
         assert analytic == pytest.approx(numerical, abs=1e-5)
 
 
-def test_rvv10_refuses_d4():
-    """r2SCAN+rVV10 carries its dispersion; D4 on top would count it twice."""
-    with pytest.raises(ValueError, match="count it twice"):
-        Mandacaru(method="dft", xc="r2scan-rvv10", dispersion="d4",
-                  basis={"name": "PAW-LCAO", "size": "SZ"})
+class TestTheVdwOption:
+    """``vdw=`` picks the van der Waals treatment; the constructor resolves
+    and validates it before anything is built."""
+
+    SZ = {"name": "PAW-LCAO", "size": "SZ"}
+
+    def _solver(self, **options):
+        return Mandacaru(method="dft", basis=self.SZ, **options).solver
+
+    @pytest.mark.parametrize("xc, vdw, resolved, treatment", [
+        ("pbe", "rvv10", "pbe+rvv10", "rvv10"),
+        ("PBE", "RVV10", "pbe+rvv10", "rvv10"),
+        ("r2scan", "rvv10", "r2scan+rvv10", "rvv10"),
+        ("pbe+rvv10", None, "pbe+rvv10", "rvv10"),
+        ("r2scan+rvv10", "rvv10", "r2scan+rvv10", "rvv10"),
+        ("pbe", None, "pbe", None),
+        ("pbe", "d4", "pbe", "d4"),
+        ("r2scan", "d4", "r2scan", "d4"),
+        ("hse06", "d4", "hse06", "d4")])
+    def test_the_functional_and_the_treatment_are_resolved(
+            self, xc, vdw, resolved, treatment):
+        solver = self._solver(xc=xc, vdw=vdw)
+        assert (solver.xc, solver.vdw) == (resolved, treatment)
+
+    @pytest.mark.parametrize("xc", ["lda", "hse06"])
+    def test_rvv10_pairs_with_pbe_and_r2scan_only(self, xc):
+        with pytest.raises(ValueError, match="pairs with xc='pbe'"):
+            self._solver(xc=xc, vdw="rvv10")
+
+    @pytest.mark.parametrize("xc", ["pbe+rvv10", "r2scan+rvv10"])
+    def test_rvv10_refuses_d4(self, xc):
+        """The rVV10 forms carry their van der Waals attraction; D4 on top
+        would count it twice."""
+        with pytest.raises(ValueError, match="count it twice"):
+            self._solver(xc=xc, vdw="d4")
+
+    def test_d4_without_parameters_for_the_functional_is_refused(self):
+        with pytest.raises(ValueError, match="no parameters"):
+            self._solver(xc="lda", vdw="d4")
+
+    def test_an_unknown_vdw_is_refused(self):
+        with pytest.raises(ValueError, match="unknown vdw"):
+            self._solver(xc="pbe", vdw="d3")
+
+    @pytest.mark.parametrize("retired", ["r2scan-rvv10", "r2scan_rvv10"])
+    def test_the_retired_functional_spelling_is_refused(self, retired):
+        with pytest.raises(ValueError, match="unknown exchange-correlation"):
+            self._solver(xc=retired)
+
+    def test_the_retired_dispersion_option_is_refused(self):
+        with pytest.raises((TypeError, ValueError)):
+            Mandacaru(method="dft", xc="pbe", dispersion="d4",
+                      basis=self.SZ)
+
+    def test_the_rvv10_forms_read_the_pbe_dataset_set(self):
+        for xc, vdw in (("pbe+rvv10", None), ("pbe", "rvv10"),
+                        ("r2scan", "rvv10")):
+            calc = Mandacaru(method="dft", xc=xc, vdw=vdw, basis=self.SZ)
+            assert calc.library_folder == "pbe-sr"
+
+    def test_d4_is_dispatched_to_the_energy_and_the_forces(self):
+        """``vdw="d4"`` adds the D4 energy and gradient to the PBE run."""
+        pytest.importorskip("dftd4")
+        from mandacaru.algorithms.dft import (d4_dispersion_energy,
+                                              d4_dispersion_gradient)
+        from mandacaru.algorithms.forces import HA_BOHR_TO_EV_ANGSTROM
+        atoms = lih()
+        atoms.calc = Mandacaru(method="dft", xc="pbe", vdw="d4",
+                               grid_spacing=0.25, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "DZP"})
+        atoms.get_forces()
+        result = atoms.calc.result
+        assert result.scf.dispersion_energy == pytest.approx(
+            d4_dispersion_energy(atoms, "pbe"), abs=1e-12)
+        gradient = atoms.calc.force_result.details["dispersion_gradient"]
+        assert np.allclose(gradient, d4_dispersion_gradient(atoms, "pbe")
+                           * HA_BOHR_TO_EV_ANGSTROM, atol=1e-8)
 
 
 class TestForces:
@@ -482,7 +561,7 @@ class TestDispersion:
         bare = h2()
         e_bare = _run(bare, xc="pbe", grid_spacing=0.35)
         dressed = h2()
-        e_d4 = _run(dressed, xc="pbe", grid_spacing=0.35, dispersion="d4")
+        e_d4 = _run(dressed, xc="pbe", grid_spacing=0.35, vdw="d4")
         d4 = d4_dispersion_energy(dressed, "pbe")
         assert d4 < 0.0
         assert dressed.calc.result.scf.dispersion_energy == pytest.approx(d4)
@@ -569,7 +648,7 @@ class TestDispersion:
         from mandacaru.algorithms.dft import d4_dispersion
 
         bare = self._distorted_silicon()
-        dressed = self._distorted_silicon(dispersion="d4")
+        dressed = self._distorted_silicon(vdw="d4")
         difference = (dressed.get_potential_energy()
                       - bare.get_potential_energy())
         d4 = d4_dispersion(dressed, "pbe")["energy"]
@@ -587,7 +666,7 @@ class TestDispersion:
         from mandacaru.algorithms.dft import d4_dispersion
 
         bare = self._distorted_silicon()
-        dressed = self._distorted_silicon(dispersion="d4")
+        dressed = self._distorted_silicon(vdw="d4")
         difference = dressed.get_forces() - bare.get_forces()
         gradient = d4_dispersion(dressed, "pbe", grad=True)["gradient"]
         expected = -from_hartree(1.0, "eV") * ANGSTROM_TO_BOHR * gradient
@@ -603,7 +682,7 @@ class TestDispersion:
         from mandacaru.algorithms.dft import d4_dispersion
 
         stresses = []
-        for options in ({}, {"dispersion": "d4"}):
+        for options in ({}, {"vdw": "d4"}):
             atoms = bulk("Si", "diamond", a=5.43)
             atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.35, trace=False,
                                    basis={"name": "PAW-LCAO", "size": "SZ"},
@@ -624,20 +703,12 @@ class TestDispersion:
         from mandacaru.algorithms.dft import d4_dispersion_energy
 
         bare = self._distorted_silicon(ghosts=[1])
-        dressed = self._distorted_silicon(ghosts=[1], dispersion="d4")
+        dressed = self._distorted_silicon(ghosts=[1], vdw="d4")
         difference = (dressed.get_potential_energy()
                       - bare.get_potential_energy())
         real = d4_dispersion_energy(dressed[[0]], "pbe")
         assert difference == pytest.approx(from_hartree(real, "eV"), abs=1e-8)
         assert real != pytest.approx(d4_dispersion_energy(dressed, "pbe"))
-
-    def test_d4_without_parameters_for_the_functional_is_refused(self):
-        with pytest.raises(ValueError, match="no parameters"):
-            Mandacaru(method="dft", xc="lda", dispersion="d4")
-
-    def test_an_unknown_dispersion_is_refused(self):
-        with pytest.raises(ValueError, match="unknown dispersion"):
-            Mandacaru(method="dft", xc="pbe", dispersion="d3")
 
 
 class TestOptions:
@@ -1026,7 +1097,7 @@ PAW_SZP = {"name": "PAW-LCAO", "size": "SZP"}
 #: run, the unitary family and an all-electron basis.
 SPECTRAL_FORCE_CASES = {
     "lda/paw-lcao": (lih, dict(xc="lda", grid_spacing=0.3, basis=PAW_SZP)),
-    "pbe+d4/paw-lcao": (lih, dict(xc="pbe", dispersion="d4", grid_spacing=0.3,
+    "pbe+d4/paw-lcao": (lih, dict(xc="pbe", vdw="d4", grid_spacing=0.3,
                                   basis=PAW_SZP)),
     "lda/upaw-lcao": (_tilted_h2, dict(xc="lda", grid_spacing=0.25,
                                        basis={"name": "UPAW-LCAO",

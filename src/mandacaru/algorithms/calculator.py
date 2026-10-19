@@ -372,7 +372,9 @@ class Mandacaru(Calculator):
         ``xc="lda"`` (default),
         ``"pbe"``, ``"r2scan"`` or the screened hybrid ``"hse06"``
         (molecules and crystals, with forces and stress), and
-        ``dispersion="d4"`` for the D4
+        ``vdw="rvv10"`` for the rVV10 nonlocal correlation of PBE or r2SCAN
+        (``xc`` then resolves to ``"pbe+rvv10"`` / ``"r2scan+rvv10"``, which
+        are accepted as ``xc`` too), or ``vdw="d4"`` for the D4
         correction from the optional ``dftd4`` package, not for LDA;
         ``hartree="tensor"`` contracts a molecule's Hartree term from the
         two-body tensor instead of the default Poisson solve),
@@ -403,7 +405,7 @@ class Mandacaru(Calculator):
         of the family's library, relative to its variable.  By default the
         set of the functional: ``"pbe-sr"`` (``$MANDACARU_PAW_PATH/pbe-sr/``,
         scalar-relativistic PBE) for ``method="dft"`` with ``xc="pbe"``,
-        ``"hse06"``, ``"r2scan"`` or ``"r2scan-rvv10"``, and ``"lda-sr"``
+        ``"hse06"``, ``"r2scan"`` or either rVV10 form, and ``"lda-sr"``
         (scalar-relativistic LDA) for LDA and every other method.
         ``"lda-fr"`` and ``"pbe-fr"`` read the PAW-LCAO sets with the
         spin-orbit term; with ``method="dft"`` a molecule or a crystal on

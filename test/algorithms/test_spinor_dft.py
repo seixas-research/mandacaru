@@ -229,6 +229,23 @@ class TestHydrogenIodide:
                       ) * HARTREE_TO_EV
         assert 0.8 < lowering / mean_field < 1.4
 
+    def test_rvv10_runs_with_the_spin_orbit_term(self):
+        """``vdw="rvv10"`` on the spin-orbit set: the nonlocal correlation
+        sees the total density, so it adds its energy to PBE's and leaves the
+        spin-orbit lowering where PBE puts it (within a few meV)."""
+        plain = _hi("pbe").calc.result.scf
+        atoms = _hi("pbe", vdw="rvv10")
+        scf = atoms.calc.result.scf
+        assert atoms.calc.solver.xc == "pbe+rvv10"
+        assert scf.spin_orbit and scf.converged
+        assert scf.kramers_pairing < 1e-8
+        assert scf.electronic_energy != pytest.approx(
+            plain.electronic_energy, abs=1e-6)
+        lowering = scf.spin_orbit_energy * HARTREE_TO_EV
+        reference = plain.spin_orbit_energy * HARTREE_TO_EV
+        assert -0.1 < lowering < -0.03
+        assert lowering == pytest.approx(reference, abs=5e-3)
+
     def test_the_reference_determinant_is_the_exported_problem_s(
             self, hydrogen_iodide):
         """The Poisson route's determinant energy (one solve per spinor pair
@@ -695,7 +712,8 @@ class TestTheCollinearLimitOfACrystal:
     @pytest.mark.parametrize("xc", [
         "lda", "r2scan", pytest.param("pbe", marks=pytest.mark.slow),
         pytest.param("hse06", marks=pytest.mark.slow),
-        pytest.param("r2scan-rvv10", marks=pytest.mark.slow)])
+        pytest.param("pbe+rvv10", marks=pytest.mark.slow),
+        pytest.param("r2scan+rvv10", marks=pytest.mark.slow)])
     def test_without_its_term_it_is_the_restricted_crystal(self, xc,
                                                            monkeypatch):
         """Every functional: r2SCAN's kinetic-energy density, HSE06's
@@ -742,7 +760,8 @@ class TestTheCollinearLimitOfACrystal:
     @pytest.mark.parametrize("xc", [
         "lda", "r2scan", pytest.param("pbe", marks=pytest.mark.slow),
         pytest.param("hse06", marks=pytest.mark.slow),
-        pytest.param("r2scan-rvv10", marks=pytest.mark.slow)])
+        pytest.param("pbe+rvv10", marks=pytest.mark.slow),
+        pytest.param("r2scan+rvv10", marks=pytest.mark.slow)])
     def test_moment_vectors_along_one_axis_are_the_unrestricted_crystal(
             self, xc):
         """The O2 triplet in a box on the scalar set: along z the moment

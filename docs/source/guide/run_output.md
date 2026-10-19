@@ -211,7 +211,7 @@ pairing (`spin_orbit_coupling` is in the GHF setup).
 blocks are read under.
 
 `method="dft"` writes the same two blocks with Kohn-Sham content
-({doc}`dft`). `[SCF SETUP]` adds `xc_functional`, `dispersion` (`NONE` when
+({doc}`dft`). `[SCF SETUP]` adds `xc_functional`, `vdw` (`NONE` when
 there is none) and, for a molecule, `hartree` (a Poisson solve per iteration,
 or the two-body tensor with `hartree="tensor"`), and states the convergence criteria and the level shift of the
 Kohn-Sham iteration. `[SCF SUMMARY]` adds the `reference_energy_<unit>` of the

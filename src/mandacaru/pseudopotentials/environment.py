@@ -72,7 +72,8 @@ DEFAULT_LIBRARY_FOLDER = "lda-sr"
 #: PBE has its own set; the screened hybrid built on it and the meta-GGAs,
 #: for which no datasets are generated, read the PBE set too.
 DATASET_FUNCTIONALS = {"lda": "lda", "pbe": "pbe", "hse06": "pbe",
-                       "r2scan": "pbe", "r2scan-rvv10": "pbe"}
+                       "r2scan": "pbe", "pbe+rvv10": "pbe",
+                       "r2scan+rvv10": "pbe"}
 
 _DATA_EXTENSIONS = (".parquet", ".pq", ".json")
 

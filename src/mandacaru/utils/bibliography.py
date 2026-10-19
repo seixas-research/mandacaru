@@ -205,7 +205,7 @@ _ALGORITHMS = [
   pages   = {244103},
   year    = {2010},
   doi     = {10.1063/1.3521275}
-}""", "VV10 nonlocal correlation (xc='r2scan-rvv10')", verified=False,
+}""", "VV10 nonlocal correlation (xc='pbe+rvv10' / 'r2scan+rvv10')", verified=False,
          topics=("xc", "dispersion")),
     _ref("Sabatini2013", """
 @article{Sabatini2013,
@@ -218,7 +218,7 @@ _ALGORITHMS = [
   pages   = {041108},
   year    = {2013},
   doi     = {10.1103/PhysRevB.87.041108}
-}""", "the rVV10 kernel (xc='r2scan-rvv10')", verified=False,
+}""", "the rVV10 kernel (xc='pbe+rvv10' / 'r2scan+rvv10')", verified=False,
          topics=("xc", "dispersion")),
     _ref("RomanPerez2009", """
 @article{RomanPerez2009,
@@ -230,7 +230,7 @@ _ALGORITHMS = [
   pages   = {096102},
   year    = {2009},
   doi     = {10.1103/PhysRevLett.103.096102}
-}""", "the q interpolation of the nonlocal kernel (xc='r2scan-rvv10')",
+}""", "the q interpolation of the nonlocal kernel (xc='pbe+rvv10' / 'r2scan+rvv10')",
          verified=False, topics=("xc", "dispersion")),
     _ref("KingSmith1993", """
 @article{KingSmith1993,
@@ -483,7 +483,7 @@ _ALGORITHMS = [
   pages   = {075422},
   year    = {2022},
   doi     = {10.1103/PhysRevB.106.075422}
-}""", "r2SCAN+rVV10, b = 11.95 (xc='r2scan-rvv10')", verified=False,
+}""", "r2SCAN+rVV10, b = 11.95 (xc='r2scan+rvv10')", verified=False,
          topics=("xc", "dispersion")),
     _ref("Heyd2003", """
 @article{Heyd2003,
@@ -536,7 +536,7 @@ _ALGORITHMS = [
   pages   = {154122},
   year    = {2019},
   doi     = {10.1063/1.5090222}
-}""", "the D4 dispersion correction (dispersion='d4')", verified=False,
+}""", "the D4 dispersion correction (vdw='d4')", verified=False,
          topics=("dispersion",)),
     _ref("Mermin1965", """
 @article{Mermin1965,

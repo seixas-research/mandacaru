@@ -121,7 +121,8 @@ from .exchange_correlation import (GRADIENT_DENSITY_FLOOR, _nonlocal,
 #: semilocal part of HSE06 (the caller adds the spinor exact exchange),
 #: r2SCAN with the kinetic-energy density along the same axis, and
 #: r2SCAN+rVV10, whose nonlocal correlation sees the total density only.
-NONCOLLINEAR_FUNCTIONALS = ("lda", "pbe", "hse06", "r2scan", "r2scan-rvv10")
+NONCOLLINEAR_FUNCTIONALS = ("lda", "pbe", "hse06", "r2scan", "pbe+rvv10",
+                          "r2scan+rvv10")
 
 
 def supports_noncollinear(functional: str) -> bool:

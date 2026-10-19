@@ -16,7 +16,7 @@ atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="dft",
                        xc="pbe",                  # "lda" (default) | "pbe" | "r2scan" | "hse06"
-                       dispersion="d4",           # None (default) | "d4"
+                       vdw="d4",                  # None (default) | "rvv10" | "d4"
                        basis={"name": "PAW-LCAO", "size": "DZP"},
                        grid_spacing=0.2)
 energy_ev = atoms.get_potential_energy()
@@ -25,7 +25,7 @@ energy_ev = atoms.get_potential_energy()
 The same calculation from the command line:
 
 ```bash
-mandacaru H2O --method dft --xc pbe --dispersion d4 --cell 10
+mandacaru H2O --method dft --xc pbe --vdw d4 --cell 10
 ```
 
 A crystal read from a file with a periodic cell (CIF, POSCAR, extended XYZ)
@@ -60,7 +60,12 @@ the handoff below).
 | `"pbe"` | Generalized-gradient approximation | Perdew, Burke and Ernzerhof 1996 |
 | `"r2scan"` | Meta-GGA, depending on the kinetic-energy density | Furness *et al.* 2020 |
 | `"hse06"` | Screened hybrid: a quarter of the short-range exchange is exact (molecules and crystals; crystal forces and stress) | Heyd, Scuseria and Ernzerhof 2003; Krukau *et al.* 2006 |
-| `"r2scan-rvv10"` | r2SCAN plus rVV10 nonlocal correlation: dispersion from the density (molecules and crystals, forces and stress) | Vydrov and Van Voorhis 2010; Sabatini *et al.* 2013; Ning *et al.* 2022 |
+| `"pbe+rvv10"` | PBE plus rVV10 nonlocal correlation, $b = 6.3$ (molecules and crystals, forces and stress, with or without spin-orbit coupling) | Vydrov and Van Voorhis 2010; Sabatini *et al.* 2013 |
+| `"r2scan+rvv10"` | r2SCAN plus rVV10 nonlocal correlation, $b = 11.95$: dispersion from the density (molecules and crystals, forces and stress, with or without spin-orbit coupling) | Vydrov and Van Voorhis 2010; Sabatini *et al.* 2013; Ning *et al.* 2022 |
+
+`vdw="rvv10"` is the same choice made on the side: `xc="pbe", vdw="rvv10"`
+runs `"pbe+rvv10"` and `xc="r2scan", vdw="rvv10"` runs `"r2scan+rvv10"`. It
+is refused for any other functional.
 
 PBE and r2SCAN use the Perdew-Wang 1992 parameterization of the uniform-gas
 correlation energy. The exchange-correlation energy and its potential are
@@ -179,9 +184,9 @@ and with time reversal: the irreducible wedge reproduces the full k-mesh to
 short-range spheres' quadrature is not invariant under the cube's
 three-fold axes).
 
-### r2SCAN+rVV10: dispersion from the density
+### rVV10: dispersion from the density
 
-`xc="r2scan-rvv10"` adds the rVV10 nonlocal correlation to r2SCAN, so the
+`xc="r2scan+rvv10"` (or `vdw="rvv10"`) adds the rVV10 nonlocal correlation to r2SCAN, so the
 van der Waals attraction comes from the density itself rather than from an
 atom-pairwise correction:
 
@@ -194,7 +199,8 @@ with $q = \omega_0/\kappa$, $\omega_0^2 = C|\nabla n/n|^4 + 4\pi n/3$ and
 $\kappa = \tfrac{3\pi}{2} b\,(n/9\pi)^{1/6}$ (Vydrov and Van Voorhis 2010;
 the separable rVV10 kernel of Sabatini *et al.* 2013). The parameters are
 r2SCAN's, $b = 11.95$ and $C = 0.0093$ (Ning *et al.* 2022, fitted to the
-argon dimer); $\beta = (3/b^2)^{3/4}/32$ makes the term vanish for the
+argon dimer), and PBE's, $b = 6.3$ and the same $C = 0.0093$ (Sabatini *et al.*
+2013); $\beta = (3/b^2)^{3/4}/32$ makes the term vanish for the
 uniform gas.
 
 - **How it is evaluated.** The kernel is interpolated over $q$ on 16 points
@@ -226,7 +232,7 @@ uniform gas.
 
 ## D4 dispersion
 
-`dispersion="d4"` adds the D4 correction (Caldeweyher *et al.* 2019), computed
+`vdw="d4"` adds the D4 correction (Caldeweyher *et al.* 2019), computed
 for the functional that ran, with its gradient in the forces. On a crystal
 it is the lattice sum -- the pair dispersion and the coordination numbers
 that set the C6 coefficients both run over the periodic images -- in the
@@ -239,9 +245,9 @@ package, an optional dependency:
 pip install 'mandacaru[dispersion]'
 ```
 
-D4 has parameters for PBE, r2SCAN and HSE06 and none for LDA, so `dispersion="d4"`
-with `xc="lda"` is refused, as it is with `xc="r2scan-rvv10"`, which
-carries its own dispersion. Without `dftd4` installed the calculation stops
+D4 has parameters for PBE, r2SCAN and HSE06 and none for LDA, so `vdw="d4"`
+with `xc="lda"` is refused, as it is with `xc="pbe+rvv10"` or
+`xc="r2scan+rvv10"`, which carry their own van der Waals correlation. Without `dftd4` installed the calculation stops
 with an error naming the extra.
 
 ## Pseudopotential bases and their functional
@@ -264,7 +270,7 @@ unless `paw_dataset=` names another:
 | `"lda"` | `lda-sr/` |
 | `"pbe"` | `pbe-sr/` |
 | `"hse06"` | `pbe-sr/` (the hybrid built on PBE) |
-| `"r2scan"`, `"r2scan-rvv10"` | `pbe-sr/` (no r2SCAN datasets are generated) |
+| `"r2scan"`, `"pbe+rvv10"`, `"r2scan+rvv10"` | `pbe-sr/` (no r2SCAN datasets are generated) |
 
 ```python
 atoms.calc = Mandacaru(method="dft", xc="pbe",       # reads pbe-sr/
@@ -382,7 +388,7 @@ converged Kohn-Sham determinant:
 | `hartree_energy` | Hartree energy, in Hartree |
 | `xc_energy` | Exchange-correlation energy, in Hartree |
 | `core_correction_energy` | Per-atom offset restoring the valence-only zero (pseudopotential bases), in Hartree |
-| `dispersion_energy` | The D4 energy, in Hartree (zero without `dispersion`) |
+| `dispersion_energy` | The D4 energy, in Hartree (zero without `vdw="d4"`) |
 
 The HOMO-LUMO gap is a difference of Kohn-Sham eigenvalues, an orbital-energy
 gap, not an excitation energy or a quasiparticle gap.
@@ -510,7 +516,7 @@ three blocks of its own, read back by `parse_output` as `"setup"`,
 `"scf_iterations"` and `"summary"` (see [Reading a run](run_output.md)):
 
 - `[SCF SETUP]` names the functional (`xc_functional`), the dispersion
-  correction (`dispersion`, `NONE` when there is none), how the Hartree term
+  treatment (`vdw`, `NONE` when there is none), how the Hartree term
   was built (`hartree`, see *The Hartree term* above) and the
   convergence
   criteria: at most 200 iterations, converged when both the energy change and
@@ -526,7 +532,7 @@ three blocks of its own, read back by `parse_output` as `"setup"`,
   a core correction and the dispersion energy when D4 ran.
 
 The run also writes a `references.bib`: the Hohenberg-Kohn and Kohn-Sham
-papers, the functional that ran and, with `dispersion="d4"`, the D4 paper.
+papers, the functional that ran and, with `vdw="d4"`, the D4 paper.
 
 ## From Kohn-Sham to ADAPT-VQE
 
@@ -561,7 +567,7 @@ surface can be relaxed with any ASE optimizer:
 ```python
 from ase.optimize import BFGS
 
-atoms.calc = Mandacaru(method="dft", xc="pbe", dispersion="d4", grid_spacing=0.2,
+atoms.calc = Mandacaru(method="dft", xc="pbe", vdw="d4", grid_spacing=0.2,
                        basis={"name": "PAW-LCAO", "size": "DZP"})
 BFGS(atoms).run(fmax=0.05)
 ```

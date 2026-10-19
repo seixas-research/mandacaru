@@ -192,7 +192,7 @@ def _crystal(grid_spacing=None, kpts=None):
 
 class TestTheKohnShamMatrix:
     @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
-                                            "r2scan-rvv10"])
+                                            "pbe+rvv10", "r2scan+rvv10"])
     def test_it_is_the_derivative_of_the_energy(self, functional):
         r"""``dE = sum_k w_k tr(dP_k H_k)`` for every term of the functional.
 

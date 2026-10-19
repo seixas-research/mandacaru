@@ -126,8 +126,8 @@ from mandacaru import Mandacaru
 atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="dft",
-                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan" | "hse06" | "r2scan-rvv10"
-                       dispersion="d4",                       # None | "d4" (PBE and r2SCAN; pip install 'mandacaru[dispersion]')
+                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan" | "hse06" | "pbe+rvv10" | "r2scan+rvv10"
+                       vdw="d4",                              # None | "rvv10" (PBE, r2SCAN) | "d4" (pip install 'mandacaru[dispersion]')
                        basis={"name": "PAW-LCAO",
                               "size": "DZP"},
                        grid_spacing=0.2)

@@ -57,7 +57,7 @@ sphere adds its one-center exact exchange and removes its share of the
 frozen one-center semilocal exchange
 (:mod:`mandacaru.pseudopotentials.onecenter`).  Like the meta-GGA it is
 solved in the generalized Kohn-Sham sense (a nonlocal operator).  The
-D4 dispersion correction (``dispersion="d4"``) is added from the external
+D4 dispersion correction (``vdw="d4"``) is added from the external
 ``dftd4`` library, parameterized for the functional that ran.
 
 PAW-LCAO
@@ -71,7 +71,7 @@ compensation charges in the Hartree term (their low-rank multipole terms,
 the same ones the two-body tensor carries) and the dataset's smooth core in the functional, exactly how the dataset was
 unscreened.  Each functional reads the datasets of its own set
 (:data:`~mandacaru.pseudopotentials.environment.DATASET_FUNCTIONALS`: LDA
-the LDA set; PBE, HSE06, r2SCAN and r2SCAN+rVV10 the PBE set); datasets of
+the LDA set; PBE, HSE06, r2SCAN and their rVV10 forms the PBE set); datasets of
 another set are a mismatch between molecule and dataset, and are warned
 about.
 
@@ -259,8 +259,10 @@ def shell_occupations(levels, n: int, window: float = DEGENERACY_WINDOW):
     occupations[low:high + 1] = (n - low) / (high + 1 - low)
     return occupations
 
-#: Dispersion corrections ``dispersion=`` accepts.
-DISPERSION_CORRECTIONS = ("d4",)
+#: The van der Waals treatments ``vdw=`` accepts: the nonlocal rVV10
+#: correlation, which turns ``xc="pbe"`` into ``"pbe+rvv10"`` and
+#: ``xc="r2scan"`` into ``"r2scan+rvv10"``, and the D4 pair correction.
+VDW_CORRECTIONS = ("rvv10", "d4")
 
 #: The functionals D4 is parameterized for, by the ``dftd4`` method name.
 D4_METHODS = {"pbe": "pbe", "r2scan": "r2scan", "hse06": "hse06"}
@@ -1602,7 +1604,7 @@ def d4_dispersion(atoms, functional: str, grad: bool = False) -> dict:
         from dftd4.interface import DampingParam, DispersionModel
     except ImportError as error:
         raise ImportError(
-            "dispersion='d4' needs the dftd4 package: "
+            "vdw='d4' needs the dftd4 package: "
             "pip install 'mandacaru[dispersion]'") from error
     periodic = np.asarray(atoms.pbc, dtype=bool)
     lattice = (to_bohr(np.asarray(atoms.get_cell()), "angstrom")
@@ -1717,12 +1719,11 @@ class DFTDriver(_MeanFieldDriver):
     #: :meth:`nuclear_gradient` instead of refusing forces.
     analytic_gradient = True
 
-    def __init__(self, xc: str = DEFAULT_XC, dispersion: str | None = None,
+    def __init__(self, xc: str = DEFAULT_XC, vdw: str | None = None,
                  smearing=None, hartree: str = DEFAULT_HARTREE,
                  **driver_kwargs: object) -> None:
         from .periodic_dft import resolve_smearing
-        self.xc = xc_grid.resolve_functional(xc)
-        self.dispersion = self._check_dispersion(dispersion, self.xc)
+        self.xc, self.vdw = self._resolve_vdw(vdw, xc_grid.resolve_functional(xc))
         self.smearing = smearing
         resolve_smearing(smearing)               # validated now, used later
         #: How a molecule's Hartree matrix is built (:data:`HARTREE_METHODS`);
@@ -1843,22 +1844,37 @@ class DFTDriver(_MeanFieldDriver):
             super()._check_kpts()
 
     @staticmethod
-    def _check_dispersion(dispersion, functional: str) -> str | None:
-        if dispersion in (None, False):
-            return None
-        key = str(dispersion).strip().lower().replace("-", "")
-        if key not in DISPERSION_CORRECTIONS:
-            raise ValueError(f"unknown dispersion correction {dispersion!r}; "
-                             f"available: {', '.join(DISPERSION_CORRECTIONS)}")
-        if xc_grid.has_nonlocal_correlation(functional):
+    def _resolve_vdw(vdw, functional: str) -> tuple[str, str | None]:
+        """The functional and the van der Waals treatment a run uses.
+
+        ``vdw="rvv10"`` completes ``"pbe"`` / ``"r2scan"`` to its rVV10
+        form; a functional that already names rVV10 reports it too.
+        """
+        nonlocal_xc = xc_grid.has_nonlocal_correlation(functional)
+        if vdw in (None, False):
+            return functional, "rvv10" if nonlocal_xc else None
+        key = str(vdw).strip().lower().replace("-", "")
+        if key not in VDW_CORRECTIONS:
+            raise ValueError(f"unknown vdw correction {vdw!r}; "
+                             f"available: {', '.join(VDW_CORRECTIONS)}")
+        if key == "rvv10":
+            if nonlocal_xc:
+                return functional, key
+            if functional not in ("pbe", "r2scan"):
+                raise ValueError(
+                    f"vdw='rvv10' pairs with xc='pbe' or xc='r2scan', not "
+                    f"{functional!r}")
+            return f"{functional}+rvv10", key
+        if nonlocal_xc:
             raise ValueError(
-                f"xc={functional!r} already carries its dispersion (rVV10 "
-                f"nonlocal correlation); adding D4 would count it twice")
+                f"xc={functional!r} already carries its van der Waals "
+                f"correlation (rVV10 nonlocal correlation); adding D4 would "
+                f"count it twice")
         if functional not in D4_METHODS:
             raise ValueError(
                 f"D4 has no parameters for xc={functional!r}; use one of "
                 f"{', '.join(sorted(D4_METHODS))}")
-        return key
+        return functional, key
 
     def _citation_config(self) -> dict[str, object]:
         """Cite Kohn-Sham, the functional and the dispersion that ran."""
@@ -1868,10 +1884,13 @@ class DFTDriver(_MeanFieldDriver):
                       "r2scan": ("Furness2020", "PerdewWang1992"),
                       "hse06": ("Heyd2003", "Krukau2006", "PBE1996",
                                 "PerdewWang1992"),
-                      "r2scan-rvv10": ("Furness2020", "PerdewWang1992",
+                      "pbe+rvv10": ("PBE1996", "PerdewWang1992",
+                                    "Vydrov2010", "Sabatini2013",
+                                    "RomanPerez2009"),
+                      "r2scan+rvv10": ("Furness2020", "PerdewWang1992",
                                        "Vydrov2010", "Sabatini2013",
                                        "RomanPerez2009", "Ning2022")}[self.xc]
-        dispersion = ("Caldeweyher2019",) if self.dispersion else ()
+        dispersion = ("Caldeweyher2019",) if self.vdw == "d4" else ()
         paw_exchange = ()
         if xc_grid.is_hybrid(self.xc):
             from ._hamiltonian_from_atoms import (pseudopotential_family,
@@ -1905,7 +1924,8 @@ class DFTDriver(_MeanFieldDriver):
             # The noncollinear functional of the spinor run (local spin axis),
             # and its gradient-corrected form.
             spin += ("Kubler1988",)
-            if self.xc in ("pbe", "hse06", "r2scan", "r2scan-rvv10"):
+            if self.xc in ("pbe", "hse06", "r2scan", "pbe+rvv10",
+                           "r2scan+rvv10"):
                 # The gradients along the local axis.
                 spin += ("Hobbs2000",)
         if xc_grid.is_hybrid(self.xc) and (isinstance(scf, GHFResult)
@@ -1958,7 +1978,7 @@ class DFTDriver(_MeanFieldDriver):
             # (GHF.mode_order).
             n_electrons = sum(full_particles)
             full_particles = ((n_electrons + 1) // 2, n_electrons // 2)
-        if self.dispersion:
+        if self.vdw == "d4":
             # Over the real atoms: a ghost has no electrons to disperse.
             real = [i for i in range(len(self.atoms)) if i not in self.ghosts]
             self._scf.dispersion_energy = d4_dispersion_energy(
@@ -2052,7 +2072,7 @@ class DFTDriver(_MeanFieldDriver):
         real = [i for i in range(len(self.atoms)) if i not in self.ghosts]
         self._dispersion_energy = (
             d4_dispersion_energy(self.atoms[real], self.xc)
-            if self.dispersion else 0.0)
+            if self.vdw == "d4" else 0.0)
         # Kept for the non-self-consistent spectra: it holds the converged
         # potential (`PeriodicKohnSham.bands`).
         self._periodic_solver = solver
@@ -2083,7 +2103,7 @@ class DFTDriver(_MeanFieldDriver):
             atom_of_orbital=context["atom_of_orbital"],
             orbital_delta=orbital_delta, include_pulay=include_pulay,
             hartree=self.hartree)
-        if self.dispersion:
+        if self.vdw == "d4":
             dispersion = (d4_dispersion_gradient(self.atoms, self.xc)
                           * HA_BOHR_TO_EV_ANGSTROM)
             result.hellmann_feynman = result.hellmann_feynman + dispersion
@@ -3010,7 +3030,7 @@ class DFTDriver(_MeanFieldDriver):
             delta=DEFAULT_DELTA if orbital_delta is None else float(
                 orbital_delta),
             include_pulay=include_pulay)
-        if self.dispersion:
+        if self.vdw == "d4":
             dispersion = (d4_dispersion_gradient(self.atoms, self.xc)
                           * HA_BOHR_TO_EV_ANGSTROM)
             result.hellmann_feynman = result.hellmann_feynman + dispersion
@@ -3043,7 +3063,7 @@ class DFTDriver(_MeanFieldDriver):
             self._periodic_solver, self.atoms, options, family.name,
             self._kpts_spec(),
             strain=DEFAULT_STRAIN if strain is None else float(strain))
-        if self.dispersion:
+        if self.vdw == "d4":
             # dftd4's virial over the volume is the stress in ASE's sign.
             volume = abs(np.linalg.det(to_bohr(np.asarray(self.atoms.get_cell()),
                                                "angstrom")))
@@ -3198,7 +3218,7 @@ class DFTDriver(_MeanFieldDriver):
             **spinor,
             "xc_functional": self.xc.upper(),
             **hybrid,
-            "dispersion": (self.dispersion or "none").upper(),
+            "vdw": (self.vdw or "none").upper(),
             "hartree": ("Poisson solve of the density per iteration (no "
                         "two-body tensor)" if self.hartree == "poisson"
                         else "contracted from the two-body tensor"),
@@ -3239,7 +3259,7 @@ class DFTDriver(_MeanFieldDriver):
                 # 2<S> per cell only: the orbital moment is not computed.
                 fields["spin_moment_bohr_magneton"] = "(" + ", ".join(
                     f"{float(v):.6f}" for v in scf.spin_moment) + ")"
-            if self.dispersion:
+            if self.vdw == "d4":
                 fields[f"dispersion_energy_{unit}"] = \
                     f"{self._to_energy_units(self._dispersion_energy):.10f}"
             return fields
@@ -3262,7 +3282,7 @@ class DFTDriver(_MeanFieldDriver):
         if scf.core_correction_energy:
             fields[f"core_correction_energy_{unit}"] = \
                 f"{to_unit(scf.core_correction_energy):.10f}"
-        if self.dispersion:
+        if self.vdw == "d4":
             fields[f"dispersion_energy_{unit}"] = \
                 f"{to_unit(scf.dispersion_energy):.10f}"
         if self._spinor():

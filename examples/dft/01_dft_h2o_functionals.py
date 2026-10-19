@@ -5,10 +5,10 @@ from mandacaru import Mandacaru
 atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 
-for xc, dispersion in (("lda", None), ("pbe", "d4"), ("r2scan", "d4")):
+for xc, vdw in (("lda", None), ("pbe", "d4"), ("r2scan", "d4")):
     atoms.calc = Mandacaru(method="dft",
                            xc=xc,
-                           dispersion=dispersion,
+                           vdw=vdw,
                            basis={"name": "PAW-LCAO", "size": "DZP"},
                            grid_spacing=0.2)
     energy = atoms.get_potential_energy()

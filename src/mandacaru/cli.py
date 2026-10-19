@@ -199,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .algorithms.active_space import ACTIVE_SPACE_METHODS
     from .algorithms.ansatz_spec import ANSATZ_NAMES
     from .algorithms.calculator import DEFAULT_METHOD, STABLE_METHODS
-    from .algorithms.dft import DISPERSION_CORRECTIONS
+    from .algorithms.dft import VDW_CORRECTIONS
     from .backends.hardware import available_devices
     from .circuits.pools import available_pools
     from .core.mapping import MAPPINGS
@@ -428,10 +428,11 @@ def build_parser() -> argparse.ArgumentParser:
     solver.add_argument("--xc", default=None, choices=GRID_FUNCTIONALS,
                         help="exchange-correlation functional of --method dft "
                              "(default lda)")
-    solver.add_argument("--dispersion", default=None,
-                        choices=DISPERSION_CORRECTIONS,
-                        help="dispersion correction of --method dft (pbe and "
-                             "r2scan only; needs the dftd4 package)")
+    solver.add_argument("--vdw", default=None, choices=VDW_CORRECTIONS,
+                        help="van der Waals treatment of --method dft: rvv10 "
+                             "(nonlocal correlation; pbe and r2scan only) or "
+                             "d4 (pbe, r2scan and hse06; needs the dftd4 "
+                             "package)")
     solver.add_argument("--smearing", nargs="+", default=None,
                         metavar="SPEC",
                         help="occupation smearing of --method dft on a "
@@ -649,7 +650,7 @@ def solver_options(args) -> dict:
                  "proposal",
                  "proposal_temperature", "record", "proposal_model",
                  "update_between_geometries", "screen_insertions", "xc",
-                 "dispersion"):
+                 "vdw"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value

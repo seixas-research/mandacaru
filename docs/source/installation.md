@@ -161,7 +161,7 @@ Hamiltonians or state vectors.
 | `docs` | Sphinx, MyST and Furo for building this manual. |
 | `pyarrow` | An alternative Parquet engine for Hamiltonian caches. |
 | `memory` | `psutil`, for the resident-memory line of the `[PERFORMANCE]` block (it falls back to the standard library). |
-| `dispersion` | `dftd4`, for the D4 correction of `Mandacaru(method="dft", dispersion="d4")`. |
+| `dispersion` | `dftd4`, for the D4 correction of `Mandacaru(method="dft", vdw="d4")`. |
 | `coverage` | Test coverage reporting with pytest-cov. |
 | `dev` | Everything above. |
 

@@ -293,7 +293,7 @@ class TestCounterpoise:
         pytest.importorskip("dftd4")
         from mandacaru.algorithms.dft import d4_dispersion_energy
         atoms = _helium_pair()
-        atoms.calc = Mandacaru(method="dft", xc="pbe", dispersion="d4",
+        atoms.calc = Mandacaru(method="dft", xc="pbe", vdw="d4",
                                grid_spacing=0.3, basis=PAW_SZ, ghosts=[1], trace=False)
         atoms.get_potential_energy()
         assert atoms.calc.solver._scf.dispersion_energy == pytest.approx(

@@ -74,6 +74,9 @@ from .fft import workspace
 
 #: C of VV10 (fitted to C6 coefficients; every published pairing keeps it).
 C_VV10 = 0.0093
+#: b of PBE+rVV10 (Sabatini et al., 2013: the value the rVV10 kernel was
+#: introduced with).
+B_PBE = 6.3
 #: b of r2SCAN+rVV10 (Ning et al., 2022: refit to the CCSD(T) Ar2 curve).
 B_R2SCAN = 11.95
 

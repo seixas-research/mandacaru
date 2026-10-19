@@ -87,7 +87,7 @@ class TestEnergies:
                 < xc_grid.evaluate(grid, rho, "lda").energy)
 
     @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
-                                            "r2scan-rvv10"])
+                                            "pbe+rvv10", "r2scan+rvv10"])
     def test_the_potential_is_the_functional_derivative(self, functional):
         r"""``dE/de = int v delta`` along a smooth perturbation of the density."""
         grid = _grid()
@@ -176,10 +176,25 @@ class TestOptions:
                              [("LDA", "lda"), ("pz81", "lda"), ("PBE", "pbe"),
                               ("gga-pbe", "pbe"), ("r2SCAN", "r2scan"),
                               ("r²SCAN", "r2scan"),
-                              ("r2SCAN+rVV10", "r2scan-rvv10"),
-                              ("r2scan_rvv10", "r2scan-rvv10")])
+                              ("r2SCAN+rVV10", "r2scan+rvv10"),
+                              ("PBE+rVV10", "pbe+rvv10")])
     def test_spellings_resolve(self, spelling, canonical):
         assert xc_grid.resolve_functional(spelling) == canonical
+
+    @pytest.mark.parametrize("spelling", ["r2scan-rvv10", "r2scan_rvv10",
+                                          "pbe-rvv10", "r2scanrvv10"])
+    def test_the_retired_rvv10_spellings_are_refused(self, spelling):
+        with pytest.raises(ValueError, match="unknown exchange-correlation"):
+            xc_grid.resolve_functional(spelling)
+
+    def test_the_rvv10_pairings_carry_their_published_parameters(self):
+        from mandacaru.integrals import vv10
+        assert xc_grid.NONLOCAL == {"pbe+rvv10": ("pbe", 6.3),
+                                    "r2scan+rvv10": ("r2scan", 11.95)}
+        assert vv10.C_VV10 == 0.0093
+        assert xc_grid.semilocal_part("pbe+rvv10") == "pbe"
+        assert not xc_grid.is_meta_gga("pbe+rvv10")
+        assert xc_grid.is_meta_gga("r2scan+rvv10")
 
     def test_an_unknown_functional_is_refused(self):
         with pytest.raises(ValueError, match="unknown exchange-correlation"):
@@ -190,7 +205,7 @@ class TestSpinPolarized:
     """`evaluate_spin`: the potentials of each channel on the grid."""
 
     @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
-                                            "r2scan-rvv10"])
+                                            "pbe+rvv10", "r2scan+rvv10"])
     def test_equal_channels_give_the_unpolarized_terms(self, functional):
         grid = _grid()
         rho, r2 = _gaussian(grid)
@@ -207,7 +222,7 @@ class TestSpinPolarized:
                                rtol=1e-9, atol=1e-12)
 
     @pytest.mark.parametrize("functional", ["lda", "pbe", "r2scan",
-                                            "r2scan-rvv10"])
+                                            "pbe+rvv10", "r2scan+rvv10"])
     @pytest.mark.parametrize("channel", ["up", "dn"])
     def test_each_potential_is_its_functional_derivative(self, functional,
                                                          channel):
@@ -367,7 +382,7 @@ class TestCrystalSymmetry:
         return grid, symmetry, lumpy, tau
 
     @pytest.mark.parametrize("functional", ["pbe", "r2scan", "hse06",
-                                            "r2scan-rvv10"])
+                                            "pbe+rvv10", "r2scan+rvv10"])
     def test_an_image_has_the_same_energy_and_the_image_potential(
             self, wurtzite, functional):
         grid, symmetry, rho, tau = wurtzite

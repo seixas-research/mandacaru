@@ -2,7 +2,7 @@
 
 The 2H monolayer is periodic in the plane (``pbc=[True, True, False]``) with
 vacuum along z, so the k-point mesh, the band path and the density of
-states are two-dimensional. ``xc="r2scan-rvv10"`` adds the rVV10 nonlocal
+states are two-dimensional. ``xc="r2scan+rvv10"`` adds the rVV10 nonlocal
 correlation to the meta-GGA, the dispersion that binds MoS2 layers to each
 other. The datasets are the scalar-relativistic PBE set, ``pbe-sr/`` (no
 r2SCAN datasets are generated), written out here although it is already
@@ -22,7 +22,7 @@ atoms = mx2("MoS2", kind="2H", a=3.16, thickness=3.17, vacuum=5.0)
 atoms.pbc = [True, True, False]
 
 atoms.calc = Mandacaru(method="dft",
-                       xc="r2scan-rvv10",
+                       xc="r2scan+rvv10",
                        basis={"name": "PAW-LCAO", "size": "TZP", "energy_shift": 0.01},
                        paw_dataset="pbe-sr",
                        grid_spacing=0.15,

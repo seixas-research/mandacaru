@@ -36,7 +36,8 @@ def _noncollinear(grid):
 
 
 #: Every functional with a noncollinear form (the hybrid's semilocal part).
-FUNCTIONALS = ["lda", "pbe", "hse06", "r2scan", "r2scan-rvv10"]
+FUNCTIONALS = ["lda", "pbe", "hse06", "r2scan", "pbe+rvv10",
+               "r2scan+rvv10"]
 
 
 def _tau(grid, density):
