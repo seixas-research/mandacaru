@@ -123,6 +123,47 @@ class CPUDevice:
         eps, y = np.linalg.eigh(X @ H @ np.swapaxes(X, -1, -2).conj())
         return eps, np.swapaxes(X, -1, -2).conj() @ y
 
+    def spinor_eigensolve(self, H) -> tuple[np.ndarray, np.ndarray]:
+        r"""``(eps, C)`` of two-component ``H`` (``(nk, 2M, 2M)``, alpha
+        block first) with the spin-free metric :math:`S \otimes \mathbb 1`:
+        eigenvalues ascending ``(nk, 2M)``, eigenvectors orthonormal in that
+        metric, ``(nk, 2M, 2M)``."""
+        X = self._inverse_factor
+        nk, M = X.shape[0], X.shape[1]
+        X2 = np.zeros((nk, 2 * M, 2 * M), dtype=complex)
+        X2[:, :M, :M] = X2[:, M:, M:] = X
+        eps, y = np.linalg.eigh(X2 @ H @ np.swapaxes(X2, -1, -2).conj())
+        return eps, np.swapaxes(X2, -1, -2).conj() @ y
+
+    def grid_matrices(self, fields) -> np.ndarray:
+        r"""``(nk, F, M, M)``: :math:`\int\chi^*_{\mu\mathbf k}\,v_f\,
+        \chi_{\nu\mathbf k}` of each flat grid field ``v_f`` of ``fields``
+        (``(F, ngrid)``) at every k-point -- the exchange-correlation field
+        of a two-component crystal."""
+        dV = self.crystal.grid.dV
+        with threadpool_limits(limits=self.grid_threads, user_api="blas"):
+            return np.stack([np.stack([((d.psi.conj() * v) @ d.psi.T) * dV
+                                       for v in fields])
+                             for d in self.kpoint_data])
+
+    def gradient_matrices(self, fields) -> np.ndarray:
+        r"""``(nk, F, M, M)``: :math:`\tfrac12\int\nabla\chi^*_{\mu\mathbf
+        k}\cdot v_f\,\nabla\chi_{\nu\mathbf k}` of each grid field of
+        ``fields`` at every k-point, from this device's Bloch gradients -- the
+        Pauli part of a two-component meta-GGA's operator."""
+        dV = self.crystal.grid.dV
+        with threadpool_limits(limits=self.grid_threads, user_api="blas"):
+            return np.stack([np.stack([
+                sum(0.5 * ((d.conj() * v) @ d.T) for d in grads) * dV
+                for v in fields]) for grads in self.gradients])
+
+    def magnetization(self, matrices) -> np.ndarray:
+        """``(3, ngrid)``: the magnetization of spinor density matrices at
+        this device's k-points
+        (:meth:`~mandacaru.pseudopotentials.periodic_paw.PeriodicPAW.magnetization`)."""
+        with threadpool_limits(limits=self.grid_threads, user_api="blas"):
+            return self.crystal.magnetization(matrices, self.kpoint_data)
+
     def density_matrices(self, C, f) -> np.ndarray:
         """``C f C^dagger`` for occupations ``f`` (``(..., nk, M)``)."""
         return (C * f[..., None, :]) @ np.swapaxes(C, -1, -2).conj()

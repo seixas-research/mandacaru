@@ -328,9 +328,18 @@ class SubspaceMixin:
     * :meth:`_emit_run_header` / :meth:`_print_subspace_summary` -- verbose output.
     """
 
-    def _init_subspace(self, num_states: int, weights) -> None:
+    def _init_subspace(self, num_states: int, weights, shots=0) -> None:
         if int(num_states) < 1:
             raise ValueError("num_states must be >= 1")
+        if shots:
+            # Every level is a state vector evolved locally: a shot-based run
+            # may not build one (its memory must stay polynomial in the
+            # qubit count), and these drivers have no measured form.
+            raise NotImplementedError(
+                f"{type(self).__name__} evolves its reference states as "
+                f"local state vectors and has no measured form, so it does "
+                f"not take shots > 0; use method='vqe' or 'adapt-vqe' on a "
+                f"device, or shots=0")
         self.num_states = int(num_states)
         self._weights_spec = weights
 
@@ -524,7 +533,7 @@ class SubspaceVQE(SubspaceMixin, VQE):
         #: ``2S + 1`` of the spin-adapted references, ``None`` for
         #: determinants.
         self.multiplicity = None if multiplicity is None else int(multiplicity)
-        self._init_subspace(num_states, weights)
+        self._init_subspace(num_states, weights, kwargs.get("shots", 0))
         super().__init__(hamiltonian, ansatz, **kwargs)
 
     def _references(self) -> np.ndarray:
@@ -685,10 +694,13 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
     """
 
     citation_method = "subspace-adapt-vqe"
+    #: The weighted screening needs every reference's evolved state, which a
+    #: shot-based run does not build (no measured form yet).
+    _measures_pool_gradients = False
 
     def __init__(self, hamiltonian=None, pool="fermionic", *,
                  num_states: int = 2, weights=None, **kwargs):
-        self._init_subspace(num_states, weights)
+        self._init_subspace(num_states, weights, kwargs.get("shots", 0))
         super().__init__(hamiltonian, pool, **kwargs)
 
     def _reference_occupied(self):

@@ -263,11 +263,13 @@ selection.
 ## Large bases: `"dlpno-mp2"`
 
 `"mp2"` itself is cheap. What it needs first is not: the RHF reference and the
-MP2 amplitudes read the basis's full two-electron tensor, about $48 M^4$ bytes
-at its peak and $M^2/2$ Poisson solves plus an $M^4$ contraction to build. On a
-17 GB machine that stops near $M = 135$ functions, and benzene in
-PAW-LCAO-DZP ($M = 108$) did not finish building it in 25 minutes. The MP2
-step itself took under 10 ms on every molecule measured.
+MP2 amplitudes read the basis's full two-electron tensor, $M^2/2$ Poisson
+solves plus an $M^4$ contraction to build, kept packed in about $M^4$ bytes
+per copy (atomic-orbital, orthonormal, molecular-orbital) with a transform's
+working array of about $2 M^4$ bytes besides ({doc}`scalability`): 139 MB a
+copy for benzene in PAW-LCAO-DZP ($M = 108$), and the build, the SCF on it
+and the transforms grow as $M^4$ to $M^5$. The MP2 step itself took under
+10 ms on every molecule measured.
 
 `"dlpno-mp2"` never forms that tensor:
 
@@ -352,16 +354,23 @@ aligned.
 
 A run takes this route by itself only when it would otherwise not fit: a
 closed-shell active space is set (a frozen core or a truncation) and the
-tensor route's
-three $M^4$ arrays -- atomic-orbital, orthonormal and molecular-orbital,
-$48 M^4$ bytes -- would claim more than a quarter of the machine's memory (or
+tensor route's three tensors -- atomic-orbital, orthonormal and
+molecular-orbital, packed to about $M^4$ bytes each, plus a transform's
+working array of about $2 M^4$ bytes (a crystal's complex ones in full, $48
+M^4$ bytes) -- would claim more than a quarter of the machine's memory (or
 its cgroup's limit). Below that the tensor route is kept, because on a small
 basis it is much faster (water PAW-LCAO-SZP, $M = 17$: 3 s against 34 s).
 The `[ACTIVE SPACE]` block's `two_body_integrals` line says which route a run
 took. Open shells and spin-orbit Hamiltonians stay on the tensor route: an
 open shell's UHF has soft modes, so the two routes' coefficients agree only to
-the SCF tolerance (1e-8 Ha on OH, the active energies to 1e-11 Ha). Forces of an integral-direct build are the central difference of the
-rebuilt reduced Hamiltonian, as for `"dlpno-mp2"` above.
+the SCF tolerance (1e-8 Ha on OH, the active energies to 1e-11 Ha). An open
+shell built from Cholesky factors (`two_body={"method": "cholesky"}`, see
+{doc}`scalability`) is integral-direct anyway: its UHF runs on the factors'
+Coulomb and exchange, and `"mp2"` reads the two spin Fock matrices and the
+same-spin and alpha-beta $\langle ij|ab\rangle$ blocks in each spin's
+semicanonical orbitals, never the four-index tensor. Forces of an
+integral-direct build are the central difference of the rebuilt reduced
+Hamiltonian, as for `"dlpno-mp2"` above.
 
 ## Occupied orbitals are chosen by energy, always
 
@@ -480,18 +489,69 @@ Without the constraint orbital 3 is kept and its partner 4 deleted.
 
 ## Forces and remaining limits
 
-**Nuclear forces.** Molecular PAW-LCAO and other atom-centered bases support
-forces with a reduced active space. The force path rebuilds the reduced
-Hamiltonian on the same frozen grid at symmetric nuclear displacements and
-contracts it with the converged active-space RDMs. This includes the motion of
-the selected orbitals, any MP2 or natural-orbital rotation, and the frozen-core
-constant. The displaced orbitals are aligned to the original orbital gauge
-before contraction. This costs two integral and SCF builds per Cartesian
-coordinate, without additional VQE optimizations or hardware jobs. It requires
-`force_method="rdm"` and `include_pulay=True`.
+**Nuclear forces.** The force is the gradient of the energy the calculator
+reports at the displaced geometry: the variational (ADAPT-VQE, VQE) energy
+written in the canonical orbitals of *that* geometry. Moving the nuclei changes
+that energy in two ways: through the integrals (Hellmann-Feynman and Pulay
+terms, with the orbitals held fixed) and through the orbitals themselves. The
+second part vanishes only for a state that is stationary under orbital
+rotations (a Hartree-Fock determinant, or the exact eigenstate of the orbital
+space). It does not vanish for a truncated ADAPT-VQE state, and it is never
+zero with deleted virtual orbitals. The `orbital_gradient` of the `[FORCES]`
+block measures it.
 
-**Periodic stress and periodic active-space forces.** These remain unavailable
-with deleted virtual orbitals.
+For the **canonical orbitals of a closed-shell RHF reference** (the default
+`"energy"` ranking of the virtuals, an explicit orbital count, or no
+truncation) the response is analytic. The orbital gradient of the active-space
+energy is built from the active one- and two-particle RDMs and the frozen-core
+density, one coupled-perturbed Hartree-Fock (CPHF) equation is solved once for
+the whole molecule (the z-vector of Handy and Schaefer), and the result is
+folded into effective density matrices that the existing streamed derivative
+integrals contract
+({func}`~mandacaru.algorithms.pseudo_forces.pseudo_nuclear_gradient`). The cost
+beyond an ordinary force is one $O(M^5)$ integral transformation and a CPHF
+solve of $O(M^4)$ per iteration, with the RDMs of the active space only; no
+displaced geometry is rebuilt. The same holds for a crystal on a Gamma-point
+supercell (`method="bloch-adapt-vqe"`), where active spaces with deleted
+virtuals were refused before.
+
+For a selector that rotates the orbitals (`"mp2"`, `"natural"`,
+`"dlpno-mp2"`, whose active subspace follows the MP2 natural orbitals), an open
+shell reference (UHF natural orbitals) and a Cholesky or integral-direct build
+(no AO tensor to differentiate) the response is the central difference of the
+reduced Hamiltonian along the $3N-6$ internal directions, at a step of
+0.0025 Angstrom: two integral and SCF builds per direction, without further VQE
+optimizations or hardware jobs. Its truncation error is $O(\mathrm{step}^2)$
+(about 4e-4 eV/Angstrom on water). The z-vector for the MP2 selector would need
+the derivative of the MP2 density; it is not implemented, and these
+combinations keep the finite difference rather than return a force without the
+response.
+
+Both routes differentiate the energy in the canonical orbital *gauge* the
+displaced build produces. An ansatz that is not invariant under rotations of
+the active orbitals (every truncated ADAPT-VQE state) has an energy that
+depends on that gauge: an earlier version transported the orbitals with a polar
+alignment, which differs at first order and gave a force 6 to 20 percent off on
+water (it is still used for a degenerate pair of orbitals, whose canonical gauge
+is undefined). A state that depends on the gauge of exactly degenerate orbitals
+(a nonzero orbital gradient between them) has no unique force; the analytic
+route then reports why and falls back to the finite difference. Orbitals that carry density and are *nearly* degenerate (a gap below
+2 mHa, as in a symmetric ammonia or any $C_{3v}$ or linear molecule whose
+degeneracy the grid splits slightly) mix non-perturbatively under a finite
+displacement: the analytic force is still the exact derivative at the
+geometry, but it warns, because an optimizer step or a finite-difference check
+at that scale sees a different, gauge-dependent energy surface (ammonia
+at the symmetric geometry: 0.25 eV/Angstrom between the two, closing to 1e-4
+once one hydrogen is moved by 0.1 Angstrom). Both routes
+assume the state is converged in its *parameters* (the energy is variational in
+them): an unconverged optimizer leaves an error first order in the remaining
+parameter gradient, and a state stopped by `max_iterations` is differentiated
+exactly as it stands as long as that ansatz is the one carried to the displaced
+geometry (`transfer=True`). Forces from measured states (`shots > 0`) remain
+out of scope; on hardware the analogue is the parameter-shift rule on the
+active-space parameters.
+
+**Periodic stress.** Stress with deleted virtual orbitals remains unavailable.
 
 **The plane-wave basis.** There the register *is* the cutoff, which
 `energy_cutoff` sets; truncating the mean-field orbitals on top of it would be a

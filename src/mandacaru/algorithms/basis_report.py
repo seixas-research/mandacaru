@@ -222,6 +222,19 @@ def _pseudo_report(name, context, symbols, fields, tables):
                 f"{shell.r_char:.4f}", f"{shell.reference_radius:.4f}")
                for symbol, shell in shells.items()])
 
+    # Diffuse shells: the recipe, every shell as built (or rejected by the
+    # one-center Gram-Schmidt), and whether the cell holds them.
+    if "diffuse" in family.options:
+        from ..pseudopotentials.diffuse import (box_table,
+                                                diffuse_recipe_text,
+                                                shells_table)
+        fields["diffuse"] = diffuse_recipe_text(options.get("diffuse"))
+        diffuse = context.get("diffuse") or {}
+        if diffuse:
+            tables["diffuse_shells"] = shells_table(diffuse)
+        if context.get("diffuse_box"):
+            tables["diffuse_box"] = box_table(context["diffuse_box"])
+
 
 def basis_report(basis, context, symbols) -> tuple[dict, dict]:
     """``(fields, tables)`` of the ``[BASIS]`` block.

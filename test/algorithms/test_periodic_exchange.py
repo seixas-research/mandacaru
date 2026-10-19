@@ -183,3 +183,43 @@ class TestTheExchangeMatrices:
                 d.weight * np.sum(((Ck * fk) @ Ck.conj().T) * Kk.T)
                 for d, Ck, fk, Kk in zip(crystal.kpoint_data, C, fa, K)))
         assert traces[0] == pytest.approx(traces[1], abs=1e-9)
+
+
+def test_spinor_exchange_is_the_channel_exchange_on_spin_blocks():
+    """Spinors with one spin component each (the whole mesh, no images):
+    the spinor exchange is block diagonal, each block the collinear
+    exchange of that channel's states; mixing the two components turns the
+    blocks as the spin density matrix does."""
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+
+    crystal, _context = build_crystal(
+        SILICON, float(np.linalg.norm(SILICON.cell[0])) / 9,
+        {"size": "SZ", "filter_cutoff": 200},
+        kpts={"size": (2, 1, 1), "gamma": True}, full_mesh=True)
+    exchange = px.PeriodicExchange(crystal, OMEGA, time_reversal=False)
+    M = crystal.M
+    rng = np.random.default_rng(2)
+    data = crystal.kpoint_data
+    up = [rng.normal(size=(M, 3)) + 1j * rng.normal(size=(M, 3))
+          for _ in data]
+    down = [rng.normal(size=(M, 2)) + 1j * rng.normal(size=(M, 2))
+            for _ in data]
+    f_up, f_down = np.array([1.0, 0.7, 0.4]), np.array([0.9, 0.2])
+    spinors = [np.block([[u, np.zeros((M, 2))], [np.zeros((M, 3)), d]])
+               for u, d in zip(up, down)]
+    f = np.concatenate([f_up, f_down])
+    K = exchange.spinor_matrices(
+        data, exchange.spinor_mesh_states(data, spinors, [f] * len(data)))
+    for vectors, filling, block in ((up, f_up, (slice(0, M),) * 2),
+                                    (down, f_down, (slice(M, 2 * M),) * 2)):
+        channel = exchange.matrices(data, exchange.mesh_states(
+            data, vectors, [filling] * len(data)))
+        assert np.allclose(K[(slice(None),) + block], channel, atol=1e-12)
+    assert np.max(np.abs(K[:, :M, M:])) < 1e-14
+    # A global spin rotation U: K -> (U x 1) K (U x 1)^dagger.
+    from mandacaru.algorithms.spinor_dft import spin_rotation
+    U = spin_rotation([0.3, -0.5, 0.8])
+    rotation = np.kron(U, np.eye(M))
+    turned = exchange.spinor_matrices(data, exchange.spinor_mesh_states(
+        data, [rotation @ c for c in spinors], [f] * len(data)))
+    assert np.allclose(turned, rotation @ K @ rotation.conj().T, atol=1e-12)

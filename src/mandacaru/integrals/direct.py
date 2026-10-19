@@ -500,6 +500,51 @@ class DirectCoulomb:
                         out += U[c, d] * Q * Qd
         return out
 
+    def spinor_exchange(self, alpha, beta) -> np.ndarray:
+        r""":math:`\langle ij|ji\rangle` over two-component spinors.
+
+        Spinor :math:`i` has the AO-coefficient columns ``alpha[:, i]`` and
+        ``beta[:, i]`` for its two spin components, and its pair density with
+        :math:`j` sums over the spin it keeps,
+        :math:`P_{ij} = \sum_\sigma \psi_{i\sigma}^*\psi_{j\sigma}`, so
+        :math:`\langle ij|ji\rangle = \int P_{ij}\,\overline{V[P_{ij}]}` --
+        real and non-negative.  One Poisson solve per pair :math:`i \le j`
+        (the exchange energy of a spinor determinant needs nothing else), the
+        augmentation transformed into the spinors' pair matrices
+        :math:`\sum_\sigma c_\sigma^\dagger Q c_\sigma`.
+        """
+        alpha, beta = np.asarray(alpha), np.asarray(beta)
+        phi = (alpha.T @ self.psi, beta.T @ self.psi)
+        n = alpha.shape[1]
+        out = np.zeros((n, n))
+        for i in range(n):
+            for j0 in range(i, n, POISSON_BLOCK):
+                j = slice(j0, min(j0 + POISSON_BLOCK, n))
+                rho = (np.conj(phi[0][i]) * phi[0][j]
+                       + np.conj(phi[1][i]) * phi[1][j])
+                potential = self.potential(rho)
+                values = np.real(np.sum(rho * np.conj(potential), axis=1)
+                                 ) * self.dV
+                out[i, j] = values
+                out[j, i] = values
+        aug = self.augmentation()
+        if aug is not None:
+            Qs, Ws, U = aug
+
+            def pair(Q):
+                return (alpha.conj().T @ Q @ alpha
+                        + beta.conj().T @ Q @ beta)
+
+            Qt, Wt = [pair(Q) for Q in Qs], [pair(W) for W in Ws]
+            extra = np.zeros((n, n), dtype=complex)
+            for c, (Q, W) in enumerate(zip(Qt, Wt)):
+                extra += Q * W.T + W * Q.T
+                for d, Qd in enumerate(Qt):
+                    if U[c, d] != 0:
+                        extra += U[c, d] * Q * Qd.T
+            out = out + np.real(extra)
+        return out
+
     def orbital_integrals(self, C) -> np.ndarray:
         r""":math:`\langle pq|rs\rangle` over the orbitals ``C`` (AO columns).
 
@@ -542,6 +587,58 @@ class DirectCoulomb:
         if aug is not None:
             eri += augmentation_tensor(aug, C)
         return eri
+
+    def ovov(self, occupied, virtual, occupied2=None, virtual2=None):
+        r""":math:`(ia|jb) = \langle ij|ab\rangle` as an ``(o, v, o', v')``
+        array: electron 1 on the pair densities :math:`\phi_i^*\phi_a` of
+        ``occupied`` and ``virtual`` (AO columns), electron 2 on those of
+        ``occupied2`` and ``virtual2`` (default: the same two sets) -- the
+        blocks MP2 reads, an open shell's with one spin's orbitals on each
+        electron.  :math:`o'v'` Poisson solves, a block at a time, each
+        contracted against every electron-1 pair at once
+        (:func:`~mandacaru.integrals.engine.contract_pair_potentials`), so
+        no :math:`M^4` array and the grid memory of one block."""
+        from .engine import contract_pair_potentials
+
+        Co, Cv = np.asarray(occupied), np.asarray(virtual)
+        Co2 = Co if occupied2 is None else np.asarray(occupied2)
+        Cv2 = Cv if virtual2 is None else np.asarray(virtual2)
+        conj_i = np.conj(Co.T @ self.psi)                     # (o, G)
+        phi_a = Cv.T @ self.psi                               # (v, G)
+        conj_j = np.conj(Co2.T @ self.psi)                    # (o', G)
+        phi_b = Cv2.T @ self.psi                              # (v', G)
+        o2, v2 = conj_j.shape[0], phi_b.shape[0]
+        dtype = np.result_type(conj_i, phi_a, conj_j, phi_b, float)
+        out = np.empty((conj_i.shape[0], phi_a.shape[0], o2, v2),
+                       dtype=dtype)
+        j_index, b_index = np.divmod(np.arange(o2 * v2), v2)
+        rho = np.empty((min(POISSON_BLOCK, max(o2 * v2, 1)), self.psi.shape[1]),
+                       dtype=np.result_type(conj_j, phi_b))
+        potentials = np.empty_like(rho, dtype=self._potential_dtype(rho.dtype))
+        for v0 in range(0, o2 * v2, POISSON_BLOCK):
+            j, b = j_index[v0:v0 + POISSON_BLOCK], b_index[v0:v0 + POISSON_BLOCK]
+            k = j.size
+            np.multiply(conj_j[j], phi_b[b], out=rho[:k])
+            self.potential(rho[:k], out=potentials[:k])
+            X = contract_pair_potentials(conj_i, phi_a, potentials[:k],
+                                         self.solver.workers)    # (k, o, v)
+            X *= self.dV
+            out[:, :, j, b] = X.transpose(1, 2, 0)
+        aug = self.augmentation()
+        if aug is not None:
+            Qs, Ws, U = aug
+            Ld, Ld2 = Co.conj().T, Co2.conj().T
+            Q1 = [Ld @ Q @ Cv for Q in Qs]
+            W1 = [Ld @ W @ Cv for W in Ws]
+            Q2 = [Ld2 @ Q @ Cv2 for Q in Qs]
+            W2 = [Ld2 @ W @ Cv2 for W in Ws]
+            for c in range(len(Qs)):
+                out += np.einsum("ia,jb->iajb", Q1[c], W2[c])
+                out += np.einsum("ia,jb->iajb", W1[c], Q2[c])
+                for d in range(len(Qs)):
+                    if U[c, d] != 0:
+                        out += U[c, d] * np.einsum("ia,jb->iajb", Q1[c], Q2[d])
+        return out
 
     def exchange_blocks(self, occupied, functions, pairs) -> dict:
         r""":math:`K^{ij}_{ab} = \langle ij|ab\rangle` for local pairs.

@@ -22,6 +22,12 @@ g_i &={\left.\frac{\partial}{\partial\theta}
 
 The commutator is Hermitian, so this derivative is real. Mandacaru's local
 `gradient="analytic"` option evaluates it directly from the state vector.
+On a device (`shots > 0`) there is no state vector: $[\hat H, A_i]$ is formed
+in the Pauli algebra and **measured** as an observable, the strings of every
+screened generator merged into qubit-wise-commuting bases. At the
+Hartree-Fock determinant, before the first operator, the derivative is a
+diagonal element and is computed exactly instead (see
+{ref}`adapt-on-a-device`).
 
 ## Grow and optimize
 

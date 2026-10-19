@@ -507,6 +507,39 @@ class TestElectronsBlock:
         assert text.index("[SYSTEM]") < text.index("[ELECTRONS]") \
             < text.index("[OPTIMIZATION SETUP]") < text.index("[ITERATIONS]")
 
+    def test_cholesky_factors_have_one_line(self, tmp_path):
+        """A factored run says how it was factored -- tolerance, rank and the
+        largest residual diagonal -- once, in this block, right after the
+        kinetic operator; the dense run above has no such line."""
+        from mandacaru import Mandacaru
+
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.35,
+                               two_body={"method": "cholesky",
+                                         "tolerance": 1e-6}, txt=out)
+        atoms.get_potential_energy()
+        parsed = parse_output(out)
+        block = parsed["electrons"]
+        keys = list(block)
+        assert keys[keys.index("kinetic operator") + 1] == "two-body integrals"
+        factors = atoms.calc.solver._gradient_context["integrals"]._cholesky
+        line = block["two-body integrals"]
+        assert line == factors.summary()
+        assert line.startswith("Cholesky factors, tolerance 1.000e-06 Ha, "
+                               f"rank {factors.rank} (")
+        assert f"largest residual diagonal {factors.max_residual:.3e} Ha" \
+            in line
+        # One owner: no other block repeats the rank or the tolerance.
+        text = open(out, encoding="utf-8").read()
+        assert text.count(f"rank {factors.rank}") == 1
+        assert text.count("1.000e-06 Ha") == 1
+
+    def test_the_dense_run_has_no_two_body_line(self, run):
+        out, _calc = run
+        assert "two-body integrals" not in parse_output(out)["electrons"]
+
 
 class TestBasisBlock:
     """``[BASIS]``: the basis that *ran*, not the options that were typed.
@@ -659,7 +692,7 @@ class TestOptimizationSetupBlock:
               # How the ansatz grows, how a growth step is optimized and where
               # it executes: the log is the only record when the
               # standard-output header is off.
-              "growth", "pruning",
+              "growth", "pruning", "screening",
               "reoptimize_all_parameters", "parameter_gradient",
               "state_vector_backend", "device",
               "backend_provider", "circuit_execution", "shots",

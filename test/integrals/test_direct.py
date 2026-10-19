@@ -69,6 +69,22 @@ class TestDirectCoulomb:
             reference).max()
 
 
+    def test_ovov_blocks_match_the_transformed_tensor(self, system):
+        """``(ia|jb)`` with electron 2 on another orbital set, the blocks
+        an open-shell MP2 reads."""
+        _kind, integrals, _n = system
+        eri = integrals.ao_two_body()
+        rng = np.random.default_rng(3)
+        M = eri.shape[0]
+        C = rng.normal(size=(M, 7)) + 1j * rng.normal(size=(M, 7))
+        o1, v1, o2, v2 = C[:, :2], C[:, 2:5], C[:, 5:6], C[:, 4:7]
+        reference = np.einsum("ai,bj,cp,dq,abcd->ipjq", o1.conj(), o2.conj(),
+                              v1, v2, eri, optimize=True)
+        got = integrals.direct_coulomb().ovov(o1, v1, o2, v2)
+        assert got.shape == (2, 3, 1, 3)
+        assert np.abs(got - reference).max() < 1e-9 * np.abs(reference).max()
+
+
 class TestDirectHartreeFock:
     def test_it_reaches_the_tensor_solution(self, system):
         _kind, integrals, n_electrons = system
@@ -134,17 +150,41 @@ class TestDirectHamiltonian:
         worst = max((abs(c) for c in difference.terms.values()), default=0.0)
         assert worst < 1e-9
 
-    def test_open_shell_mp2_is_refused_without_the_tensor(self):
-        # Closed-shell MP2 reads only <ij|ab>, which the direct build forms;
-        # the open-shell expression needs the tensor in two spin-resolved
-        # semicanonical bases.
+    @pytest.mark.parametrize("basis", ["HAO", {"name": "PAW-LCAO",
+                                                 "size": "SZP"}])
+    def test_open_shell_mp2_without_the_tensor_is_the_tensor_one(self, basis):
+        """The open-shell MP2 natural orbitals from the direct spin Fock
+        matrices and ``<ij|ab>`` blocks equal the tensor route's in the same
+        orbitals, to round-off."""
+        from mandacaru.algorithms.mp2 import open_shell_mp2_natural_orbitals
+        from mandacaru.algorithms.orbital_integrals import \
+            DirectOrbitalIntegrals
+        from mandacaru.core.hamiltonian import molecular_orbital_integrals
+
+        integrals, n_electrons = _integrals(basis)
+        n = n_electrons // 2
+        h_mo, eri_mo, C = molecular_orbital_integrals(
+            integrals, n_electrons, (n + 1, n - 1), True)
+        tensor = open_shell_mp2_natural_orbitals(h_mo, eri_mo, n + 1, n - 1)
+        direct = DirectOrbitalIntegrals(integrals, C) \
+            .open_shell_mp2_natural_orbitals(n + 1, n - 1)
+        assert direct.correlation_energy == pytest.approx(
+            tensor.correlation_energy, abs=1e-11)
+        assert np.abs(direct.occupations - tensor.occupations).max() < 1e-10
+        # The rotation up to each natural orbital's sign.
+        overlap = np.abs(direct.rotation.T @ tensor.rotation)
+        assert np.abs(np.diag(overlap) - 1.0).max() < 1e-8
+
+    def test_an_open_shell_mp2_selection_builds_without_the_tensor(self):
         integrals, n_electrons = _integrals("HAO")
         n = n_electrons // 2
-        with pytest.raises(ValueError, match="never forms"):
-            integrals.molecular_hamiltonian(
-                mo_basis=True, n_electrons=n_electrons,
-                num_particles=(n + 1, n - 1),
-                active_space={"orbitals": 6, "method": "mp2"}, direct=True)
+        integrals.molecular_hamiltonian(
+            mo_basis=True, n_electrons=n_electrons,
+            num_particles=(n + 1, n - 1),
+            active_space={"orbitals": 6, "method": "mp2"}, direct=True)
+        assert integrals.integral_direct
+        assert integrals._eri_ao is None
+        assert integrals.active_space.n_active == 6
 
 
 class TestLocalExchange:

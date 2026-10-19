@@ -48,6 +48,39 @@ $ mandacaru H2O --cell 8 --basis NAO --basis-option size=DZP --device braket-ion
 The `ibm-quantum` label (the least-busy IBM processor) does not fix a register
 size, so pass `--device-qubits 127` to compare against a specific processor. `--json` prints the estimate as machine-readable JSON.
 
+## A shot-based run
+
+With `shots > 0` nothing is simulated, so the state-vector line is replaced by
+what the run *will* need: an estimate of one energy's measurement bases, the
+classical memory (every term polynomial: the Hamiltonian, the pool, the
+gradient batches), and for ADAPT-VQE the cost of one measured gradient step:
+
+```python
+calc = Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
+                 pool="fermionic", device="ibm_fez", shots=1000,
+                 active_space={"orbitals": {"occupied": 5, "virtual": 5},
+                               "method": "mp2"})
+print(calc.dry_run(methanol).summary())
+```
+
+```text
+  ...
+  shots             : 1000 (every expectation value measured; no state vector)
+  energy            : ~3,066 bases per evaluation (estimate)
+  classical memory  : ~396 MiB  (polynomial: Hamiltonian, pool, gradient batches)
+  gradient step     : ~670,688 bases (~218.8 energies), ~68 jobs, ~670,688,000 shots, 875 pool operators  (estimate; the run logs the exact plan)
+```
+
+These are order-of-magnitude estimates: the pool size is exact (it is
+counted), but no Hamiltonian exists yet, so its Pauli strings are taken as
+those of dense integrals (`1.41 M^4`; a real molecule has fewer -- methanol's
+CAS(10, 10) has 7,279, not 14,100) and the step as about a quarter of an
+energy per fermionic operator. The measured step of this methanol run is
+229,641 bases in 34 jobs. The run computes the exact plan before anything is
+queued and writes it to `[GRADIENT MEASUREMENT]` ({doc}`measurement_cost`).
+The same fields are on the estimate (`energy_bases`, `classical_memory_bytes`,
+`gradient_step`) and in `--json`.
+
 ## From Python
 
 ```python

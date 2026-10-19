@@ -113,6 +113,33 @@ class TestTheFactors:
                  for t in (1e-1, 1e-2, 1e-4, 1e-6, 1e-9)]
         assert ranks == sorted(ranks) and ranks[0] < ranks[-1]
 
+    @pytest.mark.parametrize("kept", [True, False])
+    def test_the_factors_do_not_depend_on_the_thread_count(self, hydrogenic,
+                                                           monkeypatch,
+                                                           kept):
+        """The diagonal's batches on their own workspaces, the columns and
+        updates in fixed blocks: the same factors and pivots, to the bit,
+        on one thread and on several."""
+        from mandacaru.integrals import cholesky as cholesky_mod
+        from mandacaru.integrals import fft as fft_mod
+
+        engine, _solver, _eri = hydrogenic
+        monkeypatch.setattr(fft_mod, "PARALLEL_MIN_VALUES", 0)
+        monkeypatch.setattr(cholesky_mod, "DIAGONAL_BLOCK", 7)
+        monkeypatch.setattr(fft_mod, "MATMUL_ROW_BLOCK", 6)
+        factors = []
+        for workers in (1, 3):
+            solver = PoissonFFTSolver(engine.grid.shape, step=engine.grid.step,
+                                      workers=workers)
+            factors.append(cholesky_two_body(
+                engine._psi, solver, 1e-6,
+                max_memory_mb=64.0 if kept else 1e-3))
+            assert factors[-1].profile["kept pair functions"] == kept
+        one, three = factors
+        assert np.array_equal(one.pivots, three.pivots)
+        assert np.array_equal(one.vectors, three.vectors)
+        assert one.max_residual == three.max_residual
+
     def test_the_factor_matrices_are_real_symmetric(self, hydrogenic):
         engine, solver, _eri = hydrogenic
         B = cholesky_two_body(engine._psi, solver, 1e-6).matrices()
@@ -148,6 +175,11 @@ class TestTheConsumers:
         ovov = chol.ovov(occ, vir)                        # (ia|jb)
         assert np.abs(ovov - reference[:2, :2, 2:top, 2:top].transpose(
             0, 2, 1, 3)).max() < 1e-9
+        # Electron 2 on another orbital set (an open shell's other spin).
+        occ2, vir2 = C[:, 1:3], C[:, 3:top]
+        mixed = chol.ovov(occ, vir, occ2, vir2)
+        assert np.abs(mixed - reference[:2, 1:3, 2:top, 3:top].transpose(
+            0, 2, 1, 3)).max() < 1e-9
         pair = chol.pair_exchange(occ, vir)               # <ii|aa>
         expected = np.array([[reference[i, i, a, a] for a in range(2, top)]
                              for i in range(2)])
@@ -180,6 +212,12 @@ class TestPAWWater:
                               C[:, :2].conj(), C[:, 2:], C[:, 2:], eri,
                               optimize=True)
         assert np.abs(blocks[(0, 1)] - reference[0, 1]).max() < 1e-9
+        D = C[:, :1] @ C[:, :1].T
+        mixed = chol.ovov(C[:, :2], C[:, 2:], C[:, 1:2], C[:, 3:])
+        expected = np.einsum("ai,bj,cp,dq,abcd->ipjq", C[:, :2], C[:, 1:2],
+                             C[:, 2:], C[:, 3:], eri, optimize=True)
+        assert D.shape == (M, M)
+        assert np.abs(mixed - expected).max() < 1e-9
 
     def test_a_fixed_density_energy_at_the_default_tolerance(self, water):
         """The two-electron energy of the core-guess RHF density in the

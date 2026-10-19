@@ -22,10 +22,16 @@ template.  Each macro-iteration:
 4. re-optimize **all** parameters with the classical optimizer (warm-started from
    the previous optimum -- ADAPT's key efficiency property).
 
-This is an exact state-vector implementation in the same spirit as
-:class:`~mandacaru.algorithms.vqe.VQE`: the Hamiltonian and each generator are
-materialized as dense matrices and the ansatz produces the exact :math:`2^N`
-state vector, so gradients and energies are noiseless.
+With ``shots = 0`` it is an exact state-vector implementation in the same
+spirit as :class:`~mandacaru.algorithms.vqe.VQE`: the Hamiltonian and each
+generator are materialized (dense, sparse, sector or matrix-free) and the
+ansatz produces the exact state vector, so gradients and energies are
+noiseless.  With ``shots > 0`` nothing is simulated: every energy is measured
+on the device, every pool gradient after the first step is the measured
+expectation value of its commutator observable ``[H, A_i]``
+(:mod:`~mandacaru.backends.gradient_measurement`), the first step's are exact
+at the reference determinant, and the classical memory stays polynomial in the
+qubit count.
 
 Each grown ansatz is also **profiled** for hardware cost: the parameterized
 unitary is compiled to a native ``{CNOT, U}`` gate set with Qiskit and its CNOT
@@ -53,6 +59,7 @@ import numpy as np
 from ..circuits.adapt_ansatz import AdaptAnsatz
 from ..circuits.pools import GRADIENT_FLOOR, PoolOperator, _support_of
 from ..circuits.profiling import CircuitMetrics
+from ..backends.measurement import RunBudgetExceeded
 from ..units import convert_energy, to_hartree
 from .calculator import _method_key
 from .convergence import Convergence
@@ -114,7 +121,35 @@ GRADIENT_FORMULAS = {
                           f"{FINITE_DIFFERENCE_STEP:g}"),
     "parameter_shift": ("parameter-shift rule, exact for the generator's "
                         "frequency set"),
+    "measured": ("g = <psi|[H, A]|psi> from Pauli expectation values measured "
+                 "on the device, exact (classical) at the reference "
+                 "determinant"),
 }
+
+#: Spellings of the ``screening`` option other than ``{"operators": K}``.
+SCREENING_MODES = ("auto", "full")
+
+
+def resolve_screening(spec):
+    """``"auto"``, ``"full"`` or ``{"operators": K}`` (``K >= 1``).
+
+    Which pool operators each growth step screens: every one (``"full"``),
+    the ``K`` with the largest gradients at the reference determinant
+    (``{"operators": K}``), or ``"auto"`` -- every one on a local simulation,
+    and on a shot-based run every one whose gradients fit **one** job of the
+    measurement budget, else the largest such ranked subset
+    (:meth:`ADAPTVQE._screened_operators`).
+    """
+    if isinstance(spec, str) and spec.strip().lower() in SCREENING_MODES:
+        return spec.strip().lower()
+    if isinstance(spec, Mapping):
+        unknown = sorted(set(spec) - {"operators"})
+        count = spec.get("operators")
+        if not unknown and isinstance(count, (int, np.integer)) \
+                and not isinstance(count, bool) and int(count) >= 1:
+            return {"operators": int(count)}
+    raise ValueError(f"screening must be 'auto', 'full' or "
+                     f"{{'operators': K}} with K >= 1, got {spec!r}")
 
 
 def resolve_gradient_method(name) -> str:
@@ -289,7 +324,7 @@ EXPRESSIVITY_SAMPLES = 400
 
 
 class ADAPTVQE(DeflationMixin, PoolDriver):
-    """Adaptive VQE on an exact state-vector backend.
+    """Adaptive VQE: an exact state-vector run, or a measured one on a device.
 
     **The internal layer**: reached only through the calculator,
     ``Mandacaru(method="adapt-vqe", ...)``, which forwards every option here.
@@ -413,7 +448,9 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         ``n_qubits >= 16`` (where a full-register sparse Hamiltonian no longer
         fits in memory) whenever states are prepared internally; ``True`` /
         ``False`` force it.  Incompatible with executing the ansatz as a
-        circuit (``execute_circuits``), which prepares full-register states.
+        circuit (``execute_circuits``), which prepares full-register states,
+        and with ``shots > 0``, which simulates no state at all: there
+        ``"auto"`` builds no sector and ``True`` is refused.
     atomic_units : bool
         Units used in the ``output.txt`` log.  ``False`` (default) logs energies
         in **eV** and lengths in **Angstrom**; ``True`` logs Hartree and Bohr.
@@ -529,6 +566,20 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         a much cheaper one-dimensional line search per step, at the cost of
         variational freedom (the energy is then an upper bound to the quenched
         result).
+    screening : str or dict
+        Which pool operators each growth step screens (default ``"auto"``).
+        ``"full"`` screens every one; ``{"operators": K}`` the ``K`` with the
+        largest gradients at the reference determinant (computed exactly and
+        classically), a fixed candidate set; ``"auto"`` screens every one on a
+        local simulation and, with ``shots > 0``, every one whose gradients
+        fit **one** job of the measurement budget -- else the largest ranked
+        subset that does, with a warning and the reason in the
+        ``[GRADIENT MEASUREMENT]`` block.  With ``shots > 0`` every gradient
+        after the first step is **measured on the device** as the
+        expectation value of the commutator ``[H, A_k]``
+        (:mod:`~mandacaru.backends.gradient_measurement`); the first step's,
+        at the reference determinant, are exact and classical.  No state
+        vector is ever built (see :doc:`/guide/measurement_cost`).
     run_options : dict, optional
         Extra keyword arguments forwarded to :meth:`run` on each calculator
         evaluation (e.g. ``{"log_expressivity": False}``).  Only arguments that
@@ -541,6 +592,8 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
     #: The total-N sector and the ``"spin-orbit"`` pool (see
     #: :meth:`_resolve_spin_conservation`).
     _supports_spin_orbit = True
+    #: With ``shots > 0`` the pool gradients are measured on the device.
+    _measures_pool_gradients = True
 
     citation_method = "adapt-vqe"
     #: The name in the ``[SYSTEM]`` block's title.
@@ -571,6 +624,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                  record=None,
                  transfer: bool = False,
                  transfer_threshold: float | None = None,
+                 screening="auto",
                  **driver_kwargs):
         # Everything else -- the problem setup, the Hamiltonian cache, the
         # circuit providers, checkpoints -- is a VariationalDriver option and is
@@ -615,6 +669,11 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         #: result.
         self.start = None
 
+        #: Which pool operators a growth step screens
+        #: (:func:`resolve_screening`).
+        self.screening = resolve_screening(screening)
+        self._screened = None
+
         # Run defaults (also the defaults for the ASE-calculator evaluation).
         self.max_iterations = int(max_iterations)
         self.convergence = Convergence.resolve(convergence)
@@ -638,6 +697,12 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         # keep the first one's columns and print rows wider than the terminal.
         self._layout_cache = None
         self._label_width = None
+        # The screened operators and their measurement plan belong to this
+        # Hamiltonian and pool.
+        self._screened = None
+        #: Standard errors of the last measured screening (pool order), or
+        #: ``None`` before one.
+        self.gradient_errors = None
         super()._configure(hamiltonian, num_particles, n_spatial_orbitals)
 
     # -- energy / gradient ------------------------------------------------ #
@@ -834,6 +899,163 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         selection, so overriding this never changes the stopping criterion.
         """
         return int(np.argmax(np.abs(grads)))
+
+    # -- screening: which operators, and where their gradients come from -- #
+
+    def _reference_gradients(self) -> np.ndarray:
+        """Exact pool gradients at the reference determinant, from the Pauli
+        algebra alone (no state, no measurement)."""
+        return self.pool_gradients.reference_gradients(
+            self._new_ansatz().reference_qubits())
+
+    def _gradient_job_limits(self) -> tuple:
+        """``(bases, strings)`` a gradient job may hold: the measurement
+        budget's ceilings, and the provider's ``max_bases_per_job``."""
+        from ..backends.measurement import resolve_measurement_budget
+
+        limits = resolve_measurement_budget(self.measurement_budget)
+        provider = self.circuit_provider()
+        caps = [c for c in (getattr(provider, "max_bases_per_job", None),
+                            limits["bases"]) if c]
+        return (min(caps) if caps else None), limits["observables"]
+
+    def _screened_operators(self) -> tuple:
+        """``(pool indices screened each step, why it is not every one)``.
+
+        ``"full"`` -- and ``"auto"`` on a local simulation -- is every
+        operator.  Otherwise the pool is **ranked** by the exact gradient at
+        the reference determinant (largest magnitude first, ties in pool
+        order) and ``{"operators": K}`` keeps the first ``K``.  ``"auto"`` on
+        a shot-based run keeps the whole pool when its gradient step fits one
+        job of the measurement budget, else the longest ranked prefix that
+        does (found by doubling, then bisection; each probe is a classical
+        count).  A prefix of none means a single operator's commutator does
+        not fit a job, which is refused.
+        """
+        if self._screened is not None:
+            return self._screened
+        n = len(self._pool_ops)
+        spec = self.screening
+        if spec == "full" or (spec == "auto" and not self.shots) or n == 0:
+            self._screened = (list(range(n)), None)
+            return self._screened
+        grads = self._reference_gradients()
+        ranked = [int(k) for k in np.argsort(-np.abs(grads), kind="stable")]
+        if isinstance(spec, dict):
+            count = min(spec["operators"], n)
+            self._screened = (sorted(ranked[:count]), (
+                f"the {count} of {n} operators with the largest gradients at "
+                f"the reference determinant (screening operators = {count})"))
+            return self._screened
+        pool = self.pool_gradients
+        provider = self.circuit_provider()
+        bases, strings = self._gradient_job_limits()
+
+        def fits(count):
+            plan = pool.plan(provider, sorted(ranked[:count]), bases,
+                             strings, cache=False)
+            return plan.jobs <= 1
+
+        low, high = 0, 1
+        while fits(high):
+            low = high
+            if high == n:
+                self._screened = (list(range(n)), None)
+                return self._screened
+            high = min(2 * high, n)
+        while high - low > 1:
+            middle = (low + high) // 2
+            low, high = (middle, high) if fits(middle) else (low, middle)
+        if low == 0:
+            from ..backends.measurement import MeasurementBudgetError
+            single = pool.plan(provider, [ranked[0]], bases, strings,
+                               cache=False)
+            raise MeasurementBudgetError(
+                f"screening='auto' fits the pool gradients of a shot-based "
+                f"step into one job of the measurement budget ({bases} bases, "
+                f"{strings} strings), and not even one operator fits: the "
+                f"gradient of {self._pool_ops[ranked[0]].label!r} alone is "
+                f"{single.strings:,} Pauli strings in {single.bases:,} bases "
+                f"({single.jobs} jobs).  Pass screening='full' (several jobs "
+                f"per step) or {{'operators': K}}, raise measurement_budget=, "
+                f"or shrink the register.", single)
+        self._screened = (sorted(ranked[:low]), (
+            f"the {low} of {n} operators with the largest gradients at the "
+            f"reference determinant, because screening='auto' fits a step "
+            f"into one job of the measurement budget ({bases} bases, "
+            f"{strings} strings) and the full pool's gradients do not fit; "
+            f"pass screening='full' for all of them, in several jobs per "
+            f"step"))
+        warnings.warn(self._screened[1], RuntimeWarning, stacklevel=4)
+        return self._screened
+
+    def _gradient_plan(self):
+        """The measurement plan of one screening step (state-independent)."""
+        chosen, _why = self._screened_operators()
+        bases, strings = self._gradient_job_limits()
+        return self.pool_gradients.plan(self.circuit_provider(), chosen,
+                                        bases, strings)
+
+    def _screen(self, ansatz, params):
+        """``(gradients, gradient_of)`` at the current state.
+
+        ``gradients`` covers the whole pool (an operator outside the screened
+        set reads 0, so it is never selected); ``gradient_of(op)`` is the
+        gradient of one operator, pooled or not, at the same state -- what a
+        coupled-exchange growth asks for its members.
+
+        A local run contracts the state vector.  A shot-based run never has
+        one: at the reference determinant (an empty ansatz) every gradient is
+        exact and classical; after that the screened gradients are measured
+        on the device, after the step's plan has passed the budgets
+        (:meth:`~mandacaru.algorithms.base.VariationalDriver._preflight_gradient_step`).
+        """
+        chosen, _why = self._screened_operators()
+        n = len(self._pool_ops)
+        if not self.shots:
+            psi = (ansatz.state(params) if ansatz.num_parameters
+                   else ansatz.reference_state())
+            grads = self._gradients(psi)
+            if len(chosen) < n:
+                kept = np.zeros(n)
+                kept[chosen] = grads[chosen]
+                grads = kept
+            return grads, (lambda op, _psi=psi:
+                           self._operator_gradient(op, _psi))
+        pool = self.pool_gradients
+        grads = np.zeros(n)
+        if not ansatz.num_parameters:
+            occupied = ansatz.reference_qubits()
+            grads[chosen] = pool.reference_gradients(occupied)[chosen]
+            return grads, (lambda op, _occ=occupied: float(
+                pool.with_generators([op.generator])
+                .reference_gradients(_occ)[0]))
+        provider = self.circuit_provider()
+        bases, strings = self._gradient_job_limits()
+        self._preflight_gradient_step(self._gradient_plan())
+        problem = self.circuit_problem(ansatz, params)
+        values, errors = pool.measure(provider, problem, chosen, bases,
+                                      strings)
+        grads[chosen] = values
+        self.gradient_errors = np.zeros(n)
+        self.gradient_errors[chosen] = errors
+
+        def gradient_of(op, _problem=problem):
+            single = pool.with_generators([op.generator])
+            self._preflight_gradient_step(
+                single.plan(provider, [0], bases, strings))
+            return float(single.measure(provider, _problem, [0], bases,
+                                        strings)[0][0])
+
+        return grads, gradient_of
+
+    def _stop_growth_on_budget(self, exc) -> None:
+        """End the growth where a refused gradient measurement left it (the
+        optimizer's own budget stop does the same, :meth:`_budget_stop`)."""
+        self.run_budget_exhausted = str(exc)
+        warnings.warn(f"the run budget stopped the growth before a pool "
+                      f"gradient measurement: {exc}", RuntimeWarning,
+                      stacklevel=3)
 
     # -- transfer between geometries -------------------------------------- #
 
@@ -1069,7 +1291,20 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
             # itself is in the [ELECTRONS] block above.
             extra=self._setup_fields(),
             lineage=self._lineage_fields(restored))
+        if self.shots:
+            logger.write_block("GRADIENT MEASUREMENT",
+                               self._gradient_measurement_fields())
         return logger
+
+    def _gradient_measurement_fields(self) -> dict:
+        """``[GRADIENT MEASUREMENT]``: what one screening step measures on
+        the device and what it costs -- the one block that says it."""
+        plan = self._gradient_plan()
+        _chosen, why = self._screened_operators()
+        fields = plan.fields(energy_bases=self.pool_gradients.energy_bases())
+        if why is not None:
+            fields["screened_subset"] = why
+        return fields
 
     def _setup_fields(self) -> dict:
         """Driver-specific ``[OPTIMIZATION SETUP]`` lines: the operator pool.
@@ -1089,6 +1324,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                            if self.tetris else "single (largest gradient)"),
                 "pruning": ("on (drop one irrelevant operator per step)"
                             if self.prune else "off"),
+                "screening": str(self.screening),
                 "reoptimize_all_parameters": str(self.quenching),
                 "parameter_gradient": self._parameter_gradient_description(),
                 "state_vector_backend": self._backend_description(),
@@ -1140,6 +1376,10 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         column that is sometimes filled, and a cost that depends on the
         backend, are worse than a decision the caller makes once.
         """
+        if log_expressivity is True and self.shots:
+            raise ValueError(
+                "log_expressivity=True samples state fidelities of the "
+                "ansatz, which a shot-based run (shots > 0) does not build")
         if log_expressivity is True or log_expressivity is False:
             return bool(log_expressivity)
         raise ValueError(
@@ -1236,7 +1476,15 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         self.ansatz = ansatz        # the grown ansatz, for measured energies
         params = (np.asarray(initial_parameters, dtype=float).ravel()
                   if initial_parameters is not None else np.zeros(0))
-        ref_energy = self.energy(ansatz.reference_state())
+        # The determinant's own energy on a shot-based run, which builds no
+        # state vector (base: reference_energy_of).
+        ref_energy = self.reference_energy_of(ansatz)
+        if self.shots:
+            # The gradient step's cost is state-independent: planned once,
+            # and refused now, before anything is queued, if one step cannot
+            # fit the budgets.
+            with timings.time("gradient planning"):
+                self._preflight_gradient_step(self._gradient_plan())
 
         # Resume: rebuild the grown ansatz and its history from a checkpoint,
         # then keep growing.  `max_iterations` counts operators in total.
@@ -1335,10 +1583,14 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                     # The processor budget ended the last growth step at its
                     # best point; growing further would submit nothing.
                     break
-                with timings.time("gradient screening"):
-                    psi = ansatz.state(params) if ansatz.num_parameters else \
-                        ansatz.reference_state()
-                    grads = self._gradients(psi)
+                try:
+                    with timings.time("gradient screening"):
+                        grads, gradient_of = self._screen(ansatz, params)
+                except RunBudgetExceeded as exc:
+                    # Measured on the device and refused before its first
+                    # job: the ansatz grown so far is the result.
+                    self._stop_growth_on_budget(exc)
+                    break
                 max_grad = _max_abs(grads)
                 if convergence.reached(max_grad, delta_energy) or (
                         carried and delta_energy is None
@@ -1362,10 +1614,15 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                 index = self._pool_index
                 source = [index.get(label) for label in selected]
                 n_new = 0
-                for pick in chosen:
-                    n_new += self._grow(ansatz, selected, self._pool_ops[pick],
-                                        lambda o, _psi=psi:
-                                        self._operator_gradient(o, _psi))
+                try:
+                    for pick in chosen:
+                        n_new += self._grow(ansatz, selected,
+                                            self._pool_ops[pick], gradient_of)
+                except RunBudgetExceeded as exc:
+                    # A coupled-exchange member's gradient was refused before
+                    # anything of this step was appended.
+                    self._stop_growth_on_budget(exc)
+                    break
 
                 # Warm start: reuse previous optimum, new parameters set to 0.
                 # `quenching` decides whether the previous angles are re-optimized
@@ -1463,16 +1720,20 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                         "operator_label": op.label,
                         "metrics": metrics,
                     })
-            if not converged:
+            if not converged and not getattr(self, "run_budget_exhausted",
+                                             None):
                 # The loop stopped on max_iterations (or ran none at all).
                 # Screen once more so the reported gradient -- and the
                 # convergence flag -- describe the *final* state rather than
                 # the one before the last operator was appended and optimized.
-                with timings.time("gradient screening"):
-                    psi = ansatz.state(params) if ansatz.num_parameters else \
-                        ansatz.reference_state()
-                    max_grad = _max_abs(self._gradients(psi))
-                converged = convergence.reached(max_grad, delta_energy)
+                try:
+                    with timings.time("gradient screening"):
+                        max_grad = _max_abs(self._screen(ansatz, params)[0])
+                    converged = convergence.reached(max_grad, delta_energy)
+                except RunBudgetExceeded as exc:
+                    # The last gradient stays the one measured before the
+                    # final growth step; the run is not called converged.
+                    self._stop_growth_on_budget(exc)
 
             # The final state, whether or not periodic checkpoints were asked
             # for -- this is what another algorithm (QPE) starts from.
@@ -1800,14 +2061,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
     def _parameter_gradient_description(self) -> str:
         """How the classical optimizer gets the gradient of the energy in the
         ansatz parameters (the ``parameter_gradient`` setup line)."""
-        from ..optimizers.optim import _GRADIENT_METHODS
-
-        if self.optimizer.method not in _GRADIENT_METHODS:
-            return f"none ({self.optimizer.method} uses no gradient)"
-        if self._energy_gradient(self._new_ansatz()) is not None:
-            return ("analytic (adjoint: one forward preparation and one "
-                    "backward sweep)")
-        return "finite difference (by the optimizer, one energy per parameter)"
+        return self._parameter_gradient_text(self._new_ansatz())
 
     def _gradient_description(self) -> tuple[str, str]:
         """``(how the screening gradient is evaluated, why)``.
@@ -1818,6 +2072,11 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         those paths screen analytically whatever was asked for.  The header
         reports what actually runs, and says when it differs from the request.
         """
+        if self.shots:
+            note = GRADIENT_FORMULAS["measured"]
+            if self.gradient != "analytic":
+                note += f" (overrides {self.gradient}: shots > 0)"
+            return "measured", note
         overridden = (getattr(self, "_sparse", False)
                       or getattr(self, "_sector", None) is not None)
         effective = "analytic" if overridden else self.gradient

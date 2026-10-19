@@ -3394,9 +3394,10 @@ def from_payload(payload: dict) -> PAWDataset:
 PAW_DEFAULT_OPTIONS = {"filter_cutoff": "auto", **CONFINEMENT_DEFAULT_OPTIONS}
 
 #: What a PAW-LCAO / UPAW-LCAO basis dict may say beyond the family-independent
-#: options: which projector set is sampled, and the confinement options every
-#: pseudopotential family shares (:data:`~.confinement.CONFINEMENT_OPTIONS`).
-PAW_EXTRA_OPTIONS = ("projector_basis",) + CONFINEMENT_OPTIONS
+#: options: which projector set is sampled, the confinement options every
+#: pseudopotential family shares (:data:`~.confinement.CONFINEMENT_OPTIONS`)
+#: and the diffuse shells (:mod:`.diffuse`; off unless written).
+PAW_EXTRA_OPTIONS = ("projector_basis",) + CONFINEMENT_OPTIONS + ("diffuse",)
 
 
 def _register():

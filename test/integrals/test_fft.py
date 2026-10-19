@@ -90,6 +90,33 @@ class TestPrunedConvolution:
         direct = np.sum(rho * potential, axis=1) * np.prod(PADDED)
         np.testing.assert_allclose(power, direct, rtol=1e-12)
 
+    @pytest.mark.parametrize("padded", [PADDED, SHAPE])
+    def test_real_half_spectra_and_their_inverse(self, padded):
+        """``forward_real`` is the ``rfftn`` of the zero-padded densities and
+        ``inverse_real`` the box of the ``irfftn`` (the rVV10 convolution's
+        two halves), batch by batch through the workspace."""
+        rng = np.random.default_rng(5)
+        G = int(np.prod(SHAPE))
+        rho = rng.normal(size=(7, G))
+        space = FFTWorkspace(SHAPE, padded, batch_bytes=3 * 8
+                             * int(np.prod(padded)))
+        half = padded[2] // 2 + 1
+        spectra = np.empty((7, padded[0], padded[1], half), dtype=complex)
+        space.forward_real(rho, spectra)
+        pad = np.zeros((7,) + tuple(padded))
+        pad[:, :SHAPE[0], :SHAPE[1], :SHAPE[2]] = rho.reshape((7,) + SHAPE)
+        reference = sfft.rfftn(pad, axes=(1, 2, 3))
+        assert np.abs(spectra - reference).max() < 1e-12 * np.abs(
+            reference).max()
+        out = space.inverse_real(spectra, np.empty_like(rho), scale=2.0)
+        assert np.abs(out - 2.0 * rho).max() < 1e-12 * np.abs(rho).max()
+
+    def test_a_stack_is_the_workspace_buffer(self):
+        space = FFTWorkspace(SHAPE)
+        first = space.stack(2)
+        assert first.shape == (2,) + SHAPE and first.dtype == complex
+        assert np.shares_memory(space.stack(1), first)
+
     def test_in_place_transforms_of_a_stack(self):
         rng = np.random.default_rng(4)
         stack = rng.normal(size=(3,) + SHAPE) + 0j
@@ -182,6 +209,32 @@ def test_the_pool_holds_blas_to_one_thread():
 
     fft_mod.parallel_chunks(4, probe, 2)
     assert seen and set(seen) == {1}
+
+
+def test_the_blocks_are_the_problems_not_the_threads():
+    """``parallel_blocks`` cuts ``range(count)`` into the same blocks on any
+    thread count, and holds BLAS to one thread on one thread too."""
+    from threadpoolctl import threadpool_info
+
+    seen = {}
+    for threads in (1, 2, 4):
+        blocks, limits = [], []
+
+        def record(lo, hi, state):
+            blocks.append((lo, hi))
+            limits.append(max(info["num_threads"] for info in
+                              threadpool_info() if info["user_api"] == "blas"))
+
+        fft_mod.parallel_blocks(23, 5, record, threads, buffers=list)
+        seen[threads] = sorted(blocks)
+        assert set(limits) == {1}
+    assert seen[1] == seen[2] == seen[4] == [(0, 5), (5, 10), (10, 15),
+                                             (15, 20), (20, 23)]
+    rng = np.random.default_rng(9)
+    A, B = rng.normal(size=(37, 50)), rng.normal(size=(50, 6))
+    one = fft_mod.parallel_matmul(A, B, 1, block=8)
+    assert np.array_equal(one, fft_mod.parallel_matmul(A, B, 3, block=8))
+    assert np.abs(one - A @ B).max() < 1e-12
 
 
 def test_scipy_transforms_in_place_on_views():

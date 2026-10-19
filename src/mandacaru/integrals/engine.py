@@ -25,7 +25,8 @@ import numpy as np
 from ..basis.base import BasisFunction
 from ..units import from_hartree
 from . import _backend
-from .fft import PARALLEL_MIN_VALUES, parallel_chunks, thread_count
+from .fft import (PARALLEL_MIN_VALUES, parallel_blocks, parallel_chunks,
+                  parallel_matmul, thread_count)
 from .grid import Grid
 from .poisson import PeriodicPoissonSolver, PoissonFFTSolver
 
@@ -77,32 +78,45 @@ def radial_kinetic_energy(radial, l: int, r_max: float = 40.0,
     return float(0.5 * (np.trapezoid(du * du, r) + centrifugal) / norm)
 
 
-def eri_peak_bytes(n_orbitals: int, real: bool = False) -> int:
+def packed_eri_bytes(n_orbitals: int) -> int:
+    """Bytes of the eightfold-packed real tensor
+    (:class:`~mandacaru.integrals.packed.PackedERI`): ``P(P+1)/2`` numbers
+    for ``P = M(M+1)/2`` pairs, about ``M^4`` bytes."""
+    P = int(n_orbitals) * (int(n_orbitals) + 1) // 2
+    return 8 * P * (P + 1) // 2
+
+
+def eri_peak_bytes(n_orbitals: int, real: bool = False,
+                   packed: bool = False) -> int:
     """Peak memory of the FFT two-body tensor beyond the Poisson blocks.
 
-    The ``M^4`` result -- real (8 bytes an entry) for a molecule's real
-    functions, complex (16) otherwise -- written in place block by block,
-    and the ``(nv, M, M)`` contraction results of one block of pair
-    potentials (a few ``M^3`` arrays in practice).  The pair densities,
-    potentials and contraction tiles are bounded separately by
-    ``max_memory_mb``.
+    The result -- eightfold packed for a molecule's real functions
+    (``packed``, about ``M^4`` bytes), else the full ``M^4`` array, real (8
+    bytes an entry) or complex (16) -- written in place block by block, and
+    the ``(nv, M, M)`` contraction results of one block of pair potentials
+    (a few ``M^3`` arrays in practice).  The pair densities, potentials and
+    contraction tiles are bounded separately by ``max_memory_mb``.
     """
     M = int(n_orbitals)
+    if packed:
+        return packed_eri_bytes(M) + 8 * 2 * M ** 3
     return (8 if real else 16) * (M ** 4 + 2 * M ** 3)
 
 
-def refuse_unaffordable_eri(n_orbitals: int, real: bool = False) -> None:
+def refuse_unaffordable_eri(n_orbitals: int, real: bool = False,
+                            packed: bool = False) -> None:
     """Raise :class:`MemoryError` when the two-body tensor cannot fit, before
     the Poisson solves it would otherwise run first."""
     from ..core.matrix_free import available_memory_bytes, format_bytes
 
-    needed = eri_peak_bytes(n_orbitals, real)
+    needed = eri_peak_bytes(n_orbitals, real, packed)
     available = available_memory_bytes()
     if needed > available:
-        kind = "real" if real else "complex"
+        kind = ("packed real" if packed else "real M^4" if real
+                else "complex M^4")
         raise MemoryError(
             f"the two-electron tensor of {n_orbitals} orbitals needs "
-            f"{format_bytes(needed)} (the {kind} M^4 result) against "
+            f"{format_bytes(needed)} (the {kind} result) against "
             f"{format_bytes(available)} of available memory; reduce "
             f"the basis (size=, an active_space) before integrating")
 
@@ -117,9 +131,21 @@ MAX_PAIR_BLOCK = 1024
 #: in cache while the matrix product reads them).
 CONTRACTION_TILE_BYTES = 2 * 2 ** 20
 
-#: Rows ``(v, a)`` of one such tile: enough for an efficient one-core
+#: Most rows ``(v, a)`` of one such tile: enough for an efficient one-core
 #: matrix product against the ``M`` columns of ``psi``.
 CONTRACTION_TILE_ROWS = 256
+
+#: Fewest rows of a tile, and the tile count a block of rows is split into
+#: when that leaves at least this many rows a tile: enough tiles to share
+#: out over the threads, fixed by the problem so that the decomposition --
+#: and every sum in it -- does not depend on the thread count.
+CONTRACTION_MIN_ROWS = 16
+CONTRACTION_TILES = 64
+
+#: Blocks of pairs the streamed contraction is cut into, and their fewest
+#: pairs: fixed by the problem, so its sums do not depend on the threads.
+PAIR_BLOCKS = 32
+PAIR_BLOCK_MIN = 64
 
 #: Share of the two-body budget (:func:`eri_memory_budget_mb`) the grid tile
 #: of pair densities of the streamed contraction may take.
@@ -130,49 +156,59 @@ def contract_pair_potentials(conj_psi, psi, phi, workers: int = -1) -> np.ndarra
     r"""``X[v, a, c] = sum_g conj(psi_a) Phi_v psi_c`` for a block of pair
     potentials ``phi`` ``(nv, G)`` over the functions ``psi`` ``(M, G)``
     (``conj_psi`` is ``conj(psi)``, passed in so a caller forms it once).
+    ``conj_psi`` may hold other functions than ``psi`` (``(Ma, G)``, the
+    conjugated left factors): ``X`` is then ``(nv, Ma, M)``.
 
-    The ``nv M`` rows ``(v, a)`` of ``X`` are split over ``workers`` threads
-    (``-1``: every core, as the FFT workers of the solver that made
-    ``phi``).  Each thread forms its rows' products ``conj(psi_a) Phi_v``
-    a grid tile at a time (:data:`CONTRACTION_TILE_BYTES`) and multiplies
-    the tile by ``psi^T`` on one core, so no ``M x G`` product per
-    potential is ever resident and BLAS never competes with the threads
-    (:func:`~mandacaru.integrals.fft.parallel_chunks`).  Not scaled by the
-    volume element.  Real functions and potentials give a real ``X``.
+    The ``nv M`` rows ``(v, a)`` of ``X`` are cut into tiles of a fixed
+    number of rows (set by the problem: :data:`CONTRACTION_TILES` tiles of
+    at least :data:`CONTRACTION_MIN_ROWS` and at most
+    :data:`CONTRACTION_TILE_ROWS` rows), shared out over ``workers``
+    threads (``-1``: every core, as the FFT workers of the solver that made
+    ``phi``).  Each tile forms its products ``conj(psi_a) Phi_v`` a grid
+    slice at a time (:data:`CONTRACTION_TILE_BYTES`) and multiplies the
+    slice by ``psi^T`` on one core, so no ``M x G`` product per potential is
+    ever resident and BLAS never competes with the threads
+    (:func:`~mandacaru.integrals.fft.parallel_blocks`).  The tiles and the
+    slices do not depend on the thread count, so neither does ``X``, to the
+    bit.  Not scaled by the volume element.  Real functions and potentials
+    give a real ``X``.
     """
     M, ngrid = psi.shape
+    rows_per = conj_psi.shape[0]
     nv = phi.shape[0]
     dtype = np.result_type(conj_psi, psi, phi)
-    X = np.zeros((nv, M, M), dtype=dtype)
-    flat = X.reshape(nv * M, M)
-    count = nv * M
+    X = np.zeros((nv, rows_per, M), dtype=dtype)
+    flat = X.reshape(nv * rows_per, M)
+    count = nv * rows_per
     threads = (1 if count * ngrid < PARALLEL_MIN_VALUES
-               else min(thread_count(workers), count))
-    rows = max(1, min(CONTRACTION_TILE_ROWS, -(-count // threads)))
+               else thread_count(workers))
+    rows = int(min(CONTRACTION_TILE_ROWS,
+                   max(CONTRACTION_MIN_ROWS, -(-count // CONTRACTION_TILES))))
     width = int(max(64, min(ngrid, CONTRACTION_TILE_BYTES
                             // (dtype.itemsize * rows))))
 
-    def contract(lo, hi):
-        tile = np.empty((rows, width), dtype=dtype)
-        part = np.empty((rows, M), dtype=dtype)
-        for r0 in range(lo, hi, rows):
-            r1 = min(r0 + rows, hi)
-            for g0 in range(0, ngrid, width):
-                g1 = min(g0 + width, ngrid)
-                t = tile[:r1 - r0, :g1 - g0]
-                # Rows of one potential v are consecutive a's.
-                r = r0
-                while r < r1:
-                    v, a = divmod(r, M)
-                    end = min(r1, (v + 1) * M)
-                    np.multiply(conj_psi[a:a + end - r, g0:g1],
-                                phi[v, g0:g1], out=t[r - r0:end - r0])
-                    r = end
-                out = part[:r1 - r0]
-                np.matmul(t, psi[:, g0:g1].T, out=out)
-                flat[r0:r1] += out
+    def buffers():
+        return (np.empty((rows, width), dtype=dtype),
+                np.empty((rows, M), dtype=dtype))
 
-    parallel_chunks(count, contract, threads)
+    def contract(r0, r1, state):
+        tile, part = state
+        for g0 in range(0, ngrid, width):
+            g1 = min(g0 + width, ngrid)
+            t = tile[:r1 - r0, :g1 - g0]
+            # Rows of one potential v are consecutive a's.
+            r = r0
+            while r < r1:
+                v, a = divmod(r, rows_per)
+                end = min(r1, (v + 1) * rows_per)
+                np.multiply(conj_psi[a:a + end - r, g0:g1],
+                            phi[v, g0:g1], out=t[r - r0:end - r0])
+                r = end
+            out = part[:r1 - r0]
+            np.matmul(t, psi[:, g0:g1].T, out=out)
+            flat[r0:r1] += out
+
+    parallel_blocks(count, rows, contract, threads, buffers)
     return X
 
 
@@ -484,7 +520,8 @@ class IntegralEngine:
     # -- two body ---------------------------------------------------------- #
 
     def two_body(self, energy_units: str = "eV",
-                 max_memory_mb: float | None = None, solver=None):
+                 max_memory_mb: float | None = None, solver=None,
+                 packed: bool = False):
         r"""Electron-repulsion tensor over the basis, physicists' notation.
 
         Returns ``eri[a, b, c, d] = <ab|cd>``,
@@ -524,14 +561,27 @@ class IntegralEngine:
             :class:`~mandacaru.core.mpc.TruncatedCoulombSolver`, for the
             exchange-correlation hole -- so the two can be subtracted term by
             term.
+        packed : bool
+            Return a real tensor eightfold packed
+            (:class:`~mandacaru.integrals.packed.PackedERI`, about ``M^4``
+            bytes instead of ``8 M^4``), written row by row as the
+            potentials are solved, so the full array never exists.  Only a
+            real tensor packs (a molecule's real functions on an even
+            kernel); any other comes back as the full array.
         """
         with self.timings.time("two-body integrals (fft)"):
-            eri = self._two_body_fft(max_memory_mb, solver=solver)
-        # In place: the M^4 tensor is never copied for its units.
-        eri *= from_hartree(1.0, energy_units)
+            eri = self._two_body_fft(max_memory_mb, solver=solver,
+                                     packed=packed)
+        # In place: the tensor is never copied for its units.
+        factor = from_hartree(1.0, energy_units)
+        if hasattr(eri, "scale"):
+            eri.scale(factor)
+        else:
+            eri *= factor
         return eri
 
-    def _two_body_fft(self, max_memory_mb: float | None = None, solver=None):
+    def _two_body_fft(self, max_memory_mb: float | None = None, solver=None,
+                      packed: bool = False):
         r"""FFT-Poisson electron-repulsion tensor ``<ab|cd>`` (physicists').
 
         For every pair ``v = (b, d)`` with ``b <= d`` the density
@@ -561,6 +611,13 @@ class IntegralEngine:
         (:meth:`_contract_streamed`).  Both give the dense contraction to
         round-off.
 
+        **Packed.**  For a real tensor and ``packed``, the slab of pair
+        ``v = {b, d}`` holds row ``v`` of the pair matrix
+        :math:`W_{uv} = (ac|bd)`, and its entries ``u <= v`` are written
+        straight into the packed triangle
+        (:class:`~mandacaru.integrals.packed.PackedERI`); the other half,
+        the same integrals solved from the other pair, is not kept.
+
         ``two_body_profile`` holds the seconds of each stage of the last
         call (pair densities, Poisson, contraction) and the route taken.
         """
@@ -584,7 +641,8 @@ class IntegralEngine:
                                                          False))
         dtype = np.float64 if real else np.complex128
         itemsize = np.dtype(dtype).itemsize
-        refuse_unaffordable_eri(M, real)
+        packed = bool(packed) and real
+        refuse_unaffordable_eri(M, real, packed)
         budget = (eri_memory_budget_mb() if max_memory_mb is None
                   else float(max_memory_mb)) * 2 ** 20
         cached = itemsize * U * ngrid <= 0.5 * budget
@@ -596,8 +654,15 @@ class IntegralEngine:
                                              psi.dtype.itemsize * U * width))
         profile = {"pair densities": 0.0, "poisson": 0.0, "contraction": 0.0,
                    "route": "cached" if cached else "streamed",
-                   "pair_block": B, "tile_width": width, "real": real}
-        eri = np.empty((M, M, M, M), dtype=dtype)
+                   "pair_block": B, "tile_width": width, "real": real,
+                   "packed": packed}
+        if packed:
+            from .packed import PackedERI
+
+            eri = PackedERI.zeros(M)
+            lower_rows, lower_cols = np.tril_indices(M)
+        else:
+            eri = np.empty((M, M, M, M), dtype=dtype)
         rho = (None if cached
                else np.empty((B, ngrid), dtype=psi.dtype))       # reused
         phi = np.empty((B, ngrid), dtype=dtype)                  # reused
@@ -620,16 +685,27 @@ class IntegralEngine:
             solver.solve_stack(block, out=phi[:nv])
             t2 = perf_counter()
             if cached:
-                X = self._contract_cached(densities, phi[:nv], M, iu, ju)
+                X = self._contract_cached(densities, phi[:nv], M, iu, ju,
+                                          workers)
             else:
                 X = self._contract_streamed(psi, phi[:nv], iu, ju, width,
                                             workers)
             X *= dV
             b, d = iu[v0:v1], ju[v0:v1]
-            # The flipped pair first, so a diagonal pair (b == d) keeps X.
-            flipped = X.transpose(0, 2, 1)
-            eri[:, d, :, b] = flipped if real else np.conj(flipped)
-            eri[:, b, :, d] = X
+            if packed:
+                # Pair {b, d} (b <= d) is row d(d+1)/2 + b of the pair
+                # matrix; its entries u <= that row are the triangle's.
+                rows = X[:, lower_rows, lower_cols]            # (nv, P)
+                for k, row in enumerate(d * (d + 1) // 2 + b):
+                    start = int(row) * (int(row) + 1) // 2
+                    eri.data[start:start + int(row) + 1] = rows[k,
+                                                                :int(row) + 1]
+            else:
+                # The flipped pair first, so a diagonal pair (b == d) keeps
+                # X.
+                flipped = X.transpose(0, 2, 1)
+                eri[:, d, :, b] = flipped if real else np.conj(flipped)
+                eri[:, b, :, d] = X
             t3 = perf_counter()
             profile["pair densities"] += t1 - t0
             profile["poisson"] += t2 - t1
@@ -638,17 +714,21 @@ class IntegralEngine:
         return eri
 
     @staticmethod
-    def _contract_cached(densities, phi, M, iu, ju) -> np.ndarray:
+    def _contract_cached(densities, phi, M, iu, ju,
+                         workers: int = -1) -> np.ndarray:
         r"""The same ``X`` from the kept pair densities ``rho_u`` (``u`` over
         ``a <= c``): ``sum_g rho_u Phi_v`` is one matrix product, and the
         entries with ``a > c`` are ``sum_g conj(rho_u) Phi_v``, the conjugate
         of a second product with ``conj(Phi)`` (conjugated in place).  Real
-        densities and potentials need the first product only."""
-        upper = densities @ phi.T                                 # (U, nv)
+        densities and potentials need the first product only.  The products
+        run in fixed blocks of pairs on one core each
+        (:func:`~mandacaru.integrals.fft.parallel_matmul`), so ``X`` does
+        not depend on the thread count."""
+        upper = parallel_matmul(densities, phi.T, workers)        # (U, nv)
         if not (np.iscomplexobj(densities) or np.iscomplexobj(phi)):
             return IntegralEngine._slabs(upper, None, M, iu, ju)
         np.conjugate(phi, out=phi)
-        lower = np.conj(densities @ phi.T)
+        lower = np.conj(parallel_matmul(densities, phi.T, workers))
         np.conjugate(phi, out=phi)
         return IntegralEngine._slabs(upper, lower, M, iu, ju)
 
@@ -672,11 +752,14 @@ class IntegralEngine:
         for every pair ``u`` and ``E[u, v] += rho_u Phi_v^T`` (and, for
         complex functions, ``conj(rho_u) Phi_v^T`` for the flipped pairs).
 
-        The pairs are split over ``workers`` threads; each forms its own
-        rows of the shared ``U x width`` tile and multiplies them on one core
-        (:func:`~mandacaru.integrals.fft.parallel_chunks` holds BLAS to one
+        The pairs are cut into :data:`PAIR_BLOCKS` blocks (of at least
+        :data:`PAIR_BLOCK_MIN` pairs) shared out over ``workers`` threads;
+        each block forms its own rows of the shared ``U x width`` tile and
+        multiplies them on one core
+        (:func:`~mandacaru.integrals.fft.parallel_blocks` holds BLAS to one
         thread meanwhile), so threads and BLAS never oversubscribe the
-        cores.
+        cores, and the blocks -- hence every sum -- are the same whatever
+        the thread count.
         """
         M, ngrid = psi.shape
         U, nv = iu.size, phi.shape[0]
@@ -690,7 +773,7 @@ class IntegralEngine:
         # The pairs of row a are u = first[a] .. first[a] + M - a - 1.
         first = np.concatenate(([0], np.cumsum(np.arange(M, 0, -1))))
 
-        def contract(lo, hi):
+        def contract(lo, hi, _state):
             out = part[lo:hi]
             for g0 in range(0, ngrid, width):
                 g1 = min(g0 + width, ngrid)
@@ -712,7 +795,8 @@ class IntegralEngine:
 
         threads = (1 if U * width < PARALLEL_MIN_VALUES
                    else thread_count(workers))
-        parallel_chunks(U, contract, threads)
+        block = max(PAIR_BLOCK_MIN, -(-U // PAIR_BLOCKS))
+        parallel_blocks(U, block, contract, threads)
         return IntegralEngine._slabs(upper, lower, M, iu, ju)
 
     @staticmethod

@@ -26,7 +26,7 @@ from mandacaru.algorithms import (Mandacaru, phase_estimation,
                                   qpe_memory_estimate, QPEResult,
                                   QuantumPhaseEstimation)
 from mandacaru.algorithms import qpe as qpe_module
-from mandacaru.core import PauliSum, load_checkpoint
+from mandacaru.core import PauliSum, load_checkpoint, matrix_free
 from mandacaru.core.checkpoint import reference_vector
 from mandacaru.units import HARTREE_TO_EV
 
@@ -191,7 +191,8 @@ class TestMemoryCheck:
     def test_the_check_runs_before_any_allocation(self, h2_checkpoint,
                                                   monkeypatch):
         """With 1 KiB "available" the run must abort without preparing a state."""
-        monkeypatch.setattr(qpe_module, "available_memory", lambda: 1024)
+        monkeypatch.setattr(matrix_free, "available_memory_bytes",
+                            lambda: 1024)
         monkeypatch.setattr(qpe_module, "prepare_state",
                             lambda *a: pytest.fail("a state was prepared"))
         qpe = QuantumPhaseEstimation(n_evaluation_qubits=8, verbose=False)
@@ -200,7 +201,8 @@ class TestMemoryCheck:
         assert qpe.memory_estimate_result.fraction > 1
 
     def test_ignore_proceeds_with_a_warning(self, h2_checkpoint, monkeypatch):
-        monkeypatch.setattr(qpe_module, "available_memory", lambda: 1024)
+        monkeypatch.setattr(matrix_free, "available_memory_bytes",
+                            lambda: 1024)
         qpe = QuantumPhaseEstimation(n_evaluation_qubits=4, verbose=False,
                                      memory_policy="ignore", atomic_units=True)
         with pytest.warns(RuntimeWarning, match="despite the memory estimate"):
@@ -209,7 +211,8 @@ class TestMemoryCheck:
 
     def test_prompt_asks_and_honors_the_answer(self, h2_checkpoint,
                                                 monkeypatch):
-        monkeypatch.setattr(qpe_module, "available_memory", lambda: 1024)
+        monkeypatch.setattr(matrix_free, "available_memory_bytes",
+                            lambda: 1024)
         monkeypatch.setattr(qpe_module.sys.stdin, "isatty", lambda: True,
                             raising=False)
         qpe = QuantumPhaseEstimation(n_evaluation_qubits=4, verbose=False,
@@ -221,7 +224,8 @@ class TestMemoryCheck:
         assert qpe.run(h2_checkpoint).probabilities.sum() == pytest.approx(1.0)
 
     def test_prompt_without_a_terminal_aborts(self, h2_checkpoint, monkeypatch):
-        monkeypatch.setattr(qpe_module, "available_memory", lambda: 1024)
+        monkeypatch.setattr(matrix_free, "available_memory_bytes",
+                            lambda: 1024)
         monkeypatch.setattr(qpe_module.sys.stdin, "isatty", lambda: False,
                             raising=False)
         qpe = QuantumPhaseEstimation(n_evaluation_qubits=4, verbose=False,
@@ -231,7 +235,7 @@ class TestMemoryCheck:
 
     def test_a_large_but_allowed_run_warns(self, monkeypatch):
         est = qpe_memory_estimate(4, 10)
-        monkeypatch.setattr(qpe_module, "available_memory",
+        monkeypatch.setattr(matrix_free, "available_memory_bytes",
                             lambda: int(est.total_bytes / 0.3))
         with pytest.warns(RuntimeWarning, match="large QPE simulation"):
             assert qpe_module.check_memory(qpe_memory_estimate(4, 10), "abort",

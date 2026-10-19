@@ -134,6 +134,68 @@ static void laplacian_general(const double _Complex *field, double _Complex *lap
     }
 }
 
+void mandacaru_laplacian_real(const double *field, double *lap, int n,
+                              int nx, int ny, int nz, const double *ginv) {
+    const double g00 = ginv[0], g11 = ginv[4], g22 = ginv[8];
+    const double g01 = ginv[1], g02 = ginv[2], g12 = ginv[5];
+    const double diag = -2.0 * (g00 + g11 + g22);
+    const long ngrid = (long)nx * ny * nz;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) collapse(2)
+#endif
+    for (int f = 0; f < n; ++f) {
+        for (int i = 0; i < nx; ++i) {
+            const double *u = field + (long)f * ngrid;
+            double *out = lap + (long)f * ngrid;
+            for (int j = 0; j < ny; ++j) {
+                for (int k = 0; k < nz; ++k) {
+                    const long g = idx3g(i, j, k, ny, nz);
+                    double acc = diag * u[g];
+                    /* Diagonal second derivatives (zero beyond the faces). */
+                    double s = 0.0;
+                    if (i + 1 < nx) s += u[idx3g(i + 1, j, k, ny, nz)];
+                    if (i - 1 >= 0) s += u[idx3g(i - 1, j, k, ny, nz)];
+                    acc += g00 * s;
+                    s = 0.0;
+                    if (j + 1 < ny) s += u[idx3g(i, j + 1, k, ny, nz)];
+                    if (j - 1 >= 0) s += u[idx3g(i, j - 1, k, ny, nz)];
+                    acc += g11 * s;
+                    s = 0.0;
+                    if (k + 1 < nz) s += u[idx3g(i, j, k + 1, ny, nz)];
+                    if (k - 1 >= 0) s += u[idx3g(i, j, k - 1, ny, nz)];
+                    acc += g22 * s;
+                    /* Cross derivatives: coefficient 2*g_ab * 1/4 = g_ab/2. */
+                    if (g01 != 0.0) {
+                        double c = 0.0;
+                        if (i + 1 < nx && j + 1 < ny) c += u[idx3g(i+1, j+1, k, ny, nz)];
+                        if (i + 1 < nx && j - 1 >= 0) c -= u[idx3g(i+1, j-1, k, ny, nz)];
+                        if (i - 1 >= 0 && j + 1 < ny) c -= u[idx3g(i-1, j+1, k, ny, nz)];
+                        if (i - 1 >= 0 && j - 1 >= 0) c += u[idx3g(i-1, j-1, k, ny, nz)];
+                        acc += 0.5 * g01 * c;
+                    }
+                    if (g02 != 0.0) {
+                        double c = 0.0;
+                        if (i + 1 < nx && k + 1 < nz) c += u[idx3g(i+1, j, k+1, ny, nz)];
+                        if (i + 1 < nx && k - 1 >= 0) c -= u[idx3g(i+1, j, k-1, ny, nz)];
+                        if (i - 1 >= 0 && k + 1 < nz) c -= u[idx3g(i-1, j, k+1, ny, nz)];
+                        if (i - 1 >= 0 && k - 1 >= 0) c += u[idx3g(i-1, j, k-1, ny, nz)];
+                        acc += 0.5 * g02 * c;
+                    }
+                    if (g12 != 0.0) {
+                        double c = 0.0;
+                        if (j + 1 < ny && k + 1 < nz) c += u[idx3g(i, j+1, k+1, ny, nz)];
+                        if (j + 1 < ny && k - 1 >= 0) c -= u[idx3g(i, j+1, k-1, ny, nz)];
+                        if (j - 1 >= 0 && k + 1 < nz) c -= u[idx3g(i, j-1, k+1, ny, nz)];
+                        if (j - 1 >= 0 && k - 1 >= 0) c += u[idx3g(i, j-1, k-1, ny, nz)];
+                        acc += 0.5 * g12 * c;
+                    }
+                    out[g] = acc;
+                }
+            }
+        }
+    }
+}
+
 void mandacaru_one_body_general(const double _Complex *psi,
                               const double *Vext,
                               int M, int nx, int ny, int nz,

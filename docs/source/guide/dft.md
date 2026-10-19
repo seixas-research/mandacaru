@@ -793,6 +793,300 @@ fe.calc.get_total_magnetic_moment()       # N_up - N_down per cell
   unrestricted run (moment 2.000, 1.000 per atom, pi* exchange splitting
   1.555 vs 1.558 eV).
 
+## Spin-orbit coupling: two-component Kohn-Sham
+
+A molecule or a crystal on a spin-orbit set -- `paw_dataset="lda-fr"` with
+LDA, `paw_dataset="pbe-fr"` with PBE -- is solved in **two-component
+spinors** (crystals: *Crystals* below).
+No other option is needed: the dataset carries the spin-orbit term, and the
+Kohn-Sham operator then contains it, exactly the one-body term
+`method="ghf"` adds.
+
+```python
+from ase import Atoms
+
+hi = Atoms("HI", positions=[[0, 0, 0], [0, 0, 1.609]], cell=[9.0] * 3)
+hi.center()
+hi.calc = Mandacaru(method="dft", xc="pbe", paw_dataset="pbe-fr",
+                    grid_spacing=0.25, basis={"name": "PAW-LCAO", "size": "SZ"})
+hi.get_potential_energy()
+scf = hi.calc.result.scf
+scf.spin_orbit_energy            # against the collinear run, Hartree
+scf.kramers_pairing              # 0 for a closed shell: Kramers pairs
+```
+
+- **The operator** is $2M \times 2M$ over the Loewdin basis, alpha block
+  first: the scalar core Hamiltonian on both spin blocks, the spin-orbit
+  term (which couples them), the Hartree matrix of the total density on
+  both diagonal blocks (the same Poisson solve) and the exchange-correlation
+  potential and magnetic field, $v\,\mathbb 1 +
+  \mathbf B\cdot\boldsymbol\sigma$.
+- **Noncollinear functionals, local spin axis.** At each point the spin
+  density matrix gives the density $n$ and the magnetization vector
+  $\mathbf m$, and the collinear spin-polarized functional is evaluated on
+  $n_\pm = (n \pm |\mathbf m|)/2$, the spin densities along the local axis
+  $\hat{\mathbf m}$ (Kübler et al. 1988). LDA, PBE, r2SCAN, r2SCAN+rVV10
+  and HSE06 are supported. PBE (and every gradient functional here)
+  takes the gradients along the same axis: $\nabla n$ and the projection
+  $\hat{\mathbf m}\cdot\nabla\mathbf m$, which is $\nabla|\mathbf m|$
+  wherever $\mathbf m$ is smooth and nonzero but has no kink where a
+  collinear moment changes sign. The energy is invariant under a global
+  spin rotation, a collinear state gives back the collinear functional and
+  potentials to round-off, and the field is the exact derivative of the
+  energy (the gradient-corrected form follows Hobbs, Kresse and Hafner
+  2000). Where $\mathbf m$ vanishes exactly on a grid point -- a collinear
+  moment's nodal plane through the grid -- the axis is taken from the
+  gradient of $\mathbf m$, so that point keeps its spin gradient and the
+  collinear limit stays exact there too. **Its limits**: the gradient of the axis itself
+  ($\nabla\hat{\mathbf m}$) does not enter the energy, so a twisting
+  magnetization has no spin stiffness from the GGA, and the field's
+  axis-rotation term carries $1/|\mathbf m|$, large where a noncollinear
+  moment passes through zero (the known instability of local-axis GGAs; it
+  is zero for collinear and for time-reversal symmetric states).
+- **r2SCAN** takes the kinetic-energy density matrix of the spinors,
+  $\tau_{\sigma\sigma'} = \tfrac12(\tau\,\delta_{\sigma\sigma'} +
+  \boldsymbol\tau_m\cdot\boldsymbol\sigma_{\sigma\sigma'})$, along the same
+  axis, $\tau_\pm = \tfrac12(\tau \pm \hat{\mathbf m}\cdot\boldsymbol\tau_m)$,
+  and adds $\tfrac12\nabla\phi^*\cdot(v_\tau\mathbb 1 + \mathbf b_\tau\cdot
+  \boldsymbol\sigma)\nabla\phi$ to the operator (the local-axis form; a
+  noncollinear meta-GGA's spin-current term is not included).
+  **r2SCAN+rVV10**'s nonlocal correlation sees the total density only.
+  **HSE06** adds the short-range exact exchange of every spin block of the
+  spinor density matrix (generalized Hartree-Fock's exchange, with the
+  collinear hybrid's kernel and one-center terms), and its semilocal part
+  gives up the short-range exchange channel by channel along the axis. A
+  magnetization at round-off (a collinear moment's nodal plane, seen from a
+  turned frame) counts as zero: its axis is taken from $\boldsymbol\tau_m$
+  or the gradient of $\mathbf m$, as at an exact zero, and a channel the
+  functional clips at zero has no derivative there, as in the collinear
+  evaluator; with both, a collinear state turned to $x$ is the collinear
+  energy to round-off for every functional.
+- **Occupations** are aufbau over the $2M$ spinor levels, with a degenerate
+  shell at the Fermi level filled equally, as in the collinear solvers: a
+  Kramers pair holding one electron, or an open $p_{3/2}$ quartet.
+- **The SCF starts from the collinear solution** of the same integrals
+  without the spin-orbit term (restricted, or unrestricted for an open
+  shell), so a spin-polarized open shell stays polarized; its energy is kept
+  (`scalar_energy`), and `spin_orbit_energy` (also in `[SCF SUMMARY]`) is
+  what the spinors lowered it by.
+- **What you get**: the spinor eigenvalues (`get_eigenvalues()`, one set,
+  `get_number_of_spins()` is 1), `kramers_pairing` (the largest splitting
+  within the occupied pairs, measured, not imposed), the **spin** moment
+  vector `spin_moment`, $2\langle\mathbf S\rangle$ in Bohr magnetons
+  (`get_total_magnetic_moment()` is its $z$ component). It is not the total
+  moment $\langle\mathbf L + 2\mathbf S\rangle$: the orbital moment is not
+  computed, and the two can differ in sign (Tl $6p^1$: spin $+1/3$, total
+  $-1/3$). Also `dos`/`pdos` with one electron per level, populations, cube
+  files and dipoles from the spinor density, and the many-body Hamiltonian
+  exported in the spinors (the GHF layout: `pool="spin-orbit"` for ADAPT-VQE,
+  and not the `parity_reduced` mapping, which is refused).
+- **Checked**: without the spin-orbit term the spinor problem gives the
+  collinear energy to round-off -- OH with its UKS moment turned from $z$
+  to $x$ (LDA 1e-14, PBE 2.4e-13 Ha; moment 1.000 along $x$) and closed-shell
+  water and HI with zero moment vectors (below; 1e-14 Ha). HI's occupied
+  spinors pair to 2e-15 Ha. Xe's $5p$ splitting is 1.1 % (LDA) and 1.0 %
+  (PBE) below the radial Dirac atom of the same functional in SZ at
+  grid_spacing 0.25 Å (0.9 % at 0.2 Å, extrapolating to about 0.5 %; the
+  dataset's own operator is 0.4 % short, the rest is the basis and the
+  grid). HI's spin-orbit lowering is 53.5 meV (LDA) and 50.5 meV (PBE),
+  against 46.6 and 42.8 meV between GHF+SO and the RHF determinant of the
+  same integrals; TlH's is 115 meV against 147 meV. The open-shell Tl atom
+  ($6p^1$) puts its electron in a $6p_{1/2}$ spinor: moment 1/3 Bohr
+  magneton (the spin of $p_{1/2}$), 633 meV below the collinear UKS.
+
+### A noncollinear start
+
+Without a spin-orbit term the collinear solution is a fixed point of the
+spinor SCF, and a stable one: a noncollinear ground state is **not** found
+from the collinear start, and a slightly canted collinear start falls back to
+it. Equilateral H$_3$ (a frustrated triangle) has a coplanar state with its
+site moments at 120°, 37.8 meV below the UKS doublet at $R = 2.5$ Å (LDA,
+SZ), that the collinear start never reaches. Ask for it with ASE's
+noncollinear moments, one vector per atom:
+
+```python
+import numpy as np
+from ase import Atoms
+
+R = 2.5
+h3 = Atoms("H3", positions=R * np.array([[0, 0, 0], [1, 0, 0],
+                                         [0.5, np.sqrt(3) / 2, 0]]),
+           cell=[R + 6, R + 6, 6])
+h3.center()
+angles = 2 * np.pi * np.arange(3) / 3
+h3.set_initial_magnetic_moments(np.c_[np.cos(angles), np.sin(angles),
+                                      np.zeros(3)])
+h3.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3,
+                    basis={"name": "PAW-LCAO", "size": "SZ"})
+h3.get_potential_energy()
+scf = h3.calc.result.scf
+scf.noncollinear_energy          # against the collinear start, Hartree
+scf.spin_moment                  # (0, 0, 0): the site moments cancel
+```
+
+- `(N, 3)` moments select the two-component solver on **any** dataset: on a
+  scalar set it runs without the spin-orbit term (`spin_orbit_coupling:
+  False` in `[SCF SETUP]`, `noncollinear_energy_<unit>` in `[SCF SUMMARY]`),
+  on a spin-orbit set with it. `(N,)` moments behave as before.
+- The collinear run first takes every moment along one axis, with the
+  vectors' lengths (their rounded sum is the number of unpaired electrons,
+  so it must match the electron count's parity); then each atom's share of
+  that magnetization -- the Loewdin populations of its basis functions -- is
+  turned to its own vector, and the spinor SCF starts there. An atom given a
+  zero vector has its share dropped. The charge density is the collinear
+  one.
+- For H$_3$ it lands on the 120° state: site moments 0.912 Bohr magneton
+  (Loewdin), 120.00° apart, the total zero to 2e-4 (the cubic grid breaks
+  the threefold axis), 37.83 meV below UKS. Turning OH's moment to $x$
+  gives back the UKS energy (LDA 1e-14, PBE 2.4e-13 Ha) with the moment along
+  $x$.
+- Refused: `(N, 3)` moments on any other method; forces, as for every
+  two-component run.
+
+### Crystals
+
+A periodic geometry on a spin-orbit set, or with `(N, 3)` moments, is
+solved in **two-component Bloch spinors**, with the options of any crystal
+(k-points, smearing, grid, basis):
+
+```python
+from ase.build import bulk
+
+gaas = bulk("GaAs", "zincblende", a=5.653)
+gaas.calc = Mandacaru(method="dft", xc="lda", paw_dataset="lda-fr",
+                      grid_spacing=0.15, kpts={"size": (4, 4, 4), "gamma": True},
+                      basis={"name": "PAW-LCAO", "size": "DZP"})
+gaas.get_potential_energy()
+gamma = gaas.calc.get_eigenvalues(kpt=0)   # 2M spinor bands at Gamma, eV
+scf = gaas.calc.result.scf
+scf.spin_orbit_energy                      # against the collinear crystal, Hartree
+scf.terms["spin_orbit"]                    # <h_SO>, a term of the energy
+```
+
+- **The operator** at each k-point is the collinear crystal's Kohn-Sham
+  matrix of the total density on both spin blocks, plus the molecule's
+  spin-orbit term summed over the lattice -- the projections of the Bloch
+  sums on the home cell's spin-orbit projectors, as the scalar nonlocal
+  term -- plus $\int\chi^*\,\mathbf B_{xc}\cdot\boldsymbol\sigma\,\chi$ of
+  the noncollinear LDA or PBE on the cell grid. The metric is
+  $S(\mathbf k)\otimes\mathbb 1$. Each spinor band holds one electron
+  around one Fermi level; smearing, mixing and the energy conventions are
+  the collinear crystal's.
+- **The k-point mesh.** The spin is not a separate quantum number, but time
+  reversal still maps the states at $\mathbf k$ onto those at
+  $-\mathbf k$ with the same energy and density and the *opposite*
+  magnetization, and a space-group operation maps them, spin rotated, onto
+  those at $R\mathbf k$, the magnetization turning as an axial vector. So:
+  a crystal given **no initial moments** is solved as a non-magnetic one,
+  with time-reversal symmetry imposed -- its magnetization is zero and not
+  computed, the functional is the unpolarized one -- and its density is a
+  scalar, so the mesh is reduced by the space group and time reversal as for
+  a collinear crystal. That is an assumption, as a collinear crystal
+  without moments is restricted: a crystal that would magnetize must be
+  given moments (a free Tl atom in a box without them lands on a half-filled
+  Kramers pair, 122 meV above its magnetic $6p_{1/2}$ state). A
+  **magnetic** one (`(N,)` moments with the spin-orbit term, or `(N, 3)`
+  moments) is solved on the **whole mesh**, the magnetization a vector
+  field of every k-point, and its spectra (DOS, Fermi surface) are
+  diagonalized on the whole mesh too. `[SCF SETUP]` says which
+  (`k_points_irreducible`, `spin`).
+- **The SCF continues the collinear crystal**: the collinear problem of the
+  same crystal and mesh without the spin-orbit term is solved first
+  (restricted, or spin-polarized with the moments' lengths along $z$), and
+  the spinor SCF starts from the density its last diagonalization was built
+  from -- the magnetization along $z$, or, with `(N, 3)` moments, each
+  atom's Hirshfeld share of it turned to its vector. Without the
+  spin-orbit term and with every moment along one axis its first step *is*
+  the collinear step, so it stops there, on the collinear energy.
+- **Meta-GGA and hybrid.** r2SCAN and r2SCAN+rVV10 run on the wedge
+  like LDA and PBE. HSE06's exchange takes every occupied spinor of the
+  mesh, and the images of a wedge's spinors would need their spin
+  rotations, so a hybrid spinor crystal is solved on the **whole mesh**;
+  its exchange operator is mixed with the density as the collinear
+  crystal's is, and seeded from the collinear start's (turned with the
+  moments' mean direction for `(N, 3)` moments).
+- **What you get**: the spinor bands (`get_eigenvalues`, one set of $2M$
+  per k-point, `get_number_of_spins()` 1), `band_structure` and
+  `fat_bands`, `dos` and `pdos` with either integration (one electron per
+  spinor band: the DOS integrates to the number of spinor bands, $2M$),
+  `fermi_surface` and `write_fermi_surface`, charges (`get_charges`,
+  `atomic_partition`; local moments are the $z$ components of a magnetic
+  crystal's spin moments, zero for a non-magnetic one) and the spin moment
+  per cell `spin_moment`, $2\langle\mathbf S\rangle$ (augmentation
+  included; `get_total_magnetic_moment()` is its $z$ component).
+- **The Berry-phase polarization** (`get_polarization`) takes the strings
+  of the $N$ occupied spinor bands with the spin-summed overlaps: one
+  electron per band, so the electrons' quantum is $e\,\mathbf a_j/\Omega$,
+  not $2e\,\mathbf a_j/\Omega$. The Born effective charges and the
+  clamped-ion piezoelectric tensor follow
+  (`born_effective_charges`, `piezoelectric_tensor`); the relaxed-ion
+  tensor needs the forces and is refused.
+- **Wannier functions** (`wannier`) of spinor bands are spinors, one
+  electron each: every trial orbital of the guess is taken twice, spin up
+  and spin down along `spin_axis` (default $z$), the overlaps sum both spin
+  components, and spreads, centers, the disentanglement in energy windows
+  and the interpolation are the collinear path's. The disentangled
+  subspace is not symmetrized (the operations' spin rotations are not
+  represented), the state selections by projectability (`"auto"`,
+  `"scdm"`, `"rpa"`) are refused, and so is the downfolded problem. A
+  spinor function is written component by component
+  (`write(..., component="up")`) or as the density it carries
+  (`write(..., part="density")`, $|w_\uparrow|^2 + |w_\downarrow|^2$).
+- **Refused**: forces and stress (the crystal gradient has no spin-orbit or
+  noncollinear term), projectabilities, natural orbitals and volumetric
+  fields of the crystal (cube files), which read collinear Bloch states,
+  and a finite electric field. A crystal on a spin-orbit set is never read
+  as a scalar-relativistic one: every consumer without spinor states
+  refuses it.
+- **Checked**: with the spin-orbit term zeroed, a spin-orbit crystal is its
+  collinear start to round-off (Si, LDA 0.0 and PBE 1.8e-15 Ha; fcc Al
+  8.9e-16 Ha), and so are the O$_2$ triplet's moment vectors along $z$ in
+  a periodic box (1.4e-14 Ha) and turned to $x$ (SU(2) invariance, moment
+  $(2, 0, 0)$). Si on `lda-fr`: Kramers pairs at $\Gamma$ to 2e-16 Ha,
+  $E(\mathbf k) = E(-\mathbf k)$ to 1e-15, and the whole mesh with zero
+  moment vectors reproduces the wedge to the collinear starts' convergence
+  (8e-9 Ha). The matrix is the derivative of the energy, spin-orbit term and
+  noncollinear field included (finite differences, 4e-10 relative, LDA and
+  PBE). In a large cell at $\Gamma$ a crystal is the molecule: HI's
+  spin-orbit lowering 52.94 against 53.04 meV at grid_spacing 0.18 Å (52.15
+  against 53.46 at 0.25: the molecule samples the iodine projectors on its
+  grid, the crystal on spheres, and the molecule's converges toward the
+  crystal's), the Tl atom's $6p_{1/2}$ lowering 632.6 against 633.4 meV,
+  and equilateral H$_3$'s 120° state to 0.13 meV.
+  The split-off gap $\Delta_{so}$ at $\Gamma$ (LDA, DZP, experimental
+  lattices): Si 50.4 meV (h 0.15 Å, 4$^3$; experiment 44), AlAs 303 meV
+  (h 0.15; experiment 0.28 eV), AlSb 678 meV (h 0.15; experiment 0.676
+  eV), GaAs 334 meV (h 0.15, 4$^3$; 341 at h 0.11; experiment 0.341 eV; the
+  III-V values from Vurgaftman, Meyer and Ram-Mohan 2001); PBE gives Si
+  49.1 and GaAs 320 meV. GaAs comes
+  out inverted in this basis and grid ($\Gamma_6$ below $\Gamma_8$): its
+  Ga 3d sits far too shallow and sinks only slowly with the grid, so its
+  gap is not to be trusted there.
+- **Checked, meta-GGA and hybrid**: with the spin-orbit term zeroed, or
+  the O$_2$ triplet's moment vectors along $z$, $x$ or $y$ (a complex spin
+  rotation), r2SCAN, r2SCAN+rVV10 and HSE06 crystals stop at their first
+  step on the collinear energy (1e-15 to 2e-14 Ha); OH's moment turned to
+  $x$ or $y$ is its UKS energy (r2SCAN, HSE06: 1e-14 Ha). The matrix is the
+  energy's derivative (r2SCAN 3e-10; HSE06 3e-8, the grid exchange's
+  1e-7-level asymmetry, which the collinear crystal shares). Without the
+  term the spinor Wannier functions are two copies of the collinear ones
+  (spreads 3e-12) and the Berry phases twice the collinear phases (modulo
+  $2\pi$); AlSb's Born charge is 1.898 with the term, 1.8995 without.
+  $\Delta_{so}$ at $\Gamma$ (DZP): Si r2SCAN 49.0 meV (h 0.2 Å, 4$^3$; PBE
+  49.1), HSE06 53.2 meV (3$^3$; PBE 49.1); GaAs r2SCAN 324 meV (h 0.15 Å,
+  4$^3$; PBE 320), HSE06 334 meV (2$^3$; PBE 316), where HSE06 also lifts
+  $\Gamma_6$ above $\Gamma_8$ (gap 0.99 eV). The exact exchange of the
+  spin-orbit-split occupied states raises $\Delta_{so}$; a scalar
+  functional cannot (in SZ silicon, where symmetry fixes the
+  $\Gamma_{25'}$ states, PBE, r2SCAN and Gamma-only HSE06 give the same
+  55.7 meV and HSE06 on 2$^3$ 58.3). The hybrid's value moves with the
+  k-mesh; the hybrid on the whole mesh is costly (Si DZP 3$^3$: 19 min,
+  GaAs DZP 2$^3$: 50 min, 2.7 GB).
+
+Refused for every two-component run, each with its own message:
+**forces** (the analytic gradient has no spin-orbit or noncollinear term;
+relax on a scalar set).
+
 ## Crystal forces, stress and cell relaxation
 
 For a crystal, `atoms.get_forces()` and `atoms.get_stress()` are the
@@ -842,6 +1136,19 @@ BFGS(FrechetCellFilter(si)).run(fmax=0.01)
   (the force by the space group with its atom map); they equal the full
   mesh's to round-off. Diamond Si, DZP, 4x4x4, grid_spacing = 0.2 Angstrom: forces
   29 s, stress 7.5 s on 8 cores.
+- **A molecule has no stress.** Kohn-Sham is periodic only when `atoms.pbc`
+  has a periodic direction, and `calc.implemented_properties` lists `"stress"`
+  only then. On a molecule, `get_stress()` raises ASE's
+  `PropertyNotImplementedError`, as ASE's own calculators do for a cell-less
+  geometry. So a cell filter cannot wrap a molecule, and neither can
+  `ase.calculators.fd.FiniteDifferenceCalculator(..., eps_strain=None)`:
+  `None` there means "use the calculator's analytic stress", not "skip the
+  stress". A plain `BFGS(atoms)` never asks for the stress. For
+  finite-difference forces on a molecule, call
+  `ase.calculators.fd.calculate_numerical_forces(atoms, eps=0.01)`, or keep
+  the wrapper's default `eps_strain`. The wrapper then strains the box
+  numerically, at twelve extra energies per call, and that stress means
+  nothing for a free molecule.
 
 ## Bands and densities of states
 
@@ -898,6 +1205,65 @@ energies = energies - si.calc.get_fermi_level()   # center on the Fermi level
   that overlap evenly. Water's lowest level is 68 % oxygen in an SZ basis
   and 50 % in DZP (Mulliken: 80 % and 64 %), while the lone pair stays
   oxygen's. Compare shares within one basis, not across bases.
+- **`integration="tetrahedron"`** (on `dos` and `pdos`; the default is
+  `"gaussian"`) replaces the Gaussians by the linear tetrahedron method:
+  every band is interpolated linearly inside the six tetrahedra that cut
+  each cell of the k-mesh along its shortest diagonal, and the interpolant
+  is integrated exactly. There is no width (`width` then only pads the
+  default energy axis), band edges and van Hove singularities stay sharp,
+  and a gap is exactly empty. Each value is the DOS averaged over its
+  energy's cell of the axis, taken from the exact number of states at the
+  cell's edges, so the values times the spacing add up to the count and a
+  band flat across a tetrahedron is not lost; pass distinct `energies`. In
+  `pdos` each shell's weight is interpolated with its band, corner by
+  corner, rather than averaged over a tetrahedron, so the shells still sum
+  to the total. The bands are diagonalized on the irreducible wedge and
+  unfolded onto the whole mesh: a band energy is the same at every image of
+  a k-point, and a shell's weight summed over the atoms the operations
+  permute is too, so that sum is unfolded and shared equally among those
+  atoms. Degenerate states at one k-point (within 1 meV) share their
+  weights, since which of them carries which atom is the eigensolver's
+  arbitrary choice.
+
+  ```python
+  energies, dos = si.calc.dos(integration="tetrahedron", kpts=(8, 8, 8))
+  energies, pdos = si.calc.pdos(integration="tetrahedron", kpts=(8, 8, 8))
+  ```
+
+  `curvature_correction=True` adds Bloechl's correction, which restores to
+  leading order the curvature the linear interpolation misses. It moves
+  weight between the corners of each tetrahedron without changing their
+  sum, so `dos` is the same with it or without it, and it acts on `pdos`
+  only -- where it is **off by default**. It is meant for the Fermi-sea
+  integrals of a metal at a fixed count (30 to 1000 times closer with it on
+  free electrons), not for a projected DOS: a corrected shell goes negative
+  where its projection is small at a band extremum on a mesh point, and its
+  error at a band onset does not shrink with the mesh (free electrons
+  projected on $\sin^2 \pi k_x$: a relative error of 0.4 at 8, 16 and 32
+  points per axis, against 0.18 to 0.15 uncorrected). For an insulator's
+  shell populations it changes nothing (a full band's correction is zero),
+  while it reshapes silicon's s-PDOS by 38 % of its peak on a 4x4x4 mesh.
+  Uncorrected, every shell is non-negative by construction.
+
+  Near a band edge, mind the mesh: within the first k-shell of a band
+  extremum that sits on a mesh point the linear tetrahedron DOS rises
+  quadratically, $(E - E_0)^2$, not as $\sqrt{E - E_0}$; the square root
+  appears only beyond it. Do not fit edge exponents (or effective masses)
+  inside that first shell.
+
+  The tetrahedron method needs a crystal and a uniform mesh,
+  `kpts=(n1, n2, n3)` or `{"size": ..., "gamma": ...}`, with at least two
+  points along every periodic direction: a molecule, a band path, an
+  explicit list of k-points and a Gamma-only mesh are refused.
+
+  Use the tetrahedra for the spectrum itself: band edges, gaps, the DOS at
+  the Fermi level of a metal, and a coarse mesh, where a Gaussian must be
+  wide enough to bridge the mesh spacing. On a 6x6x6 mesh of the
+  simple-cubic tight-binding band, broadening the tetrahedron DOS by a
+  Gaussian of 0.2 t comes 6 times closer to the converged spectrum at that
+  resolution than broadening the levels by the same Gaussian. Keep the
+  Gaussian for a spectrum meant to be smooth at a chosen resolution on a
+  mesh that resolves it, and for molecules.
 - **`fermi_surface((n1, n2, n3))`** returns the band energies (eV) on the
   full Gamma-centered mesh `k = (i1/n1, i2/n2, i3/n3)`, shaped
   `(n_bands, n1, n2, n3)` (`(2, n_bands, ...)` spin-polarized). Only the
@@ -1622,7 +1988,11 @@ The minimized functions of bcc Fe are not atom-centered. Without
 
 The following are refused or unavailable:
 
-- **Spin-orbit coupling** in the Kohn-Sham operator.
+- **The forces and stress of a two-component (spin-orbit or
+  noncollinear) molecule or crystal**, and the spinor crystal analyses
+  listed in *Spin-orbit coupling: two-component Kohn-Sham* (projectabilities,
+  natural orbitals, volumetric fields, the downfolded problem of spinor
+  Wannier functions, a finite field).
 - **Crystals with an all-electron basis**: the periodic path is
   PAW-LCAO or UPAW-LCAO only.
 - **D4 with LDA or with r2SCAN+rVV10**, as above.
@@ -1638,6 +2008,9 @@ electronic dielectric tensor is above.
   136, B864.
 - Kohn, W. and Sham, L. J. (1965). Self-consistent equations including exchange
   and correlation effects. *Phys. Rev.* 140, A1133.
+- Kübler, J., Höck, K.-H., Sticht, J. and Williams, A. R. (1988). Density
+  functional theory of non-collinear magnetism. *J. Phys. F: Met. Phys.* 18,
+  469.
 - Perdew, J. P. and Zunger, A. (1981). Self-interaction correction to
   density-functional approximations for many-electron systems. *Phys. Rev. B*
   23, 5048.
@@ -1671,3 +2044,9 @@ electronic dielectric tensor is above.
   165105.
 - Caldeweyher, E. *et al.* (2019). A generally applicable atomic-charge
   dependent London dispersion correction. *J. Chem. Phys.* 150, 154122.
+- Jepsen, O. and Andersen, O. K. (1971). The electronic structure of h.c.p.
+  ytterbium. *Solid State Commun.* 9, 1763.
+- Lehmann, G. and Taut, M. (1972). On the numerical calculation of the
+  density of states and related properties. *Phys. Status Solidi B* 54, 469.
+- Bloechl, P. E., Jepsen, O. and Andersen, O. K. (1994). Improved tetrahedron
+  method for Brillouin-zone integrations. *Phys. Rev. B* 49, 16223.

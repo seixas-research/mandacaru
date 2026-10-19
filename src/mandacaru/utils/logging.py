@@ -363,8 +363,9 @@ class Logger:
             is the real-space box the grid is cut from, while ``pbc`` says
             whether the system repeats along each of its vectors -- so the block
             reports both.  ``None`` when the geometry did not carry it.
-        magmoms : (N,) array_like, optional
-            Initial magnetic moments, one per atom.  They select the spin state
+        magmoms : (N,) or (N, 3) array_like, optional
+            Initial magnetic moments, one per atom (or one vector per atom, a
+            noncollinear start, written as nested lists).  They select the spin state
             (`resolve_num_unpaired`), so a run that was given them should say
             so; ``None`` when the geometry did not carry them.
         units : str
@@ -1019,7 +1020,11 @@ def _magmom_text(magmoms) -> str:
     """
     if magmoms is None:
         return "(not provided)"
-    values = np.atleast_1d(np.asarray(magmoms, dtype=float))
+    values = np.asarray(magmoms, dtype=float)
+    if values.ndim == 2:
+        # (N, 3) moment vectors (a noncollinear start): one triple per atom.
+        return "[" + ", ".join(_magmom_text(row) for row in values) + "]"
+    values = np.atleast_1d(values)
     # repr() of a float keeps the decimal point and round-trips exactly.
     return "[" + ", ".join(repr(float(value)) for value in values) + "]"
 
@@ -1584,6 +1589,7 @@ _SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              "[NESTED OTOC]": "nested_otoc",
              "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
+             "[GRADIENT MEASUREMENT]": "gradient_measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
              # The classical SCF's setup and summary are read under the same
              # keys as a variational run's, so a reader asks one question.
@@ -1685,7 +1691,8 @@ def parse_output(path: str) -> dict:
                 elif section == "performance":
                     table = None
                     step["performance"] = {"stages_s": {}}
-                elif section in ("electrons", "measurement"):
+                elif section in ("electrons", "measurement",
+                                 "gradient_measurement"):
                     step[section] = {}
                 elif section in ("basis", "active_space"):
                     table = None
@@ -1799,7 +1806,8 @@ def parse_output(path: str) -> dict:
                 if len(fields) >= 4:
                     step["system"].setdefault("geometry", []).append(
                         [fields[0]] + [number(v) for v in fields[1:4]])
-            elif section in ("system", "setup", "electrons", "measurement") \
+            elif section in ("system", "setup", "electrons", "measurement",
+                             "gradient_measurement") \
                     and ":" in stripped:
                 key, _, value = stripped.partition(":")
                 key, value = key.strip(), value.strip()

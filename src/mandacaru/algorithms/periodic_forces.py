@@ -169,7 +169,9 @@ def periodic_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                               orbital_delta: float | None = None,
                               include_pulay: bool = True,
                               algebraic_step: float = DEFAULT_ALGEBRAIC_STEP,
-                              orbital_gradient: bool = True) -> ForceResult:
+                              orbital_gradient: bool = True,
+                              orbital_response: dict | None = None
+                              ) -> ForceResult:
     r"""Hellmann-Feynman + Pulay gradient of a periodic calculation.
 
     Parameters
@@ -192,6 +194,10 @@ def periodic_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         Step of the directional derivative of the algebraic energy.
     orbital_gradient : bool
         Measure the orbital-rotation residual.
+    orbital_response : dict, optional
+        ``{"n_occ", "support"}``: differentiate the energy of the canonical
+        orbitals of each geometry (the z-vector of
+        :mod:`~mandacaru.algorithms.orbital_response`), as for a molecule.
 
     Returns
     -------
@@ -215,6 +221,16 @@ def periodic_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     S0, h0, g0 = _matrices(integrals, stack0, _ion_potential(integrals, sites))
     electronic = energy(S0, h0, g0)
     total = electronic + integrals.nuclear_repulsion + integrals.constant_energy
+    response = None
+    if orbital_response is not None:
+        from .orbital_response import response_densities
+
+        response = response_densities(
+            h0, g0, energy.V, energy.D, energy.G,
+            n_occ=int(orbital_response["n_occ"]),
+            support=orbital_response["support"], S=S0)
+        energy = AlgebraicEnergy(energy.V, response.D, response.G)
+        orbital_gradient = False
 
     n_atoms = len(sites)
     hf = np.zeros((n_atoms, 3))
@@ -275,6 +291,8 @@ def periodic_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     forces = forces_hartree_bohr * conversion
 
     residual = None
+    if response is not None:
+        residual = response.orbital_gradient
     if orbital_gradient:
         residual = energy.orbital_gradient(S0, h0, g0)
 

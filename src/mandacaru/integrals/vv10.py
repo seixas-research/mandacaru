@@ -70,6 +70,8 @@ import numpy as np
 from scipy import fft as sfft
 from scipy.interpolate import CubicSpline
 
+from .fft import workspace
+
 #: C of VV10 (fitted to C6 coefficients; every published pairing keeps it).
 C_VV10 = 0.0093
 #: b of r2SCAN+rVV10 (Ning et al., 2022: refit to the CCSD(T) Ar2 curve).
@@ -274,20 +276,22 @@ def nonlocal_correlation(grid, density: np.ndarray, sigma: np.ndarray, *,
     sigma = np.asarray(sigma, dtype=float)
     shape, dV = tuple(grid.shape), float(grid.dV)
     theta, dtheta_dn, dtheta_ds = _local(n, sigma, b, C, q_min, q_cut, n_q)
-    knorm, lengths = _wavenumbers(grid, bool(getattr(grid, "periodic", False)))
-    slices = tuple(slice(0, s) for s in shape)
-    transforms = []
-    for a in range(n_q):
-        pad = np.zeros(lengths)
-        pad[slices] = theta[a].reshape(shape)
-        transforms.append(sfft.rfftn(pad))
-    half = knorm[..., : transforms[0].shape[-1]]
+    periodic = bool(getattr(grid, "periodic", False))
+    knorm, lengths = _wavenumbers(grid, periodic)
+    # The grid's shared FFT workspace (circular on a crystal's cell, zero-
+    # padded for a molecule): every theta_a's half spectrum in one array,
+    # the box never copied into a padded volume of its own.
+    space = workspace(shape, None if periodic else lengths)
+    transforms = np.empty((n_q,) + tuple(lengths[:2]) + (space.half,),
+                          dtype=complex)
+    space.forward_real(np.ascontiguousarray(theta), transforms)
+    half = knorm[..., :space.half]
     dk, table = _kernel_table(q_min, q_cut, n_q,
                               round(float(half.max()) + 1.0, 0))
     position = half / dk
     index = position.astype(np.intp)
     frac = position - index
-    accumulated = [np.zeros_like(transforms[0]) for _ in range(n_q)]
+    accumulated = np.zeros_like(transforms)
     for a in range(n_q):
         for b_ in range(a, n_q):
             row = table[a, b_]
@@ -295,12 +299,11 @@ def nonlocal_correlation(grid, density: np.ndarray, sigma: np.ndarray, *,
             accumulated[a] += kernel * transforms[b_]
             if b_ != a:
                 accumulated[b_] += kernel * transforms[a]
+    del transforms
     energy = 0.0
-    u = np.zeros((n_q, n.size))
+    u = space.inverse_real(accumulated, np.empty((n_q, n.size)))
     for a in range(n_q):
-        conv = sfft.irfftn(accumulated[a], s=lengths)[slices].reshape(-1)
-        u[a] = conv
-        energy += float(np.sum(theta[a] * conv) * dV)
+        energy += float(np.sum(theta[a] * u[a]) * dV)
     # E = -3/4 sum_ab int theta_a (phi_ab * theta_b) + beta N; dE/dtheta_a = -3/2 u_a.
     energy = -0.75 * energy + beta(b) * float(np.sum(n) * dV)
     d_density = beta(b) - 1.5 * np.sum(u * dtheta_dn, axis=0)

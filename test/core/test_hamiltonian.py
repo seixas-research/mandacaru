@@ -6,6 +6,7 @@ import pytest
 
 from mandacaru.core.hamiltonian import MolecularIntegrals, minimal_hao_basis
 from mandacaru.integrals import Grid
+from mandacaru.integrals.packed import dense_tensor
 
 
 R = 0.74  # H2 bond length, Angstrom
@@ -288,7 +289,9 @@ class TestEarlyActiveSpace:
         g = np.einsum("pa,qb,rc,sd,abcd->pqrs", U, U, U.conj(), U.conj(),
                       grid.active_two_body, optimize=True)
         assert np.abs(h - dense.active_one_body).max() < tolerance
-        assert np.abs(g - dense.active_two_body).max() < tolerance
+        # The tensor route keeps its reduced integrals packed.
+        assert np.abs(g - dense_tensor(dense.active_two_body)).max() \
+            < tolerance
         assert abs(grid.active_constant - dense.active_constant) < tolerance
 
     def test_no_four_index_tensor_at_a_fixed_active_space(self):
@@ -326,10 +329,11 @@ class TestEarlyActiveSpace:
                                         n_electrons=n_electrons,
                                         active_space=spec)
         assert not integrals.integral_direct
-        # A machine too small for the tensor route's three M^4 arrays.
+        # A machine too small for the tensor route's three tensors.
         monkeypatch.setattr(
             matrix_free, "memory_limit_bytes",
-            lambda: hamiltonian.dense_route_bytes(integrals.n_orbitals))
+            lambda: hamiltonian.dense_route_bytes(integrals.n_orbitals,
+                                                  integrals.packs_two_body))
         integrals.molecular_hamiltonian(mo_basis=True,
                                         n_electrons=n_electrons,
                                         active_space=spec)
@@ -342,3 +346,201 @@ class TestEarlyActiveSpace:
         integrals.molecular_hamiltonian(mo_basis=True,
                                         n_electrons=n_electrons)
         assert not integrals.integral_direct
+
+
+# --------------------------------------------------------------------------- #
+# The two-body operator against a determinant-by-determinant oracle.
+# --------------------------------------------------------------------------- #
+
+def _ladder(operation, mode, determinant):
+    """``a`` or ``a+`` on spin-orbital ``mode`` of a determinant bit mask:
+    ``(new mask, fermionic sign)``, ``None`` when it annihilates."""
+    occupied = (determinant >> mode) & 1
+    if occupied != (operation == "a"):
+        return None
+    below = bin(determinant & ((1 << mode) - 1)).count("1")
+    return determinant ^ (1 << mode), -1.0 if below % 2 else 1.0
+
+
+def determinant_hamiltonian(h, chemist, n_alpha, n_beta, constant=0.0):
+    r"""``(matrix, determinants)`` of
+    :math:`\sum h_{pq} a^\dagger_p a_q + \tfrac12 \sum (pr|qs)\,
+    a^\dagger_p a^\dagger_q a_s a_r` in the ``(n_alpha, n_beta)`` determinant
+    basis, spin-orbital ``sigma * M + p``.
+
+    Written from the chemists' integrals ``(pr|qs) = chemist[p, r, q, s]``
+    alone, applying the operators to bit masks: it shares no code with
+    ``Fermion``, the mappings or the sector.  ``h`` is ``(M, M)`` or
+    ``(2, M, M)``, ``chemist`` ``(M,)*4`` or ``(2, 2, M, M, M, M)`` (spin
+    resolved: electron 1 of spin ``sigma``, electron 2 of spin ``tau``).
+    """
+    from itertools import combinations
+
+    h, chemist = np.asarray(h), np.asarray(chemist)
+    M = h.shape[-1]
+    spin_h = lambda s: h[s] if h.ndim == 3 else h
+    spin_g = lambda s, t: chemist[s, t] if chemist.ndim == 6 else chemist
+    determinants = [sum(1 << i for i in a) | sum(1 << (M + i) for i in b)
+                    for a in combinations(range(M), n_alpha)
+                    for b in combinations(range(M), n_beta)]
+    position = {d: i for i, d in enumerate(determinants)}
+    matrix = np.zeros((len(determinants),) * 2, dtype=complex)
+    for column, det in enumerate(determinants):
+        matrix[column, column] += constant
+        for s in range(2):
+            for p, q in zip(*np.nonzero(spin_h(s))):
+                first = _ladder("a", s * M + q, det)
+                second = first and _ladder("c", s * M + p, first[0])
+                if second:
+                    matrix[position[second[0]], column] += \
+                        spin_h(s)[p, q] * first[1] * second[1]
+        for s in range(2):
+            for t in range(2):
+                for p, r, q, u in zip(*np.nonzero(spin_g(s, t))):
+                    chain, sign = det, 1.0
+                    for operation, mode in (("a", s * M + r), ("a", t * M + u),
+                                            ("c", t * M + q), ("c", s * M + p)):
+                        step = _ladder(operation, mode, chain)
+                        if step is None:
+                            break
+                        chain, factor = step
+                        sign *= factor
+                    else:
+                        matrix[position[chain], column] += \
+                            0.5 * sign * spin_g(s, t)[p, r, q, u]
+    return matrix, determinants
+
+
+def _chemist_problem(M, complex_orbitals, seed, factors=4, spin_resolved=False):
+    """Random Hermitian ``h`` and a sum of squares of Hermitian matrices
+    ``(pr|qs) = sum_k L_k[p, r] L_k[q, s]``: real (8-fold symmetric) or
+    complex (4-fold), as the integrals of real and complex orbitals are."""
+    rng = np.random.default_rng(seed)
+
+    def hermitian():
+        a = rng.standard_normal((M, M))
+        if complex_orbitals:
+            a = a + 1j * rng.standard_normal((M, M))
+        return (a + a.conj().T) / 2
+
+    def one_set():
+        g = sum(np.einsum("pr,qs->prqs", L, L)
+                for L in (hermitian() for _ in range(factors)))
+        return hermitian(), g
+
+    if not spin_resolved:
+        return one_set()
+    blocks = [[one_set() for _ in range(2)] for _ in range(2)]
+    h = np.stack([blocks[0][0][0], blocks[1][1][0]])
+    g = np.stack([np.stack([blocks[s][t][1] for t in range(2)])
+                  for s in range(2)])
+    return h, g
+
+
+class TestAgainstADeterminantOracle:
+    """The qubit Hamiltonian's sector spectrum is the determinant FCI's.
+
+    A wrong index order (chemists' for physicists'), a lost factor of 1/2, a
+    swapped spin block or a missing symmetrization changes the spectrum of
+    these random problems at once; they have no structure a lucky convention
+    could hide behind.
+    """
+
+    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
+                                         "bravyi_kitaev", "parity_reduced"])
+    @pytest.mark.parametrize("complex_orbitals", [False, True])
+    @pytest.mark.parametrize("M, n_alpha, n_beta", [(3, 1, 1), (4, 2, 1)])
+    def test_the_sector_spectrum_is_the_determinant_spectrum(
+            self, M, n_alpha, n_beta, complex_orbitals, mapping):
+        from mandacaru.core.mapping import Fermion
+        from mandacaru.core.sector import ParticleSector
+
+        h, chemist = _chemist_problem(M, complex_orbitals, seed=7)
+        operator = Fermion.from_spatial_integrals(
+            h, chemist.transpose(0, 2, 1, 3))
+        operator = operator + Fermion({(): 0.37 + 0j}, n_modes=2 * M)
+        oracle, _ = determinant_hamiltonian(h, chemist, n_alpha, n_beta, 0.37)
+        assert np.abs(oracle - oracle.conj().T).max() < 1e-13
+
+        qubit = operator.map_to_qubits(mapping, n_modes=2 * M,
+                                       num_particles=(n_alpha, n_beta))
+        # Hermitian as an operator, conserving N and S_z: nothing leaves.
+        assert max(abs(c.imag) for c in qubit.terms.values()) < 1e-12
+        sector = ParticleSector(qubit.num_qubits, (n_alpha, n_beta), mapping)
+        assert sector.conserves(qubit)
+        matrix = sector.restrict(qubit).toarray()
+        assert np.abs(matrix - matrix.conj().T).max() < 1e-12
+        assert np.allclose(np.linalg.eigvalsh(matrix),
+                           np.linalg.eigvalsh(oracle), atol=1e-11)
+
+    def test_spin_resolved_integrals_follow_their_spin_blocks(self):
+        from mandacaru.core.mapping import Fermion
+        from mandacaru.core.sector import ParticleSector
+
+        h, chemist = _chemist_problem(3, True, seed=9, spin_resolved=True)
+        physicist = chemist.transpose(0, 1, 2, 4, 3, 5)
+        oracle, _ = determinant_hamiltonian(h, chemist, 2, 1)
+        qubit = Fermion.from_spatial_integrals(h, physicist).map_to_qubits(
+            "jordan_wigner", n_modes=6)
+        sector = ParticleSector(6, (2, 1), "jordan_wigner")
+        assert sector.conserves(qubit)
+        assert np.allclose(
+            np.linalg.eigvalsh(sector.restrict(qubit).toarray()),
+            np.linalg.eigvalsh(oracle), atol=1e-11)
+
+    @pytest.fixture(scope="class")
+    def molecules(self):
+        return {}
+
+    @pytest.mark.parametrize("name, frozen", [
+        ("H2", None), ("LiH", None), ("LiH", 1), ("H2O", 1)])
+    def test_molecular_hamiltonians_equal_the_independent_active_problem(
+            self, name, frozen, molecules):
+        """The pipeline's operator (AO tensor -> RHF orbitals -> frozen core
+        -> spin blocks -> Jordan-Wigner) against the active problem written
+        here from the atomic-orbital integrals: the transform by the
+        orbitals, the frozen-core potential
+        ``h_pq + sum_c [2 (pq|cc) - (pc|cq)]``, the core energy and the
+        nuclear repulsion.  Also the Hartree-Fock energy of the SCF."""
+        from mandacaru.core.sector import ParticleSector
+
+        if name not in molecules:
+            molecules[name] = _molecule_integrals(
+                name, {"name": "PAW-LCAO", "size": "SZ"})
+        integrals, n_electrons = molecules[name]
+        spec = None if frozen is None else {"frozen": frozen}
+        operator = integrals.molecular_hamiltonian(
+            mo_basis=True, n_electrons=n_electrons, active_space=spec)
+
+        C = np.asarray(integrals.mo_coefficients)
+        h_mo = C.conj().T @ integrals.one_body() @ C
+        g_mo = np.einsum("pi,qj,rk,sl,pqrs->ijkl", C.conj(), C.conj(), C, C,
+                         integrals.two_body(), optimize=True)
+        chemist = g_mo.transpose(0, 2, 1, 3)               # (pr|qs)
+        core, active = range(frozen or 0), range(frozen or 0, h_mo.shape[0])
+        h_eff = h_mo + sum(2 * chemist[:, :, c, c] - chemist[:, c, c, :]
+                           for c in core)
+        e_core = (sum(2 * h_mo[c, c] for c in core)
+                  + sum(2 * chemist[c, c, d, d] - chemist[c, d, d, c]
+                        for c in core for d in core))
+        constant = e_core + integrals.nuclear_repulsion \
+            + integrals.constant_energy
+        ix = np.ix_(active, active)
+        n_alpha = n_electrons // 2 - len(core)
+        oracle, _ = determinant_hamiltonian(
+            h_eff[ix], chemist[np.ix_(active, active, active, active)],
+            n_alpha, n_alpha, constant)
+
+        # The SCF's own energy is the reference determinant's.
+        assert oracle[0, 0].real == pytest.approx(
+            integrals.hartree_fock(n_electrons).electronic_energy
+            + integrals.nuclear_repulsion + integrals.constant_energy,
+            abs=1e-8)
+
+        qubit = operator.map_to_qubits("jordan_wigner")
+        sector = ParticleSector(qubit.num_qubits, (n_alpha, n_alpha),
+                                "jordan_wigner")
+        assert sector.conserves(qubit)
+        assert np.allclose(
+            np.linalg.eigvalsh(sector.restrict(qubit).toarray())[:4],
+            np.linalg.eigvalsh(oracle)[:4], atol=1e-9)

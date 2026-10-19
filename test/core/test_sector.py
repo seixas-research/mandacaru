@@ -14,7 +14,7 @@ import pytest
 from mandacaru.algorithms.rdm import one_rdm, two_rdm
 from mandacaru.core.hamiltonian import spin_block_integrals
 from mandacaru.core.mapping import Fermion, PauliSum
-from mandacaru.core.sector import ParticleSector
+from mandacaru.core.sector import ParticleSector, apply_pauli_sum
 
 M = 3
 
@@ -64,17 +64,15 @@ def test_sector_rdms_match_the_full_register(mapping):
 # Restricting a large operator without holding every term at once.
 # --------------------------------------------------------------------------- #
 
-def test_restrict_batches_without_changing_the_result():
-    """The batched fold is exact, whatever the batch size.
+def test_restrict_is_the_term_by_term_sum():
+    """The group-wise fill is exactly the sum of every term's own action.
 
-    Every Pauli term contributes one entry per sector state, so keeping all of
-    them before de-duplicating costs ``len(terms) * dim`` entries -- 3.7e8 of
-    them (~12 GB) for OH in PAW-LCAO-DZ, against a summed result of 16.5M nonzeros.
-    ``restrict`` therefore folds the terms into the running matrix in batches,
-    which is only legitimate because the sum is linear in them.
+    Each term is applied to every sector state with
+    :func:`~mandacaru.core.sector.apply_pauli_sum` (images and phases by
+    bit operations on one state at a time) and the entries inside the sector
+    are summed, which shares no code with the flip-mask grouping and the
+    in-place CSR fill of ``restrict``.
     """
-    from mandacaru.core.sector import RESTRICT_BATCH_ENTRIES
-
     rng = np.random.default_rng(11)
     n_qubits = 8
     labels = {"".join(rng.choice(list("IXYZ"), n_qubits)):
@@ -82,10 +80,60 @@ def test_restrict_batches_without_changing_the_result():
     operator = PauliSum(labels, num_qubits=n_qubits)
     sector = ParticleSector(n_qubits, (2, 2), "jordan_wigner")
 
-    reference = sector.restrict(operator, max_entries=10 ** 9).toarray()
-    for batch in (1, 3, 97, RESTRICT_BATCH_ENTRIES):
-        restricted = sector.restrict(operator, max_entries=batch).toarray()
-        assert np.allclose(restricted, reference, atol=1e-12), batch
+    expected = np.zeros((sector.dim, sector.dim), dtype=complex)
+    for column, state in enumerate(sector.indices):
+        images, amplitudes = apply_pauli_sum(operator, [state], [1.0])
+        rows = sector.positions(images)
+        keep = rows >= 0
+        expected[rows[keep], column] += amplitudes[keep]
+    restricted = sector.restrict(operator)
+    assert np.allclose(restricted.toarray(), expected, atol=1e-12)
+    # Sorted rows, no stored zero, no duplicate.
+    assert restricted.has_sorted_indices
+    assert np.all(restricted.data != 0)
+
+
+def test_the_position_table_agrees_with_the_search():
+    """The ``int32`` lookup table and ``searchsorted`` give the same positions,
+    inside and outside the sector, and out-of-range indices fall back."""
+    sector = ParticleSector(8, (2, 2), "jordan_wigner")
+    probe = np.arange(1 << 8, dtype=np.int64)
+    where = np.searchsorted(sector.indices, probe)
+    where = np.clip(where, 0, sector.dim - 1)
+    reference = np.where(sector.indices[where] == probe, where, -1)
+    assert np.array_equal(sector.positions(probe), reference)
+    assert sector.positions(np.array([-1, 1 << 8, 1 << 40])).tolist() == [-1] * 3
+
+
+def test_restrict_holds_little_more_than_its_result():
+    """The peak of a restriction is the matrix plus a few vectors.
+
+    16 qubits, (4, 4), a molecular-type Hamiltonian (5,793 Pauli terms, 1.77M
+    entries, 34 MiB).  The coordinate-format fold this replaced peaked at
+    3.8 times the result; the ceiling is 1.25.
+    """
+    import tracemalloc
+
+    rng = np.random.default_rng(3)
+    M = 8
+    h = rng.standard_normal((M, M))
+    h = np.diag(np.linspace(-3, 3, M)) + 0.1 * (h + h.T)
+    chemist = sum(np.einsum("pr,qs->prqs", L, L) for L in
+                  ((lambda a: (a + a.T) / 2)(rng.standard_normal((M, M)))
+                   for _ in range(4)))
+    operator = Fermion.from_spatial_integrals(
+        h, 0.05 * chemist.transpose(0, 2, 1, 3)).map_to_qubits(
+        "jordan_wigner", n_modes=2 * M)
+    sector = ParticleSector(2 * M, (4, 4), "jordan_wigner")
+    tracemalloc.start()
+    try:
+        matrix = sector.restrict(operator)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    stored = matrix.data.nbytes + matrix.indices.nbytes + matrix.indptr.nbytes
+    assert matrix.nnz > 1_000_000
+    assert peak < 1.25 * stored
 
 
 class TestFlipMaskGrouping:
@@ -202,6 +250,20 @@ class TestConserves:
         assert self._state_by_state(sector, generator)
         assert not all(sector.conserves(PauliSum({label: coeff}))
                        for label, coeff in generator.terms.items())
+
+    def test_a_string_lost_to_truncation_is_not_a_leak(self):
+        """The mappings drop each string at or below 1e-12 on its own, so a
+        conserving term near that scale can keep half of its flip group.
+        That remainder must not cost the run its sector (H2 in a last-zeta
+        DZP basis fell back to the full 20-qubit register and took over an
+        hour)."""
+        excitation = Fermion({((1, True), (0, False)): 1.0,
+                              ((0, True), (1, False)): -1.0}, n_modes=2 * M)
+        generator = excitation.map_to_qubits("jordan_wigner")
+        sector = ParticleSector(2 * M, (1, 1), "jordan_wigner")
+        label, coeff = next(iter(generator.terms.items()))
+        assert sector.conserves(PauliSum({label: 2e-12 * coeff}))
+        assert not sector.conserves(PauliSum({label: 1e-9 * coeff}))
 
 
 def test_restrict_of_nothing_is_empty():

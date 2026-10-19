@@ -555,7 +555,12 @@ def _virtual_ranking(method: str, h_mo, eri_mo, n_doubly: int,
         # occupied orbitals: the open-shell expression perturbs that determinant
         # and never rotates its occupied orbitals.  The alpha/beta labels do not
         # matter to a spin-summed density, so the larger count goes first.
-        if open_shell:
+        if open_shell and eri_mo is None:
+            # An integral-direct build: the provider forms the spin Fock
+            # matrices and the <ij|ab> blocks, never the whole tensor.
+            result = orbital_integrals.open_shell_mp2_natural_orbitals(
+                first_virtual, n_doubly)
+        elif open_shell:
             result = open_shell_mp2_natural_orbitals(h_mo, eri_mo,
                                                      first_virtual, n_doubly)
         elif eri_mo is None:
@@ -864,11 +869,6 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
         _resolve_counts(orbitals, n_doubly, n_singly, n_virtual, len(frozen))
     tensors = (orbital_integrals.tensors()
                if orbital_integrals is not None else None)
-    if method == "mp2" and tensors is None and open_shell:
-        raise ValueError(
-            "the open-shell 'mp2' active_space method reads the full two-body "
-            "tensor in its spin-resolved semicanonical orbitals, which an "
-            "integral-direct build never forms")
     h_mo, eri_mo = tensors if tensors is not None else (h_mo, eri_mo)
     rotation, occupations, correlation, occupied_density = _virtual_ranking(
         method, h_mo, eri_mo, n_doubly, first_virtual, M,

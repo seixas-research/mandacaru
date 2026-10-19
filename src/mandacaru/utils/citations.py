@@ -192,6 +192,12 @@ def _pseudo_keys(family, options) -> list:
         keys += ["Sankey1989", "Junquera2001"]
     if options.get("filter_cutoff"):
         keys.append("Anglada2006")
+    # Diffuse shells: the augmentation recipe, sized and cut like the
+    # numerical orbitals of the confinement papers.
+    if options.get("diffuse"):
+        from ..pseudopotentials.diffuse import validate_diffuse
+        if validate_diffuse(options["diffuse"]) is not None:
+            keys += ["Kendall1992", "Artacho1999", "Junquera2001"]
     return keys
 
 

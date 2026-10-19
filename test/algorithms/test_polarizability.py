@@ -155,3 +155,24 @@ class TestThePolarizability:
         atoms.pbc = True
         with pytest.raises(NotImplementedError, match="Berry phase"):
             polarizability(atoms, method="rhf", basis=PAW_SZP)
+
+
+class TestDiffuseShells:
+    def test_a_diffuse_basis_responds_more(self):
+        """Smoke test: H2 in SZP, plus its diffuse s and p shells (coarse
+        grid, a box that holds them), moves toward the Hartree-Fock limit
+        (alpha_iso 5.2 a.u.): the response density lives outside the valence
+        orbitals.  (Without the p shell a diffuse s alone does not: the
+        minimal SZ alpha_zz is too large for a basis reason of its own.)"""
+        from ase import Atoms
+
+        def alpha(basis):
+            atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+            atoms.center(vacuum=7.3)
+            return polarizability(atoms, method="rhf", basis=basis,
+                                  grid_spacing=0.4, trace=False)
+
+        plain = alpha(PAW_SZP)
+        diffuse = alpha({**PAW_SZP, "diffuse": True})
+        assert plain.isotropic < diffuse.isotropic < 5.6
+        assert diffuse.tensor[0, 0] > plain.tensor[0, 0]

@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..integrals.packed import is_packed
+
 __all__ = ["TensorOrbitalIntegrals", "DirectOrbitalIntegrals"]
 
 
@@ -97,13 +99,27 @@ class TensorOrbitalIntegrals(_LocalBasis):
 
     def __init__(self, h_mo, eri_mo, integrals=None, orbitals=None):
         self.h_mo = np.asarray(h_mo)
-        self.eri_mo = np.asarray(eri_mo)
+        # A packed tensor stays packed: every query below reads it so.
+        self.eri_mo = eri_mo if is_packed(eri_mo) else np.asarray(eri_mo)
         self.integrals = integrals
         self.orbitals = None if orbitals is None else np.asarray(orbitals)
+
+    def _mean_field(self, weights, rotation=None) -> np.ndarray:
+        r""":math:`h + J[N] - \tfrac12 K[N]` of the occupations ``weights``
+        (``N = diag(weights)``) in the (rotated) orbitals, from the packed
+        tensor: the density is rotated, never the tensor."""
+        h, eri = self.h_mo, self.eri_mo
+        R = np.eye(h.shape[0]) if rotation is None else np.asarray(rotation)
+        D = (R * np.asarray(weights, dtype=float)[None, :]) @ R.conj().T
+        F = h + eri.coulomb(D) - 0.5 * eri.exchange(D)
+        return R.conj().T @ F @ R
 
     def fock(self, weights) -> np.ndarray:
         """The full Fock matrix in the molecular orbitals for occupations
         ``weights``."""
+        if is_packed(self.eri_mo):
+            F = self._mean_field(weights)
+            return 0.5 * (F + F.conj().T)
         h, eri = np.asarray(self.h_mo), np.asarray(self.eri_mo)
         F = h.astype(np.result_type(h, eri, float))
         for k, n_k in enumerate(weights):
@@ -116,8 +132,12 @@ class TensorOrbitalIntegrals(_LocalBasis):
         ``occupied`` / ``functions`` (as
         :meth:`~mandacaru.integrals.direct.DirectCoulomb.exchange_blocks`)."""
         occupied, functions = np.asarray(occupied), np.asarray(functions)
-        half = np.einsum("pi,qj,pqrs->ijrs", occupied.conj(), occupied.conj(),
-                         self.eri_mo, optimize=True)
+        if is_packed(self.eri_mo):
+            identity = np.eye(self.n_orbitals)
+            half = self.eri_mo.block(occupied, occupied, identity, identity)
+        else:
+            half = np.einsum("pi,qj,pqrs->ijrs", occupied.conj(),
+                             occupied.conj(), self.eri_mo, optimize=True)
         out = {}
         for (i, j), domain in pairs.items():
             F = functions[:, list(domain)]
@@ -147,6 +167,8 @@ class TensorOrbitalIntegrals(_LocalBasis):
         - \langle pk|kp\rangle)`; ``n_k`` is 2 for a doubly and 1 for a singly
         occupied orbital (the spin average of an open shell).
         """
+        if is_packed(self.eri_mo):
+            return np.real(np.diag(self._mean_field(weights, rotation)))
         h, eri = self._in(rotation)
         fock = np.diag(h).copy()
         for k, n_k in enumerate(weights):
@@ -157,6 +179,14 @@ class TensorOrbitalIntegrals(_LocalBasis):
 
     def pair_exchange(self, occupied, virtual, rotation=None) -> np.ndarray:
         r""":math:`|\langle ii|aa\rangle|` over ``occupied`` x ``virtual``."""
+        if is_packed(self.eri_mo):
+            R = (np.eye(self.n_orbitals) if rotation is None
+                 else np.asarray(rotation))
+            Ro, Rv = R[:, list(occupied)], R[:, list(virtual)]
+            block = self.eri_mo.block(Ro, Ro, Rv, Rv)        # <ij|ab>
+            o, v = Ro.shape[1], Rv.shape[1]
+            return np.abs(block[np.arange(o)[:, None], np.arange(o)[:, None],
+                                np.arange(v)[None, :], np.arange(v)[None, :]])
         _h, eri = self._in(rotation)
         return np.abs(np.array([[eri[i, i, a, a] for a in virtual]
                                 for i in occupied]))
@@ -254,6 +284,45 @@ class DirectOrbitalIntegrals(_LocalBasis):
         oovv = np.array([[blocks[(i, j)] for j in range(n_occ)]
                          for i in range(n_occ)])
         return mp2_natural_orbitals_from_block(oovv, energies, n_occ, canonical)
+
+    def open_shell_mp2_natural_orbitals(self, n_alpha: int, n_beta: int):
+        r"""Open-shell MP2 frozen natural orbitals
+        (:func:`~mandacaru.algorithms.mp2.open_shell_mp2_natural_orbitals`)
+        without the tensor.
+
+        The two spin Fock matrices of the determinant filling the lowest
+        ``n_alpha`` and ``n_beta`` orbitals come from the direct Coulomb and
+        exchange, :math:`F^\sigma = h + J[D^\alpha + D^\beta] - K[D^\sigma]`
+        (:func:`~mandacaru.algorithms.mp2.spin_fock_matrices`), and the
+        same-spin and alpha-beta :math:`\langle ij|ab\rangle` blocks in each
+        spin's semicanonical orbitals from
+        :meth:`~mandacaru.integrals.direct.DirectCoulomb.ovov` (:math:`o v`
+        Poisson solves per block), so the :math:`M^4` tensor the canonical
+        route transforms twice is never formed.  Equal to that route to
+        round-off.
+        """
+        from .mp2 import open_shell_mp2_from_blocks
+
+        C, X = self.orbitals, self.X
+        densities = []
+        for n in (int(n_alpha), int(n_beta)):
+            occupied = X @ C[:, :n]
+            densities.append(occupied @ occupied.conj().T)     # AO basis
+        J = self.direct.coulomb(densities[0] + densities[1])
+        focks = []
+        for D in densities:
+            G = X.conj().T @ (J - self.direct.exchange(D)) @ X
+            F = C.conj().T @ (self.h + G) @ C
+            focks.append(0.5 * (F + F.conj().T))
+        to_ao = X @ C
+
+        def oovv(c1, c2, c3, c4):
+            # <ij|ab> = (ia|jb): electron 1 on (i, a), electron 2 on (j, b).
+            block = self.direct.ovov(to_ao @ c1, to_ao @ c3, to_ao @ c2,
+                                     to_ao @ c4)
+            return block.transpose(0, 2, 1, 3)
+
+        return open_shell_mp2_from_blocks(focks, n_alpha, n_beta, oovv)
 
     def exchange_blocks(self, occupied, functions, pairs) -> dict:
         """As :meth:`TensorOrbitalIntegrals.exchange_blocks`, on the grid."""

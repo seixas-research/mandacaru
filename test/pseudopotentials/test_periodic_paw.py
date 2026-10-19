@@ -180,6 +180,114 @@ class TestGridSymmetry:
         assert len(zone.points) == 16 and zone.weights.sum() == 216
 
 
+def _equivalent(a, b, rotations):
+    """Whether fractional k-points ``a`` and ``b`` are images under one of
+    ``rotations`` (``k -> k W``, the reduction's convention) or its time
+    reverse, up to a reciprocal-lattice vector."""
+    for W in rotations:
+        image = np.asarray(a) @ np.asarray(W, dtype=float)
+        for sign in (1.0, -1.0):
+            delta = sign * image - np.asarray(b)
+            if np.all(np.abs(delta - np.round(delta)) < 1e-8):
+                return True
+    return False
+
+
+class TestTheMeshWedge:
+    """:func:`~mandacaru.pseudopotentials.periodic_paw.mesh_wedge`: the map
+    from every full-mesh point to its wedge representative, which the
+    tetrahedron DOS and the Fermi surface unfold through."""
+
+    @staticmethod
+    def check(mesh, size, operations):
+        points, mapping, kept = pp.mesh_wedge(mesh, size, operations)
+        rotations = ([np.eye(3)] if kept is None
+                     else list(kept.info.rotations))
+        assert mapping.shape == (len(mesh),)
+        # Every mesh point is an image of its representative.
+        for j, k in enumerate(mesh):
+            assert _equivalent(points[mapping[j]], k, rotations), j
+        # Every representative is a mesh point, standing for itself, and no
+        # two are images of each other.
+        for i, k in enumerate(points):
+            delta = mesh - k
+            here = np.flatnonzero(np.all(np.abs(delta - np.round(delta))
+                                         < 1e-8, axis=1))
+            assert len(here) == 1 and mapping[here[0]] == i
+            for other in points[:i]:
+                assert not _equivalent(other, k, rotations)
+        # The weights are the orbit sizes over N_k: reduce_mesh's.
+        weights = np.bincount(mapping, minlength=len(points)) / len(mesh)
+        assert np.all(weights > 0) and weights.sum() == pytest.approx(1.0)
+        reduced, reference, _ops = pp.reduce_mesh(mesh, operations)
+        assert len(reduced) == len(points)
+        for k, w in zip(reduced, reference):
+            delta = points - k
+            match = np.flatnonzero(np.all(np.abs(delta - np.round(delta))
+                                          < 1e-8, axis=1))
+            assert len(match) == 1
+            assert weights[match[0]] == pytest.approx(w, abs=1e-14)
+        return points, kept
+
+    @pytest.mark.parametrize("kpts", [
+        {"size": (4, 4, 4), "gamma": True}, (4, 4, 4), (3, 3, 3),
+        {"size": (3, 4, 2), "gamma": True}, (3, 4, 2), (2, 2, 2)])
+    def test_time_reversal_alone(self, kpts):
+        """No point-group operation: k and -k, keyed on the lattice 2 n k
+        (a shifted mesh's coordinates are odd multiples of 1/(2n))."""
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
+            monkhorst_pack_kpts
+        size, _gamma, mesh = monkhorst_pack_kpts(kpts)
+        points, kept = self.check(mesh, size, None)
+        assert kept is None
+        # Half the points, plus the self-reverse ones (2k on the lattice).
+        own = np.sum(np.all(np.abs(2 * mesh - np.round(2 * mesh)) < 1e-8,
+                            axis=1))
+        assert len(points) == (len(mesh) + own) // 2
+
+    @pytest.mark.parametrize("atoms, nodes, kpts, expected", [
+        (SILICON, 8, {"size": (4, 4, 4), "gamma": True}, 8),
+        (SILICON, 8, (4, 4, 4), 10),
+        (SILICON, 8, (3, 3, 3), 4),
+        (SILICON, 10, (4, 4, 4), None),
+        (bulk("Mg", "hcp", a=3.21, c=5.21), 10, (4, 4, 2), None),
+        (bulk("Mg", "hcp", a=3.21, c=5.21), 10,
+         {"size": (3, 3, 2), "gamma": True}, None)],
+        ids=["Si-gamma-4", "Si-shifted-4", "Si-3", "Si-24-ops",
+             "Mg-shifted", "Mg-gamma"])
+    def test_with_the_point_group(self, atoms, nodes, kpts, expected):
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
+            monkhorst_pack_kpts
+        size, _gamma, mesh = monkhorst_pack_kpts(kpts)
+        symmetry = pp.grid_symmetry(atoms, _grid(atoms, nodes))
+        points, kept = self.check(mesh, size, symmetry)
+        assert kept is not None and len(points) < len(mesh) // 2
+        if expected is not None:
+            assert len(points) == expected
+
+    def test_a_mesh_without_its_time_reverse_is_refused(self):
+        mesh = np.array([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0]])
+        with pytest.raises(ValueError, match="k -> -k"):
+            pp.mesh_wedge(mesh, (4, 1, 1))
+
+    def test_without_time_reversal_the_mesh_is_kept_whole(self):
+        """A magnetic spinor crystal's bands are not even in k: every point
+        stands for itself, with weight 1/N_k, and no operation is taken."""
+        from mandacaru.algorithms._hamiltonian_from_atoms import \
+            monkhorst_pack_kpts
+        size, _gamma, mesh = monkhorst_pack_kpts((3, 4, 2))
+        points, mapping, kept = pp.mesh_wedge(mesh, size,
+                                              time_reversal=False)
+        assert kept is None and np.array_equal(points, mesh)
+        assert np.array_equal(mapping, np.arange(len(mesh)))
+        reduced, weights, kept = pp.reduce_mesh(mesh, time_reversal=False)
+        assert kept is None and np.array_equal(reduced, mesh)
+        assert np.allclose(weights, 1.0 / len(mesh))
+        symmetry = pp.grid_symmetry(SILICON, _grid(SILICON, 8))
+        with pytest.raises(ValueError, match="time reversal"):
+            pp.reduce_mesh(mesh, symmetry, time_reversal=False)
+
+
 class TestTheIrreducibleWedge:
     @pytest.mark.parametrize("atoms, nodes, kpts, options, functional", [
         (SILICON, 12, (2, 2, 2), {"size": "SZ", "filter_cutoff": 200}, "lda"),
@@ -354,3 +462,91 @@ def test_the_crystal_build_runs_single_threaded_blas():
     (:func:`~mandacaru.integrals._backend.single_threaded_blas`)."""
     for function in (pp.build_crystal, pp.PeriodicPAW.kpoint_matrices):
         assert getattr(function, "__wrapped__", None) is not None
+
+
+class TestTheSpinOrbitTerm:
+    """The spin-orbit term of a spin-orbit set, Bloch summed per k-point
+    (:meth:`~mandacaru.pseudopotentials.periodic_paw.PeriodicPAW.spin_orbit_matrix`)."""
+
+    @staticmethod
+    def options(xc="lda"):
+        from mandacaru.pseudopotentials.paw import paw_library_path
+        return {**SILICON_BASIS,
+                "paw_dataset": paw_library_path(None, xc,
+                                                relativity="dirac")}
+
+    @pytest.fixture(scope="class")
+    def crystal(self):
+        crystal, _context = pp.build_crystal(
+            SILICON, SILICON_H, self.options(),
+            kpts={"size": (2, 1, 1), "gamma": True}, spin_orbit=True)
+        return crystal
+
+    def test_a_spin_orbit_set_needs_spinor_states(self):
+        """Without ``spin_orbit=True`` the set is refused, not read as a
+        scalar-relativistic one."""
+        with pytest.raises(NotImplementedError, match="spin-orbit"):
+            pp.build_crystal(SILICON, SILICON_H, self.options(),
+                             kpts={"size": (1, 1, 1), "gamma": True})
+        assert pp.spin_orbit_symbols(SILICON, self.options()) == ["Si"]
+        assert pp.spin_orbit_symbols(SILICON, SILICON_BASIS) == []
+
+    def test_it_couples_the_spins_and_is_hermitian(self, crystal):
+        M = crystal.M
+        assert crystal.has_spin_orbit
+        for data in crystal.kpoint_data:
+            h = data.spin_orbit
+            assert h.shape == (2 * M, 2 * M)
+            assert np.allclose(h, h.conj().T, atol=1e-15)
+            assert np.max(np.abs(h[:M, M:])) > 1e-4
+            # L.S is traceless over each shell's spin-orbitals.
+            assert abs(np.trace(np.linalg.solve(
+                np.kron(np.eye(2), data.overlap), h))) < 1e-10
+
+    def test_it_is_periodic_in_the_reciprocal_lattice(self, crystal):
+        """The Bloch sums at k + G are those at k, and so is the term."""
+        k = crystal.cartesian_kpoints([[0.1, 0.2, -0.3]])
+        G = crystal.cartesian_kpoints([[1.0, -1.0, 2.0]])
+        assert np.allclose(crystal.spin_orbit_matrix(k),
+                           crystal.spin_orbit_matrix(k + G), atol=1e-12)
+        assert np.allclose(crystal.spin_orbit_matrix(crystal.kpoints),
+                           np.stack([d.spin_orbit
+                                     for d in crystal.kpoint_data]),
+                           atol=1e-14)
+
+    def test_time_reversal_maps_k_to_minus_k(self, crystal):
+        """Its spectrum in the metric S(k) x 1 is even in k (Kramers), and
+        at Gamma it comes in pairs."""
+        from scipy.linalg import eigh
+
+        k = crystal.cartesian_kpoints([[0.1, 0.2, -0.3], [0.0, 0.0, 0.0]])
+        data = crystal.kpoint_matrices(np.vstack([k, -k[:1]]))
+        spectra = [eigh(d.spin_orbit, np.kron(np.eye(2), d.overlap),
+                        eigvals_only=True) for d in data]
+        assert np.allclose(spectra[0], spectra[2], atol=1e-12)
+        assert np.allclose(spectra[1][0::2], spectra[1][1::2], atol=1e-12)
+
+    def test_a_scalar_crystal_has_none(self):
+        crystal, _context = pp.build_crystal(
+            SILICON, SILICON_H, SILICON_BASIS,
+            kpts={"size": (1, 1, 1), "gamma": True}, spin_orbit=True)
+        assert not crystal.has_spin_orbit
+        assert crystal.kpoint_data[0].spin_orbit is None
+        assert not np.any(crystal.spin_orbit_matrix(crystal.kpoints))
+
+    def test_a_magnetization_is_refused_on_a_reduced_mesh(self, crystal):
+        """An axial vector the scalar averages would not rotate."""
+        assert crystal.symmetry is not None
+        M = crystal.M
+        P = [np.eye(2 * M, dtype=complex)] * len(crystal.kpoint_data)
+        with pytest.raises(NotImplementedError, match="axial"):
+            crystal.magnetization(P)
+
+
+class TestDiffuseIsMolecular:
+    def test_a_crystal_with_diffuse_shells_is_refused(self):
+        # Refused before anything is sampled: in a solid a diffuse shell is
+        # nearly dependent on the neighbors' valence functions.
+        with pytest.raises(ValueError, match="for molecules"):
+            pp.build_crystal(SILICON, SILICON_H,
+                             {**SILICON_BASIS, "diffuse": True})

@@ -236,6 +236,57 @@ class TestDevices:
         assert data["per_atom"] == [["H", 1], ["H", 1]]
 
 
+class TestAShotBasedRun:
+    """With ``shots > 0`` the estimate is the classical memory (polynomial)
+    and, for ADAPT-VQE, the cost of a measured gradient step -- not a state
+    vector."""
+
+    def test_adapt_reports_memory_and_the_gradient_step(self):
+        from mandacaru.circuits.pools import build_pool
+
+        water = _boxed("H2O")
+        est = estimate_qubits(water, active_space={"frozen": "auto"},
+                              method="adapt-vqe", device="ibm_fez",
+                              shots=4096, pool="fermionic")
+        step = est.gradient_step
+        assert step["pool_size"] == len(build_pool(
+            "fermionic", est.n_spatial_orbitals, est.num_particles))
+        assert step["shots"] == 4096 * step["bases"]
+        assert step["jobs"] >= 1 and step["bases"] > est.energy_bases
+        assert est.classical_memory_bytes < 2 ** 30
+        text = est.summary()
+        assert "gradient step" in text and "classical memory" in text
+        assert "state vector      :" not in text
+        assert json.loads(est.to_json())["gradient_step"]["bases"] == \
+            step["bases"]
+
+    def test_the_memory_is_polynomial_at_fifty_qubits(self):
+        hamiltonian = PauliSum({"Z" + "I" * 49: 1.0})
+        est = estimate_qubits(hamiltonian=hamiltonian, num_particles=(5, 5),
+                              n_spatial_orbitals=25, method="adapt-vqe",
+                              shots=1000, pool="fermionic")
+        assert est.n_qubits == 50
+        assert est.gradient_step["pool_size"] == 200 + 2 * 1900 + 10000
+        # Dense integrals would hold 4 M^4 two-body terms: a few GB at most,
+        # against 2^50 * 16 bytes = 16 PiB for one state vector.
+        assert est.classical_memory_bytes < 4 * 2 ** 30
+
+    def test_vqe_reports_the_energy_and_no_gradient_step(self):
+        est = estimate_qubits(_boxed("H2O"), method="vqe", shots=1000,
+                              active_space={"frozen": "auto"})
+        assert est.gradient_step is None
+        assert est.energy_bases > 0 and est.classical_memory_bytes > 0
+
+    def test_the_driver_passes_its_shots_and_pool(self):
+        calc = Mandacaru(method="adapt-vqe", pool="qeb", shots=1000,
+                         active_space={"frozen": "auto"}, trace=False)
+        est = calc.dry_run(_boxed("H2O"))
+        assert est.shots == 1000 and est.pool == "qeb"
+        assert est.gradient_step is not None
+        exact = Mandacaru(method="adapt-vqe", trace=False).dry_run(_h2())
+        assert exact.gradient_step is None and exact.shots == 0
+
+
 # --------------------------------------------------------------------------- #
 # Accuracy against real Hamiltonians.
 # --------------------------------------------------------------------------- #
@@ -572,3 +623,35 @@ class TestDryRunIsDry:
         with pytest.raises(FileNotFoundError):
             Mandacaru(method="adapt-vqe",
                       load_hamiltonian=str(tmp_path / "absent.parquet"))
+
+
+class TestDiffuseShells:
+    def test_the_count_is_the_built_basis(self):
+        """Water DZP with one diffuse shell per angular momentum present
+        (O s p d, H s p): 23 + 9 + 4 + 4 functions, as the builder makes
+        them, and the label names the recipe."""
+        from mandacaru.pseudopotentials.families import (
+            lookup_family, pseudo_basis_arguments)
+        from mandacaru.pseudopotentials.orbitals import pseudo_basis
+
+        water = _boxed("H2O", vacuum=7.3)
+        basis = {"name": "PAW-LCAO", "size": "DZP", "diffuse": True}
+        est = estimate_qubits(water, basis=basis)
+        assert est.per_atom == [("O", 22), ("H", 9), ("H", 9)]
+        assert est.n_qubits == 80
+        assert ("diffuse (shells present, count 1, rms_ratio 2.5, "
+                "cutoff_norm 0.0001)") in est.basis
+        family = lookup_family("PAW-LCAO")
+        symbols = water.get_chemical_symbols()
+        potentials = {s: family.get(s, None) for s in set(symbols)}
+        options = family.resolved_options(
+            {k: v for k, v in basis.items() if k != "name"})
+        fns, _owners = pseudo_basis(symbols, water.get_positions(), potentials,
+                                    **pseudo_basis_arguments("paw-lcao",
+                                                             options))
+        assert est.n_qubits == 2 * len(fns)
+
+    def test_off_leaves_the_label_alone(self):
+        est = estimate_qubits(_boxed("H2O"), basis={
+            "name": "PAW-LCAO", "size": "DZP", "diffuse": False})
+        assert "diffuse" not in est.basis and est.n_qubits == 46

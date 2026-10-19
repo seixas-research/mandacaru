@@ -318,3 +318,27 @@ class TestCounterpoise:
         with pytest.raises(ValueError, match="counterpoise=True"):
             interaction_energy(_helium_pair(), [[0], [1]], method="rhf",
                                basis=PAW_SZ, ghosts=[1])
+
+
+class TestDiffuseCounterpoise:
+    def test_ghosts_lend_their_diffuse_shells(self):
+        """Two H2 4 Angstrom apart in SZ plus diffuse s shells.  The
+        partner's diffuse shells, carried by its ghosts, lower each
+        monomer's energy -- the superposition error of an incomplete monomer
+        basis -- and the counterpoise correction removes it: the corrected
+        interaction is close to zero at this distance, the raw one is not."""
+        atoms = _two_h2(4.0)
+        atoms.set_cell([18.6, 14.6, 15.4])      # 7.3 A around: r_cut 7.22 A
+        atoms.center()
+        basis = {"name": "PAW-LCAO", "diffuse": True}
+        raw = interaction_energy(atoms, [[0, 1], [2, 3]], method="rhf",
+                                 basis=basis, grid_spacing=0.45)
+        corrected = interaction_energy(atoms, [[0, 1], [2, 3]], method="rhf",
+                                       basis=basis, grid_spacing=0.45,
+                                       counterpoise=True)
+        assert corrected.complex_energy == pytest.approx(raw.complex_energy)
+        for ghosted, alone in zip(corrected.fragment_energies,
+                                  raw.fragment_energies):
+            assert ghosted < alone
+        assert abs(corrected.in_units("eV")) < 0.005
+        assert raw.in_units("eV") < corrected.in_units("eV") - 0.01

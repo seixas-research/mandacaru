@@ -214,23 +214,32 @@ class PauliSum:
     def to_sparse_matrix(self):
         """Sparse CSR matrix (qubit 0 is the leftmost Kronecker factor).
 
-        Uses :mod:`scipy.sparse` Kronecker products, so the memory scales with the
-        (small) number of non-zeros of each Pauli string rather than the dense
-        ``2^n * 2^n``.  Used by the memory-light path of
-        :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE` for larger active spaces.
+        Built by flip mask, as :meth:`ParticleSector.restrict
+        <mandacaru.core.sector.ParticleSector.restrict>` does on a sector: the
+        strings sharing the qubits they flip share every image state, so each
+        flip mask is one pass over the ``2^n`` basis states, written straight
+        into the CSR arrays -- no Kronecker product per term, and memory of
+        the result plus a few vectors.  Used by the memory-light path of
+        :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE` for larger active
+        spaces.
         """
-        import scipy.sparse as sp
+        from .sector import csr_from_flip_groups, flip_groups
 
-        n = self.num_qubits
-        dim = 2 ** n
-        single = {ch: sp.csr_matrix(M) for ch, M in _SINGLE.items()}
-        mat = sp.csr_matrix((dim, dim), dtype=complex)
-        for label, coeff in self.terms.items():
-            m = sp.identity(1, dtype=complex, format="csr")
-            for ch in label:
-                m = sp.kron(m, single[ch], format="csr")
-            mat = mat + coeff * m
-        return mat.tocsr()
+        dim = 1 << self.num_qubits
+        return csr_from_flip_groups(
+            flip_groups(self), np.arange(dim, dtype=np.int64),
+            lambda images: images, dim)
+
+    def hermitian_part(self) -> "PauliSum":
+        r""":math:`\tfrac12(A + A^\dagger)` as a Pauli sum.
+
+        Every Pauli string is Hermitian, so the Hermitian part of
+        :math:`\sum_P c_P P` is :math:`\sum_P \mathrm{Re}(c_P)\,P`: the
+        imaginary parts of the coefficients are dropped, with no matrix formed.
+        """
+        return PauliSum({label: coeff.real for label, coeff in
+                         self.terms.items() if coeff.real != 0.0},
+                        num_qubits=self.num_qubits)
 
     def to_sparse_pauli_op(self):
         """Convert to a qiskit ``SparsePauliOp`` (requires qiskit)."""
@@ -570,13 +579,27 @@ class Fermion:
         ``spin(Q) == spin(S)``.  The ``(2M)^4`` spin-orbital tensor is never
         formed: the nonzero entries of each spatial slab ``eri[p]`` are found
         once and written out for the four spin blocks they populate.
+
+        ``eri`` may be a :class:`~mandacaru.integrals.packed.PackedERI`, read
+        one slab ``eri[p]`` at a time.
+
+        Spin-resolved integrals (a spin-polarized model, one set of spatial
+        functions per spin) are ``h`` of shape ``(2, M, M)`` and ``eri`` of
+        shape ``(2, 2, M, M, M, M)``: ``eri[sigma, tau]`` is the block whose
+        electron 1 has spin ``sigma`` and electron 2 spin ``tau``, the same
+        terms in the same order as the spin-orbital tensor holding those
+        blocks.
         """
         h = np.asarray(h)
-        M = h.shape[0]
+        resolved = h.ndim == 3
+        if resolved and h.shape[0] != 2:
+            raise ValueError(f"spin-resolved one-body integrals are (2, M, M), "
+                             f"got {h.shape}")
+        M = h.shape[-1]
         n = 2 * M
         h_so = np.zeros((n, n), dtype=complex)
-        h_so[:M, :M] = h
-        h_so[M:, M:] = h
+        h_so[:M, :M] = h[0] if resolved else h
+        h_so[M:, M:] = h[1] if resolved else h
         if h_spin is not None:
             h_spin = np.asarray(h_spin)
             if h_spin.shape != (n, n):
@@ -586,22 +609,37 @@ class Fermion:
             h_so = h_so + h_spin
         terms = _one_body_terms(h_so, tol)
         if eri is not None:
-            eri = np.asarray(eri)
-            entries = []
-            for p in range(M):
-                slab = eri[p]
+            from ..integrals.packed import is_packed
+
+            # A packed tensor is read slab by slab, never written out.
+            slab_of = (eri.slab if is_packed(eri)
+                       else (lambda p, _e=np.asarray(eri): _e[p]))
+            eri = eri if is_packed(eri) else np.asarray(eri)
+            if resolved and eri.shape != (2, 2) + (M,) * 4:
+                raise ValueError(f"spin-resolved two-body integrals are "
+                                 f"(2, 2, {M}, {M}, {M}, {M}), got "
+                                 f"{eri.shape}")
+
+            def scan(slab):
                 q, r, s = np.nonzero(np.abs(slab) > tol)
-                entries.append((q.tolist(), r.tolist(), s.tolist(),
-                                [0.5 * complex(v) for v in
-                                 slab[q, r, s].tolist()]))
+                return (q.tolist(), r.tolist(), s.tolist(),
+                        [0.5 * complex(v) for v in slab[q, r, s].tolist()])
+
+            # One scan per slab: shared by the four spin blocks of a
+            # spin-independent tensor, one per block when resolved.
+            entries = ({(sigma, tau, p): scan(eri[sigma, tau, p])
+                        for sigma in range(2) for tau in range(2)
+                        for p in range(M)} if resolved
+                       else {p: scan(slab_of(p)) for p in range(M)})
             for P in range(n):
                 # Row P of the spin-orbital tensor: electron 1 keeps P's spin
                 # (R in its block), electron 2 runs over both spins with
                 # Q and S in the same block -- alpha first, the C order.
                 sigma, p = divmod(P, M)
-                q, r, s, values = entries[p]
                 shift_r = sigma * M
-                for shift in (0, M):
+                for tau, shift in enumerate((0, M)):
+                    q, r, s, values = entries[(sigma, tau, p) if resolved
+                                              else p]
                     for qq, rr, ss, value in zip(q, r, s, values):
                         key = ((P, True), (qq + shift, True),
                                (ss + shift, False), (rr + shift_r, False))

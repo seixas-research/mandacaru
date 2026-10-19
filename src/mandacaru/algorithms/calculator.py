@@ -73,8 +73,9 @@ from time import perf_counter as _perf
 from typing import TYPE_CHECKING
 
 import numpy as np
-from ase.calculators.calculator import (Calculator, all_changes,
-                                        compare_atoms)
+from ase.calculators.calculator import (Calculator,
+                                        PropertyNotImplementedError,
+                                        all_changes, compare_atoms)
 
 from .ansatz_spec import resolve_ansatz
 from .bloch import BLOCH_METHODS
@@ -404,7 +405,9 @@ class Mandacaru(Calculator):
         scalar-relativistic PBE) for ``method="dft"`` with ``xc="pbe"``,
         ``"hse06"``, ``"r2scan"`` or ``"r2scan-rvv10"``, and ``"lda-sr"``
         (scalar-relativistic LDA) for LDA and every other method.
-        ``"lda-fr"`` reads the PAW-LCAO set with the spin-orbit term.  A
+        ``"lda-fr"`` and ``"pbe-fr"`` read the PAW-LCAO sets with the
+        spin-orbit term; with ``method="dft"`` a molecule or a crystal on
+        them is solved in two-component spinors (noncollinear LDA or PBE).  A
         basis that names its own ``paw_dataset`` option keeps it.
     grid_spacing : float
         Grid spacing in Angstrom (default ``0.20``), used both for the
@@ -521,8 +524,8 @@ class Mandacaru(Calculator):
         (or ``"cholesky"`` at the default tolerance) generates Cholesky
         factors on the grid instead and builds the SCF and the active-space
         integrals from them, trading generation time for memory: about
-        ``8 M^2 R`` bytes against the tensor's ``16 M^4``, with ``R`` a few
-        times ``M``.  The tolerance (Hartree) bounds every integral's error,
+        ``4 M^2 R`` bytes against the packed tensor's ``M^4`` (and no
+        tensor-sized working set), with ``R`` a few times ``M``.  The tolerance (Hartree) bounds every integral's error,
         not an energy's; see the "Memory and scale" guide for what it does to
         energies.  Molecules, energies and active spaces only: crystals,
         ``method="dft"`` and ``"ghf"`` and a spin-orbit basis need the dense
@@ -555,8 +558,41 @@ class Mandacaru(Calculator):
     overwriting the rest; see :mod:`mandacaru.utils.logging`.
     """
 
-    implemented_properties = ["energy", "free_energy", "forces",
-                              "charges", "magmoms", "magmom"]
+    #: What every calculation declares to ASE; ``"stress"`` joins it only
+    #: for a periodic one (:attr:`implemented_properties`).
+    _ALWAYS_IMPLEMENTED = ("energy", "free_energy", "forces",
+                           "charges", "magmoms", "magmom")
+
+    @property
+    def implemented_properties(self) -> list[str]:
+        """The properties this calculation can report, as ASE reads them.
+
+        ``"stress"`` is listed exactly when the calculation is periodic -- a
+        periodic many-body method, or Kohn-Sham on a geometry with a periodic
+        direction (:meth:`_is_periodic_calculation`) -- since a molecule has
+        no cell to strain.  The geometry is the one attached (``atoms.calc =
+        calc``) or, failing that, the last one computed; Kohn-Sham with
+        neither does not list it yet.
+        """
+        names = list(self._ALWAYS_IMPLEMENTED)
+        geometry = self.__dict__.get("_attached_atoms")
+        if geometry is None:
+            geometry = self.__dict__.get("atoms")
+        if "_solver_class" in self.__dict__ \
+                and self._is_periodic_calculation(geometry):
+            names.append("stress")
+        return names
+
+    def _is_periodic_calculation(self, atoms) -> bool:
+        """Whether this method on ``atoms`` is a periodic calculation.
+
+        A periodic driver always is; Kohn-Sham decides by the geometry, and
+        periodic atoms are a crystal.  Every other method is molecular.
+        """
+        if getattr(self._solver_class, "periodic_hamiltonian", False):
+            return True
+        decides = getattr(self._solver_class, "_is_periodic", None)
+        return decides is not None and bool(decides(atoms))
 
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
                  paw_dataset: str | None = None,
@@ -948,23 +984,35 @@ class Mandacaru(Calculator):
     # Kohn-Sham spectra and band analysis (method="dft").
 
     def dos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
-            energies=None):
-        """Gaussian-broadened density of states, ``(energies, dos)``, in eV
-        and states/eV per cell (per molecule), both spins.
+            energies=None, integration: str = "gaussian",
+            curvature_correction=None):
+        """Density of states, ``(energies, dos)``, in eV and states/eV per
+        cell (per molecule), both spins.
 
-        ``width`` is the Gaussian's standard deviation; a crystal's ``kpts``
-        is diagonalized non-self-consistently (``None``: the SCF mesh).
+        ``integration="gaussian"`` (the default) broadens each level by a
+        Gaussian of standard deviation ``width``; ``"tetrahedron"``
+        integrates a crystal's bands linearly interpolated on a uniform mesh,
+        with no width (``curvature_correction``: the Bloechl correction,
+        which leaves the DOS unchanged).  A crystal's ``kpts`` is
+        diagonalized non-self-consistently (``None``: the SCF mesh).
         """
         return self._solver_member("dos", self._NEEDS_DFT)(
-            width=width, npoints=npoints, kpts=kpts, energies=energies)
+            width=width, npoints=npoints, kpts=kpts, energies=energies,
+            integration=integration,
+            curvature_correction=curvature_correction)
 
     def pdos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
-             energies=None):
+             energies=None, integration: str = "gaussian",
+             curvature_correction=None):
         """:meth:`dos` projected on atomic shells, ``(energies, pdos)``;
         ``pdos[(atom, l)]`` is a shell's Loewdin share and the shells sum to
-        the total."""
+        the total.  With tetrahedra the Bloechl ``curvature_correction`` is
+        off by default (it makes a shell negative near a band edge; it is
+        meant for a metal's Fermi-sea integrals)."""
         return self._solver_member("pdos", self._NEEDS_DFT)(
-            width=width, npoints=npoints, kpts=kpts, energies=energies)
+            width=width, npoints=npoints, kpts=kpts, energies=energies,
+            integration=integration,
+            curvature_correction=curvature_correction)
 
     def fat_bands(self, path=None, npoints: int = 100):
         """:meth:`band_structure` plus each state's Loewdin weight on each
@@ -1011,7 +1059,8 @@ class Mandacaru(Calculator):
             guess, kpts=kpts, bands=bands)
 
     def wannier(self, n_functions=None, *, guess="bonds", windows=None,
-                bands=None, kpts=None, trial_radial="gaussian", **options):
+                bands=None, kpts=None, trial_radial="gaussian",
+                spin_axis=None, **options):
         """Maximally localized Wannier functions of a crystal's bands
         (:func:`~mandacaru.algorithms.wannier.wannier_functions`).
 
@@ -1022,11 +1071,13 @@ class Mandacaru(Calculator):
         ``n_functions`` are disentangled.  ``guess`` gives one trial orbital
         per function: ``"bonds"``, ``"sp3"``, orbitals on atoms such as
         ``{"V": "t2g"}``, or centers.  A spin-polarized crystal returns a
-        :class:`~mandacaru.algorithms.wannier.SpinWannierResult`.
+        :class:`~mandacaru.algorithms.wannier.SpinWannierResult`; a
+        two-component (spinor) crystal spinor functions, each trial taken
+        spin up and spin down along ``spin_axis`` (default z).
         """
         return self._solver_member("wannier", self._NEEDS_CRYSTAL_DFT)(
             n_functions, guess=guess, windows=windows, bands=bands, kpts=kpts,
-            trial_radial=trial_radial, **options)
+            trial_radial=trial_radial, spin_axis=spin_axis, **options)
 
     # The references a run rests on.
 
@@ -1122,6 +1173,9 @@ class Mandacaru(Calculator):
         solver = self._solver_class(basis=self.basis, grid=grid,
                                     grid_spacing=self.grid_spacing,
                                     verbose=self._show_trace(), **options)
+        # The per-job ceilings bound a shot-based run's own measurements
+        # too (ADAPT's gradient jobs), not only the final one.
+        solver.measurement_budget = self.measurement_budget
         # A periodic driver keeps the primitive cell aside (its own `atoms`
         # becomes the supercell once it runs); hand over the attached geometry
         # so the band structure is available without a calculation.
@@ -1313,6 +1367,13 @@ class Mandacaru(Calculator):
         """
         Calculator.calculate(self, atoms, properties, system_changes)
         atoms = self.atoms
+        if np.ndim(atoms.get_initial_magnetic_moments()) == 2 and \
+                not getattr(self._solver_class, "noncollinear_start", False):
+            raise NotImplementedError(
+                "(N, 3) initial magnetic moments start a noncollinear "
+                "(two-component) run, which only method='dft' has (a "
+                f"molecule or a crystal); method={self.method!r} takes one "
+                "collinear moment per atom, (N,)")
         step_t0 = _perf()
         if not self._show_trace():
             # The terminal now carries only ASE's one line per step, which
@@ -1361,10 +1422,7 @@ class Mandacaru(Calculator):
         # geometry as long as the cell does not change -- and the molecular
         # bounding-box grid would not even span the cell.
         # Kohn-Sham decides by the geometry: periodic atoms are a crystal.
-        periodic = getattr(self._solver_class, "periodic_hamiltonian", False)
-        decides = getattr(self._solver_class, "_is_periodic", None)
-        if not periodic and decides is not None:
-            periodic = bool(decides(atoms))
+        periodic = self._is_periodic_calculation(atoms)
         grid = (self._frozen_grid(atoms)
                 if want_forces and not periodic else self._grid)
         # Forces asked for the geometry whose energy was just converged (ASE
@@ -1555,10 +1613,14 @@ class Mandacaru(Calculator):
                 raise NotImplementedError(
                     "active-space forces require include_pulay=True because "
                     "the selected orbital space moves with the nuclei")
-            if periodic:
+            if periodic and self._orbital_response_spec(solver, context) is None:
                 raise NotImplementedError(
-                    "periodic active-space forces need a displaced periodic "
-                    "Hamiltonian and are not implemented")
+                    "periodic active-space forces with deleted virtuals come "
+                    "from the z-vector orbital response, which needs the "
+                    "canonical orbitals of a closed-shell reference (the "
+                    "'energy' ranking or an explicit orbital list); this "
+                    "selector rotates them and a periodic Hamiltonian cannot "
+                    "be rebuilt at displaced geometries")
 
         if not legacy:
             return
@@ -1789,11 +1851,17 @@ class Mandacaru(Calculator):
     def factorization(self, solver=None):
         """The double-factorized form of this run's Hamiltonian, or ``None``.
 
-        Needs the molecular integrals, so it exists exactly when the run built
-        a basis (not in direct mode, not for a loaded Hamiltonian, not for an
-        integral-direct build such as a ``"dlpno-mp2"`` active space).
-        Cheap -- an ``eigh`` of an ``M^2 x M^2`` matrix, 0.1 s at 24 spin
-        orbitals.
+        Needs the spatial integrals the Hamiltonian was built from, so it
+        exists exactly when the run built a basis (not in direct mode, not
+        for a loaded Hamiltonian): the molecular-orbital integrals of a
+        full-space build, the reduced integrals a build with deleted virtual
+        orbitals or an integral-direct one keeps, and, for Cholesky-factored
+        integrals, the factors themselves in the active orbitals
+        (:func:`~mandacaru.backends.factorization.spatial_double_factorization`,
+        whose leaves then come from a ``k x k`` problem).  No spin-orbital
+        tensor is formed.  A frozen core alone keeps no reduced integrals:
+        ``None``.  Cheap -- an ``eigh`` of an ``M^2 x M^2`` matrix, 0.1 s at
+        12 spatial orbitals.
 
         The **constant** is whatever the driver's qubit Hamiltonian carries
         beyond the electronic operator (the nuclear repulsion): a scalar, read
@@ -1804,19 +1872,20 @@ class Mandacaru(Calculator):
         context = getattr(solver, "_gradient_context", None)
         if not context or context.get("integrals") is None:
             return None
-        if getattr(context["integrals"], "integral_direct", False):
-            # An integral-direct build holds no two-body tensor, and building
-            # the full one here would undo the point of the route.
+        integrals = context["integrals"]
+        problem = self._factorization_problem(integrals, context)
+        if problem is None:
             return None
-        from ..backends.factorization import double_factorization
-        from ..core.hamiltonian import (molecular_orbital_integrals,
-                                        spin_block_integrals)
+        h, eri, factors, coupling, cut = problem
+        from ..backends.factorization import spatial_double_factorization
         from ..core.mapping import Fermion
 
-        h_mo, eri_mo, _orbitals = molecular_orbital_integrals(
-            context["integrals"], context["n_electrons"])
-        h_so, g_so = spin_block_integrals(h_mo, eri_mo)
-        electronic = Fermion.from_integrals(h_so, g_so).map_to_qubits(
+        # The electronic operator exactly as the build wrote it (the
+        # Cholesky build drops integrals below its tolerance), to read the
+        # constant off the driver's Hamiltonian and to check nothing else
+        # is in it.
+        electronic = Fermion.from_spatial_integrals(h, eri, tol=cut
+                                                    ).map_to_qubits(
             solver.mapping)
         offset = (solver.hamiltonian + (-1.0) * electronic).simplify()
         identity = "I" * int(solver.n_qubits)
@@ -1827,7 +1896,51 @@ class Mandacaru(Calculator):
             # The factorization describes the electronic operator; anything
             # else in the driver's Hamiltonian would be silently dropped.
             return None
-        return double_factorization(h_so, g_so, constant=constant)
+        if factors is not None:
+            return spatial_double_factorization(h, factors=factors,
+                                                coupling=coupling,
+                                                constant=constant)
+        return spatial_double_factorization(h, eri, constant=constant)
+
+    @staticmethod
+    def _factorization_problem(integrals, context):
+        """``(h, eri, factors, coupling, cut)`` the factorization starts
+        from: the spatial one-body matrix and tensor of the register's
+        orbitals (Hartree), the Cholesky pair factors and their coupling in
+        those orbitals (``None`` for a dense build), and the cut the
+        operator was written with; ``None`` when the build kept no spatial
+        integrals of its register."""
+        from ..core.hamiltonian import molecular_orbital_integrals
+
+        space = getattr(integrals, "active_space", None)
+        reduced = space is not None and (space.truncated or space.frozen)
+        h = getattr(integrals, "active_one_body", None)
+        eri = getattr(integrals, "active_two_body", None)
+        if reduced and (h is None or eri is None
+                        or not getattr(integrals, "active_spin_blocked", True)):
+            return None
+        cholesky = bool(getattr(integrals, "cholesky_integrals", False))
+        if cholesky:
+            factors = integrals.cholesky_two_body()
+            mo = np.asarray(integrals.mo_coefficients)
+            active = (list(space.active) if reduced
+                      else list(range(mo.shape[1])))
+            C = (integrals._lowdin_x() if integrals.orthogonalize
+                 else np.eye(mo.shape[0])) @ mo[:, active]
+            if not reduced:
+                h = np.real_if_close(mo.conj().T @ integrals.one_body() @ mo)
+                eri = factors.active_tensor(C)
+            pair, coupling = factors.pair_factors(C)
+            return h, eri, pair, coupling, integrals.two_body_spec.tolerance
+        if reduced:
+            return h, eri, None, None, 1e-12
+        if getattr(integrals, "integral_direct", False):
+            # An integral-direct build without an active space holds no
+            # tensor, and building the full one here would undo the route.
+            return None
+        h_mo, eri_mo, _orbitals = molecular_orbital_integrals(
+            integrals, context["n_electrons"])
+        return h_mo, eri_mo, None, None, 1e-12
 
     def _factorized_bases(self, solver):
         """Bases a double-factorized measurement would need, if computable."""
@@ -2133,11 +2246,34 @@ class Mandacaru(Calculator):
                     "rebuilds -Z/r potentials of its own, which is not what a "
                     "lattice-summed Hamiltonian was built from.  Use "
                     "force_method='rdm'.")
-            result = periodic_nuclear_gradient(
-                context["integrals"], gamma, gamma2,
-                atom_of_orbital=context["atom_of_orbital"],
-                orbital_delta=self.orbital_delta,
-                include_pulay=self.include_pulay)
+            from .orbital_response import OrbitalResponseUnavailable
+
+            spec = self._orbital_response_spec(solver, context)
+            result = None
+            if spec is not None:
+                try:
+                    result = periodic_nuclear_gradient(
+                        context["integrals"], gamma, gamma2,
+                        atom_of_orbital=context["atom_of_orbital"],
+                        orbital_delta=self.orbital_delta,
+                        include_pulay=self.include_pulay,
+                        orbital_response=spec)
+                except OrbitalResponseUnavailable as error:
+                    warnings.warn(
+                        f"the analytic orbital response was not applied "
+                        f"({error}); the gradient holds the orbitals fixed",
+                        RuntimeWarning, stacklevel=3)
+                    spec = None
+            if result is None:
+                result = periodic_nuclear_gradient(
+                    context["integrals"], gamma, gamma2,
+                    atom_of_orbital=context["atom_of_orbital"],
+                    orbital_delta=self.orbital_delta,
+                    include_pulay=self.include_pulay)
+            if spec is not None:
+                result.details["orbital_response_method"] = "z-vector"
+                solver._cite("Pulay1969", "HandySchaefer1984")
+                self._warn_near_degenerate(result)
             if reference_energy is None and not getattr(solver, "shots", 0):
                 reference_energy = float(solver._from_energy_units(
                     solver.result.optimal_energy, "Ha"))
@@ -2150,7 +2286,7 @@ class Mandacaru(Calculator):
                         f"solver's ({reference_energy:.10f} Ha); the force "
                         "would not be the gradient of the reported energy")
             residual = float(result.details.get("orbital_gradient", 0.0) or 0.0)
-            if residual > ORBITAL_RESPONSE_TOLERANCE:
+            if residual > ORBITAL_RESPONSE_TOLERANCE and spec is None:
                 warnings.warn(
                     "the state is not stationary with respect to orbital "
                     f"rotations (max |dE/dkappa| = {residual:.1e} Ha); the "
@@ -2164,19 +2300,47 @@ class Mandacaru(Calculator):
             # overlap and compensation charges when the family has them, the
             # bare -Z/r when it does not.  It differentiates the same energy
             # expression the solver reported, for every atom-centered basis.
+            from .orbital_response import OrbitalResponseUnavailable
             from .pseudo_forces import (ENERGY_CHECK_TOLERANCE,
                                         pseudo_nuclear_gradient)
-            # With deleted virtuals the finite-difference gradient below is
-            # the whole answer, and the analytic Pulay term would only be
-            # overwritten: the Hellmann-Feynman part (and the energy check)
-            # is all that is kept from here.
-            result = pseudo_nuclear_gradient(
-                context["integrals"], gamma, gamma2,
-                atom_of_orbital=context["atom_of_orbital"],
-                orbital_delta=self.orbital_delta,
-                include_pulay=self.include_pulay
-                and not context.get("deleted"))
-            if context.get("deleted"):
+            # The energy is written in the canonical Hartree-Fock orbitals of
+            # each geometry, so a state that is not stationary under orbital
+            # rotations (every truncated ansatz, and any active space with
+            # deleted virtuals) also moves through them: the z-vector folds
+            # that response into the RDMs the derivative integrals are
+            # contracted with.  Where the orbitals are not those of a closed
+            # shell RHF (a rotating selector, an open shell) the response is
+            # finite-differenced instead.
+            spec = self._orbital_response_spec(solver, context)
+            deleted = bool(context.get("deleted"))
+            result = None
+            if spec is not None:
+                try:
+                    result = pseudo_nuclear_gradient(
+                        context["integrals"], gamma, gamma2,
+                        atom_of_orbital=context["atom_of_orbital"],
+                        orbital_delta=self.orbital_delta,
+                        include_pulay=self.include_pulay,
+                        orbital_response=spec)
+                except OrbitalResponseUnavailable as error:
+                    warnings.warn(
+                        f"the analytic orbital response was not applied "
+                        f"({error}); falling back to the unrelaxed "
+                        f"gradient" + (" and a finite-difference "
+                                       "active-space response" if deleted
+                                       else ""), RuntimeWarning, stacklevel=3)
+                    spec = None
+            if result is None:
+                # The finite-difference gradient below is the whole answer
+                # with deleted virtuals, and the analytic Pulay term would
+                # only be overwritten: the Hellmann-Feynman part (and the
+                # energy check) is all that is kept from here.
+                result = pseudo_nuclear_gradient(
+                    context["integrals"], gamma, gamma2,
+                    atom_of_orbital=context["atom_of_orbital"],
+                    orbital_delta=self.orbital_delta,
+                    include_pulay=self.include_pulay and not deleted)
+            if deleted and spec is None:
                 from .active_space_forces import (
                     ACTIVE_SPACE_STEP_ANGSTROM, active_space_gradient)
 
@@ -2189,6 +2353,10 @@ class Mandacaru(Calculator):
                 result.details["active_space_response"] = response
                 result.details["active_space_step_angstrom"] = \
                     ACTIVE_SPACE_STEP_ANGSTROM
+            elif spec is not None:
+                result.details["orbital_response_method"] = "z-vector"
+                solver._cite("Pulay1969", "HandySchaefer1984")
+                self._warn_near_degenerate(result)
             if reference_energy is None and not getattr(solver, "shots", 0):
                 # `optimal_energy` is the scalar every result type has -- the
                 # ground state, the one `_converged_state` returns -- whereas
@@ -2205,7 +2373,8 @@ class Mandacaru(Calculator):
                         f"({reported:.10f} Ha); the force would not be the "
                         "gradient of the reported energy")
             residual = float(result.details.get("orbital_gradient", 0.0) or 0.0)
-            if residual > ORBITAL_RESPONSE_TOLERANCE and not context.get("deleted"):
+            if (residual > ORBITAL_RESPONSE_TOLERANCE and spec is None
+                    and not deleted):
                 warnings.warn(
                     f"the state is not stationary with respect to orbital "
                     f"rotations (max |dE/dkappa| = {residual:.2e} Ha): the "
@@ -2239,6 +2408,62 @@ class Mandacaru(Calculator):
         if self.project_translation and self._projection_applies(legacy):
             self._project_translation(legacy)
         return legacy
+
+    @staticmethod
+    def _warn_near_degenerate(result) -> None:
+        """Say so when canonical orbitals that carry density are nearly
+        degenerate: the z-vector is the derivative at this geometry, but the
+        orbitals mix non-perturbatively under a finite step."""
+        pairs = (result.details.get("orbital_response") or {}).get(
+            "near_degenerate")
+        if pairs:
+            shown = ", ".join(f"({p}, {q}): {gap:.1e} Ha"
+                              for p, q, gap in pairs[:4])
+            warnings.warn(
+                f"canonical orbitals that carry density are nearly "
+                f"degenerate ({shown}); the force is the exact derivative at "
+                f"this geometry, but those orbitals mix non-perturbatively "
+                f"under a finite displacement, so an optimizer's step or a "
+                f"finite-difference check sees a different (and for a "
+                f"truncated ansatz gauge-dependent) energy surface.  "
+                f"Symmetry-broken geometries are not affected.",
+                RuntimeWarning, stacklevel=4)
+
+    def _orbital_response_spec(self, solver, context) -> dict | None:
+        """``{"n_occ", "support"}`` when the z-vector orbital response applies.
+
+        It does for the canonical orbitals of a closed-shell RHF reference
+        (the ``"energy"`` ranking of virtuals, an explicit orbital list, or no
+        active space at all) on a tensor build.  A selector that rotates the
+        orbitals (the MP2 natural orbitals) moves the active subspace through
+        a response not derived here, and an open-shell reference needs a
+        coupled-perturbed UHF: both keep the finite-difference route.
+        """
+        from ..core.hamiltonian import resolve_reference
+
+        space = context.get("active_space")
+        integrals = context["integrals"]
+        if space is not None and space.rotation is not None:
+            return None
+        if (getattr(integrals, "spin_orbit_coupling", None)
+                or getattr(integrals, "spinor_basis", False)):
+            return None
+        frozen = tuple(context.get("frozen") or ())
+        n_alpha, n_beta = (int(v) for v in solver.num_particles)
+        try:
+            *_, open_shell = resolve_reference(
+                context["n_electrons"], (n_alpha + len(frozen),
+                                         n_beta + len(frozen)))
+        except ValueError:
+            return None
+        if open_shell:
+            return None
+        active = context.get("active")
+        if active is None:
+            active = [p for p in range(len(integrals.basis))
+                      if p not in set(frozen)]
+        return {"n_occ": int(context["n_electrons"]) // 2,
+                "support": sorted(set(frozen) | set(active))}
 
     def _direct_active_space_gradient(self, solver, context, rdms,
                                       reference_energy):
@@ -2319,6 +2544,16 @@ class Mandacaru(Calculator):
                                     if result.pulay is not None else
                                     result.details.get("decomposition")),
                  "n_electrons": f"{result.n_electrons:.6f}"}
+        if details.get("orbital_response_method"):
+            response = details.get("orbital_response") or {}
+            extra["orbital_response"] = (
+                f"{details['orbital_response_method']} "
+                f"({response.get('cphf_iterations', 0)} CPHF iterations, "
+                f"residual {float(response.get('cphf_residual', 0.0)):.1e})")
+        elif "active_space_response" in details:
+            extra["orbital_response"] = (
+                "central difference of the reduced Hamiltonian, step "
+                f"{details['active_space_step_angstrom']} Angstrom")
         # The two residuals that say whether this gradient can be trusted: the
         # orbital response it neglects and the net force the grid invents.
         for key in ("orbital_gradient", "translational_residual"):
@@ -2664,6 +2899,14 @@ class Mandacaru(Calculator):
         result = getattr(solver, "result", None)
         if result is None:
             raise RuntimeError("the solver has not been run yet")
+        if getattr(solver, "shots", 0):
+            # Its memory must stay polynomial in the qubits: a shot-based run
+            # builds no state vector, not even after it has converged.
+            raise NotImplementedError(
+                "a shot-based run (shots > 0) has no state vector to read "
+                "this from; what needs the converged state (densities, "
+                "charges, volumetric fields) is not available from a device "
+                "run")
         # A subspace run optimizes one unitary over several references and sorts
         # the resulting levels: its ground state is a *stored* vector, not
         # U(theta) applied to the Hartree-Fock reference (that is whichever
@@ -2937,6 +3180,26 @@ class Mandacaru(Calculator):
             return method
         return self.population or PARTITION_METHODS[0]
 
+    def get_property(self, name, atoms=None, allow_calculation=True):
+        """ASE's property lookup, with the stress computed by :meth:`get_stress`.
+
+        :meth:`calculate` produces the energy and the forces only, so ASE's
+        generic path (``calc.get_property("stress")``, a
+        ``SumCalculator``, a trajectory asked for ``properties=["stress"]``)
+        would otherwise report a stress it lists as missing.  A stored one
+        for the same geometry is returned without recomputing it; a molecule
+        is refused with the reason (:class:`PropertyNotImplementedError`).
+        """
+        if name != "stress" or not allow_calculation:
+            return Calculator.get_property(self, name, atoms,
+                                           allow_calculation)
+        if name in self.implemented_properties:
+            stored = Calculator.get_property(self, name, atoms,
+                                             allow_calculation=False)
+            if stored is not None:
+                return stored
+        return np.array(self.get_stress(atoms), copy=True)
+
     def get_stress(self, atoms=None, *, voigt: bool = True,
                    strain: float = None):
         r"""Stress tensor of a periodic calculation, in eV/Angstrom^3.
@@ -2964,10 +3227,15 @@ class Mandacaru(Calculator):
             Half-amplitude of the symmetric strain; default
             :data:`~mandacaru.algorithms.periodic_forces.DEFAULT_STRAIN`.
 
+        The stress stored in ``results["stress"]`` is always ASE's Voigt
+        6-vector, whichever form is returned.
+
         Raises
         ------
-        NotImplementedError
-            For a molecular method, which has no cell to strain.
+        ase.calculators.calculator.PropertyNotImplementedError
+            For a molecular calculation, which has no cell to strain -- the
+            exception ASE's own calculators raise for a cell-less geometry
+            (a subclass of :class:`NotImplementedError`).
         """
         from ..units import from_hartree
         from .periodic_forces import (DEFAULT_STRAIN, VOIGT, periodic_stress,
@@ -2992,14 +3260,11 @@ class Mandacaru(Calculator):
             tensor = solver.crystal_stress(
                 strain=None if strain is None else float(strain))
             tensor = tensor * from_hartree(1.0, "eV") / BOHR_TO_ANGSTROM ** 3
-            self.results["stress"] = (np.array([tensor[a, b]
-                                                for a, b in VOIGT])
-                                      if voigt else tensor)
-            return self.results["stress"]
+            self.results["stress"] = np.array([tensor[a, b]
+                                               for a, b in VOIGT])
+            return self.results["stress"] if voigt else tensor
         if not getattr(solver, "periodic_hamiltonian", False):
-            raise NotImplementedError(
-                f"method {self.method!r} is not periodic, so there is no cell "
-                "to strain and no stress to report.")
+            raise PropertyNotImplementedError(self._no_stress_message())
         if atoms is not None:
             self.calculate(atoms, properties=("energy",))
         context = getattr(solver, "_gradient_context", None) or {}
@@ -3045,9 +3310,27 @@ class Mandacaru(Calculator):
             strain=DEFAULT_STRAIN if strain is None else float(strain))
         # Hartree/Bohr^3 -> eV/Angstrom^3.
         tensor = tensor * from_hartree(1.0, "eV") / BOHR_TO_ANGSTROM ** 3
-        self.results["stress"] = (np.array([tensor[a, b] for a, b in VOIGT])
-                                  if voigt else tensor)
-        return self.results["stress"]
+        self.results["stress"] = np.array([tensor[a, b] for a, b in VOIGT])
+        return self.results["stress"] if voigt else tensor
+
+    def _no_stress_message(self) -> str:
+        """Why a molecular calculation has no stress, and the routes that
+        do not need one."""
+        crystal = ("; Kohn-Sham is periodic only on a geometry with a "
+                   "periodic direction (atoms.pbc)"
+                   if getattr(self._solver_class, "_is_periodic", None)
+                   is not None else "")
+        return (
+            f"method {self.method!r} is not periodic here, so there is no "
+            f"cell to strain and no stress to report{crystal}.  "
+            "ase.calculators.fd.FiniteDifferenceCalculator(eps_strain=None) "
+            "asks for this analytic stress: for a molecule keep the default "
+            "eps_strain (ASE strains the box numerically, a number with no "
+            "physical meaning for a free molecule), or take forces alone "
+            "with ase.calculators.fd.calculate_numerical_forces.  A cell "
+            "filter (FrechetCellFilter, UnitCellFilter) needs a periodic "
+            "calculation; relax a molecule's positions with the optimizer "
+            "on the atoms themselves.")
 
     def finite_size_correction(self, scheme: str = "mpc", *, state=None,
                                shells=None):

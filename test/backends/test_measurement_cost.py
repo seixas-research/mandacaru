@@ -34,7 +34,8 @@ from mandacaru import Mandacaru
 from mandacaru.algorithms import calculator as calculator_module
 from mandacaru.algorithms.calculator import (MeasurementFailed,
                                              _is_real_operator, _real_problem)
-from mandacaru.backends.factorization import double_factorization
+from mandacaru.backends.factorization import (double_factorization,
+                                              spatial_double_factorization)
 from mandacaru.backends.measurement import (DEFAULT_MEASUREMENT_BUDGET,
                                             MeasurementBudgetError,
                                             MeasurementPlan,
@@ -538,6 +539,108 @@ class TestDoubleFactorization:
     def test_a_mismatched_tensor_is_refused(self):
         with pytest.raises(ValueError, match="does not match"):
             double_factorization(np.zeros((4, 4)), np.zeros((3, 3, 3, 3)))
+        with pytest.raises(ValueError, match="does not match"):
+            spatial_double_factorization(np.zeros((4, 4)),
+                                         np.zeros((3, 3, 3, 3)))
+        with pytest.raises(ValueError, match="do not match"):
+            spatial_double_factorization(np.zeros((4, 4)),
+                                         factors=np.zeros((2, 3, 3)))
+
+
+class TestTheSpatialFactorization:
+    """The factorization of spatial integrals (no ``(2M)^4`` tensor) is the
+    spin-orbital one: the same operator, weights, one-norm and count."""
+
+    @staticmethod
+    def spatial(calc):
+        context = calc.solver._gradient_context
+        h_mo, eri_mo, _orbitals = molecular_orbital_integrals(
+            context["integrals"], context["n_electrons"])
+        return h_mo, eri_mo
+
+    def test_it_is_the_spin_orbital_factorization(self):
+        calc = solved(lih(), None)
+        h, eri = self.spatial(calc)
+        spin = double_factorization(*spin_block_integrals(h, eri))
+        spatial = spatial_double_factorization(h, eri)
+        assert spatial.n_modes == spin.n_modes
+        assert spatial.measurement_bases == spin.measurement_bases
+        assert np.allclose(sorted(l.weight for l in spatial.leaves),
+                           sorted(l.weight for l in spin.leaves), atol=1e-12)
+        assert spatial.one_norm == pytest.approx(spin.one_norm, rel=1e-10)
+        assert spatial.truncation_error == pytest.approx(
+            spin.truncation_error, abs=1e-10)
+        difference = (spin.to_fermion().map_to_qubits()
+                      + (-1.0) * spatial.to_fermion().map_to_qubits()
+                      ).simplify()
+        assert max((abs(complex(c)) for c in difference.terms.values()),
+                   default=0.0) < 1e-10
+        # Every rotation keeps the two spins apart.
+        m = h.shape[0]
+        for leaf in spatial.leaves:
+            assert np.abs(leaf.orbitals[:m, m:]).max() == 0.0
+        cut = spatial_double_factorization(h, eri, max_leaves=2)
+        assert len(cut.leaves) == 2
+        assert cut.truncation_error > spatial.truncation_error
+
+    def test_pair_factors_give_the_tensor_factorization(self):
+        """From ``k < M^2`` factors and a coupling (Cholesky factors plus an
+        augmentation's channels) the leaves come from a ``k x k`` problem,
+        with the tensor's result."""
+        rng = np.random.default_rng(4)
+        m, k = 4, 6
+        F = rng.normal(size=(k, m, m))
+        F = F + F.transpose(0, 2, 1)
+        K = np.diag([1.0, 1.0, 1.0, 1.0, 0.0, 0.0])
+        K[4, 5] = K[5, 4] = 1.0
+        K[4, 4] = 0.3
+        chemist = np.einsum("ij,ipr,jqs->prqs", K, F, F)
+        eri = chemist.transpose(0, 2, 1, 3)               # <pq|rs> = (pr|qs)
+        h = rng.normal(size=(m, m))
+        h = h + h.T
+        dense = spatial_double_factorization(h, eri)
+        factored = spatial_double_factorization(h, factors=F, coupling=K)
+        assert factored.measurement_bases == dense.measurement_bases
+        assert np.allclose(sorted(l.weight for l in factored.leaves),
+                           sorted(l.weight for l in dense.leaves), atol=1e-10)
+        assert np.allclose(factored.one_body, dense.one_body, atol=1e-12)
+        difference = (dense.to_fermion().map_to_qubits()
+                      + (-1.0) * factored.to_fermion().map_to_qubits()
+                      ).simplify()
+        assert max((abs(complex(c)) for c in difference.terms.values()),
+                   default=0.0) < 1e-10
+
+    def test_the_calculator_uses_no_spin_orbital_tensor(self, monkeypatch):
+        import mandacaru.core.hamiltonian as hamiltonian
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("the (2M)^4 tensor was formed")
+
+        monkeypatch.setattr(hamiltonian, "spin_block_integrals", forbidden)
+        calc = solved(lih(), None)
+        factorization = calc.factorization()
+        h, eri = self.spatial(calc)
+        assert factorization.measurement_bases == \
+            spatial_double_factorization(h, eri).measurement_bases
+
+    def test_a_cholesky_run_is_factorized_from_its_factors(self):
+        """The factors of an active space give the factorization of the
+        reduced Hamiltonian, and its circuits the run's energy."""
+        atoms = h2()
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO",
+                               grid_spacing=0.30, pool="qeb", max_iterations=3,
+                               trace=False, two_body={"method": "cholesky",
+                                                      "tolerance": 1e-9},
+                               active_space={"orbitals": 2},
+                               measurement_scheme="double-factorized",
+                               measurement_provider=QiskitProvider(
+                                   device="statevector"))
+        energy = atoms.get_potential_energy()
+        factorization = atoms.calc.factorization()
+        assert factorization is not None and factorization.n_modes == 4
+        assert atoms.calc.measurement["scheme"] == "double-factorized"
+        assert atoms.calc.measurement["energy_eV"] == pytest.approx(
+            energy, abs=1e-6)
 
 
 # --------------------------------------------------------------------------- #

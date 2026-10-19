@@ -47,6 +47,13 @@ from .mapping import (PauliSum, _encoding_matrix, parity_tapered_qubits,
 MAX_SECTOR_DIMENSION = 5_000_000
 #: Widest register a 64-bit basis-state index can address.
 MAX_SECTOR_QUBITS = 62
+#: Largest out-of-sector amplitude :meth:`ParticleSector.conserves` accepts.
+#: The qubit mappings drop every Pauli string at or below 1e-12
+#: (:meth:`~mandacaru.core.mapping.PauliSum.simplify`), one string at a time,
+#: so a number-conserving term near that scale (a grid-anisotropy integral of
+#: a degenerate pair in a rotated gauge, ~1e-11 Ha) keeps only part of its flip
+#: group and leaks a few 1e-12.  A genuine leak is the size of a coefficient.
+LEAK_ATOL = 1e-10
 
 
 def pauli_masks(label: str) -> tuple[int, int, int]:
@@ -157,11 +164,60 @@ def apply_pauli_sum(operator: PauliSum, indices, amplitudes):
     return unique[keep], summed[keep]
 
 
-#: Sector entries held before being folded into the running matrix by
-#: :meth:`ParticleSector.restrict`.  Each is 32 bytes (a complex value and two
-#: 64-bit indices), so the default bounds that staging buffer at ~256 MB; the
-#: result itself is far smaller than the un-summed total.
-RESTRICT_BATCH_ENTRIES = 8_000_000
+#: Widest register whose basis-state positions are looked up in a table of
+#: ``2^n`` ``int32`` (64 MiB at 24 qubits) instead of searched for.
+LOOKUP_MAX_QUBITS = 24
+
+
+def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
+    r"""The CSR matrix of grouped Pauli terms over the basis ``states``.
+
+    ``groups`` is :func:`flip_groups`; ``locate(images)`` gives the position of
+    each image state in ``states`` (``-1`` if it is not in the basis).  A
+    group's strings send state ``j`` to the one image ``states[j] ^ f``, so a
+    group fills at most one entry per column and per row, and two groups never
+    reach the same ``(row, column)`` (the flip mask is ``states[row] ^
+    states[col]``).  The matrix therefore has exactly ``sum`` of the groups'
+    entries and **no duplicate to merge**: a first pass counts each row's
+    entries, the second writes them into place, and nothing larger than the
+    result is ever held (the older coordinate-format fold staged 32 bytes per
+    entry, then summed copies of the running matrix: three times the result
+    at its peak).  Rows come out sorted by column; exact zeros (terms that
+    cancelled) are dropped.
+    """
+    import scipy.sparse as sp
+
+    columns = np.arange(dim, dtype=np.int64)
+
+    def reach(flip):
+        rows = locate(states ^ np.int64(flip))
+        inside = rows >= 0
+        if inside.all():
+            return rows, columns, states
+        return rows[inside], columns[inside], states[inside]
+
+    counts = np.zeros(dim, dtype=np.int64)
+    for flip in groups:
+        rows, _cols, _states = reach(flip)
+        counts[rows] += 1
+    indptr = np.zeros(dim + 1, dtype=np.int64)
+    np.cumsum(counts, out=indptr[1:])
+    nnz = int(indptr[-1])
+    index_type = np.int32 if nnz < np.iinfo(np.int32).max else np.int64
+    indices = np.empty(nnz, dtype=index_type)
+    data = np.empty(nnz, dtype=complex)
+    fill = indptr[:-1].copy()
+    for flip, members in groups.items():
+        rows, cols, kept = reach(flip)
+        slot = fill[rows]
+        indices[slot] = cols
+        data[slot] = group_amplitudes(members, kept)
+        fill[rows] += 1
+    matrix = sp.csr_matrix((data, indices, indptr.astype(index_type)),
+                           shape=(dim, dim))
+    matrix.sort_indices()
+    matrix.eliminate_zeros()
+    return matrix
 
 
 class ParticleSector:
@@ -264,9 +320,25 @@ class ParticleSector:
         """Number of basis states in the sector."""
         return int(self.indices.size)
 
+    def _lookup(self):
+        """``position of every register state`` as an ``int32`` table (``-1``
+        outside the sector), or ``None`` on a register too wide for one."""
+        if self.n_qubits > LOOKUP_MAX_QUBITS:
+            return None
+        table = self.__dict__.get("_lookup_table")
+        if table is None:
+            table = np.full(1 << self.n_qubits, -1, dtype=np.int32)
+            table[self.indices] = np.arange(self.dim, dtype=np.int32)
+            self.__dict__["_lookup_table"] = table
+        return table
+
     def positions(self, indices):
         """Sector positions of basis-state ``indices`` (``-1`` if outside)."""
         indices = np.asarray(indices, dtype=np.int64)
+        table = self._lookup()
+        if table is not None and indices.size and indices.min() >= 0 \
+                and indices.max() < table.size:
+            return table[indices]
         where = np.searchsorted(self.indices, indices)
         where = np.clip(where, 0, max(self.dim - 1, 0))
         inside = self.indices[where] == indices
@@ -284,7 +356,7 @@ class ParticleSector:
 
     # -- operators -------------------------------------------------------- #
 
-    def restrict(self, operator: PauliSum, max_entries: int | None = None):
+    def restrict(self, operator: PauliSum):
         r"""``operator`` restricted to the sector, as a ``(dim, dim)`` CSR matrix.
 
         Exact for an operator that conserves ``(n_alpha, n_beta)``; the
@@ -293,7 +365,7 @@ class ParticleSector:
         **Terms are grouped by their flip mask.**  A Pauli string sends
         :math:`|x\rangle` to a phase times :math:`|x \oplus f\rangle`, so every
         term with the same :math:`f` sends column ``j`` to the *same* row --
-        and the search that finds those rows, which dominates the cost, is
+        and the lookup that finds those rows, which dominates the cost, is
         paid once per group instead of once per term.  The grouping is not a
         lucky coincidence: ``X`` and ``Y`` both set a flip bit, so all eight
         Pauli strings of a Jordan-Wigner double excitation share one mask, the
@@ -301,65 +373,24 @@ class ParticleSector:
         lands in :math:`f = 0`.  A molecular Hamiltonian therefore has ~9x
         fewer masks than terms, and the ratio is flat in the basis size.
 
-        The group's terms are summed into **one** value array before anything
-        is emitted, which shrinks the staged entries by the same factor.  That
-        matters because every term used to contribute one entry per sector
-        state: for OH in PAW-LCAO-DZ (14,707 terms, 25,200 states) that was 3.7e8
-        entries, about 12 GB, for a result needing a small fraction of it.
-        What is left is folded into the running CSR in batches of at most
-        ``max_entries`` (default :data:`RESTRICT_BATCH_ENTRIES`), which bounds
-        the peak at the batch plus the result and leaves the answer unchanged
-        -- the sum is linear in the terms.
+        The group's terms are summed into **one** value array, and the groups
+        are written straight into the CSR arrays
+        (:func:`csr_from_flip_groups`): the peak is the result plus a few
+        vectors of ``dim`` entries.  (Every term used to contribute one entry
+        per sector state -- for OH in PAW-LCAO-DZ, 14,707 terms and 25,200
+        states, 3.7e8 entries, about 12 GB, for a result needing a small
+        fraction of it -- and the batched fold that replaced it still held
+        about three times the result.)
         """
-        import scipy.sparse as sp
-
         if operator.num_qubits != self.n_qubits:
             raise ValueError(f"operator acts on {operator.num_qubits} qubits, "
                              f"the sector register on {self.n_qubits}")
-        budget = int(max_entries or RESTRICT_BATCH_ENTRIES)
-        columns = np.arange(self.dim, dtype=np.int64)
-        total = None
-        rows_all, cols_all, data_all, pending = [], [], [], 0
-
-        def fold(total):
-            """Sum the batch into ``total`` and release it."""
-            if not data_all:
-                return total
-            batch = sp.coo_matrix(
-                (np.concatenate(data_all),
-                 (np.concatenate(rows_all), np.concatenate(cols_all))),
-                shape=(self.dim, self.dim)).tocsr()
-            rows_all.clear(), cols_all.clear(), data_all.clear()
-            return batch if total is None else total + batch
-
-        for flip, members in flip_groups(operator).items():
-            rows = self.positions(self.indices ^ np.int64(flip))
-            inside = rows >= 0
-            if not inside.any():
-                continue
-            if inside.all():
-                # The common case for a number-conserving operator: nothing
-                # leaves the sector, so no array has to be compacted.
-                kept_rows, kept_cols, states = rows, columns, self.indices
-            else:
-                kept_rows = rows[inside]
-                kept_cols = columns[inside]
-                states = self.indices[inside]
-            values = group_amplitudes(members, states)
-            rows_all.append(kept_rows)
-            cols_all.append(kept_cols)
-            data_all.append(values)
-            pending += values.size
-            if pending >= budget:
-                total, pending = fold(total), 0
-        total = fold(total)
-        if total is None:
-            return sp.csr_matrix((self.dim, self.dim), dtype=complex)
-        return total.tocsr()
+        return csr_from_flip_groups(flip_groups(operator), self.indices,
+                                    self.positions, self.dim)
 
     # -- states ----------------------------------------------------------- #
 
-    def conserves(self, operator: PauliSum, atol: float = 1e-12) -> bool:
+    def conserves(self, operator: PauliSum, atol: float = LEAK_ATOL) -> bool:
         r"""Whether ``operator`` maps the sector into itself.
 
         :meth:`restrict` silently drops whatever leaves the sector, so a

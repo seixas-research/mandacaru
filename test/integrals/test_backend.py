@@ -302,6 +302,88 @@ class TestBuildLoadsWhatItBuilt:
         assert _backend.HAS_C_BACKEND is False
 
 
+class TestARebuiltLibraryReplacesAStaleOne:
+    """A build that replaces a stale library already loaded in the process
+    is loaded from a private copy: the dynamic loader would hand back the
+    stale handle for the same path."""
+
+    def test_a_fresh_load_binds_a_copy_and_leaves_no_file(self, backend_state):
+        import tempfile
+
+        real = check_backend()
+        if not real.available:
+            pytest.skip("needs a compiled library")
+        before = set(Path(tempfile.gettempdir()).glob("mandacaru_integrals_*"))
+        lib = _backend._load(fresh=True)
+        assert lib is not None and lib is not _backend._LIB
+        assert hasattr(lib, "mandacaru_laplacian_real")
+        after = set(Path(tempfile.gettempdir()).glob("mandacaru_integrals_*"))
+        assert after <= before
+
+
+class TestTheRealLaplacian:
+    """``mandacaru_laplacian_real``: the one-body kernels' stencil on real
+    samples, equal to the NumPy reference to round-off and independent of
+    the OpenMP thread count."""
+
+    METRICS = {
+        "cubic": np.diag([1 / 0.3 ** 2] * 3),
+        "anisotropic": np.diag([1 / 0.3 ** 2, 1 / 0.25 ** 2, 1 / 0.35 ** 2]),
+        "skewed": np.linalg.inv(np.array([[0.3, 0.05, 0.0],
+                                          [0.05, 0.3, 0.02],
+                                          [0.0, 0.02, 0.28]]) ** 2 + 0.0),
+    }
+
+    @pytest.mark.parametrize("metric", sorted(METRICS))
+    def test_it_is_the_numpy_stencil(self, metric):
+        if not check_backend().available:
+            pytest.skip("needs the compiled library")
+        ginv = self.METRICS[metric]
+        ginv = 0.5 * (ginv + ginv.T)
+        shape = (7, 6, 5)
+        samples = np.random.default_rng(1).normal(size=(4, 7 * 6 * 5))
+        got = _backend.laplacian_real(samples, shape, ginv)
+        reference = np.stack([_backend._laplacian_general(
+            row.reshape(shape), ginv).reshape(-1) for row in samples])
+        assert np.abs(got - reference).max() < 1e-13 * np.abs(reference).max()
+
+    def test_the_thread_count_does_not_change_it(self):
+        if not check_backend().available:
+            pytest.skip("needs the compiled library")
+        ginv = self.METRICS["skewed"]
+        ginv = 0.5 * (ginv + ginv.T)
+        samples = np.random.default_rng(2).normal(size=(5, 9 * 8 * 7))
+        results = []
+        for threads in (1, 2, 3):
+            with threadpool_limits(limits=threads, user_api="openmp"):
+                results.append(_backend.laplacian_real(samples, (9, 8, 7),
+                                                       ginv))
+        assert all(np.array_equal(results[0], other) for other in results)
+
+    def test_the_real_one_body_matrices_match_the_numpy_path(
+            self, backend_state):
+        """``kinetic="fd"`` on real functions: the C stencil and the NumPy
+        reference give the same ``T`` and ``V`` to round-off."""
+        if not check_backend().available:
+            pytest.skip("needs the compiled library")
+        from types import SimpleNamespace
+
+        rng = np.random.default_rng(3)
+        shape = (8, 7, 6)
+        step = np.array([[0.3, 0.02, 0.0], [0.0, 0.28, 0.01], [0.0, 0.0, 0.31]])
+        metric = np.linalg.inv(step.T @ step)
+        grid = SimpleNamespace(shape=shape, dV=float(abs(np.linalg.det(step))),
+                               metric_inverse=lambda: metric)
+        psi = rng.normal(size=(6, int(np.prod(shape))))
+        vext = rng.normal(size=int(np.prod(shape)))
+        T_c, V_c = _backend.one_body_matrices(psi, vext, grid)
+        _backend.HAS_C_BACKEND = False
+        T_n, V_n = _backend.one_body_matrices(psi, vext, grid)
+        assert T_c.dtype == np.float64
+        assert np.abs(T_c - T_n).max() < 1e-13 * np.abs(T_n).max()
+        assert np.array_equal(V_c, V_n)
+
+
 class TestBuildCommand:
     """``mandacaru --build-backend``."""
 

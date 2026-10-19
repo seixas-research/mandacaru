@@ -161,6 +161,13 @@ class DeflationMixin:
         self._check_kpts()
         if int(num_states) < 1:
             raise ValueError("num_states must be >= 1")
+        if getattr(self, "shots", 0):
+            # The penalty is an overlap of state vectors: a shot-based run
+            # builds none (its memory must stay polynomial in the qubits).
+            raise NotImplementedError(
+                "energy_levels() deflates against the overlaps of local "
+                "state vectors, which a shot-based run (shots > 0) does not "
+                "build; compute excited states with shots=0")
         spec = getattr(self, "active_space", None)
         if spec is not None and spec.symmetry and int(num_states) > 1:
             import warnings

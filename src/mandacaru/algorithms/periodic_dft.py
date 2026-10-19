@@ -245,7 +245,9 @@ class PulayMixer:
 
     Only the total density is Kerker-damped: the charge sloshing it cures is
     a long-wavelength mode of the total, and damping the magnetization's long
-    wavelengths too would stall the moment of a ferromagnet.
+    wavelengths too would stall the moment of a ferromagnet.  The
+    magnetization is a flat field (collinear) or ``(3, ngrid)`` (a
+    two-component crystal's vector).
     """
 
     def __init__(self, crystal, history: int = MIXING_HISTORY,
@@ -264,12 +266,14 @@ class PulayMixer:
         self._inputs: list[np.ndarray] = []
         self._residuals: list[np.ndarray] = []
         self.n_grid = crystal.grid.size
+        self._m_shape = (self.n_grid,)
 
     def _pack(self, rho, q, m=None, extra=None) -> np.ndarray:
         values = [q[c] for c in self.crystal.channels]
         parts = [rho.astype(complex)]
         if self.spin:
-            parts.append(np.asarray(m).astype(complex))
+            self._m_shape = np.shape(m)
+            parts.append(np.asarray(m).astype(complex).ravel())
         parts.append(np.asarray(values, dtype=complex))
         self._extra_shapes = [np.shape(a) for a in (extra or [])]
         parts.extend(np.asarray(a, dtype=complex).ravel()
@@ -282,8 +286,9 @@ class PulayMixer:
         start = n
         m = None
         if self.spin:
-            m = np.real(x[n:2 * n])
-            start = 2 * n
+            size = int(np.prod(self._m_shape))
+            m = np.real(x[n:n + size]).reshape(self._m_shape)
+            start = n + size
         channels = self.crystal.channels
         q = {c: x[start + i] for i, c in enumerate(channels)}
         start += len(channels)
@@ -329,7 +334,8 @@ class PulayMixer:
         n = len(self._inputs)
         dV = self.crystal.grid.dV
         metric = np.ones(len(residual))
-        metric[:self.n_grid * (2 if self.spin else 1)] = dV
+        metric[:self.n_grid + (int(np.prod(self._m_shape)) if self.spin
+                               else 0)] = dV
         extra = sum(int(np.prod(shape)) for shape in self._extra_shapes)
         if extra:
             metric[len(residual) - extra:] = 0.0
@@ -422,10 +428,21 @@ class PeriodicKohnShamResult:
 class PeriodicKohnSham:
     r"""Self-consistent Kohn-Sham equations on a :class:`PeriodicPAW` crystal."""
 
+    #: Whether the solver holds two-component (spinor) Bloch states: only
+    #: :class:`~.spinor_dft.SpinorPeriodicKohnSham` takes a crystal with a
+    #: spin-orbit term.
+    two_component = False
+
     def __init__(self, crystal, n_electrons: float, functional: str = "lda",
                  smearing=None, relativistic: bool = False,
                  constant: float = 0.0, magnetic_moments=None,
                  screening=None, field=None, field_size=None):
+        if getattr(crystal, "has_spin_orbit", False) \
+                and not self.two_component:
+            raise NotImplementedError(
+                "the crystal carries a spin-orbit term, which collinear Bloch "
+                "states cannot hold: two-component Kohn-Sham "
+                "(SpinorPeriodicKohnSham) solves it")
         self.crystal = crystal
         moments = (None if magnetic_moments is None
                    else np.asarray(magnetic_moments, dtype=float))
@@ -504,6 +521,13 @@ class PeriodicKohnSham:
         #: ``(n~, q, tau)`` of :attr:`density_matrices` -- the density the
         #: reported energy is a functional of, and the forces differentiate.
         self.output_density = None
+        #: What the last diagonalization's operator was built from: ``rho``
+        #: (n~), ``q``, ``m`` (a spin crystal's magnetization, else
+        #: ``None``), ``tau`` (a meta-GGA's kinetic-energy density, a pair
+        #: for a spin crystal) and ``operators`` (a hybrid's mixed nonlocal
+        #: operators, ``[K, O]`` or ``[K_up, K_dn, O_up, O_dn]``): where a
+        #: two-component SCF continues from.
+        self.scf_input = None
 
     # -- the effective Hamiltonian ------------------------------------------ #
 
@@ -653,6 +677,29 @@ class PeriodicKohnSham:
             rho = rho[0] + rho[1]
         band = sum(d.weight * float(np.real(np.sum(P * d.fixed.T)))
                    for d, P in zip(c.kpoint_data, matrices))
+        electrostatic = self.electrostatic_energy(rho, q)
+        if spin:
+            tau_up, tau_dn = tau if tau is not None else (None, None)
+            e_xc = self._spin_xc(channels[0], channels[1], tau_up,
+                                 tau_dn).energy
+            return {"band_fixed": band, "electrostatic": electrostatic,
+                    "xc": e_xc, "constant": self.constant}
+        xc_rho = rho + (self.core if self.core is not None else 0.0)
+        xc_tau = None
+        if self.meta:
+            xc_tau = tau + (self._core_tau if self._core_tau is not None
+                            else 0.0)
+        e_xc = xc_grid.evaluate(c.grid, xc_rho, self.functional,
+                                relativistic=self.relativistic,
+                                tau=xc_tau, screening=self.screening,
+                                exchange_density=rho).energy
+        return {"band_fixed": band, "electrostatic": electrostatic,
+                "xc": e_xc, "constant": self.constant}
+
+    def electrostatic_energy(self, rho, q) -> float:
+        """The Coulomb energy of the smooth density ``rho``, the compensation
+        moments ``q`` and the ions, per cell (Hartree)."""
+        c = self.crystal
         rho_G = rc.to_reciprocal(c.grid, rho)
         hat_G = sum((q[ch] * self.g_hat[ch] for ch in c.channels),
                     np.zeros_like(rho_G))
@@ -668,24 +715,7 @@ class PeriodicKohnSham:
                                   for ch in c.channels))) \
             - float(np.real(sum(q[ch] * value
                                 for ch, value in self.onsite.items())))
-        if spin:
-            tau_up, tau_dn = tau if tau is not None else (None, None)
-            e_xc = self._spin_xc(channels[0], channels[1], tau_up,
-                                 tau_dn).energy
-            return {"band_fixed": band, "electrostatic": smooth + compact
-                    + ionic + self.ion_constant, "xc": e_xc,
-                    "constant": self.constant}
-        xc_rho = rho + (self.core if self.core is not None else 0.0)
-        xc_tau = None
-        if self.meta:
-            xc_tau = tau + (self._core_tau if self._core_tau is not None
-                            else 0.0)
-        e_xc = xc_grid.evaluate(c.grid, xc_rho, self.functional,
-                                relativistic=self.relativistic,
-                                tau=xc_tau, screening=self.screening,
-                                exchange_density=rho).energy
-        return {"band_fixed": band, "electrostatic": smooth + compact + ionic
-                + self.ion_constant, "xc": e_xc, "constant": self.constant}
+        return smooth + compact + ionic + self.ion_constant
 
     # -- the loop ----------------------------------------------------------- #
 
@@ -709,6 +739,8 @@ class PeriodicKohnSham:
         hybrid, operators_in, change = None, None, 0.0
         field_in, n_occ = None, int(round(self.n_electrons / 2.0))
         for it in range(1, max_iter + 1):
+            scf_input = {"rho": rho, "q": q, "m": None, "tau": tau,
+                         "operators": operators_in}
             V, v_tau, w, _terms = self._potentials(rho, q, tau)
             H = device.hamiltonians(V, v_tau, w, None if operators_in is None
                                     else operators_in[1])
@@ -772,6 +804,7 @@ class PeriodicKohnSham:
         # The potentials of the last diagonalization, not of the output
         # density: those are the ones the reported eigenvalues belong to.
         self.potentials = (V, v_tau, w)
+        self.scf_input = scf_input
         self._hybrid_output = hybrid
         self.density_matrices = matrices
         self.output_density = (rho_out, q_out, tau_out)
@@ -806,6 +839,8 @@ class PeriodicKohnSham:
         # -a/2 tr(P K)); `hybrid` holds the output states' terms.
         hybrid, operators_in, change = None, None, 0.0
         for it in range(1, max_iter + 1):
+            scf_input = {"rho": rho, "q": q, "m": m, "tau": tau,
+                         "operators": operators_in}
             up, dn = 0.5 * (rho + m), 0.5 * (rho - m)
             V, v_tau, w, _terms = self._potentials_spin(up, dn, q, *tau)
             H = np.stack([device.hamiltonians(
@@ -875,6 +910,7 @@ class PeriodicKohnSham:
                         else 0.5 * (energy + free))
         terms["entropy"] = entropy_term
         self.potentials = (V, v_tau, w)
+        self.scf_input = scf_input
         self._hybrid_output = hybrid
         self.density_matrices = (matrices[0], matrices[1])
         self.output_density = ((up_out, dn_out), q_out, tau_out)

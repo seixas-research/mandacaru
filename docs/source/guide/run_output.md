@@ -222,7 +222,26 @@ parts. A hybrid (`xc="hse06"`) adds `exact_exchange` to `[SCF SETUP]` (the
 fraction and the range separation) and `exact_exchange_energy_<unit>` to
 `[SCF SUMMARY]`: the part of `xc_energy_<unit>` the exact exchange carries,
 not a further term of the sum. A crystal's summary holds no energy terms, so
-a hybrid crystal adds only the `[SCF SETUP]` entry.
+a hybrid crystal adds only the `[SCF SETUP]` entry. A molecule on a
+spin-orbit set (two-component Kohn-Sham) says so in `scf_method` and adds
+`spin_orbit_coupling: True` to `[SCF SETUP]`; its `[SCF SUMMARY]` carries the
+GHF-style `kramers_pairing_Hartree`, `spin_orbit_energy_<unit>` (the energy
+minus that of the collinear solution the SCF started from: a change, not a
+term of the sum) and `spin_moment_bohr_magneton`, the spin moment vector
+`(Mx, My, Mz)`, $2\langle\mathbf S\rangle$ (the spin part only: the
+orbital moment is not computed). A noncollinear start (`(N, 3)` initial
+magnetic moments, written as one triple per atom in `[SYSTEM]`) runs the
+same solver; on a scalar set it has `spin_orbit_coupling: False`, and
+`noncollinear_energy_<unit>` takes the place of `spin_orbit_energy_<unit>`
+as the change against the collinear start. A two-component crystal (a
+spin-orbit set, or `(N, 3)` moments) does the same: `scf_method` says it,
+`spin_orbit_coupling` joins `[SCF SETUP]`, whose `spin` reads
+`two-component, non-magnetic` or `two-component, magnetic (initial moments
+...)` and whose `k_points_irreducible` reads `(the full mesh, unreduced)` for
+a magnetic one; its `[SCF SUMMARY]` adds `spin_orbit_energy_<unit>` (or
+`noncollinear_energy_<unit>`), against the collinear crystal it started from
+on the same mesh, and the per-cell `spin_moment_bohr_magneton` in place of
+`magnetic_moment_bohr_magneton`.
 
 Between the two, a Kohn-Sham run writes `[SCF ITERATIONS]`, one row per
 iteration, so the convergence can be followed and diagnosed:
@@ -242,7 +261,8 @@ electronic energy of a molecule (no constants: the summary adds them) and the
 free energy of a crystal; `dE_<unit>` its change (`-` on the first row);
 `residual` what the convergence test measures -- the largest density-matrix
 change of a molecule, the density residual (electrons) of a crystal; and a
-spin-polarized crystal adds `moment_muB`, the moment per cell.
+spin-polarized crystal adds `moment_muB`, the moment per cell (for a magnetic
+two-component crystal the length of its spin moment vector).
 `parse_output` returns the rows under `"scf_iterations"`, one dict per row
 keyed by the column headings.
 
@@ -332,6 +352,7 @@ read off the left margin:
     dataset_xc: LDA (atomic reference only; the valence interaction is the bare Coulomb operator)
     one_center: exact: one-center Coulomb and exchange in the two-body operator, frozen-core exchange
     paw_dataset: lda-sr (/data/mandacaru-paw/lda-sr)
+    diffuse: off
     basis_functions: 6
     datasets:
         symbol  Z  Z_ion  l_max  r_cut_Bohr  source     sha256
@@ -443,6 +464,34 @@ back from `parse_output(path)["basis"]` as lists of rows keyed by the column
 names. An all-electron basis gets the block too (name, options, functions); a
 direct-mode run, where no basis was built, has none.
 
+A PAW-LCAO or UPAW-LCAO block always has a `diffuse` line: `off`, or the
+recipe that ran, such as `shells present, count 1, rms_ratio 2.5, cutoff_norm
+0.0001` (a `{symbol: recipe}` mapping when elements differ). With diffuse
+shells it gains two tables. `diffuse_shells` has one row per shell and element:
+`l`, its `index` within the channel, the rms radius in Bohr and Å, the
+`reference_l` and `reference_rms_Bohr` it was sized from, `alpha_Bohr^-2`,
+`r_cut` in Bohr and Å, the squared norm left after the one-center Gram-Schmidt
+(`residual`), and `accepted` or `rejected` (a rejected shell is not in the
+basis). `diffuse_box` has one row per atom: its largest `r_cut` against its
+distance to the nearest face of the grid (`face_distance`), both in Bohr and
+Å, and the smallest grid norm over radial norm among its diffuse functions
+(`grid_norm`; below `0.9999` the run also warns that the cell cuts them):
+
+```text
+    diffuse: shells present, count 1, rms_ratio 2.5, cutoff_norm 0.0001
+    diffuse_shells:
+        symbol  l  index  rms_Bohr  rms_Angstrom  reference_l  reference_rms_Bohr  alpha_Bohr^-2  r_cut_Bohr  r_cut_Angstrom  residual  status
+        ----------------------------------------------------------------------------------------------------------------------------------------
+        H       0  0      4.9356    2.6118        0            1.9742              0.028376       13.6367     7.2163          0.437179  accepted
+        H       1  0      4.9356    2.6118        0            1.9742              0.048674       11.4992     6.0851          0.940034  accepted
+    diffuse_box:
+        atom  symbol  r_cut_Bohr  r_cut_Angstrom  face_distance_Bohr  face_distance_Angstrom  grid_norm
+        -----------------------------------------------------------------------------------------------
+        0     H       13.6367     7.2163          13.7005             7.2500                  0.999999
+```
+
+(a hydrogen atom in PAW-LCAO-DZP, `examples/diffuse/01_diffuse_h_anion.py`).
+
 Each fact has **one owner**. The basis is in `[BASIS]` and not repeated in
 `[ELECTRONS]`; the classical optimizer is in `[OPTIMIZATION SETUP]` and not
 repeated in the variational summary. A value written in two blocks can disagree
@@ -500,6 +549,23 @@ PAW-LCAO-DZP on eight orbitals, both constraints on:
 It reads back from `parse_output(path)["active_space"]`, the table as a list of
 rows keyed by the column names.
 
+A run whose two-body integrals are Cholesky factors
+(`two_body={"method": "cholesky", ...}`, see {doc}`scalability`) has one more
+`[ELECTRONS]` line, right after `kinetic operator`, and it is the only place
+the factors are described:
+
+```text
+    two-body integrals: Cholesky factors, tolerance 1.000e-07 Ha, rank 143 (8.41 per basis function), largest residual diagonal 6.885e-17 Ha
+```
+
+The tolerance is the truncation that was asked for, the rank the number of
+factors it took, and the largest residual diagonal the bound the factors
+actually reached: every integral is within it. Factors rebuilt on a
+reference's pivots (the displaced geometries of an active-space force) do
+not compute the diagonal and say so. `[PERFORMANCE]` keeps only the time of
+the `two-body integrals (cholesky)` stage. The exact dense integrals have no
+such line.
+
 `[SYSTEM]` says *where the atoms are*, `[ELECTRONS]` *what was solved* (the
 reference state, the charge, the mapping, the register width), `[ACTIVE SPACE]`
 *which orbitals* the register carries
@@ -524,8 +590,12 @@ settings:
 | classical optimizer | `classical_optimizer`, `max_iterations`, `convergence`, `convergence_marker` |
 | screening gradient | `gradient_method`, `gradient_formula`, `convergence_gradient`, `gradient_units` |
 | operator pool | `pool`, `pool_class`, `pool_size` |
-| growth and execution | `reoptimize_all_parameters`, `state_vector_backend`, `device`, `backend_provider`, `circuit_execution`, `shots`, `circuit_profiling` |
+| growth and execution | `growth`, `pruning`, `screening`, `reoptimize_all_parameters`, `parameter_gradient`, `state_vector_backend`, `device`, `backend_provider`, `circuit_execution`, `shots`, `circuit_profiling` |
 | the loop's starting point | `energy_unit`, `convergence_energy_<unit>`, `reference_energy_<unit>` |
+
+A fixed-ansatz `method="vqe"` writes the `ansatz` lines, `initial_parameters`,
+`parameter_gradient` (`analytic (adjoint ...)`, `finite difference ...` or
+`none (<method> uses no gradient)`) and the execution lines above.
 
 A fresh run starts from the reference state that `[ELECTRONS]` names, with an
 empty ansatz; the block does not repeat it. A **resumed** run closes the block
@@ -567,6 +637,47 @@ screening whose gradient is marked while the last row's `dE` is.
 | `analytic` (default) | The exact derivative `g_i = 2 Re<H psi\|A_i psi>` -- what the other two estimate. | One matrix-vector product per pool operator; no step-size truncation error. |
 | `finite_difference` | A central difference of the energy at shifted parameters, step `1e-4` (`FINITE_DIFFERENCE_STEP`, reported in `gradient_formula`). | `2 x \|pool\|` energy evaluations, plus the `\|pool\|` dense diagonalizations those evaluations are read from. |
 | `parameter_shift` | The quantum parameter-shift rule, reconstructed over the generator's frequency set (exact, not an approximation). | The same shifted-energy evaluations and diagonalizations, several shifts per frequency. |
+| `measured` (any run with `shots > 0`) | `g_i = <psi\|[H, A_i]\|psi>` from Pauli expectation values measured on the device; exact and classical at the reference determinant, before the first operator. | One measured gradient step per growth step, sized in `[GRADIENT MEASUREMENT]`. No state vector. |
+
+With `shots > 0`, `gradient_method` is `measured` whatever `gradient=` asked
+for (the formula says when it overrides a request), `state_vector_backend` is
+`none (...)`, and `screening` is the `screening=` option: which pool operators
+a growth step screens ({doc}`measurement_cost`).
+
+### `[GRADIENT MEASUREMENT]`: what a shot-based ADAPT-VQE measures
+
+A shot-based ADAPT-VQE writes this block once, after `[OPTIMIZATION SETUP]`.
+It is the only block that states the cost of the screening, and every number
+in it is computed before anything is submitted: the commutator observables
+`[H, A_k]` do not depend on the state, so one plan serves every growth step.
+LiH (HAO, `grid_spacing=0.4`, `pool="qeb"`, `shots=4096`, local estimator):
+
+```text
+[GRADIENT MEASUREMENT]
+    scheme: commutator observables [H, A_k], strings merged per batch, qubit-wise-commuting bases
+    first_step: classical (exact at the reference determinant)
+    measured_operators: 8
+    strings_per_step: 507
+    bases_per_step: 162
+    bases_per_step_in_energies: 6.0 (an energy is 27 bases)
+    jobs_per_step: 1
+    largest_job: 162 bases, 507 strings
+    circuit_instances_per_step: 162
+    shots_per_step: 663552
+    gradient_noise_bound_Ha: 2.059e-02
+    batches_per_step: 1
+    batch_memory_bytes: 60150
+```
+
+| Line | Meaning |
+| :--- | :--- |
+| `measured_operators` | How many pool operators each step measures (the pool size is `pool_size`, the device `device` and the shots per basis `shots` in `[OPTIMIZATION SETUP]`). Fewer than the pool only under `screening={"operators": K}` or the automatic subset, and then `screened_subset` says which and why. |
+| `strings_per_step`, `bases_per_step` | Distinct Pauli strings of the step's commutators and the qubit-wise-commuting bases they are measured in. A string shared by several operators is measured once. |
+| `bases_per_step_in_energies` | The same bases in units of one energy measurement of the Hamiltonian. |
+| `jobs_per_step`, `largest_job` | The jobs the bases are packed into, each within `measurement_budget=` (bases and observables). |
+| `shots_per_step`, `circuit_instances_per_step` | With the provider's resilience multipliers, as in `[MEASUREMENT PLAN]`. |
+| `gradient_noise_bound_Ha` | `max_k (sum_R c_kR^2)^(1/2) / sqrt(shots)`: a bound on one gradient's standard error. The `\|grad\|` column's largest of many noisy gradients sits above it, so a gradient criterion below it cannot be met. |
+| `batches_per_step`, `batch_memory_bytes` | The classical working set: commutators are formed in batches, and the largest one (plus the step's string store) is what the step holds in memory. |
 
 The shift-based estimators are opt-in, for studying the estimator itself: they
 converge to the number `analytic` computes directly. The eigendecompositions they
@@ -588,7 +699,8 @@ calc = Mandacaru(method="adapt-vqe",
 The block reports **what ran**, not what was asked for.
 `state_vector_backend` says how the run held its states and operators:
 `dense matrices` or `sparse matrices` on the full register, `particle-number
-sector` when the states were restricted to one, and `matrix-free Pauli
+sector` when the states were restricted to one (`method="vqe"` too, from
+10 qubits), and `matrix-free Pauli
 products` when no operator matrix was stored ({doc}`scalability`). A sparse, matrix-free or
 sector-restricted run never forms the eigendecompositions the shift estimators
 need and screens analytically whatever was requested, so it logs
@@ -690,6 +802,7 @@ closed by then -- the gradient is taken after the variational run):
     include_pulay: True
     pulay_fraction: 37.943206
     n_electrons: 8.000000
+    orbital_response: z-vector (3 CPHF iterations, residual 4.1e-14)
     orbital_gradient: 8.122069e-03
     translational_residual: 5.098009e-02
     forces:
@@ -713,9 +826,16 @@ gradient components ($+dE/dR$) in the convention of
 operators moved" and "the basis functions moved" can be read off per atom.
 `max_force` is the number an ASE optimizer converges on, and the two residuals
 are the honest measures of whether the gradient is usable for geometry at all:
-`orbital_gradient` is the orbital response the RDM gradient neglects
-({data}`~mandacaru.algorithms.calculator.ORBITAL_RESPONSE_TOLERANCE` is where it
-starts warning) and `net_force` is the grid's egg-box
+`orbital_gradient` is the largest orbital-rotation derivative of the state's
+energy, in Hartree (zero for a Hartree-Fock determinant and for the exact
+eigenstate of the orbital space). `orbital_response` says how the gradient
+accounts for it: `z-vector` (one coupled-perturbed Hartree-Fock solve, folded
+into the density matrices; the residual is the solve's), or `central difference
+of the reduced Hamiltonian` for a selector or reference the z-vector does not
+cover (see the active-space guide). Only when neither applies does the gradient
+hold the orbitals fixed, and then
+{data}`~mandacaru.algorithms.calculator.ORBITAL_RESPONSE_TOLERANCE` is where it
+starts warning. `net_force` is the grid's egg-box
 -- a free molecule feels no net force, so whatever appears there is
 discretization artifact.
 

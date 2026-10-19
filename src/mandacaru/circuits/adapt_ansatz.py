@@ -60,6 +60,12 @@ class AdaptAnsatz:
     matrix backends to machine precision; it is simply much slower, and is what
     makes the driver's ``backend_provider`` argument meaningful.
 
+    A **measured** ansatz (``simulate=False``) has no state backend at all: it
+    is the operator list and the reference determinant a circuit is built
+    from, for a shot-based run whose every expectation value is measured on
+    the device.  It stores no generator matrix and no ``2^n`` vector, and asking
+    it for a state is an error.
+
     Exposes the :class:`~mandacaru.circuits.base.Ansatz` protocol
     (``num_parameters``, ``n_qubits``, ``state``, ``reference_state``, ``evolve``).
     """
@@ -67,8 +73,14 @@ class AdaptAnsatz:
     def __init__(self, n_qubits: int, occupied: tuple[int, ...],
                  mapping: str = "jordan_wigner", sparse: bool = False,
                  provider=None, num_particles=None, sector=None,
-                 matrix_free: bool = False):
+                 matrix_free: bool = False, simulate: bool = True):
         self.n_qubits = int(n_qubits)
+        #: Whether states are prepared locally; ``False`` for a measured
+        #: (shot-based) ansatz, which keeps only what a circuit needs.
+        self.simulate = bool(simulate)
+        if not self.simulate and (sector is not None or provider is not None):
+            raise ValueError("a measured ansatz (simulate=False) prepares no "
+                             "state, so it takes no sector and no provider")
         #: Particle-number sector the generators act in (``None``: full register).
         self.sector = sector
         if sector is not None and provider is not None:
@@ -92,9 +104,6 @@ class AdaptAnsatz:
         self._ops: list[PoolOperator] = []
         self._eig: list[tuple[np.ndarray, np.ndarray]] = []   # dense (w, V)
         self._sparse_ops: list[tuple] = []                    # (A, A2, rodrigues)
-        self._hf = self._reference_vector()
-
-    def _reference_vector(self) -> np.ndarray:
         # The Hartree-Fock determinant is a computational basis state whose bits
         # depend on the fermion-to-qubit map (occupation for JW, parity sums for
         # parity / Bravyi-Kitaev).
@@ -104,16 +113,26 @@ class AdaptAnsatz:
             if bit:
                 index |= 1 << (self.n_qubits - 1 - i)         # qubit 0 = MSB
         self._reference_index = index
+        self._hf = self._reference_vector() if self.simulate else None
+
+    def _reference_vector(self) -> np.ndarray:
         if self.sector is not None:
-            return self.sector.basis_vector(index)
+            return self.sector.basis_vector(self._reference_index)
         vec = np.zeros(2 ** self.n_qubits, dtype=complex)
-        vec[index] = 1.0
+        vec[self._reference_index] = 1.0
         return vec
+
+    def _require_states(self) -> None:
+        if not self.simulate:
+            raise RuntimeError(
+                "this ansatz is measured on the device (a shot-based run): "
+                "it prepares no state vector, and none of 2^"
+                f"{self.n_qubits} amplitudes is ever allocated")
 
     def append(self, op: PoolOperator) -> None:
         """Add a generator to the end of the ansatz."""
         self._ops.append(op)
-        if self.provider is not None:
+        if self.provider is not None or not self.simulate:
             # Circuit execution needs only the generator's Pauli terms; skip the
             # (expensive) dense eigendecomposition / sparse powers entirely.
             return
@@ -192,6 +211,7 @@ class AdaptAnsatz:
         return _occupied_qubits(self._reference_index, self.n_qubits)
 
     def reference_state(self) -> np.ndarray:
+        self._require_states()
         return self._hf.copy()
 
     def state(self, theta) -> np.ndarray:
@@ -208,6 +228,7 @@ class AdaptAnsatz:
         (:class:`~mandacaru.algorithms.SubspaceADAPTVQE`) send several orthogonal
         references through one shared, adaptively grown unitary.
         """
+        self._require_states()
         theta = np.asarray(theta, dtype=float).ravel()
         if theta.size != self.num_parameters:
             raise ValueError(
@@ -264,9 +285,9 @@ class AdaptAnsatz:
         generator.  The whole gradient costs about three state preparations
         and one product with :math:`H`, against :math:`N + 1` energies for a
         finite difference.  ``None`` on a circuit provider, which returns no
-        amplitudes to sweep back.
+        amplitudes to sweep back, and on a measured ansatz.
         """
-        if self.provider is not None:
+        if self.provider is not None or not self.simulate:
             return None
         theta = np.asarray(theta, dtype=float).ravel()
         psi = self.evolve(theta, self._hf[:, None])

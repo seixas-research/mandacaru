@@ -106,16 +106,38 @@ class TestAllElectronGradient:
         assert np.abs(numerical).max() > 1.0        # a real force, not noise
 
     def test_lih_with_a_frozen_core(self):
-        """The inert core is refilled before the density matrices are used."""
+        """The inert core is refilled before the density matrices are used,
+        and the core orbitals' response is part of the force: it is the
+        derivative of the energy a displaced calculation reports (the ansatz
+        re-optimized in the displaced orbitals), not of the fixed-orbital
+        energy."""
         grid = Grid(center=[4.0, 4.0, 4.0], box_size=4.0, grid_spacing=0.45,
                     units="angstrom")
         atoms = Atoms("LiH", positions=[[4.013, 3.979, 3.207],
                                         [4.013, 3.979, 4.807]], cell=[8.0] * 3)
-        forces, numerical = analytic_and_numerical(
-            atoms, "HAO", grid, 0.45, active_space={"frozen": "auto"},
-            max_iterations=6)
-        scale = np.abs(numerical).max()
-        assert np.abs(forces - numerical).max() < 1e-3 * scale
+        atoms.calc = Mandacaru(
+            method="adapt-vqe", basis="HAO", grid=grid, grid_spacing=0.45,
+            profile=False, convergence={"gradient": 1e-6},
+            active_space={"frozen": "auto"}, max_iterations=6, transfer=True)
+        atoms.get_forces()
+        forces = atoms.calc.force_result.unprojected
+        assert atoms.calc.solver._gradient_context["frozen"]
+        assert atoms.calc.force_result.details[
+            "orbital_response_method"] == "z-vector"
+        step = 0.002
+        scale = np.abs(forces).max()
+        for atom, axis in ((0, 2), (1, 2), (1, 0)):
+            energies = []
+            for sign in (+1, -1):
+                moved = atoms.copy()
+                moved.positions[atom, axis] += sign * step
+                moved.calc = atoms.calc
+                energies.append(moved.get_potential_energy())
+            numerical = -(energies[0] - energies[1]) / (2 * step)
+            # 166 eV/Angstrom on a bare nucleus; the unrelaxed (fixed
+            # orbital) force misses by 0.2, the response brings it to 5e-3.
+            assert forces[atom, axis] == pytest.approx(numerical,
+                                                       abs=2e-4 * scale)
 
     def test_frozen_core_expansion_matches_an_explicit_determinant(self):
         """Core-core, core-active and active-active blocks, exactly."""

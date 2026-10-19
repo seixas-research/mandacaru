@@ -331,22 +331,32 @@ class PoissonFFTSolver:
         """
         return convolve_stack(self, rho_stack, out, self.dV)
 
-    def self_energies(self, rho_stack: np.ndarray) -> np.ndarray:
+    def self_energies(self, rho_stack: np.ndarray,
+                      workspace=None) -> np.ndarray:
         r""":math:`\iint \rho_p v \rho_p` of each real density in a
         ``(P, G)`` stack, by Parseval: forward transforms only.
 
         :math:`dV \sum_x \rho\Phi = dV^2 H^{-1}\sum_k |\hat\rho(k)|^2
         \hat K(k)` exactly, because :math:`\rho` vanishes outside the box
         of the padded mesh (``H`` points).  Needs the even (real) kernel.
+        ``workspace`` is an :class:`~mandacaru.integrals.fft.FFTWorkspace` of
+        the same grid and padding to transform in instead of the solver's
+        shared one (a thread's own, when several stacks are summed at once);
+        each density's value does not depend on which.
         """
         if not self.even:
             raise ValueError(
                 "self_energies needs the even (real) kernel of an "
                 "orthogonal grid; solve the densities instead")
+        space = self.workspace if workspace is None else workspace
+        if space.shape != self.workspace.shape or \
+                space.padded != self.workspace.padded:
+            raise ValueError("the workspace must have the solver's grid and "
+                             "padding")
         rho = np.ascontiguousarray(rho_stack, dtype=float)
-        half = self._Gk[..., :self.workspace.half]
+        half = self._Gk[..., :space.half]
         scale = self.dV * self.dV / float(np.prod(self.L))
-        return self.workspace.power(rho, half) * scale
+        return space.power(rho, half) * scale
 
 
 def convolve_stack(solver, rho_stack, out, scale):

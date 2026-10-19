@@ -938,7 +938,11 @@ class TestLibrary:
 
         The collapse was a finite-difference one (the stencil under-estimates
         the kinetic energy of the unresolved 3d functions), so the guard runs
-        on ``kinetic="fd"``: 26.7 eV between the two points there.  With the
+        on ``kinetic="fd"``.  There the UHF at 1.39 Angstrom has at least two
+        converged solutions 10.4 eV apart (gaps of 26.7 and 37.2 eV), and
+        which one the SCF reaches turns on round-off: integrals that differ
+        by 6e-12 (the thread-independent sampling, K30) pick the other one.
+        The bound sits above both and far below the 154 eV collapse.  With the
         spectral default the gap is 1.3 eV, but the UHF at 1.39 Angstrom does
         not converge in 1000 iterations (Phase N, 2026-10-13)."""
         from mandacaru.algorithms.hartree_fock import UHF
@@ -962,7 +966,7 @@ class TestLibrary:
             energies.append(result.electronic_energy
                             + integrals.nuclear_repulsion
                             + integrals.constant_energy)
-        assert abs(energies[0] - energies[1]) * HARTREE_TO_EV < 30.0
+        assert abs(energies[0] - energies[1]) * HARTREE_TO_EV < 50.0
 
     @pytest.mark.slow
     @pytest.mark.parametrize("symbol", library_elements())
@@ -1128,7 +1132,7 @@ class TestResolution:
         assert spec.options == ("size", "zeta_split", "paw_dataset",
                                 "filter_cutoff", "projector_basis",
                                 "energy_shift", "confinement_potential",
-                                "polarization_method")
+                                "polarization_method", "diffuse")
         # PAW filters and confines its basis by default (the polarization
         # shell follows the confinement, so it is derived rather than listed);
         # writing an option wins either way.

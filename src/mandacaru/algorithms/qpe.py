@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..core import matrix_free
 from ..core.checkpoint import WavefunctionCheckpoint, prepare_state
 from ..core.mapping import PauliSum
 from ..units import energy_unit_label, from_hartree, to_hartree
@@ -91,23 +92,9 @@ DEFAULT_EVALUATION_QUBITS = 8
 # Memory.
 # --------------------------------------------------------------------------- #
 
-def available_memory() -> int | None:
-    """Bytes of memory available to this process, or ``None`` if unknown.
-
-    ``psutil`` when installed (it accounts for cache and reclaimable pages);
-    otherwise the total physical memory from ``sysconf``, which over-states
-    what is free, so the policy check errs toward permitting.
-    """
-    try:
-        import psutil
-        return int(psutil.virtual_memory().available)
-    except Exception:                                   # pragma: no cover
-        pass
-    try:
-        return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
-    except (AttributeError, ValueError, OSError):       # pragma: no cover
-        return None
-
+# The available memory is the one guard every module reads
+# (:func:`~mandacaru.core.matrix_free.available_memory_bytes`: ``MemAvailable``
+# capped by the cgroup's limit), looked up at call time.
 
 @dataclass(frozen=True)
 class QPEMemoryEstimate:
@@ -118,7 +105,7 @@ class QPEMemoryEstimate:
     statevector_bytes: int      #: one ``2^(n+t)`` complex vector
     working_bytes: int          #: ``WORKING_SET_FACTOR`` of them
     unitary_bytes: int          #: the dense eigenvector matrix, if used
-    available_bytes: int | None
+    available_bytes: int        #: what can be allocated now
 
     @property
     def total_bytes(self) -> int:
@@ -132,8 +119,7 @@ class QPEMemoryEstimate:
         return self.total_bytes / self.available_bytes
 
     def summary(self) -> str:
-        avail = ("unknown" if self.available_bytes is None
-                 else f"{self.available_bytes / 2**30:.2f} GiB")
+        avail = f"{self.available_bytes / 2**30:.2f} GiB"
         share = ("" if self.fraction is None
                  else f" = {100 * self.fraction:.1f}% of the {avail} available")
         return (f"QPE statevector: {self.n_system} system + "
@@ -173,7 +159,7 @@ def qpe_memory_estimate(n_system: int, n_evaluation: int,
                              statevector_bytes=statevector,
                              working_bytes=WORKING_SET_FACTOR * statevector,
                              unitary_bytes=unitary,
-                             available_bytes=available_memory())
+                             available_bytes=matrix_free.available_memory_bytes())
 
 
 def check_memory(estimate: QPEMemoryEstimate, policy: str = "abort",

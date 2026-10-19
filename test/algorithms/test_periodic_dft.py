@@ -452,6 +452,103 @@ class TestTheSpectrum:
         for shell, values in full.items():
             assert np.abs(pdos[shell] - values).max() < 5e-6 * scale
 
+    def test_the_tetrahedron_dos_counts_the_valence_electrons(self, silicon):
+        """4x4x4 Gamma-centered, non-self-consistent: the cell-averaged DOS
+        holds the 16 states of the 8 bands and the 8 valence electrons below
+        the Fermi level, exactly, and is zero across the mesh's gap."""
+        atoms, _energy = silicon
+        calc = atoms.calc
+        kpts = {"size": (4, 4, 4), "gamma": True}
+        energies, dos = calc.dos(integration="tetrahedron", kpts=kpts,
+                                 npoints=2001)
+        step = energies[1] - energies[0]
+        mu = calc.get_fermi_level()
+        assert dos.sum() * step == pytest.approx(16.0, abs=1e-9)
+        assert dos[energies < mu].sum() * step == pytest.approx(8.0,
+                                                                abs=1e-9)
+        bands = calc.fermi_surface((4, 4, 4))
+        top, bottom = bands[3].max(), bands[4].min()
+        assert top < mu < bottom
+        inside = (energies - 0.5 * step > top) & (energies + 0.5 * step
+                                                  < bottom)
+        assert inside.sum() > 50 and np.abs(dos[inside]).max() < 1e-9
+        assert {"JepsenAndersen1971", "LehmannTaut1972",
+            "BloechlJepsenAndersen1994"} \
+            <= set(calc.citation_keys())
+
+    def test_the_tetrahedron_pdos_is_the_full_mesh_one(self, silicon):
+        """The shells sum to the DOS; unfolded from the wedge, they are the
+        PDOS of the 4x4x4 mesh diagonalized point by point (to 3e-7 of the
+        peak: the quadratures' asymmetry), and the two atoms agree to 2e-5.
+        By default (uncorrected) the shells are non-negative; the curvature
+        correction, asked for, dips them below zero by under 2 % of the
+        peak and still sums to the DOS."""
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            monkhorst_pack_kpts)
+        from mandacaru.algorithms.dft import TETRAHEDRON_DEGENERACY
+        from mandacaru.algorithms.tetrahedron import (
+            degenerate_average, mesh_tetrahedra, tetrahedron_dos)
+        from mandacaru.units import HARTREE_TO_EV
+        atoms, _energy = silicon
+        calc, solver = atoms.calc, atoms.calc.solver
+        kpts = {"size": (4, 4, 4), "gamma": True}
+        axis, dos = calc.dos(integration="tetrahedron", kpts=kpts,
+                             npoints=801)
+        _axis, pdos = calc.pdos(integration="tetrahedron", kpts=kpts,
+                                npoints=801)
+        assert set(pdos) == {(0, 0), (0, 1), (1, 0), (1, 1)}
+        assert np.abs(sum(pdos.values()) - dos).max() < 1e-10 * dos.max()
+        # The full mesh by brute force: ASE's order is the C order of the
+        # mesh indices.
+        size, _gamma, mesh = monkhorst_pack_kpts(kpts)
+        crystal = solver._gradient_context["integrals"]
+        levels, weights = solver._periodic_solver.bands(
+            crystal.cartesian_kpoints(mesh), projections=True)
+        levels = levels * HARTREE_TO_EV
+        shells = solver._orbital_shells()
+        keys = sorted(set(shells))
+        member = np.array([[s == key for s in shells] for key in keys], float)
+        grouped = degenerate_average(
+            levels, np.einsum("gm,kmn->kgn", member, weights),
+            TETRAHEDRON_DEGENERACY)
+        full = 2 * tetrahedron_dos(axis, levels,
+                                   mesh_tetrahedra(size,
+                                                   atoms.cell.reciprocal()),
+                                   grouped, curvature_correction=False,
+                                   cell_average=True)
+        scale = full.max()
+        for column, shell in enumerate(keys):
+            assert np.abs(pdos[shell] - full[:, column]).max() < 1e-6 * scale
+        for l in (0, 1):
+            assert np.abs(pdos[(0, l)] - pdos[(1, l)]).max() < 1e-4 * scale
+        assert min(v.min() for v in pdos.values()) > -1e-12
+        _axis, corrected = calc.pdos(integration="tetrahedron", kpts=kpts,
+                                     npoints=801, curvature_correction=True)
+        assert np.abs(sum(corrected.values()) - dos).max() < 1e-10 * dos.max()
+        assert min(v.min() for v in corrected.values()) > -0.03 * scale
+        assert min(v.min() for v in corrected.values()) < -1e-4 * scale
+
+    @pytest.mark.parametrize("kpts, match", [
+        ("GXL", "uniform mesh"),
+        ([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], "uniform mesh"),
+        ({"path": "GX", "npoints": 5}, "uniform mesh"),
+        ((2.5, 2, 2), "uniform mesh"),
+        ((1, 4, 4), "two mesh points along every periodic direction")])
+    def test_the_tetrahedron_method_refuses_what_it_cannot_cut(
+            self, silicon, kpts, match):
+        atoms, _energy = silicon
+        with pytest.raises(ValueError, match=match):
+            atoms.calc.dos(integration="tetrahedron", kpts=kpts)
+        with pytest.raises(ValueError, match=match):
+            atoms.calc.pdos(integration="tetrahedron", kpts=kpts)
+
+    def test_the_integration_options_are_checked(self, silicon):
+        atoms, _energy = silicon
+        with pytest.raises(ValueError, match="unknown integration"):
+            atoms.calc.dos(integration="histogram")
+        with pytest.raises(ValueError, match="curvature_correction"):
+            atoms.calc.pdos(curvature_correction=False)
+
     def test_the_band_structure_follows_the_path(self, silicon):
         from ase.spectrum.band_structure import BandStructure
         atoms, _energy = silicon
@@ -659,6 +756,33 @@ class TestSpinPolarized:
             calc.write_fermi_surface(tmp_path / "o2.bxsf", (1, 1, 2))
         calc.write_fermi_surface(tmp_path / "o2.bxsf", (1, 1, 2), spin=1)
 
+    def test_a_tetrahedron_dos_per_channel(self, oxygen):
+        """Each channel counts one electron per state: on a 2x2x2 mesh the
+        DOS is the sum of the two channels' tetrahedron DOS on the same mesh
+        (from the Fermi-surface energies), and holds the 12 valence
+        electrons below the Fermi level.  The SCF's own Gamma-only mesh has
+        no tetrahedra and is refused."""
+        from mandacaru.algorithms.tetrahedron import (
+            mesh_tetrahedra, tetrahedron_dos)
+        atoms = oxygen[True]
+        calc = atoms.calc
+        with pytest.raises(ValueError, match="two mesh points"):
+            calc.dos(integration="tetrahedron")
+        kpts = {"size": (2, 2, 2), "gamma": True}
+        energies, dos = calc.dos(integration="tetrahedron", kpts=kpts)
+        bands = calc.fermi_surface((2, 2, 2))           # (2, nb, 2, 2, 2)
+        n_bands = bands.shape[1]
+        tetrahedra = mesh_tetrahedra((2, 2, 2), atoms.cell.reciprocal())
+        expected = sum(tetrahedron_dos(
+            energies, bands[s].reshape(n_bands, -1).T, tetrahedra,
+            cell_average=True) for s in (0, 1))
+        assert np.abs(dos - expected).max() < 1e-10 * dos.max()
+        step = energies[1] - energies[0]
+        below = energies < calc.get_fermi_level()
+        assert dos[below].sum() * step == pytest.approx(12.0, abs=1e-9)
+        _energies, pdos = calc.pdos(integration="tetrahedron", kpts=kpts)
+        assert np.abs(sum(pdos.values()) - dos).max() < 1e-10 * dos.max()
+
     def test_spectra_carry_both_channels(self, oxygen):
         calc = oxygen[True].calc
         energies, dos = calc.dos(width=0.05)
@@ -836,3 +960,42 @@ def test_the_mixers_coefficients_come_from_the_density_alone():
                                            extra_out=[K[i + 1]])
         outputs[scale] = density
     assert np.allclose(outputs[1.0], outputs[1e3], atol=1e-12)
+
+
+def test_a_vector_magnetization_mixes_like_its_components():
+    """A two-component crystal mixes a (3, ngrid) magnetization: with the
+    vector along z it is the collinear mixer's step, component by
+    component."""
+    crystal, _context = _crystal()
+    rng = np.random.default_rng(5)
+    n = crystal.grid.size
+    rho = [np.abs(rng.normal(size=n)) for _ in range(3)]
+    m = [0.1 * rng.normal(size=n) for _ in range(3)]
+    q = {c: 0.0j for c in crystal.channels}
+    collinear, vector = pd.PulayMixer(crystal, spin=True), \
+        pd.PulayMixer(crystal, spin=True)
+    for i in range(2):
+        rho_c, _q, m_c = collinear.mix(rho[i], q, rho[i + 1], q, m[i],
+                                       m[i + 1])
+        zero = np.zeros(n)
+        rho_v, _q, m_v = vector.mix(rho[i], q, rho[i + 1], q,
+                                    np.stack([zero, zero, m[i]]),
+                                    np.stack([zero, zero, m[i + 1]]))
+        assert m_v.shape == (3, n)
+        assert np.allclose(rho_v, rho_c, atol=1e-14)
+        assert np.allclose(m_v[2], m_c, atol=1e-14)
+        assert not np.any(m_v[:2])
+
+
+def test_a_crystal_with_a_spin_orbit_term_needs_spinor_states():
+    """The collinear solver refuses it rather than drop the term."""
+    from mandacaru.pseudopotentials.paw import paw_library_path
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+
+    crystal, context = build_crystal(
+        SILICON, float(np.linalg.norm(SILICON.cell[0])) / 8,
+        {**SILICON_BASIS,
+         "paw_dataset": paw_library_path(None, "lda", relativity="dirac")},
+        kpts={"size": (1, 1, 1), "gamma": True}, spin_orbit=True)
+    with pytest.raises(NotImplementedError, match="two-component"):
+        pd.PeriodicKohnSham(crystal, context["n_electrons"], "lda")

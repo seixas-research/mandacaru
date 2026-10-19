@@ -26,7 +26,11 @@ spanning the reciprocal vector :math:`\mathbf b_j`,
 over the occupied bands, averaged over the strings of the transverse mesh.
 The electrons contribute :math:`\mathbf P_{el} = -(f e/2\pi\Omega)
 \sum_j\phi_j\mathbf a_j` (:math:`f = 2` for a spin-restricted crystal; a
-spin-polarized one sums its two channels with :math:`f = 1`), the ions
+spin-polarized one sums its two channels with :math:`f = 1`; a
+two-component (spinor) crystal has one set of :math:`N` occupied spinor
+bands, :math:`f = 1`, its overlaps the spin-summed inner products
+:math:`\sum_\sigma\langle u_{m\mathbf k\sigma}|u_{n\mathbf
+k'\sigma}\rangle`), the ions
 :math:`\mathbf P_{ion} = (e/\Omega)\sum_A Z_A\mathbf R_A` with the valence
 charges.  The Berry phase is defined modulo :math:`2\pi`, so
 :math:`\mathbf P_{el}` modulo :math:`f e\,\mathbf a_j/\Omega`, and moving
@@ -121,7 +125,7 @@ def occupied_bands(result) -> list:
     not separated from the empty one and its Berry phase is not defined.
     """
     spin = getattr(result, "n_spins", 1) == 2
-    full = 1.0 if spin else 2.0
+    full = 1.0 if spin or electrons_per_band(result) == 1.0 else 2.0
     occupations = [np.asarray(f, dtype=float) for f in result.occupations]
     counts = []
     for channel in range(2 if spin else 1):
@@ -145,6 +149,30 @@ def occupied_bands(result) -> list:
                 "separated occupied manifold")
         counts.append(per_k.pop())
     return counts
+
+
+def electrons_per_band(result) -> float:
+    """Electrons a band of ``result`` holds: 2 in a spin-restricted
+    crystal, 1 in a spin channel or a two-component (spinor) crystal."""
+    from .spinor_dft import PeriodicKohnShamGResult
+
+    if isinstance(result, PeriodicKohnShamGResult) or \
+            getattr(result, "n_spins", 1) == 2:
+        return 1.0
+    return 2.0
+
+
+def state_overlap(S, left, right) -> np.ndarray:
+    r""":math:`V^\dagger S V'` of the states ``left`` and ``right``
+    (columns): over the Bloch sums with ``S`` ``(M, M)``, or for
+    two-component states (``2M`` rows, alpha first) the spin-summed
+    :math:`\sum_\sigma V_\sigma^\dagger S V'_\sigma` -- ``S`` is spin
+    free."""
+    M = S.shape[0]
+    if left.shape[0] == M:
+        return left.conj().T @ S @ right
+    return (left[:M].conj().T @ S @ right[:M]
+            + left[M:].conj().T @ S @ right[M:])
 
 
 def onsite_operator(crystal, b) -> np.ndarray:
@@ -195,7 +223,7 @@ def string_phase(crystal, states, n_occ, b) -> float:
         data, V = states[s]
         data_next, V_next = states[(s + 1) % len(states)]
         S = link_overlap(crystal, data, data_next, b, onsite, grid_phase)
-        M = V[:, :n_occ].conj().T @ S @ V_next[:, :n_occ]
+        M = state_overlap(S, V[:, :n_occ], V_next[:, :n_occ])
         sign, logdet = np.linalg.slogdet(M)
         phase -= float(np.angle(sign))
     return phase
@@ -236,8 +264,7 @@ def berry_polarization(solver, result, size) -> Polarization:
     """
     crystal = solver.crystal
     counts = occupied_bands(result)
-    spin = solver.n_spins == 2
-    f = 1.0 if spin else 2.0
+    f = electrons_per_band(result)
     size = tuple(int(n) for n in size)
     if len(size) != 3 or min(size) < 1:
         raise ValueError(f"size must be three positive integers; got {size!r}")
@@ -364,8 +391,7 @@ def born_effective_charges(atoms, *, delta: float = DEFAULT_BORN_DELTA,
         result = geometry.calc.polarization_result
         crystal = geometry.calc.solver._periodic_solver.crystal
         g = polarization_quantum(
-            1.0 if geometry.calc.solver.get_number_of_spins() == 2 else 2.0,
-            crystal.charges)
+            electrons_per_band(geometry.calc.solver._scf), crystal.charges)
         return result.raw, g * np.asarray(crystal.lattice, float).T
 
     n_atoms = len(atoms)
@@ -506,10 +532,17 @@ def piezoelectric_tensor(atoms, *, strain: float = DEFAULT_PIEZO_STRAIN,
     reference = atoms.copy()
     reference.calc = Mandacaru(**options)
     reference.get_potential_energy()
-    crystal = reference.calc.solver._periodic_solver.crystal
-    g = polarization_quantum(
-        1.0 if reference.calc.solver.get_number_of_spins() == 2 else 2.0,
-        crystal.charges)
+    solver = reference.calc.solver._periodic_solver
+    if relax_ions and solver.two_component:
+        from .dft import SPINOR_CRYSTAL_FORCES_REFUSAL
+        raise NotImplementedError(
+            "the relaxed-ion piezoelectric tensor relaxes the ions with the "
+            "crystal forces: " + SPINOR_CRYSTAL_FORCES_REFUSAL.format(
+                what="forces") + ".  The clamped-ion tensor "
+            "(relax_ions=False) is available")
+    crystal = solver.crystal
+    g = polarization_quantum(electrons_per_band(reference.calc.solver._scf),
+                             crystal.charges)
     lattice = np.asarray(crystal.lattice, dtype=float)       # columns, Bohr
     volume = abs(float(np.linalg.det(lattice)))
     steps = (g / volume) * lattice.T * E_PER_BOHR2_IN_C_PER_M2  # rows

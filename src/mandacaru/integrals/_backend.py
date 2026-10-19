@@ -88,14 +88,36 @@ def _find_library() -> str | None:
     return found
 
 
-def _load():
+def _load(fresh: bool = False):
+    """Load and bind the library, or ``None``.
+
+    ``fresh`` loads a private copy of the file: a process that already
+    loaded a stale build at the same path would otherwise get that handle
+    back from the dynamic loader, and a library just compiled to replace it
+    could not be used before the next process.
+    """
     path = _find_library()
     if path is None:
         return None
+    if fresh:
+        try:
+            handle, copy = tempfile.mkstemp(prefix="mandacaru_integrals_",
+                                            suffix=Path(path).suffix)
+            os.close(handle)
+            shutil.copyfile(path, copy)
+            path = copy
+        except OSError:
+            return None
     try:
         lib = ctypes.CDLL(path)
     except OSError:
         return None
+    finally:
+        if fresh:
+            try:
+                os.unlink(path)       # the mapping outlives the file (POSIX)
+            except OSError:
+                pass
     try:
         return _bind(lib)
     except AttributeError:
@@ -128,6 +150,17 @@ def _bind(lib):
         ctypes.c_double,             # dV
         _C128_W,                     # out_T (M * M)
         _C128_W,                     # out_V (M * M)
+    ]
+
+    lib.mandacaru_laplacian_real.restype = None
+    lib.mandacaru_laplacian_real.argtypes = [
+        _F64,                        # field (n * ngrid)
+        ndpointer(dtype=np.float64, flags="C_CONTIGUOUS,WRITEABLE"),  # lap
+        ctypes.c_int,                # n
+        ctypes.c_int,                # nx
+        ctypes.c_int,                # ny
+        ctypes.c_int,                # nz
+        _F64,                        # ginv  (9, row-major inverse metric)
     ]
 
     lib.mandacaru_kb_project.restype = None
@@ -237,10 +270,11 @@ class BackendStatus:
         return "C (serial)"
 
 
-def _reload() -> bool:
-    """Re-run the library search and rebind the module globals."""
+def _reload(fresh: bool = False) -> bool:
+    """Re-run the library search and rebind the module globals (``fresh``:
+    from a private copy of the file, :func:`_load`)."""
     global _LIB, HAS_C_BACKEND
-    _LIB = _load()
+    _LIB = _load(fresh)
     HAS_C_BACKEND = _LIB is not None
     return HAS_C_BACKEND
 
@@ -447,7 +481,8 @@ def build_backend(build_dir: str | os.PathLike | None = None, *,
     candidate = build_dir / _LIB_NAMES.get(system, "libmandacaru_integrals.so")
     if candidate.is_file():
         if build_dir == _BUILD_DIR and not HAS_C_BACKEND:
-            _reload()
+            # A fresh copy: a stale build at this path may already be loaded.
+            _reload(fresh=True)
         return candidate
     return None
 
@@ -489,7 +524,7 @@ def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatu
     if build and not _build_attempted:
         _build_attempted = True
         path = build_backend(verbose=verbose)
-        if path is not None and _reload():
+        if path is not None and (HAS_C_BACKEND or _reload(fresh=True)):
             compiled = True
             return BackendStatus(True, _find_library(), num_threads(), True,
                                  f"C backend compiled into {path.parent}")
@@ -841,9 +876,10 @@ REAL_LAPLACIAN_BLOCK = 32
 
 def _one_body_real(psi_stack, Vext, grid):
     r"""``(T, V)`` of real samples (a molecule's real harmonics): the
-    finite-difference Laplacian of the C kernels (:func:`_laplacian_general`,
-    the same stencil and boundary), then two real matrix products.  Both
-    matrices are real symmetric to round-off."""
+    finite-difference Laplacian of the C kernels (:func:`laplacian_real`,
+    the same stencil and boundary, in C when the library is loaded), then
+    two real matrix products.  Both matrices are real symmetric to
+    round-off."""
     nx, ny, nz = grid.shape
     M, ngrid = psi_stack.shape
     _check_samples(psi_stack, nx * ny * nz, "one_body_matrices")
@@ -853,14 +889,42 @@ def _one_body_real(psi_stack, Vext, grid):
     ginv = np.asarray(grid.metric_inverse(), dtype=np.float64)
     dV = float(grid.dV)
     T = np.empty((M, M))
+    lap = np.empty((min(REAL_LAPLACIAN_BLOCK, max(M, 1)), ngrid))
     for b0 in range(0, M, REAL_LAPLACIAN_BLOCK):
         block = psi_stack[b0:b0 + REAL_LAPLACIAN_BLOCK]
-        lap = np.stack([_laplacian_general(row.reshape(nx, ny, nz),
-                                           ginv).reshape(-1)
-                        for row in block])
-        T[:, b0:b0 + REAL_LAPLACIAN_BLOCK] = (psi_stack @ lap.T) * (-0.5 * dV)
+        out = laplacian_real(block, grid.shape, ginv, lap[:block.shape[0]])
+        T[:, b0:b0 + REAL_LAPLACIAN_BLOCK] = (psi_stack @ out.T) * (-0.5 * dV)
     V = ((psi_stack * Vext) @ psi_stack.T) * dV
     return T, V
+
+
+def laplacian_real(samples, shape, ginv, out=None) -> np.ndarray:
+    r"""The finite-difference Laplacian of real samples ``(n, G)`` on a grid
+    of node counts ``shape`` and inverse metric ``ginv``, the stencil and
+    boundary of the one-body kernels, into ``out`` (``(n, G)``, allocated
+    when omitted).  The C kernel ``mandacaru_laplacian_real`` when the
+    library is loaded, else :func:`_laplacian_general` row by row; the two
+    agree to round-off, and the C result does not depend on its thread
+    count (each node is one thread's)."""
+    nx, ny, nz = _as_shape(shape)
+    samples = np.ascontiguousarray(samples, dtype=np.float64)
+    n = samples.shape[0]
+    if out is None:
+        out = np.empty((n, nx * ny * nz))
+    if samples.shape != (n, nx * ny * nz) or out.shape != samples.shape \
+            or not out.flags.c_contiguous or out.dtype != np.float64:
+        raise ValueError(f"laplacian_real: samples and out must be (n, "
+                         f"{nx * ny * nz}) float64, got {samples.shape} and "
+                         f"{out.shape}")
+    ginv = np.ascontiguousarray(ginv, dtype=np.float64)
+    if HAS_C_BACKEND and n:
+        _LIB.mandacaru_laplacian_real(samples.reshape(-1), out.reshape(-1),
+                                      n, nx, ny, nz, ginv.reshape(-1))
+        return out
+    for row, target in zip(samples, out):
+        target[:] = _laplacian_general(row.reshape(nx, ny, nz),
+                                       ginv).reshape(-1)
+    return out
 
 
 def _one_body_numpy(psi_stack, Vext, ginv, dV, shape):

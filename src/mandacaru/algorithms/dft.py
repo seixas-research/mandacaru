@@ -80,11 +80,21 @@ Restricted for a closed shell, unrestricted when ``n_alpha != n_beta``
 shell that straddles the Fermi level -- spin-restricted O2's pi*, the OH
 radical's beta pi -- whose electrons are shared equally by its members
 (:func:`shell_occupations`): the zero-temperature ensemble, which the energy,
-the density and the forces then describe.  A **periodic** geometry (any ``atoms.pbc``)
+the density and the forces then describe.  A molecule on a spin-orbit set
+(``lda-fr/``, ``pbe-fr/``) is solved in two-component spinors with the
+spin-orbit term in the operator and the noncollinear LDA or PBE
+(:mod:`~mandacaru.algorithms.spinor_dft`), started from its collinear
+solution; so is a molecule whose atoms carry ``(N, 3)`` initial moment
+vectors (a noncollinear start, with or without the spin-orbit term).  Neither
+has forces yet.  A **periodic** geometry (any ``atoms.pbc``)
 takes the crystal path instead -- Bloch states on a Monkhorst-Pack mesh with
 smearing, spin-polarized when the atoms carry initial moments, PAW-LCAO only
 (:mod:`~mandacaru.algorithms.periodic_dft`); D4 there is the lattice sum,
-in the energy, the forces and the stress.
+in the energy, the forces and the stress.  A crystal on a spin-orbit set, or
+with ``(N, 3)`` moment vectors, is solved in two-component Bloch spinors
+(:class:`~mandacaru.algorithms.spinor_dft.SpinorPeriodicKohnSham`): energy,
+bands, densities of states, Fermi surfaces and charges; no forces or
+stress.
 
 The converged Kohn-Sham orbitals are exported like the Hartree-Fock ones: the
 result carries the many-body Hamiltonian written in them, so
@@ -103,9 +113,10 @@ import numpy as np
 
 from ..core.mapping import Fermion
 from ..integrals import exchange_correlation as xc_grid
+from ..integrals.packed import is_packed
 from ..units import to_bohr
-from .hartree_fock import (DIIS, LEVEL_SHIFT, RHFResult, UHFResult,
-                           _level_shifted, natural_orbitals,
+from .hartree_fock import (DIIS, LEVEL_SHIFT, GHFResult, RHFResult,
+                           UHFResult, _level_shifted, natural_orbitals,
                            transform_integrals)
 from .periodic_dft import scf_record
 from .pseudo_forces import AlgebraicEnergy
@@ -138,6 +149,23 @@ HARTREE_METHODS = ("poisson", "tensor")
 
 #: The default of ``hartree=`` (HISTORY, "K4").
 DEFAULT_HARTREE = "poisson"
+
+#: How ``dos()`` and ``pdos()`` sum the k-points (``integration=``): a
+#: Gaussian broadening of every level (the default, molecules too), or the
+#: linear tetrahedron method of :mod:`.tetrahedron` (crystals on a uniform
+#: mesh).
+DOS_INTEGRATIONS = ("gaussian", "tetrahedron")
+
+#: Levels (eV) at one k-point closer than this share their projections in
+#: the tetrahedron PDOS (:func:`.tetrahedron.degenerate_average`): which
+#: state of a degenerate set carries which atom is the eigensolver's
+#: arbitrary choice (silicon's zone-face pairs at X, one state per atom or
+#: both shared), and it moved 30-44 % of a shell's peak between silicon's
+#: two atoms on a 4x4x4 mesh.  The grid splits levels a symmetry makes
+#: degenerate: by ~1e-6 eV for the grid's own operations, by up to 1.1e-4 eV
+#: for the zone-face pairs the nonsymmorphic ones stick together (silicon,
+#: grid spacing 0.34 Angstrom).
+TETRAHEDRON_DEGENERACY = 1e-3
 
 
 def _stalled(history) -> bool:
@@ -368,9 +396,14 @@ class LazyHamiltonian:
         self.constant = complex(constant)
 
     def build(self) -> Fermion:
-        n_modes = 2 * np.asarray(self.scf.h_mo).shape[0]
-        return (Fermion.from_spatial_integrals(self.scf.h_mo, self.scf.eri_mo)
-                + Fermion({(): self.constant}, n_modes=n_modes))
+        h_mo = np.asarray(self.scf.h_mo)
+        if isinstance(self.scf, GHFResult):
+            # Spinor integrals (two-component Kohn-Sham), already
+            # spin-orbital and in mode order, as GHF exports them.
+            return (Fermion.from_integrals(h_mo, self.scf.eri_mo)
+                    + Fermion({(): self.constant}, n_modes=h_mo.shape[0]))
+        return (Fermion.from_spatial_integrals(h_mo, self.scf.eri_mo)
+                + Fermion({(): self.constant}, n_modes=2 * h_mo.shape[0]))
 
 
 class PoissonHartree:
@@ -399,6 +432,14 @@ class PoissonHartree:
     def orbital_integrals(self, C) -> np.ndarray:
         """``<ij|kl>`` over the Loewdin-basis orbital columns ``C``."""
         return self.direct.orbital_integrals(self.X @ np.asarray(C))
+
+    def spinor_exchange(self, C) -> np.ndarray:
+        """``<ij|ji>`` over the Loewdin-basis spinor columns ``C`` (``(2M,
+        n)``, alpha rows first;
+        :meth:`~mandacaru.integrals.direct.DirectCoulomb.spinor_exchange`)."""
+        C = np.asarray(C)
+        M = self.X.shape[1]
+        return self.direct.spinor_exchange(self.X @ C[:M], self.X @ C[M:])
 
 
 class KohnSham:
@@ -892,6 +933,24 @@ class UnrestrictedKohnSham(KohnSham):
             occupations_alpha=fa, occupations_beta=fb)
 
 
+#: Why a two-component (spin-orbit) crystal has no forces or stress yet.
+SPINOR_CRYSTAL_FORCES_REFUSAL = (
+    "{what} of a two-component (spin-orbit or noncollinear) crystal are not "
+    "implemented: the crystal gradient differentiates the collinear "
+    "Kohn-Sham matrix and has no spin-orbit or noncollinear term.  Use a "
+    "scalar-relativistic set (paw_dataset='lda-sr' or 'pbe-sr') and "
+    "collinear (N,) initial magnetic moments for forces, stress and "
+    "relaxations")
+
+#: Why a two-component (spin-orbit) molecule has no forces yet.
+SPINOR_FORCES_REFUSAL = (
+    "forces of the two-component (spin-orbit) Kohn-Sham energy are not "
+    "implemented: the analytic gradient differentiates the collinear "
+    "functional and has no spin-orbit or noncollinear term.  Use a "
+    "scalar-relativistic set (paw_dataset='lda-sr' or 'pbe-sr') and "
+    "collinear (N,) initial magnetic moments for forces and relaxations")
+
+
 def _datasets_relativistic(datasets) -> bool:
     """The datasets' common relativistic-exchange flag (they must agree)."""
     flags = {bool(getattr(d, "relativistic_exchange", False))
@@ -956,8 +1015,11 @@ def kohn_sham_solver(integrals, n_electrons: int,
                      functional: str = DEFAULT_XC, spins=None,
                      screening=None, hartree: str = DEFAULT_HARTREE
                      ) -> KohnSham:
-    """The :class:`KohnSham` problem of ``integrals``, not yet solved --
-    :class:`UnrestrictedKohnSham` when ``spins = (n_alpha, n_beta)`` differ.
+    """The collinear :class:`KohnSham` problem of ``integrals``, not yet
+    solved -- :class:`UnrestrictedKohnSham` when ``spins = (n_alpha,
+    n_beta)`` differ.  A spin-orbit term (a ``lda-fr/`` or ``pbe-fr/``
+    dataset) is not in it: this is the problem of the scalar part, which
+    :func:`kohn_sham` solves first and turns into the two-component one.
 
     ``integrals`` is a :class:`~mandacaru.core.hamiltonian.MolecularIntegrals`
     (or its PAW-LCAO subclass) in its orthonormalized basis; the orbitals are
@@ -977,9 +1039,6 @@ def kohn_sham_solver(integrals, n_electrons: int,
         raise NotImplementedError(
             "method='dft' is molecular (Gamma point, isolated boundary "
             "conditions) for now")
-    if getattr(integrals, "spin_orbit_coupling", None):
-        raise NotImplementedError(
-            "method='dft' has no spin-orbit term in its Kohn-Sham operator")
     functional = xc_grid.resolve_functional(functional)
     datasets = integrals.pseudopotentials or []
     _warn_functional_mismatch(datasets, functional)
@@ -1025,13 +1084,47 @@ def _centers(integrals):
 
 def kohn_sham(integrals, n_electrons: int, functional: str = DEFAULT_XC,
               spins=None, screening=None, hartree: str = DEFAULT_HARTREE,
-              **run_options):
+              spin_directions=None, **run_options):
     """Solve the Kohn-Sham problem on ``integrals``: restricted, or
     unrestricted when ``spins = (n_alpha, n_beta)`` differ (``screening``
-    and ``hartree`` as for :func:`kohn_sham_solver`)."""
-    result = kohn_sham_solver(integrals, n_electrons, functional,
-                              spins=spins, screening=screening,
-                              hartree=hartree).run(**run_options)
+    and ``hartree`` as for :func:`kohn_sham_solver`).
+
+    Integrals with a spin-orbit term, or a noncollinear start
+    (``spin_directions``, ``(M, 3)``: the spin direction of each basis
+    function's share of the magnetization), are solved twice: the collinear
+    problem of their scalar part first (restricted or unrestricted, by
+    ``spins``), then the two-component one -- with the spin-orbit term when
+    the integrals carry it -- started from its density
+    (:func:`~mandacaru.algorithms.spinor_dft.collinear_spinor_density`), or
+    from that density with each share turned to its direction
+    (:func:`~mandacaru.algorithms.spinor_dft.noncollinear_spinor_density`).
+    The result keeps the collinear energy as ``scalar_energy``.
+    """
+    spin_orbit = bool(getattr(integrals, "spin_orbit_coupling", None))
+    if spin_orbit or spin_directions is not None:
+        from ..integrals.noncollinear import supports_noncollinear
+        from .spinor_dft import (SpinorKohnSham, collinear_spinor_density,
+                                 noncollinear_spinor_density,
+                                 spinor_functional_refusal)
+        if not supports_noncollinear(functional):
+            raise NotImplementedError(spinor_functional_refusal(
+                xc_grid.resolve_functional(functional)))
+        solver = kohn_sham_solver(integrals, n_electrons, functional,
+                                  spins=spins, screening=screening,
+                                  hartree=hartree)
+        collinear = solver.run(**run_options)
+        spinor = SpinorKohnSham.from_solver(
+            solver, spin_orbit=(integrals.spin_orbit_matrix() if spin_orbit
+                                else None))
+        guess = (collinear_spinor_density(collinear)
+                 if spin_directions is None else
+                 noncollinear_spinor_density(collinear, spin_directions))
+        result = spinor.run(guess, **run_options)
+        result.scalar_energy = float(collinear.electronic_energy)
+    else:
+        result = kohn_sham_solver(integrals, n_electrons, functional,
+                                  spins=spins, screening=screening,
+                                  hartree=hartree).run(**run_options)
     result.core_correction_energy = float(
         sum(xc_grid.core_correction_offset(d)
             for d in integrals.pseudopotentials or []))
@@ -1086,8 +1179,19 @@ class KohnShamEnergy(AlgebraicEnergy):
         one = np.sum(P * (h + self.V_xc).T)
         if not self.two_body:
             return float(np.real(one)) + self.constant
-        hartree = 0.5 * np.einsum("ca,db,abcd->", P, P, g, optimize=True)
+        if is_packed(g):
+            # 1/2 sum P_ca P_db <ab|cd> = 1/2 sum_pq P_qp J[P]_pq.
+            hartree = 0.5 * np.sum(P.T * g.coulomb(P))
+        else:
+            hartree = 0.5 * np.einsum("ca,db,abcd->", P, P, g, optimize=True)
         return float(np.real(one + hartree)) + self.constant
+
+    def pair_derivative(self, S) -> np.ndarray:
+        r""":math:`\partial E/\partial g_{abcd} = \tfrac12 P_{ca}P_{db}` at
+        overlap ``S``, as the ``(M^2, M^2)`` matrix :math:`P_{(ac),(bd)}`
+        (:meth:`~mandacaru.algorithms.pseudo_forces.AlgebraicEnergy.pair_derivative`)."""
+        vector = self.density(S).T.ravel()
+        return 0.5 * np.outer(vector, vector)
 
     def orbital_gradient(self, S, h, g, step: float = 1e-5) -> None:
         """Not measured: a converged Kohn-Sham density is stationary."""
@@ -1528,6 +1632,39 @@ def d4_dispersion_energy(atoms, functional: str) -> float:
     return d4_dispersion(atoms, functional)["energy"]
 
 
+def _uniform_mesh(kpts, pbc) -> dict:
+    """``kpts`` as ``{"size", "gamma"}`` for the tetrahedron method.
+
+    A ValueError for anything the method cannot cut into tetrahedra: a band
+    path, an explicit list of k-points, a k-point density, or a mesh with
+    fewer than two points along a periodic direction.
+    """
+    gamma = None
+    size = kpts
+    if isinstance(kpts, dict):
+        if set(kpts) - {"size", "gamma"} or "size" not in kpts:
+            raise ValueError(
+                "the tetrahedron method needs a uniform mesh, kpts=(n1, n2, "
+                f"n3) or {{'size': (n1, n2, n3), 'gamma': ...}}; got {kpts!r}")
+        size, gamma = kpts["size"], kpts.get("gamma")
+    try:
+        values = [float(n) for n in size]
+    except (TypeError, ValueError):
+        values = []
+    if len(values) != 3 or any(v != int(v) or v < 1 for v in values):
+        raise ValueError(
+            "the tetrahedron method needs a uniform mesh (n1, n2, n3); a "
+            f"band path or a list of k-points is not one: kpts={kpts!r}")
+    size = tuple(int(v) for v in values)
+    thin = [axis for axis in range(3) if pbc[axis] and size[axis] < 2]
+    if thin:
+        raise ValueError(
+            "the tetrahedron method needs at least two mesh points along "
+            f"every periodic direction; kpts {size} has one along axis "
+            f"{', '.join(map(str, thin))}")
+    return {"size": size, "gamma": gamma}
+
+
 @dataclass(frozen=True)
 class PeriodicDFTResult:
     r"""A periodic Kohn-Sham result, per cell, energies in ``energy_unit``.
@@ -1572,6 +1709,9 @@ class DFTDriver(_MeanFieldDriver):
     """
 
     _kind = "dft"
+    #: ``(N, 3)`` initial magnetic moments start a two-component run of a
+    #: molecule (:meth:`_spin_directions`); every other method refuses them.
+    noncollinear_start = True
     #: The Kohn-Sham energy is stationary in its density matrix, so its
     #: gradient needs no orbital response: the calculator asks
     #: :meth:`nuclear_gradient` instead of refusing forces.
@@ -1601,6 +1741,7 @@ class DFTDriver(_MeanFieldDriver):
     def _build_hamiltonian(self, atoms):
         """A crystal is built by :func:`~mandacaru.pseudopotentials.periodic_paw.build_crystal`;
         a molecule by the shared builder."""
+        self._check_noncollinear_moments(atoms)
         self._periodic = self._is_periodic(atoms)
         if not self._periodic:
             return self._build_molecular_integrals(atoms)
@@ -1631,11 +1772,13 @@ class DFTDriver(_MeanFieldDriver):
                 "periodic method='dft' needs a PAW-LCAO or UPAW-LCAO basis; "
                 f"got {self.basis!r}")
         options = {k: v for k, v in dict(spec or {}).items() if k != "name"}
+        spinor, whole = self._crystal_spinor(atoms, options, family.name)
         crystal, context = build_crystal(
             atoms, self.grid_spacing, options,
             kpts={"size": tuple(self.kpts), "gamma": self.kpts_gamma},
             family=family.name, grid=self.grid, ghosts=self.ghosts,
-            full_mesh=self.electric_field is not None)
+            full_mesh=self.electric_field is not None or whole,
+            spin_orbit=spinor)
         context["integrals"] = crystal
         context["n_electrons"] = float(context["n_electrons"]) - float(
             self.charge)
@@ -1643,6 +1786,33 @@ class DFTDriver(_MeanFieldDriver):
         self._basis_symbols = list(atoms.get_chemical_symbols())
         n = int(round(context["n_electrons"]))
         return None, (n // 2, n - n // 2), crystal.M
+
+    def _crystal_spinor(self, atoms, options, family) -> tuple[bool, bool]:
+        """``(spinor, whole_mesh)`` of a crystal: whether it is solved in
+        two-component Bloch spinors (a spin-orbit set, or ``(N, 3)`` moment
+        vectors) and whether it needs the whole k-point mesh -- a magnetic
+        start, which breaks time reversal, or a hybrid, whose exchange takes
+        every mesh point's spinors.  What a spinor crystal cannot do is
+        refused here, before the crystal is built."""
+        from ..pseudopotentials.periodic_paw import spin_orbit_symbols
+
+        moments = np.asarray(atoms.get_initial_magnetic_moments(), float)
+        noncollinear = moments.ndim == 2
+        with_spin_orbit = spin_orbit_symbols(atoms, options, family)
+        spinor = bool(with_spin_orbit) or noncollinear
+        if not spinor:
+            return False, False
+        from ..integrals.noncollinear import supports_noncollinear
+        if not supports_noncollinear(self.xc):
+            from .spinor_dft import spinor_functional_refusal
+            raise NotImplementedError(spinor_functional_refusal(self.xc))
+        if self.electric_field is not None:
+            raise NotImplementedError(
+                "a finite electric field is implemented for a collinear "
+                "crystal; this one is two-component (spin-orbit or "
+                "noncollinear)")
+        return True, (noncollinear or bool(np.any(moments != 0.0))
+                      or xc_grid.is_hybrid(self.xc))
 
     def _build_molecular_integrals(self, atoms):
         """The shared builder, stopped after the integrals.
@@ -1722,11 +1892,26 @@ class DFTDriver(_MeanFieldDriver):
                 crystal += ("Togo2018",)          # the space group (spglib)
         spin = ()
         scf = getattr(self, "_scf", None)
-        if self.xc == "lda" and (isinstance(scf, KohnShamUResult)
+        if self.xc == "lda" and (isinstance(scf, (KohnShamUResult, GHFResult))
                                  or getattr(scf, "n_spins", 1) == 2):
             # The LDA's spin interpolation; PBE and r2SCAN polarize through
             # the Perdew-Wang uniform gas, already cited.
             spin = ("vonBarthHedin1972",)
+        noncollinear = isinstance(scf, GHFResult) or (
+            self._spinor_crystal() and not scf.time_reversal)
+        if self.xc == "lda" and noncollinear and not spin:
+            spin = ("vonBarthHedin1972",)
+        if noncollinear:
+            # The noncollinear functional of the spinor run (local spin axis),
+            # and its gradient-corrected form.
+            spin += ("Kubler1988",)
+            if self.xc in ("pbe", "hse06", "r2scan", "r2scan-rvv10"):
+                # The gradients along the local axis.
+                spin += ("Hobbs2000",)
+        if xc_grid.is_hybrid(self.xc) and (isinstance(scf, GHFResult)
+                                           or self._spinor_crystal()):
+            # The exact exchange of every spin block of the spinors.
+            spin += ("JimenezHoyos2011",)
         config["extras"] = (tuple(config.get("extras", ())) + functional
                             + paw_exchange + dispersion + crystal + spin)
         return config
@@ -1746,14 +1931,33 @@ class DFTDriver(_MeanFieldDriver):
             self._configure_periodic(context, num_particles, n_orbitals)
             return
         full_particles = tuple(int(n) for n in num_particles)
+        directions = self._spin_directions(context)
+        spinor = (bool(getattr(integrals, "spin_orbit_coupling", None))
+                  or directions is not None)
+        if spinor and self.mapping == "parity_reduced":
+            raise ValueError(
+                "the two-component Kohn-Sham Hamiltonian is written in "
+                "spinors and has no alpha-parity qubit to remove; use "
+                "'jordan_wigner', 'parity' or 'bravyi_kitaev'")
         # n_alpha != n_beta (initial magnetic moments, odd electron counts)
-        # selects the unrestricted solver.
+        # selects the unrestricted solver; a spin-orbit dataset or (N, 3)
+        # moments the two-component one, started from that collinear
+        # solution (turned atom by atom to the moment vectors).
         self._scf = kohn_sham(integrals, sum(full_particles), self.xc,
-                              spins=full_particles, hartree=self.hartree)
+                              spins=full_particles, hartree=self.hartree,
+                              spin_directions=directions)
         # The exported Hamiltonian and every one-particle picture (density,
         # populations, cube files) are in the model orbitals: the Kohn-Sham
-        # orbitals, or the natural orbitals of an unrestricted run.
+        # orbitals, the natural orbitals of an unrestricted run, or the
+        # spinors in mode order (the GHF layout, `spinor_basis`).
         integrals.mo_coefficients = self._model_orbitals()
+        integrals.spinor_basis = spinor
+        if spinor:
+            # The determinant of the lowest N spinors fills the first
+            # ceil(N/2) modes of the first half and floor(N/2) of the second
+            # (GHF.mode_order).
+            n_electrons = sum(full_particles)
+            full_particles = ((n_electrons + 1) // 2, n_electrons // 2)
         if self.dispersion:
             # Over the real atoms: a ghost has no electrons to disperse.
             real = [i for i in range(len(self.atoms)) if i not in self.ghosts]
@@ -1769,6 +1973,38 @@ class DFTDriver(_MeanFieldDriver):
         self.n_qubits = 2 * M - (2 if self.mapping == "parity_reduced" else 0)
         self._configured = True
 
+    def _spin_directions(self, context):
+        """``(M, 3)`` spin directions of the basis functions -- each its
+        atom's unit initial moment vector, zero for a zero vector -- when
+        the geometry carries ``(N, 3)`` moments (a noncollinear start), else
+        ``None``."""
+        moments = np.asarray(self.atoms.get_initial_magnetic_moments(),
+                             dtype=float)
+        if moments.ndim != 2:
+            return None
+        norms = np.linalg.norm(moments, axis=1, keepdims=True)
+        unit = np.divide(moments, norms, out=np.zeros_like(moments),
+                         where=norms > 1e-12)
+        owner = np.asarray(context["atom_of_orbital"], dtype=int)
+        n_orbitals = context["integrals"].n_orbitals
+        if owner.shape != (n_orbitals,):
+            raise NotImplementedError(
+                "(N, 3) initial magnetic moments need every basis function "
+                "on an atom; this basis has functions that are not")
+        return unit[owner]
+
+    def _check_noncollinear_moments(self, atoms) -> None:
+        """Refuse ``(N, 3)`` initial moments where the spinor start cannot
+        run: a functional without a spinor form."""
+        if np.ndim(atoms.get_initial_magnetic_moments()) != 2:
+            return
+        from ..integrals.noncollinear import supports_noncollinear
+        if not supports_noncollinear(self.xc):
+            from .spinor_dft import spinor_functional_refusal
+            raise NotImplementedError(
+                "(N, 3) initial magnetic moments start a noncollinear "
+                "(two-component) run: " + spinor_functional_refusal(self.xc))
+
     def _configure_periodic(self, context, num_particles, n_orbitals) -> None:
         """Solve the crystal's Kohn-Sham problem."""
         from .periodic_dft import PeriodicKohnSham
@@ -1779,16 +2015,34 @@ class DFTDriver(_MeanFieldDriver):
         constant = float(sum(d.one_center_energy for d in datasets)
                          + sum(xc_grid.core_correction_offset(d)
                                for d in datasets))
-        solver = PeriodicKohnSham(
-            crystal, context["n_electrons"], self.xc, smearing=self.smearing,
-            relativistic=(xc_grid.takes_relativistic_exchange(self.xc)
-                          and _datasets_relativistic(datasets)),
-            constant=constant,
-            magnetic_moments=np.delete(
-                self.atoms.get_initial_magnetic_moments(), list(self.ghosts)),
-            field=self.electric_field,
-            field_size=(tuple(self.kpts) if self.electric_field is not None
-                        else None))
+        relativistic = (xc_grid.takes_relativistic_exchange(self.xc)
+                        and _datasets_relativistic(datasets))
+        moments = np.delete(
+            np.asarray(self.atoms.get_initial_magnetic_moments(), float),
+            list(self.ghosts), axis=0)
+        if crystal.has_spin_orbit or moments.ndim == 2:
+            from .spinor_dft import SpinorPeriodicKohnSham
+            directions = None
+            if moments.ndim == 2:
+                # The collinear start takes the vectors' lengths along z.
+                lengths = np.linalg.norm(moments, axis=1)
+                directions = np.divide(
+                    moments, lengths[:, None], out=np.zeros_like(moments),
+                    where=lengths[:, None] > 1e-12)
+                moments = lengths
+            solver = SpinorPeriodicKohnSham(
+                crystal, context["n_electrons"], self.xc,
+                smearing=self.smearing, relativistic=relativistic,
+                constant=constant, magnetic_moments=moments,
+                directions=directions)
+        else:
+            solver = PeriodicKohnSham(
+                crystal, context["n_electrons"], self.xc,
+                smearing=self.smearing, relativistic=relativistic,
+                constant=constant, magnetic_moments=moments,
+                field=self.electric_field,
+                field_size=(tuple(self.kpts)
+                            if self.electric_field is not None else None))
         self._scf = solver.run()
         # The D4 lattice sum: a constant of the electronic problem, added to
         # the reported energies (`_result`) and its derivatives to the
@@ -1820,6 +2074,8 @@ class DFTDriver(_MeanFieldDriver):
 
         if self._periodic:
             return self._crystal_gradient(orbital_delta, include_pulay)
+        if self._spinor():
+            raise NotImplementedError(SPINOR_FORCES_REFUSAL)
         context = self._gradient_context
         scf = self._scf
         result = kohn_sham_gradient(
@@ -1858,6 +2114,34 @@ class DFTDriver(_MeanFieldDriver):
                 "for its broadened spectrum.")
         return self._gradient_context["integrals"]
 
+    def _require_collinear_crystal(self, what: str):
+        """:meth:`_require_crystal`, refusing a two-component crystal for
+        an analysis that reads collinear Bloch states."""
+        crystal = self._require_crystal(what)
+        if self._spinor_crystal():
+            from .spinor_dft import TWO_COMPONENT_CRYSTAL_REFUSAL
+            raise NotImplementedError(
+                TWO_COMPONENT_CRYSTAL_REFUSAL.format(what=what))
+        return crystal
+
+    def _spinor_crystal(self) -> bool:
+        """Whether the crystal was solved in two-component Bloch spinors."""
+        from .spinor_dft import PeriodicKohnShamGResult
+        return self._periodic and isinstance(getattr(self, "_scf", None),
+                                             PeriodicKohnShamGResult)
+
+    def _levels_hold(self) -> float:
+        """Electrons a crystal level holds: 2 spin-restricted, 1 in a spin
+        channel or a spinor band."""
+        if self._spinor_crystal() or self.get_number_of_spins() == 2:
+            return 1.0
+        return 2.0
+
+    def _time_reversal(self) -> bool:
+        """Whether a crystal's bands are even in k (time reversal), so a
+        mesh may be reduced by it: false for a magnetic spinor crystal."""
+        return not self._spinor_crystal() or bool(self._scf.time_reversal)
+
     def _orbital_shells(self) -> list:
         """``(atom, l)`` of every basis function, in the matrices' order."""
         context = self._gradient_context
@@ -1889,10 +2173,20 @@ class DFTDriver(_MeanFieldDriver):
                 "orbitals (natural_orbitals()) are computed per k-point, and "
                 "its dipole is the Berry-phase polarization "
                 "(get_polarization)")
+        scf = self._scf
+        if self._spinor():
+            # In the spinor modes (`model_orbitals`), as a quantum state's
+            # RDM is, gamma_PQ = <a_P^dagger a_Q>: the spin blocks of the
+            # Loewdin basis come back through `volumetric.spin_resolved_rdm`.
+            C = np.asarray(scf.mo_coefficients)
+            f = (np.asarray(scf.occupations) if scf.occupations is not None
+                 else (np.arange(C.shape[1]) < scf.n_electrons).astype(float))
+            V = np.asarray(self.result.model_orbitals)
+            A = V.conj().T @ C
+            return ((A * f) @ A.conj().T).T
         gamma = super().mean_field_rdm()
         # A partly filled degenerate shell: the ensemble's density, not that
         # of the determinant filling one member.
-        scf = self._scf
         if self._unrestricted():
             channels = [(scf.mo_coefficients_alpha, scf.occupations_alpha),
                         (scf.mo_coefficients_beta, scf.occupations_beta)]
@@ -1920,9 +2214,18 @@ class DFTDriver(_MeanFieldDriver):
         from dataclasses import replace
 
         self._require_crystal("a crystal population analysis")
+        matrices = self._periodic_solver.density_matrices
+        if self._spinor_crystal():
+            # The charges of the spin-traced matrices; a magnetic spinor
+            # crystal's moments are the z components (its spin blocks), a
+            # non-magnetic one's are zero (time reversal imposed).
+            M = self._gradient_context["integrals"].M
+            matrices = ([P[:M, :M] + P[M:, M:] for P in matrices]
+                        if self._scf.time_reversal else
+                        ([P[:M, :M] for P in matrices],
+                         [P[M:, M:] for P in matrices]))
         partition = partition_crystal(
-            self._gradient_context["integrals"],
-            self._periodic_solver.density_matrices, method=method,
+            self._gradient_context["integrals"], matrices, method=method,
             numbers=numbers)
         # One owner for the total moment: the occupations (what
         # `get_total_magnetic_moment` reports); the grid integral equals it
@@ -1939,7 +2242,7 @@ class DFTDriver(_MeanFieldDriver):
         ``volumetric_field`` reach it."""
         from .periodic_volumetric import crystal_field
 
-        self._require_crystal("a crystal's volumetric field")
+        self._require_collinear_crystal("a crystal's volumetric field")
         return crystal_field(self._periodic_solver, quantity, index,
                              kpoint=kpoint, spin=spin, component=component,
                              repeat=repeat, numbers=numbers)
@@ -1947,9 +2250,18 @@ class DFTDriver(_MeanFieldDriver):
     def _unrestricted(self) -> bool:
         return isinstance(getattr(self, "_scf", None), KohnShamUResult)
 
+    def _spinor(self) -> bool:
+        """Whether the molecule was solved in two-component spinors (a
+        spin-orbit dataset)."""
+        return isinstance(getattr(self, "_scf", None), GHFResult)
+
     def _molecular_levels(self):
-        """``[(eigenvalues, coefficients, n_occupied)]`` per spin (Hartree)."""
+        """``[(eigenvalues, coefficients, n_occupied)]`` per spin (Hartree);
+        one set of ``2M`` spinor levels for a two-component run."""
         scf = self._scf
+        if self._spinor():
+            return [(np.asarray(scf.mo_energies, float),
+                     np.asarray(scf.mo_coefficients), scf.n_electrons)]
         if self._unrestricted():
             return [(np.asarray(scf.mo_energies_alpha, float),
                      np.asarray(scf.mo_coefficients_alpha), scf.n_alpha),
@@ -1959,7 +2271,9 @@ class DFTDriver(_MeanFieldDriver):
                  np.asarray(scf.mo_coefficients), scf.n_occupied)]
 
     def get_number_of_spins(self) -> int:
-        """2 for a spin-unrestricted molecule or spin-polarized crystal."""
+        """2 for a spin-unrestricted molecule or spin-polarized crystal; 1
+        for a two-component (spinor) molecule, whose levels are one set of
+        spinors, each holding one electron."""
         if self._periodic:
             return int(getattr(self._require_scf(), "n_spins", 1))
         return 2 if self._unrestricted() else 1
@@ -2089,12 +2403,22 @@ class DFTDriver(_MeanFieldDriver):
             levels = np.array([e for e, _C, _n in channels])
             state = (np.array([np.abs(C) ** 2 for _e, C, _n in channels])
                      if projections else None)
+            if self._spinor():
+                # One electron per spinor level; a function's weight sums
+                # its two spin components.
+                weights = np.full(1, 0.5)
+                if state is not None:
+                    M = state.shape[1] // 2
+                    state = state[:, :M] + state[:, M:]
             return levels * HARTREE_TO_EV, weights, state, None
         crystal = self._gradient_context["integrals"]
         spin = self.get_number_of_spins() == 2
+        # A spinor band holds one electron: weight w_k / 2 under the
+        # two-per-state broadening.
+        share = 0.5 if self._spinor_crystal() else 1.0
         if kpts is None and not projections:
             levels = np.array(scf.eigenvalues)
-            weights = np.asarray(scf.weights, float)
+            weights = np.asarray(scf.weights, float) * share
             if spin:
                 # Each (k, spin) pair is an entry of weight w_k / 2: the
                 # two-per-state broadening then counts one electron per state.
@@ -2107,7 +2431,9 @@ class DFTDriver(_MeanFieldDriver):
         spec = (kpts if kpts is not None
                 else {"size": tuple(self.kpts), "gamma": self.kpts_gamma})
         _size, _gamma, mesh = monkhorst_pack_kpts(spec)
-        points, weights, symmetry = reduce_mesh(mesh, crystal.symmetry)
+        points, weights, symmetry = reduce_mesh(
+            mesh, crystal.symmetry, time_reversal=self._time_reversal())
+        weights = weights * share
         eigenvalues, state = self._periodic_solver.bands(
             crystal.cartesian_kpoints(points), projections=projections)
         if spin:
@@ -2125,25 +2451,51 @@ class DFTDriver(_MeanFieldDriver):
                            eigenvalues.max() + 5.0 * width, int(npoints))
 
     def dos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
-            energies=None):
-        """Gaussian-broadened density of states, ``(energies, dos)``.
+            energies=None, integration: str = "gaussian",
+            curvature_correction=None):
+        """Density of states, ``(energies, dos)``.
 
         ``energies`` in eV (on the eigenvalues' reference -- subtract
         :meth:`get_fermi_level` to center it), ``dos`` in states/eV per cell
         (per molecule), both spins: it integrates to twice the number of
-        bands.  ``width`` is the Gaussian's standard deviation (eV).  A
-        crystal's ``kpts`` (a mesh, as for the calculator) is diagonalized
-        non-self-consistently -- a denser mesh than the SCF one gives a
-        smoother curve; ``None`` uses the SCF mesh.
+        spatial bands -- for a two-component (spinor) run, to the number of
+        spinor bands, each holding one electron.  A crystal's ``kpts`` (a
+        mesh, as for the calculator) is
+        diagonalized non-self-consistently -- a denser mesh than the SCF one
+        gives a smoother curve; ``None`` uses the SCF mesh.
+
+        ``integration`` picks how the k-points are summed.  ``"gaussian"``
+        (the default) broadens each level by a Gaussian of standard deviation
+        ``width`` (eV).  ``"tetrahedron"`` interpolates the bands linearly
+        between the mesh points and integrates the interpolant exactly
+        (:mod:`~mandacaru.algorithms.tetrahedron`): there is no width, which
+        then only pads the default energy axis.  Each value is the DOS
+        averaged over its energy's cell of the axis (from the exact counts at
+        the midpoints to the neighbors), so a band flat across a tetrahedron
+        is kept and the sum of the values times the spacing is the count;
+        the energies must be distinct.  It needs a crystal and a uniform mesh
+        with at least two points along every periodic direction.
+        ``curvature_correction`` (tetrahedron only) is the Bloechl
+        correction: it moves weight among a tetrahedron's corners without
+        changing their sum, so the DOS is the same with it or without it
+        (on by default, as for integrated quantities); it matters only for
+        :meth:`pdos`, where it is off by default.
         """
         from .periodic_dft import broadened_dos
 
+        if self._tetrahedron(integration, curvature_correction):
+            eigenvalues, _state, tetrahedra, _groups = \
+                self._tetrahedron_mesh(kpts, False)
+            axis = self._energy_axis(eigenvalues, width, npoints, energies)
+            return axis, self._tetrahedron_sum(axis, eigenvalues, None,
+                                               tetrahedra, True)
         eigenvalues, weights, _state, _sym = self._spectrum(kpts, False)
         axis = self._energy_axis(eigenvalues, width, npoints, energies)
         return axis, broadened_dos(axis, eigenvalues, weights, width)
 
     def pdos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
-             energies=None):
+             energies=None, integration: str = "gaussian",
+             curvature_correction=None):
         """Density of states projected on atomic shells, ``(energies, pdos)``.
 
         ``pdos[(atom, l)]`` is the share of :meth:`dos` carried by the
@@ -2151,9 +2503,44 @@ class DFTDriver(_MeanFieldDriver):
         ``atom`` (index into the Atoms); the shells sum to the total.  On a
         symmetry-reduced mesh each atom's share is averaged over the atoms
         the operations map it to, which makes it the full mesh's.
+
+        With ``integration="tetrahedron"`` each shell's weight is
+        interpolated with its band, corner by corner, and the product
+        integrated exactly.  The wedge is unfolded onto the whole mesh
+        through the sum of a shell over the atoms the operations permute
+        among themselves -- a sum every operation leaves unchanged, unlike
+        one atom's share -- and that sum is shared equally among them.  At a
+        k-point the states of a degenerate set (levels within
+        :data:`TETRAHEDRON_DEGENERACY`) share their projections, which the
+        eigensolver's choice of basis in the set would otherwise split
+        arbitrarily.
+        ``curvature_correction`` (off by default here: ``None`` is
+        ``False``) adds the Bloechl correction, which moves weight between
+        the corners of a tetrahedron without changing the total, so the
+        shells still sum to :meth:`dos` either way.  It is meant for the
+        Fermi-sea integrals of a metal, where it removes the leading error;
+        on a projected DOS it is not: a corrected shell goes negative where
+        its projection is small at a band extremum on a mesh point, and its
+        error at a band onset does not shrink with the mesh (free electrons
+        projected on ``sin(pi kx)**2``: a relative error of 0.4 at
+        8, 16 and 32 points per axis, against 0.18 to 0.15 uncorrected).
+        Other arguments as in :meth:`dos`.
         """
         from .periodic_dft import broadened_dos
 
+        if self._tetrahedron(integration, curvature_correction):
+            correction = bool(curvature_correction)
+            eigenvalues, state, tetrahedra, groups = \
+                self._tetrahedron_mesh(kpts, True)
+            axis = self._energy_axis(eigenvalues, width, npoints, energies)
+            per_group = self._tetrahedron_sum(axis, eigenvalues, state,
+                                              tetrahedra, correction)
+            self._cite("Loewdin1950")
+            pdos = {}
+            for column, (atoms, l) in enumerate(groups):
+                for atom in atoms:
+                    pdos[(atom, l)] = per_group[:, column] / len(atoms)
+            return axis, dict(sorted(pdos.items()))
         eigenvalues, weights, state, symmetry = self._spectrum(kpts, True)
         axis = self._energy_axis(eigenvalues, width, npoints, energies)
         per_orbital = broadened_dos(axis, eigenvalues, weights, width,
@@ -2169,6 +2556,101 @@ class DFTDriver(_MeanFieldDriver):
                        for (atom, l) in grouped}
         return axis, dict(sorted(grouped.items()))
 
+    def _tetrahedron(self, integration, curvature_correction) -> bool:
+        """Whether ``integration`` selects the tetrahedron method; an unknown
+        one, or a curvature correction without tetrahedra, is refused."""
+        name = str(integration).strip().lower()
+        if name not in DOS_INTEGRATIONS:
+            raise ValueError(f"unknown integration {integration!r}; use one "
+                             f"of {DOS_INTEGRATIONS}")
+        if name == "gaussian" and curvature_correction is not None:
+            raise ValueError("curvature_correction belongs to the "
+                             "tetrahedron method; pass "
+                             "integration='tetrahedron'")
+        if name == "tetrahedron" and not self._periodic:
+            self._require_scf()
+            raise NotImplementedError(
+                "the tetrahedron method integrates over a crystal's "
+                "Brillouin zone; a molecule has discrete levels: use "
+                "integration='gaussian'")
+        return name == "tetrahedron"
+
+    def _tetrahedron_sum(self, axis, eigenvalues, state, tetrahedra,
+                         correction: bool) -> np.ndarray:
+        """The cell-averaged :func:`~.tetrahedron.tetrahedron_dos` summed
+        over the spin channels; a spin-restricted crystal counts each state
+        twice, a spin channel's or a spinor band once."""
+        from .tetrahedron import tetrahedron_dos
+
+        self._cite("JepsenAndersen1971", "LehmannTaut1972",
+                   "BloechlJepsenAndersen1994")
+        channels = len(eigenvalues)
+        total = sum(tetrahedron_dos(
+            axis, eigenvalues[s], tetrahedra,
+            None if state is None else state[s],
+            curvature_correction=correction, cell_average=True)
+            for s in range(channels))
+        return total * self._levels_hold()
+
+    def _tetrahedron_mesh(self, kpts, projections: bool):
+        """The whole mesh for :func:`~.tetrahedron.tetrahedron_dos`.
+
+        Returns ``(eigenvalues, state, tetrahedra, groups)``: the eigenvalues
+        (eV) ``(n_spins, N_k, n_bands)`` at every mesh point, in the flat C
+        order of the mesh indices :func:`~.tetrahedron.mesh_tetrahedra`
+        uses; with ``projections`` the shell weights ``(n_spins, N_k, G,
+        n_bands)``, one column per entry ``(atoms, l)`` of ``groups``: a set
+        of atoms the operations permute among themselves and a shell's
+        ``l``.  Only the wedge is diagonalized: a band energy is the same at
+        every image of a k-point, and so is a shell's weight summed over such
+        a set of atoms (one atom's alone moves to its image atom).
+        """
+        from ..pseudopotentials.periodic_paw import mesh_wedge
+        from ..units import HARTREE_TO_EV
+        from ._hamiltonian_from_atoms import monkhorst_pack_kpts
+        from .tetrahedron import degenerate_average, mesh_tetrahedra
+
+        crystal = self._require_crystal("the tetrahedron method")
+        spec = _uniform_mesh(
+            kpts if kpts is not None
+            else {"size": tuple(self.kpts), "gamma": self.kpts_gamma},
+            self.atoms.get_pbc())
+        size, _gamma, mesh = monkhorst_pack_kpts(spec)
+        size = np.asarray(size)
+        index = np.rint((mesh - mesh.min(axis=0)) * size).astype(int) % size
+        flat = np.ravel_multi_index(index.T, tuple(size))
+        points, mapping, operations = mesh_wedge(
+            mesh, size, crystal.symmetry, time_reversal=self._time_reversal())
+        eigenvalues, state = self._periodic_solver.bands(
+            crystal.cartesian_kpoints(points), projections=projections)
+        eigenvalues = np.asarray(eigenvalues) * HARTREE_TO_EV
+        if eigenvalues.ndim == 2:                  # one channel
+            eigenvalues = eigenvalues[None]
+        full = np.empty((len(eigenvalues), len(mesh), eigenvalues.shape[-1]))
+        full[:, flat] = eigenvalues[:, mapping]
+        tetrahedra = mesh_tetrahedra(tuple(size),
+                                     np.asarray(self.atoms.cell.reciprocal()))
+        if not projections:
+            return full, None, tetrahedra, None
+        state = np.asarray(state)
+        if state.ndim == 3:
+            state = state[None]                    # (S, nk, M, n)
+        maps = ([np.arange(len(self.atoms))] if operations is None
+                else operations.atom_maps)
+        orbit = {a: tuple(sorted({int(m[a]) for m in maps}))
+                 for a in range(len(self.atoms))}
+        shells = [(orbit[atom], l) for atom, l in self._orbital_shells()]
+        groups = list(dict.fromkeys(shells))
+        member = np.zeros((len(groups), len(shells)))
+        member[[groups.index(s) for s in shells], np.arange(len(shells))] = 1
+        grouped = np.einsum("gm,skmn->skgn", member, state)
+        grouped = np.stack([degenerate_average(eigenvalues[s], grouped[s],
+                                               TETRAHEDRON_DEGENERACY)
+                            for s in range(len(grouped))])
+        unfolded = np.empty((len(grouped), len(mesh)) + grouped.shape[2:])
+        unfolded[:, flat] = grouped[:, mapping]
+        return full, unfolded, tetrahedra, groups
+
     def fermi_surface(self, size) -> np.ndarray:
         """Band energies (eV) on the full Gamma-centered ``size`` mesh.
 
@@ -2176,12 +2658,14 @@ class DFTDriver(_MeanFieldDriver):
         the grid a ``.bxsf`` file spans.  Only the irreducible points are
         diagonalized (non-self-consistently, the potential frozen) and the
         rest are filled in by symmetry -- a band energy is invariant under
-        the crystal's rotations and under time reversal.  Returns
+        the crystal's rotations and under time reversal (a magnetic
+        two-component crystal, whose bands are not even in k, is
+        diagonalized on the whole mesh).  Returns
         ``(n_bands, n1, n2, n3)``, or ``(2, n_bands, n1, n2, n3)`` for a
         spin-polarized crystal, on the eigenvalues' reference
         (:meth:`get_fermi_level` is on the same one).
         """
-        from ..core.symmetry import irreducible_kpoints
+        from ..pseudopotentials.periodic_paw import mesh_wedge
         from ..units import HARTREE_TO_EV
 
         crystal = self._require_crystal("a Fermi surface")
@@ -2189,23 +2673,9 @@ class DFTDriver(_MeanFieldDriver):
         if len(size) != 3 or min(size) < 1:
             raise ValueError("size must be three positive integers "
                              f"(n1, n2, n3); got {size!r}")
-        index = np.indices(size).reshape(3, -1).T
-        mesh = index / np.asarray(size, dtype=float)
-        operations = (crystal.symmetry.keeping_mesh(mesh)
-                      if crystal.symmetry is not None else None)
-        if operations is not None:
-            zone = irreducible_kpoints(mesh, operations.info,
-                                       time_reversal=True)
-            points, mapping = zone.points, zone.mapping
-        else:
-            # Time reversal alone: -k is the mesh point (-i mod n).
-            flat = np.ravel_multi_index(index.T, size)
-            partner = np.ravel_multi_index((-index % size).T, size)
-            keep = np.flatnonzero(flat <= partner)
-            slot = np.empty(len(mesh), dtype=int)
-            slot[keep] = np.arange(len(keep))
-            slot[partner[keep]] = slot[keep]
-            points, mapping = mesh[keep], slot
+        mesh = np.indices(size).reshape(3, -1).T / np.asarray(size, float)
+        points, mapping, _operations = mesh_wedge(
+            mesh, size, crystal.symmetry, time_reversal=self._time_reversal())
         eigenvalues, _ = self._periodic_solver.bands(
             crystal.cartesian_kpoints(points))
         eigenvalues = np.asarray(eigenvalues) * HARTREE_TO_EV
@@ -2281,7 +2751,7 @@ class DFTDriver(_MeanFieldDriver):
                                      point_projectabilities)
         from .wannier import resolve_guess
 
-        crystal = self._require_crystal("projectabilities")
+        crystal = self._require_collinear_crystal("projectabilities")
         solver = self._periodic_solver
         trials = resolve_guess(guess, self.atoms, crystal)
         bands = tuple(range(crystal.M)) if bands is None else tuple(
@@ -2336,7 +2806,7 @@ class DFTDriver(_MeanFieldDriver):
             raise ValueError(f"unknown natural-orbital method {method!r}; "
                              "use None (the Kohn-Sham density matrix) or "
                              "'rpa'")
-        self._require_crystal("natural orbitals")
+        self._require_collinear_crystal("natural orbitals")
         if method is None:
             from .periodic_volumetric import bloch_natural_orbitals
 
@@ -2357,7 +2827,8 @@ class DFTDriver(_MeanFieldDriver):
         return self.natural_orbitals_result
 
     def wannier(self, n_functions=None, *, guess="bonds", windows=None,
-                bands=None, kpts=None, trial_radial="gaussian", **options):
+                bands=None, kpts=None, trial_radial="gaussian",
+                spin_axis=None, **options):
         """Maximally localized Wannier functions of a crystal's bands
         (:func:`~mandacaru.algorithms.wannier.wannier_functions`).
 
@@ -2402,12 +2873,26 @@ class DFTDriver(_MeanFieldDriver):
         channel's functions from its own Bloch states, the trial orbitals
         shared, and ``bands``, ``n_functions`` and ``windows`` each either
         shared or a pair ``(up, down)``.
+
+        A two-component (spinor) crystal gives **spinor Wannier functions**
+        of its spinor bands, one electron each: every trial orbital of the
+        guess is taken twice, spin up and spin down along ``spin_axis``
+        (default ``z``; :func:`~mandacaru.algorithms.wannier.spinor_trials`),
+        so the guess gives twice as many functions; the overlaps are summed
+        over both spin components, the bands default to the ``N`` occupied
+        spinor bands, and the disentanglement takes energy windows (it is
+        not symmetrized, and the state selections are refused).
         """
         from .band_selection import resolve_selection, selection_citations
         from .berry_phase import occupied_bands
-        from .wannier import per_spin, resolve_guess, wannier_functions
+        from .wannier import (per_spin, resolve_guess, spinor_trials,
+                              wannier_functions)
 
         self._require_crystal("Wannier functions")
+        spinor = self._spinor_crystal()
+        if spin_axis is not None and not spinor:
+            raise ValueError("spin_axis is the quantization axis of a "
+                             "two-component crystal's spinor trials")
         n_spins = int(self._periodic_solver.n_spins)
         if bands is None:
             if windows is None:
@@ -2426,9 +2911,13 @@ class DFTDriver(_MeanFieldDriver):
                 bands = ([list(range(c)) for c in counts] if n_spins == 2
                          else list(range(counts[0])))
             else:
-                bands = list(range(self._periodic_solver.crystal.M))
+                bands = list(range(self._periodic_solver.crystal.M
+                                   * (2 if spinor else 1)))
         trials = resolve_guess(guess, self.atoms,
                                self._periodic_solver.crystal, trial_radial)
+        if spinor:
+            trials = spinor_trials(trials, (0.0, 0.0, 1.0)
+                                   if spin_axis is None else spin_axis)
         explicit = not isinstance(guess, str)
         size = self._mesh_size(kpts)
         selection = resolve_selection(windows)
@@ -2513,6 +3002,9 @@ class DFTDriver(_MeanFieldDriver):
 
         from .forces import HA_BOHR_TO_EV_ANGSTROM
 
+        if self._spinor_crystal():
+            raise NotImplementedError(
+                SPINOR_CRYSTAL_FORCES_REFUSAL.format(what="Forces"))
         result = crystal_gradient(
             self._periodic_solver,
             delta=DEFAULT_DELTA if orbital_delta is None else float(
@@ -2541,6 +3033,9 @@ class DFTDriver(_MeanFieldDriver):
         from .crystal_forces import DEFAULT_STRAIN, crystal_stress
 
         self._require_crystal("a stress")
+        if self._spinor_crystal():
+            raise NotImplementedError(
+                SPINOR_CRYSTAL_FORCES_REFUSAL.format(what="Stresses"))
         name, spec = resolve_basis(self.basis)
         family = pseudopotential_family(name)
         options = {k: v for k, v in dict(spec or {}).items() if k != "name"}
@@ -2561,6 +3056,8 @@ class DFTDriver(_MeanFieldDriver):
         scf = self._scf
         if isinstance(scf, KohnShamUResult):
             return np.asarray(scf.natural_orbitals)
+        if isinstance(scf, GHFResult):
+            return np.asarray(scf.mode_coefficients)
         return np.asarray(scf.mo_coefficients)
 
     def _result(self, timings, run_t0) -> MeanFieldResult:
@@ -2620,21 +3117,55 @@ class DFTDriver(_MeanFieldDriver):
             method, width = resolve_smearing(self.smearing)
             defaults = inspect.signature(PeriodicKohnSham.run).parameters
             crystal = self._gradient_context["integrals"]
-            return {
-                "scf_method": "periodic Kohn-Sham (Bloch states)",
-                "xc_functional": self.xc.upper(),
-                **_hybrid_setup(self.xc),
-                "k_points_irreducible": (
-                    f"{len(crystal.kpoints)} (time reversal)"
-                    if crystal.symmetry is None else
+            moments = np.asarray(self.atoms.get_initial_magnetic_moments(),
+                                 float)
+            spinor = self._spinor_crystal()
+            if self._gradient_context.get("full_mesh"):
+                reduction = f"{len(crystal.kpoints)} (the full mesh, unreduced)"
+            elif crystal.symmetry is None:
+                reduction = f"{len(crystal.kpoints)} (time reversal)"
+            else:
+                reduction = (
                     f"{len(crystal.kpoints)} ({crystal.symmetry.n_operations} "
                     f"of {crystal.symmetry.n_space_group} space-group "
-                    f"operations on the grid, and time reversal)"),
+                    f"operations on the grid, and time reversal)")
+            if spinor:
+                scf = self._scf
+                method_label = (
+                    "periodic two-component (spinor) Kohn-Sham (Bloch "
+                    "spinors), started from the collinear crystal; "
+                    + ("time-reversal symmetry imposed (no initial "
+                       "moments): the magnetization is zero"
+                       if scf.time_reversal else
+                       "noncollinear (local spin axis)"
+                       + (", each atom's share of the magnetization turned "
+                          "to its initial moment vector"
+                          if moments.ndim == 2 else "")))
+                extra = {"spin_orbit_coupling": str(bool(scf.spin_orbit))}
+            else:
+                method_label = "periodic Kohn-Sham (Bloch states)"
+                extra = {}
+            polarized = bool(np.any(moments))
+            if moments.ndim == 2:
+                listed = [[round(float(v), 3) for v in m] for m in moments]
+            else:
+                listed = [round(float(m), 3) for m in moments]
+            if spinor:
+                spin = ("two-component, magnetic (initial moments "
+                        f"{listed})" if not self._scf.time_reversal
+                        else "two-component, non-magnetic")
+            else:
+                spin = (f"polarized (initial moments {listed})" if polarized
+                        else "restricted")
+            magnetized = polarized or (spinor and not self._scf.time_reversal)
+            return {
+                "scf_method": method_label,
+                **extra,
+                "xc_functional": self.xc.upper(),
+                **_hybrid_setup(self.xc),
+                "k_points_irreducible": reduction,
                 "smearing": f"{method}, {width * HARTREE_TO_EV:g} eV",
-                "spin": ("polarized (initial moments "
-                         f"{[round(float(m), 3) for m in self.atoms.get_initial_magnetic_moments()]})"
-                         if np.any(self.atoms.get_initial_magnetic_moments())
-                         else "restricted"),
+                "spin": spin,
                 "max_iterations": defaults["max_iter"].default,
                 "convergence_Hartree": (
                     f"{defaults['tol'].default:g} (free energy change) and "
@@ -2642,16 +3173,29 @@ class DFTDriver(_MeanFieldDriver):
                     "(density residual)"),
                 "mixing": ("Pulay, Kerker-preconditioned (the total "
                            "density; the magnetization undamped)"
-                           if np.any(self.atoms.get_initial_magnetic_moments())
-                           else "Pulay, Kerker-preconditioned"),
+                           if magnetized else "Pulay, Kerker-preconditioned"),
                 "energy_unit": self._energy_unit_label(),
             }
         defaults = inspect.signature(KohnSham.run).parameters
         hybrid = _hybrid_setup(self.xc)
+        if self._spinor():
+            noncollinear_start = np.ndim(
+                self.atoms.get_initial_magnetic_moments()) == 2
+            method = ("two-component (spinor) Kohn-Sham, noncollinear "
+                      "(local spin axis), started from the collinear "
+                      "solution" + (" with each atom's share of the "
+                                    "magnetization turned to its initial "
+                                    "moment vector"
+                                    if noncollinear_start else ""))
+            spinor = {"spin_orbit_coupling": str(bool(self._scf.spin_orbit))}
+        else:
+            method = ("unrestricted Kohn-Sham (open shell)"
+                      if self._unrestricted() else
+                      "restricted Kohn-Sham (closed shell)")
+            spinor = {}
         return {
-            "scf_method": ("unrestricted Kohn-Sham (open shell)"
-                           if self._unrestricted() else
-                           "restricted Kohn-Sham (closed shell)"),
+            "scf_method": method,
+            **spinor,
             "xc_functional": self.xc.upper(),
             **hybrid,
             "dispersion": (self.dispersion or "none").upper(),
@@ -2683,6 +3227,18 @@ class DFTDriver(_MeanFieldDriver):
             if getattr(scf, "n_spins", 1) == 2:
                 fields["magnetic_moment_bohr_magneton"] = \
                     f"{scf.magnetic_moment:.6f}"
+            if self._spinor_crystal():
+                # Against the collinear crystal the SCF started from: not a
+                # term of the energy, the change the spinors made.
+                if scf.spin_orbit_energy is not None:
+                    fields[f"spin_orbit_energy_{unit}"] = \
+                        f"{self._to_energy_units(scf.spin_orbit_energy):.10f}"
+                if scf.noncollinear_energy is not None:
+                    fields[f"noncollinear_energy_{unit}"] = \
+                        f"{self._to_energy_units(scf.noncollinear_energy):.10f}"
+                # 2<S> per cell only: the orbital moment is not computed.
+                fields["spin_moment_bohr_magneton"] = "(" + ", ".join(
+                    f"{float(v):.6f}" for v in scf.spin_moment) + ")"
             if self.dispersion:
                 fields[f"dispersion_energy_{unit}"] = \
                     f"{self._to_energy_units(self._dispersion_energy):.10f}"
@@ -2709,4 +3265,16 @@ class DFTDriver(_MeanFieldDriver):
         if self.dispersion:
             fields[f"dispersion_energy_{unit}"] = \
                 f"{to_unit(scf.dispersion_energy):.10f}"
+        if self._spinor():
+            # Against the collinear solution the SCF started from: not a
+            # term of the sum above, the change the spinors made.
+            if scf.spin_orbit_energy is not None:
+                fields[f"spin_orbit_energy_{unit}"] = \
+                    f"{to_unit(scf.spin_orbit_energy):.10f}"
+            if scf.noncollinear_energy is not None:
+                fields[f"noncollinear_energy_{unit}"] = \
+                    f"{to_unit(scf.noncollinear_energy):.10f}"
+            # 2<S> only: the orbital moment is not computed.
+            fields["spin_moment_bohr_magneton"] = "(" + ", ".join(
+                f"{float(v):.6f}" for v in scf.spin_moment) + ")"
         return fields

@@ -55,6 +55,18 @@ class TestTheDatabase:
             head = reference.entry.splitlines()[0]
             assert head.endswith("{" + key + ","), head
 
+    def test_no_key_is_defined_twice(self):
+        """The registry is a dict: a second record under one key silently
+        replaced the first (the tetrahedron paper once took the PAW paper's
+        ``Bloechl1994``, and every PAW-LCAO run cited it)."""
+        records = (bib._ALGORITHMS + bib._POOLS + bib._MAPPINGS + bib._BASES
+                   + bib._OPTIMIZERS + bib._CODES)
+        keys = [r.key for r in records]
+        assert len(keys) == len(set(keys)), sorted(
+            k for k in set(keys) if keys.count(k) > 1)
+        assert "Projector augmented-wave" in bib.REFERENCES[
+            "Bloechl1994"].entry
+
     def test_every_record_has_balanced_braces(self):
         for key, reference in bib.REFERENCES.items():
             assert reference.entry.count("{") == reference.entry.count("}"), key
@@ -289,6 +301,16 @@ class TestTheSelector:
                                             "energy_shift": 0.1})
         assert {"Junquera2001", "Sankey1989", "Anglada2006",
                 "Artacho1999"} <= set(rich)
+        assert "Kendall1992" not in rich
+
+    def test_diffuse_shells_cite_the_augmentation(self):
+        keys = citation_keys(family="paw-lcao",
+                             basis_options={"size": "SZ", "diffuse": True})
+        assert {"Kendall1992", "Artacho1999", "Junquera2001"} <= set(keys)
+        assert "Kendall1992" not in citation_keys(
+            family="paw-lcao", basis_options={"size": "SZ", "diffuse": False})
+        assert "Kendall1992" not in citation_keys(
+            family="paw-lcao", basis_options={"diffuse": {"O": False}})
 
     def test_gaussian_family_names(self):
         assert "Dunning1989" in citation_keys(basis="cc-pVTZ")

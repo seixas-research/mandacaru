@@ -66,6 +66,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..integrals._backend import single_threaded_blas
 from ..units import EV_TO_HARTREE, HARTREE_TO_EV
 
 #: Amplitude ``A`` (Hartree) of the confining potential.
@@ -333,10 +334,20 @@ def _eigenvalue(r, v, p_u, D, q, state: int = 0) -> float:
     return 0.5 * (lo + hi)
 
 
+@single_threaded_blas
 def _solve(pp, l: int, r_c: float, amplitude: float, inner_fraction: float,
            vectors: bool, state: int = 0):
     """The ``state``-th generalized eigenpair on the fine and the coarse
-    grid."""
+    grid.
+
+    On one BLAS thread: a threaded BLAS splits the dense eigensolver's
+    reductions by the thread count, which moved every confined orbital --
+    and so the sampled basis and every integral -- by about 1e-13 between
+    two runs on different thread counts (2 against 24 threads moved a
+    benzene Cholesky rank from 1066 to 1074).  On one thread the basis is
+    the same bit for bit whatever the thread count; these pencils (a few
+    hundred to a few thousand radial nodes, cached per channel) are small
+    for a thread team anyway."""
     from scipy.linalg import eigh
 
     from .paw import _generalized_matrices

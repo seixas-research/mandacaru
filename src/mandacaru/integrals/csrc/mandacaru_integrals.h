@@ -64,6 +64,22 @@ void mandacaru_one_body_general(const double _Complex *psi,
                               double _Complex *out_T,
                               double _Complex *out_V);
 
+/* Finite-difference Laplacian of n *real* sampled functions on a general grid
+ * (the stencil, inverse metric and boundary of mandacaru_one_body_general):
+ *
+ *   lap[f * ngrid + g] = sum_{a,b} ginv[a,b] d_a d_b field[f * ngrid + g]
+ *
+ * field, lap : (n * nx*ny*nz) real, row-major (function-major).
+ * ginv       : (9) row-major 3x3 inverse metric (step^T step)^{-1}.
+ *
+ * The real one-body matrices are two real matrix products of these
+ * Laplacians and the samples, which BLAS does better than any reduction
+ * written here, so this kernel is the stencil alone.  Parallel over
+ * (function, x plane); every node is one thread's, so the result does not
+ * depend on the thread count. */
+void mandacaru_laplacian_real(const double *field, double *lap, int n,
+                              int nx, int ny, int nz, const double *ginv);
+
 /* Kleinman-Bylander projector overlaps.
  *
  * The nonlocal part of a norm-conserving pseudopotential is a sum of rank-one

@@ -47,9 +47,10 @@ allocated only when requested.
 
 `method="ghf"` solves generalized Hartree–Fock: one determinant of complex
 two-component spinors, with no assumption that an orbital has a definite
-$S_z$. It is the one mean field that puts spin-orbit coupling into its
-self-consistent Fock operator, so it is the reference for a Dirac dataset
-(`paw_dataset="lda-fr"`). Without spin-orbit coupling a closed shell gives
+$S_z$. It is the Hartree-Fock mean field that puts spin-orbit coupling into
+its self-consistent Fock operator, so it is the reference for a Dirac dataset
+(`paw_dataset="lda-fr"`); `method="dft"` does the same in two-component
+Kohn-Sham ({doc}`dft`, *Spin-orbit coupling: two-component Kohn-Sham*). Without spin-orbit coupling a closed shell gives
 the RHF determinant back; an open shell ends at or below UHF, since GHF may
 break collinearity. The SCF starts from the core and screened-core guesses and
 from the RHF and UHF determinants written as spinors, so its energy is at or

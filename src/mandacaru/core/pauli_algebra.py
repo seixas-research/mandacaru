@@ -77,6 +77,32 @@ def _popcount(words: np.ndarray) -> np.ndarray:
     return np.bitwise_count(words).sum(axis=1, dtype=np.int64)
 
 
+def pack_labels(labels, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(x, z)`` bit tables of ``IXYZ`` labels of ``n`` letters each."""
+    labels = list(labels)
+    if not labels:
+        empty = np.zeros((0, max(1, -(-int(n) // 64))), dtype=np.uint64)
+        return empty, empty.copy()
+    letters = np.frombuffer("".join(labels).encode("ascii"),
+                            dtype=np.uint8).reshape(len(labels), int(n))
+    is_x = (letters == ord("X")) | (letters == ord("Y"))
+    is_z = (letters == ord("Z")) | (letters == ord("Y"))
+    return _pack(is_x), _pack(is_z)
+
+
+def label_letters(x: np.ndarray, z: np.ndarray, n: int) -> np.ndarray:
+    """``(terms, n)`` uint8 ASCII letters of bit-table rows."""
+    return _LETTERS[_unpack(x, n) + 2 * _unpack(z, n)]
+
+
+def unpack_labels(x: np.ndarray, z: np.ndarray, n: int) -> list[str]:
+    """Inverse of :func:`pack_labels`."""
+    if not len(x):
+        return []
+    text = label_letters(x, z, n).tobytes().decode("ascii")
+    return [text[i * n:(i + 1) * n] for i in range(len(x))]
+
+
 class PauliTable:
     r"""A :class:`~mandacaru.core.mapping.PauliSum` as symplectic bit tables.
 
@@ -106,54 +132,64 @@ class PauliTable:
         if not labels:
             empty = np.zeros((0, max(1, -(-n // 64))), dtype=np.uint64)
             return cls(empty, empty.copy(), coeffs, n)
-        letters = np.frombuffer("".join(labels).encode("ascii"),
-                                dtype=np.uint8).reshape(len(labels), n)
-        is_x = (letters == ord("X")) | (letters == ord("Y"))
-        is_z = (letters == ord("Z")) | (letters == ord("Y"))
-        return cls(_pack(is_x), _pack(is_z), coeffs, n)
+        x, z = pack_labels(labels, n)
+        return cls(x, z, coeffs, n)
+
+    def keys(self) -> np.ndarray:
+        """``(terms, 2 * words)`` uint64 rows ``[x | z]``: one key per string."""
+        return np.ascontiguousarray(np.concatenate([self.x, self.z], axis=1))
+
+    def merged(self, atol: float = 0.0) -> PauliTable:
+        """Repeated strings summed, ``|c| <= atol`` dropped, rows sorted by key."""
+        n = self.num_qubits
+        if not self.coeffs.size:
+            return PauliTable(self.x[:0], self.z[:0], self.coeffs[:0], n)
+        unique, inverse = np.unique(self.keys(), axis=0, return_inverse=True)
+        summed = np.zeros(unique.shape[0], dtype=self.coeffs.dtype)
+        np.add.at(summed, inverse.ravel(), self.coeffs)
+        keep = np.abs(summed) > atol
+        unique, summed = unique[keep], summed[keep]
+        words = self.x.shape[1]
+        return PauliTable(np.ascontiguousarray(unique[:, :words]),
+                          np.ascontiguousarray(unique[:, words:]), summed, n)
+
+    def labels(self) -> list[str]:
+        """The strings as ``IXYZ`` labels, in row order."""
+        return unpack_labels(self.x, self.z, self.num_qubits)
 
     def to_pauli_sum(self, atol: float = 0.0) -> PauliSum:
         """Back to labels, summing repeated strings and dropping ``|c| <= atol``."""
         n = self.num_qubits
-        if not self.coeffs.size:
+        table = self.merged(atol)
+        if not table.coeffs.size:
             return PauliSum(num_qubits=n)
-        # Merge duplicates: one row of 2*words uint64 per string.
-        keys = np.ascontiguousarray(np.concatenate([self.x, self.z], axis=1))
-        unique, inverse = np.unique(keys, axis=0, return_inverse=True)
-        summed = np.zeros(unique.shape[0], dtype=complex)
-        np.add.at(summed, inverse.ravel(), self.coeffs)
-        keep = np.abs(summed) > atol
-        unique, summed = unique[keep], summed[keep]
-        if not summed.size:
-            return PauliSum(num_qubits=n)
-        words = self.x.shape[1]
-        codes = (_unpack(unique[:, :words], n)
-                 + 2 * _unpack(unique[:, words:], n))
-        text = _LETTERS[codes].tobytes().decode("ascii")
-        labels = (text[i * n:(i + 1) * n] for i in range(summed.size))
-        return PauliSum._from_valid_terms(dict(zip(labels, summed.tolist())), n)
+        return PauliSum._from_valid_terms(
+            dict(zip(table.labels(), table.coeffs.tolist())), n)
 
     def __len__(self) -> int:
         return int(self.coeffs.size)
 
 
-def commutator(a: PauliSum, b: PauliSum, atol: float = 1e-12) -> PauliSum:
-    r""":math:`[A, B] = AB - BA` of two qubit operators, term by term.
+def commutator_table(a: PauliTable, b: PauliTable,
+                     atol: float = 1e-12) -> PauliTable:
+    r""":math:`[A, B]` of two bit tables, merged (:meth:`PauliTable.merged`).
 
     Only anticommuting string pairs contribute, each :math:`2\,\sigma_i\sigma_j`
     (module docstring).  The loop runs over the operator with fewer terms, and
     every step is one vectorized pass over the other's table, so the
     commutator of a :math:`10^6`-term Hamiltonian with an excitation generator
     takes a handful of passes and no matrix.  Strings that cancel, and
-    coefficients at or below ``atol``, are dropped.
+    coefficients at or below ``atol``, are dropped.  No label is formed: a
+    caller that streams many commutators (an adaptive solver's pool
+    gradients, :mod:`mandacaru.backends.gradient_measurement`) keeps them as
+    tables.
     """
     width = a.num_qubits
     if b.num_qubits != width:
         raise ValueError(f"commutator of a {width}-qubit and a "
                          f"{b.num_qubits}-qubit operator")
-    swap = len(a.terms) < len(b.terms)
-    big = PauliTable.from_pauli_sum(b if swap else a)
-    small = PauliTable.from_pauli_sum(a if swap else b)
+    swap = len(a) < len(b)
+    big, small = (b, a) if swap else (a, b)
     # Written as [big, small]; [a, b] = -[b, a] undoes the swap at the end.
     phase_big = _popcount(big.x & big.z)
     xs, zs, cs = [], [], []
@@ -172,12 +208,24 @@ def commutator(a: PauliSum, b: PauliSum, atol: float = 1e-12) -> PauliSum:
         cs.append(2.0 * big.coeffs[odd] * small.coeffs[row]
                   * _I_POWERS[exponent])
     if not cs:
-        return PauliSum(num_qubits=width)
+        empty = np.zeros((0, big.x.shape[1]), dtype=np.uint64)
+        return PauliTable(empty, empty.copy(), np.zeros(0, dtype=complex),
+                          width)
+    coeffs = np.concatenate(cs)
     table = PauliTable(np.concatenate(xs), np.concatenate(zs),
-                       np.concatenate(cs), width)
-    if swap:
-        table.coeffs = -table.coeffs
-    return table.to_pauli_sum(atol=atol)
+                       -coeffs if swap else coeffs, width)
+    return table.merged(atol)
+
+
+def commutator(a: PauliSum, b: PauliSum, atol: float = 1e-12) -> PauliSum:
+    r""":math:`[A, B] = AB - BA` of two qubit operators, term by term
+    (:func:`commutator_table` on their bit tables)."""
+    if b.num_qubits != a.num_qubits:
+        raise ValueError(f"commutator of a {a.num_qubits}-qubit and a "
+                         f"{b.num_qubits}-qubit operator")
+    table = commutator_table(PauliTable.from_pauli_sum(a),
+                             PauliTable.from_pauli_sum(b), atol)
+    return table.to_pauli_sum()
 
 
 # -- fermion-to-qubit mapping ------------------------------------------------ #

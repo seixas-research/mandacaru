@@ -32,12 +32,13 @@ from ..circuits.pools import (PoolBase, PoolOperator, _support_of,
 from ..circuits.profiling import CircuitMetrics, profile_ansatz
 from ..core.matrix_free import PauliOperator
 from .base import VariationalDriver
+from .sector_support import SectorMixin
 
 
 #: Shortest the operator label is elided to before a row is allowed to wrap.
 
 
-class PoolDriver(VariationalDriver):
+class PoolDriver(SectorMixin, VariationalDriver):
     """A variational driver whose ansatze are products of pool generators.
 
     Not used directly.  A subclass passes the pool options through
@@ -57,23 +58,25 @@ class PoolDriver(VariationalDriver):
         ``True``, ``False`` or ``"auto"`` (see :meth:`_resolve_sector`).
     """
 
-    #: Registers at least this wide use the particle-number sector by default.
-    SECTOR_AUTO_QUBITS = 16
-    #: Drivers whose states cannot live in a sector override this.
-    _supports_sector = True
-
-    #: Largest ``sector.dim * len(terms)`` product worth checking for leakage.
-    SECTOR_GUARD_WORK = 20_000_000
+    #: Whether this driver measures its pool gradients on the device when
+    #: ``shots > 0`` (:mod:`~mandacaru.backends.gradient_measurement`).  A
+    #: driver that does not screens on a local state vector, which a
+    #: shot-based run may not build, so it refuses shots.
+    _measures_pool_gradients = False
 
     def __init__(self, *, pool="fermionic", profile: bool = True,
                  sector: bool | str = "auto", **driver_kwargs):
         super().__init__(**driver_kwargs)
+        if self.shots and not self._measures_pool_gradients:
+            raise NotImplementedError(
+                f"{type(self).__name__} screens its operator pool on a local "
+                f"state vector, which a shot-based run (shots > 0) does not "
+                f"build: its classical memory must stay polynomial in the "
+                f"qubit count.  method='adapt-vqe' measures its pool "
+                f"gradients on the device; use it, or shots=0 for a local "
+                f"simulation.")
         self.profile = profile
-        if not (isinstance(sector, bool)
-                or (isinstance(sector, str) and sector.strip().lower() == "auto")):
-            raise ValueError(f"unknown sector spec {sector!r}; use True, False "
-                             "or 'auto'")
-        self.sector = sector
+        self._set_sector_option(sector)
         self._pool_spec = pool
 
     def _adopt_problem(self, hamiltonian, num_particles, n_spatial_orbitals
@@ -163,7 +166,14 @@ class PoolDriver(VariationalDriver):
         self._maybe_dump_hamiltonian(self.num_particles,
                                      self.pool.n_spatial_orbitals)
         self._maybe_dump_pool(self.pool, self._pool_ops)
-        if self._matrix_free:
+        # The commutator observables of a shot-based run, built when first
+        # measured (:attr:`pool_gradients`).
+        self._pool_gradient_tables = None
+        if self.shots:
+            # Every gradient is measured on the device: no generator is
+            # materialized in any representation.
+            self._pool_matrices = None
+        elif self._matrix_free:
             # Masks and coefficients only; a generator's product is one gather
             # (all its strings share a flip mask), so nothing is cached.
             self._pool_matrices = [
@@ -178,6 +188,17 @@ class PoolDriver(VariationalDriver):
         else:
             self._pool_matrices = [op.matrix() for op in self._pool_ops]
         self._configured = True
+
+    @property
+    def pool_gradients(self):
+        """The pool's commutator observables ``[H, A_k]`` against this run's
+        Hamiltonian (:class:`~mandacaru.backends.gradient_measurement.PoolGradients`),
+        what a shot-based run measures its screening gradients from."""
+        if self._pool_gradient_tables is None:
+            from ..backends.gradient_measurement import PoolGradients
+            self._pool_gradient_tables = PoolGradients(
+                self.hamiltonian, [op.generator for op in self._pool_ops])
+        return self._pool_gradient_tables
 
     def _analytic_gradients(self, psi: np.ndarray) -> np.ndarray:
         r"""Exact pool gradients ``g_i = 2 Re<H psi | A_i psi>`` (reference)."""
@@ -290,74 +311,15 @@ class PoolDriver(VariationalDriver):
                 "use 'jordan_wigner', 'parity' or 'bravyi_kitaev'")
         return conserving
 
-    def _resolve_sector(self, n_qubits: int, qubit_h=None, operators=()):
-        """The :class:`~mandacaru.core.sector.ParticleSector` to simulate, or ``None``.
-
-        A sector is only safe when the Hamiltonian *and* every pool generator
-        keep the ansatz inside it: :meth:`~mandacaru.core.sector.ParticleSector.restrict`
-        drops whatever leaves, which would quietly replace a generator by its
-        projection (``exp(PAP) != P exp(A) P``).  The qubit pool's individual
-        Pauli strings do leak by construction.  An explicit ``sector=True``
-        raises for such a pool; the automatic choice falls back to the full
-        register and says so.
-        """
-        spec = self.sector
-        internal = self.ansatz_provider() is None
-        if isinstance(spec, str):
-            use = (int(n_qubits) >= self.SECTOR_AUTO_QUBITS
-                   and self._supports_sector and internal)
-        else:
-            use = bool(spec)
-        if not use:
-            return None
-        if not self._supports_sector:
-            raise NotImplementedError(
-                f"{type(self).__name__} builds full-register reference states "
-                "and cannot run in a particle-number sector (sector=True)")
-        if not internal:
-            raise ValueError(
-                "sector=True needs the internal state-vector backend; executing "
-                "the ansatz as a circuit prepares full-register states")
-        from ..core.sector import ParticleSector
-        sector = ParticleSector(n_qubits, self.num_particles, self.mapping,
-                                spin_conserving=self.spin_conserving)
-
-        leaking = self._sector_leak(sector, qubit_h, operators)
-        if leaking is not None:
-            message = (f"{leaking} does not conserve the "
-                       f"{self.num_particles} particle-number sector, so "
-                       f"restricting it would change the operator "
-                       f"(exp(PAP) != P exp(A) P)")
-            if not isinstance(spec, str):
-                raise ValueError(
-                    f"sector=True was requested but {message}; use the "
-                    f"'fermionic', 'qeb' or 'ceo' pool, or sector=False")
-            warnings.warn(f"simulating the full register: {message}",
-                          RuntimeWarning, stacklevel=3)
-            return None
-        return sector
-
-    def _sector_leak(self, sector, qubit_h, operators) -> str | None:
-        """Name of the first operator that leaves ``sector``, or ``None``."""
-        def affordable(operator):
-            return (operator is not None
-                    and sector.dim * max(len(operator.terms), 1)
-                    <= self.SECTOR_GUARD_WORK)
-
-        if affordable(qubit_h) and not sector.conserves(qubit_h):
-            return "the Hamiltonian"
-        for op in operators:
-            generator = getattr(op, "generator", None)
-            if affordable(generator) and not sector.conserves(generator):
-                return f"pool operator {getattr(op, 'label', '?')!r}"
-        return None
-
     def _new_ansatz(self) -> AdaptAnsatz:
         """A fresh growable ansatz on the configured evaluation backend.
 
         Routes through :meth:`~mandacaru.algorithms.base.VariationalDriver.circuit_provider`,
         so the ansatz evaluates its states either with the internal state-vector
-        backend or by executing circuits on Qiskit / Braket / Cirq.
+        backend or by executing circuits on Qiskit / Braket / Cirq.  With
+        ``shots > 0`` it is a measured ansatz (``simulate=False``): the
+        operators and the reference determinant a circuit is built from, and
+        no state.
         """
         info = getattr(self, "_taper_info", None)
         if info is not None:
@@ -370,13 +332,14 @@ class PoolDriver(VariationalDriver):
                                sparse=getattr(self, "_sparse", False),
                                matrix_free=getattr(self, "_matrix_free", False),
                                provider=self.ansatz_provider(),
-                               num_particles=None, sector=None)
+                               num_particles=None, sector=None,
+                               simulate=not self.shots)
         return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
                            self.mapping, sparse=getattr(self, "_sparse", False),
                            matrix_free=getattr(self, "_matrix_free", False),
                            provider=self.ansatz_provider(),
                            num_particles=self.num_particles,
-                           sector=self._sector)
+                           sector=self._sector, simulate=not self.shots)
 
     def _profile(self, ansatz) -> CircuitMetrics:
         """Compiled-circuit metrics for ``ansatz`` on the configured provider."""
@@ -391,7 +354,7 @@ class PoolDriver(VariationalDriver):
                               ansatz.operators, provider=provider)
 
     def reference_energy(self) -> float:
-        return self.energy(self._new_ansatz().reference_state())
+        return self.reference_energy_of(self._new_ansatz())
 
     # -- the run log ------------------------------------------------------ #
 

@@ -260,14 +260,15 @@ def resolve_family(name=None) -> FamilySpec:
 
 
 def pseudo_basis_arguments(family, options, *, confinement=None,
-                           polarization=None) -> dict:
+                           polarization=None, diffuse=None) -> dict:
     """Keyword arguments of :func:`~.orbitals.pseudo_basis` for ``options``.
 
     The one place a basis dict is turned into a construction, shared by the
     Hamiltonian builder and the dry run so the two cannot count different
     bases.  ``confinement`` / ``polarization`` (optional dicts) receive what
     the hooks resolve -- each orbital's cutoff radius, the polarization
-    shell's -- for the run log.
+    shell's -- for the run log, and ``diffuse`` (optional) the diffuse shells
+    (:mod:`.diffuse`).
 
     The split-valence scheme is ``zeta_split`` (``"first_zeta"`` unless
     written), and the scheme fixes its own tail norms or split norm
@@ -287,6 +288,11 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
         arguments["polarization_shape"] = polarization_factory(
             options.get("polarization_method"), options.get("energy_shift"),
             polarization, options.get("confinement_potential"))
+    if "diffuse" in spec.options:
+        from .diffuse import diffuse_factory
+        hook = diffuse_factory(options.get("diffuse"), diffuse)
+        if hook is not None:
+            arguments["diffuse_shells"] = hook
     return arguments
 
 
@@ -364,10 +370,11 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
 
     confinement: dict = {}
     polarization: dict = {}
+    diffuse: dict = {}
     basis_fns, atom_of_orbital = pseudo_basis(
         symbols, positions, potentials, filter_wavevector=k_c,
         **pseudo_basis_arguments(family, options, confinement=confinement,
-                                 polarization=polarization))
+                                 polarization=polarization, diffuse=diffuse))
     kb = projectors(real_symbols, real_positions, potentials, options)
     coupling_blocks = coupling(kb, real_symbols, potentials)
     overlap_blocks = (None if overlap is None
@@ -399,6 +406,14 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
         **{potentials_keyword: [potentials[s] for s in real_symbols]})
     if electric_field is not None:
         integrals.apply_electric_field(electric_field)
+    diffuse_box = None
+    if diffuse:
+        from .diffuse import box_diagnostic, check_active_space
+        # Refused before the two-body work, not after it.
+        check_active_space(active_space, basis_fns, num_particles)
+        _ratios, diffuse_box = box_diagnostic(integrals, basis_fns,
+                                              atom_of_orbital, symbols,
+                                              diffuse)
     # Without `hamiltonian` the caller needs only the integrals (Kohn-Sham
     # DFT): no RHF orbitals, no MO transform, no second-quantized operator.
     hamiltonian = (integrals.molecular_hamiltonian(
@@ -430,6 +445,9 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
                "filter_wavevector": k_c, "options": dict(options),
                "confinement": confinement, "polarization": polarization,
                "active_space": space}
+    if diffuse:
+        context["diffuse"] = diffuse
+        context["diffuse_box"] = diffuse_box
     if space is not None:
         context["active"] = tuple(space.active)
         context["deleted"] = tuple(space.deleted)

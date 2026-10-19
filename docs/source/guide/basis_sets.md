@@ -79,6 +79,26 @@ state-vector simulator `DZP` water is already out of reach; the sizes exist so
 that the basis is not the limiting approximation when the system is small enough
 to afford them.
 
+Diffuse functions are a third, independent control, and only the PAW-LCAO
+and UPAW-LCAO families have it. `basis={"name": "PAW-LCAO", "size": "DZP",
+"diffuse": True}` adds one wide quasi-Gaussian shell for every angular momentum
+the atom's basis already has, up to d. Larger sizes add short-ranged zetas, so
+only this option extends the basis's reach. It is what a polarizability, an
+anion or a weak complex needs (see *Diffuse functions* in
+[Pseudopotentials](pseudopotentials.md)). It costs functions, and so qubits:
+
+| Atom (PAW-LCAO) | DZP | DZP + `diffuse` | added shells |
+|------|-----|-----------------|--------------|
+| H  | 5  | 9  | s p |
+| Li | 5  | 9  | s p |
+| C, N, O, F, Cl | 13 | 22 | s p d |
+| Fe | 15 | 24 | s p d |
+
+Every added function is two more qubits, the same as any other. The diffuse
+shells also need a larger box (7.2 Å of vacuum around hydrogen at the
+default), and an `active_space` that truncates them must rank by `"mp2"` (or
+`"natural"`), not by `"energy"`.
+
 ## How the extra zetas are built
 
 They are *not* new eigenvalue problems. Mandacaru uses the split-valence

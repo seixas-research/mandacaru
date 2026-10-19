@@ -43,6 +43,7 @@ import numpy as np
 from ..basis import HydrogenicAtomicOrbital
 from ..integrals import Grid, IntegralEngine, Potentials
 from ..integrals.cholesky import TwoBodySpec, resolve_two_body
+from ..integrals.packed import dense_tensor, is_packed
 from ..integrals.two_center import (PERIODIC_REFUSAL, TwoCenter,
                                      validate_two_center)
 from ..units import to_bohr
@@ -78,11 +79,20 @@ CHOLESKY_SPINOR_REFUSAL = (
     "two_body='dense' (the default) for method='ghf' or a lda-fr basis")
 
 
-def dense_route_bytes(n_orbitals: int) -> int:
-    """Bytes of the ``M^4`` tensors the tensor route of
+def dense_route_bytes(n_orbitals: int, packed: bool = False) -> int:
+    """Bytes of the two-body tensors the tensor route of
     :meth:`MolecularIntegrals.molecular_hamiltonian` keeps: the atomic-orbital
-    tensor, the orthonormal one and the molecular-orbital one, complex."""
+    tensor, the orthonormal one and the molecular-orbital one.  Packed (a
+    molecule's real functions,
+    :class:`~mandacaru.integrals.packed.PackedERI`) each is about ``M^4``
+    bytes, plus the ``M^4/4``-number intermediate of a transform; otherwise
+    three full complex arrays."""
     M = int(n_orbitals)
+    if packed:
+        from ..integrals.engine import packed_eri_bytes
+
+        P = M * (M + 1) // 2
+        return 3 * packed_eri_bytes(M) + 8 * P * P
     return 3 * 16 * M ** 4
 
 if TYPE_CHECKING:
@@ -133,9 +143,16 @@ class MeanFieldMixin:
         cached = getattr(self, "_last_rhf_result", None)
         if cached is not None and cached[0] == int(n_electrons):
             return cached[1]
-        result = RHF(self.one_body(), self.two_body(), n_electrons).run()
+        result = RHF(self.one_body(), self._scf_two_body(), n_electrons).run()
         self._last_rhf_result = (int(n_electrons), result)
         return result
+
+    def _scf_two_body(self):
+        """The tensor the SCF reads: the stored (packed) one where the class
+        keeps one (:meth:`MolecularIntegrals.stored_two_body`), else
+        :meth:`two_body`."""
+        stored = getattr(self, "stored_two_body", None)
+        return stored() if stored is not None else self.two_body()
 
     def direct_coulomb(self):
         """The :class:`~mandacaru.integrals.direct.DirectCoulomb` of this
@@ -257,7 +274,8 @@ class MeanFieldMixin:
         cached = getattr(self, "_last_uhf_result", None)
         if cached is not None and cached[0] == particles:
             return cached[1]
-        result = UHF(self.one_body(), self.two_body(), n_alpha, n_beta).solve()
+        result = UHF(self.one_body(), self._scf_two_body(), n_alpha,
+                     n_beta).solve()
         self._last_uhf_result = ((int(n_alpha), int(n_beta)), result)
         return result
 
@@ -885,7 +903,11 @@ class MolecularIntegrals(MeanFieldMixin):
         if self._eri is not None:
             return
         eri, augmentation = self._ao_two_body_terms()
-        if self.orthogonalize:
+        if self.orthogonalize and is_packed(eri):
+            # The same Loewdin transform, packed to packed (X is real for a
+            # real basis): no M^4 array.
+            eri = eri.transform(self._lowdin_x())
+        elif self.orthogonalize:
             # Lowdin-orthonormalize the basis; the second-quantized Hamiltonian
             # requires an orthonormal orbital set.
             X = self._lowdin_x()
@@ -983,7 +1005,9 @@ class MolecularIntegrals(MeanFieldMixin):
         if omega < 0.0:
             raise ValueError(f"omega must be >= 0, got {omega!r}")
         if omega == 0.0:
-            eri, _augmentation = self._ao_two_body_terms()
+            # The exchange tensor of a hybrid is read in full: written out of
+            # the packed store here.
+            eri = dense_tensor(self._ao_two_body_terms()[0])
         else:
             # The grid pairs under the spectral short-range kernel; the
             # compensation charges' terms are analytic: the bare ones minus
@@ -1116,12 +1140,27 @@ class MolecularIntegrals(MeanFieldMixin):
         the whole Hamiltonian.
         """
         if self._eri_ao is None:
-            eri = self._engine.two_body(energy_units="Ha")
+            # A molecule's real functions: the tensor eightfold packed
+            # (PackedERI), written so by the engine; anything else in full.
+            eri = self._engine.two_body(energy_units="Ha",
+                                        packed=self.packs_two_body)
             augmentation = self.two_body_augmentation()
             if augmentation is not None:
-                augmentation.add_to(eri)
+                if is_packed(eri):
+                    eri.add_augmentation(augmentation)
+                else:
+                    augmentation.add_to(eri)
             self._eri_ao, self._augmentation_ao = eri, augmentation
         return self._eri_ao, self._augmentation_ao
+
+    @property
+    def packs_two_body(self) -> bool:
+        """Whether the two-body tensor is kept eightfold packed
+        (:class:`~mandacaru.integrals.packed.PackedERI`, about ``M^4`` bytes
+        against ``8 M^4``): a molecule whose sampled functions are real.  A
+        crystal and complex functions keep the full array."""
+        return bool(getattr(self._engine, "real", False)
+                    and not getattr(self, "periodic", False))
 
     def cholesky_two_body(self):
         """The Cholesky factors of the two-body integrals
@@ -1154,11 +1193,25 @@ class MolecularIntegrals(MeanFieldMixin):
 
     def ao_two_body(self) -> np.ndarray:
         r"""Two-body tensor over the atomic orbitals, augmentation included
-        (Hartree, physicists' notation), computed once."""
-        return self._ao_two_body_terms()[0]
+        (Hartree, physicists' notation), computed once, as a full ``(M,)*4``
+        array: written out of the packed store
+        (:attr:`packs_two_body`) on each call -- a transient ``M^4`` array
+        for a caller that needs the whole tensor."""
+        return dense_tensor(self._ao_two_body_terms()[0])
 
     def two_body(self) -> np.ndarray:
-        r"""Spatial two-body tensor ``<pq|rs>`` in physicists' notation (Hartree)."""
+        r"""Spatial two-body tensor ``<pq|rs>`` in physicists' notation
+        (Hartree), as a full ``(M,)*4`` array: written out of the packed
+        store on each call for a molecule (:attr:`packs_two_body`).  The
+        Hamiltonian pipeline reads :meth:`stored_two_body` instead."""
+        return dense_tensor(self.stored_two_body())
+
+    def stored_two_body(self):
+        r"""The spatial two-body tensor as it is kept: a
+        :class:`~mandacaru.integrals.packed.PackedERI` for a molecule's real
+        functions (the SCF, the molecular-orbital transform, the selectors
+        and the operator read it packed), else the full array; computed
+        once."""
         if self._eri is None:
             self._compute_two_body()
         return self._eri
@@ -1313,7 +1366,9 @@ class MolecularIntegrals(MeanFieldMixin):
                 from ..algorithms.mp2 import rotate_integrals
 
                 h_mo, eri_mo = rotate_integrals(h_mo, eri_mo, space.rotation)
-                h_mo, eri_mo = np.real_if_close(h_mo), np.real_if_close(eri_mo)
+                h_mo = np.real_if_close(h_mo)
+                if not is_packed(eri_mo):
+                    eri_mo = np.real_if_close(eri_mo)
                 self.mo_coefficients = np.asarray(
                     self.mo_coefficients) @ space.rotation
             if space is not None:
@@ -1331,7 +1386,7 @@ class MolecularIntegrals(MeanFieldMixin):
                     "a frozen core included -- is a choice among molecular "
                     "orbitals, and the atomic-orbital Hamiltonian has none to "
                     "choose from")
-            h, g = self.one_body(), self.two_body()
+            h, g = self.one_body(), self.stored_two_body()
             if self.spin_orbit_coupling:
                 h_spin = self.spin_orbit_matrix()
         if self.cholesky_integrals:
@@ -1374,7 +1429,7 @@ class MolecularIntegrals(MeanFieldMixin):
         frozen core or a truncation, so the tensor would be cut down
         anyway), a closed shell and a selector of
         :data:`DIRECT_ROUTE_SELECTORS`, a molecule without spin-orbit
-        coupling, and when the tensor route's ``M^4`` arrays (:func:`dense_route_bytes`)
+        coupling, and when the tensor route's tensors (:func:`dense_route_bytes`)
         would claim more than :data:`DIRECT_ROUTE_MEMORY_FRACTION` of the
         memory limit.  The limit
         (:func:`~mandacaru.core.matrix_free.memory_limit_bytes`) is the
@@ -1397,7 +1452,7 @@ class MolecularIntegrals(MeanFieldMixin):
                                                 open_shell)
         if open_ or spec.method not in DIRECT_ROUTE_SELECTORS:
             return False
-        return (dense_route_bytes(self.n_orbitals)
+        return (dense_route_bytes(self.n_orbitals, self.packs_two_body)
                 > DIRECT_ROUTE_MEMORY_FRACTION * memory_limit_bytes())
 
     def _direct_mo_problem(self, n_electrons, num_particles, open_shell,
@@ -1802,7 +1857,9 @@ def resolve_reference(n_electrons, num_particles=None, open_shell=None):
 
 def molecular_orbital_integrals(integrals, n_electrons, num_particles=None,
                                 open_shell=None):
-    """``(h_mo, eri_mo, orbitals)`` in the conjugation-real mean-field basis.
+    """``(h_mo, eri_mo, orbitals)`` in the conjugation-real mean-field basis
+    (``eri_mo`` packed, :class:`~mandacaru.integrals.packed.PackedERI`, when
+    the integrals keep their tensor packed).
 
     ``integrals`` is any integral class offering ``hartree_fock``,
     ``open_shell_hartree_fock``, ``real_orbitals``, ``one_body`` and
@@ -1832,8 +1889,10 @@ def molecular_orbital_integrals(integrals, n_electrons, num_particles=None,
     if real is not orbitals:
         from ..algorithms.hartree_fock import transform_integrals
         h_mo, eri_mo = transform_integrals(integrals.one_body(),
-                                           integrals.two_body(), real)
-        h_mo, eri_mo = np.real_if_close(h_mo), np.real_if_close(eri_mo)
+                                           integrals._scf_two_body(), real)
+        h_mo = np.real_if_close(h_mo)
+        if not is_packed(eri_mo):
+            eri_mo = np.real_if_close(eri_mo)
     return h_mo, eri_mo, real
 
 
@@ -1910,7 +1969,9 @@ def spin_block_integrals(h: np.ndarray, eri: np.ndarray,
     is built without it (:meth:`~mandacaru.core.mapping.Fermion.from_spatial_integrals`).
     """
     h = np.asarray(h)
-    eri = np.asarray(eri)
+    # The spin-orbital tensor holds the whole spatial one: a packed tensor
+    # is written out here.
+    eri = dense_tensor(eri)
     M = h.shape[0]
     n_so = 2 * M
 
@@ -1959,9 +2020,21 @@ def freeze_core_integrals(h_mo: np.ndarray, eri_mo: np.ndarray,
     occupied (the frozen-core approximation).
     """
     h_mo = np.asarray(h_mo)
-    eri_mo = np.asarray(eri_mo)
     frozen = list(frozen)
     active = list(active)
+    if is_packed(eri_mo):
+        # The same sums as the core's Coulomb and exchange, J - K/2 of the
+        # density 2 sum_i |i><i|; the active block is a gather of the
+        # packed tensor, which stays packed.
+        D = np.zeros(h_mo.shape)
+        D[frozen, frozen] = 2.0
+        G = (eri_mo.coulomb(D) - 0.5 * eri_mo.exchange(D)
+             if frozen else np.zeros(h_mo.shape))
+        core_energy = sum(2.0 * h_mo[i, i] + G[i, i] for i in frozen)
+        h_eff = (h_mo + G)[np.ix_(active, active)]
+        return (h_eff.astype(np.result_type(h_mo, float)),
+                eri_mo.subset(active), float(np.real(core_energy)))
+    eri_mo = np.asarray(eri_mo)
 
     core_energy = 0.0
     for i in frozen:

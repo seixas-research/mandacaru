@@ -33,12 +33,14 @@ from ase import Atoms
 from mandacaru.core import MolecularIntegrals
 from mandacaru.core.hamiltonian import molecular_orbital_integrals
 from mandacaru.integrals import Grid
+from mandacaru.integrals.packed import PackedERI, dense_tensor
 from mandacaru.algorithms.mp2 import (MIN_DENOMINATOR, fock_matrix,
                                       mp2_amplitudes, mp2_density, mp2_energy,
                                       mp2_natural_orbitals,
                                       open_shell_mp2_natural_orbitals,
                                       rotate_integrals,
-                                      semicanonical_rotation)
+                                      semicanonical_rotation,
+                                      spin_fock_matrices)
 
 
 # --------------------------------------------------------------------------- #
@@ -68,7 +70,9 @@ def h2():
     integrals = _h2_integrals()
     h_mo, eri_mo, _orbitals = molecular_orbital_integrals(integrals, 2, (1, 1),
                                                           None)
-    return np.real(h_mo), np.real(eri_mo), 1
+    # The formulas are pinned on the full array (the packed tensor the
+    # pipeline keeps is checked against it in TestThePackedTensor).
+    return np.real(h_mo), np.real(dense_tensor(eri_mo)), 1
 
 
 # --------------------------------------------------------------------------- #
@@ -570,7 +574,7 @@ def h3_doublet():
     integrals = _h3_doublet_integrals()
     h_mo, eri_mo, _orbitals = molecular_orbital_integrals(integrals, 3, (2, 1),
                                                           True)
-    return np.real(h_mo), np.real(eri_mo), (2, 1)
+    return np.real(h_mo), np.real(dense_tensor(eri_mo)), (2, 1)
 
 
 class TestOpenShellMP2:
@@ -715,3 +719,47 @@ class TestOpenShellPrefactorsAgainstExactPerturbationTheory:
         right = float(np.max(np.abs(block - d_vv)))
         doubled = float(np.max(np.abs(block - 2.0 * d_vv)))
         assert doubled > 10.0 * right, (right, doubled)
+
+
+class TestThePackedTensor:
+    """The pipeline keeps a molecule's tensor packed
+    (:class:`~mandacaru.integrals.packed.PackedERI`); every MP2 quantity
+    from it equals the full array's."""
+
+    def test_closed_shell_quantities_match_the_full_array(self, h2):
+        h_mo, eri_mo, n_occ = h2
+        packed = PackedERI.from_dense(eri_mo)
+        assert np.abs(fock_matrix(h_mo, packed, n_occ)
+                      - fock_matrix(h_mo, eri_mo, n_occ)).max() < 1e-13
+        eps = np.real(np.diag(fock_matrix(h_mo, eri_mo, n_occ)))
+        assert mp2_energy(packed, eps, n_occ) == pytest.approx(
+            mp2_energy(eri_mo, eps, n_occ), abs=1e-14)
+        rotation = np.linalg.qr(np.random.default_rng(3).normal(
+            size=h_mo.shape))[0]
+        h_new, eri_new = rotate_integrals(h_mo, eri_mo, rotation)
+        h_packed, eri_packed = rotate_integrals(h_mo, packed, rotation)
+        assert np.abs(h_packed - h_new).max() < 1e-13
+        assert np.abs(eri_packed.dense() - eri_new).max() < 1e-13
+        # Natural orbitals from the block of the semicanonical orbitals.
+        h_rot, eri_rot = np.real(h_new), np.real(eri_new)
+        dense = mp2_natural_orbitals(h_rot, eri_rot, n_occ)
+        from_packed = mp2_natural_orbitals(h_rot, PackedERI.from_dense(
+            eri_rot), n_occ)
+        assert from_packed.correlation_energy == pytest.approx(
+            dense.correlation_energy, abs=1e-14)
+        assert np.abs(from_packed.occupations - dense.occupations).max() \
+            < 1e-12
+
+    def test_open_shell_quantities_match_the_full_array(self, h3_doublet):
+        h_mo, eri_mo, (n_alpha, n_beta) = h3_doublet
+        packed = PackedERI.from_dense(eri_mo)
+        for a, b in zip(spin_fock_matrices(h_mo, packed, n_alpha, n_beta),
+                        spin_fock_matrices(h_mo, eri_mo, n_alpha, n_beta)):
+            assert np.abs(a - b).max() < 1e-13
+        dense = open_shell_mp2_natural_orbitals(h_mo, eri_mo, n_alpha, n_beta)
+        from_packed = open_shell_mp2_natural_orbitals(h_mo, packed, n_alpha,
+                                                      n_beta)
+        assert from_packed.correlation_energy == pytest.approx(
+            dense.correlation_energy, abs=1e-14)
+        assert np.abs(from_packed.occupations - dense.occupations).max() \
+            < 1e-12

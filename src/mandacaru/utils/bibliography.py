@@ -130,6 +130,46 @@ _ALGORITHMS = [
   doi     = {10.1088/0022-3719/5/13/012}
 }""", "the spin interpolation of the local spin-density correlation",
          verified=False, topics=("xc", "spin")),
+    _ref("Kubler1988", """
+@article{Kubler1988,
+  author  = {K{\\"u}bler, J. and H{\\"o}ck, K.-H. and Sticht, J. and
+             Williams, A. R.},
+  title   = {Density functional theory of non-collinear magnetism},
+  journal = {J. Phys. F: Met. Phys.},
+  volume  = {18},
+  pages   = {469--483},
+  year    = {1988},
+  doi     = {10.1088/0305-4608/18/3/018}
+}""", "noncollinear spin density functional theory: the local spin axis of "
+         "two-component (spinor) Kohn-Sham", verified=False,
+         topics=("xc", "spin", "dft")),
+    _ref("Hobbs2000", """
+@article{Hobbs2000,
+  author  = {Hobbs, D. and Kresse, G. and Hafner, J.},
+  title   = {Fully unconstrained noncollinear magnetism within the projector
+             augmented-wave method},
+  journal = {Phys. Rev. B},
+  volume  = {62},
+  pages   = {11556--11570},
+  year    = {2000},
+  doi     = {10.1103/PhysRevB.62.11556}
+}""", "the gradient-corrected (PBE) noncollinear functional in the local "
+         "spin axis: the gradient of the magnetization projected on that axis",
+         verified=False, topics=("xc", "spin", "dft")),
+    _ref("Vurgaftman2001", """
+@article{Vurgaftman2001,
+  author  = {Vurgaftman, I. and Meyer, J. R. and Ram-Mohan, L. R.},
+  title   = {Band parameters for {III-V} compound semiconductors and their
+             alloys},
+  journal = {J. Appl. Phys.},
+  volume  = {89},
+  pages   = {5815--5875},
+  year    = {2001},
+  doi     = {10.1063/1.1368156}
+}""", "the measured split-off gaps of III-V semiconductors (GaAs 0.341, "
+         "AlAs 0.28, AlSb 0.676 eV) a two-component crystal's spin-orbit "
+         "splitting at Gamma is compared with", verified=False,
+         topics=("spin", "dft", "reference data")),
     _ref("PerdewZunger1981", """
 @article{PerdewZunger1981,
   author  = {Perdew, J. P. and Zunger, Alex},
@@ -741,6 +781,31 @@ _ALGORITHMS = [
 }""", "fixed Cholesky pivots as a Coulomb-metric fitting basis, smooth in "
          "the nuclear positions (two_body cholesky forces)", verified=False,
          topics=("cholesky", "integrals", "forces")),
+    _ref("HandySchaefer1984", """
+@article{HandySchaefer1984,
+  author  = {Handy, Nicholas C. and Schaefer, III, Henry F.},
+  title   = {On the evaluation of analytic energy derivatives for correlated
+             wave functions},
+  journal = {J. Chem. Phys.},
+  volume  = {81},
+  pages   = {5031--5033},
+  year    = {1984},
+  doi     = {10.1063/1.447489}
+}""", "the z-vector: one coupled-perturbed Hartree-Fock solve for the orbital "
+         "response of every nuclear coordinate (active-space forces)",
+         topics=("forces",)),
+    _ref("Pulay1969", """
+@article{Pulay1969,
+  author  = {Pulay, P.},
+  title   = {Ab initio calculation of force constants and equilibrium
+             geometries in polyatomic molecules. {I}. {T}heory},
+  journal = {Mol. Phys.},
+  volume  = {17},
+  pages   = {197--204},
+  year    = {1969},
+  doi     = {10.1080/00268976900100941}
+}""", "the basis-function (Pulay) term of the nuclear gradient with "
+         "atom-centered orbitals", topics=("forces",)),
 ]
 
 # --------------------------------------------------------------------------- #
@@ -859,8 +924,10 @@ _MAPPINGS = [
   archivePrefix = {arXiv},
   primaryClass  = {quant-ph},
   doi           = {10.48550/arXiv.1701.08213}
-}""", "the two-qubit reduction of the parity mapping (parity_reduced)",
-         verified=False, topics=("mapping", "parity_reduced")),
+}""", "the two-qubit reduction of the parity mapping (parity_reduced) and "
+         "Z2 symmetry tapering (mandacaru.core.tapering)",
+         verified=False, topics=("mapping", "parity_reduced", "tapering",
+                                 "symmetry")),
 ]
 
 # --------------------------------------------------------------------------- #
@@ -953,6 +1020,19 @@ _BASES = [
   doi     = {10.1002/(SICI)1521-3951(199909)215:1<809::AID-PSSB809>3.0.CO;2-0}
 }""", "the split-valence multiple-zeta construction", verified=False,
          topics=("multizeta", "zeta_split")),
+    _ref("Kendall1992", """
+@article{Kendall1992,
+  author  = {Kendall, Rick A. and Dunning, Jr., Thom H. and Harrison,
+             Robert J.},
+  title   = {Electron affinities of the first-row atoms revisited.
+             {S}ystematic basis sets and wave functions},
+  journal = {J. Chem. Phys.},
+  volume  = {96},
+  pages   = {6796--6806},
+  year    = {1992},
+  doi     = {10.1063/1.462569}
+}""", "diffuse augmentation of the basis (diffuse=)", verified=False,
+         topics=("diffuse",)),
     _ref("Anglada2006", """
 @article{Anglada2006,
   author  = {Anglada, Emilio and Soler, Jos{\\'e} M.},
@@ -1177,6 +1257,42 @@ _BASES = [
   doi     = {10.1016/j.commatsci.2010.05.010}
 }""", "the default high-symmetry band path of each Bravais lattice",
          verified=False, topics=("periodic",)),
+    _ref("JepsenAndersen1971", """
+@article{JepsenAndersen1971,
+  author  = {Jepsen, O. and Andersen, O. K.},
+  title   = {The electronic structure of h.c.p. ytterbium},
+  journal = {Solid State Commun.},
+  volume  = {9},
+  pages   = {1763--1767},
+  year    = {1971},
+  doi     = {10.1016/0038-1098(71)90313-9}
+}""", "the linear tetrahedron method of the density of states "
+         "(integration='tetrahedron')", verified=False,
+         topics=("periodic",)),
+    _ref("LehmannTaut1972", """
+@article{LehmannTaut1972,
+  author  = {Lehmann, G. and Taut, M.},
+  title   = {On the numerical calculation of the density of states and
+             related properties},
+  journal = {Phys. Status Solidi B},
+  volume  = {54},
+  pages   = {469--477},
+  year    = {1972},
+  doi     = {10.1002/pssb.2220540211}
+}""", "the closed forms of the linear tetrahedron density of states",
+         verified=False, topics=("periodic",)),
+    _ref("BloechlJepsenAndersen1994", """
+@article{BloechlJepsenAndersen1994,
+  author  = {Bl{\\"o}chl, Peter E. and Jepsen, O. and Andersen, O. K.},
+  title   = {Improved tetrahedron method for {B}rillouin-zone integrations},
+  journal = {Phys. Rev. B},
+  volume  = {49},
+  pages   = {16223--16233},
+  year    = {1994},
+  doi     = {10.1103/PhysRevB.49.16223}
+}""", "the tetrahedron decomposition along the shortest diagonal, the "
+         "corner integration weights and their curvature correction",
+         verified=False, topics=("periodic",)),
     _ref("Lehmann1954", """
 @article{Lehmann1954,
   author  = {Lehmann, Harry},
@@ -1309,17 +1425,6 @@ _BASES = [
   doi     = {10.1103/PhysRevB.73.205119}
 }""", "the two-dimensionally truncated Coulomb kernel for slabs",
          verified=False, topics=("slab", "periodic", "coulomb-cutoff")),
-    _ref("Bravyi2017", """
-@misc{Bravyi2017,
-  author        = {Bravyi, Sergey and Gambetta, Jay M. and Mezzacapo, Antonio
-                   and Temme, Kristan},
-  title         = {Tapering off qubits to simulate fermionic {H}amiltonians},
-  year          = {2017},
-  eprint        = {1701.08213},
-  archivePrefix = {arXiv},
-  doi           = {10.48550/arXiv.1701.08213}
-}""", "Z2 symmetry tapering (mandacaru.core.tapering)", verified=False,
-         topics=("tapering", "mapping", "symmetry")),
     _ref("Loewdin1950", """
 @article{Loewdin1950,
   author  = {L{\\"o}wdin, Per-Olov},

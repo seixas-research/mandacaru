@@ -308,3 +308,103 @@ class TestCholeskyTwoBody:
                 "Folkestad2019"} <= set(calc.solver.citation_keys())
         dense = Mandacaru(method="rhf", trace=False)
         assert "Koch2003" not in dense.solver.citation_keys()
+
+
+def _kohn_sham_h2(**atoms_options):
+    """H2 with the cheapest Kohn-Sham calculator that still has forces."""
+    atoms = h2()
+    if atoms_options:
+        atoms.set_pbc(atoms_options["pbc"])
+    atoms.calc = Mandacaru(method="dft", xc="lda",
+                           basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.25, trace=False)
+    return atoms
+
+
+class TestTheStressFollowsAse:
+    """A molecule has no stress, and says so the way ASE's calculators do.
+
+    ASE's own calculators raise
+    :class:`~ase.calculators.calculator.PropertyNotImplementedError` for the
+    stress of a cell-less geometry, and the ASE machinery that probes for a
+    stress (trajectory writers, optimizers) catches exactly that class.
+    """
+
+    def test_a_molecule_refuses_with_the_ase_exception(self):
+        from ase.calculators.calculator import PropertyNotImplementedError
+
+        atoms = _kohn_sham_h2()
+        with pytest.raises(PropertyNotImplementedError,
+                           match="not periodic.*calculate_numerical_forces"):
+            atoms.get_stress()
+        with pytest.raises(PropertyNotImplementedError, match="not periodic"):
+            atoms.calc.get_property("stress", atoms)
+
+    def test_only_a_periodic_calculation_lists_the_stress(self):
+        from mandacaru.algorithms.bloch import BLOCH_METHODS
+
+        assert "stress" not in _kohn_sham_h2().calc.implemented_properties
+        crystal = _kohn_sham_h2(pbc=True)
+        assert "stress" in crystal.calc.implemented_properties
+        assert "stress" not in Mandacaru(
+            method="adapt-vqe", basis="HAO",
+            trace=False).implemented_properties
+        assert "stress" in Mandacaru(
+            method=BLOCH_METHODS[0], basis="HAO",
+            kpts={"size": (1, 1, 1), "gamma": True},
+            trace=False).implemented_properties
+
+    def test_the_analytic_stress_wrapper_fails_as_for_ase_s_own(self):
+        """``eps_strain=None`` asks the wrapped calculator for its stress."""
+        from ase.calculators.calculator import PropertyNotImplementedError
+        from ase.calculators.fd import FiniteDifferenceCalculator
+        from ase.calculators.lj import LennardJones
+
+        argon = Atoms("Ar2", positions=[[0, 0, 0], [0, 0, 3.8]])
+        argon.calc = FiniteDifferenceCalculator(LennardJones(), eps_disp=None,
+                                                eps_strain=None)
+        with pytest.raises(PropertyNotImplementedError) as theirs:
+            argon.get_forces()
+        atoms = _kohn_sham_h2()
+        atoms.calc = FiniteDifferenceCalculator(atoms.calc, eps_disp=None,
+                                                eps_strain=None)
+        with pytest.raises(PropertyNotImplementedError) as ours:
+            atoms.get_forces()
+        assert isinstance(ours.value, type(theirs.value))
+
+    def test_the_numerical_wrapper_reproduces_the_analytic_forces(self):
+        from ase.calculators.fd import FiniteDifferenceCalculator
+
+        atoms = _kohn_sham_h2()
+        analytic = atoms.get_forces()
+        atoms.calc = FiniteDifferenceCalculator(atoms.calc, eps_disp=0.01)
+        numerical = atoms.get_forces()
+        assert np.abs(analytic).max() > 1.0
+        assert np.allclose(numerical, analytic, atol=2e-2)
+
+    def test_a_relaxation_never_asks_for_the_stress(self, tmp_path):
+        """BFGS and its trajectory probe for properties; neither needs it."""
+        from ase.io import read
+        from ase.optimize import BFGS
+
+        atoms = _kohn_sham_h2()
+        path = tmp_path / "h2.traj"
+        BFGS(atoms, trajectory=str(path), logfile=None).run(steps=1)
+        assert "stress" not in atoms.calc.results
+        written = read(path, index=-1)
+        assert written.get_forces() == pytest.approx(atoms.get_forces())
+
+
+class TestNoncollinearMoments:
+    """(N, 3) initial magnetic moments start a two-component run, which only
+    molecular Kohn-Sham has; every other method takes one moment per atom."""
+
+    @pytest.mark.parametrize("method", ["rhf", "uhf", "adapt-vqe"])
+    def test_a_method_without_spinors_refuses_them(self, method):
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+        atoms.set_initial_magnetic_moments([[0, 0, 1], [1, 0, 0]])
+        atoms.calc = Mandacaru(method=method, basis="HAO", trace=False)
+        with pytest.raises(NotImplementedError,
+                           match=r"\(N, 3\) initial magnetic moments.*"
+                                 rf"method={method!r}"):
+            atoms.get_potential_energy()

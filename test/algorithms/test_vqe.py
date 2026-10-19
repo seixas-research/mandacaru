@@ -367,6 +367,8 @@ class TestVQERunLog:
         assert setup["classical_optimizer"] == "COBYLA"
         assert setup["ansatz"] == "UCCSD"
         assert setup["initial_parameters"] == "all zero (the reference state)"
+        assert setup["parameter_gradient"] == \
+            "none (COBYLA uses no gradient)"
 
     def test_the_summary_is_the_result(self, log):
         result, _text, parsed = log
@@ -505,3 +507,209 @@ class TestAShotRunBuildsNoStateVector:
         # The reference energy came from the determinant: |1010> here.
         assert calc.solver.reference_energy() == pytest.approx(
             -1.0 - 0.5 - 0.3)
+
+    def test_fifty_qubits(self, monkeypatch):
+        """A 50-qubit UCCSD on a device double: every energy measured, the
+        reference from the determinant, no sector, and every exponential
+        constructor forbidden; the classical memory stays under a gigabyte."""
+        import tracemalloc
+
+        from .test_adapt_vqe import (PolynomialDevice, _nothing_exponential,
+                                     _sparse_molecular_fermion)
+
+        fermion = _sparse_molecular_fermion(25)
+        device = PolynomialDevice()
+        with _nothing_exponential(monkeypatch):
+            tracemalloc.start()
+            try:
+                calc = Mandacaru(method="vqe", hamiltonian=fermion,
+                                 num_particles=(1, 1), n_spatial_orbitals=25,
+                                 ansatz={"name": "uccsd", "trotter": True},
+                                 shots=1000, trace=False,
+                                 optimizer={"method": "SPSA", "maxiter": 3})
+                solver = calc.solver
+                solver.circuit_provider = lambda: device
+                result = solver.run()
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+        assert solver.n_qubits == 50 and solver._sector is None
+        assert np.isfinite(result.optimal_energy)
+        assert device.energies >= 6
+        assert peak < 2 ** 30, f"peak {peak / 2 ** 20:.0f} MiB"
+
+
+# --- the particle-number sector (the dense 2^N matrices of a 12-qubit run) ---
+
+def _random_molecular_fermion(n_orbitals, seed=3):
+    """A random Hermitian two-body Hamiltonian with real-orbital symmetry."""
+    from mandacaru.core.mapping import Fermion
+
+    rng = np.random.default_rng(seed)
+    h = rng.standard_normal((n_orbitals,) * 2)
+    h = np.diag(np.linspace(-3, 3, n_orbitals)) + 0.1 * (h + h.T)
+    chemist = np.zeros((n_orbitals,) * 4)
+    for _ in range(3):
+        L = rng.standard_normal((n_orbitals,) * 2)
+        L = (L + L.T) / 2
+        chemist += np.einsum("pr,qs->prqs", L, L)
+    return Fermion.from_spatial_integrals(h, 0.05 * chemist.transpose(0, 2, 1, 3))
+
+
+class TestVQEInTheSector:
+    """``method="vqe"`` simulates the ``(n_alpha, n_beta)`` sector, as ADAPT does."""
+
+    def _calc(self, fermion, n_orbitals, **options):
+        return Mandacaru(method="vqe", hamiltonian=fermion,
+                         num_particles=(2, 2), n_spatial_orbitals=n_orbitals,
+                         trace=False, **options)
+
+    @pytest.mark.parametrize("trotter", [False, True])
+    def test_energies_equal_the_register_simulation(self, trotter):
+        """8 qubits, the same random angles: sector against the 256-state
+        register, in the exact and in the ordered-product ansatz."""
+        fermion = _random_molecular_fermion(4)
+        ansatz = {"name": "uccsd", "trotter": trotter}
+        full = self._calc(fermion, 4, sector=False, ansatz=ansatz).solver
+        sector = self._calc(fermion, 4, sector=True, ansatz=ansatz).solver
+        assert full._sector is None and sector._sector.dim == 36
+        rng = np.random.default_rng(1)
+        for _ in range(3):
+            theta = rng.uniform(-1, 1, full.ansatz.num_parameters)
+            assert sector.energy_at(theta) == pytest.approx(
+                full.energy_at(theta), abs=1e-11)
+        assert sector.reference_energy() == pytest.approx(
+            full.reference_energy(), abs=1e-12)
+
+    def test_an_optimized_run_matches_the_register_run(self):
+        fermion = _random_molecular_fermion(4)
+        optimizer = {"method": "L-BFGS", "maxiter": 200, "tol": 1e-10}
+        energies = [self._calc(fermion, 4, sector=flag,
+                               optimizer=optimizer).run().optimal_energy
+                    for flag in (False, True)]
+        assert energies[1] == pytest.approx(energies[0], abs=1e-9)
+
+    def test_the_sector_is_automatic_from_ten_qubits(self):
+        small = self._calc(_random_molecular_fermion(4), 4).solver
+        large = self._calc(_random_molecular_fermion(5), 5).solver
+        assert small._sector is None and large._sector.dim == 100
+        assert "particle-number sector, 100 states" in \
+            large._backend_description()
+
+    def test_a_shot_run_builds_no_sector(self):
+        """With shots every energy is measured on the device, so the automatic
+        choice builds no sector (whose enumeration and leak check would cost
+        the sector dimension before anything is submitted), and an explicit
+        one is refused."""
+        fermion = _random_molecular_fermion(5)
+        calc = self._calc(fermion, 5, shots=1000)
+        assert calc.solver._sector is None
+        with pytest.raises(ValueError, match="sector=True"):
+            self._calc(fermion, 5, shots=1000, sector=True).solver
+
+    def test_a_sector_too_large_to_enumerate_is_not_a_setup_error(
+            self, monkeypatch):
+        """The automatic choice leaves an oversized sector to the register
+        path and says so; only an explicit ``sector=True`` raises."""
+        from mandacaru.core import sector as sector_module
+
+        monkeypatch.setattr(sector_module, "MAX_SECTOR_DIMENSION", 50)
+        fermion = _random_molecular_fermion(5)
+        with pytest.warns(RuntimeWarning, match="full register"):
+            solver = self._calc(fermion, 5).solver
+        assert solver._sector is None
+        with pytest.raises(ValueError, match="limit 50"):
+            self._calc(fermion, 5, sector=True).solver
+
+    def test_a_twelve_qubit_run_allocates_no_register_matrix(self):
+        """Dense: 92 generators of 268 MB, a 268 MB Hamiltonian.  Sector: a
+        few megabytes (the ceiling is a hundredth of one dense matrix)."""
+        import tracemalloc
+
+        fermion = _random_molecular_fermion(6)
+        tracemalloc.start()
+        try:
+            solver = self._calc(fermion, 6).solver
+            theta = np.full(solver.ansatz.num_parameters, 0.02)
+            energy = solver.energy_at(theta)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert solver._sector.dim == 225
+        assert solver.energy_at(np.zeros_like(theta)) == pytest.approx(
+            solver.reference_energy(), abs=1e-12)
+        assert np.isfinite(energy)
+        assert peak < 16 * 2 ** 20
+
+    def test_the_ordered_product_uses_the_analytic_gradient(self):
+        fermion = _random_molecular_fermion(5)
+        calc = self._calc(fermion, 5, ansatz={"name": "uccsd", "trotter": True},
+                          optimizer={"method": "L-BFGS", "maxiter": 60,
+                                     "tol": 1e-9})
+        assert calc.solver._energy_gradient(calc.solver.ansatz) is not None
+        exact = self._calc(fermion, 5)
+        assert exact.solver._energy_gradient(exact.solver.ansatz) is None
+
+    def test_a_hamiltonian_that_leaves_the_sector_keeps_the_register(
+            self, monkeypatch):
+        from mandacaru.core.mapping import PauliSum
+        from mandacaru.circuits import UCCSD
+
+        leaking = (_random_molecular_fermion(4).map_to_qubits("jordan_wigner")
+                   + PauliSum({"X" + "I" * 7: 0.2}, num_qubits=8))
+        calc = Mandacaru(method="vqe", hamiltonian=leaking,
+                         ansatz=UCCSD(4, (2, 2)), sector="auto", trace=False)
+        # Lower the automatic threshold so that a cheap 8-qubit run meets it.
+        monkeypatch.setattr(calc._solver_class, "SECTOR_AUTO_QUBITS", 8)
+        with pytest.warns(RuntimeWarning, match="full register"):
+            solver = calc.solver
+        assert solver._sector is None
+        with pytest.raises(ValueError, match="sector=True"):
+            Mandacaru(method="vqe", hamiltonian=leaking,
+                      ansatz=UCCSD(4, (2, 2)), sector=True,
+                      trace=False).solver
+
+    def test_only_the_uccsd_ansatz_runs_in_a_sector(self):
+        fermion = _random_molecular_fermion(4)
+        with pytest.raises(NotImplementedError, match="sector"):
+            self._calc(fermion, 4, sector=True, ansatz="hva").solver
+        with pytest.raises(ValueError, match="sector"):
+            self._calc(fermion, 4, sector="sometimes")
+
+    def test_the_subspace_solver_keeps_the_register(self, monkeypatch):
+        """Its reference states are built on the full register, so it neither
+        chooses a sector by itself nor accepts one."""
+        fermion = _random_molecular_fermion(2)
+        options = dict(method="subspace-vqe", hamiltonian=fermion,
+                       num_particles=(1, 1), n_spatial_orbitals=2, trace=False)
+        calc = Mandacaru(**options)
+        monkeypatch.setattr(calc._solver_class, "SECTOR_AUTO_QUBITS", 4)
+        assert calc.solver._sector is None
+        with pytest.raises(NotImplementedError, match="sector"):
+            Mandacaru(sector=True, **options).solver
+
+    def test_the_ordered_product_optimizes_with_the_adjoint_gradient(
+            self, monkeypatch):
+        """Same minimum as the differenced run, in far fewer evaluations, and
+        the setup block says which gradient ran."""
+        fermion = _random_molecular_fermion(4)
+        ansatz = {"name": "uccsd", "trotter": True}
+        optimizer = {"method": "L-BFGS", "maxiter": 300, "tol": 1e-10}
+
+        def run(differenced):
+            calc = self._calc(fermion, 4, sector=True, ansatz=ansatz,
+                              optimizer=optimizer)
+            if differenced:
+                monkeypatch.setattr(calc.solver, "_energy_gradient",
+                                    lambda ansatz: None)
+            return calc, calc.run()
+
+        analytic_calc, analytic = run(False)
+        differenced_calc, differenced = run(True)
+        assert analytic.optimal_energy == pytest.approx(
+            differenced.optimal_energy, abs=1e-7)
+        assert analytic.num_evaluations < differenced.num_evaluations / 5
+        for calc, kind in ((analytic_calc, "analytic"),
+                           (differenced_calc, "finite difference")):
+            assert calc.solver._parameter_gradient_text(
+                calc.solver.ansatz).startswith(kind)

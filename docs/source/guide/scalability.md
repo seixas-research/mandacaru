@@ -24,9 +24,9 @@ gather per amplitude. Strings that share a flip mask share their images, so a
 molecular Hamiltonian costs one gather per group, about nine times fewer than
 its terms ({class}`~mandacaru.core.matrix_free.PauliOperator`).
 
-With `sector=True`, or the default `sector="auto"` from 16 qubits, all three
-forms act on the particle-number sector's `C(M, n_alpha) C(M, n_beta)` states
-instead of `2^n`.
+With `sector=True`, or the default `sector="auto"` (from 16 qubits for
+ADAPT-VQE, from 10 for `method="vqe"`), all three forms act on the
+particle-number sector's `C(M, n_alpha) C(M, n_beta)` states instead of `2^n`.
 
 ```python
 from mandacaru.algorithms import Mandacaru
@@ -60,6 +60,64 @@ both come from. The pool is never cached, because it can hold millions of
 generators: one screening pass over this problem's 609 generators takes 1.1 s,
 against 0.03 s with stored matrices. Matrix-free is therefore the form for
 problems whose matrices do not fit, not a default.
+
+## The fixed-ansatz VQE in the sector
+
+`method="vqe"` with the default UCCSD ansatz used to hold a dense `2^n x 2^n`
+matrix for the Hamiltonian and one for every excitation generator: 16 * 4^n
+bytes each, 4 GiB at 14 qubits, and a 12-qubit water or methanol active space
+(92 to 117 generators) needed more than 25 GB. It now evolves the state in the
+particle-number sector like ADAPT-VQE: sector vectors of
+`C(M, n_alpha) C(M, n_beta)` amplitudes and sparse sector generators, with no
+array of size `4^n` anywhere. `sector="auto"` (the default) turns it on from
+10 qubits, `sector=True` / `False` force it, and a Hamiltonian or generator
+that does not conserve `(n_alpha, n_beta)` keeps the full register with a
+warning (`sector=True` raises instead). Only the UCCSD ansatz on an untapered
+register prepares sector states; the HVA, a pre-built ansatz object and the
+subspace solver keep the register.
+
+The exact exponential `exp(sum_k theta_k G_k)|HF>` is applied with
+`scipy.sparse.linalg.expm_multiply` to the summed sparse generator, whose
+sparsity pattern is built once (each evaluation only reweights it). With
+`ansatz={"name": "uccsd", "trotter": True}` the state is the ordered product of
+closed-form exponentials, which also gives the optimizer the analytic adjoint
+gradient (the `parameter_gradient` line of `[OPTIMIZATION SETUP]` says which
+gradient ran): far fewer evaluations for a gradient method, so prefer it for
+the hundreds of parameters of a 16- or 20-qubit active space.
+
+Measured on a random molecular-type Hamiltonian (10 qubits, 54 parameters,
+60 COBYLA evaluations, shared machine, indicative): 62.5 s and 1157 MiB with
+the dense matrices, 0.6 s and 122 MiB in the sector, the same energy to
+1e-10 Ha. Water in PAW-LCAO-DZ, 10 qubits: 52.8 s and 1374 MiB against 8.1 s
+and 453 MiB, energy -458.808317 eV in both.
+
+## Building the sector matrices
+
+The Hamiltonian and the generators are restricted to the sector by flip mask
+(a Pauli string sends `|x>` to a phase times `|x XOR f>`, and the strings that
+share `f` share their images). Three costs were removed:
+
+- the images are found in a table of `2^n` `int32` positions (64 MiB at 24
+  qubits) instead of by binary search;
+- the groups are written straight into the CSR arrays, counting each row's
+  entries first. A flip mask is `x_row XOR x_col`, so no two groups reach the
+  same entry and there is nothing to merge: the peak is the matrix plus a few
+  vectors of `dim` entries, where the coordinate-format fold held 3.8 times
+  the matrix (35 MiB against 129 MiB for a 16-qubit, 1.77-million-entry
+  Hamiltonian);
+- the Hermitian part `(H + H^dagger)/2` is taken on the coefficients (every
+  Pauli string is Hermitian, so it is the real part of each coefficient)
+  rather than on the matrix, which formed a transposed copy and a sum.
+
+Methanol, PAW-LCAO-DZ, a CAS(10,10) MP2 active space on 20 qubits
+(`pool="fermionic"`, 875 generators, 7,147 Pauli terms, 63,504 sector states,
+6 ADAPT iterations, same energy -640.437776 eV before and after): peak
+resident memory 2559 MiB -> 1578 MiB, the sparse restriction of the
+Hamiltonian and the pool 4.8 s -> 3.6 s (shared machine, indicative). The
+stored Hamiltonian is 532 MiB and the pool 401 MiB; what is left is those two
+matrices. A random 20-qubit Hamiltonian of 14,251 terms had a 4.5 GB setup peak
+and now peaks at 1.9 GB. `PauliSum.to_sparse_matrix` uses the same fill for
+the full register: 12 qubits, 1,819 terms, 11.4 s -> 0.1 s.
 
 ## The limit no operator form removes
 
@@ -120,23 +178,47 @@ A = double_excitation(10, 60, 11, 61).map_to_qubits("jordan_wigner",
 observable = H.commutator(A)     # Hermitian; measure <psi|[H, A]|psi>
 ```
 
-What such a register cannot do is *optimize*. Every screening pass and every
-inner optimization would need `<psi|[H, A_i]|psi>` measured on a quantum
-processor for every pool operator. Mandacaru optimizes on the local state
-vector and sends only the optimized state to hardware for one measurement
-({doc}`measurement_cost`), so a 100-qubit problem can be prepared, mapped and
-costed here, but not solved.
+What such a register cannot do is *simulate*: no local state vector exists at
+this width. It can be **optimized on a device**. With `shots > 0` a run's
+classical memory is polynomial in the qubit count -- no `2^n` array, no
+sector-sized vector or matrix, no local screening: VQE measures every energy,
+and ADAPT-VQE measures its energies and its pool gradients
+`<psi|[H, A_i]|psi>` from the strings of these same commutators, grouped into
+qubit-wise-commuting bases ({ref}`adapt-on-a-device`). The reference energy
+is the determinant's, read off the `I`/`Z` strings. The test suite runs a
+50-qubit ADAPT-VQE and a 50-qubit UCCSD-VQE this way, against a device double,
+with every exponential constructor (`to_matrix`, `to_sparse_matrix`, the
+sector, `Statevector`, `expm_multiply`, the `2^n` reference) made to raise:
+the ADAPT run (624-operator fermionic pool, three growth steps) peaks at 24 MiB
+of traced Python memory, the VQE run (624 parameters) at 4 MiB.
+
+What it costs on the device is the other question, and the answer at 50
+qubits is the measurement wall of {doc}`measurement_cost`, not memory.
 
 ## The two-electron integrals
 
 The classical preparation has a memory limit of its own, set by the basis
-size `M` rather than by the register. The two-electron tensor
-`<ab|cd>` holds `M^4` complex numbers, `16 M^4` bytes: 1.3 MB for water in
-PAW-LCAO-SZP (`M = 17`), 2.2 GB for benzene in DZP (`M = 108`), 13 GB for
-naphthalene in DZP (`M = 170`). It is built from the `M(M+1)/2` pair
+size `M` rather than by the register. The two-electron tensor `<ab|cd>`
+holds `M^4` numbers. A molecule's basis functions are real, so its integrals
+have the eightfold symmetry `(ac|bd) = (ca|bd) = (bd|ac) = ...`, and
+Mandacaru keeps only the distinct ones: the lower triangle of the symmetric
+matrix over the `M(M+1)/2` pairs, about `M^4` bytes against the `8 M^4` of
+the full real array. That is 0.09 MB for water in PAW-LCAO-SZP (`M = 17`),
+139 MB for benzene in DZP (`M = 108`) and 845 MB for naphthalene in DZP
+(`M = 170`), whose full array (6.7 GB real) did not fit in 8 GB at all. The
+engine writes it packed as the potentials are solved, and the SCF (its
+Coulomb and exchange), the orbital transforms, the active-space selectors,
+the frozen core, the fermionic operator, the double factorization and the
+nuclear gradient all read it packed
+({class}`~mandacaru.integrals.packed.PackedERI`). The few consumers that
+need the whole array -- a spin-orbit (spinor) or spin-orbital tensor, a
+hybrid functional's exchange tensor, the Kohn-Sham handoff -- write it out
+for themselves and drop it. A crystal keeps the full complex array (its
+Bloch functions are complex). It is built from the `M(M+1)/2` pair
 densities `psi_b^* psi_d`, one Poisson solve each. Every solve's potential
-gives a whole slab of the tensor, `eri[:, b, :, d]`, from one matrix product,
-so the build needs the result plus a working set. The working set is bounded
+gives a whole slab of the tensor, `eri[:, b, :, d]` (the row of its pair in
+the packed triangle), from one matrix product, so the build needs the
+result plus a working set. The working set is bounded
 by `MANDACARU_ERI_MEMORY_MB` (256 MB by default). Every grid convolution
 (Poisson solves, the spectral Laplacian, pair transforms) runs on one shared
 FFT workspace per grid ({mod}`mandacaru.integrals.fft`). The workspace
@@ -164,14 +246,17 @@ writes them as `(ac|bd) = sum_r B^r_ac B^r_bd`. The pivots are batched in
 two steps (Folkestad, Kjonstad and Koch 2019), and the decomposition runs on
 the grid without ever forming the matrix:
 
-- the functions are made real by the unitary their conjugation closure
-  allows, so the pair densities, their potentials and the factors are real;
+- a molecule's basis functions are real (real spherical harmonics), so the
+  pair densities, their potentials and the factors are real;
 - the exact diagonal comes from Parseval, forward transforms only;
 - pairs whose sampled supports do not meet are skipped;
 - each pivot's column is one matrix product.
 
-The rank `R` is a few times `M`, so the factors take about `8 M^2 R` bytes
-instead of `16 M^4`. The SCF builds its Coulomb and exchange from the
+The rank `R` is a few times `M`, so the factors take about `4 M^2 R` bytes
+(the upper triangles) instead of the packed tensor's `M^4` -- and they never
+need the tensor's working set. The run log writes the
+tolerance, the rank and the largest residual diagonal on one `[ELECTRONS]`
+line ({doc}`run_output`). The SCF builds its Coulomb and exchange from the
 factors (RHF, or UHF for an open shell). The active-space integrals come from
 the factors too, so the tensor is formed only when every orbital is active.
 The PAW-LCAO compensation charges stay in their structured form beside the
@@ -204,7 +289,8 @@ them. Left out, it does not change the active-space FCI energy of water
 The default, 1e-7 Ha, is the loosest tolerance that kept every one of these
 energies within 1e-6 Ha. A larger molecule accumulates more: confirm the
 tolerance on your own system. For benzene at 1e-7 Ha the factors and the
-compensation terms take 73 MB, against 2.2 GB for the tensor.
+compensation terms take 73 MB, against 139 MB for the packed tensor (and
+the dense route's build, SCF and transforms around it).
 
 The first version is for molecules, energies and active spaces. The cases
 that need the dense tensor are refused with the reason: a crystal (a periodic

@@ -305,6 +305,18 @@ class TestTheStress:
                     tensor[1, 2], tensor[0, 2], tensor[0, 1]]
         assert voigt == pytest.approx(expected)
 
+    def test_ase_s_generic_lookup_reads_the_stress(self, cubic_atom,
+                                                   cubic_tensor):
+        """Declared to ASE, and stored as the Voigt 6-vector it expects --
+        read back from the stored result, not computed again."""
+        calc = cubic_atom.calc
+        assert "stress" in calc.implemented_properties
+        assert calc.results["stress"].shape == (6,)
+        stress = calc.get_property("stress", cubic_atom)
+        assert stress == pytest.approx(
+            [cubic_tensor[0, 0], cubic_tensor[1, 1], cubic_tensor[2, 2],
+             cubic_tensor[1, 2], cubic_tensor[0, 2], cubic_tensor[0, 1]])
+
     def test_an_even_grid_is_shear_free_too(self):
         grid_spacing, shape = 0.30, 10        # the grid with the largest original artifact
         """The regression: the shear used to depend on the grid's parity.
@@ -335,3 +347,53 @@ class TestTheStress:
         atoms.get_potential_energy()
         with pytest.raises(NotImplementedError, match="not periodic"):
             atoms.calc.get_stress()
+
+
+class TestTheOrbitalResponseOfAVariationalState:
+    """A truncated ADAPT-VQE state on a Gamma-point supercell of an H2 chain
+    is not stationary under orbital rotations; its force is the derivative of
+    the energy of the canonical orbitals of each geometry (the z-vector), with
+    or without deleted virtual orbitals."""
+
+    @staticmethod
+    def chain(**options):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.8, 0.15, 0.0]],
+                      cell=np.diag([3.0, 5.0, 5.0]),
+                      pbc=[True, False, False])
+        atoms.calc = Mandacaru(
+            method="bloch-adapt-vqe", kpts={"size": (2, 1, 1), "gamma": True},
+            basis="HAO", grid_spacing=0.35, trace=False, profile=False,
+            pool="fermionic", project_translation=False, max_iterations=2,
+            convergence={"gradient": 1e-7}, **options)
+        return atoms
+
+    @staticmethod
+    def richardson(atoms, atom, axis):
+        slopes = []
+        for step in (0.01, 0.005):
+            energies = []
+            for sign in (+1, -1):
+                moved = atoms.copy()
+                moved.positions[atom, axis] += sign * step
+                moved.calc = atoms.calc
+                energies.append(moved.get_potential_energy())
+            slopes.append(-(energies[0] - energies[1]) / (2 * step))
+        return (4 * slopes[1] - slopes[0]) / 3
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("active_space", [
+        None, {"orbitals": 3, "method": "energy"}])
+    def test_the_force_is_the_derivative_of_the_reoptimized_energy(
+            self, active_space):
+        options = {} if active_space is None else {
+            "active_space": active_space}
+        atoms = self.chain(**options)
+        forces = atoms.get_forces()
+        details = atoms.calc.force_result.details
+        assert details["orbital_response_method"] == "z-vector"
+        assert details["orbital_gradient"] > 1e-3
+        if active_space is not None:
+            assert atoms.calc.solver._gradient_context["deleted"]
+        for axis in (0, 1):
+            assert forces[1, axis] == pytest.approx(
+                self.richardson(atoms, 1, axis), abs=5e-4)

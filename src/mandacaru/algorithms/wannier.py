@@ -98,6 +98,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..integrals import reciprocal as rc
+from ..integrals.fft import workspace
 from ..units import BOHR_TO_ANGSTROM, EV_TO_HARTREE, HARTREE_TO_EV
 
 #: Width (Bohr) of the Gaussian trial orbitals of the initial projection.
@@ -207,7 +208,10 @@ class Trial:
     :math:`sp^3` hybrid toward the unit vector :math:`\hat d` is
     :math:`\tfrac12 S_{00} + \tfrac{\sqrt3}{2}\hat d\cdot(p_x, p_y,
     p_z)`.  ``atom`` is the index of the atom it sits on, if any, and
-    ``label`` names it."""
+    ``label`` names it.  ``spin`` is the spinor :math:`(c_\uparrow,
+    c_\downarrow)` of a trial for two-component (spinor) Bloch states,
+    :math:`g(\mathbf r)\,(c_\uparrow, c_\downarrow)^T`
+    (:func:`spinor_trials`); ``None`` for collinear states."""
 
     center: tuple
     angular: tuple = ((0, 0, 1.0),)
@@ -215,6 +219,7 @@ class Trial:
     radial: tuple | None = None
     atom: int | None = None
     label: str = ""
+    spin: tuple | None = None
 
 
 @dataclass
@@ -333,33 +338,19 @@ class DownfoldedProblem:
                                 optimize=True)
         return h, g
 
-    def spin_orbital_integrals(self, basis: str = "wannier") -> tuple:
-        """``(h, g)`` over the ``2n`` spin-orbitals, up first: the one-body
-        matrix (block diagonal in spin) and :math:`\\langle PQ|RS\\rangle`,
-        nonzero when the spins of ``P`` and ``R``, and of ``Q`` and ``S``,
-        agree."""
-        from ..core.hamiltonian import spin_block_integrals
-
-        h, g = self.integrals(basis)
-        if not self.spin_polarized:
-            return spin_block_integrals(h, g)
-        n = self.n_spatial_orbitals
-        h_so = np.zeros((2 * n, 2 * n), dtype=complex)
-        g_so = np.zeros((2 * n,) * 4, dtype=complex)
-        for s in range(2):
-            h_so[s * n:(s + 1) * n, s * n:(s + 1) * n] = h[s]
-            for t in range(2):
-                a, b = slice(s * n, (s + 1) * n), slice(t * n, (t + 1) * n)
-                g_so[a, b, a, b] = g[s, t]
-        return h_so, g_so
-
     def fermion_hamiltonian(self, basis: str = "wannier"):
-        """The spin-orbital :class:`~mandacaru.core.mapping.Fermion`
+        r"""The spin-orbital :class:`~mandacaru.core.mapping.Fermion`
         Hamiltonian (Hartree; no constant) in ``basis``
-        (:meth:`integrals`)."""
+        (:meth:`integrals`): the ``2n`` spin-orbitals up first, the
+        one-body term block diagonal in spin and :math:`\langle
+        PQ|RS\rangle` nonzero when the spins of ``P`` and ``R``, and of
+        ``Q`` and ``S``, agree.  Written from the spatial integrals (per
+        spin pair for a spin-polarized model), without the ``(2n)^4``
+        spin-orbital tensor
+        (:meth:`~mandacaru.core.mapping.Fermion.from_spatial_integrals`)."""
         from ..core.mapping import Fermion
 
-        return Fermion.from_integrals(*self.spin_orbital_integrals(basis))
+        return Fermion.from_spatial_integrals(*self.integrals(basis))
 
     def as_quantum_problem(self) -> dict[str, object]:
         """Options for ``Mandacaru(method='adapt-vqe', **options)``.
@@ -433,6 +424,10 @@ class WannierResult:
     # Records the references a later step (screening) uses, when the
     # functions came through a calculator.
     _cite: object = field(default=None, repr=False)
+    #: Whether the functions are spinors (a two-component crystal's): each
+    #: holds one electron, ``unitary`` mixes spinor bands, and the
+    #: functions on the grid have two components.
+    spinor: bool = False
 
     @property
     def n_functions(self) -> int:
@@ -503,8 +498,20 @@ class WannierResult:
             if self._crystal is None:
                 raise RuntimeError("this result carries no crystal to build "
                                    "its functions from")
-            self._grid = supercell_functions(self._crystal, self.kpoints,
-                                             self._coefficients, self.size)
+            if self.spinor:
+                # The two spin components, each a set of functions of its
+                # own: values (2, n, ...), projections (2, n, N, P).
+                M = self._crystal.M
+                pieces = [supercell_functions(self._crystal, self.kpoints,
+                                              self._coefficients[:, part],
+                                              self.size)
+                          for part in (slice(0, M), slice(M, 2 * M))]
+                self._grid = (np.stack([p[0] for p in pieces]),
+                              np.stack([p[1] for p in pieces]))
+            else:
+                self._grid = supercell_functions(self._crystal, self.kpoints,
+                                                 self._coefficients,
+                                                 self.size)
         return self._grid
 
     def orbital(self, index: int):
@@ -512,23 +519,24 @@ class WannierResult:
         grid (Bohr^-3/2; the smooth part), its global phase chosen to make
         it as real as possible, the box centered on the function.
         ``origin`` (Bohr) is node ``(0, 0, 0)`` and ``step`` (Bohr) holds the
-        step vectors as columns."""
+        step vectors as columns.  A spinor function's values are ``(2, ...)``,
+        its spin-up and spin-down components, with one phase for both."""
         values, _projections = self._supercell()
         index = int(index)
         if not 0 <= index < self.n_functions:
             raise IndexError(f"function {index} of {self.n_functions}")
-        w = values[index]
+        w = values[:, index] if self.spinor else values[index]
         # The phase that makes sum w^2 real and positive maximizes |Re w|.
         w = w * np.exp(-0.5j * np.angle(np.sum(w * w)))
         crystal = self._crystal
         step = np.asarray(crystal.grid.step, dtype=float)
         origin = rc.grid_origin(crystal.grid)
-        shape = np.array(w.shape)
+        shape = np.array(w.shape[-3:])
         # Roll the periodic box so the function sits in its middle.
         center = np.asarray(self.centers[index]) / BOHR_TO_ANGSTROM
         nodes = np.linalg.solve(step, center - origin)
         shift = np.floor(nodes - 0.5 * shape).astype(int)
-        w = np.roll(w, tuple(-shift), axis=(0, 1, 2))
+        w = np.roll(w, tuple(-shift), axis=(-3, -2, -1))
         return w, origin + step @ shift, step
 
     def imaginary_ratio(self, index: int) -> float:
@@ -537,23 +545,47 @@ class WannierResult:
         w, _origin, _step = self.orbital(index)
         return float(np.linalg.norm(w.imag) / np.linalg.norm(w.real))
 
-    def write(self, index: int, path, part: str = "real", format=None) -> str:
-        """Write function ``index`` (:meth:`orbital`) as a ``.cube`` or
+    def write(self, index: int, path, part: str = "real", format=None,
+              component: str | None = None) -> str:
+        r"""Write function ``index`` (:meth:`orbital`) as a ``.cube`` or
         ``.xsf`` file and return the path.  ``part`` is ``"real"``,
         ``"imaginary"`` or ``"modulus"``; the atoms in the box are those of
-        the supercell."""
+        the supercell.  A spinor function writes one spin ``component``
+        (``"up"`` or ``"down"``) with those parts, or with ``part="density"``
+        (no component) the density :math:`|w_\uparrow|^2 + |w_\downarrow|^2`
+        it carries."""
         from ase.data import atomic_numbers
 
         from ..utils.cube import write_volumetric
 
         fields = {"real": np.real, "imaginary": np.imag, "modulus": np.abs}
-        if part not in fields:
-            raise ValueError(f"part must be one of {sorted(fields)}; got "
-                             f"{part!r}")
-        w, origin, step = self.orbital(index)
+        if self.spinor and part == "density":
+            if component is not None:
+                raise ValueError("the density sums both spin components: "
+                                 "give no component")
+            w, origin, step = self.orbital(index)
+            values = np.sum(np.abs(w) ** 2, axis=0)
+            label = "density |w_up|^2 + |w_down|^2"
+        else:
+            if part not in fields:
+                raise ValueError(f"part must be one of {sorted(fields)}"
+                                 + (" or 'density'" if self.spinor else "")
+                                 + f"; got {part!r}")
+            w, origin, step = self.orbital(index)
+            label = f"{part} part"
+            if self.spinor:
+                if component not in ("up", "down"):
+                    raise ValueError(
+                        "a spinor Wannier function has two components: "
+                        "give component='up' or 'down', or part='density'")
+                w = w[0 if component == "up" else 1]
+                label = f"spin-{component} component, {part} part"
+            elif component is not None:
+                raise ValueError("component belongs to a spinor function")
+            values = fields[part](w)
         crystal = self._crystal
         lattice = np.asarray(crystal.lattice, dtype=float)       # columns
-        box = step @ np.diag(w.shape)
+        box = step @ np.diag(values.shape)
         numbers, charges, positions = [], [], []
         for atom, center in enumerate(crystal.centers):
             dataset = crystal.datasets[atom]
@@ -566,9 +598,9 @@ class WannierResult:
                     charges.append(float(dataset.valence_charge))
                     positions.append(r)
         return write_volumetric(
-            path, fields[part](w), origin, step, numbers,
+            path, values, origin, step, numbers,
             np.reshape(positions, (-1, 3)), charges=charges, cell=box.T,
-            comment=f"Mandacaru Wannier function {index} ({part} part)",
+            comment=f"Mandacaru Wannier function {index} ({label})",
             format=format, periodic=True)
 
     # -- the downfolded many-body problem ----------------------------------- #
@@ -605,6 +637,12 @@ class WannierResult:
         states on the vectors within ``screening_cutoff`` (Bohr^-1)
         (:func:`screened_interaction`).
         """
+        if self.spinor:
+            raise NotImplementedError(
+                "the downfolded problem of spinor Wannier functions is not "
+                "built: its two-body terms and spin-orbital layout are those "
+                "of a spin-orbit Hamiltonian, which the downfolding does not "
+                "assemble yet")
         return downfold_channels([self], functions, num_particles,
                                  screening, screening_cutoff,
                                  screening_bands, coulomb)
@@ -819,7 +857,7 @@ def overlaps(crystal, data, vectors, size, steps, b_vectors) -> np.ndarray:
     serve across the zone's edge (a Bloch sum at :math:`\mathbf k + \mathbf
     G` is the one at :math:`\mathbf k`), with the true :math:`\mathbf b` in
     the phase."""
-    from .berry_phase import link_overlap, onsite_operator
+    from .berry_phase import link_overlap, onsite_operator, state_overlap
 
     size = np.asarray(size, dtype=int)
     index = np.indices(tuple(size)).reshape(3, -1).T
@@ -835,7 +873,7 @@ def overlaps(crystal, data, vectors, size, steps, b_vectors) -> np.ndarray:
         for k in range(nk):
             S = link_overlap(crystal, data[k], data[neighbors[k]], b, onsite,
                              grid_phase)
-            M[k, ib] = vectors[k].conj().T @ S @ vectors[neighbors[k]]
+            M[k, ib] = state_overlap(S, vectors[k], vectors[neighbors[k]])
     return M
 
 
@@ -852,6 +890,31 @@ def gaussian_trials(centers) -> list:
     return [Trial(tuple(float(x) for x in c), label=f"s@{i}")
             for i, c in enumerate(np.atleast_2d(np.asarray(centers,
                                                            dtype=float)))]
+
+
+def spinor_trials(trials, axis=(0.0, 0.0, 1.0)) -> list:
+    r"""Each trial orbital twice, as the spinors spin up and spin down
+    along the unit ``axis`` (the quantization axis), for two-component
+    Bloch states: :math:`g\,\chi_\pm` with :math:`(\hat{\mathbf
+    n}\cdot\boldsymbol\sigma)\chi_\pm = \pm\chi_\pm`, the pair of each
+    orbital adjacent (labels ``:up`` and ``:down``)."""
+    from dataclasses import replace
+
+    from .spinor_dft import spin_rotation
+
+    axis = np.asarray(axis, dtype=float)
+    if axis.shape != (3,) or not np.linalg.norm(axis) > 0.0:
+        raise ValueError(f"spin_axis must be a nonzero 3-vector; got {axis!r}")
+    U = spin_rotation(axis)
+    out = []
+    for trial in trials:
+        if trial.spin is not None:
+            raise ValueError("the trial orbitals already carry spinors")
+        for name, column in (("up", 0), ("down", 1)):
+            out.append(replace(trial, spin=(complex(U[0, column]),
+                                            complex(U[1, column])),
+                               label=f"{trial.label}:{name}"))
+    return out
 
 
 def real_harmonic(l: int, m: int, x, y, z) -> np.ndarray:
@@ -963,7 +1026,19 @@ def trial_projections(crystal, data, vectors, fractional, trials,
             g = np.zeros(r.shape[1], dtype=complex)
             for R, near, values in pieces:
                 g[near] += np.exp(1j * (kc[k] @ R)) * values
-            out[k, :, n] = v.conj().T @ (d.psi.conj() @ g) * grid.dV
+            p = (d.psi.conj() @ g) * grid.dV
+            M = len(p)
+            if v.shape[0] == M:
+                out[k, :, n] = v.conj().T @ p
+            else:
+                # A spinor state: <psi|g chi> = sum_s c_s <psi_s|g>.
+                if trial.spin is None:
+                    raise ValueError(
+                        "two-component (spinor) states need spinor trial "
+                        "orbitals (spinor_trials)")
+                up, down = trial.spin
+                out[k, :, n] = (up * (v[:M].conj().T @ p)
+                                + down * (v[M:].conj().T @ p))
     return out
 
 
@@ -1457,9 +1532,15 @@ def real_phases(data, vectors, U, size) -> np.ndarray:
     size = np.asarray(size, dtype=int)
     index = np.indices(tuple(size)).reshape(3, -1).T
     minus = np.ravel_multi_index(tuple(((-index) % size).T), tuple(size))
-    phi = [(v @ u).T @ d.psi for d, v, u in zip(data, vectors, U)]
-    total = sum(np.sum(phi[k] * phi[minus[k]], axis=1)
-                for k in range(len(phi)))
+    M = len(data[0].psi)
+    # A spinor function's two components: the sum of w_s^2 over both.
+    parts = ((slice(0, M),) if vectors[0].shape[0] == M
+             else (slice(0, M), slice(M, 2 * M)))
+    total = 0.0
+    for part in parts:
+        phi = [(v[part] @ u).T @ d.psi for d, v, u in zip(data, vectors, U)]
+        total = total + sum(np.sum(phi[k] * phi[minus[k]], axis=1)
+                            for k in range(len(phi)))
     return np.exp(-0.5j * np.angle(total))
 
 
@@ -1700,11 +1781,25 @@ def pair_densities(box: SupercellCoulomb, values, projections,
     density = np.empty((n, n, box.G2.size), dtype=complex)
     compact = np.zeros((n, n, box.G2.size), dtype=complex)
     charges, sums = [], []
+    # The products of one function against a batch of partners are formed
+    # in the supercell grid's shared workspace buffer and transformed there
+    # in place (`integrals.fft`): no product or transform is allocated per
+    # pair.
+    space = workspace(box.total)
+    step = min(space.batch(16), max(n, 1))
+    buffer = space.stack(step)
+    scale = dV * box.origin_phase
     for p in range(n):
-        for q in range(n):
-            product = np.conj(functions[p]) * functions[q]
-            density[p, q] = np.ravel(dV * box.origin_phase
-                                     * np.fft.fftn(product))
+        left = np.conj(functions[p])
+        for q0 in range(0, n, step):
+            q1 = min(q0 + step, n)
+            stack = buffer[:q1 - q0]
+            for j, q in enumerate(range(q0, q1)):
+                np.multiply(left, functions[q], out=stack[j])
+            stack = space.forward(stack)
+            stack *= scale
+            density[p, q0:q1] = stack.reshape(q1 - q0, -1)
+    lattice = workspace(cells)
     for atom, L, M in crystal.channels:
         own = crystal.projector_columns(atom)
         blk = crystal.multipole_blocks[(atom, L, M)]
@@ -1712,7 +1807,13 @@ def pair_densities(box: SupercellCoulomb, values, projections,
         # Q[t, p, q] = a_p(t)^+ blk a_q(t) per supercell cell t.
         Q = np.einsum("pti,ij,qtj->tpq", np.conj(a), blk, a)
         charges.append(Q)
-        sums.append(np.fft.fftn(Q.reshape(*cells, n, n), axes=(0, 1, 2)))
+        # The lattice sum over the cells, one (p, q) per transform, on a
+        # copy: the transform runs in place, and einsum's layout can make
+        # the moved axes a view of Q itself.
+        stack = np.array(np.moveaxis(Q.reshape(*cells, n * n), -1, 0),
+                         dtype=complex, order="C", copy=True)
+        stack = lattice.forward(stack)
+        sums.append(np.moveaxis(stack, 0, -1).reshape(*cells, n, n))
     # The compensation transforms a block of G at a time.
     G = box.G.reshape(3, -1)
     cell_of = [np.ravel(mi) for mi in m_mod]
@@ -2099,6 +2200,9 @@ def polarizability(crystal, channel_pairs, q, g, n_cells: int) -> tuple:
     to_G = grid.dV * np.exp(-1j * (rc.grid_origin(grid) @ (B @ g)))
     transforms = crystal.compensation_transforms(qG)          # (n_ch, nG)
     q_phase = np.exp(-1j * (q @ r))
+    space = workspace(shape)
+    step = space.batch(16)
+    buffer = space.stack(step)
     chi = np.zeros((qG.shape[1],) * 2, dtype=complex)
     for channel, pairs in channel_pairs:
         solver = channel._solver
@@ -2118,10 +2222,20 @@ def polarizability(crystal, channel_pairs, q, g, n_cells: int) -> tuple:
             a_index, b_index = np.nonzero(np.abs(weight) > 1e-12)
             if a_index.size == 0:
                 continue
-            product = np.conj(psi1[a_index]) * psi2[b_index] * q_phase
-            transform = np.fft.fftn(product.reshape(-1, *shape),
-                                    axes=(1, 2, 3)).reshape(len(a_index), -1)
-            rho = transform[:, fft_index] * to_G[None, :]
+            # The transition products a batch at a time in the cell grid's
+            # shared workspace, transformed in place; only the coefficients
+            # on q + G are kept, never every product's whole transform.
+            rho = np.empty((a_index.size, qG.shape[1]), dtype=complex)
+            for t0 in range(0, a_index.size, step):
+                t1 = min(t0 + step, a_index.size)
+                stack = buffer[:t1 - t0]
+                flat = stack.reshape(t1 - t0, -1)
+                np.multiply(np.conj(psi1[a_index[t0:t1]]),
+                            psi2[b_index[t0:t1]], out=flat)
+                flat *= q_phase
+                stack = space.forward(stack)
+                np.multiply(stack.reshape(t1 - t0, -1)[:, fft_index],
+                            to_G[None, :], out=rho[t0:t1])
             for c, (atom, L, M) in enumerate(crystal.channels):
                 own = crystal.projector_columns(atom)
                 blk = crystal.multipole_blocks[(atom, L, M)]
@@ -2347,6 +2461,11 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
         raise ValueError(f"{J} functions from {len(bands)} bands")
     entangled = windows is not None or J != len(bands)
     crystal = solver.crystal
+    # Two-component states: one electron per spinor band; the disentangled
+    # subspace is not symmetrized (the operations' spin rotations are not
+    # represented), and the state selections by projectability are
+    # collinear.
+    spinor = bool(getattr(solver, "two_component", False))
     lattice = np.asarray(crystal.lattice, dtype=float)       # columns, Bohr
     B = rc.reciprocal_vectors(lattice)
     b_vectors, weights, steps = neighbor_shells(B, size)
@@ -2366,7 +2485,7 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
             # Omega_I's subspace, kept symmetric under the operations that
             # map the windows' states onto themselves.
             nonlocal operations
-            if symmetrize:
+            if symmetrize and not spinor:
                 symmetry = symmetry_operations(
                     crystal, data, vectors, fractional, size, *sets,
                     moments=getattr(solver, "initial_moments", None))
@@ -2379,6 +2498,12 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
                                masks=sets, symmetry=symmetry)
 
         selection = resolve_selection(windows)
+        if selection is not None and spinor:
+            raise NotImplementedError(
+                "the state selections (projectabilities, SCDM, RPA natural "
+                "orbitals) read collinear Bloch states; a spinor crystal "
+                "takes energy windows: windows={'outer': (lo, hi), "
+                "'frozen': (lo, hi)}")
         if selection is None:
             outer, frozen = resolve_windows(windows)
             S, disentanglement = subspace(window_sets(energies, outer,
@@ -2427,7 +2552,7 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
         rho_bvk = None
     else:
         # Electrons per state: two in a restricted crystal, one per channel.
-        f = (2.0 / solver.n_spins) * occupation(
+        f = (1.0 if spinor else 2.0 / solver.n_spins) * occupation(
             (energies - fermi_level) / solver.width, solver.method)
         rho_bvk = bvk_blocks(fractional, np.einsum(
             "kam,ka,kan->kmn", np.conj(U), f, U), size)
@@ -2446,7 +2571,7 @@ def channel_wannier_functions(solver, spin, size, bands, trials, *,
         spin=spin if solver.n_spins == 2 else None,
         _hamiltonian_bvk=H_bvk, _density_bvk=rho_bvk, _crystal=crystal,
         _coefficients=coefficients, _solver=solver,
-        _fermi_level=fermi_level, _cite=cite)
+        _fermi_level=fermi_level, _cite=cite, spinor=spinor)
 
 
 def bond_centers(atoms, tolerance: float = 0.1) -> np.ndarray:

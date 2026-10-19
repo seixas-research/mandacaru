@@ -218,6 +218,9 @@ class RadialTable:
     l: int
     zeta: int = 1
     polarization: bool = False
+    #: A diffuse shell (:mod:`mandacaru.pseudopotentials.diffuse`): neither a
+    #: zeta of an occupied state nor a polarization shell.
+    diffuse: bool = False
 
 
 class TabulatedOrbital(BasisFunction):
@@ -238,6 +241,7 @@ class TabulatedOrbital(BasisFunction):
         self.real = bool(real)
         self.zeta = int(table.zeta)
         self.polarization = bool(table.polarization)
+        self.diffuse = bool(table.diffuse)
         self.center = (np.zeros(3) if center is None
                        else to_bohr(center, units))
         self.r_c = float(table.r[-1])
@@ -247,6 +251,12 @@ class TabulatedOrbital(BasisFunction):
     @property
     def state(self) -> tuple[int, int, int]:
         return (self.n, self.l, self.m)
+
+    @property
+    def kind(self) -> str:
+        """``"diffuse"``, ``"polarization"`` or ``"zeta"``."""
+        return ("diffuse" if self.diffuse
+                else "polarization" if self.polarization else "zeta")
 
     def radial(self, r) -> np.ndarray:
         """Interpolated radial function; zero outside the confining sphere.
@@ -295,7 +305,8 @@ class TabulatedOrbital(BasisFunction):
             np.asarray(z, dtype=float) - self.center[2], real=self.real)
 
     def __repr__(self) -> str:
-        kind = "pol" if self.polarization else f"zeta{self.zeta}"
+        kind = ("diffuse" if self.diffuse
+                else "pol" if self.polarization else f"zeta{self.zeta}")
         return (f"TabulatedOrbital(n={self.n}, l={self.l}, m={self.m}, "
                 f"{kind}, r_c={self.r_c:.2f})")
 

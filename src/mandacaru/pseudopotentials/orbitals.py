@@ -216,7 +216,7 @@ class KBProjector(_RadialTabulated):
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                  size="SZ", split_norm=None, filter_wavevector=None,
                  first_zeta=None, tail_norms=None, polarization_shape=None,
-                 *, real: bool = True):
+                 diffuse_shells=None, *, real: bool = True):
     """Valence pseudo-atomic basis for a molecule (real spherical
     harmonics) or, ``real=False``, a crystal (complex ones).
 
@@ -256,6 +256,13 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     :func:`~.confinement.polarization_factory` supplies the quasi-Gaussian.
     Further polarization functions are then split-valence refinements of that
     shape with the *same* ``l``, instead of shells of higher ``l``.
+
+    ``diffuse_shells`` (optional) is a callable ``(symbol, potential,
+    existing, filter_wavevector) -> [RadialTable, ...]`` that **appends**
+    diffuse shells to each atom after its ordinary functions (``existing``:
+    the atom's radial functions as ``(n, l, r, values)``, filtered) --
+    :func:`~.diffuse.diffuse_factory` supplies it.  The ordinary basis is
+    built exactly as without it, and the atom-major order is kept.
 
     ``filter_wavevector`` (the cutoff wave-vector :math:`k_c` in
     Bohr\\ :sup:`-1` that the ``filter_cutoff`` option resolves to, ``None``
@@ -355,6 +362,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         n_zeta, n_polarization = resolve_zeta(size_of(symbol))
         if n_zeta == 1 and n_polarization == 0:
             # Minimal valence set: the original path, unchanged.
+            existing = []
             for state in states:
                 l = state.l
                 radial = first_radial(symbol, pp, l, state.index, state.empty)
@@ -363,12 +371,21 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                 else:
                     radial = filtered(symbol, ("sz", l, state.index), pp.r,
                                       radial, l)
+                existing.append((state.n, l, pp.r,
+                                 pp.channels[l].pseudo_waves[state.index]
+                                 if radial is None else radial))
                 for m in range(-l, l + 1):
                     functions.append(PseudoAtomicOrbital(
                         pp, l, m, center=position, units=units, radial=radial,
                         index=state.index, eigenvalue=state.level,
                         real=real))
                     owners.append(index)
+            if diffuse_shells is not None:
+                extra = orbitals_from_tables(
+                    diffuse_shells(symbol, pp, existing, k_c),
+                    center=position, units=units, real=real)
+                functions.extend(extra)
+                owners.extend([index] * len(extra))
             continue
 
         tables = []
@@ -426,6 +443,11 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                 tables.append(filtered_table(symbol, ("pol", l, table.zeta),
                                              table))
 
+        if diffuse_shells is not None:
+            # After the polarization shells, still on this atom: the
+            # atom-major order the populations and `atom_of_orbital` rely on.
+            tables.extend(diffuse_shells(
+                symbol, pp, [(t.n, t.l, t.r, t.values) for t in tables], k_c))
         atom_functions = orbitals_from_tables(tables, center=position,
                                               units=units, real=real)
         functions.extend(atom_functions)

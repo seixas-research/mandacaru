@@ -298,11 +298,18 @@ def resolve_num_unpaired(atoms, spin, n_el: int) -> int:
     electron, so with no magnetic moments it is a doublet whatever ``spin``
     says; for an even count ``spin`` keeps the closed-shell singlet (``0``) --
     a high-spin even-electron state is requested through the magnetic moments.
+    ``(N, 3)`` moment vectors (a noncollinear start, ``method="dft"``) count
+    by their lengths: the collinear state the spinor SCF starts from has
+    every moment along one axis, before each is turned to its vector.
     """
     total = 0.0
     if atoms is not None:
         try:
-            total = float(np.sum(atoms.get_initial_magnetic_moments()))
+            moments = np.asarray(atoms.get_initial_magnetic_moments(),
+                                 dtype=float)
+            if moments.ndim == 2:
+                moments = np.linalg.norm(moments, axis=1)
+            total = float(np.sum(moments))
         except Exception:
             total = 0.0
     if abs(total) > 1e-8:
@@ -415,6 +422,7 @@ def resolve_pseudo_basis(name, options, symbols):
     family = next(iter(pseudo.values()))
     sizes, merged = {}, {}
     shifts = {}
+    diffuse = {}
     shared = {}
     filters = {}
     for symbol, (_sub_name, sub_options) in resolved.items():
@@ -424,13 +432,13 @@ def resolve_pseudo_basis(name, options, symbols):
                 f"unknown option(s) {unknown} for the {family.label} basis of "
                 f"{symbol!r}; it accepts {list(family.options)}")
         extra = {k: v for k, v in sub_options.items()
-                 if k not in ("size", "filter_cutoff",
-                              "energy_shift") + SHARED_PSEUDO_OPTIONS}
+                 if k not in ("size", "filter_cutoff", "energy_shift",
+                              "diffuse") + SHARED_PSEUDO_OPTIONS}
         if extra:
             raise ValueError(
                 f"per-element basis options {extra!r} for {symbol!r} cannot "
                 f"differ per element with the {family.label} family; only "
-                "'size', 'energy_shift' and 'filter_cutoff' may be "
+                "'size', 'energy_shift', 'diffuse' and 'filter_cutoff' may be "
                 "written per element "
                 "(give the other options in a single {'name': ..., ...} basis "
                 "dict)")
@@ -441,6 +449,12 @@ def resolve_pseudo_basis(name, options, symbols):
                     f"the {family.label} family has no 'energy_shift' option; "
                     f"it accepts {list(family.options)}")
             shifts[symbol] = sub_options["energy_shift"]
+        if "diffuse" in sub_options:
+            if "diffuse" not in family.options:
+                raise ValueError(
+                    f"the {family.label} family has no 'diffuse' option; "
+                    f"it accepts {list(family.options)}")
+            diffuse[symbol] = sub_options["diffuse"]
         if "filter_cutoff" in sub_options:
             filters[symbol] = sub_options["filter_cutoff"]
         for key in SHARED_PSEUDO_OPTIONS:
@@ -484,6 +498,20 @@ def resolve_pseudo_basis(name, options, symbols):
         default = family.default_options.get("energy_shift")
         merged["energy_shift"] = ({**shifts} if default is None
                                   else {"*": default, **shifts})
+    if diffuse:
+        # Per atom like the confinement; an element that does not write it
+        # gets the default, which is no diffuse shells.  Validated here, so
+        # the two spellings fail alike.
+        from ..pseudopotentials.diffuse import DIFFUSE_KEYS, validate_diffuse
+        for symbol, value in diffuse.items():
+            if isinstance(value, dict) and value and all(
+                    k not in DIFFUSE_KEYS for k in value):
+                raise ValueError(
+                    f"the per-element basis of {symbol!r} gives 'diffuse' as "
+                    f"a mapping {value!r}; inside a per-element basis it is "
+                    "that element's recipe (True, a count or a recipe dict)")
+        validate_diffuse(diffuse)
+        merged["diffuse"] = dict(diffuse)
     return family, merged
 
 

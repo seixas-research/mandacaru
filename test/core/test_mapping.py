@@ -71,6 +71,37 @@ class TestPauliSum:
 
 # --- Fermion operator algebra ---
 
+class TestMatrixForms:
+    """The sparse matrix is built by flip mask; the dense one is the oracle."""
+
+    @staticmethod
+    def _random(n_qubits, n_terms, seed):
+        rng = np.random.default_rng(seed)
+        terms = {"".join(rng.choice(list("IXYZ"), n_qubits)):
+                 complex(rng.normal(), rng.normal()) for _ in range(n_terms)}
+        return PauliSum(terms, num_qubits=n_qubits)
+
+    @pytest.mark.parametrize("n_qubits", [1, 3, 6])
+    def test_the_sparse_matrix_is_the_dense_one(self, n_qubits):
+        operator = self._random(n_qubits, 40, seed=n_qubits)
+        sparse = operator.to_sparse_matrix()
+        assert sparse.format == "csr"
+        assert np.allclose(sparse.toarray(), operator.to_matrix(), atol=1e-13)
+
+    def test_the_empty_operator_is_the_zero_matrix(self):
+        sparse = PauliSum({}, num_qubits=3).to_sparse_matrix()
+        assert sparse.shape == (8, 8) and sparse.nnz == 0
+
+    def test_the_hermitian_part_is_half_the_sum_with_the_adjoint(self):
+        operator = self._random(5, 60, seed=4)
+        dense = operator.to_matrix()
+        part = operator.hermitian_part()
+        assert all(isinstance(c, complex) and c.imag == 0.0
+                   for c in part.terms.values())
+        assert np.allclose(part.to_matrix(), 0.5 * (dense + dense.conj().T),
+                           atol=1e-13)
+
+
 class TestFermionAlgebra:
     def test_creation_annihilation_adjoint(self):
         a = Fermion.annihilation(0)
@@ -302,6 +333,54 @@ class TestSpatialIntegrals:
         assert list(built.terms.items()) == list(reference.terms.items())
         with pytest.raises(ValueError, match="h_spin"):
             Fermion.from_spatial_integrals(h, eri, h_spin[:4, :4])
+
+    def test_spin_resolved_integrals_match_their_spin_orbital_tensor(self):
+        """A spin-polarized model's integrals (one block per spin pair) give
+        the operator of the spin-orbital tensor holding those blocks, term
+        for term and in order."""
+        m = 3
+        h = np.stack([_spatial(m, seed=10 + s, complex_eri=True)[0]
+                      for s in range(2)])
+        eri = np.stack([np.stack([_spatial(m, seed=20 + 2 * s + t,
+                                           complex_eri=True)[1]
+                                  for t in range(2)]) for s in range(2)])
+        h_so = np.zeros((2 * m, 2 * m), dtype=complex)
+        g_so = np.zeros((2 * m,) * 4, dtype=complex)
+        for s in range(2):
+            a = slice(s * m, (s + 1) * m)
+            h_so[a, a] = h[s]
+            for t in range(2):
+                b = slice(t * m, (t + 1) * m)
+                g_so[a, b, a, b] = eri[s, t]
+        reference = Fermion.from_integrals(h_so, g_so)
+        built = Fermion.from_spatial_integrals(h, eri)
+        assert list(built.terms.items()) == list(reference.terms.items())
+        # Equal blocks are the spin-independent tensor.
+        same = Fermion.from_spatial_integrals(
+            np.stack([h[0], h[0]]), np.stack([np.stack([eri[0, 0]] * 2)] * 2))
+        assert (list(same.terms.items())
+                == list(Fermion.from_spatial_integrals(h[0],
+                                                       eri[0, 0]).terms.items()))
+        with pytest.raises(ValueError, match="spin-resolved two-body"):
+            Fermion.from_spatial_integrals(h, eri[0])
+
+    def test_a_packed_tensor_gives_the_same_operator_term_for_term(self):
+        """The eightfold-packed tensor of real orbitals is read slab by slab:
+        the operator is the dense tensor's, key for key and in order."""
+        from mandacaru.integrals.packed import PackedERI
+
+        rng = np.random.default_rng(12)
+        m = 5
+        factors = [(lambda a: (a + a.T) / 2)(rng.standard_normal((m, m)))
+                   for _ in range(3)]
+        chemist = sum(np.einsum("pr,qs->prqs", L, L) for L in factors)
+        dense = chemist.transpose(0, 2, 1, 3)                    # <pq|rs>
+        h = rng.standard_normal((m, m)); h = h + h.T
+        expected = Fermion.from_spatial_integrals(h, dense)
+        packed = Fermion.from_spatial_integrals(h, PackedERI.from_dense(dense))
+        assert list(packed.terms) == list(expected.terms)
+        assert np.allclose(list(packed.terms.values()),
+                           list(expected.terms.values()), atol=1e-13, rtol=0)
 
     def test_the_slab_scan_is_the_whole_array_scan(self):
         rng = np.random.default_rng(8)

@@ -652,34 +652,8 @@ def pair_derivative_integrals(psi_grid, derivatives, phi):
     return T1, T2
 
 
-def pair_derivative_tensors(psi_grid, derivatives, grid, solver=None):
-    r"""``(T1, T2)`` of :func:`pair_derivative_integrals` over every pair,
-    ``(3, M, M, M^2)`` each, times the volume element.
-
-    What a caller needs when it forms each atom's two-body derivative
-    tensor itself (the PAW-LCAO gradient,
-    :func:`~mandacaru.algorithms.pseudo_forces.pseudo_nuclear_gradient`):
-    :math:`\int\partial\rho_{ab}\Phi_{cd}` for a move of atom ``A`` is
-    ``T1[k, a, b, cd]`` on ``a``'s in ``A`` plus ``T2[k, a, b, cd]`` on
-    ``b``'s in ``A``.  ``6 M^4`` complex numbers, filled from streamed blocks
-    of pair potentials, in place of the ``M^2 G`` potential stack.
-    """
-    M = psi_grid.shape[0]
-    T1 = T2 = None
-    for start, stop, phi in pair_potential_blocks(psi_grid, grid, solver):
-        block1, block2 = pair_derivative_integrals(psi_grid, derivatives, phi)
-        if T1 is None:
-            T1 = np.empty((3, M, M, M * M), dtype=block1.dtype)
-            T2 = np.empty((3, M, M, M * M), dtype=block2.dtype)
-        T1[..., start:stop] = block1
-        T2[..., start:stop] = block2
-    T1 *= grid.dV
-    T2 *= grid.dV
-    return T1, T2
-
-
 def _two_body_pulay(psi_grid, derivatives, grid, de_dg, atom_of_orbital,
-                    n_atoms, solver=None):
+                    n_atoms, solver=None, pair_layout: bool = False):
     r"""``<dE/dg, dg/dR>`` of every atom and direction, without ``dg``.
 
     With ``g[m,n,l,s] = <mn|ls> = int rho_ml(1) Phi_ns(1)``, the derivative has
@@ -695,10 +669,17 @@ def _two_body_pulay(psi_grid, derivatives, grid, de_dg, atom_of_orbital,
     (:func:`pair_derivative_integrals`): one pass of ``M^2`` Poisson solves
     for the whole gradient, and no ``M^2 G`` array.  Returns ``(n_atoms,
     3)``.
+
+    ``pair_layout`` takes ``de_dg`` as the ``(M^2, M^2)`` matrix
+    :math:`P_{(ac),(bd)} = \partial E/\partial g_{abcd}`, whose
+    :math:`K` is :math:`P + P^T` (no ``M^4`` transpose besides).
     """
     M = psi_grid.shape[0]
-    K = (np.einsum("acbd->abcd", de_dg)
-         + np.einsum("cadb->abcd", de_dg)).reshape(M, M, M * M)
+    if pair_layout:
+        K = (de_dg + de_dg.T).reshape(M, M, M * M)
+    else:
+        K = (np.einsum("acbd->abcd", de_dg)
+             + np.einsum("cadb->abcd", de_dg)).reshape(M, M, M * M)
     rows = np.zeros((3, M), dtype=complex)          # derivative on a
     columns = np.zeros((3, M), dtype=complex)       # derivative on b
     for start, stop, phi in pair_potential_blocks(psi_grid, grid, solver):

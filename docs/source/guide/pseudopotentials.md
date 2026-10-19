@@ -847,8 +847,10 @@ for the $j$ average. Both $j$ levels are then shifted together by the gap
 between the scalar-relativistic level and the Dirac atom's $j$ average: below
 0.5 mHa for light and 4d/5f shells, 1–2 mHa for 5p and 5d, 3.7–6.8 mHa for the
 6p of Tl–Bi. The splitting itself is kept. The installed Dirac datasets are
-read with `paw_dataset="lda-fr"`. The term breaks $S_z$, so only ADAPT-VQE
-with `pool="spin-orbit"` runs it, and not with the `parity_reduced` mapping.
+read with `paw_dataset="lda-fr"`. The term breaks $S_z$, so among the quantum
+drivers only ADAPT-VQE with `pool="spin-orbit"` runs it, and not with the
+`parity_reduced` mapping; `method="dft"` solves a molecule or a crystal on it
+in two-component spinors ({doc}`dft`).
 The molecular orbitals are then the GHF spinors, and an `active_space`
 freezes and deletes Kramers pairs of them (see the active-space guide).
 
@@ -1133,9 +1135,14 @@ shell. Inside a checkout the datasets sit one folder per set:
 
 `pbe-fr/` is the PBE counterpart of `lda-fr/` (`mandacaru-paw/FR.md`): the
 reference atom is the radial Dirac atom in PBE. It is read like `lda-fr/`,
-with `paw_dataset="pbe-fr"` and `method="ghf"` or a spin-orbit pool;
-`method="dft"` has no spin-orbit term and refuses it, so a Kohn-Sham PBE
-calculation reads `pbe-sr/`. Protactinium is built in both Dirac sets on the
+with `paw_dataset="pbe-fr"` and `method="ghf"` or a spin-orbit pool, or
+with `method="dft"`, which then solves a molecule or a crystal in
+two-component spinors with the spin-orbit term in its Kohn-Sham operator
+({doc}`dft`, *Spin-orbit coupling: two-component Kohn-Sham*; forces and
+stress are refused there). Every other consumer of a crystal on a spin-orbit
+set refuses it rather than drop the term.
+Without `paw_dataset=` a Kohn-Sham PBE calculation reads `pbe-sr/`.
+Protactinium is built in both Dirac sets on the
 reference $5f^2 6d^1 7s^2$, where all its $j$ branches are bound (the scalar
 $5f^3 7s^2$ leaves one unbound). `pbe-fr/` flags 24 elements, none for a ghost: Ag, Cd, Cs, Ba, Fr, La, Ce–Yb, Lu,
 Hf, W, Ir and Ac, for the same structural reasons as `pbe-sr/`.
@@ -1482,6 +1489,251 @@ Two limits are refused with the usable range in the message: a shift so large
 that the confinement would cut into the augmentation sphere (`r_i` must stay
 outside `r_cut`), and one so small that the radius runs past the dataset's
 radial table.
+
+## Diffuse functions: `diffuse`
+
+No `energy_shift` makes a pseudopotential basis diffuse. The first zeta is at
+most the free atom's orbital: the rms radius of hydrogen's 1s is 1.83, 1.94
+and 1.97 Bohr at 0.1 eV, at 0.01 eV and unconfined. A response property (the
+polarizability), a bound anion or a weakly bound complex needs the density
+further out than that. The `diffuse` option **adds** functions there and leaves
+the ordinary basis (`size`, `energy_shift`, the polarization shell) as it was:
+
+```python
+from ase.build import molecule
+from mandacaru import Mandacaru
+
+water = molecule("H2O")
+water.center(vacuum=7.3)                 # the box must hold the shells (below)
+water.calc = Mandacaru(method="rhf",
+                       basis={"name": "PAW-LCAO", "size": "DZP",
+                              "diffuse": True},
+                       grid_spacing=0.2)
+```
+
+It is off by default for every family and geometry, and `False`, `None` and
+`0` all mean off. PAW-LCAO and UPAW-LCAO both accept it. Diffuse functions
+belong to the trial space only: they are projected on the dataset's projectors
+and enter the augmented overlap `S + C Q C†` like every other function, and
+they add no projector, occupation or dataset change.
+
+### Construction
+
+Each diffuse shell is the quasi-Gaussian of the polarization function,
+
+```{math}
+R(r) = N\,r^{l}\Bigl[e^{-\alpha r^2} - (a - b r^2)\Bigr], \qquad r < r_{cut},
+```
+
+whose value and slope vanish at `r_cut`. Its width and its support are set
+separately:
+
+* **The width** is an rms radius, `sqrt(<r²>)` of the cut function:
+  `rms_ratio` times the rms radius of the atom's **free** valence orbital of
+  the same `l`. That orbital is the dataset's stored bound wave, unconfined, so
+  the scale does not depend on `size`, `energy_shift` or the polarization
+  method. An `l` with no valence state (hydrogen's p, oxygen's d, lithium's p)
+  takes the atom's outermost valence orbital. `rms_radius` (Å) gives the
+  width directly instead.
+* **The support** `r_cut` is where the *uncut* Gaussian `r^l e^{-αr²}` leaves
+  `cutoff_norm` of its squared norm outside. For a Gaussian the tail fraction
+  is the regularized gamma function `Q(l + 3/2, 2α r_cut²)`, and both the cut
+  function's rms radius and `r_cut` scale as `α^{-1/2}`, so `α` and `r_cut`
+  follow from the target in closed form.
+
+`count` shells per channel follow a geometric sequence of rms radii, `ratio`
+apart. Every shell is tabulated on **its own radial grid**: the dataset's
+grid, continued past its 30-Bohr end when the support needs it (lithium's s
+shell reaches 29.7 Bohr). It is Fourier-filtered like the rest of the basis
+and then **Gram-Schmidt orthogonalized on its atom** against that atom's
+functions of the same `l`, compact ones first. A shell that keeps less than
+10⁻⁴ of its squared norm after the projection is dropped as redundant, and the
+log records it as `rejected`. This step depends only on the atom, never on the
+geometry, so it cannot make an energy scan jump. Dependence *between* atoms is
+left to the Löwdin step, which warns below an overlap eigenvalue of 10⁻⁶ and
+refuses at 10⁻¹⁰. Diffuse functions come after the polarization shells of
+their atom, in the atom-major order that the populations rely on; a basis
+function reports `kind == "diffuse"`.
+
+| key | meaning | default |
+| :--- | :--- | :--- |
+| `shells` | `"present"` (every `l` of the atom's ordinary basis, valence and polarization, up to d), a string of letters (`"sp"`), or a list of `l` or letters | `"present"` |
+| `count` | shells per `l` | 1 |
+| `rms_ratio` | rms radius of the first shell over the free-atom valence rms radius of its `l` | 2.5 |
+| `ratio` | factor between the rms radii of successive shells (`count > 1`) | √3.5 = 1.87 |
+| `rms_radius` | the first shell's rms radius in **Å**, instead of `rms_ratio` | -- |
+| `cutoff_norm` | squared norm of the Gaussian tail beyond `r_cut` | 10⁻⁴ |
+
+`True` is the default recipe, an `int` is that many shells per `l` with it,
+and a dict sets any of the keys above. A `{symbol: spec}` mapping, with an
+optional `"*"` default, gives elements different recipes. The per-element basis
+form takes it inside each element's dict:
+
+```python
+basis={"O": {"name": "PAW-LCAO", "size": "DZP", "diffuse": True},
+       "H": {"name": "PAW-LCAO", "size": "DZP"}}     # H: no diffuse shells
+```
+
+An element that does not write `diffuse` gets no diffuse shells. Leaving an
+option out means its default, and here the default is off.
+
+The default recipe (one shell per `l` present, `rms_ratio` 2.5, a 10⁻⁴ tail)
+was chosen from the measurements below. Compared with 2.0, a ratio of 2.5 binds
+the fluorine and hydrogen anions better (F 1.17 against 1.00 eV, H⁻ 0.59
+against 0.54), brings water and HF (and NH₃ at PBE) closer in polarizability and doubles
+the smallest overlap eigenvalue. It does worse on the hydrogen-rich H₂ and CH₄. At 3.0 a gap opens between the valence
+orbital and the shell, and chlorine's affinity falls from 2.36 to 2.25 eV.
+The diffuse primitives of aug-cc-pVDZ sit at 2.2-2.8 times the same free-atom
+radii. Shells on the valence `l` alone do little for the polarizability: the
+response needs the shell *above* the occupied `l` (oxygen's d, hydrogen's p).
+A 10⁻⁴ tail instead of 10⁻⁶ shortens every support by 14 % and moved the H⁻
+and F affinities by 0.01 eV.
+
+### The box
+
+A molecule's box is its cell, and nothing pads the box from the basis. A
+diffuse shell that the cell cuts is a different, more compact function, and
+the energy it gives is wrong rather than merely unconverged. H₂ (SZ with the
+default shells, RHF) comes out 60 meV *lower* in 3 Å of vacuum than in 7.5 Å,
+so a lower energy does not show that a box is large enough. Once the cell holds
+the shells, 7.5 Å and 9 Å agree to 10⁻⁹ eV.
+At the default recipe, with the DZP shell set (`shells="present"`):
+
+| element | shells (DZP) | largest `r_cut` (Bohr) | vacuum needed (Å) |
+| :--- | :--- | ---: | ---: |
+| H | s p | 13.64 | 7.2 |
+| Li | s p | 29.73 | 15.7 |
+| C | s p d | 12.33 | 6.5 |
+| N | s p d | 10.52 | 5.6 |
+| O | s p d | 9.09 | 4.8 |
+| F | s p d | 8.00 | 4.2 |
+| Cl | s p d | 11.83 | 6.3 |
+
+Every run checks this. Each diffuse function's norm on the grid is compared
+with its radial norm, and a function that keeps less than `1 − 10⁻⁴` of it
+raises a `RuntimeWarning`. The `[BASIS]` block's `diffuse_box` table lists each
+atom's largest `r_cut` against its distance to the nearest face of the grid,
+in Bohr and Å, with the worst grid norm. A larger box is the cost: water with
+the default shells needs 0.47 M grid points at 0.2 Å, against 0.16 M for DZP
+in 5 Å of vacuum.
+
+### Active spaces
+
+Every diffuse function is one more spatial orbital, so two more qubits. With
+the default recipe on a DZP basis, a hydrogen or lithium atom gains 4
+functions (s and p: 8 qubits), and a C, N, O, F or Cl atom gains 9 (s, p and d:
+18 qubits). Water goes from 23 to 40 functions, from 46 to 80 unreduced qubits.
+The basis cost is paid before the active space and is not reduced by it: the
+SCF, the integrals and the MP2 ranking all see the full basis.
+
+Diffuse shells make the *lowest* virtual orbitals, and the default
+`active_space` ranking, `"energy"`, keeps the lowest first. A truncated
+register would then fill with diffuse orbitals whatever they contribute, so a
+basis with diffuse functions **refuses** an `"energy"`-ranked truncation and
+names the remedy: rank the virtuals by occupation with `"method": "mp2"` (or
+`"natural"` for an open shell). An untruncated space and explicit orbital
+indices are not ranked, so they are accepted. For H⁻, where the diffuse
+virtuals carry the extra electron, the MP2 ranking keeps fewer of them and
+recovers more of the correlation than the energy ranking does:
+
+H⁻ electron affinity (eV): the two-electron FCI energy of the anion
+(what UCCSD or ADAPT-VQE reach), the H atom exact at UHF, `grid_spacing` 0.25
+(0.3 with two shells), box per the table above. The kept-diffuse column is the
+Löwdin population of the active virtual orbitals on the diffuse functions, in
+orbitals.
+
+| basis | full | `"mp2"` 12 / 16 / 20 qubits | `"energy"` 12 / 16 / 20 qubits | diffuse kept, `"mp2"` / `"energy"` at 12 qubits |
+| :--- | ---: | :--- | :--- | :--- |
+| DZP, no diffuse (5 functions) | −0.66 | -- | -- | -- |
+| QZ2P unconfined (12) | 0.26 | 0.24 / 0.24 / 0.24 | −0.31 / −0.16 / 0.10 | 0 / 0 |
+| DZP + `diffuse` (9) | 0.59 | 0.57 / 0.58 / -- | 0.38 / 0.52 / -- | 2.3 / 3.8 |
+| QZ2P + `diffuse` (14) | 0.61 | 0.58 / 0.59 / 0.61 | 0.32 / 0.46 / 0.59 | 1.9 / 3.6 |
+| QZ2P + `diffuse=2` (18) | 0.65 | 0.61 / 0.62 / 0.64 | −0.04 / 0.02 / 0.38 | 1.9 / 4.7 |
+| all-electron FCI, cc-pVQZ / aug-cc-pVQZ | 0.18 / 0.74 | | | |
+
+Hartree-Fock leaves H⁻ unbound in every basis (−0.33 to −0.40 eV with the
+diffuse shells), so all of the binding is correlation. The MP2 ranking
+recovers 96-99.5 % of that correlation contribution at 12-20 qubits, and the
+energy ranking 30-98 %. The energy ranking also gets *worse* as diffuse shells
+are added: at 12 qubits the second shell makes the anion unbound again
+(−0.04 eV). ADAPT-VQE in the 16-qubit MP2 space of DZP + `diffuse` gives
+0.581 eV, the FCI value of that space. What is left against the
+all-electron 0.74 eV is angular: hydrogen's basis stops at p here, while
+aug-cc-pVQZ carries d, f and g on it. Some register sizes split a
+degenerate p set, and Mandacaru warns about it; `"symmetry": True` keeps the
+sets whole.
+
+### Measured
+
+All on DZP at 0.1 eV, `grid_spacing` 0.2 Å (0.3 for LiH), in a box that holds
+the shells. Wave-function methods use `lda-sr/` with the exact spheres, PBE
+uses `pbe-sr/`, and the kinetic operator is the spectral default. The references
+are all-electron finite-field values (aug-cc-pVQZ), which serve only as
+measured reference numbers; nothing in Mandacaru reads them.
+
+Static polarizability, `alpha_iso` (a.u.), DZP → DZP + `diffuse` (reference):
+
+| molecule | RHF | PBE |
+| :--- | :--- | :--- |
+| H₂O | 5.70 → 8.58 (8.64) | 5.98 → 10.40 (10.58) |
+| HF | 2.94 → 4.93 (4.95) | 3.16 → 6.15 (6.17) |
+| HCl | 8.59 → 15.77 (16.76) | 8.67 → 17.62 (18.29) |
+| NH₃ | 9.01 → 12.77 (13.02) | 9.30 → 15.06 (15.40) |
+| CH₄ | 12.89 → 15.35 (16.08) | 13.17 → 16.60 (17.52) |
+| H₂ | 3.19 → 4.47 (5.19) | 3.21 → 4.99 (5.64) |
+| LiH | 12.66 → 25.32 (24.94) | 16.81 → 34.57 (34.75) |
+
+Without diffuse shells the confined DZP basis misses 20-53 % of every
+polarizability. With them it comes within 5 % of the reference except for H₂ (−14 %
+RHF, −12 % PBE), HCl at RHF (−6 %) and CH₄ at PBE (−5 %). The worst cases are
+the hydrogen-rich ones: hydrogen's diffuse p shell, sized from its 1s, is
+wider than the response needs. `rms_ratio` 2.0 does better there (H₂ 4.93
+RHF, 5.40 PBE; CH₄ 15.82, 17.06) and worse on water, HF and the anions, so the
+default stays at 2.5. Water at TZ2P + `diffuse` gives 8.56 (RHF), so the size
+is not what limits it. Halving the field moves PBE water by 10⁻³ a.u.
+Unconfined DZP and TZP, with no diffuse shells, give 8.15 for RHF water, and
+unconfined TZP gives 9.49 for PBE: the free-atom orbitals recover most of
+the RHF response but only three quarters of the PBE one, and the diffuse
+shells close what is left.
+
+Electron affinities (eV), UHF ΔSCF for F and Cl, FCI for H⁻:
+
+| | F | Cl | H⁻ |
+| :--- | ---: | ---: | ---: |
+| DZP | −0.04 | 1.35 | −0.66 |
+| DZP + `diffuse` | 1.17 | 2.37 | 0.59 |
+| QZ2P + `diffuse` | -- | -- | 0.61 |
+| reference (aug-cc-pVQZ; cc-pVQZ) | 1.18 (0.84) | 2.37 (2.28) | 0.74 (0.18) |
+
+The confined basis cannot hold an anion; the diffuse shells can. F carries a
+grid uncertainty of about 0.04 eV per 0.05 Å of `grid_spacing`, and at h → 0
+DZP + `diffuse` extrapolates to about 1.10 eV, TZ2P + `diffuse` to 1.21.
+
+Water dimer (S22, PBE, kcal/mol): DZP raw −8.24, counterpoise −4.56;
+DZP + `diffuse` raw −5.41, counterpoise −4.72; reference −4.98 / −4.95. The
+diffuse shells cut the superposition error from 3.7 to 0.7 kcal/mol. The
+counterpoise monomers carry their partner's diffuse shells on the ghosts.
+
+Conditioning: water's smallest diagonal-normalized overlap eigenvalue is
+6.3·10⁻³ at DZP, 4.1·10⁻⁴ with the shells and 1.6·10⁻⁴ at TZ2P with them
+(CH₄: 8.8·10⁻⁵), all well above the 10⁻⁶ warning. Analytic forces match a
+central difference (H₂, `test_paw_forces.py`). An RHF scan of HF from 0.80 to
+1.05 Å stays as smooth with the shells as without them (quartic-fit residual
+0.54 against 0.55 meV), and the bond moves by −0.002 Å.
+
+Cost, water, `grid_spacing` 0.2: the PBE `polarizability()` (seven runs)
+takes 149 s and 2.1 GB with the shells, against 46 s and 0.8 GB without; the
+PBE water dimer takes 250 s and 3.8 GB, against 86 s and 1.3 GB. LiH needs
+16 Å of vacuum (1.3 M points at 0.3 Å).
+
+### Not for crystals
+
+A periodic geometry with `diffuse` is refused with a `ValueError`. In a solid,
+a diffuse shell is nearly linearly dependent on the neighbors' valence
+functions. Its Bloch sum also runs over several times the images of a confined
+orbital: for bcc lithium, an estimated 330 images per function for a 20-Bohr
+shell, against 70 for the confined 2s. Slabs, where diffuse functions would describe
+the vacuum side, are a separate extension.
 
 ## Fourier filtering
 

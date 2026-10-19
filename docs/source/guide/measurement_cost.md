@@ -198,7 +198,10 @@ An optimization whose `optimizer.max_evaluations() * provider.jobs_per_energy
 (hamiltonian)` would need more jobs than the budget (or, with a `total_shots`
 limit, more shots than `provider.shots_per_energy(hamiltonian)` allows) is
 refused up front,
-before anything is queued, naming that count against the limit. A submission
+before anything is queued, naming that count against the limit. A
+shot-based ADAPT-VQE's gradient steps are counted the same way: one step's
+jobs and shots are checked before the run starts and again before each step
+([below](#adapt-on-a-device)). A submission
 that would only exceed it partway through the run is refused at that job
 instead (`RunBudgetExceeded`), and whatever the run had already reached -- the
 optimizer's best point, the checkpoint -- is kept. `provider.run_usage()`
@@ -297,6 +300,138 @@ integrals, so a direct-mode problem or a loaded Hamiltonian is refused by name
 rather than silently falling back.
 ```
 
+(adapt-on-a-device)=
+## ADAPT-VQE on a device: the pool gradients are measured
+
+**The device decides, and with `shots > 0` nothing is simulated.** Every
+quantity a shot-based ADAPT-VQE uses comes from a measurement or from
+polynomial classical algebra: the reference energy from the determinant's
+`I`/`Z` strings, every energy from the Estimator, and every pool gradient as
+the expectation value of a commutator,
+
+$$g_k = \langle\psi|[H, A_k]|\psi\rangle = \sum_R c_{kR}\,\langle\psi|R|\psi\rangle ,$$
+
+whose strings $R = PQ$ and real coefficients come from the Pauli algebra on
+bit tables ({mod}`~mandacaru.backends.gradient_measurement`). No `2^n`
+array, no sector, no pool matrix, no dense `eigh` and no `expm_multiply` is
+built anywhere on the path, on any device (`ibm_*`, `fake_*`, Braket, or the
+local shot-based estimator). The `shots=0` local simulation keeps its exact
+state-vector route unchanged.
+
+* **The first step is classical and exact.** At the Hartree-Fock determinant
+  $\langle b|R|b\rangle$ is $\pm1$ for an `I`/`Z` string and 0 otherwise, so
+  only the products $PQ$ that share their flip pattern contribute: no
+  measurement at all.
+* **After it, the screened operators' commutators are merged.** They are
+  formed in batches (at most a million strings before merging), a string
+  shared by several operators -- or by two batches -- is measured once, and
+  the strings are grouped into qubit-wise-commuting bases with the same
+  greedy rule as an energy. One basis is one circuit.
+* **The bases are packed into jobs** within `measurement_budget=` (10,000
+  bases and 50,000 strings per job by default) and the provider's
+  `max_bases_per_job`; every job goes through the provider's run ledger.
+* **The cost is planned before anything is queued.** It does not depend on
+  the state, so it is computed once, logged as `[GRADIENT MEASUREMENT]`
+  ({doc}`run_output`), and checked before the run starts and before every
+  step against the run budget (jobs and shots) and the measurement budget:
+  an oversized step is refused with its numbers, and a step the run budget
+  stops ends the growth with the ansatz grown so far.
+* **Shot noise is reported, not hidden.** Each gradient comes with its
+  standard error, and `gradient_noise_bound_Ha` bounds it at
+  $\max_k\|c_k\|_2/\sqrt{\text{shots}}$. The largest of many noisy
+  gradients sits above that bound, so a gradient criterion below it cannot be
+  met: use the energy criterion, or more shots.
+
+Validated against the state vector: with an exact device the measured run
+takes the local run's every operator and every energy (H₂, LiH and H₂O in
+HAO, fermionic, QEB and CEO pools, energies to 1e-9 eV); measured gradients
+equal `2 Re<H psi|A psi>` to 1e-10 and, sampled, lie within their standard
+errors; at 50 qubits a stabilizer simulation of the circuit at Clifford
+angles gives the merged, batched gradients to 1e-10 of each commutator
+measured alone.
+
+### What a gradient step costs
+
+One growth step's gradient measurement, merged, against one energy (1,000
+shots per basis, the default measurement budget):
+
+| system (PAW-LCAO, `grid_spacing=0.3`) | qubits | pool | H strings | energy bases | step strings | step bases | energies | jobs | shots |
+|---|---|---|---|---|---|---|---|---|---|
+| water DZ, CAS(8, 7) by MP2 | 14 | `fermionic`, 204 | 902 | 202 | 93,641 | 15,911 | 79 | 3 | 1.6e7 |
+| | | `qeb`, 204 | | | 345,200 | 31,185 | 154 | 8 | 3.1e7 |
+| | | `ceo-ovp`, 1,344 | | | 892,845 | 76,851 | 380 | 19 | 7.7e7 |
+| methanol DZ, CAS(10, 10) by MP2 | 20 | `fermionic`, 875 | 7,279 | 1,676 | 924,530 | 229,641 | 137 | 34 | 2.3e8 |
+| dense random integrals, CAS(10, 25) | 50 | `fermionic`, 14,000 | 571,876 | 116,419 | one operator alone: 602,208 | 187,306 | 1.6 | 21 | 1.9e8 |
+| neighbor-only integrals, CAS(2, 25) (the test's) | 50 | `fermionic`, 624 | 548 | 14 | 177,570 | 60,525 | 4,300 | 7 | 6.1e7 |
+
+The first step costs nothing (it is classical). An *energy*, for comparison,
+is the "energy bases" column times the shots. On dense synthetic integrals at
+8-20 qubits the merged step is 8 to 66 energies (0.10-0.39 energies per pool
+operator); `qeb` costs about twice `fermionic` (its strings carry no `Z`
+chains, so fewer are shared), and the qubit pool measures exactly the
+fermionic pool's strings (191,300 against 191,240 at 16 qubits), so its whole
+pool costs the same. The classical side stays small: the methanol plan peaks
+at 73 MB of batch memory, the 50-qubit one-operator plan at 1.7 GB of RSS, most
+of it the Hamiltonian itself.
+
+The merging is what makes this polynomial *and* about a few tenths of an
+energy per pool operator: measured operator by operator, the same steps need
+10-25 times more bases. **The full fermionic pool at 50 qubits is
+unaffordable even merged**: one operator's gradient alone is 602,208 strings in 187,306
+bases (21 jobs, 1.6 energies), and the 14,000-operator step extrapolates to
+2.6-6.4e8 bases -- 2,200 to 5,500 energies, 2.6-6.4e11 shots and 26,000 to
+64,000 jobs at 1,000 shots per basis -- while a single energy of that
+Hamiltonian is already 1.2e8 shots. So `screening="auto"` refuses it (not
+one operator fits a job) rather than truncating it silently, and the
+measurement wall, not memory, is what bounds a 50-qubit ADAPT-VQE: shrink
+the active space, use a ranked subset (`screening={"operators": K}`) knowing
+it is one, or wait for the cheaper groupings below.
+
+Each step is O(N) to O(N²) energies here; the grouping of Anastasiou *et
+al.* (arXiv:2306.03227), which pivots on a Hamiltonian term and measures the
+resulting commuting (not qubit-wise) sets with at most $N-3$ extra CNOTs,
+reaches about $4N$ energies for the qubit pool and is the next step; it is
+not implemented.
+
+### Screening: which operators a step measures
+
+`screening=` decides it:
+
+* `"full"`: every operator, in as many jobs as the measurement budget makes of
+  it;
+* `{"operators": K}`: the `K` operators with the largest gradients at the
+  reference determinant (exact, classical), a fixed candidate set;
+* `"auto"` (the default): every operator on a local simulation; with
+  `shots > 0` every operator whose step fits **one job** of the measurement
+  budget, else the longest prefix of that ranking that does -- with a
+  `RuntimeWarning` and the reason in `[GRADIENT MEASUREMENT]`'s
+  `screened_subset`. If not even one operator fits a job (a single 50-qubit
+  commutator of a dense molecular Hamiltonian is millions of strings), the
+  run is refused with the numbers, before anything is queued.
+
+The ranking is a truncation of the pool and is reported as one: an operator
+outside the candidate set reads a zero gradient and is never selected. A
+coupled-exchange (`ceo`) growth that expands into its members measures their
+gradients in one more small job.
+
+### Rehearsing above 24 qubits
+
+A fake backend without `qiskit-aer` falls back to Qiskit's `BasicSimulator`,
+which simulates at most 24 qubits -- and a circuit transpiled to a 156-qubit
+processor (`fake_kingston`, `fake_fez`, `fake_marrakesh`) spans all 156 wires,
+so without `qiskit-aer` those three cannot run even H₂; the five-qubit
+`fake_manila` can (`examples/ibm_quantum/05_adapt_h2_measured_gradients.py`).
+`qiskit-aer` (not a dependency) removes the first limit, and its
+matrix-product-state method could reach 50 qubits for low-entanglement
+circuits. What is checked at 50
+qubits instead, all polynomial: a device double that answers every request
+by arithmetic (the test suite's 50-qubit ADAPT-VQE and VQE, with every
+exponential constructor made to raise; the ADAPT run peaks at 24 MiB of
+traced memory), a stabilizer simulation of the actual circuit at Clifford
+angles (`qiskit.quantum_info.StabilizerState`), and the reference
+determinant, where every gradient is exact. Rehearse with the same options
+on a fake backend before any submission.
+
 ## What to reach for
 
 * **Too big to submit** → drop the forces (an energy is one observable), lower
@@ -306,6 +441,10 @@ rather than silently falling back.
   `measurement_scheme="double-factorized"` is the structural answer.
 * **Too deep to trust** → `pool="ceo-ovp"` (about half the CNOTs of `qeb`),
   `tetris=True`, `prune=True`, and pin the layout with `physical_qubits=`.
+* **A shot-based ADAPT-VQE step too large** → `screening={"operators": K}`,
+  a smaller pool (`qeb` costs about twice `fermionic`, the generalized `ceo`
+  pools more), a smaller active space; the dry run estimates the step and
+  the run logs its exact plan.
 * **Too many jobs for the run budget** → fewer evaluations
   (`optimizer={"maxiter": ...}`), `measurement_provider=` instead of
   `device="ibm_*"` (optimize locally, measure once), or raise `run_budget=`

@@ -16,11 +16,16 @@
   commuting groups and the **pre-flight plan** that sizes a job before it is
   queued;
 * :mod:`~mandacaru.backends.factorization` -- the double-factorized Hamiltonian
-  and the ``O(M)`` basis-rotation measurement scheme built on it.
+  and the ``O(M)`` basis-rotation measurement scheme built on it;
+* :mod:`~mandacaru.backends.gradient_measurement` -- ADAPT-VQE's pool
+  gradients as measured commutator observables, and the plan that sizes a
+  growth step's measurement.
 """
 
 from .factorization import (DoubleFactorization, double_factorization,
-                            factorized_measurement_bases)
+                            factorized_measurement_bases,
+                            spatial_double_factorization)
+from .gradient_measurement import GradientMeasurementPlan, PoolGradients
 from .hardware import (available_devices, is_simulator, normalize_device,
                        require_runnable)
 from .measurement import (DEFAULT_MEASUREMENT_BUDGET, MeasurementBudgetError,
@@ -44,7 +49,10 @@ __all__ = [
     "shot_noise_estimate",
     "DoubleFactorization",
     "double_factorization",
+    "spatial_double_factorization",
     "factorized_measurement_bases",
+    "GradientMeasurementPlan",
+    "PoolGradients",
     "available_devices",
     "normalize_device",
     "is_simulator",

@@ -385,8 +385,8 @@ def build_parser() -> argparse.ArgumentParser:
     basis.add_argument("--two-body", default=None,
                        choices=TWO_BODY_METHODS,
                        help="two-electron integrals: the dense tensor "
-                            "(default) or Cholesky factors, which hold "
-                            "about 8 M^2 R bytes instead of 16 M^4")
+                            "(default, packed: about M^4 bytes) or Cholesky "
+                            "factors, which hold about 4 M^2 R bytes")
     basis.add_argument("--cholesky-tolerance", type=float, default=None,
                        metavar="HARTREE",
                        help="truncation of the Cholesky factors (Hartree; "

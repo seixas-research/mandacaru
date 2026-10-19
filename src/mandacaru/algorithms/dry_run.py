@@ -158,6 +158,26 @@ class QubitEstimate:
         Memory of one exact state vector, the cost driver of a local simulator.
     source : str
         ``"geometry"``, ``"hamiltonian-file"`` or ``"hamiltonian"``.
+    shots : int
+        Shots per measurement basis; ``> 0`` is a run whose every expectation
+        value is measured on the device, so no state vector is built.
+    pool : str or None
+        ADAPT-VQE's operator pool, when the method has one.
+    energy_bases : int or None
+        For a shot-based run, the estimated qubit-wise-commuting bases of one
+        energy evaluation (the Hamiltonian's strings over
+        :data:`~mandacaru.backends.gradient_measurement.STRINGS_PER_ENERGY_BASIS`).
+    classical_memory_bytes : int or None
+        For a shot-based run, the classical memory it will need -- the
+        Hamiltonian, the pool and the measured gradients' working set, every
+        term polynomial in the qubit count
+        (:func:`~mandacaru.backends.gradient_measurement.shot_run_memory_bytes`).
+    gradient_step : dict or None
+        For a shot-based ADAPT-VQE, the order-of-magnitude cost of one measured
+        screening step: ``pool_size``, ``strings``, ``bases``, ``jobs``,
+        ``shots`` and ``energies`` (bases in units of one energy's,
+        :func:`~mandacaru.backends.gradient_measurement.estimate_gradient_step`).
+        The run writes the exact plan to ``[GRADIENT MEASUREMENT]``.
     notes : list of str
         Human-readable caveats (e.g. an unrunnable device, a plane-wave basis).
     """
@@ -180,6 +200,11 @@ class QubitEstimate:
     expected_operators: int | None = None
     expected_two_qubit_gates: int | None = None
     source: str = "geometry"
+    shots: int = 0
+    pool: str | None = None
+    energy_bases: int | None = None
+    classical_memory_bytes: int | None = None
+    gradient_step: dict | None = None
     notes: list[str] = field(default_factory=list)
 
     # -- derived ---------------------------------------------------------- #
@@ -291,7 +316,26 @@ class QubitEstimate:
             lines.append(f"  RUNNABLE HERE     : "
                          f"{'yes' if self.runnable_on_device else 'NO'}"
                          f"  (width and depth together)")
-        if self.device_is_simulator:
+        if self.shots > 0:
+            lines.append(f"  shots             : {self.shots} (every expectation "
+                         f"value measured; no state vector)")
+            if self.energy_bases is not None:
+                lines.append(f"  energy            : ~{self.energy_bases:,} "
+                             f"bases per evaluation (estimate)")
+            if self.classical_memory_bytes is not None:
+                lines.append(f"  classical memory  : ~"
+                             f"{_format_bytes(self.classical_memory_bytes)}  "
+                             f"(polynomial: Hamiltonian, pool, gradient "
+                             f"batches)")
+            step = self.gradient_step
+            if step is not None:
+                lines.append(
+                    f"  gradient step     : ~{step['bases']:,} bases "
+                    f"(~{step['energies']:g} energies), ~{step['jobs']:,} "
+                    f"jobs, ~{step['shots']:,} shots, "
+                    f"{step['pool_size']:,} pool operators  (estimate; the "
+                    f"run logs the exact plan)")
+        elif self.device_is_simulator:
             lines.append(f"  state vector      : 2^{self.n_qubits} amplitudes = "
                          f"{_format_bytes(self.statevector_bytes)}")
         for note in self.notes:
@@ -314,8 +358,9 @@ def _basis_key(name: str) -> str:
 
 
 def _pseudo_basis_count(atoms, family, options):
-    """Per-atom valence function counts, a label and the loaded potentials
-    for a pseudopotential family (nothing sampled on a grid).
+    """Per-atom valence function counts, a label, the loaded potentials and
+    the number of diffuse functions for a pseudopotential family (nothing
+    sampled on a grid).
 
     The Fourier filter (``basis={..., "filter_cutoff": ...}``) cannot change a
     *count* -- it reshapes each radial function and adds none -- so the basis
@@ -344,9 +389,10 @@ def _pseudo_basis_count(atoms, family, options):
     # different angular momentum (and so a different function count) than the
     # default one.  It solves radial problems, never anything on a grid.
     from ..pseudopotentials.families import pseudo_basis_arguments
-    _fns, atom_of_orbital = pseudo_basis(
+    fns, atom_of_orbital = pseudo_basis(
         symbols, positions, potentials,
         **pseudo_basis_arguments(family.name, options))
+    n_diffuse = sum(1 for f in fns if getattr(f, "diffuse", False))
     counts = np.bincount(np.asarray(atom_of_orbital, dtype=int),
                          minlength=len(symbols))
     size = options.get("size", "SZ")
@@ -363,9 +409,18 @@ def _pseudo_basis_count(atoms, family, options):
         parts.append(resolve_polarization_method(
             options.get("polarization_method"), options.get("energy_shift"))
             + " polarization")
+    if n_diffuse or ("diffuse" in family.options
+                     and options.get("diffuse") not in (None, False)):
+        # Named only when asked for: "no diffuse" is the basis every label
+        # before the option described.
+        from ..pseudopotentials.diffuse import diffuse_label
+        label = diffuse_label(options.get("diffuse"))
+        if label != "no diffuse":
+            parts.append(label)
     parts.append("pseudopotentials")
     per_atom = [(s, int(c)) for s, c in zip(symbols, counts)]
-    return per_atom, f"{family.label} ({', '.join(parts)})", potentials
+    return (per_atom, f"{family.label} ({', '.join(parts)})", potentials,
+            n_diffuse)
 
 
 def count_basis_functions(atoms, basis="HAO"):
@@ -384,7 +439,8 @@ def count_basis_functions(atoms, basis="HAO"):
     name, options = resolve_basis(basis)
     family, options = resolve_pseudo_basis(name, options, symbols)
     if family is not None:
-        per_atom, label, _potentials = _pseudo_basis_count(atoms, family, options)
+        per_atom, label, _potentials, _n = _pseudo_basis_count(atoms, family,
+                                                              options)
         return per_atom, label
 
     if name == "per-element":
@@ -435,6 +491,31 @@ def _device_fields(device, notes):
     return canon, capacity
 
 
+def _shot_run_fields(est: QubitEstimate, h_strings, budget) -> None:
+    """Fill the classical memory and, for ADAPT-VQE, the gradient step."""
+    from ..backends.gradient_measurement import (estimate_energy_bases,
+                                                 estimate_gradient_step,
+                                                 shot_run_memory_bytes)
+    from ..circuits.pools import expected_pool_size
+
+    est.energy_bases = estimate_energy_bases(est.n_spatial_orbitals,
+                                             h_strings)
+
+    size = None
+    if est.pool is not None and "adapt" in est.method:
+        size = expected_pool_size(est.pool, est.n_spatial_orbitals,
+                                  est.num_particles)
+    from ..circuits.pools import pool_class
+    name = None if size is None else pool_class(est.pool).name
+    est.classical_memory_bytes = shot_run_memory_bytes(
+        est.n_qubits, est.n_spatial_orbitals, size, h_strings,
+        pool=name or "fermionic")
+    if size is not None:
+        est.gradient_step = estimate_gradient_step(
+            size, est.n_spatial_orbitals, est.shots, h_strings, budget,
+            pool=name)
+
+
 def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                     charge: int = 0, n_electrons=None, spin: bool = False,
                     active_space=None, taper: bool = False,
@@ -442,7 +523,8 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                     hamiltonian=None, num_particles=None,
                     n_spatial_orbitals=None, method: str = "adapt-vqe",
                     device: str = "AER_simulator",
-                    ghosts=()) -> QubitEstimate:
+                    ghosts=(), shots: int = 0, pool=None,
+                    measurement_budget=None) -> QubitEstimate:
     """Estimate the qubit count of a calculation without running it.
 
     Three problem sources are understood, in this order of precedence:
@@ -457,7 +539,10 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
       resolved exactly as :func:`~mandacaru.algorithms._hamiltonian_from_atoms.build_basis_hamiltonian`
       would.
 
-    Every keyword mirrors the driver argument of the same name.
+    Every keyword mirrors the driver argument of the same name.  With
+    ``shots > 0`` the estimate also carries the classical memory of the run
+    and, for ADAPT-VQE with a named ``pool``, the cost of one measured
+    gradient step.
     """
     from ..core.mapping import Fermion, PauliSum, _canonical_method
     from .active_space import resolve_active_space_spec
@@ -475,8 +560,13 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                 and kw.get("source") == "geometry"):
             kw["n_qubits"] = max(int(kw["n_qubits"]) - 2, 0)
             notes.append("parity_reduced mapping: two qubits fewer")
+        h_strings = kw.pop("h_strings", None)
         est = QubitEstimate(method=method, device=canon_device,
-                            device_qubits=capacity, notes=notes, **kw)
+                            device_qubits=capacity, notes=notes,
+                            shots=int(shots),
+                            pool=None if pool is None else str(pool), **kw)
+        if est.shots > 0:
+            _shot_run_fields(est, h_strings, measurement_budget)
         if capacity is not None:
             est.fits_device = est.n_qubits <= capacity
         # The depth estimate is only meaningful for a processor: a simulator has
@@ -519,7 +609,10 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
         return finish(n_qubits=n_qubits, n_spatial_orbitals=n_orb,
                       n_electrons=na + nb, num_particles=(na, nb),
                       n_basis_functions=n_orb, basis="(explicit Hamiltonian)",
-                      source="hamiltonian")
+                      source="hamiltonian",
+                      h_strings=(len(hamiltonian.terms)
+                                 if isinstance(hamiltonian, PauliSum)
+                                 else None))
 
     # -- the cache file -------------------------------------------------- #
     if load_hamiltonian is not None:
@@ -574,7 +667,8 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
                 f"valence-only pseudo basis")
         from ..pseudopotentials.orbitals import valence_electrons
 
-        per_atom, label, potentials = _pseudo_basis_count(atoms, family, options)
+        per_atom, label, potentials, n_diffuse = _pseudo_basis_count(
+            atoms, family, options)
         n_basis = int(sum(n for _s, n in per_atom))
         n_el = int(round(valence_electrons([symbols[i] for i in real],
                                            potentials))) - int(charge)
@@ -642,6 +736,10 @@ def estimate_qubits(atoms=None, *, basis="HAO", mapping: str = "jordan_wigner",
         else:
             n_occ_active, n_virt_active = _resolve_counts(
                 orbitals, n_doubly, n_singly, n_virtual, len(frozen))
+            if family is not None:
+                from ..pseudopotentials.diffuse import refuse_energy_ranking
+                refuse_energy_ranking(spec.method, n_diffuse, n_virtual,
+                                      n_virt_active)
             frozen = list(frozen) + [
                 p for p in range(n_doubly) if p not in set(frozen)
             ][:n_doubly - len(frozen) - n_occ_active]

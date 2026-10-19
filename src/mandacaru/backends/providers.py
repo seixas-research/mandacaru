@@ -1272,6 +1272,45 @@ class BraketProvider(CircuitProvider):
         counts_per_group = [self._counts(task.result()) for task in tasks]
         return energy_from_group_counts(groups, identity, counts_per_group)
 
+    capabilities = ("energy", "expectation_values")
+
+    def expectation_values(self, n_qubits: int, occupied, generators, thetas,
+                           labels, max_bases_per_job: int | None = None):
+        """``<P>`` of one state for several Pauli strings, from shots.
+
+        Returns ``({label: value}, {label: standard error})``.  The strings
+        are partitioned into qubit-wise-commuting bases
+        (:func:`~mandacaru.backends.measurement.qwc_partition`), one quantum
+        task per basis, all queued before any is awaited; each string is read
+        off its basis's counts.  ``max_bases_per_job`` is accepted for the
+        provider protocol and has no effect: a Braket submission is a task
+        per basis already.  With ``shots = 0`` the values are the exact
+        state-vector expectations (simulator only).
+        """
+        from .measurement import pauli_expectation_from_counts, qwc_partition
+
+        labels = [str(label) for label in labels]
+        if not self.shots:
+            psi = self.statevector(n_qubits, occupied, generators, thetas)
+            values = {label: float(np.real(np.vdot(
+                psi, PauliSum({label: 1.0}).to_sparse_matrix() @ psi)))
+                for label in labels}
+            return values, dict.fromkeys(labels, 0.0)
+        partition = qwc_partition(labels)
+        tasks = [self._submit(self.build(n_qubits, occupied, generators,
+                                         thetas, measure_basis=basis),
+                              self.shots)
+                 for basis, _members in partition]
+        values, stds = {}, {}
+        for (_basis, members), task in zip(partition, tasks):
+            counts = self._counts(task.result())
+            for i in members:
+                value = pauli_expectation_from_counts(labels[i], counts)
+                values[labels[i]] = value
+                stds[labels[i]] = float(np.sqrt(max(1.0 - value ** 2, 0.0)
+                                                / self.shots))
+        return values, stds
+
     @staticmethod
     def _counts(result) -> dict:
         """Braket measurement counts as ``{bitstring: n}`` (qubit 0 leftmost).

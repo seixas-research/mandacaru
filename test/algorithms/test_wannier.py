@@ -413,6 +413,37 @@ def bond(silicon_sp3):
 class TestTheTwoSiteModel:
     """The two hybrids of one bond: a two-site, two-electron model."""
 
+    def test_the_pair_densities_are_the_plain_transforms(self, silicon_sp3):
+        """The pair densities transform in the supercell grid's shared FFT
+        workspace, a batch at a time and in place: the same coefficients
+        as one plain ``fftn`` per pair, and the compensation charges left as
+        they were (an in-place lattice sum once overwrote them)."""
+        from mandacaru.algorithms import wannier as wmod
+
+        atoms, _windows, w = silicon_sp3
+        modes = [(n, (0, 0, 0)) for n in bond_pair(atoms, w)]
+        box = w._coulomb_box()
+        values, projections = w._supercell()
+        got = wmod.pair_densities(box, values, projections, modes)
+        crystal, cells = w._crystal, tuple(int(c) for c in box.size)
+        n = len(modes)
+        functions = [values[m] for m, _R in modes]
+        for p in range(n):
+            for q in range(n):
+                plain = np.ravel(crystal.grid.dV * box.origin_phase
+                                 * np.fft.fftn(np.conj(functions[p])
+                                               * functions[q]))
+                assert np.abs(got.density[p, q] - got.compact[p, q]
+                              - plain).max() < 1e-14
+        coefficients = [projections[m] for m, _R in modes]
+        for (atom, L, M), Q in zip(crystal.channels, got.charges):
+            own = crystal.projector_columns(atom)
+            blk = crystal.multipole_blocks[(atom, L, M)]
+            a = np.stack([c[:, own] for c in coefficients])
+            expected = np.einsum("pti,ij,qtj->tpq", np.conj(a), blk, a)
+            assert np.array_equal(Q, expected)
+        assert cells == tuple(int(c) for c in w.size)
+
     def test_the_two_sites_are_equivalent(self, bond):
         h, g = bond.kohn_sham, bond.two_body
         assert bond.n_electrons == 2
@@ -1038,6 +1069,10 @@ def test_the_unpolarized_limit_is_the_restricted_result(silicon):
     whole = restricted.downfold(coulomb="isolated")
     assert np.allclose(split.density_matrix.sum(axis=0),
                        whole.density_matrix, atol=1e-8)
-    for a, b in zip(split.spin_orbital_integrals(),
-                    whole.spin_orbital_integrals()):
-        assert np.abs(a - b).max() * HARTREE_TO_EV < 1e-4
+    (h_split, g_split), (h_whole, g_whole) = split.integrals(), \
+        whole.integrals()
+    for s in range(2):
+        assert np.abs(h_split[s] - h_whole).max() * HARTREE_TO_EV < 1e-4
+        for t in range(2):
+            assert (np.abs(g_split[s, t] - g_whole).max() * HARTREE_TO_EV
+                    < 1e-4)

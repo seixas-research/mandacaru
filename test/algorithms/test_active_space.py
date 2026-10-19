@@ -285,6 +285,9 @@ def h2_pair_mo():
 
 def _determinant_energy(h_mo, eri_mo, n_doubly):
     """Closed-shell determinant energy (electronic) in the given basis."""
+    from mandacaru.integrals.packed import dense_tensor
+
+    eri_mo = dense_tensor(eri_mo)
     o = slice(0, n_doubly)
     J = np.einsum("iijj->ij", eri_mo[o, o, o, o])
     K = np.einsum("ijji->ij", eri_mo[o, o, o, o])
@@ -982,3 +985,60 @@ class TestTheOccupationCriterion:
             assert energy >= full - 1e-10
             errors.append(energy - full)
         assert errors == sorted(errors, reverse=True), errors
+
+
+def _paw_library_present() -> bool:
+    from mandacaru.pseudopotentials import get_paw
+    try:
+        get_paw("H")
+    except (FileNotFoundError, ValueError):
+        return False
+    return True
+
+
+@pytest.mark.skipif(not _paw_library_present(),
+                    reason="MANDACARU_PAW_PATH is not configured")
+class TestDiffuseShellsNeedAnOccupationRanking:
+    """Diffuse shells make the lowest virtual orbitals: an 'energy'-ranked
+    truncation would fill the register with them, so it is refused, naming
+    the remedy, before any integral is built."""
+
+    BASIS = {"name": "PAW-LCAO", "diffuse": True}
+
+    def _h2(self):
+        return Atoms("H2", positions=[[7.5, 7.5, 7.5], [7.5, 7.5, 8.24]],
+                     cell=[15.0, 15.0, 15.74])
+
+    def test_an_energy_ranked_truncation_is_refused(self):
+        from mandacaru.algorithms.dry_run import estimate_qubits
+
+        with pytest.raises(ValueError, match="'mp2'.*'natural'"):
+            estimate_qubits(self._h2(), basis=self.BASIS,
+                            active_space={"orbitals": 2})
+
+    def test_the_builder_refuses_it_too(self):
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            build_basis_hamiltonian)
+
+        with pytest.raises(ValueError, match="diffuse function"):
+            build_basis_hamiltonian(self._h2(), self.BASIS, None, 0.5, 0,
+                                    None, active_space={"orbitals": 2})
+
+    @pytest.mark.parametrize("active_space", [
+        {"method": "mp2", "orbitals": 2},          # ranked by occupation
+        {"orbitals": 4},                           # nothing deleted
+        {"orbitals": (0, 1)},                      # chosen by index
+    ])
+    def test_what_is_not_refused(self, active_space):
+        from mandacaru.algorithms.dry_run import estimate_qubits
+
+        estimate = estimate_qubits(self._h2(), basis=self.BASIS,
+                                   active_space=active_space)
+        assert estimate.n_basis_functions == 4
+
+    def test_without_diffuse_shells_nothing_changes(self):
+        from mandacaru.algorithms.dry_run import estimate_qubits
+
+        estimate = estimate_qubits(self._h2(), basis="PAW-LCAO",
+                                   active_space={"orbitals": 1})
+        assert estimate.n_qubits == 2

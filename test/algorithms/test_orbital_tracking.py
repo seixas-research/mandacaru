@@ -26,6 +26,7 @@ from mandacaru.algorithms.orbital_tracking import (OrbitalMatch,
                                                    occupation_blocks,
                                                    orbital_overlap,
                                                    transfer_ansatz)
+from mandacaru.integrals.packed import PackedERI, dense_tensor, is_packed
 from mandacaru.units import HARTREE_TO_EV
 
 
@@ -139,9 +140,11 @@ def relabel(monkeypatch):
         p[[2, 3]] = [3, 2]
         s = np.ones(n)
         s[[1, 2]] = -1.0
-        return (h[np.ix_(p, p)] * np.outer(s, s),
-                eri[np.ix_(p, p, p, p)]
-                * np.einsum("p,q,r,t->pqrt", s, s, s, s),
+        relabeled_eri = (dense_tensor(eri)[np.ix_(p, p, p, p)]
+                         * np.einsum("p,q,r,t->pqrt", s, s, s, s))
+        if is_packed(eri):
+            relabeled_eri = PackedERI.from_dense(relabeled_eri)
+        return (h[np.ix_(p, p)] * np.outer(s, s), relabeled_eri,
                 np.asarray(orbitals)[:, p] * s)
 
     monkeypatch.setattr(hamiltonian_module, "molecular_orbital_integrals",

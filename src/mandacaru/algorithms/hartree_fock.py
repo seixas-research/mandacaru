@@ -49,6 +49,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..integrals.packed import dense_tensor, is_packed
+
 
 @dataclass
 class RHFResult:
@@ -172,9 +174,28 @@ def transform_integrals(h: np.ndarray, eri: np.ndarray,
     ``eri_new[p,q,r,s] = sum C*_ap C*_bq C_cr C_ds <ab|cd>``.
     """
     h_new = C.conj().T @ h @ C
+    if is_packed(eri):
+        # Packed to packed: the orbitals of a real problem are real.
+        return h_new, eri.transform(C)
     eri_new = np.einsum("ap,bq,cr,ds,abcd->pqrs",
                         C.conj(), C.conj(), C, C, eri, optimize=True)
     return h_new, eri_new
+
+
+def _as_tensor(eri, dtype):
+    """``eri`` as the SCF reads it: a packed tensor as it is (real), else an
+    array of ``dtype``."""
+    return eri if is_packed(eri) else np.asarray(eri, dtype=dtype)
+
+
+def _dtype(h, eri):
+    return np.result_type(np.asarray(h),
+                          eri.dtype if is_packed(eri) else np.asarray(eri),
+                          float)
+
+
+def _real_if_close(eri):
+    return eri if eri is None or is_packed(eri) else np.real_if_close(eri)
 
 
 class RHF:
@@ -184,8 +205,11 @@ class RHF:
     ----------
     h : (M, M) array
         Spatial one-body core Hamiltonian ``T + V`` in an orthonormal basis.
-    eri : (M, M, M, M) array
-        Two-electron integrals ``<pq|rs>`` in physicists' notation.
+    eri : (M, M, M, M) array or PackedERI
+        Two-electron integrals ``<pq|rs>`` in physicists' notation; a
+        :class:`~mandacaru.integrals.packed.PackedERI` is read packed (its
+        Coulomb and exchange, its transform) and the result's ``eri_mo`` is
+        packed too.
     n_electrons : int
         Total electron count (must be even for closed-shell RHF).
     """
@@ -193,9 +217,9 @@ class RHF:
     def __init__(self, h: np.ndarray, eri: np.ndarray, n_electrons: int):
         # Real integrals (a molecule's real harmonics) keep a real SCF, and
         # with it real molecular orbitals.
-        dtype = np.result_type(np.asarray(h), np.asarray(eri), float)
+        dtype = _dtype(h, eri)
         self.h = np.asarray(h, dtype=dtype)
-        self.eri = np.asarray(eri, dtype=dtype)
+        self.eri = _as_tensor(eri, dtype)
         self.M = self.h.shape[0]
         if n_electrons % 2 != 0:
             raise ValueError("RHF requires an even number of electrons")
@@ -222,8 +246,11 @@ class RHF:
         # invisible for real orbitals and wrong for the complex spherical
         # harmonics of any p or d shell:
         #   J_pq = sum_rs D_sr eri[p,r,q,s],   K_pq = sum_rs D_sr eri[p,r,s,q].
-        J = np.einsum("sr,prqs->pq", D, self.eri, optimize=True)
-        K = np.einsum("sr,prsq->pq", D, self.eri, optimize=True)
+        if is_packed(self.eri):
+            J, K = self.eri.coulomb(D), self.eri.exchange(D)
+        else:
+            J = np.einsum("sr,prqs->pq", D, self.eri, optimize=True)
+            K = np.einsum("sr,prsq->pq", D, self.eri, optimize=True)
         return self.h + J - 0.5 * K
 
     def _electronic_energy(self, D: np.ndarray, F: np.ndarray) -> float:
@@ -303,8 +330,7 @@ class RHF:
         return RHFResult(
             electronic_energy=energy, mo_energies=np.real(eps),
             mo_coefficients=C, n_occupied=self.n_occ, converged=converged,
-            h_mo=np.real_if_close(h_mo),
-            eri_mo=None if eri_mo is None else np.real_if_close(eri_mo),
+            h_mo=np.real_if_close(h_mo), eri_mo=_real_if_close(eri_mo),
             n_iterations=it)
 
 
@@ -457,9 +483,9 @@ class UHF:
 
     def __init__(self, h: np.ndarray, eri: np.ndarray,
                  n_alpha: int, n_beta: int):
-        dtype = np.result_type(np.asarray(h), np.asarray(eri), float)
+        dtype = _dtype(h, eri)
         self.h = np.asarray(h, dtype=dtype)
-        self.eri = np.asarray(eri, dtype=dtype)
+        self.eri = _as_tensor(eri, dtype)
         self.M = self.h.shape[0]
         self.na, self.nb = int(n_alpha), int(n_beta)
         if max(self.na, self.nb) > self.M:
@@ -472,9 +498,13 @@ class UHF:
 
     def _coulomb(self, D: np.ndarray) -> np.ndarray:
         # D enters as D_sr (see RHF._fock): complex orbitals need it.
+        if is_packed(self.eri):
+            return self.eri.coulomb(D)
         return np.einsum("sr,prqs->pq", D, self.eri, optimize=True)
 
     def _exchange(self, D: np.ndarray) -> np.ndarray:
+        if is_packed(self.eri):
+            return self.eri.exchange(D)
         return np.einsum("sr,prsq->pq", D, self.eri, optimize=True)
 
     def _fock_pair(self, Da, Db):
@@ -588,8 +618,7 @@ class UHF:
             mo_energies_alpha=np.real(epsa), mo_energies_beta=np.real(epsb),
             mo_coefficients_alpha=Ca, mo_coefficients_beta=Cb,
             natural_occupations=occ, natural_orbitals=C_no,
-            h_mo=np.real_if_close(h_mo),
-            eri_mo=None if eri_mo is None else np.real_if_close(eri_mo),
+            h_mo=np.real_if_close(h_mo), eri_mo=_real_if_close(eri_mo),
             converged=converged, n_iterations=it, reference_energy=reference)
 
 
@@ -659,6 +688,17 @@ class GHFResult:
                 f"n_electrons={self.n_electrons}, converged={self.converged})")
 
 
+def kramers_pairing(eigenvalues, n_electrons: int) -> float:
+    """Largest splitting within the energy-ordered pairs (0-1, 2-3, ...) of
+    the lowest ``n_electrons`` spinor levels (an odd count leaves its last
+    level unpaired): zero for a Kramers-paired, time-reversal symmetric
+    closed shell.  Measured, not imposed."""
+    n = int(n_electrons)
+    occupied = np.real(np.asarray(eigenvalues))[:n]
+    pairs = occupied[:n - n % 2].reshape(-1, 2)
+    return float(np.max(pairs[:, 1] - pairs[:, 0])) if len(pairs) else 0.0
+
+
 def spinor_integrals(h: np.ndarray, eri: np.ndarray, C: np.ndarray
                      ) -> tuple[np.ndarray, np.ndarray]:
     r"""``(h', g')`` in the spinor basis ``C`` (``(2M, K)``).
@@ -713,7 +753,9 @@ class GHF:
 
     def __init__(self, h: np.ndarray, eri: np.ndarray, n_electrons: int):
         self.h = np.asarray(h, dtype=complex)
-        self.eri = np.asarray(eri, dtype=complex)
+        # The spinor SCF works on the full complex tensor: a packed one is
+        # written out here.
+        self.eri = np.asarray(dense_tensor(eri), dtype=complex)
         self.M = self.eri.shape[0]
         if self.h.shape != (2 * self.M, 2 * self.M):
             raise ValueError(f"h must be ({2 * self.M}, {2 * self.M}) for "
@@ -793,12 +835,15 @@ class GHF:
             raise ValueError("alpha and beta orbitals must be square")
         return out
 
-    def mode_order(self) -> np.ndarray:
-        """Spinor index of each exported mode: spinor ``2i`` goes to mode
-        ``i`` (the first half) and ``2i + 1`` to mode ``M + i``, so the
-        reference that fills the first ``ceil(N/2)`` modes of the first half
-        and ``floor(N/2)`` of the second is the GHF determinant."""
-        M = self.M
+    @staticmethod
+    def mode_order(M: int) -> np.ndarray:
+        """Spinor index of each exported mode of ``2M`` spinors (ascending
+        energy): spinor ``2i`` goes to mode ``i`` (the first half) and
+        ``2i + 1`` to mode ``M + i``, so the reference that fills the first
+        ``ceil(N/2)`` modes of the first half and ``floor(N/2)`` of the
+        second is the determinant of the lowest ``N`` spinors -- the GHF one,
+        or a spinor Kohn-Sham one."""
+        M = int(M)
         order = np.empty(2 * M, dtype=int)
         order[:M] = np.arange(0, 2 * M, 2)
         order[M:] = np.arange(1, 2 * M, 2)
@@ -830,10 +875,8 @@ class GHF:
         F = self._fock(D)
         eps, C = np.linalg.eigh(F)                 # canonical spinors
         energy = self._energy(D, F)
-        occupied = eps[:self.n]
-        pairs = occupied[:self.n - self.n % 2].reshape(-1, 2)
-        pairing = float(np.max(pairs[:, 1] - pairs[:, 0])) if len(pairs) else 0.0
-        ordered = C[:, self.mode_order()]
+        pairing = kramers_pairing(eps, self.n)
+        ordered = C[:, self.mode_order(self.M)]
         h_mo, eri_mo = spinor_integrals(self.h, self.eri, ordered)
         return GHFResult(
             electronic_energy=energy, n_electrons=self.n,

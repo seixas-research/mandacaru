@@ -65,7 +65,8 @@ from collections import OrderedDict
 import numpy as np
 from scipy import fft as sfft
 
-__all__ = ["FFTWorkspace", "workspace", "parallel_chunks", "thread_count",
+__all__ = ["FFTWorkspace", "workspace", "parallel_chunks", "parallel_blocks",
+           "parallel_matmul", "thread_count",
            "WORKSPACE_BYTES", "WORKSPACE_CACHE_BYTES", "PARALLEL_MIN_VALUES"]
 
 #: Bytes of padded volumes one workspace keeps for a batch: the batch is as
@@ -148,6 +149,13 @@ class FFTWorkspace:
                 (count, self.padded[0], self.padded[1], self.half),
                 dtype=np.complex128)
         return self._real_box, self._spectrum
+
+    def stack(self, count: int) -> np.ndarray:
+        """A ``(count, *padded)`` complex view of the workspace's own buffer
+        (grown when needed, then reused), for a caller that fills it and
+        transforms it in place with :meth:`forward` / :meth:`inverse`.  Its
+        contents do not survive the next use of the workspace."""
+        return self._complex_buffer(int(count))[:int(count)]
 
     def release(self) -> None:
         """Drop the buffers (they are rebuilt on the next use)."""
@@ -288,6 +296,47 @@ class FFTWorkspace:
             self._planes(Lx - nx, gap)
         self._fft(spec, 1)
         return spec
+
+    def forward_real(self, rho: np.ndarray, out: np.ndarray) -> np.ndarray:
+        r"""Half spectra of a ``(P, G)`` stack of real densities, pruned as
+        in :meth:`convolve_real`, written into ``out`` (``(P, Lx, Ly,
+        Lz//2 + 1)`` complex): the ``rfftn`` of each density zero-padded to
+        the transform shape."""
+        P = rho.shape[0]
+        step = min(self.batch(8), max(P, 1))
+        real_box, _spectrum = self._real_buffers(step)
+        for start in range(0, P, step):
+            stop = min(start + step, P)
+            self._real_forward(rho, start, stop, real_box, out[start:stop])
+        return out
+
+    def inverse_real(self, spectra: np.ndarray, out: np.ndarray,
+                     scale: float = 1.0) -> np.ndarray:
+        r"""``out[p] = scale *`` the box of the inverse of half spectra
+        ``spectra`` (``(P, Lx, Ly, Lz//2 + 1)``, overwritten): the
+        ``irfftn`` of each, restricted to the grid, pruned as in
+        :meth:`convolve_real`.  ``out`` is ``(P, G)``."""
+        nx, ny, nz = self.shape
+        Lz = self.padded[2]
+        P = spectra.shape[0]
+        step = min(self.batch(8), max(P, 1))
+        for start in range(0, P, step):
+            stop = min(start + step, P)
+            k = stop - start
+            spec = spectra[start:stop]
+            self._fft(spec, 1, inverse=True)
+            self._fft(spec if self.circular else spec[:, :nx, :, :], 2,
+                      inverse=True)
+            values = sfft.irfft(spec[:, :nx, :ny, :], n=Lz, axis=3,
+                                workers=self.workers)
+            target = out[start:stop].reshape(k, nx, ny, nz)
+
+            def store(lo, hi):
+                np.multiply(values[:, lo:hi, :, :nz], scale,
+                            out=target[:, lo:hi])
+
+            self._planes(nx, store)
+        return out
 
     def convolve_real(self, rho: np.ndarray, half_kernel: np.ndarray,
                       out: np.ndarray, scale: float = 1.0) -> np.ndarray:
@@ -444,6 +493,65 @@ def parallel_chunks(count: int, function, threads: int) -> None:
                    for lo, hi in zip(edges[:-1], edges[1:]) if hi > lo]
         for future in futures:
             future.result()
+
+
+def parallel_blocks(count: int, block: int, function, threads: int,
+                    buffers=None) -> None:
+    """``function(lo, hi, state)`` over the fixed blocks ``[i block,
+    (i + 1) block)`` of ``range(count)``, the blocks shared out over the
+    pool's ``threads`` (:func:`parallel_chunks`), BLAS held to one thread
+    throughout -- also on one thread.
+
+    The decomposition is the problem's, not the thread count's: a reduction
+    inside a block (a matrix product, a sum) runs on the same operands in
+    the same order whatever ``threads`` is, so the result is the same bit
+    for bit on any number of cores (a thread count only decides which
+    thread runs which blocks).  ``buffers`` is a factory called once per
+    worker for the scratch arrays it passes as ``state`` (``None`` without
+    one).
+    """
+    block = max(1, int(block))
+    count = int(count)
+    n_blocks = -(-count // block)
+
+    def run(b0, b1):
+        state = None if buffers is None else buffers()
+        for b in range(b0, b1):
+            function(b * block, min((b + 1) * block, count), state)
+
+    if n_blocks == 0:
+        return
+    if min(int(threads), n_blocks) <= 1:
+        with _blas_controller().limit(limits=1, user_api="blas"):
+            run(0, n_blocks)
+        return
+    parallel_chunks(n_blocks, run, threads)
+
+
+#: Rows per block of :func:`parallel_matmul`.
+MATMUL_ROW_BLOCK = 512
+
+
+def parallel_matmul(A, B, workers: int = -1, out=None,
+                    block: int | None = None) -> np.ndarray:
+    """``A @ B`` in fixed blocks of :data:`MATMUL_ROW_BLOCK` rows of ``A``,
+    each a one-core product, shared out over ``workers`` threads
+    (:func:`parallel_blocks`).  A threaded BLAS splits a long reduction by
+    its thread count, so its last bits follow the number of cores; here the
+    blocks are the problem's and every row's product is one core's, so the
+    result does not depend on the thread count.  ``out`` (``(rows of A,
+    columns of B)``) is written when given."""
+    if out is None:
+        out = np.empty((A.shape[0], B.shape[1]), dtype=np.result_type(A, B))
+    block = MATMUL_ROW_BLOCK if block is None else int(block)
+
+    def rows(lo, hi, _state):
+        np.matmul(A[lo:hi], B, out=out[lo:hi])
+
+    threads = (1 if A.shape[0] * A.shape[1] < PARALLEL_MIN_VALUES
+               else thread_count(workers))
+    parallel_blocks(A.shape[0], block, rows, threads)
+    return out
 
 
 _WORKSPACES: "OrderedDict[tuple, FFTWorkspace]" = OrderedDict()

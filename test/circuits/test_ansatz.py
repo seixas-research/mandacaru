@@ -76,3 +76,82 @@ class TestCustomAnsatz:
         with pytest.raises(TypeError, match="SerializableAnsatz"):
             calc.run()
         assert not evaluations
+
+
+class TestUCCSDInAParticleSector:
+    """The sector representation: ``C(M, na) C(M, nb)`` amplitudes and sparse
+    generators, the same state as the dense ``2^N`` form."""
+
+    @pytest.mark.parametrize("trotter", [False, True])
+    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
+                                         "bravyi_kitaev", "parity_reduced"])
+    def test_the_state_is_the_register_state_restricted(self, mapping,
+                                                         trotter):
+        from mandacaru.core.sector import ParticleSector
+
+        dense = UCCSD(4, (2, 2), mapping, trotter=trotter)
+        sector = ParticleSector(dense.n_qubits, (2, 2), mapping)
+        sparse = UCCSD(4, (2, 2), mapping, trotter=trotter, sector=sector)
+        theta = np.random.default_rng(3).uniform(-1, 1, dense.num_parameters)
+        assert sparse.state(theta).size == sector.dim == 36
+        assert np.allclose(sector.embed(sparse.state(theta)),
+                           dense.state(theta), atol=1e-12)
+        assert np.allclose(sector.embed(sparse.reference_state()),
+                           dense.reference_state(), atol=1e-14)
+        stack = np.stack([sparse.reference_state()] * 2, axis=1)
+        assert sparse.evolve(theta, stack).shape == (36, 2)
+
+    def test_no_register_sized_array_is_allocated(self):
+        """12 qubits: one dense generator is 268 MB, the 92 of them 25 GB."""
+        import tracemalloc
+
+        from mandacaru.core.sector import ParticleSector
+
+        ansatz = UCCSD(6, (2, 2))
+        ansatz.use_sector(ParticleSector(12, (2, 2), "jordan_wigner"))
+        theta = np.full(ansatz.num_parameters, 0.05)
+        tracemalloc.start()
+        try:
+            state = ansatz.state(theta)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert abs(np.linalg.norm(state) - 1.0) < 1e-12
+        assert peak < 32 * 2 ** 20
+
+    def test_the_adjoint_gradient_exists_only_for_the_ordered_product(self):
+        from mandacaru.core.sector import ParticleSector
+
+        sector = ParticleSector(8, (2, 2), "jordan_wigner")
+        assert not hasattr(UCCSD(4, (2, 2), sector=sector), "energy_and_gradient")
+        assert not hasattr(UCCSD(4, (2, 2), trotter=True),
+                           "energy_and_gradient")
+        ansatz = UCCSD(4, (2, 2), trotter=True, sector=sector)
+        rng = np.random.default_rng(5)
+        h = rng.standard_normal((36, 36)); h = h + h.T
+        theta = rng.uniform(-0.5, 0.5, ansatz.num_parameters)
+        energy, gradient = ansatz.energy_and_gradient(theta, lambda v: h @ v)
+        assert energy == pytest.approx(
+            np.real(np.vdot(ansatz.state(theta), h @ ansatz.state(theta))))
+        step = 1e-6
+        for k in (0, 7, ansatz.num_parameters - 1):
+            plus, minus = theta.copy(), theta.copy()
+            plus[k] += step
+            minus[k] -= step
+            numeric = (np.real(np.vdot(ansatz.state(plus),
+                                       h @ ansatz.state(plus)))
+                       - np.real(np.vdot(ansatz.state(minus),
+                                         h @ ansatz.state(minus)))) / (2 * step)
+            assert gradient[k] == pytest.approx(numeric, abs=1e-6)
+
+    def test_a_sector_and_a_circuit_provider_exclude_each_other(self):
+        from mandacaru.core.sector import ParticleSector
+
+        class Provider:
+            name = "stub"
+
+        with pytest.raises(ValueError, match="sector"):
+            UCCSD(2, (1, 1), trotter=True, provider=Provider(),
+                  sector=ParticleSector(4, (1, 1), "jordan_wigner"))
+        with pytest.raises(ValueError, match="spans"):
+            UCCSD(3, (1, 1), sector=ParticleSector(4, (1, 1), "jordan_wigner"))

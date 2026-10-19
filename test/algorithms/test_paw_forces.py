@@ -523,3 +523,28 @@ def test_exact_spheres_force_is_the_derivative_of_the_energy():
     numerical = -(energies[0] - energies[1]) / (2 * step) * HARTREE_TO_EV
     assert abs(result.forces[0, 2]) > 2.0
     assert result.forces[0, 2] == pytest.approx(numerical, abs=1e-3)
+
+
+def test_a_diffuse_basis_force_is_the_derivative_of_the_energy():
+    """Diffuse shells are tabulated radial functions on their own grid; their
+    Pulay terms take the same path as every other function's.  H2 in SZ plus
+    one diffuse s shell per atom, in a cell that holds the shells, against a
+    central difference on the calculator's frozen grid."""
+    basis = {"name": "PAW-LCAO", "diffuse": True}
+    atoms = dimer("H2", 0.75, 15.4)
+    atoms.calc = calculator(grid_spacing=0.3, basis=basis)
+    raw = None
+    atoms.get_forces()
+    raw = atoms.calc.force_result.unprojected
+    context = atoms.calc.solver._gradient_context
+    assert sum(1 for f in context["integrals"].basis
+               if getattr(f, "diffuse", False)) == 2
+    step = 0.005
+    energies = []
+    for sign in (1, -1):
+        moved = atoms.copy()
+        moved.positions[1, 2] += sign * step
+        moved.calc = atoms.calc
+        energies.append(moved.get_potential_energy())
+    numerical = -(energies[0] - energies[1]) / (2 * step)
+    assert raw[1, 2] == pytest.approx(numerical, abs=5e-3)

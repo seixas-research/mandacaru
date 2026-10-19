@@ -264,6 +264,42 @@ class TestOneCenterExchange:
         assert (plus - minus) / (2 * step) == pytest.approx(directional,
                                                              rel=1e-8)
 
+    def test_spinor_blocks_are_the_derivative_and_the_channel_form(
+            self, water_projectors):
+        """Two-component blocks: the ``(2P, 2P)`` operator is the derivative
+        of the energy in every block (the off-diagonal ones included), and
+        spin-diagonal blocks give the two channels' energy and operators."""
+        projectors, datasets = water_projectors
+        hybrid = OneCenterHybrid(projectors, datasets, 0.11, 0.25)
+        P = len(projectors)
+        rng = np.random.default_rng(5)
+        A = rng.normal(size=(2 * P, 2 * P)) + 1j * rng.normal(
+            size=(2 * P, 2 * P))
+        D = A @ A.conj().T / (2 * P)
+        dD = rng.normal(size=(2 * P, 2 * P)) + 1j * rng.normal(
+            size=(2 * P, 2 * P))
+        dD = 0.5 * (dD + dD.conj().T)
+
+        def blocks(X):
+            return [[X[s * P:(s + 1) * P, t * P:(t + 1) * P]
+                     for t in range(2)] for s in range(2)]
+        terms = hybrid.evaluate_spinor(blocks(D))
+        step = 1e-5
+        plus = hybrid.evaluate_spinor(blocks(D + step * dD)).energy
+        minus = hybrid.evaluate_spinor(blocks(D - step * dD)).energy
+        directional = float(np.real(np.sum(terms.operators[0].T * dD)))
+        assert (plus - minus) / (2 * step) == pytest.approx(directional,
+                                                             rel=1e-8)
+        up, down = blocks(D)[0][0], blocks(D)[1][1]
+        zero = np.zeros_like(up)
+        diagonal = hybrid.evaluate_spinor([[up, zero], [zero, down]])
+        channels = hybrid.evaluate(up, down)
+        assert diagonal.energy == pytest.approx(channels.energy, rel=1e-13)
+        O = diagonal.operators[0]
+        assert np.allclose(O[:P, :P], channels.operators[0], atol=1e-13)
+        assert np.allclose(O[P:, P:], channels.operators[1], atol=1e-13)
+        assert not np.any(O[:P, P:])
+
     def test_the_spin_channels_and_the_limits(self, water_projectors):
         """Two equal channels are the closed shell; no fraction, no term."""
         projectors, datasets = water_projectors

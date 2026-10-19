@@ -653,6 +653,10 @@ class KPointMatrices:
     overlap: np.ndarray                 # augmented S(k)
     fixed: np.ndarray                   # T + V_sr + C D^ion C^dagger
     projections: np.ndarray             # C(k), (M, P)
+    #: The spin-orbit term :math:`h^{SO}(\mathbf k)`, ``(2M, 2M)`` over the
+    #: spinor Bloch basis (alpha block first), or ``None`` for a crystal
+    #: built without it (:meth:`PeriodicPAW.spin_orbit_matrix`).
+    spin_orbit: np.ndarray | None = None
 
 
 class PeriodicPAW:
@@ -682,11 +686,19 @@ class PeriodicPAW:
         The basis' Fourier-filter cutoff wave-vector (Bohr^-1), recorded so a strained
         cell rebuilds the same basis.  The partial core is *not* filtered
         with it (:meth:`core_density`).
+    spin_orbit_projectors, spin_orbit_blocks : optional
+        The spin-orbit term of a spin-orbit set (``lda-fr/``, ``pbe-fr/``):
+        the projectors it acts through
+        (:func:`~.paw.paw_spin_orbit_projectors`, complex harmonics) and
+        its ``{(atom, l): D_SO}`` couplings
+        (:func:`~.paw.paw_spin_orbit_blocks`) -- the molecule's term, Bloch
+        summed (:meth:`spin_orbit_matrix`).  ``None`` for a scalar crystal.
     """
 
     def __init__(self, basis, atom_of_orbital, projectors, datasets, centers,
                  grid, kpoints, weights, coupling, overlap_blocks,
-                 multipole_blocks, filter_wavevector=None, symmetry=None):
+                 multipole_blocks, filter_wavevector=None, symmetry=None,
+                 spin_orbit_projectors=None, spin_orbit_blocks=None):
         from ..core.hamiltonian import assemble_block_matrix
         from .local_split import split_width
 
@@ -726,6 +738,9 @@ class PeriodicPAW:
         self.kernel = rc.alias_mean(grid, rc.coulomb_kernel)
         self._compensation_grid = None
         self._compensation_coulomb = None
+        #: The spin-orbit projectors and couplings (empty without the term).
+        self.spin_orbit_projectors = list(spin_orbit_projectors or [])
+        self.spin_orbit_blocks = dict(spin_orbit_blocks or {})
         self.kpoint_data = self._kpoints()
 
     # -- per k-point -------------------------------------------------------- #
@@ -781,6 +796,8 @@ class PeriodicPAW:
                                    self._grid_points(), center, radius)
             C_all = self._projections(kpoints)
             V_all = self._short_range_local(kpoints)
+            SO_all = (self.spin_orbit_matrix(kpoints) if self.has_spin_orbit
+                      else [None] * len(kpoints))
             for i, k in enumerate(kpoints):
                 weight = all_weights[start + i]
                 psi, C = psi_all[i], C_all[i]
@@ -790,8 +807,44 @@ class PeriodicPAW:
                 out.append(KPointMatrices(
                     k=np.asarray(k, float), weight=float(weight), psi=psi,
                     overlap=0.5 * (S + S.conj().T),
-                    fixed=0.5 * (fixed + fixed.conj().T), projections=C))
+                    fixed=0.5 * (fixed + fixed.conj().T), projections=C,
+                    spin_orbit=SO_all[i]))
         return out
+
+    @property
+    def has_spin_orbit(self) -> bool:
+        """Whether the crystal carries a spin-orbit term (a spin-orbit set)."""
+        return bool(self.spin_orbit_blocks)
+
+    def spin_orbit_matrix(self, kpoints) -> np.ndarray:
+        r"""``(nk, 2M, 2M)``: the spin-orbit term between the spinor Bloch
+        sums at the Cartesian ``kpoints``, alpha block first.
+
+        The molecule's operator
+        (:func:`~mandacaru.core.spin_orbit.spin_orbit_one_body`), with the
+        projections of the Bloch sums on the home cell's spin-orbit
+        projectors in place of the molecular ones -- the same unfolding as the
+        scalar nonlocal term :math:`C(\mathbf k)\,D\,C(\mathbf k)^\dagger`:
+
+        .. math::
+
+            h^{SO}_{\mu\sigma,\nu\tau}(\mathbf k) = \sum_{a,l}
+              \sum_{ij,mm'} C^{SO}_{\mu,lmi}(\mathbf k)\,D^{SO,a,l}_{ij}\,
+              \langle lm\sigma|\mathbf L\cdot\mathbf S|lm'\tau\rangle\,
+              C^{SO}_{\nu,lm'j}(\mathbf k)^* .
+
+        Zero (and still ``(nk, 2M, 2M)``) without the term.
+        """
+        from ..core.spin_orbit import spin_orbit_one_body
+
+        kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
+        if not self.has_spin_orbit:
+            return np.zeros((len(kpoints), 2 * self.M, 2 * self.M),
+                            dtype=complex)
+        C = self._projections(kpoints, projectors=self.spin_orbit_projectors)
+        return np.stack([spin_orbit_one_body(C[i], self.spin_orbit_projectors,
+                                             self.spin_orbit_blocks)
+                         for i in range(len(kpoints))])
 
     def kpoint_block(self) -> int:
         """How many k-points' Bloch sums fit :data:`KPOINT_BLOCK_BYTES`."""
@@ -838,30 +891,33 @@ class PeriodicPAW:
             out.append(u.reshape(len(psi), -1) * phase[None, :])
         return np.stack(out)
 
-    def _projections(self, kpoints, only=None) -> np.ndarray:
+    def _projections(self, kpoints, only=None, projectors=None) -> np.ndarray:
         r"""``C[k, mu, p]`` :math:`= \langle\chi_{\mu\mathbf k}|\tilde p_p\rangle`.
 
         Projectors of one atom with the same cutoff share one sphere rule, so
-        the Bloch sums are evaluated once per distinct sphere.
+        the Bloch sums are evaluated once per distinct sphere.  ``projectors``
+        defaults to the scalar nonlocal ones (the spin-orbit term passes its
+        own set).
         """
         from .paw import _projector_sphere
-        C = np.zeros((len(kpoints), self.M, len(self.projectors)),
+        projectors = self.projectors if projectors is None else projectors
+        C = np.zeros((len(kpoints), self.M, len(projectors)),
                      dtype=complex)
         spheres: dict = {}
-        for p, projector in enumerate(self.projectors):
+        for p, projector in enumerate(projectors):
             if only is not None and p not in only:
                 continue             # left zero: the caller wants these alone
             key = (projector.atom_index, round(float(projector.r_cut), 12))
             spheres.setdefault(key, []).append(p)
         for members in spheres.values():
-            first = self.projectors[members[0]]
+            first = projectors[members[0]]
             rows = reaching(self.basis, self.lattice, first.center,
                             float(first.r_cut))
             if rows.size == 0:
                 continue
             near = [self.basis[mu] for mu in rows]
             points, weights = _projector_sphere(first)
-            values = np.stack([self.projectors[p].evaluate(*points).ravel()
+            values = np.stack([projectors[p].evaluate(*points).ravel()
                                * weights.ravel() for p in members])
             block = np.zeros((len(kpoints), rows.size, len(members)),
                              dtype=complex)
@@ -936,6 +992,39 @@ class PeriodicPAW:
             rho, q = self.symmetry.field(rho), self.symmetry.moments(q)
         return rho, q
 
+    def magnetization(self, matrices, kpoint_data=None) -> np.ndarray:
+        r"""``(3, ngrid)``: the smooth magnetization of spinor density
+        matrices ``P_k`` (``(2M, 2M)``, alpha block first).
+
+        :math:`\rho_{\sigma\tau} = \sum_k w_k\sum_{\mu\nu}
+        P^k_{\mu\sigma,\nu\tau}\chi_\mu\chi_\nu^*`, and
+        :math:`m_x = 2\,\mathrm{Re}\,\rho_{\uparrow\downarrow}`,
+        :math:`m_y = -2\,\mathrm{Im}\,\rho_{\uparrow\downarrow}`,
+        :math:`m_z = \rho_{\uparrow\uparrow} - \rho_{\downarrow\downarrow}`.
+        A magnetization is an axial vector, which the scalar averages of
+        :class:`GridSymmetry` do not rotate: it is assembled from the whole
+        mesh only, and refused on a reduced one.
+        """
+        if self.symmetry is not None:
+            raise NotImplementedError(
+                "a magnetization is assembled from the full k-point mesh: "
+                "the crystal's operations average scalar fields and do not "
+                "rotate an axial vector")
+        kpoint_data = self.kpoint_data if kpoint_data is None else kpoint_data
+        if len(kpoint_data) != len(matrices):
+            raise ValueError(f"{len(matrices)} density matrices for "
+                             f"{len(kpoint_data)} k-points")
+        M = self.M
+        m = np.zeros((3, self.grid.size))
+        for data, P in zip(kpoint_data, matrices):
+            psi = data.psi
+            z = np.real(np.sum(psi * ((P[:M, :M] - P[M:, M:]) @ psi.conj()),
+                               axis=0))
+            ud = np.sum(psi * (P[:M, M:] @ psi.conj()), axis=0)
+            m += data.weight * np.stack([2.0 * np.real(ud),
+                                         -2.0 * np.imag(ud), z])
+        return m
+
     # -- compensation moments ----------------------------------------------- #
     #
     # Each moment operator Q^A_LM(k) = C_A blk C_A^dagger has the rank of atom
@@ -981,6 +1070,38 @@ class PeriodicPAW:
                 tau += 0.5 * data.weight * np.real(np.sum(d * (P @ d.conj()),
                                                           axis=0))
         return tau if self.symmetry is None else self.symmetry.field(tau)
+
+    def spinor_kinetic_energy_density(self, matrices, gradients,
+                                      kpoint_data=None):
+        r"""``(tau, tau_m)``: the kinetic-energy density matrix of spinor
+        density matrices (``(2M, 2M)``, alpha block first),
+        :math:`\tau_{\sigma\tau} = \tfrac12\sum_k w_k\sum
+        P^k_{\mu\sigma,\nu\tau}\nabla\chi_\mu\cdot\nabla\chi^*_\nu`, as
+        its trace and the ``(3, ngrid)`` vector
+        :math:`(2\,\mathrm{Re}\,\tau_{\uparrow\downarrow},
+        -2\,\mathrm{Im}\,\tau_{\uparrow\downarrow},
+        \tau_{\uparrow\uparrow} - \tau_{\downarrow\downarrow})` (the
+        magnetization's construction).  The whole mesh only, as
+        :meth:`magnetization`."""
+        if self.symmetry is not None:
+            raise NotImplementedError(
+                "a kinetic-energy density matrix is assembled from the full "
+                "k-point mesh: its vector part is axial")
+        kpoint_data = self.kpoint_data if kpoint_data is None else kpoint_data
+        M = self.M
+        uu = np.zeros(self.grid.size)
+        dd = np.zeros(self.grid.size)
+        ud = np.zeros(self.grid.size, dtype=complex)
+        for data, P, grads in zip(kpoint_data, matrices, gradients):
+            for d in grads:
+                uu += 0.5 * data.weight * np.real(np.sum(
+                    d * (P[:M, :M] @ d.conj()), axis=0))
+                dd += 0.5 * data.weight * np.real(np.sum(
+                    d * (P[M:, M:] @ d.conj()), axis=0))
+                ud += 0.5 * data.weight * np.sum(d * (P[:M, M:] @ d.conj()),
+                                                 axis=0)
+        return uu + dd, np.stack([2.0 * np.real(ud), -2.0 * np.imag(ud),
+                                  uu - dd])
 
     def compensation_grid(self) -> dict:
         r"""``{channel: g_hat(G)}`` on the grid's reciprocal set (filtered),
@@ -1317,23 +1438,30 @@ class PeriodicPAW:
             values[inside] += spline(distance[inside])
         return values
 
-    def initial_density(self) -> tuple[np.ndarray, dict]:
-        """Superposed smooth valence densities and reference monopoles."""
+    def _superposed_valence(self, dataset, center) -> np.ndarray:
+        """One atom's smooth valence density summed over its images on the
+        cell grid (flat)."""
         from scipy.interpolate import CubicSpline
         x = np.stack(self._grid_points(), axis=1)
+        out = np.zeros(self.grid.size)
+        r = np.asarray(dataset.r, dtype=float)
+        values = np.asarray(dataset.valence_density, dtype=float)
+        peak = float(np.max(np.abs(values)))
+        significant = np.nonzero(np.abs(values) > 1e-12 * peak)[0]
+        support = float(r[significant[-1]])
+        spline = CubicSpline(r, values)
+        for R in rc.lattice_translations(self.lattice,
+                                         support + 2.0 * self._cell_region()[1]):
+            distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
+            inside = distance <= support
+            out[inside] += spline(distance[inside])
+        return out
+
+    def initial_density(self) -> tuple[np.ndarray, dict]:
+        """Superposed smooth valence densities and reference monopoles."""
         rho = np.zeros(self.grid.size)
         for dataset, center in zip(self.datasets, self.centers):
-            r = np.asarray(dataset.r, dtype=float)
-            values = np.asarray(dataset.valence_density, dtype=float)
-            peak = float(np.max(np.abs(values)))
-            significant = np.nonzero(np.abs(values) > 1e-12 * peak)[0]
-            support = float(r[significant[-1]])
-            spline = CubicSpline(r, values)
-            for R in rc.lattice_translations(self.lattice,
-                                             support + 2.0 * self._cell_region()[1]):
-                distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
-                inside = distance <= support
-                rho[inside] += spline(distance[inside])
+            rho += self._superposed_valence(dataset, center)
         q = {c: 0.0j for c in self.channels}
         for atom, dataset in enumerate(self.datasets):
             if (atom, 0, 0) in q:
@@ -1346,8 +1474,6 @@ class PeriodicPAW:
         each atom's superposed valence density weighted by its initial moment
         over its valence charge (clamped to that charge, so neither spin
         density starts negative)."""
-        from scipy.interpolate import CubicSpline
-        x = np.stack(self._grid_points(), axis=1)
         m = np.zeros(self.grid.size)
         moments = np.zeros(len(self.datasets)) if moments is None else \
             np.asarray(moments, dtype=float)
@@ -1357,18 +1483,18 @@ class PeriodicPAW:
             if moment == 0.0 or charge <= 0.0:
                 continue
             fraction = float(np.clip(moment / charge, -1.0, 1.0))
-            r = np.asarray(dataset.r, dtype=float)
-            values = np.asarray(dataset.valence_density, dtype=float)
-            peak = float(np.max(np.abs(values)))
-            significant = np.nonzero(np.abs(values) > 1e-12 * peak)[0]
-            support = float(r[significant[-1]])
-            spline = CubicSpline(r, values)
-            for R in rc.lattice_translations(
-                    self.lattice, support + 2.0 * self._cell_region()[1]):
-                distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
-                inside = distance <= support
-                m[inside] += fraction * spline(distance[inside])
+            m += fraction * self._superposed_valence(dataset, center)
         return m
+
+    def valence_shares(self) -> np.ndarray:
+        r"""``(N, ngrid)``: each atom's share of the superposed valence
+        density, :math:`w_A = n_A/\sum_B n_B` (zero where the sum is), the
+        Hirshfeld weights of the free atoms' smooth valence densities."""
+        pieces = np.stack([self._superposed_valence(d, c)
+                           for d, c in zip(self.datasets, self.centers)])
+        total = np.sum(pieces, axis=0)
+        return np.divide(pieces, total, out=np.zeros_like(pieces),
+                         where=total > 0.0)
 
     @property
     def n_electrons_neutral(self) -> float:
@@ -1391,14 +1517,22 @@ class PeriodicPAW:
 # Building a crystal from a geometry.
 # --------------------------------------------------------------------------- #
 
-def reduce_mesh(mesh, operations=None):
+def reduce_mesh(mesh, operations=None, time_reversal: bool = True):
     """``(points, weights, operations)`` of a fractional k-mesh's wedge.
 
     ``operations`` (a :class:`GridSymmetry`) is first restricted to the
     subgroup that maps ``mesh`` onto itself; with none left, or none given,
     the mesh is reduced by time reversal alone and ``operations`` comes back
-    ``None``.  ``weights`` sum to one.
+    ``None``.  ``weights`` sum to one.  ``time_reversal=False`` (a magnetic
+    two-component crystal, whose bands are not even in k) keeps the whole
+    mesh, and takes no operations.
     """
+    if not time_reversal:
+        if operations is not None:
+            raise ValueError("a mesh without time reversal is not reduced "
+                             "by the crystal's operations either")
+        mesh = np.asarray(mesh, dtype=float)
+        return mesh, np.full(len(mesh), 1.0 / len(mesh)), None
     if operations is not None:
         operations = operations.keeping_mesh(mesh)
     if operations is None:
@@ -1409,10 +1543,66 @@ def reduce_mesh(mesh, operations=None):
     return zone.points, zone.weights / zone.weights.sum(), operations
 
 
+def mesh_wedge(mesh, size, operations=None, time_reversal: bool = True):
+    """``(points, mapping, operations)`` to unfold a quantity from the wedge.
+
+    :func:`reduce_mesh` with the map back: ``mapping[j]`` is the index into
+    ``points`` of the representative of ``mesh[j]``, so ``wedge[mapping]``
+    is the quantity on the whole mesh -- exact for anything every operation
+    and time reversal leave unchanged (a band energy, a Fermi surface).
+    ``mesh`` is uniform, ``size`` ``(n1, n2, n3)``: Gamma-centered or a
+    Monkhorst-Pack mesh, whose coordinates are multiples of ``1/(2 n)``.
+    ``time_reversal=False`` returns the whole mesh and the identity map.
+    """
+    from ..core.symmetry import irreducible_kpoints
+
+    mesh = np.asarray(mesh, dtype=float)
+    if not time_reversal:
+        if operations is not None:
+            raise ValueError("a mesh without time reversal is not reduced "
+                             "by the crystal's operations either")
+        return mesh, np.arange(len(mesh)), None
+    if operations is not None:
+        operations = operations.keeping_mesh(mesh)
+    if operations is not None:
+        zone = irreducible_kpoints(mesh, operations.info, time_reversal=True)
+        return zone.points, zone.mapping, operations
+    # Time reversal alone: on the integer lattice 2 n k, -k is a mesh point.
+    double = 2 * np.asarray(size, dtype=int)
+    key = np.rint(mesh * double).astype(int) % double
+    flat = np.ravel_multi_index(key.T, tuple(double))
+    where = np.full(int(np.prod(double)), -1)
+    where[flat] = np.arange(len(mesh))
+    partner = where[np.ravel_multi_index(((-key) % double).T, tuple(double))]
+    if np.any(partner < 0):
+        raise ValueError("the k-point mesh is not symmetric under k -> -k")
+    keep = np.flatnonzero(np.arange(len(mesh)) <= partner)
+    slot = np.empty(len(mesh), dtype=int)
+    slot[keep] = np.arange(len(keep))
+    slot[partner[keep]] = slot[keep]
+    return mesh[keep], slot, None
+
+
+def spin_orbit_symbols(atoms, options: dict | None = None,
+                       family: str = "paw-lcao") -> list:
+    """The chemical symbols of ``atoms`` whose datasets (of ``options``'
+    ``paw_dataset``) carry a spin-orbit term, sorted; empty on a scalar set.
+    The datasets are cached, so asking costs one load per element."""
+    from .families import resolve_family
+    from .paw import get_paw, get_upaw
+
+    options = resolve_family(family).resolved_options(dict(options or {}))
+    load = get_upaw if family == "upaw-lcao" else get_paw
+    return sorted(s for s in set(atoms.get_chemical_symbols())
+                  if getattr(load(s, options.get("paw_dataset")),
+                             "has_spin_orbit", False))
+
+
 @single_threaded_blas
 def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=None,
                   family: str = "paw-lcao", grid=None, ghosts=(),
-                  symmetry: bool = True, full_mesh: bool = False):
+                  symmetry: bool = True, full_mesh: bool = False,
+                  spin_orbit: bool = False):
     r"""``(crystal, context)`` for a periodic ``atoms`` with a PAW-LCAO basis.
 
     The basis, projectors and dataset blocks are the molecular builder's
@@ -1431,7 +1621,15 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     reversal alone -- the space group of the real atoms is not the cell's.
     ``full_mesh`` keeps every k-point, unreduced and without symmetry: a
     finite electric field couples neighboring k-points along strings of the
-    whole mesh and breaks the symmetry the reduction relies on.
+    whole mesh and breaks the symmetry the reduction relies on, and so does
+    a magnetic two-component crystal (time reversal flips its
+    magnetization).
+
+    ``spin_orbit`` says the caller solves two-component (spinor) Bloch
+    states: the spin-orbit term of a spin-orbit set (``lda-fr/``,
+    ``pbe-fr/``) is attached (:meth:`PeriodicPAW.spin_orbit_matrix`).
+    Without it such a set is refused -- dropping the term would report a
+    scalar-relativistic crystal under the spin-orbit set's name.
     """
     from ..algorithms._hamiltonian_from_atoms import monkhorst_pack_kpts
     from ..basis.filtering import resolve_filter_cutoff
@@ -1441,7 +1639,8 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     from .orbitals import pseudo_basis, valence_electrons
     from .paw import (DEFAULT_PROJECTOR_BASIS, get_paw, get_upaw,
                       paw_coupling_blocks, paw_multipole_blocks,
-                      paw_overlap_blocks, paw_projectors)
+                      paw_overlap_blocks, paw_projectors,
+                      paw_spin_orbit_blocks, paw_spin_orbit_projectors)
 
     # The Bloch sums and the Bader ascent run in the C library: compile it
     # (or a stale copy missing their symbols, as a tree synced from another
@@ -1450,6 +1649,8 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     _backend.warn_fallback(_backend.ensure_backend())
 
     options = resolve_family(family).resolved_options(dict(options or {}))
+    from .diffuse import refuse_crystal
+    refuse_crystal(options.get("diffuse"))
     load = get_upaw if family == "upaw-lcao" else get_paw
     symbols = atoms.get_chemical_symbols()
     atoms = atoms.copy()
@@ -1457,6 +1658,19 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     positions = np.asarray(atoms.get_positions(), dtype=float)
     cell = np.asarray(atoms.get_cell(), dtype=float)
     potentials = {s: load(s, options.get("paw_dataset")) for s in set(symbols)}
+    with_spin_orbit = sorted(s for s, p in potentials.items()
+                             if getattr(p, "has_spin_orbit", False))
+    if with_spin_orbit and not spin_orbit:
+        # Only the two-component Kohn-Sham solver has spinor Bloch states;
+        # dropping the term would report a scalar-relativistic crystal under
+        # a spin-orbit dataset's name.
+        raise NotImplementedError(
+            f"the {', '.join(with_spin_orbit)} dataset(s) carry a spin-orbit "
+            "term, which only two-component (spinor) Bloch states can hold: "
+            "method='dft' (LDA or PBE) solves a crystal on them; this "
+            "consumer of the crystal has no spinor form.  Use a "
+            "scalar-relativistic set (paw_dataset='lda-sr' or 'pbe-sr') "
+            "for it")
     if grid is None:
         g = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                  units="angstrom", cell=cell, periodic=True)
@@ -1507,13 +1721,22 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
         reduced, weights, operations = reduce_mesh(mesh, operations)
     B = rc.reciprocal_vectors(rc.lattice_vectors(g))
     kpoints = reduced @ B.T
+    so_projectors, so_blocks = None, None
+    if with_spin_orbit:
+        # Complex harmonics, as every crystal function (the L.S matrix
+        # follows the projectors' own harmonics).
+        so_projectors = paw_spin_orbit_projectors(
+            real_symbols, positions[real], potentials, real=False)
+        so_blocks = paw_spin_orbit_blocks(so_projectors, real_symbols,
+                                          potentials)
     crystal = PeriodicPAW(
         basis, atom_of_orbital, projectors, datasets,
         [to_bohr(p, "angstrom") for p in positions[real]], g, kpoints, weights,
         paw_coupling_blocks(projectors, real_symbols, potentials),
         paw_overlap_blocks(projectors, real_symbols, potentials),
         paw_multipole_blocks(projectors, datasets), filter_wavevector=k_c,
-        symmetry=operations)
+        symmetry=operations, spin_orbit_projectors=so_projectors,
+        spin_orbit_blocks=so_blocks)
     context = {"crystal": crystal, "atom_of_orbital": atom_of_orbital,
                "n_electrons": float(valence_electrons(real_symbols,
                                                       potentials)),
@@ -1522,5 +1745,5 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
                "filter_wavevector": k_c, "options": dict(options),
                "confinement": confinement, "polarization": polarization,
                "kpts_size": size, "kpts_gamma": gamma,
-               "kpoints_fractional": reduced}
+               "kpoints_fractional": reduced, "full_mesh": bool(full_mesh)}
     return crystal, context

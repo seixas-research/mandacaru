@@ -166,6 +166,38 @@ class TestTheThreadedContractions:
                                                     workers)
             assert np.abs(X - dense).max() < 1e-12
 
+    @pytest.mark.parametrize("complex_", [False, True])
+    def test_no_bit_depends_on_the_thread_count(self, monkeypatch, complex_):
+        """The tiles and pair blocks are the problem's, not the threads':
+        every contraction gives the same bits on any number of threads."""
+        from mandacaru.integrals import fft as fft_mod
+
+        monkeypatch.setattr(engine_mod, "PARALLEL_MIN_VALUES", 0)
+        monkeypatch.setattr(fft_mod, "PARALLEL_MIN_VALUES", 0)
+        monkeypatch.setattr(engine_mod, "PAIR_BLOCK_MIN", 3)
+        monkeypatch.setattr(fft_mod, "MATMUL_ROW_BLOCK", 5)
+        rng = np.random.default_rng(6)
+        M, G, nv = 8, 410, 6
+        psi = rng.normal(size=(M, G))
+        phi = rng.normal(size=(nv, G))
+        if complex_:
+            psi = psi + 1j * rng.normal(size=(M, G))
+            phi = phi + 1j * rng.normal(size=(nv, G))
+        iu, ju = np.triu_indices(M)
+        densities = np.conj(psi[iu]) * psi[ju]
+        results = {}
+        for workers in (1, 2, 3, 5):
+            results[workers] = (
+                engine_mod.contract_pair_potentials(np.conj(psi), psi, phi,
+                                                    workers),
+                IntegralEngine._contract_streamed(psi, phi, iu, ju, 37,
+                                                  workers),
+                IntegralEngine._contract_cached(densities, phi.copy(), M,
+                                                iu, ju, workers))
+        for workers in (2, 3, 5):
+            for one, other in zip(results[1], results[workers]):
+                assert np.array_equal(one, other)
+
     def test_the_tile_width_follows_the_budget(self):
         width = IntegralEngine._pair_tile_width
         U, G = 5886, 27930

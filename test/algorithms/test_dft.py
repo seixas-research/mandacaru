@@ -705,6 +705,14 @@ class TestTheMolecularSpectrum:
             calc.dos(kpts=(2, 2, 2))
         assert calc.get_ibz_k_points().shape == (1, 3)
 
+    def test_a_molecule_refuses_the_tetrahedron_method(self, water_szp):
+        """Discrete levels have no Brillouin zone to cut into tetrahedra."""
+        calc = water_szp.calc
+        for spectrum in (calc.dos, calc.pdos):
+            with pytest.raises(NotImplementedError,
+                               match="integration='gaussian'"):
+                spectrum(integration="tetrahedron")
+
     def test_the_spectrum_needs_a_run(self):
         calc = Mandacaru(method="dft", trace=False)
         with pytest.raises(ValueError, match="get_potential_energy"):

@@ -340,8 +340,9 @@ class TestWhatGetsWrittenToAFile:
         assert ":charge:" not in self.written(atoms)
 
     def test_the_analysis_is_declared_to_ase(self):
+        calc = Mandacaru(method="adapt-vqe", basis="HAO", trace=False)
         for name in ("charges", "magmoms", "magmom"):
-            assert name in Mandacaru.implemented_properties
+            assert name in calc.implemented_properties
 
     @pytest.mark.parametrize("spec,expected",
                              [(True, "hirshfeld"), ("bader", "bader"),

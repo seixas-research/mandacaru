@@ -676,31 +676,77 @@ def qwc_partition(labels, weights=None) -> list[tuple[str, list[int]]]:
         weights = [float(w) for w in weights]
         order = sorted(range(len(labels)),
                        key=lambda i: (-weights[i], labels[i]))
+    from ..core.pauli_algebra import pack_labels, unpack_labels
+
     width = len(labels[0])
-    rows = np.frombuffer("".join(labels).encode(), dtype=np.uint8)
-    rows = rows.reshape(len(labels), width)
-    ident = np.uint8(ord("I"))
-    bases = np.empty((max(len(labels), 1), width), dtype=np.uint8)
-    open_count = 0
+    x, z = pack_labels(labels, width)
+    basis_x, basis_z, members = qwc_groups(x, z, order)
+    return list(zip(unpack_labels(basis_x, basis_z, width), members))
+
+
+def qwc_groups(x: np.ndarray, z: np.ndarray, order) -> tuple:
+    """Greedy first-fit qubit-wise-commuting groups of bit-table rows.
+
+    ``x``, ``z`` are ``(terms, words)`` uint64 tables
+    (:class:`~mandacaru.core.pauli_algebra.PauliTable`), visited in ``order``.
+    A row joins the first open basis it agrees with on every qubit both act
+    on -- ``(s & s_b) & ((x ^ x_b) | (z ^ z_b)) == 0`` with ``s = x | z`` --
+    and the basis takes its letters where it had none.  Returns
+    ``(basis_x, basis_z, members)``: the bases as tables and, for each, the
+    row indices it measures.  The test is one vectorized pass over the open
+    bases per row, on 64 qubits per word: what :func:`qwc_partition` runs, and
+    what the measured pool gradients
+    (:mod:`~mandacaru.backends.gradient_measurement`) group their commutator
+    strings with, so a plan's basis count is the count that is executed.
+    """
+    order = np.asarray(order, dtype=np.int64)
+    terms, words = x.shape
+    bx = np.zeros((max(terms, 1), words), dtype=np.uint64)
+    bz = np.zeros_like(bx)
+    bs = np.zeros_like(bx)
     members: list[list[int]] = []
-    for i in order:
-        row = rows[i]
-        if open_count:
-            block = bases[:open_count]
-            fits = np.flatnonzero(((block == ident) | (row == ident)
-                                   | (block == row)).all(axis=1))
+    count = 0
+    single = words == 1
+    if single:
+        x1, z1, bx1, bz1, bs1 = x[:, 0], z[:, 0], bx[:, 0], bz[:, 0], bs[:, 0]
+    for i in order.tolist():
+        if single:
+            xi, zi = x1[i], z1[i]
+            si = xi | zi
+            if count:
+                conflict = (bs1[:count] & si) & ((bx1[:count] ^ xi)
+                                                 | (bz1[:count] ^ zi))
+                fits = np.flatnonzero(conflict == 0)
+            else:
+                fits = ()
+            if len(fits):
+                g = int(fits[0])
+                bx1[g] |= xi
+                bz1[g] |= zi
+                bs1[g] |= si
+                members[g].append(i)
+                continue
+            bx1[count], bz1[count], bs1[count] = xi, zi, si
         else:
-            fits = ()
-        if len(fits):
-            g = int(fits[0])
-            bases[g] = np.where(bases[g] == ident, row, bases[g])
-            members[g].append(i)
-        else:
-            bases[open_count] = row
-            members.append([i])
-            open_count += 1
-    return [("".join(chr(c) for c in bases[g]), members[g])
-            for g in range(open_count)]
+            xi, zi = x[i], z[i]
+            si = xi | zi
+            if count:
+                conflict = (bs[:count] & si) & ((bx[:count] ^ xi)
+                                                | (bz[:count] ^ zi))
+                fits = np.flatnonzero(~conflict.any(axis=1))
+            else:
+                fits = ()
+            if len(fits):
+                g = int(fits[0])
+                bx[g] |= xi
+                bz[g] |= zi
+                bs[g] |= si
+                members[g].append(i)
+                continue
+            bx[count], bz[count], bs[count] = xi, zi, si
+        members.append([i])
+        count += 1
+    return bx[:count], bz[:count], members
 
 
 def _greedy_bases(labels, weights=None) -> list[str]:

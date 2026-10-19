@@ -109,6 +109,21 @@ class MeshStates:
             R = R + w * ((proj.conj().T * f) @ proj)
         return np.asarray(R)
 
+    def projected_density_blocks(self) -> list:
+        r"""Spinor states (``orbitals`` ``(n, 2, ngrid)``, ``projections``
+        ``(n, 2, P)``): the four spin blocks :math:`R^{\sigma\tau}_{ij} =
+        \sum_{\mathbf q} w_{\mathbf q}\sum_m f_m\langle\tilde
+        p_i|\phi_{m\sigma}\rangle\langle\phi_{m\tau}|\tilde p_j\rangle`,
+        ``[[uu, ud], [du, dd]]``."""
+        blocks = [[0.0, 0.0], [0.0, 0.0]]
+        for w, f, proj in zip(self.weights, self.occupations,
+                              self.projections):
+            for a in range(2):
+                for b in range(2):
+                    blocks[a][b] = blocks[a][b] + w * (
+                        (proj[:, a].conj().T * f) @ proj[:, b])
+        return [[np.asarray(x) for x in row] for row in blocks]
+
 
 @dataclass
 class _Image:
@@ -130,9 +145,16 @@ class PeriodicExchange:
     pair wave vector and the dense compensation-compensation matrices.
     """
 
-    def __init__(self, crystal, omega: float):
+    def __init__(self, crystal, omega: float, time_reversal: bool = True):
         self.crystal = crystal
         self.omega = float(omega)
+        #: Whether the states at -k are taken as the conjugates of those at
+        #: k.  A two-component crystal's are not (time reversal is
+        #: i sigma_y K on spinors): it holds the whole mesh and no images.
+        self.time_reversal = bool(time_reversal)
+        if not self.time_reversal and crystal.symmetry is not None:
+            raise ValueError("an exchange without time-reversal images "
+                             "needs the whole mesh, without symmetry")
         self._images = None
         self._transforms: dict = {}
         self._dense: dict = {}
@@ -164,7 +186,8 @@ class PeriodicExchange:
             star = []
             for W, perm in self._operations():
                 image = W.T @ k_frac
-                for reverse in (False, True):
+                for reverse in ((False, True) if self.time_reversal
+                                else (False,)):
                     point = -image if reverse else image
                     if any(np.allclose(point - other,
                                        np.round(point - other), atol=1e-8)
@@ -262,6 +285,33 @@ class PeriodicExchange:
                                           @ image.projections)
         return states
 
+    def spinor_mesh_states(self, kpoint_data, vectors,
+                           occupations) -> MeshStates:
+        r"""The occupied spinor states of the whole mesh (the crystal's own
+        k-points, no images: :attr:`time_reversal` off): per point
+        ``orbitals`` ``(n, 2, ngrid)`` and ``projections`` ``(n, 2, P)``,
+        the two spin components of each state, from ``(2M, 2M)``
+        eigenvectors (alpha rows first)."""
+        if self.time_reversal or self.crystal.symmetry is not None:
+            raise ValueError("spinor states need the whole mesh and no "
+                             "time-reversal images (time_reversal=False)")
+        states = MeshStates()
+        M = self.crystal.M
+        for data, C, f in zip(kpoint_data, vectors, occupations):
+            f = np.asarray(f, dtype=float)
+            occupied = f > OCCUPATION_FLOOR
+            c = np.asarray(C)[:, occupied]
+            components = (c[:M], c[M:])
+            states.kpoints.append(np.asarray(data.k, dtype=float))
+            states.weights.append(float(data.weight))
+            states.occupations.append(f[occupied])
+            states.orbitals.append(np.stack(
+                [part.T @ data.psi for part in components], axis=1))
+            states.projections.append(np.stack(
+                [part.conj().T @ data.projections for part in components],
+                axis=1))
+        return states
+
     # -- the pair wave vectors ---------------------------------------------- #
 
     def _pair_vector(self, k, q):
@@ -309,18 +359,17 @@ class PeriodicExchange:
         (the forces').  Hermitian to round-off; not symmetrized here."""
         c = self.crystal
         grid = c.grid
-        shape, dV = grid.shape, grid.dV
         origin = np.exp(-1j * np.einsum("c,cxyz->xyz", rc.grid_origin(grid),
                                         c.G)).ravel()
         G = c.G
         nodes = self._nodes
         # The pair transforms run in place on the grid's FFT workspace.
-        space = workspace(shape, None, grid_blas_threads())
+        space = workspace(grid.shape, None, grid_blas_threads())
         blocks = [(np.asarray(c.projector_columns(ch[0])), blk)
                   for ch, blk in c.multipole_blocks.items()]
         out = []
         for data in kpoint_data:
-            psi, C_k = data.psi, data.projections
+            psi = data.psi
             M = len(psi)
             K = np.zeros((M, M), dtype=complex)
             k = np.asarray(data.k, dtype=float)
@@ -338,29 +387,101 @@ class PeriodicExchange:
                 block = max(1, int(PAIR_BLOCK_BYTES // (16 * M * psi.shape[1])))
                 for start in range(0, len(phi), block):
                     part = phi[start:start + block]
-                    n = len(part)
                     weights = w * f[start:start + block]
-                    # T(G) = int e^{-i(G+p)r} (phi* chi + n^) dr: the smooth
-                    # pair through the FFT, the compensation charges by
-                    # their moments times the shapes' transforms.
-                    pairs = (part.conj()[:, None, :] * psi[None, :, :]
-                             * phase).reshape(n * M, *shape)
-                    T = (space.forward(pairs).reshape(n, M, -1)
-                         * (origin * dV))
-                    moments = np.stack([
-                        proj[start:start + block][:, own] @ blk
-                        @ C_k[:, own].conj().T for own, blk in blocks]) \
-                        if blocks else np.zeros((0, n, M), dtype=complex)
-                    if blocks:
-                        T = T + np.einsum("cam,cg->amg", moments, transforms,
-                                          optimize=True)
-                    left = T.conj() * (weights[:, None, None] * kernel)
-                    K += np.einsum("amg,ang->mn", left, T,
-                                   optimize=True) / c.volume
-                    if blocks:
-                        K += np.einsum("cam,cd,dan,a->mn", moments.conj(),
-                                       correction, moments, weights,
-                                       optimize=True)
+                    T, moments = self._pair_transforms(
+                        part, proj[start:start + block], data, phase, space,
+                        origin, blocks, transforms)
+                    K += self._pair_exchange(T, T, moments, moments,
+                                             weights, kernel, correction)
+            out.append(K)
+        return np.stack(out)
+
+    def _pair_transforms(self, part, proj, data, phase, space, origin,
+                         blocks, transforms):
+        r"""``(T, moments)`` of the pairs :math:`\phi^*_m\chi_\mu` of the
+        states ``part`` (``(n, ngrid)``, projections ``proj`` ``(n, P)``)
+        with ``data``'s Bloch sums: :math:`T(\mathbf G) = \int
+        e^{-i(\mathbf G+\mathbf p)\cdot\mathbf r}(\phi^*\chi + \hat n)`,
+        the smooth pair through the FFT, the compensation charges by their
+        moments times the shapes' transforms."""
+        c = self.crystal
+        psi, C_k = data.psi, data.projections
+        n, M = len(part), len(psi)
+        pairs = (part.conj()[:, None, :] * psi[None, :, :]
+                 * phase).reshape(n * M, *c.grid.shape)
+        T = space.forward(pairs).reshape(n, M, -1) * (origin * c.grid.dV)
+        moments = np.stack([
+            proj[:, own] @ blk @ C_k[:, own].conj().T
+            for own, blk in blocks]) if blocks else np.zeros((0, n, M),
+                                                             dtype=complex)
+        if blocks:
+            T = T + np.einsum("cam,cg->amg", moments, transforms,
+                              optimize=True)
+        return T, moments
+
+    def _pair_exchange(self, T_left, T_right, moments_left, moments_right,
+                       weights, kernel, correction) -> np.ndarray:
+        r"""``(M, M)``: one batch of pairs' exchange,
+        :math:`\sum_m w_m (T^L_{m\mu}|v|T^R_{m\nu})` plus the dense
+        compensation correction."""
+        left = T_left.conj() * (weights[:, None, None] * kernel)
+        K = np.einsum("amg,ang->mn", left, T_right,
+                      optimize=True) / self.crystal.volume
+        if len(moments_left):
+            K = K + np.einsum("cam,cd,dan,a->mn", moments_left.conj(),
+                              correction, moments_right, weights,
+                              optimize=True)
+        return K
+
+    def spinor_matrices(self, kpoint_data, states: MeshStates) -> np.ndarray:
+        r"""``(nk, 2M, 2M)``: the exchange of spinor states
+        (:meth:`spinor_mesh_states`) at each of ``kpoint_data``, alpha block
+        first.  The kernel is spin-free, so the block
+        :math:`K^{\sigma\tau}` is :meth:`matrices`' exchange of the pair
+        densities :math:`\phi^*_{m\sigma}\chi_\mu` and
+        :math:`\phi^*_{m\tau}\chi_\nu` -- the operator
+        :math:`\sum_m f_m\phi_{m\sigma}(\mathbf r)
+        \phi^*_{m\tau}(\mathbf r')\,v(\mathbf r - \mathbf r')` of the
+        spinor density matrix's :math:`(\sigma, \tau)` block, as in
+        generalized Hartree-Fock."""
+        c = self.crystal
+        grid = c.grid
+        origin = np.exp(-1j * np.einsum("c,cxyz->xyz", rc.grid_origin(grid),
+                                        c.G)).ravel()
+        space = workspace(grid.shape, None, grid_blas_threads())
+        blocks = [(np.asarray(c.projector_columns(ch[0])), blk)
+                  for ch, blk in c.multipole_blocks.items()]
+        out = []
+        for data in kpoint_data:
+            M = len(data.psi)
+            K = np.zeros((2 * M, 2 * M), dtype=complex)
+            k = np.asarray(data.k, dtype=float)
+            for q, w, f, phi, proj in zip(states.kpoints, states.weights,
+                                          states.occupations, states.orbitals,
+                                          states.projections):
+                p, key = self._pair_vector(k, q)
+                Gp = c.G + p[:, None, None, None]
+                kernel = short_range_coulomb_kernel(
+                    np.sum(Gp * Gp, axis=0), self.omega).ravel()
+                transforms = self._compensation_on_grid(p, key)
+                correction = self._dense_correction(p, key, kernel,
+                                                    transforms)
+                phase = np.exp(-1j * (p @ self._nodes))
+                block = max(1, int(PAIR_BLOCK_BYTES
+                                   // (32 * M * data.psi.shape[1])))
+                for start in range(0, len(phi), block):
+                    weights = w * f[start:start + block]
+                    pieces = [self._pair_transforms(
+                        phi[start:start + block, s],
+                        proj[start:start + block, s], data, phase, space,
+                        origin, blocks, transforms) for s in range(2)]
+                    for a in range(2):
+                        for b in range(2):
+                            K[a * M:(a + 1) * M, b * M:(b + 1) * M] += \
+                                self._pair_exchange(
+                                    pieces[a][0], pieces[b][0],
+                                    pieces[a][1], pieces[b][1], weights,
+                                    kernel, correction)
             out.append(K)
         return np.stack(out)
 

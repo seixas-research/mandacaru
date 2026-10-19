@@ -789,10 +789,10 @@ class VariationalDriver(Calculator):
     @property
     def _h_matrix(self):
         """The Hamiltonian matrix of the state-vector backend, built on first
-        use.  A shot-based objective never touches it -- every energy is a
-        measured circuit -- so a hardware run allocates no ``2^N`` operator
-        and meets no state-memory guard unless something local asks for it
-        (ADAPT's classical pool screening does)."""
+        use.  A shot-based run never touches it -- every energy and every
+        pool gradient is measured on the device, and the reference energy is
+        the determinant's (:meth:`reference_energy_of`) -- so a hardware run
+        allocates no ``2^N`` operator and meets no state-memory guard."""
         value = self.__dict__.get("_h_matrix_value")
         if value is None:
             builder = self.__dict__.get("_h_matrix_builder")
@@ -812,14 +812,16 @@ class VariationalDriver(Calculator):
             # Only integer masks and coefficients are kept; the Hermitian part
             # is taken on the coefficients, as 0.5 * (H + H^dagger) would.
             return PauliOperator(qubit_h, sector=sector, hermitian=True)
+        # Each Pauli string is Hermitian, so 0.5 * (H + H^dagger) is H with
+        # its coefficients made real: the stored matrix is built once from
+        # them, with no transposed copy and no sum of two (the sector matrix
+        # of a 20-qubit active space is a gigabyte).
+        hermitian = qubit_h.hermitian_part()
         if sector is not None:
-            hs = sector.restrict(qubit_h)
-            return 0.5 * (hs + hs.conj().T)
+            return sector.restrict(hermitian)
         if self._sparse:
-            hs = qubit_h.to_sparse_matrix()
-            return 0.5 * (hs + hs.conj().T)
-        h = qubit_h.to_matrix()
-        return 0.5 * (h + h.conj().T)                   # Hermitize rounding noise
+            return hermitian.to_sparse_matrix()
+        return hermitian.to_matrix()
 
     def determinant_energy(self, occupied) -> float:
         """``<D|H|D>`` of the computational-basis state with ``occupied``
@@ -840,6 +842,17 @@ class VariationalDriver(Calculator):
                     sign = -sign
             total += sign * float(np.real(coeff))
         return total
+
+    def reference_energy_of(self, ansatz) -> float:
+        """Energy of ``ansatz``'s reference state.
+
+        With shots it is read off the determinant (:meth:`determinant_energy`)
+        rather than a state vector, which a shot-based run never builds; an
+        ansatz without reference qubits is the one exception.
+        """
+        if self.shots and hasattr(ansatz, "reference_qubits"):
+            return self.determinant_energy(ansatz.reference_qubits())
+        return self.energy(ansatz.reference_state())
 
     def energy(self, psi: np.ndarray) -> float:
         r"""Expectation value ``<psi| H |psi>`` (real) for a state vector ``psi``."""
@@ -866,6 +879,20 @@ class VariationalDriver(Calculator):
         h_matrix = self._h_matrix
         return lambda theta: ansatz.energy_and_gradient(
             theta, lambda vectors: h_matrix @ vectors)
+
+    def _parameter_gradient_text(self, ansatz) -> str:
+        """How the optimizer gets ``dE/dtheta`` of ``ansatz`` (the
+        ``parameter_gradient`` setup line): the adjoint sweep
+        (:meth:`_energy_gradient`), the optimizer's finite difference, or none
+        for a method that uses no gradient."""
+        from ..optimizers.optim import _GRADIENT_METHODS
+
+        if self.optimizer.method not in _GRADIENT_METHODS:
+            return f"none ({self.optimizer.method} uses no gradient)"
+        if self._energy_gradient(ansatz) is not None:
+            return ("analytic (adjoint: one forward preparation and one "
+                    "backward sweep)")
+        return "finite difference (by the optimizer, one energy per parameter)"
 
     def ansatz_energy(self, ansatz, theta) -> float:
         r"""Energy of ``ansatz`` at parameters ``theta`` on the configured backend.
@@ -921,6 +948,63 @@ class VariationalDriver(Calculator):
                 f"({'; '.join(over)}).  Lower the optimizer's maxiter or the "
                 f"shots, or raise run_budget= in backend_options if you "
                 f"mean it.")
+
+    #: The calculator's ``measurement_budget=`` (set by
+    #: :class:`~mandacaru.algorithms.calculator.Mandacaru`): the per-job
+    #: ceilings a shot-based run's gradient jobs are packed under and checked
+    #: against.  ``None`` is the default budget.
+    measurement_budget = None
+
+    def _preflight_gradient_step(self, plan) -> None:
+        """Refuse a growth step's gradient measurement before its first job.
+
+        ``plan`` is a
+        :class:`~mandacaru.backends.gradient_measurement.GradientMeasurementPlan`.
+        Its largest job must fit ``measurement_budget`` (as an energy job
+        must), and the whole step the provider's run budget (jobs and
+        shots).  Both are classical counts, so a refusal costs nothing.
+        """
+        from ..backends.measurement import (MeasurementBudgetError,
+                                            RunBudgetExceeded,
+                                            resolve_measurement_budget,
+                                            resolve_run_budget)
+
+        limits = resolve_measurement_budget(self.measurement_budget)
+        per_basis = (plan.total_shots // plan.bases) if plan.bases else 0
+        largest = {"observables": plan.max_job_strings,
+                   "bases": plan.max_job_bases,
+                   "circuit_instances": plan.max_job_bases
+                   * max(plan.noise_factors, 1) * max(plan.twirls, 1),
+                   "total_shots": plan.max_job_bases * per_basis}
+        over = [f"{key} {largest[key]:,} > {limits[key]:,}" for key in largest
+                if limits.get(key) is not None and largest[key] > limits[key]]
+        if over:
+            raise MeasurementBudgetError(
+                f"a pool-gradient job of this run would exceed the "
+                f"measurement budget ({'; '.join(over)}): one "
+                f"qubit-wise-commuting basis of the commutator observables is "
+                f"larger than a job may be.  Raise measurement_budget= if you "
+                f"mean it, or shrink the register.", plan)
+        provider = self.circuit_provider()
+        budget = resolve_run_budget(getattr(provider, "run_budget", None),
+                                    getattr(provider, "is_hardware", False))
+        if budget is None or not hasattr(provider, "run_usage"):
+            return
+        usage = provider.run_usage()
+        needed = {"jobs": usage["jobs"] + plan.jobs,
+                  "total_shots": usage["shots"] + plan.total_shots}
+        over = [f"{key} {needed[key]:,} > {budget[key]:,}" for key in needed
+                if budget.get(key) is not None and needed[key] > budget[key]]
+        if over:
+            raise RunBudgetExceeded(
+                f"measuring the pool gradients of this growth step "
+                f"({plan.operators:,} operators: {plan.strings:,} Pauli "
+                f"strings in {plan.bases:,} bases, {plan.jobs:,} jobs, "
+                f"{plan.total_shots:,} shots) would exceed the run budget "
+                f"after {usage['jobs']:,} jobs and {usage['shots']:,} shots "
+                f"({'; '.join(over)}).  Use screening={{'operators': K}} "
+                f"with a smaller K, a smaller pool or register, or raise "
+                f"run_budget= in backend_options if you mean it.")
 
     # -- circuit provider ------------------------------------------------- #
 
@@ -1021,10 +1105,11 @@ class VariationalDriver(Calculator):
         With ``shots = 0`` this is :meth:`circuit_provider` (the SDK's exact
         simulator, or ``None`` for the internal backend).  With ``shots > 0``
         it is always ``None``: a shot-based provider cannot return amplitudes,
-        so the state vector that ADAPT's classical pool-gradient screening
-        needs comes from the internal backend, while every *energy* goes
-        through :meth:`ansatz_energy` -- i.e. through the provider's
-        measurement protocol.
+        and nothing asks for them -- every energy goes through
+        :meth:`ansatz_energy` and every ADAPT pool gradient through the
+        provider's Pauli expectation values
+        (:mod:`~mandacaru.backends.gradient_measurement`), so the ansatz is a
+        measured one that prepares no state.
         """
         if self.shots:
             return None
@@ -1706,6 +1791,9 @@ class VariationalDriver(Calculator):
                 if isinstance(spec, dict) and "zeta_split" in spec:
                     from ..basis.multizeta import validate_zeta_split
                     validate_zeta_split(spec["zeta_split"])
+                if isinstance(spec, dict) and "diffuse" in spec:
+                    from ..pseudopotentials.diffuse import validate_diffuse
+                    validate_diffuse(spec["diffuse"])
             return
         family = pseudopotential_family(name)
         if family is None:
@@ -1719,6 +1807,9 @@ class VariationalDriver(Calculator):
             validate_filter_cutoff(options["filter_cutoff"])
         if "energy_shift" in options:
             validate_energy_shift(options["energy_shift"])
+        if "diffuse" in options:
+            from ..pseudopotentials.diffuse import validate_diffuse
+            validate_diffuse(options["diffuse"])
         from ..basis.multizeta import validate_zeta_split
         validate_zeta_split(options.get("zeta_split"))
         if "polarization_method" in family.options:
@@ -1771,8 +1862,11 @@ class VariationalDriver(Calculator):
         """
         from .dry_run import estimate_qubits
 
+        pool = getattr(self, "_pool_spec", None)
         common = dict(mapping=self.mapping, method=self._method_name(),
-                      device=self.device)
+                      device=self.device, shots=self.shots,
+                      pool=getattr(pool, "name", pool),
+                      measurement_budget=self.measurement_budget)
         if self.load_hamiltonian is not None:
             # The cache header is the whole specification (and fixes the
             # mapping), whether or not the driver has already adopted it.
@@ -2125,6 +2219,7 @@ class VariationalDriver(Calculator):
         return {
             **self._grid_fields(),
             "kinetic operator": self._kinetic_label(),
+            "two-body integrals": self._two_body_label(),
             "k-points": self._kpts_label(),
             "charge": str(self.charge),
             "spin-polarized": self._spin_polarized_label(),
@@ -2162,6 +2257,20 @@ class VariationalDriver(Calculator):
         path = ("pseudopotentials" if pseudopotential_family(name) is not None
                 else "all-electron")
         return DEFAULT_KINETIC[path]
+
+    def _two_body_label(self) -> str | None:
+        """The ``[ELECTRONS]`` line of Cholesky-factored two-body integrals
+        (:meth:`~mandacaru.integrals.cholesky.CholeskyERI.summary`: tolerance,
+        rank, largest residual diagonal), or ``None`` -- no line -- for the
+        exact dense integrals and a run that built none.  This block owns
+        the factors' description; ``[PERFORMANCE]`` keeps only the time of
+        the "two-body integrals (cholesky)" stage."""
+        integrals = (getattr(self, "_gradient_context", None)
+                     or {}).get("integrals")
+        if not getattr(integrals, "cholesky_integrals", False):
+            return None
+        factors = getattr(integrals, "_cholesky", None)
+        return None if factors is None else factors.summary()
 
     def _grid_fields(self) -> dict:
         """The ``[ELECTRONS]`` lines of the real-space grid.
@@ -2300,6 +2409,9 @@ class VariationalDriver(Calculator):
 
     def _backend_description(self) -> str:
         """How the state vector and the pool are represented."""
+        if self.shots:
+            return ("none (shots > 0: every expectation value is measured "
+                    "on the device, no state vector)")
         sector = getattr(self, "_sector", None)
         if getattr(self, "_matrix_free", False):
             space = (f"particle-number sector, {sector.dim} states of "

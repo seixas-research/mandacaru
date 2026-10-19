@@ -643,6 +643,42 @@ class OneCenterHybrid:
         return OneCenterTerms(energy=exact + semilocal, exact_exchange=exact,
                               semilocal=semilocal, operators=tuple(operators))
 
+    def evaluate_spinor(self, blocks) -> OneCenterTerms:
+        r"""The terms of a two-component (spinor) state: ``blocks`` are the
+        four spin blocks :math:`D^{\sigma\tau}` of the projected density
+        matrix (``[[uu, ud], [du, dd]]``).
+
+        The exchange operator is linear in the density matrix and the
+        interaction spin-free, so the block :math:`(\sigma, \tau)` of the
+        operator is :math:`-a\,\Delta K[D^{\sigma\tau}]` (plus
+        :math:`-aV` on the diagonal blocks), and the exact exchange
+        :math:`-\tfrac a2\sum_{\sigma\tau}\operatorname{tr}(D^{\tau\sigma}
+        \Delta K[D^{\sigma\tau}])` -- the spin-channel form's when the
+        off-diagonal blocks vanish.  ``operators`` holds the one ``(2P,
+        2P)`` operator, alpha block first."""
+        a = self.fraction
+        D = [[np.asarray(x) for x in row] for row in blocks]
+        P = self.n_projectors
+        total = D[0][0] + D[1][1]
+        operator = np.zeros((2 * P, 2 * P), dtype=complex)
+        exact = 0.0
+        linear = 0.0
+        for members, W, V in self.blocks:
+            block = np.ix_(members, members)
+            linear += float(np.real(np.sum(V * total[block].T)))
+            for s in range(2):
+                for t in range(2):
+                    K = self._exchange(D[s][t][block], W)
+                    exact -= 0.5 * a * float(np.real(np.sum(
+                        D[t][s][block].T * K)))
+                    rows = members + s * P
+                    cols = members + t * P
+                    operator[np.ix_(rows, cols)] += -a * K - (
+                        a * V if s == t else 0.0)
+        semilocal = self.constant - a * linear
+        return OneCenterTerms(energy=exact + semilocal, exact_exchange=exact,
+                              semilocal=semilocal, operators=(operator,))
+
 
 # --------------------------------------------------------------------------- #
 # The exact one-center terms of a Hartree-Fock (and correlated) Hamiltonian.

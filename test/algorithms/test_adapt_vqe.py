@@ -702,3 +702,376 @@ class TestResumeIntoAnotherGeometry:
         fresh.get_potential_energy()
         assert result.optimal_energy == pytest.approx(
             fresh.calc.solver.result.optimal_energy, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# On a device: the pool gradients are measured, and nothing is 2^n.
+# --------------------------------------------------------------------------- #
+
+class ExactDevice:
+    """A device double whose answers are exact: the energy and every Pauli
+    expectation value of the circuit it is handed, from that circuit's own
+    state vector (Qiskit's), so a difference from the local run can only be
+    the protocol.  It keeps a ledger of the jobs it ran."""
+
+    shots = 0
+    device_spec = "exact-device"
+    max_bases_per_job = None
+    run_budget = None
+    is_hardware = False
+
+    def __init__(self):
+        from mandacaru.backends.providers import QiskitProvider
+        self.circuit = QiskitProvider()
+        self.jobs = 0
+
+    def run_usage(self):
+        return {"jobs": self.jobs, "shots": 0}
+
+    def energy(self, n, occupied, generators, thetas, hamiltonian):
+        psi = self.circuit.statevector(n, occupied, generators, thetas)
+        return float(np.real(np.vdot(
+            psi, hamiltonian.to_sparse_matrix() @ psi)))
+
+    def expectation_values(self, n, occupied, generators, thetas, labels,
+                           max_bases_per_job=None):
+        from mandacaru.core.mapping import PauliSum
+
+        self.jobs += 1
+        psi = self.circuit.statevector(n, occupied, generators, thetas)
+        values = {label: float(np.real(np.vdot(
+            psi, PauliSum({label: 1.0}).to_sparse_matrix() @ psi)))
+            for label in labels}
+        return values, dict.fromkeys(labels, 0.0)
+
+
+def _molecule_problem(name):
+    """``(qubit Hamiltonian, num_particles, n_spatial_orbitals)`` of a small
+    real molecule (HAO), built once by a run that grows nothing."""
+    from ase.build import molecule
+
+    if name == "H2":
+        atoms, active = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)]), None
+    elif name == "LiH":
+        atoms = Atoms("LiH", positions=[(0, 0, 0), (0, 0, 1.6)])
+        active = {"frozen": "auto"}
+    else:
+        atoms = molecule("H2O")
+        active = {"frozen": "auto",
+                  "orbitals": {"occupied": 2, "virtual": 2}}
+    atoms.center(vacuum=3.0)
+    calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.4,
+                     pool="fermionic", max_iterations=0, trace=False,
+                     active_space=active)
+    atoms.calc = calc
+    with pytest.warns(RuntimeWarning) if name == "H2O" else \
+            contextlib.nullcontext():
+        atoms.get_potential_energy()
+    solver = calc.solver
+    return (solver.hamiltonian, tuple(solver.num_particles),
+            solver.pool.n_spatial_orbitals)
+
+
+class TestTheDeviceRunIsTheExactRun:
+    """With an exact device, the measured ADAPT-VQE -- classical gradients
+    at the reference, measured commutators after it, measured energies --
+    takes the local state-vector run's every step."""
+
+    COBYLA = {"method": "COBYLA", "maxiter": 300, "tol": 1e-10}
+
+    @pytest.mark.parametrize("name, pool", [
+        ("H2", "fermionic"), ("LiH", "qeb"), ("H2O", "fermionic"),
+        ("H2O", "ceo")])
+    def test_same_operators_and_energies(self, name, pool):
+        hamiltonian, particles, orbitals = _molecule_problem(name)
+        options = dict(hamiltonian=hamiltonian, pool=pool,
+                       num_particles=particles, n_spatial_orbitals=orbitals,
+                       max_iterations=3, optimizer=self.COBYLA, trace=False,
+                       profile=False,
+                       convergence={"gradient": 1e-6, "energy": None})
+        local = Mandacaru(method="adapt-vqe", **options).run()
+        calc = Mandacaru(method="adapt-vqe", shots=1000, **options)
+        device = ExactDevice()
+        calc.solver.circuit_provider = lambda: device
+        measured = calc.solver.run()
+        assert measured.operators == local.operators
+        assert measured.energy_history == pytest.approx(local.energy_history,
+                                                        abs=1e-9)
+        assert measured.reference_energy == pytest.approx(
+            local.reference_energy, abs=1e-10)
+        # The first screening is classical; every later one was measured.
+        assert device.jobs >= len(local.iterations)
+
+
+def _sparse_molecular_fermion(n_orbitals):
+    """A molecular-form Hamiltonian on ``n_orbitals`` spatial orbitals whose
+    integrals couple neighbors only: a 50-qubit register with a few thousand
+    Pauli strings, so the test is about the register and not the integrals."""
+    from mandacaru.core.mapping import Fermion
+
+    M = int(n_orbitals)
+    h = np.diag(np.linspace(-2.0, 2.0, M))
+    for p in range(M - 1):
+        h[p, p + 1] = h[p + 1, p] = -0.3
+    chemist = np.zeros((M,) * 4)
+    for p in range(M):
+        chemist[p, p, p, p] = 0.6
+        for q in (p + 1, p + 2):
+            if q < M:
+                coulomb, exchange = 0.3 / (q - p), 0.05 / (q - p)
+                chemist[p, p, q, q] = chemist[q, q, p, p] = coulomb
+                for a, b, c, d in ((p, q, p, q), (q, p, q, p),
+                                   (p, q, q, p), (q, p, p, q)):
+                    chemist[a, b, c, d] = exchange
+    return Fermion.from_spatial_integrals(h, chemist.transpose(0, 2, 1, 3))
+
+
+class PolynomialDevice:
+    """A 50-qubit device double.  Every answer is polynomial arithmetic: the
+    energy is the reference determinant's plus a fixed bowl in the angles,
+    and a Pauli expectation value is the determinant's own (exact at zero
+    angles) plus a small deterministic signal.  Nothing about it is
+    physical; it only answers what the device would be asked."""
+
+    device_spec = "polynomial-device"
+    max_bases_per_job = None
+    run_budget = None
+    is_hardware = False
+
+    def __init__(self, shots=1000):
+        self.shots = shots
+        self.energies = 0
+        self.gradient_jobs = 0
+        self.labels = 0
+
+    def run_usage(self):
+        jobs = self.energies + self.gradient_jobs
+        return {"jobs": jobs, "shots": jobs * self.shots}
+
+    @staticmethod
+    def _determinant_value(label, occupied):
+        if any(ch in "XY" for ch in label):
+            return 0.0
+        flips = sum(1 for q in occupied if label[q] == "Z")
+        return -1.0 if flips % 2 else 1.0
+
+    def energy(self, n, occupied, generators, thetas, hamiltonian):
+        self.energies += 1
+        occupied = set(occupied)
+        reference = sum(float(np.real(c)) * self._determinant_value(label,
+                                                                    occupied)
+                        for label, c in hamiltonian.terms.items())
+        thetas = np.asarray(thetas, dtype=float)
+        return reference - 0.01 * len(thetas) + float(
+            np.sum((thetas - 0.05) ** 2))
+
+    def expectation_values(self, n, occupied, generators, thetas, labels,
+                           max_bases_per_job=None):
+        import zlib
+
+        self.gradient_jobs += 1
+        self.labels += len(labels)
+        signal = float(np.sum(np.sin(np.asarray(thetas, dtype=float))))
+        values = {}
+        for label in labels:
+            seed = zlib.crc32(label.encode()) % 1000 / 1000.0
+            values[label] = float(np.clip(
+                self._determinant_value(label, set(occupied))
+                + 0.01 * signal * (seed - 0.5), -1.0, 1.0))
+        return values, dict.fromkeys(labels, 1.0 / np.sqrt(self.shots))
+
+
+@contextlib.contextmanager
+def _nothing_exponential(monkeypatch):
+    """Every constructor of a ``2^n`` (or sector-sized) object raises."""
+    import qiskit.quantum_info
+    import scipy.sparse.linalg
+
+    from mandacaru.circuits.pools import PoolOperator
+    from mandacaru.core import mapping, matrix_free, sector
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("a shot-based run built an exponential object")
+
+    class ForbiddenStatevector:
+        def __init__(self, *_args, **_kwargs):
+            forbidden()
+
+    real_eigh = np.linalg.eigh
+
+    def small_eigh(a, *args, **kwargs):
+        if np.shape(a)[0] > 64:
+            forbidden()
+        return real_eigh(a, *args, **kwargs)
+
+    for owner, name, value in (
+            (mapping.PauliSum, "to_matrix", forbidden),
+            (mapping.PauliSum, "to_sparse_matrix", forbidden),
+            (mapping.Fermion, "to_matrix", forbidden),
+            (sector.ParticleSector, "__init__", forbidden),
+            (sector.ParticleSector, "restrict", forbidden),
+            (matrix_free.PauliOperator, "__init__", forbidden),
+            (PoolOperator, "matrix", forbidden),
+            (AdaptAnsatz, "_reference_vector", forbidden),
+            (qiskit.quantum_info, "Statevector", ForbiddenStatevector),
+            (scipy.sparse.linalg, "expm_multiply", forbidden),
+            (np.linalg, "eigh", small_eigh)):
+        monkeypatch.setattr(owner, name, value)
+    yield
+
+
+class TestAShotRunBuildsNoStateVector:
+    """A 50-qubit ADAPT-VQE on a device: the reference energy from the
+    determinant, the first gradients exact and classical, the later ones
+    measured as commutator observables, every energy measured -- and no
+    ``2^50`` object anywhere, with the classical memory under a gigabyte."""
+
+    def test_fifty_qubits(self, monkeypatch, tmp_path):
+        import tracemalloc
+
+        from mandacaru.utils.logging import parse_output
+
+        fermion = _sparse_molecular_fermion(25)
+        out = str(tmp_path / "output.txt")
+        device = PolynomialDevice()
+        with _nothing_exponential(monkeypatch):
+            tracemalloc.start()
+            try:
+                calc = Mandacaru(
+                    method="adapt-vqe", hamiltonian=fermion,
+                    pool="fermionic", num_particles=(1, 1),
+                    n_spatial_orbitals=25, shots=1000, profile=False,
+                    max_iterations=3, trace=False, txt=out,
+                    convergence={"gradient": 1e-12, "energy": None},
+                    optimizer={"method": "COBYLA", "maxiter": 40,
+                               "tol": 1e-6})
+                solver = calc.solver
+                solver.circuit_provider = lambda: device
+                with pytest.warns(RuntimeWarning, match="one job"):
+                    result = solver.run()
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+        assert solver.n_qubits == 50
+        assert len(result.iterations) == 3
+        assert np.isfinite(result.optimal_energy)
+        # Steps 2 and 3 and the final screening were measured, one job each
+        # (the automatic screening fits a step into one job); step 1 was
+        # classical.  Every energy was measured too.
+        assert device.gradient_jobs == 3 and device.labels > 0
+        assert device.energies >= result.num_evaluations > 0
+        assert peak < 2 ** 30, f"peak {peak / 2 ** 20:.0f} MiB"
+        block = parse_output(out)["gradient_measurement"]
+        assert int(block["measured_operators"]) < len(solver._pool_ops)
+        assert "one job" in block["screened_subset"]
+        setup = parse_output(out)["setup"]
+        assert setup["gradient_method"] == "measured"
+        assert setup["state_vector_backend"].startswith("none")
+
+
+class TestTheGradientBudget:
+    """Gradient jobs count toward the run budget and the measurement budget,
+    and a step that cannot fit is refused before its first job."""
+
+    @pytest.fixture(scope="class")
+    def h2(self):
+        return _molecule_problem("H2")
+
+    def _calc(self, h2, **options):
+        hamiltonian, particles, orbitals = h2
+        return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
+                         pool="qeb", num_particles=particles,
+                         n_spatial_orbitals=orbitals, shots=1000,
+                         max_iterations=3, trace=False, profile=False,
+                         optimizer={"method": "COBYLA", "maxiter": 20},
+                         **options)
+
+    def test_a_step_over_the_run_budget_is_refused_up_front(self, h2):
+        from mandacaru.backends.measurement import RunBudgetExceeded
+
+        calc = self._calc(h2, backend_options={
+            "seed": 3, "run_budget": {"jobs": None, "total_shots": 10}})
+        with pytest.raises(RunBudgetExceeded, match="pool gradients"):
+            calc.solver.run()
+        assert calc.solver.circuit_provider().run_usage()["jobs"] == 0
+
+    def test_a_basis_over_the_measurement_budget_is_refused(self, h2):
+        from mandacaru.backends.measurement import MeasurementBudgetError
+
+        calc = self._calc(h2, screening="full",
+                          measurement_budget={"observables": 1})
+        with pytest.raises(MeasurementBudgetError, match="pool-gradient"):
+            calc.solver.run()
+        calc = self._calc(h2, measurement_budget={"observables": 1})
+        with pytest.raises(MeasurementBudgetError, match="not even one"):
+            calc.solver.run()
+
+    def test_the_cost_has_one_owner_block(self, h2, tmp_path):
+        from mandacaru.utils.logging import parse_output
+
+        out = str(tmp_path / "output.txt")
+        calc = self._calc(h2, txt=out, backend_options={"seed": 3})
+        result = calc.solver.run()
+        block = parse_output(out)["gradient_measurement"]
+        plan = calc.solver._gradient_plan()
+        assert int(block["bases_per_step"]) == plan.bases
+        assert int(block["jobs_per_step"]) == plan.jobs == 1
+        assert int(block["shots_per_step"]) == plan.bases * 1000
+        text = open(out).read()
+        for key in ("bases_per_step", "strings_per_step", "shots_per_step",
+                    "pool_size", "device", "shots"):
+            assert text.count(f"\n    {key}:") == 1, key
+        # Gradient jobs went through the provider's ledger.
+        usage = calc.solver.circuit_provider().run_usage()
+        assert usage["jobs"] > result.num_evaluations
+
+    def test_a_small_budget_screens_a_ranked_subset(self, h2):
+        calc = self._calc(h2, measurement_budget={"observables": 16})
+        with pytest.warns(RuntimeWarning, match="one job"):
+            chosen, why = calc.solver._screened_operators()
+        reference = np.abs(calc.solver._reference_gradients())
+        assert 0 < len(chosen) < len(reference)
+        assert reference[chosen].min() >= np.delete(reference, chosen).max()
+        assert "largest gradients" in why
+
+
+class TestScreeningOption:
+    def test_a_ranked_candidate_set_bounds_the_selection(self, h2_hamiltonian):
+        calc = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                         pool="qubit", num_particles=(1, 1),
+                         n_spatial_orbitals=2, max_iterations=1,
+                         trace=False, screening={"operators": 2})
+        chosen, why = calc.solver._screened_operators()
+        assert len(chosen) == 2 and "2 of" in why
+        result = calc.solver.run()
+        labels = [calc.solver._pool_ops[k].label for k in chosen]
+        assert result.operators[0] in labels
+
+    @pytest.mark.parametrize("bad", ["some", {"operators": 0},
+                                     {"operators": 2, "x": 1},
+                                     {"operators": True}])
+    def test_bad_values_are_refused(self, h2_hamiltonian, bad):
+        with pytest.raises(ValueError, match="screening"):
+            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                      pool="qeb", num_particles=(1, 1), n_spatial_orbitals=2,
+                      trace=False, screening=bad)
+
+
+class TestWhatAShotRunRefuses:
+    """What only a local state vector can do is refused with shots."""
+
+    def test_excited_states_and_expressivity(self, h2_hamiltonian):
+        calc = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
+                         pool="qeb", num_particles=(1, 1),
+                         n_spatial_orbitals=2, shots=100, trace=False)
+        with pytest.raises(NotImplementedError, match="shots"):
+            calc.solver.energy_levels(2)
+        with pytest.raises(ValueError, match="shot-based"):
+            calc.solver.run(log_expressivity=True)
+
+    @pytest.mark.parametrize("method", ["mcas-vqe", "subspace-adapt-vqe"])
+    def test_pool_drivers_that_screen_locally(self, h2_hamiltonian, method):
+        with pytest.raises(NotImplementedError, match="shots"):
+            Mandacaru(method=method, hamiltonian=h2_hamiltonian,
+                      pool="qeb", num_particles=(1, 1), n_spatial_orbitals=2,
+                      shots=100, trace=False).solver

@@ -169,6 +169,10 @@ of 4851 for the same energy, and the parameter optimization runs four to five
 times faster. Each call counts as one evaluation. The `[OPTIMIZATION SETUP]`
 block's `parameter_gradient` line says which gradient ran.
 
+`method="vqe"` uses it for the ordered-product UCCSD
+(`ansatz={"name": "uccsd", "trotter": True}`) in the particle-number sector; the
+exact-exponential UCCSD and the HVA keep the finite difference.
+
 It is used with `gradient="analytic"` (the default) and a gradient method;
 COBYLA, Nelder-Mead and SPSA use no gradient. `gradient="finite_difference"`
 or `"parameter_shift"` keeps the optimizer's own finite difference, and so does

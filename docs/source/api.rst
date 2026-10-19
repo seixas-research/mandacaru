@@ -100,6 +100,17 @@ charges.  See :doc:`guide/dft`.
    :undoc-members:
    :show-inheritance:
 
+Tetrahedron Integration
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The linear tetrahedron method behind ``dos(integration="tetrahedron")`` and
+``pdos(integration="tetrahedron")``.  See :doc:`guide/dft`.
+
+.. automodule:: mandacaru.algorithms.tetrahedron
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Wannier Functions
 ~~~~~~~~~~~~~~~~~
 
@@ -209,6 +220,18 @@ Hellmann-Feynman and Pulay forces for the PAW-LCAO family.  See
 :doc:`guide/pseudopotentials`.
 
 .. automodule:: mandacaru.algorithms.pseudo_forces
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Orbital Response of Active-Space Forces
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The z-vector (coupled-perturbed Hartree-Fock) response of the canonical
+orbitals to a nuclear displacement, folded into effective density matrices.
+See :doc:`guide/active_space`.
+
+.. automodule:: mandacaru.algorithms.orbital_response
    :members:
    :undoc-members:
    :show-inheritance:
@@ -392,6 +415,17 @@ confining potential, its cutoff radius fixed by the eigenvalue shift.  See
    :members:
    :show-inheritance:
 
+Diffuse Functions
+~~~~~~~~~~~~~~~~~
+
+The ``diffuse`` option of a pseudopotential basis (PAW-LCAO, UPAW-LCAO):
+quasi-Gaussian shells sized from the free atom and cut at a tail norm,
+appended to each atom's basis.  See :doc:`guide/pseudopotentials`.
+
+.. automodule:: mandacaru.pseudopotentials.diffuse
+   :members:
+   :show-inheritance:
+
 Library Files
 ~~~~~~~~~~~~~
 
@@ -420,6 +454,12 @@ FFT Workspace
 ~~~~~~~~~~~~~
 
 .. automodule:: mandacaru.integrals.fft
+   :members:
+
+Packed Two-Electron Integrals
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: mandacaru.integrals.packed
    :members:
 
 Cholesky-Factored Two-Electron Integrals
@@ -541,6 +581,18 @@ Estimating :math:`\langle H \rangle` from measurement shots via qubit-wise
 commuting Pauli groups -- the protocol a real QPU requires.
 
 .. automodule:: mandacaru.backends.measurement
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Measured Pool Gradients
+~~~~~~~~~~~~~~~~~~~~~~~
+
+ADAPT-VQE's screening gradients :math:`\langle\psi|[H, A_k]|\psi\rangle` as
+measured commutator observables, for a run with ``shots > 0``.  See
+:doc:`guide/measurement_cost`.
+
+.. automodule:: mandacaru.backends.gradient_measurement
    :members:
    :undoc-members:
    :show-inheritance:

@@ -54,6 +54,12 @@ The factorization is generated matrix-free: the pair matrix is never formed.
   (:func:`~mandacaru.integrals.engine.contract_pair_potentials`), no pair
   densities to stream.
 * **Factors grown in place**, in a buffer whose capacity doubles.
+* **Threads that change nothing.**  The diagonal's batches of pair
+  densities are shared out over the threads, each on an FFT workspace of
+  its own; the columns and the updates by the factors run in fixed blocks
+  of rows, one core each (:func:`~mandacaru.integrals.fft.parallel_blocks`).
+  The work is cut by the problem, not by the thread count, so the factors
+  and the pivots are the same bits on any number of cores.
 
 The PAW-LCAO augmentation stays outside the factorization in its structured
 form :math:`(Q, W, U)` and is added exactly by every consumer: its pair
@@ -70,6 +76,7 @@ import numpy as np
 from .direct import (augmentation_coulomb, augmentation_exchange,
                      augmentation_tensor)
 from .engine import contract_pair_potentials, eri_memory_budget_mb
+from .fft import parallel_blocks, parallel_matmul, thread_count
 
 __all__ = ["CholeskyERI", "TwoBodySpec", "cholesky_two_body",
            "resolve_two_body", "TWO_BODY_METHODS",
@@ -93,8 +100,10 @@ CHOLESKY_SPAN = 1e-2
 #: Pivot candidates whose columns are computed together in one round.
 CHOLESKY_BATCH = 32
 
-#: Pair densities per batch of the diagonal (Parseval) transforms.
+#: Pair densities per batch of the diagonal (Parseval) transforms; the
+#: batches are shared out over the threads.
 DIAGONAL_BLOCK = 64
+
 
 #: Largest negative residual diagonal (relative to the initial largest)
 #: tolerated as round-off before the factorization is declared broken.
@@ -233,6 +242,19 @@ class CholeskyERI:
             total += sum(np.asarray(a).nbytes for a in (*Qs, *Ws, U))
         return int(total)
 
+    def summary(self) -> str:
+        """The factors in one line, as the run log's ``[ELECTRONS]`` block
+        writes them: tolerance, rank (and per basis function) and the largest
+        residual diagonal -- or, for factors built on given pivots, that the
+        diagonal was not computed."""
+        residual = ("not computed (the reference's pivots)"
+                    if not np.isfinite(self.max_residual)
+                    else f"{self.max_residual:.3e} Ha")
+        per_function = self.rank / max(self.n_basis, 1)
+        return (f"Cholesky factors, tolerance {self.tolerance:.3e} Ha, rank "
+                f"{self.rank} ({per_function:.2f} per basis function), "
+                f"largest residual diagonal {residual}")
+
     #: Factors unpacked per block by the consumers.
     BLOCK = 64
 
@@ -264,6 +286,28 @@ class CholeskyERI:
             out[start:stop] = Cd @ self.matrices(start, stop) @ C
         return out
 
+    def pair_factors(self, C):
+        r"""``(F, K)``: the integrals over the orbitals ``C`` (AO columns)
+        as pair factors, :math:`(pr|qs) = \sum_{ij} K_{ij} (F_i)_{pr}
+        (F_j)_{qs}` -- the factors :math:`C^\dagger B^r C` with :math:`K =
+        1`, then the augmentation's channels :math:`C^\dagger Q C` and
+        :math:`C^\dagger W C` with their coupling :math:`\begin{pmatrix} U
+        & 1\\ 1 & 0\end{pmatrix}`.  What a double factorization starts from
+        (:func:`~mandacaru.backends.factorization.spatial_double_factorization`)."""
+        F = [self.to_mo(C)]
+        blocks = [np.eye(self.rank)]
+        if self.augmentation is not None:
+            Qs, Ws, U = self._augmentation_blocks(C, C)
+            n = len(Qs)
+            F.append(np.asarray(Qs + Ws).reshape(2 * n, *F[0].shape[1:]))
+            coupling = np.zeros((2 * n, 2 * n))
+            coupling[:n, :n] = np.asarray(U, dtype=float)
+            coupling[:n, n:] = coupling[n:, :n] = np.eye(n)
+            blocks.append(coupling)
+        from scipy.linalg import block_diag
+
+        return np.concatenate(F), block_diag(*blocks)
+
     # -- consumers ---------------------------------------------------------- #
 
     def active_tensor(self, C) -> np.ndarray:
@@ -286,24 +330,36 @@ class CholeskyERI:
         right = np.asarray(right)
         return [Ld @ Q @ right for Q in Qs], [Ld @ W @ right for W in Ws], U
 
-    def ovov(self, occupied, virtual) -> np.ndarray:
-        r""":math:`(ia|jb) = \langle ij|ab\rangle` as an ``(o, v, o, v)``
-        array, for orbitals ``occupied`` and ``virtual`` (AO columns): the
-        block MP2 needs, :math:`O(o^2v^2)` and not :math:`M^4`."""
+    def ovov(self, occupied, virtual, occupied2=None,
+             virtual2=None) -> np.ndarray:
+        r""":math:`(ia|jb) = \langle ij|ab\rangle` as an ``(o, v, o', v')``
+        array, for orbitals ``occupied`` and ``virtual`` (AO columns) on
+        electron 1 and ``occupied2``, ``virtual2`` (default: the same) on
+        electron 2: the blocks MP2 needs, :math:`O(o^2v^2)` and not
+        :math:`M^4`."""
         Co, Cv = np.asarray(occupied), np.asarray(virtual)
+        same = occupied2 is None and virtual2 is None
+        Co2 = Co if occupied2 is None else np.asarray(occupied2)
+        Cv2 = Cv if virtual2 is None else np.asarray(virtual2)
         o, v = Co.shape[1], Cv.shape[1]
-        out = np.zeros((o * v, o * v), dtype=np.result_type(Co, Cv, float))
-        Cod = Co.conj().T
+        o2, v2 = Co2.shape[1], Cv2.shape[1]
+        out = np.zeros((o * v, o2 * v2),
+                       dtype=np.result_type(Co, Cv, Co2, Cv2, float))
+        Cod, Cod2 = Co.conj().T, Co2.conj().T
         for start, stop in self._blocks():
-            L = (Cod @ self.matrices(start, stop) @ Cv).reshape(-1, o * v)
-            out += L.T @ L
-        out = out.reshape(o, v, o, v)
+            B = self.matrices(start, stop)
+            L = (Cod @ B @ Cv).reshape(-1, o * v)
+            L2 = L if same else (Cod2 @ B @ Cv2).reshape(-1, o2 * v2)
+            out += L.T @ L2
+        out = out.reshape(o, v, o2, v2)
         if self.augmentation is not None:
             Qt, Wt, U = self._augmentation_blocks(Co, Cv)
+            Qt2, Wt2, _U = (self._augmentation_blocks(Co2, Cv2)
+                            if not same else (Qt, Wt, U))
             for c, (Q, W) in enumerate(zip(Qt, Wt)):
-                out = out + np.einsum("ia,jb->iajb", Q, W)
-                out = out + np.einsum("ia,jb->iajb", W, Q)
-                for d, Qd in enumerate(Qt):
+                out = out + np.einsum("ia,jb->iajb", Q, Wt2[c])
+                out = out + np.einsum("ia,jb->iajb", W, Qt2[c])
+                for d, Qd in enumerate(Qt2):
                     if U[c, d] != 0:
                         out = out + U[c, d] * np.einsum("ia,jb->iajb", Q, Qd)
         return out
@@ -454,9 +510,11 @@ class _PairFunctions:
         if 8.0 * P * G > budget_bytes:
             return False
         cache = np.empty((P, G))
-        for start in range(0, P, DIAGONAL_BLOCK):
-            index = np.arange(start, min(start + DIAGONAL_BLOCK, P))
-            self.evaluate(index, cache[start:start + index.size])
+
+        def fill(lo, hi, _state):
+            self.evaluate(np.arange(lo, hi), cache[lo:hi])
+
+        parallel_blocks(P, DIAGONAL_BLOCK, fill, thread_count(self.workers))
         self.cache = cache
         return True
 
@@ -471,15 +529,61 @@ class _PairFunctions:
 
     def columns(self, potentials) -> np.ndarray:
         """``(P, k)``: the Coulomb matrix columns of the pair functions whose
-        potentials are ``potentials`` ``(k, G)``."""
+        potentials are ``potentials`` ``(k, G)``.  From the kept pair
+        functions, blocks of rows on one core each
+        (:func:`~mandacaru.integrals.fft.parallel_blocks`); else streamed."""
         if self.cache is not None:
-            values = self.cache @ potentials.T
+            values = parallel_matmul(self.cache, potentials.T, self.workers)
             values *= self.dV
             return values
         X = contract_pair_potentials(self.chi, self.chi, potentials,
                                      self.workers)
         X *= self.dV
         return X[:, self.rows, self.cols].T
+
+
+def _diagonal(pairs, solver) -> np.ndarray:
+    """The Coulomb self-energy of every pair function (Parseval), blocks of
+    :data:`DIAGONAL_BLOCK` pairs shared out over the solver's threads, each
+    thread on a workspace of its own with one-thread transforms
+    (:func:`~mandacaru.integrals.fft.parallel_blocks`): the pair
+    formation, the transforms and the weighted sums all run concurrently,
+    and each value is the same whatever the thread count."""
+    from .fft import FFTWorkspace, WORKSPACE_BYTES
+
+    P, G = pairs.size, pairs.chi.shape[1]
+    diagonal = np.empty(P)
+    if not P:
+        return diagonal
+    shared = solver.workspace
+    threads = min(thread_count(getattr(solver, "workers", -1)),
+                  -(-P // DIAGONAL_BLOCK))
+
+    def buffers():
+        # One thread's share of a workspace's batch, transformed on that
+        # thread alone.
+        space = (shared if threads <= 1 else
+                 FFTWorkspace(shared.shape, shared.padded, 1,
+                              batch_bytes=max(WORKSPACE_BYTES // threads,
+                                              8 * shared.padded_size)))
+        return space, np.empty((DIAGONAL_BLOCK, G))
+
+    def block(lo, hi, state):
+        space, work = state
+        index = np.arange(lo, hi)
+        values = pairs.evaluate(index, work[:hi - lo])
+        diagonal[lo:hi] = solver.self_energies(values, workspace=space)
+
+    parallel_blocks(P, DIAGONAL_BLOCK, block, threads, buffers)
+    return diagonal
+
+
+def _subtract_products(columns, left, right, workers) -> None:
+    """``columns -= left @ right.T``, the update of the batch's columns by
+    the factors so far, in fixed blocks of rows on one core each
+    (:func:`~mandacaru.integrals.fft.parallel_matmul`): the same bits
+    whatever the thread count."""
+    columns -= parallel_matmul(left, np.ascontiguousarray(right.T), workers)
 
 
 def cholesky_two_body(psi, solver, tolerance: float = DEFAULT_TOLERANCE, *,
@@ -554,12 +658,7 @@ def cholesky_two_body(psi, solver, tolerance: float = DEFAULT_TOLERANCE, *,
 
     # The exact diagonal, by Parseval: forward transforms only.
     t0 = perf_counter()
-    diagonal = np.empty(P)
-    work = np.empty((min(DIAGONAL_BLOCK, max(P, 1)), G))
-    for start in range(0, P, DIAGONAL_BLOCK):
-        index = np.arange(start, min(start + DIAGONAL_BLOCK, P))
-        block = pairs.evaluate(index, work[:index.size])
-        diagonal[start:start + index.size] = solver.self_energies(block)
+    diagonal = _diagonal(pairs, solver)
     profile["diagonal seconds"] = perf_counter() - t0
     initial = float(diagonal.max(initial=0.0))
 
@@ -585,7 +684,8 @@ def cholesky_two_body(psi, solver, tolerance: float = DEFAULT_TOLERANCE, *,
         columns = pairs.columns(potentials[:k])               # (P, k)
         t1 = perf_counter()
         if R:
-            columns -= L[:, :R] @ L[candidates, :R].T
+            _subtract_products(columns, L[:, :R], L[candidates, :R],
+                               pairs.workers)
         residual = columns[candidates, np.arange(k)].copy()
         accepted = 0
         for _ in range(k):

@@ -53,6 +53,7 @@ from .ansatz_spec import (HVA_REFUSED_OPTIONS, ansatz_name, build_ansatz,
                           reference_problem, resolve_ansatz)
 from .base import VariationalDriver
 from .deflation import DeflationMixin, deflation_penalty
+from .sector_support import SectorMixin
 
 
 @dataclass
@@ -109,7 +110,7 @@ class VQEResult:
                 f"nfev={self.num_evaluations}, success={self.success})")
 
 
-class VQE(DeflationMixin, VariationalDriver):
+class VQE(DeflationMixin, SectorMixin, VariationalDriver):
     """Variational Quantum Eigensolver on an exact state-vector backend.
 
     Also an ASE calculator: see the module docstring for the two usage modes.
@@ -196,6 +197,10 @@ class VQE(DeflationMixin, VariationalDriver):
     """
 
     _default_sparse = False
+    #: A dense ``2^N`` generator per excitation costs ``16 * 4^N`` bytes each
+    #: (4 GiB at 14 qubits), so the fixed-ansatz VQE turns to the particle-number
+    #: sector earlier than a pool-grown ansatz does.
+    SECTOR_AUTO_QUBITS = 10
     citation_method = "vqe"
     solver_label = "VQE"
     log_title = "VQE"
@@ -205,7 +210,8 @@ class VQE(DeflationMixin, VariationalDriver):
                  optimizer: str | Optimizer | None = None,
                  verbose: bool = True,
                  *, num_particles=None, n_spatial_orbitals=None,
-                 ansatz_builder=None, **driver_kwargs):
+                 ansatz_builder=None, sector: bool | str = "auto",
+                 **driver_kwargs):
         spec = resolve_ansatz(ansatz)
         if ansatz_builder is not None and ansatz is not None:
             raise ValueError("pass either ansatz= or ansatz_builder=, not both")
@@ -224,6 +230,7 @@ class VQE(DeflationMixin, VariationalDriver):
         # Every other keyword is a VariationalDriver option, forwarded
         # untouched so its name and default live in one place.
         super().__init__(optimizer=optimizer, verbose=verbose, **driver_kwargs)
+        self._set_sector_option(sector)
         # After the base resolved it: Braket and Cirq execute circuits by
         # default, without an explicit execute_circuits=True.
         if spec is not None and spec.evolution == "exact" \
@@ -337,12 +344,39 @@ class VQE(DeflationMixin, VariationalDriver):
                     f"untapered", RuntimeWarning, stacklevel=2)
             qubit_h = self._as_pauli_sum(hamiltonian, ansatz.n_qubits,
                                          particles)
-        self._materialize_hamiltonian(qubit_h, ansatz.n_qubits)
+        sector = self._ansatz_sector(ansatz, qubit_h)
+        self._materialize_hamiltonian(
+            qubit_h, ansatz.n_qubits, sector=sector,
+            operators=ansatz.pauli_generators if sector is not None else ())
         self._maybe_save_hamiltonian(self.num_particles,
                                      self.n_spatial_orbitals)
         self._maybe_dump_hamiltonian(self.num_particles,
                                      self.n_spatial_orbitals)
         self._configured = True
+
+    def _ansatz_sector(self, ansatz, qubit_h):
+        """The particle-number sector the ansatz is evaluated in, or ``None``.
+
+        Only the UCCSD ansatz prepares sector vectors, and only on an untapered
+        register (a Z2 taper mixed the occupations into parities); a Hamiltonian
+        or generator that leaks out of the sector keeps the full register
+        (:meth:`~mandacaru.algorithms.sector_support.SectorMixin._resolve_sector`).
+        """
+        from ..circuits import UCCSD
+
+        if not (isinstance(ansatz, UCCSD) and self._taper_info is None):
+            if self.sector is True:
+                raise NotImplementedError(
+                    f"sector=True: {type(ansatz).__name__} "
+                    f"{'on a Z2-tapered register ' if self._taper_info else ''}"
+                    "does not prepare particle-number sector states; only the "
+                    "UCCSD ansatz on an untapered register does")
+            return None
+        sector = self._resolve_sector(ansatz.n_qubits, qubit_h,
+                                      ansatz.pauli_generators)
+        if sector is not None:
+            ansatz.use_sector(sector)
+        return sector
 
     def _default_parameters(self) -> np.ndarray:
         """Where an optimization starts without ``initial_parameters``.
@@ -373,9 +407,7 @@ class VQE(DeflationMixin, VariationalDriver):
         With shots it is read off the determinant (:meth:`determinant_energy`)
         rather than a state vector, which a shot-based run never builds.
         """
-        if self.shots and hasattr(self.ansatz, "reference_qubits"):
-            return self.determinant_energy(self.ansatz.reference_qubits())
-        return self.energy(self.ansatz.reference_state())
+        return self.reference_energy_of(self.ansatz)
 
     def run(self, initial_parameters=None, geometry=None,
             cell=None) -> VQEResult:
@@ -456,7 +488,11 @@ class VQE(DeflationMixin, VariationalDriver):
                      "reference_energy": float(ref_energy)})
 
         with timings.time("parameter optimization"):
-            result = self._optimize_all(self.energy_at, x0, callback=track)
+            # The adjoint gradient where the ansatz can sweep back (the
+            # ordered product in a sector); else the optimizer differences.
+            result = self._optimize_all(
+                self.energy_at, x0, callback=track,
+                gradient=self._energy_gradient(self.ansatz))
 
         self._record_checkpoint(
             self.ansatz, result.x, float(result.fun),
@@ -544,6 +580,7 @@ class VQE(DeflationMixin, VariationalDriver):
         fields.update({
             "initial_parameters": start,
             "reoptimize_all_parameters": str(self.quenching),
+            "parameter_gradient": self._parameter_gradient_text(self.ansatz),
             "state_vector_backend": self._backend_description(),
             "device": str(self.device),
             "backend_provider": str(self.backend_provider),

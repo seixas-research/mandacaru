@@ -48,3 +48,51 @@ class TestBasisArgumentIsHonored:
         with pytest.raises(ValueError, match="no longer a basis name"):
             resolve_basis(basis)
 
+
+
+class TestTheDiffuseOption:
+    """``diffuse`` is a PAW-LCAO option, so UPAW-LCAO has it too, and the
+    per-element form writes it per element (validated like the single
+    dict)."""
+
+    @pytest.mark.parametrize("name", ["paw-lcao", "upaw-lcao"])
+    def test_both_families_accept_it(self, name):
+        from mandacaru.pseudopotentials.families import resolve_family
+
+        family = resolve_family(name)
+        assert "diffuse" in family.options
+        # Off unless written: no family default.
+        assert "diffuse" not in family.default_options
+
+    def test_the_per_element_form_passes_it(self):
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            resolve_basis, resolve_pseudo_basis)
+
+        _family, options = resolve_pseudo_basis(
+            *resolve_basis({"O": {"name": "PAW-LCAO", "size": "DZP",
+                                  "diffuse": {"shells": "p"}},
+                            "H": {"name": "PAW-LCAO", "diffuse": 1}}),
+            ["O", "H", "H"])
+        assert options["diffuse"] == {"O": {"shells": "p"}, "H": 1}
+        assert options["size"] == {"O": "DZP", "H": "SZ"}
+
+    def test_an_element_left_out_has_none(self):
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            resolve_basis, resolve_pseudo_basis)
+        from mandacaru.pseudopotentials.diffuse import diffuse_of
+
+        _family, options = resolve_pseudo_basis(
+            *resolve_basis({"O": {"name": "PAW-LCAO", "diffuse": True},
+                            "H": "PAW-LCAO"}), ["O", "H", "H"])
+        assert diffuse_of(options["diffuse"], "H") is None
+        assert diffuse_of(options["diffuse"], "O") is not None
+
+    def test_a_bad_per_element_value_is_refused(self):
+        from mandacaru.algorithms._hamiltonian_from_atoms import (
+            resolve_basis, resolve_pseudo_basis)
+
+        with pytest.raises(ValueError, match="rms_ratio"):
+            resolve_pseudo_basis(
+                *resolve_basis({"O": {"name": "PAW-LCAO",
+                                      "diffuse": {"rms_ratio": 0.5}},
+                                "H": "PAW-LCAO"}), ["O", "H"])

@@ -683,6 +683,37 @@ def pool_class(name: str) -> type:
             f"(or aliases {sorted(_POOL_ALIASES)})") from None
 
 
+def expected_pool_size(name: str, n_spatial_orbitals: int,
+                       num_particles: tuple[int, int]) -> int | None:
+    """How many operators ``build_pool(name, ...)`` holds, by counting
+    excitations rather than building generators (a dry run's estimate).
+
+    Exact for ``"fermionic"`` and ``"qeb"`` (the occupied-to-virtual singles
+    and doubles), and for ``"ceo"`` / ``"ceo-ovp"`` (generalized: every
+    same-spin pair, ``2 C(k, 2)`` operators per four-orbital set with ``k``
+    S_z-conserving excitations).  ``"qubit"`` is ``2 S + 8 D``, the strings
+    of the fermionic generators under Jordan-Wigner (no two excitations share
+    one; an upper bound for another encoding).  ``None`` for a pool it does
+    not model.
+    """
+    key = str(name).strip().lower()
+    key = _POOL_ALIASES.get(key, key)
+    M = int(n_spatial_orbitals)
+    _occ, _virt, singles, doubles = _spin_conserving_excitations(
+        M, num_particles)
+    if key in ("fermionic", "qeb"):
+        return len(singles) + len(doubles)
+    if key == "qubit":
+        return 2 * len(singles) + 8 * len(doubles)
+    if key in ("ceo", "ceo-ovp"):
+        from math import comb
+        # Same-spin pairs (singles); all-alpha or all-beta quadruples carry
+        # three excitations (6 OVP-CEOs), two-alpha-two-beta ones two (2).
+        return (2 * comb(M, 2) + 2 * 6 * comb(M, 4)
+                + 2 * comb(M, 2) ** 2)
+    return None
+
+
 def build_pool(name: str, n_spatial_orbitals: int,
                num_particles: tuple[int, int],
                mapping: str = "jordan_wigner") -> PoolBase:

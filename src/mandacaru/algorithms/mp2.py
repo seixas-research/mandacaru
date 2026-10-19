@@ -129,6 +129,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..integrals.packed import is_packed
+
 #: Largest off-diagonal Fock element (Hartree) left alone as already canonical.
 SEMICANONICAL_TOLERANCE = 1e-8
 
@@ -226,8 +228,14 @@ def fock_matrix(h_mo: np.ndarray, eri_mo: np.ndarray, n_occ: int) -> np.ndarray:
     orbital energies.
     """
     h_mo = np.asarray(h_mo)
-    eri_mo = np.asarray(eri_mo)
     n_occ = int(n_occ)
+    if is_packed(eri_mo):
+        # J - K/2 of the density 2 sum_i |i><i|: the same sums, packed.
+        D = np.zeros(h_mo.shape)
+        D[np.arange(n_occ), np.arange(n_occ)] = 2.0
+        fock = h_mo + eri_mo.coulomb(D) - 0.5 * eri_mo.exchange(D)
+        return 0.5 * (fock + fock.conj().T)
+    eri_mo = np.asarray(eri_mo)
     occupied = slice(0, n_occ)
     # 2 <pi|qi> - <pi|iq>, summed over i.
     coulomb = np.einsum("piqi->pq", eri_mo[:, occupied, :, occupied])
@@ -284,6 +292,8 @@ def rotate_integrals(h_mo: np.ndarray, eri_mo: np.ndarray,
     C = np.asarray(rotation)
     h = np.einsum("pi,qj,pq->ij", C.conj(), C, np.asarray(h_mo),
                   optimize=True)
+    if is_packed(eri_mo):
+        return h, eri_mo.transform(C)
     eri = np.einsum("pi,qj,rk,sl,pqrs->ijkl", C.conj(), C.conj(), C, C,
                     np.asarray(eri_mo), optimize=True)
     return h, eri
@@ -316,12 +326,23 @@ def mp2_amplitudes(eri_mo: np.ndarray, energies: np.ndarray,
     of the Fock matrix and the off-diagonal part is assumed zero (see
     :func:`semicanonical_rotation`).
     """
-    eri_mo = np.asarray(eri_mo)
     n_occ = int(n_occ)
-    o, v = slice(0, n_occ), slice(n_occ, eri_mo.shape[0])
     # <ij|ab>, physicists' notation.
-    integrals = np.real(eri_mo[o, o, v, v])
+    integrals = np.real(_oovv(eri_mo, n_occ))
     return integrals / _denominators(energies, n_occ)
+
+
+def _oovv(eri_mo, n_occ: int) -> np.ndarray:
+    r""":math:`\langle ij|ab\rangle` over the first ``n_occ`` orbitals
+    (``i, j``) and the rest (``a, b``): a slice of a full tensor, the block
+    of a packed one (:meth:`~mandacaru.integrals.packed.PackedERI.block`)."""
+    if is_packed(eri_mo):
+        identity = np.eye(eri_mo.n)
+        occ, vir = identity[:, :n_occ], identity[:, n_occ:]
+        return eri_mo.block(occ, occ, vir, vir)
+    eri_mo = np.asarray(eri_mo)
+    o, v = slice(0, n_occ), slice(n_occ, eri_mo.shape[0])
+    return eri_mo[o, o, v, v]
 
 
 def _tilde(t: np.ndarray) -> np.ndarray:
@@ -335,10 +356,8 @@ def mp2_energy(eri_mo: np.ndarray, energies: np.ndarray, n_occ: int) -> float:
     ``eri_mo`` must be in the same semicanonical basis as ``energies``.
     """
     n_occ = int(n_occ)
-    eri_mo = np.asarray(eri_mo)
-    t = mp2_amplitudes(eri_mo, energies, n_occ)
-    o, v = slice(0, n_occ), slice(n_occ, eri_mo.shape[0])
-    integrals = np.real(eri_mo[o, o, v, v])
+    integrals = np.real(_oovv(eri_mo, n_occ))
+    t = integrals / _denominators(energies, n_occ)
     return float(np.einsum("ijab,ijab->", _tilde(t), integrals, optimize=True))
 
 
@@ -382,7 +401,7 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
     conservative half of it.
     """
     h_mo = np.asarray(h_mo)
-    eri_mo = np.asarray(eri_mo)
+    eri_mo = eri_mo if is_packed(eri_mo) else np.asarray(eri_mo)
     n_occ = int(n_occ)
     M = h_mo.shape[0]
     if not 0 < n_occ < M:
@@ -392,6 +411,13 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
 
     canonical, energies = semicanonical_rotation(
         fock_matrix(h_mo, eri_mo, n_occ), n_occ)
+    if is_packed(eri_mo):
+        # Only the <ij|ab> block, in the semicanonical orbitals: two half
+        # transforms of the packed tensor, no rotated M^4 tensor.
+        oovv = eri_mo.block(canonical[:, :n_occ], canonical[:, :n_occ],
+                            canonical[:, n_occ:], canonical[:, n_occ:])
+        return mp2_natural_orbitals_from_block(oovv, energies, n_occ,
+                                               canonical)
     if not np.allclose(canonical, np.eye(M)):
         h_mo, eri_mo = rotate_integrals(h_mo, eri_mo, canonical)
     occupied, virtual = slice(0, n_occ), slice(n_occ, M)
@@ -457,6 +483,19 @@ def spin_fock_matrices(h_mo: np.ndarray, eri_mo: np.ndarray, n_alpha: int,
     built for.  With ``n_alpha == n_beta`` both reduce to :func:`fock_matrix`.
     """
     h_mo = np.asarray(h_mo)
+    if is_packed(eri_mo):
+        # J[D_alpha + D_beta] - K[D_sigma], the occupations as densities.
+        densities = []
+        for n in (int(n_alpha), int(n_beta)):
+            D = np.zeros(h_mo.shape)
+            D[np.arange(n), np.arange(n)] = 1.0
+            densities.append(D)
+        coulomb = eri_mo.coulomb(densities[0] + densities[1])
+        matrices = []
+        for D in densities:
+            fock = h_mo + coulomb - eri_mo.exchange(D)
+            matrices.append(0.5 * (fock + fock.conj().T))
+        return matrices[0], matrices[1]
     eri_mo = np.asarray(eri_mo)
     coulomb = sum(np.einsum("piqi->pq", eri_mo[:, :n, :, :n])
                   for n in (int(n_alpha), int(n_beta)))
@@ -491,6 +530,8 @@ def _pair_denominators(occ1, occ2, vir1, vir2) -> np.ndarray:
 
 def _transform(eri, c1, c2, c3, c4) -> np.ndarray:
     """``<ij|ab>`` with ``i, j, a, b`` the columns of ``c1..c4`` (real)."""
+    if is_packed(eri):
+        return eri.block(c1, c2, c3, c4)
     return np.einsum("pi,qj,pqrs,ra,sb->ijab", c1, c2, eri, c3, c4,
                      optimize=True)
 
@@ -549,8 +590,16 @@ def open_shell_mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
     descending.  Every occupation together sums to the electron count.
     """
     h_mo = _real(h_mo, "one-electron integral matrix")
-    eri_mo = _real(eri_mo, "two-electron integral tensor")
-    M = h_mo.shape[0]
+    if not is_packed(eri_mo):
+        eri_mo = _real(eri_mo, "two-electron integral tensor")
+    _check_open_shell(h_mo.shape[0], n_alpha, n_beta)
+    return open_shell_mp2_from_blocks(
+        spin_fock_matrices(h_mo, eri_mo, int(n_alpha), int(n_beta)),
+        n_alpha, n_beta,
+        lambda c1, c2, c3, c4: _transform(eri_mo, c1, c2, c3, c4))
+
+
+def _check_open_shell(M: int, n_alpha: int, n_beta: int) -> None:
     n_spin = (int(n_alpha), int(n_beta))
     n_high, n_low = max(n_spin), min(n_spin)
     if not 0 < n_high < M or n_low < 0:
@@ -558,10 +607,31 @@ def open_shell_mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
             f"open-shell MP2 needs at least one occupied and one virtual "
             f"orbital in each spin, got (n_alpha, n_beta) = {n_spin} in {M}")
 
+
+def open_shell_mp2_from_blocks(focks, n_alpha: int, n_beta: int,
+                               oovv) -> MP2Result:
+    r""":func:`open_shell_mp2_natural_orbitals` from the only integrals it
+    reads.
+
+    ``focks`` are the two spin Fock matrices in the incoming orbitals
+    (:func:`spin_fock_matrices`) and ``oovv(c1, c2, c3, c4)`` returns
+    :math:`\langle ij|ab\rangle` (``(i, j, a, b)``) for orbitals given as
+    columns over the incoming ones -- ``i`` of ``c1``, ``j`` of ``c2``,
+    ``a`` of ``c3``, ``b`` of ``c4``: the same-spin and the alpha-beta
+    blocks in each spin's semicanonical orbitals, :math:`o^2 v^2` numbers
+    each.  An integral-direct build forms them without the :math:`M^4`
+    tensor
+    (:meth:`~mandacaru.algorithms.orbital_integrals.DirectOrbitalIntegrals.open_shell_mp2_natural_orbitals`).
+    """
+    M = np.asarray(focks[0]).shape[0]
+    _check_open_shell(M, n_alpha, n_beta)
+    n_spin = (int(n_alpha), int(n_beta))
+    n_high, n_low = max(n_spin), min(n_spin)
+
     # Per spin: semicanonical orbitals (columns, in the incoming basis), their
     # energies, and the occupied-virtual Fock block in that basis.
     blocks = []
-    for n, fock in zip(n_spin, spin_fock_matrices(h_mo, eri_mo, *n_spin)):
+    for n, fock in zip(n_spin, focks):
         rotation, energies = semicanonical_rotation(fock, n)
         fock = _real(fock, "Fock matrix")
         c_occ, c_vir = rotation[:, :n], rotation[:, n:]
@@ -576,13 +646,14 @@ def open_shell_mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
     # Doubles: alpha-alpha and beta-beta antisymmetrized, alpha-beta direct.
     same = []
     for s in blocks:
-        g = _transform(eri_mo, s["occ"], s["occ"], s["vir"], s["vir"])
+        g = _real(oovv(s["occ"], s["occ"], s["vir"], s["vir"]),
+                  "same-spin integral block")
         anti = g - np.swapaxes(g, 2, 3)
         d = _pair_denominators(s["eps_occ"], s["eps_occ"],
                                s["eps_vir"], s["eps_vir"])
         same.append((anti, anti / d))
-    g_ab = _transform(eri_mo, alpha["occ"], beta["occ"], alpha["vir"],
-                      beta["vir"])
+    g_ab = _real(oovv(alpha["occ"], beta["occ"], alpha["vir"], beta["vir"]),
+                 "alpha-beta integral block")
     t_ab = g_ab / _pair_denominators(alpha["eps_occ"], beta["eps_occ"],
                                      alpha["eps_vir"], beta["eps_vir"])
 

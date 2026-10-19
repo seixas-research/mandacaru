@@ -70,6 +70,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..integrals.packed import is_packed
+
 #: Leaves whose weight is below this fraction of the largest are dropped.  The
 #: first factorization's eigenvalues fall off fast -- the two-body tensor is
 #: numerically low rank -- so this is where ``O(M^2)`` becomes ``O(M)``.
@@ -272,6 +274,155 @@ def double_factorization(h_pq, g_pqrs, tol: float = DEFAULT_LEAF_TOLERANCE,
     return DoubleFactorization(
         n_modes=m, constant=float(constant), one_body=one_body,
         one_body_orbitals=rotation, one_body_energies=energies,
+        leaves=leaves, truncation_error=truncation)
+
+
+def _pair_spectrum(eri=None, factors=None, coupling=None):
+    r"""``(weights, vectors)`` of the spatial pair matrix
+    :math:`W_{(pr),(qs)} = \langle pq|rs\rangle`, ``vectors[:, l]`` over
+    the ``M^2`` pairs.
+
+    From the tensor ``eri`` by an ``eigh`` of ``W``; from ``factors``
+    ``(k, M, M)`` with :math:`W = \sum_{ij} K_{ij}\,\mathrm{vec}(F_i)
+    \mathrm{vec}(F_j)^T` (``coupling`` :math:`K`, the identity by default:
+    Cholesky factors) by the ``k x k`` problem :math:`R K R^T` of the QR
+    decomposition :math:`F^T = QR`, so ``W`` is never formed when ``k`` is
+    below ``M^2``.  Both give ``W``'s nonzero spectrum to round-off.
+    """
+    if factors is None and is_packed(eri):
+        # The packed pair matrix W_P over unordered pairs: the ordered-pair
+        # matrix is E W_P E^T (E sums a pair's two orderings), whose
+        # nonzero spectrum is that of D^1/2 W_P D^1/2 (D = E^T E, 1 or 2),
+        # eigenvectors E D^-1/2 y -- a P x P problem, P = M(M+1)/2.
+        m, P = eri.n, eri.n_pairs
+        rows, cols = np.tril_indices(m)
+        root = np.where(rows == cols, 1.0, np.sqrt(2.0))
+        w = eri.pair_matrix() * root[:, None] * root[None, :]
+        weights, y = np.linalg.eigh(0.5 * (w + w.T))
+        y = y / root[:, None]
+        vectors = np.zeros((m, m, P))
+        vectors[rows, cols] = y
+        vectors[cols, rows] = y
+        return weights, vectors.reshape(m * m, P)
+    if factors is None:
+        g = np.asarray(eri)
+        m = g.shape[0]
+        w = np.einsum("pqrs->prqs", g).reshape(m * m, m * m)
+        return np.linalg.eigh(0.5 * (w + w.conj().T))
+    F = np.asarray(factors)
+    k, m = F.shape[0], F.shape[1]
+    K = (np.eye(k) if coupling is None
+         else 0.5 * (np.asarray(coupling) + np.asarray(coupling).T))
+    vectors = F.reshape(k, m * m).T                         # (M^2, k)
+    if k >= m * m:
+        w = vectors @ K @ vectors.T
+        return np.linalg.eigh(0.5 * (w + w.conj().T))
+    Q, R = np.linalg.qr(vectors)
+    small = R @ K @ R.T
+    weights, V = np.linalg.eigh(0.5 * (small + small.conj().T))
+    return weights, Q @ V
+
+
+def spatial_double_factorization(h, eri=None, *, factors=None, coupling=None,
+                                 tol: float = DEFAULT_LEAF_TOLERANCE,
+                                 coefficient_tol: float =
+                                 DEFAULT_COEFFICIENT_TOLERANCE,
+                                 max_leaves: int | None = None,
+                                 constant: float = 0.0) -> DoubleFactorization:
+    r""":func:`double_factorization` of a spin-free Hamiltonian, from its
+    spatial integrals, without the spin-orbital ``(2M)^4`` tensor.
+
+    ``h`` is the ``(M, M)`` spatial one-body matrix; the two-body part is
+    either the spatial tensor ``eri`` (:math:`\langle pq|rs\rangle`,
+    physicists' notation; a
+    :class:`~mandacaru.integrals.packed.PackedERI` is read packed, its
+    leaves from the ``P x P`` pair matrix) or pair ``factors`` ``(k, M, M)``
+    with the
+    symmetric ``coupling`` ``(k, k)`` -- :math:`(pr|qs) = \sum_{ij}
+    K_{ij}(F_i)_{pr}(F_j)_{qs}`, Cholesky factors with :math:`K = 1`, plus
+    a structured augmentation's channels with theirs.
+
+    The spin-orbital pair matrix of a spin-free tensor is the spatial one
+    on every pair of spin-diagonal pairs, so its nonzero spectrum is the
+    spatial one doubled: a spatial leaf :math:`(\lambda, v)` is the
+    spin-orbital leaf of weight :math:`2\lambda` and matrix
+    :math:`(v \oplus v)/\sqrt2`, rotated by :math:`U \oplus U`.  The
+    result is that of :func:`double_factorization` on
+    ``spin_block_integrals(h, eri)`` -- the same operator, leaves, weights,
+    one-norm and measurement count -- except that every rotation is block
+    diagonal in spin (the spin-orbital ``eigh`` may mix the two spins of a
+    degenerate pair).  The leaves cost one ``M^2 x M^2`` eigenproblem (or,
+    from ``k < M^2`` factors, a ``k x k`` one) instead of ``(2M)^2 x
+    (2M)^2``.
+    """
+    h = np.asarray(h)
+    m = int(h.shape[0])
+    if factors is not None:
+        F = np.asarray(factors)
+        if F.ndim != 3 or F.shape[1:] != (m, m):
+            raise ValueError(f"pair factors {F.shape} do not match a {m}-orbital "
+                             f"one-body matrix")
+        K = (np.eye(F.shape[0]) if coupling is None
+             else np.asarray(coupling))
+        # sum_q <pq|qs> = sum_q (pq|qs) = sum_ij K_ij (F_i F_j)_ps.
+        contracted = np.einsum("ij,jqs->iqs", K, F)
+        exchange_like = np.einsum("ipq,iqs->ps", F, contracted)
+    elif is_packed(eri):
+        if eri.n != m:
+            raise ValueError(f"two-body tensor {eri.shape} does not match a "
+                             f"{m}-orbital one-body matrix")
+        exchange_like = eri.exchange(np.eye(m))         # sum_q <pq|qs>
+    else:
+        g = np.asarray(eri)
+        if g.shape != (m, m, m, m):
+            raise ValueError(f"two-body tensor {g.shape} does not match a "
+                             f"{m}-orbital one-body matrix")
+        exchange_like = np.einsum("pqqs->ps", g)
+    spatial_one = np.asarray(h, dtype=complex) - 0.5 * exchange_like
+    weights, vectors = _pair_spectrum(None if factors is not None else eri,
+                                      factors, coupling)
+    # The spin-orbital spectrum: every spatial weight doubled, the rest zero.
+    weights = 2.0 * weights
+    order = np.argsort(-np.abs(weights))
+    weights, vectors = weights[order], vectors[:, order]
+    largest = float(np.abs(weights[0])) if len(weights) else 0.0
+    keep = np.abs(weights) > tol * max(largest, 1.0)
+    if max_leaves is not None:
+        cut = np.zeros_like(keep)
+        cut[:int(max_leaves)] = True
+        keep &= cut
+    dropped = weights[~keep]
+    truncation = float(np.sqrt(np.sum(dropped ** 2))) if dropped.size else 0.0
+
+    n = 2 * m
+
+    def spin_blocks(U):
+        out = np.zeros((n, n), dtype=U.dtype)
+        out[:m, :m] = out[m:, m:] = U
+        return out
+
+    leaves: list[FactorizationLeaf] = []
+    root = np.sqrt(0.5)
+    for index in np.flatnonzero(keep):
+        matrix = vectors[:, index].reshape(m, m)
+        matrix = 0.5 * (matrix + matrix.conj().T)
+        values, orbitals = np.linalg.eigh(matrix)
+        values = np.concatenate([values, values]) * root
+        values = np.where(np.abs(values) > coefficient_tol, values, 0.0)
+        if not np.any(values):
+            continue
+        leaves.append(FactorizationLeaf(weight=float(weights[index]),
+                                        orbitals=spin_blocks(orbitals),
+                                        coefficients=values))
+
+    energies, rotation = np.linalg.eigh(0.5 * (spatial_one
+                                               + spatial_one.conj().T))
+    one_body = np.zeros((n, n), dtype=complex)
+    one_body[:m, :m] = one_body[m:, m:] = spatial_one
+    return DoubleFactorization(
+        n_modes=n, constant=float(constant), one_body=one_body,
+        one_body_orbitals=spin_blocks(rotation),
+        one_body_energies=np.concatenate([energies, energies]),
         leaves=leaves, truncation_error=truncation)
 
 

@@ -20,11 +20,13 @@ before a displaced Hamiltonian is contracted with the reference RDMs.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ..integrals.packed import is_packed
 from ..units import HARTREE_TO_EV
 
 if TYPE_CHECKING:
@@ -32,8 +34,13 @@ if TYPE_CHECKING:
     from ..core.hamiltonian import MolecularIntegrals
     from .base import VariationalDriver
 
-ACTIVE_SPACE_STEP_ANGSTROM = 0.005
+ACTIVE_SPACE_STEP_ANGSTROM = 0.0025
 """Default central-difference displacement, in Angstrom."""
+
+CANONICAL_OFFDIAGONAL = 0.2
+"""Largest off-diagonal overlap between displaced and reference active
+orbitals for which the canonical gauge is a diagonal phase (a first-order
+rotation at the default step is ~1e-2; a degenerate pair mixes freely)."""
 
 
 def reduced_energy(integrals: MolecularIntegrals, gamma: np.ndarray,
@@ -51,20 +58,23 @@ def reduced_energy(integrals: MolecularIntegrals, gamma: np.ndarray,
     ``(2n)^4`` tensor; a GHF spinor basis keeps spin-orbital integrals.
     """
     h = np.asarray(integrals.active_one_body)
-    g = np.asarray(integrals.active_two_body)
+    g = integrals.active_two_body
+    if not is_packed(g):
+        g = np.asarray(g)
     gamma = np.asarray(gamma)
     gamma2 = np.asarray(gamma2)
     if integrals.active_spin_blocked:
         n = h.shape[0]
         if rotation is not None:
             h = rotation.conj().T @ h @ rotation
-            g = np.einsum("ap,bq,cr,ds,abcd->pqrs", rotation.conj(),
-                          rotation.conj(), rotation, rotation, g,
-                          optimize=True)
+            g = (g.transform(rotation) if is_packed(g) else np.einsum(
+                "ap,bq,cr,ds,abcd->pqrs", rotation.conj(), rotation.conj(),
+                rotation, rotation, g, optimize=True))
         one = np.einsum("apaq->pq", gamma.reshape(2, n, 2, n))
         two = np.einsum("apbqarbs->pqrs", gamma2.reshape((2, n) * 4))
-        energy = (np.einsum("pq,pq->", h, one, optimize=True)
-                  + 0.5 * np.einsum("pqrs,pqrs->", g, two, optimize=True))
+        pair = (g.contract(two) if is_packed(g)
+                else np.einsum("pqrs,pqrs->", g, two, optimize=True))
+        energy = np.einsum("pq,pq->", h, one, optimize=True) + 0.5 * pair
         return float(np.real(energy) + integrals.active_constant)
     if rotation is not None:
         n = rotation.shape[0]
@@ -82,24 +92,60 @@ def reduced_energy(integrals: MolecularIntegrals, gamma: np.ndarray,
 def align_active_orbitals(reference: MolecularIntegrals,
                           displaced: MolecularIntegrals,
                           reference_active: tuple[int, ...],
-                          displaced_active: tuple[int, ...]) -> np.ndarray:
+                          displaced_active: tuple[int, ...],
+                          gauge: str = "canonical") -> np.ndarray:
     r"""Unitary bringing displaced active MOs into the reference MO gauge.
 
     The Löwdin AO coordinates have the same atom and function ordering for a
-    small nuclear step.  Their active-orbital overlap is unitized by its polar
-    factor.  A small singular value signals that the selector switched to a
-    different active subspace, where a smooth local derivative is undefined.
+    small nuclear step.  The active-orbital overlap :math:`O = B^\dagger A`
+    of the displaced orbitals :math:`B` with the reference ones :math:`A` is
+    reduced to a unitary in one of two ways.
+
+    ``"canonical"`` (default) keeps the displaced orbitals as the build made
+    them -- the canonical SCF orbitals, or the natural orbitals of the
+    selector -- and removes only their arbitrary phases (the diagonal of
+    :math:`O`).  This is the energy a displaced calculation reports: its ansatz
+    is written in *those* orbitals, and for an ansatz that is not invariant
+    under rotations of the active orbitals (every truncated ADAPT-VQE state) the
+    energy depends on which rotation is used.
+
+    ``"polar"`` takes the polar factor of :math:`O`, which also removes the
+    first-order rotation among the active orbitals that the nuclear step
+    induces (a parallel transport).  It agrees with ``"canonical"`` only for a
+    state that is invariant under that rotation -- the exact eigenstate of the
+    active space -- and differs at first order otherwise; on water it was a
+    6 % error in the force.  It remains the gauge for (near-)degenerate active
+    orbitals, whose canonical gauge is not defined: ``"canonical"`` falls back
+    to it when :math:`O` is not diagonally dominant.
+
+    A small singular value signals that the selector switched to a different
+    active subspace, where a smooth local derivative is undefined.
     """
+    if gauge not in ("canonical", "polar"):
+        raise ValueError(f"unknown orbital gauge {gauge!r}")
     a = np.asarray(reference.mo_coefficients)[:, reference_active]
     b = np.asarray(displaced.mo_coefficients)[:, displaced_active]
     if a.shape != b.shape:
         raise RuntimeError("the displaced active space changed dimension")
-    left, singular, right = np.linalg.svd(b.conj().T @ a)
+    overlap = b.conj().T @ a
+    left, singular, right = np.linalg.svd(overlap)
     if singular.min(initial=1.0) < 0.5:
         raise RuntimeError(
             "the active orbital selection changed discontinuously under a "
             "nuclear displacement; reduce the force step or give the "
             "active_space an explicit 'orbitals' list")
+    if gauge == "canonical":
+        diagonal = np.diag(overlap)
+        off = np.abs(overlap - np.diag(diagonal)).max(initial=0.0)
+        if off < CANONICAL_OFFDIAGONAL and np.abs(diagonal).min(initial=1.0) > 0.9:
+            return np.diag(diagonal / np.abs(diagonal))
+        warnings.warn(
+            f"the displaced active orbitals rotate too far for the canonical "
+            f"gauge (largest off-diagonal overlap {off:.2f}, smallest "
+            f"singular value {singular.min(initial=1.0):.2f}); the polar gauge "
+            f"is used, which is exact only for an active-space eigenstate and "
+            f"can be first-order wrong for a truncated ansatz", RuntimeWarning,
+            stacklevel=2)
     return left @ right
 
 
@@ -137,8 +183,8 @@ def internal_directions(positions: np.ndarray,
 def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
                           gamma: np.ndarray,
                           gamma2: np.ndarray,
-                          step: float = ACTIVE_SPACE_STEP_ANGSTROM
-                          ) -> np.ndarray:
+                          step: float = ACTIVE_SPACE_STEP_ANGSTROM,
+                          gauge: str = "canonical") -> np.ndarray:
     r"""Central-difference reduced-Hamiltonian gradient in eV/Angstrom.
 
     Each displaced build repeats the PAW integral, SCF, frozen-core, and active
@@ -178,6 +224,13 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
 
     if step <= 0:
         raise ValueError("the active-space force step must be positive")
+    warnings.warn(
+        "active-space forces by central difference of the reduced "
+        "Hamiltonian: this active space's orbital response (a rotating "
+        "selector, an open-shell reference, or an integral-direct or "
+        f"Cholesky build) has no analytic form, so every internal direction "
+        f"is rebuilt twice at a {step} Angstrom step", RuntimeWarning,
+        stacklevel=3)
     context = solver._gradient_context
     reference = context["integrals"]
     active = tuple(context["active"])
@@ -209,7 +262,7 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
                 "frozen orbitals, or register width")
         rotation = align_active_orbitals(
             reference, displaced["integrals"], active,
-            tuple(displaced["active"]))
+            tuple(displaced["active"]), gauge)
         return reduced_energy(displaced["integrals"], gamma, gamma2, rotation)
 
     directions = (internal_directions(positions)

@@ -136,6 +136,11 @@ atoms.calc = Mandacaru(method="vqe",
 atoms.get_total_energy()          # every energy evaluation is a Runtime job
 ```
 
+`method="adapt-vqe"` does the same, and measures its pool gradients there
+too: one gradient step per growth step, in as many jobs as the measurement
+budget packs it into, counted by the same run budget (see
+[ADAPT-VQE on a device](#adapt-on-a-device)).
+
 `optimizer=None` (the default) follows the objective there too: under
 `shots > 0` it is SPSA (100 steps, two evaluations each plus one final one --
 201 in total -- `tol=None`, since a step size certifies nothing under shot
@@ -177,7 +182,11 @@ or, through the calculator, `measurement_provider=`, which also measures the
 reduced density matrices a force request needs (see
 [What a hardware measurement costs](measurement_cost.md)).
 `examples/ibm_quantum/01_vqe_h2_ibm.py` runs the whole optimization on an IBM
-device (a fake backend by default), and
+device (a fake backend by default),
+`examples/ibm_quantum/05_adapt_h2_measured_gradients.py` an ADAPT-VQE whose
+pool gradients are measured too (on `fake_manila`: without `qiskit-aer` a fake
+backend runs on Qiskit's `BasicSimulator`, at most 24 qubits, and a circuit
+transpiled to a 156-qubit processor spans all of its wires), and
 `examples/aws_braket/01_vqe_h2_braket_local.py` does the same on a Braket device.
 
 **Keep the circuit small.** Hardware noise, not shot noise, limited the first
@@ -271,25 +280,25 @@ it is not a defect of the implementation.
 
 ---
 
-## Current limitation
+## ADAPT-VQE on a device
 
-:::{admonition} Only the energy evaluation is hardware-native
-:class: caution
+:::{admonition} Every quantity is measured
+:class: note
 
-The energy runs on the device, but **ADAPT-VQE's pool-gradient screening is
-still computed classically** from the state vector. A fully hardware-native
-adaptive loop would have to measure each pool gradient as well; that is not
-implemented yet.
-
-For a fixed ansatz, `method="vqe"` is fully hardware-native
-today — every cost evaluation in the optimization is measured on the device.
+With `shots > 0` a run builds no state vector. `method="vqe"` measures every
+cost evaluation; `method="adapt-vqe"` measures its energies **and** its pool
+gradients -- each `<psi|[H, A_k]|psi>` from Pauli expectation values, grouped
+into qubit-wise-commuting bases and packed into jobs within
+`measurement_budget=` -- except at the reference determinant, where they are
+exact and classical. The cost of one gradient step and the `screening=`
+option are in {doc}`measurement_cost`.
 :::
 
-`measurement_provider=` needs a provider that can return **many** expectation
-values of one state — what a force request measures through the reduced
-density matrices. `BraketProvider` cannot (it only measures `<H>`), so pairing
-one with `atoms.get_forces()` is refused before the optimization runs, not
-after; use a `QiskitProvider` (IBM, fake or local) for forces.
+`BraketProvider` measures many expectation values of one state
+(`expectation_values`): one quantum task per qubit-wise-commuting basis, all
+queued before any is awaited. That is what the measured pool gradients use,
+and what a force request measures through the reduced density matrices with
+`measurement_provider=`.
 
 ---
 
