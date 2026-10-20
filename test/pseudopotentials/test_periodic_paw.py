@@ -413,6 +413,132 @@ def test_bloch_sums_are_the_image_sums():
     assert np.abs(values - expected).max() < 1e-12 * np.abs(expected).max()
 
 
+class TestTheLatticeSumDerivatives:
+    """The ion-pair and ion-compensation lattice sums have analytic
+    derivatives (the crystal force no longer differences them)."""
+
+    @pytest.fixture(scope="class")
+    def crystal(self):
+        atoms = SILICON.copy()
+        atoms.positions[1] += [0.05, 0.02, -0.03]
+        crystal, _context = pp.build_crystal(atoms, SILICON_H, SILICON_BASIS)
+        return crystal
+
+    @staticmethod
+    def _central(function, centers, atom, d, step):
+        values = []
+        for sign in (+1.0, -1.0):
+            moved = [np.array(x, dtype=float) for x in centers]
+            moved[atom][d] += sign * step
+            values.append(function(moved))
+        return values
+
+    def test_the_ion_pair_gradient_is_the_difference_of_the_sum(self, crystal):
+        analytic = crystal.ion_constants_gradient()
+        for atom in range(len(crystal.centers)):
+            for d in range(3):
+                plus, minus = self._central(crystal.ion_constants,
+                                            crystal.centers, atom, d, 1e-4)
+                assert analytic[atom, d] == pytest.approx(
+                    (plus - minus) / 2e-4, abs=1e-8)
+        assert np.abs(analytic).max() > 1e-4
+
+    def test_the_ion_compensation_gradient_is_the_difference_of_the_sum(
+            self, crystal):
+        analytic = crystal.short_range_ion_compensation_gradient()
+        assert set(analytic) == set(crystal.channels)
+        for atom, d in ((0, 0), (1, 2)):
+            plus, minus = self._central(
+                crystal.short_range_ion_compensation, crystal.centers, atom,
+                d, 1e-4)
+            for channel in crystal.channels:
+                numeric = (plus[channel] - minus[channel]) / 2e-4
+                assert analytic[channel][atom, d] == pytest.approx(
+                    numeric, abs=1e-7)
+
+    def test_both_gradients_sum_to_zero_over_the_atoms(self, crystal):
+        """Translating every atom together changes neither sum."""
+        assert crystal.ion_constants_gradient().sum(axis=0) == pytest.approx(
+            0.0, abs=1e-13)
+        for gradient in crystal.short_range_ion_compensation_gradient(
+                ).values():
+            assert np.abs(gradient.sum(axis=0)).max() < 1e-12
+
+    def test_the_local_potential_derivative_is_the_slope(self, crystal):
+        dataset = crystal.datasets[0]
+        radius = np.concatenate([
+            np.linspace(0.5 * dataset.r[0], 0.9 * dataset.r[0], 3),
+            np.linspace(1.05 * dataset.r[0], 0.97 * dataset.r[-1], 40),
+            np.linspace(1.05 * dataset.r[-1], 3.0 * dataset.r[-1], 5)])
+        step = 1e-6
+        numeric = (dataset.local_potential(radius + step)
+                   - dataset.local_potential(radius - step)) / (2 * step)
+        assert dataset.local_potential_derivative(radius) == pytest.approx(
+            numeric, abs=2e-6)
+
+
+class TestTheSphereBlochSums:
+    """The Bloch sums of the projector and short-range spheres: contracted
+    image by image, evaluated for any number of k-points at once, and only in
+    the blocks a force needs."""
+
+    @pytest.fixture(scope="class")
+    def crystal(self):
+        crystal, _context = pp.build_crystal(
+            SILICON, SILICON_H, SILICON_BASIS,
+            kpts={"size": (2, 2, 1), "gamma": True})
+        return crystal
+
+    def test_the_image_resolved_projection_is_the_contracted_sum(self,
+                                                                 crystal):
+        """Basis functions and their derivatives alike."""
+        rng = np.random.default_rng(3)
+        center, radius = crystal._cell_region()
+        points = center + rng.uniform(-0.5, 0.5, size=(900, 3)) * radius
+        order = np.lexsort((np.floor(points[:, 2]), np.floor(points[:, 1]),
+                            np.floor(points[:, 0])))
+        points = tuple(points[order].T)
+        columns = rng.normal(size=(3, 900)) + 1j * rng.normal(size=(3, 900))
+        functions = list(crystal.basis) + [
+            pp.BasisGradient(f, axis) for axis in range(3)
+            for f in crystal.basis[:4]]
+        kpoints = crystal.kpoints
+        values = pp.bloch_values(functions, crystal.lattice, kpoints, points,
+                                 center, radius)
+        expected = np.einsum("kmx,px->kmp", values.conj(), columns)
+        got = pp.bloch_projections(functions, crystal.lattice, kpoints,
+                                   points, columns, center, radius)
+        assert got == pytest.approx(expected, abs=1e-12 * np.abs(expected).max())
+
+    def test_k_points_evaluated_together_equal_one_by_one(self, crystal):
+        kpoints = crystal.cartesian_kpoints(
+            np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.25, 0.5, 0.0]]))
+        together = crystal.kpoint_matrices(kpoints)
+        for i, k in enumerate(kpoints):
+            alone = crystal.kpoint_matrices(k[None, :])[0]
+            for name in ("overlap", "fixed", "projections"):
+                assert np.allclose(getattr(together[i], name),
+                                   getattr(alone, name), atol=1e-12, rtol=0)
+
+    def test_the_cross_block_is_the_block_of_the_full_matrix(self, crystal):
+        kpoints = crystal.kpoints
+        full = crystal.short_range_atom(0, kpoints)
+        rows = list(range(0, crystal.M, 2))
+        columns = list(range(1, crystal.M, 2))
+        cross = crystal.short_range_cross(
+            0, kpoints, [crystal.basis[mu] for mu in rows],
+            [crystal.basis[mu] for mu in columns])
+        assert np.allclose(cross, full[:, rows][:, :, columns], atol=1e-12,
+                           rtol=0)
+
+    def test_the_chunk_holds_its_bytes_whatever_the_k_points(self):
+        assert pp._sphere_chunk_size(1, 20) == pp.SPHERE_CHUNK
+        for nk, rows in ((10, 200), (100, 400), (1000, 1000)):
+            size = pp._sphere_chunk_size(nk, rows)
+            assert 4096 <= size <= pp.SPHERE_CHUNK
+            assert size == 4096 or 32 * nk * rows * size <= pp.SPHERE_BYTES
+
+
 class TestTheProjectorSpaceMoments:
     r"""``Q^A_LM(k) = C_A blk C_A^\dagger`` is never formed: the Hamiltonian
     term and the moments go through the ``(P, P)`` projector space."""
@@ -455,6 +581,49 @@ class TestTheProjectorSpaceMoments:
         q = crystal.moment_traces(R)
         for ch in crystal.channels:
             assert q[ch] == pytest.approx(expected[ch], abs=1e-13)
+
+
+class TestTheAugmentationRemainder:
+    """What the compensation charges leave of the augmentation pair densities
+    (:meth:`~mandacaru.pseudopotentials.periodic_paw.PeriodicPAW.remainder_transforms`)
+    and of their Coulomb energy (:meth:`onsite_remainder`)."""
+
+    @pytest.fixture(scope="class")
+    def crystal(self):
+        crystal, _context = pp.build_crystal(
+            SILICON, SILICON_H, SILICON_BASIS,
+            kpts={"size": (1, 1, 1), "gamma": True})
+        return crystal
+
+    def test_it_moves_with_the_atom(self, crystal):
+        """A pure phase from one atom to the other: the two silicon atoms'
+        tables are the same function times their structure factors."""
+        vectors = np.array([[0.0, 0.0, 0.0], [1.3, 0.2, -0.7],
+                            [0.4, 2.1, 1.1]]).T
+        first = crystal.remainder_transforms(0, vectors)
+        second = crystal.remainder_transforms(1, vectors)
+        shift = np.exp(-1j * (vectors.T @ (crystal.centers[1]
+                                           - crystal.centers[0])))
+        assert np.allclose(second, first * shift[None, None, :], atol=1e-9)
+
+    def test_it_is_hermitian_in_the_pair(self, crystal):
+        """``E_ab(g) = conj(E_ba(-g))`` for the pair density of a function
+        and its conjugate partner."""
+        vectors = np.array([[1.3, 0.2, -0.7], [0.4, 2.1, 1.1]]).T
+        plus = crystal.remainder_transforms(0, vectors)
+        minus = crystal.remainder_transforms(0, -vectors)
+        assert np.allclose(plus, np.conj(minus).transpose(1, 0, 2),
+                           atol=1e-9)
+
+    def test_the_onsite_energy_is_a_hermitian_pair_tensor(self, crystal):
+        """``conj(DeltaW[a, b, c, d]) = DeltaW[b, a, d, c]`` (the pair
+        density of ``b, a`` is the conjugate of ``a, b``) and it is
+        symmetric under the exchange of the two pairs."""
+        W = crystal.onsite_remainder(0)
+        assert np.allclose(W, np.conj(W.transpose(1, 0, 3, 2)), atol=1e-10)
+        # raw-basis entries are large (tens of Hartree) and the pair-exchange
+        # symmetry holds to the quadrature of the moments, 5e-5 relative
+        assert np.allclose(W, W.transpose(2, 3, 0, 1), rtol=1e-3, atol=1e-3)
 
 
 def test_the_crystal_build_runs_single_threaded_blas():

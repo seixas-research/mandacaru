@@ -115,6 +115,24 @@ void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
                            const int *ms, const long *rows, int nm, long M,
                            double _Complex *out);
 
+/* Points per block of the Bloch kernels (and of mandacaru_bloch_project's
+ * output slices). */
+long mandacaru_bloch_block(void);
+
+/* Image-resolved projections of one shell on weight columns
+ * (mandacaru_bloch.c): out[b, R, i, p] = sum_{j in block b}
+ * conj(phi_{R,i}(r_j)) cols[p, j] -- (n_blocks, n_images, nm, P), zeroed by
+ * the caller; the entries of the images that reach a block are set. */
+void mandacaru_bloch_project(const double *x, const double *y,
+                             const double *z, long npts, const double *center,
+                             const double *translations, int n_images,
+                             double support,
+                             const double *breaks, const double *coeffs,
+                             int nb, double rc, int l, int derivative,
+                             const int *ms, int nm,
+                             const double _Complex *cols, int P,
+                             double _Complex *out);
+
 /* Steepest-ascent trajectories for the Bader partition (mandacaru_bader.c):
  * owner[s] is the captured atom, or -1 (stalled / out of steps) with the
  * stopping point in final_index. */

@@ -88,14 +88,13 @@ import numpy as np
 
 from ..integrals import reciprocal as rc
 from ..integrals._backend import single_threaded_blas
-from .periodic_device import make_device
 from .periodic_dft import entropy, fermi_level, occupation
 
-#: Displacement (Bohr) of the compensation charges, ion sums and partial cores
-#: whose derivatives are central differences (the basis and the operators'
-#: matrices are differentiated analytically), Richardson-extrapolated with
-#: half the step (:func:`_richardson`): a cramped cell (O2 in a 4 A box) put
-#: 6e-5 eV/A into the plain central difference.
+#: Displacement (Bohr) of the partial cores, whose derivative is a central
+#: difference (the basis, the operators' matrices, the compensation charges
+#: and the ion sums are differentiated analytically), Richardson-extrapolated
+#: with half the step (:func:`_richardson`): a cramped cell (O2 in a 4 A box)
+#: put 6e-5 eV/A into the plain central difference.
 DEFAULT_DELTA = 1.0e-3
 
 #: Half-amplitude of the symmetric strains of the stress.
@@ -234,20 +233,19 @@ def kpoint_state(solver):
     eigenvalues = [[] for _s in range(n_channels)]
     vectors = [[] for _s in range(n_channels)]
     overlaps = []
-    block = c.kpoint_block()
-    for start in range(0, len(kpoints), block):
-        data = c.kpoint_matrices(kpoints[start:start + block])
-        gradients = ([c.bloch_gradients(d.psi, d.k) for d in data]
-                     if solver.meta else None)
-        device = make_device(c, data, gradients)
-        for s, (V_s, v_tau_s) in enumerate(potentials):
-            H = device.hamiltonians(V_s, v_tau_s, w)
-            if solver.screening is not None:
-                H = H + _hybrid_hamiltonian_terms(solver, s, device=device)
-            eps, C = device.eigensolve(H)
-            eigenvalues[s].extend(eps)
-            vectors[s].extend(C)
-        overlaps.extend(d.overlap for d in data)
+    # The SCF's own k-points, matrices and device: the same Bloch sums,
+    # overlaps and projections it already built (rebuilding them cost as
+    # much as the whole SCF's matrices).
+    data = c.kpoint_data
+    device = solver.device
+    for s, (V_s, v_tau_s) in enumerate(potentials):
+        H = device.hamiltonians(V_s, v_tau_s, w)
+        if solver.screening is not None:
+            H = H + _hybrid_hamiltonian_terms(solver, s, device=device)
+        eps, C = device.eigensolve(H)
+        eigenvalues[s].extend(eps)
+        vectors[s].extend(C)
+    overlaps.extend(d.overlap for d in data)
     if spin:
         # One electron per state, one Fermi level over both channels.
         mu = fermi_level(eigenvalues[0] + eigenvalues[1], list(weights) * 2,
@@ -321,16 +319,15 @@ def _matrix_terms(solver, state):
     that move -- spheres, projectors, the compensation moments' ``w`` -- are
     the same in both channels and see the summed ``P`` and ``W``.
     """
-    from ..pseudopotentials.periodic_paw import BasisGradient, KPointMatrices
+    from ..pseudopotentials.periodic_paw import (KPOINT_BLOCK_BYTES,
+                                                 BasisGradient)
 
     c = solver.crystal
-    _V, _v_tau, w, _terms = state["potentials"]
-    channels = state["channels"]
     M, n_atoms = c.M, len(c.centers)
-    owner = np.asarray(c.atom_of_orbital)
     extended = list(c.basis) + [BasisGradient(f, axis) for axis in range(3)
                                 for f in c.basis]
     grad = [np.arange(M * (1 + axis), M * (2 + axis)) for axis in range(3)]
+    base = np.arange(M)
     ext = copy.copy(c)
     ext.basis = extended
     ext.atom_of_orbital = list(c.atom_of_orbital) * 4
@@ -338,97 +335,139 @@ def _matrix_terms(solver, state):
 
     pulay = np.zeros((n_atoms, 3))
     hf = np.zeros((n_atoms, 3))
-    kpoints, weights = state["kpoints"], state["weights"]
+    kpoints = state["kpoints"]
     block = ext.kpoint_block()
-    base = np.arange(M)
-    for start in range(0, len(kpoints), block):
-        chunk = kpoints[start:start + block]
-        psi_all = ext.bloch_sums(chunk)
-        C_all = ext.projections(chunk)
-        spheres = [ext.short_range_atom(atom, chunk)
-                   for atom in range(n_atoms)]
-        for i, k in enumerate(chunk):
-            index = start + i
-            psi, C = psi_all[i], C_all[i]
-            S = (psi.conj() @ psi.T) * c.grid.dV + C @ c.q_overlap @ C.conj().T
-            fixed = (ext._kinetic(psi, k) + sum(v[i] for v in spheres)
-                     + C @ c.D_ion @ C.conj().T)
-            data = KPointMatrices(k=np.asarray(k, float), weight=0.0, psi=psi,
-                                  overlap=S, fixed=fixed, projections=C)
-            gradients = (ext.bloch_gradients(psi, k) if solver.meta
-                         else None)
-            # The exchange is symmetric between its k side and its q side,
-            # so moving every function at fixed coefficients is twice
-            # moving the k side with the occupied states fixed: each
-            # channel's -s K over the extended basis (s = a/2 restricted, a
-            # per spin channel), through the same Pulay contraction as the
-            # local terms.  Not through a device: the extended overlap need
-            # not have a Cholesky factor.
-            H_channels = []
-            for s, channel in enumerate(channels):
-                H = solver._hamiltonian(data, channel["V"], channel["v_tau"],
-                                        w, gradients)
-                if solver.screening is not None:
-                    H = H + _hybrid_hamiltonian_terms(
-                        solver, s, kpoint_data=[data])[0]
-                H_channels.append(H)
-            P, W, wk = state["P"][index], state["W"][index], weights[index]
-            P_channels = [channel["P"][index] for channel in channels]
-            C0 = C[base]
-            if solver.screening is not None:
-                # The compensation charges of each channel's exchange pairs:
-                # their projectors and shapes move.
-                states = solver._hybrid_output[0]
-                for s, P_s in enumerate(P_channels):
-                    hf += wk * solver.exchange.compensation_gradient(
-                        SimpleNamespace(k=data.k, psi=psi[base],
-                                        projections=C0),
-                        states[s], P_s, [C[grad[d]] for d in range(3)],
-                        solver._exchange_scale())
-            for d in range(3):
-                g = grad[d]
-                G_Hs = [H[np.ix_(g, base)] for H in H_channels]
-                G_S = S[np.ix_(g, base)]
-                # Pulay: one atom's functions move.
-                for atom in range(n_atoms):
-                    own = (owner == atom).astype(float)
-                    band = sum(
-                        _trace(P_s, -(own[:, None] * G_H
-                                      + G_H.conj().T * own[None, :]))
-                        for P_s, G_H in zip(P_channels, G_Hs))
-                    dS = -(own[:, None] * G_S + G_S.conj().T * own[None, :])
-                    pulay[atom, d] += wk * (band - _trace(W, dS))
-                # A short-range sphere moves: minus all functions moving.
-                for atom in range(n_atoms):
-                    G_V = spheres[atom][i][np.ix_(g, base)]
-                    hf[atom, d] += wk * _trace(P, G_V + G_V.conj().T)
-                # A projector moves: minus all functions moving, its column.
-                dC_all = C[g]
-                for atom in range(n_atoms):
-                    columns = c.projector_columns(atom)
-                    if not columns:
-                        continue
-                    dC = np.zeros_like(C0)
-                    dC[:, columns] = dC_all[:, columns]
-                    dH = (dC @ c.D_ion @ C0.conj().T
-                          + C0 @ c.D_ion @ dC.conj().T)
-                    dS = (dC @ c.q_overlap @ C0.conj().T
-                          + C0 @ c.q_overlap @ dC.conj().T)
-                    Ca, dCa = C0[:, columns], dC[:, columns]
-                    for ch, blk in c.multipole_blocks.items():
-                        if ch[0] == atom:
-                            dH = dH + w[ch] * (dCa @ blk @ Ca.conj().T
-                                               + Ca @ blk @ dCa.conj().T)
-                    hf[atom, d] += wk * (_trace(P, dH) - _trace(W, dS))
-                    if solver.screening is not None:
-                        # The spheres' one-center operator, per channel,
-                        # moves as the nonlocal projector term does.
-                        for P_s, O in zip(P_channels,
-                                          solver._hybrid_output[1]):
-                            dO = (dC @ O @ C0.conj().T
-                                  + C0 @ O @ dC.conj().T)
-                            hf[atom, d] += wk * _trace(P_s, dO)
+    # What differs from the SCF's own matrices is the derivative functions'
+    # rows: the basis' projections are the SCF's (same k-points), and a
+    # sphere's matrix is needed between the derivatives and the basis only.
+    # The projector and short-range spheres are small, and their images and
+    # radial values are k-independent: evaluate them for as many k-points as
+    # their matrices fit KPOINT_BLOCK_BYTES, not for the (much smaller)
+    # block of grid Bloch sums, which repeated all of it once per block.
+    derivatives = copy.copy(c)
+    derivatives.basis = extended[M:]
+    derivatives.atom_of_orbital = list(c.atom_of_orbital) * 3
+    derivatives.M = 3 * M
+    wide = max(block, int(KPOINT_BLOCK_BYTES
+                          // (16 * (n_atoms + 1) * ext.M ** 2)))
+    for outer in range(0, len(kpoints), wide):
+        wide_chunk = kpoints[outer:outer + wide]
+        C_wide = np.concatenate(
+            [np.stack([d.projections
+                       for d in c.kpoint_data[outer:outer + wide]]),
+             derivatives.projections(wide_chunk)], axis=1)
+        spheres_wide = []
+        for atom in range(n_atoms):
+            cross = c.short_range_cross(atom, wide_chunk, extended[M:],
+                                        extended[:M])
+            V = np.zeros((len(wide_chunk), ext.M, ext.M), dtype=complex)
+            V[:, M:, :M] = cross
+            V[:, :M, M:] = cross.conj().transpose(0, 2, 1)
+            spheres_wide.append(V)
+        for start in range(outer, outer + len(wide_chunk), block):
+            _matrix_block(solver, state, ext, start, outer, block, base,
+                          grad, C_wide, spheres_wide, pulay, hf)
     return pulay, hf
+
+
+def _matrix_block(solver, state, ext, start, outer, block, base, grad, C_wide,
+                  spheres_wide, pulay, hf):
+    """Accumulate :func:`_matrix_terms` over the k-points ``start`` ..
+    ``start + block`` (those of the wide chunk that begins at ``outer``)."""
+    from ..pseudopotentials.periodic_paw import KPointMatrices
+
+    c = solver.crystal
+    _V, _v_tau, w, _terms = state["potentials"]
+    channels = state["channels"]
+    n_atoms = len(c.centers)
+    owner = np.asarray(c.atom_of_orbital)
+    kpoints, weights = state["kpoints"], state["weights"]
+    chunk = kpoints[start:start + block]
+    shift = start - outer
+    psi_all = ext.bloch_sums(chunk)
+    C_all = C_wide[shift:shift + len(chunk)]
+    spheres = [v[shift:shift + len(chunk)] for v in spheres_wide]
+    for i, k in enumerate(chunk):
+        index = start + i
+        psi, C = psi_all[i], C_all[i]
+        S = (psi.conj() @ psi.T) * c.grid.dV + C @ c.q_overlap @ C.conj().T
+        fixed = (ext._kinetic(psi, k) + sum(v[i] for v in spheres)
+                 + C @ c.D_ion @ C.conj().T)
+        data = KPointMatrices(k=np.asarray(k, float), weight=0.0, psi=psi,
+                              overlap=S, fixed=fixed, projections=C)
+        gradients = (ext.bloch_gradients(psi, k) if solver.meta
+                     else None)
+        # The exchange is symmetric between its k side and its q side,
+        # so moving every function at fixed coefficients is twice
+        # moving the k side with the occupied states fixed: each
+        # channel's -s K over the extended basis (s = a/2 restricted, a
+        # per spin channel), through the same Pulay contraction as the
+        # local terms.  Not through a device: the extended overlap need
+        # not have a Cholesky factor.
+        H_channels = []
+        for s, channel in enumerate(channels):
+            H = solver._hamiltonian(data, channel["V"], channel["v_tau"],
+                                    w, gradients)
+            if solver.screening is not None:
+                H = H + _hybrid_hamiltonian_terms(
+                    solver, s, kpoint_data=[data])[0]
+            H_channels.append(H)
+        P, W, wk = state["P"][index], state["W"][index], weights[index]
+        P_channels = [channel["P"][index] for channel in channels]
+        C0 = C[base]
+        if solver.screening is not None:
+            # The compensation charges of each channel's exchange pairs:
+            # their projectors and shapes move.
+            states = solver._hybrid_output[0]
+            for s, P_s in enumerate(P_channels):
+                hf += wk * solver.exchange.compensation_gradient(
+                    SimpleNamespace(k=data.k, psi=psi[base],
+                                    projections=C0),
+                    states[s], P_s, [C[grad[d]] for d in range(3)],
+                    solver._exchange_scale())
+        for d in range(3):
+            g = grad[d]
+            G_Hs = [H[np.ix_(g, base)] for H in H_channels]
+            G_S = S[np.ix_(g, base)]
+            # Pulay: one atom's functions move.
+            for atom in range(n_atoms):
+                own = (owner == atom).astype(float)
+                band = sum(
+                    _trace(P_s, -(own[:, None] * G_H
+                                  + G_H.conj().T * own[None, :]))
+                    for P_s, G_H in zip(P_channels, G_Hs))
+                dS = -(own[:, None] * G_S + G_S.conj().T * own[None, :])
+                pulay[atom, d] += wk * (band - _trace(W, dS))
+            # A short-range sphere moves: minus all functions moving.
+            for atom in range(n_atoms):
+                G_V = spheres[atom][i][np.ix_(g, base)]
+                hf[atom, d] += wk * _trace(P, G_V + G_V.conj().T)
+            # A projector moves: minus all functions moving, its column.
+            dC_all = C[g]
+            for atom in range(n_atoms):
+                columns = c.projector_columns(atom)
+                if not columns:
+                    continue
+                dC = np.zeros_like(C0)
+                dC[:, columns] = dC_all[:, columns]
+                dH = (dC @ c.D_ion @ C0.conj().T
+                      + C0 @ c.D_ion @ dC.conj().T)
+                dS = (dC @ c.q_overlap @ C0.conj().T
+                      + C0 @ c.q_overlap @ dC.conj().T)
+                Ca, dCa = C0[:, columns], dC[:, columns]
+                for ch, blk in c.multipole_blocks.items():
+                    if ch[0] == atom:
+                        dH = dH + w[ch] * (dCa @ blk @ Ca.conj().T
+                                           + Ca @ blk @ dCa.conj().T)
+                hf[atom, d] += wk * (_trace(P, dH) - _trace(W, dS))
+                if solver.screening is not None:
+                    # The spheres' one-center operator, per channel,
+                    # moves as the nonlocal projector term does.
+                    for P_s, O in zip(P_channels,
+                                      solver._hybrid_output[1]):
+                        dO = (dC @ O @ C0.conj().T
+                              + C0 @ O @ dC.conj().T)
+                        hf[atom, d] += wk * _trace(P_s, dO)
 
 
 def _ion_transform_atom(c, atom, G):
@@ -502,33 +541,17 @@ def _richardson(central, delta):
     return (4.0 * central(0.5 * delta) - central(delta)) / 3.0
 
 
-def _displaced(function, centers, atom, d, delta):
-    """Central difference of ``function(centers)`` as ``atom`` moves along
-    ``d``."""
-    values = []
-    for sign in (+1.0, -1.0):
-        moved = [np.array(x, dtype=float) for x in centers]
-        moved[atom][d] += sign * delta
-        values.append(function(moved))
-    return values
-
-
-def _sum_terms(solver, state, atom, delta):
-    """``(3,)``: the short-range ion-compensation and erfc ion-pair sums."""
+def _sum_terms(solver, state):
+    """``(n_atoms, 3)``: the short-range ion-compensation and erfc ion-pair
+    sums -- both pair sums with analytic derivatives
+    (:meth:`~mandacaru.pseudopotentials.periodic_paw.PeriodicPAW.
+    short_range_ion_compensation_gradient`, ``ion_constants_gradient``)."""
     c = solver.crystal
     _rho, q, _tau = state["density"]
-    out = np.zeros(3)
-    for d in range(3):
-        def central(h, d=d):
-            plus, minus = _displaced(
-                lambda centers: c.short_range_ion_compensation(centers,
-                                                               atom=atom),
-                c.centers, atom, d, h)
-            value = float(np.real(sum(q[ch] * (plus[ch] - minus[ch])
-                                      for ch in c.channels))) / (2.0 * h)
-            plus, minus = _displaced(c.ion_constants, c.centers, atom, d, h)
-            return value + (plus - minus) / (2.0 * h)
-        out[d] = _richardson(central, delta)
+    gradient = c.short_range_ion_compensation_gradient()
+    out = c.ion_constants_gradient()
+    for channel in c.channels:
+        out = out + np.real(q[channel] * gradient[channel])
     return out
 
 
@@ -647,8 +670,8 @@ def crystal_gradient(solver, *, delta: float = DEFAULT_DELTA,
     hf = hf + _electrostatic(solver, state)
     core = _core_potentials(solver, state)
     for atom in range(n_atoms):
-        hf[atom] += (_sum_terms(solver, state, atom, delta)
-                     + _core_terms(solver, state, atom, delta, core))
+        hf[atom] += _core_terms(solver, state, atom, delta, core)
+    hf = hf + _sum_terms(solver, state)
     hf = symmetrize_vectors(c, hf) * HA_BOHR_TO_EV_ANGSTROM
     pulay = symmetrize_vectors(c, pulay) * HA_BOHR_TO_EV_ANGSTROM
     gradient = hf + pulay

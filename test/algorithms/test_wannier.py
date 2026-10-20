@@ -19,6 +19,7 @@ from ase.build import bulk
 from ase.io.cube import read_cube_data
 
 from mandacaru import Mandacaru
+from mandacaru.algorithms import wannier as wmod
 from mandacaru.algorithms.wannier import (SpinWannierResult, bond_centers,
                                           fragment_extent, gaussian_radial,
                                           is_orbital_spec, neighbor_shells,
@@ -418,7 +419,6 @@ class TestTheTwoSiteModel:
         workspace, a batch at a time and in place: the same coefficients
         as one plain ``fftn`` per pair, and the compensation charges left as
         they were (an in-place lattice sum once overwrote them)."""
-        from mandacaru.algorithms import wannier as wmod
 
         atoms, _windows, w = silicon_sp3
         modes = [(n, (0, 0, 0)) for n in bond_pair(atoms, w)]
@@ -774,18 +774,17 @@ class TestTheT2gModel:
     interaction."""
 
     def test_the_fermi_level_cuts_the_t2g_bands(self, vanadate_crystal):
-        """d1: the sixteen bands below full (Sr 4s and 4p, semicore since
-        the K21 datasets of 2026-10-11, and O's twelve), the Fermi level
-        inside the next three, the t2g, which lie within the model's 2 eV
-        window."""
+        """d1: the twenty bands below full (V 3s and 3p and Sr 4s and 4p,
+        semicore, and O's twelve), the Fermi level inside the next three,
+        the t2g, which lie within the model's 2 eV window."""
         atoms = vanadate_crystal
         solver = atoms.calc.solver._periodic_solver
         B = rc.reciprocal_vectors(solver.crystal.lattice)
         kpoints = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 1, 1]]) / 3.0
         bands = (np.asarray(solver.bands(kpoints @ B.T)[0]) * HARTREE_TO_EV
                  - atoms.calc.get_fermi_level())
-        assert bands[:, 15].max() < -2.0
-        assert bands[:, 16].min() < 0.0 < bands[:, 18].max() < 2.0
+        assert bands[:, 19].max() < -2.0
+        assert bands[:, 20].min() < 0.0 < bands[:, 22].max() < 2.0
 
     def test_three_equivalent_functions_on_vanadium(self, vanadate):
         atoms, w = vanadate
@@ -812,6 +811,29 @@ class TestTheT2gModel:
         assert np.allclose(pair_hopping, J, atol=1e-8)
         assert U[0] > Up[0] > 0.0 and 0.0 < J[0] < 0.1 * U[0]
         assert 0.9 < (U[0] - Up[0]) / (2.0 * J.mean()) < 1.2
+
+    def test_the_augmentation_remainder_lifts_the_bare_interaction(
+            self, vanadate, t2g_model):
+        """The on-site part of the all-electron pair density that the
+        compensation charges miss (:func:`onsite_integrals`) adds 1.11 eV to
+        the bare U and 0.13 eV to U' of 3^3 SrVO3 with the semicore V,
+        whose 1.67 Bohr d sphere holds more of the 3d pair density than the
+        old 1.156 Bohr one did (0.44 eV and 0.07 eV to U'): the bare U is 15.57 and J
+        0.528 eV (15.76 and 0.538 before; the literature's are 16.1 and
+        0.55))."""
+        w = vanadate[1]
+        box = w._coulomb_box()
+        values, projections = w._supercell()
+        plain = wmod.pair_densities(box, values, projections,
+                                    wmod.resolve_fragment(None, 3))
+        remainder = wmod.onsite_integrals(box.crystal, plain, plain)
+        assert np.abs(remainder.imag).max() * HARTREE_TO_EV < 1e-8
+        r = remainder.real * HARTREE_TO_EV
+        assert r[0, 0, 0, 0] == pytest.approx(1.106, abs=0.03)
+        assert r[0, 1, 0, 1] == pytest.approx(0.126, abs=0.01)
+        g = t2g_model.two_body.real * HARTREE_TO_EV
+        assert g[0, 0, 0, 0] == pytest.approx(15.57, abs=0.03)
+        assert g[0, 1, 1, 0] == pytest.approx(0.528, abs=0.01)
 
     def test_the_model_holds_the_d_electron(self, t2g_model):
         """d1: the three functions hold the one electron of the t2g

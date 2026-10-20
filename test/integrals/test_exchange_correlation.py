@@ -259,6 +259,148 @@ class TestSpinPolarized:
                                         rel=1e-5)
 
 
+class TestAGivenGradient:
+    """``gradient_field=`` / ``gradient_fields=``: the caller builds the
+    density gradient (a meta-GGA's from the orbitals,
+    :func:`~mandacaru.integrals.exchange_correlation.product_rule_gradient`)
+    and contracts the vector field the evaluator returns in place of the
+    divergence of it."""
+
+    FUNCTIONALS = ["pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"]
+
+    @pytest.mark.parametrize("functional", FUNCTIONALS)
+    def test_the_grid_s_own_gradient_gives_the_divergence_form(self,
+                                                               functional):
+        grid = _grid(grid_spacing=0.3)
+        rho, r2 = _gaussian(grid)
+        tau = _tau(grid, rho, r2)
+        plain = xc_grid.evaluate(grid, rho, functional, tau=tau)
+        given = xc_grid.evaluate(grid, rho, functional, tau=tau,
+                                 gradient_field=xc_grid.gradient(grid, rho))
+        assert given.energy == pytest.approx(plain.energy, rel=1e-13)
+        folded = given.potential - xc_grid.divergence(
+            grid, given.gradient_potential)
+        assert np.max(np.abs(folded - plain.potential)) \
+            < 1e-10 * np.max(np.abs(plain.potential))
+        assert plain.gradient_potential is None
+
+    @pytest.mark.parametrize("functional", ["pbe", "r2scan"])
+    def test_the_vector_field_is_the_derivative_in_the_gradient(
+            self, functional):
+        r"""``dE = int W . d(grad rho)`` for a gradient that is not the
+        density's own -- what lets the caller differentiate it through the
+        orbitals."""
+        grid = _grid(grid_spacing=0.3)
+        rho, r2 = _gaussian(grid)
+        tau = _tau(grid, rho, r2)
+        grad = xc_grid.gradient(grid, rho)
+        delta = 0.05 * grad * np.exp(-0.2 * r2) * (
+            1.0 + 0.3 * grid.Z.reshape(-1))
+        eps = 1e-5
+
+        def energy(field):
+            return xc_grid.evaluate(grid, rho, functional, tau=tau,
+                                    gradient_field=field).energy
+
+        terms = xc_grid.evaluate(grid, rho, functional, tau=tau,
+                                 gradient_field=grad)
+        directional = np.sum(terms.gradient_potential * delta) * grid.dV
+        assert (energy(grad + eps * delta) - energy(grad - eps * delta)) \
+            / (2.0 * eps) == pytest.approx(directional, rel=1e-6)
+
+    @pytest.mark.parametrize("functional", FUNCTIONALS)
+    def test_the_spin_channels_agree_with_the_divergence_form(self,
+                                                              functional):
+        grid = _grid(grid_spacing=0.3)
+        rho, r2 = _gaussian(grid)
+        up, dn = rho, 0.5 * rho * np.exp(-0.8 * r2)
+        tau_up, tau_dn = _tau(grid, up, r2), _tau(grid, dn, r2)
+        plain = xc_grid.evaluate_spin(grid, up, dn, functional,
+                                      tau_up=tau_up, tau_dn=tau_dn)
+        given = xc_grid.evaluate_spin(
+            grid, up, dn, functional, tau_up=tau_up, tau_dn=tau_dn,
+            gradient_fields=(xc_grid.gradient(grid, up),
+                             xc_grid.gradient(grid, dn)))
+        assert given.energy == pytest.approx(plain.energy, rel=1e-13)
+        for channel in ("up", "dn"):
+            folded = getattr(given, f"potential_{channel}") \
+                - xc_grid.divergence(
+                    grid, getattr(given, f"gradient_potential_{channel}"))
+            reference = getattr(plain, f"potential_{channel}")
+            assert np.max(np.abs(folded - reference)) \
+                < 1e-9 * np.max(np.abs(reference))
+        assert plain.gradient_potential_up is None
+
+    def test_a_single_orbital_density_has_no_mismatch_with_its_tau(self):
+        r"""The product-rule gradient of ``rho = phi^2`` is ``2 phi grad phi``,
+        so ``tau_W = |grad rho|^2/8 rho`` is ``tau = |grad phi|^2/2`` to
+        round-off wherever the density is not zero -- while the grid's
+        derivative of the sampled density differs from it where the
+        density is not resolved."""
+        grid = _grid(grid_spacing=0.3)
+        phi = (ALPHA / np.pi) ** 0.75 * np.exp(
+            -0.5 * ALPHA * (grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2)
+        ).reshape(-1)
+        orbitals = phi[None, :]
+        gradients = xc_grid.gradient(grid, orbitals)
+        density = np.array([[2.0]])
+        rho = 2.0 * phi * phi
+        tau = np.sum(gradients[:, 0] ** 2, axis=0)            # 2 * (1/2)|grad|^2
+        product = xc_grid.product_rule_gradient(orbitals, gradients, density)
+        live = rho > 1e-8
+        weizsaecker = np.sum(product * product, axis=0)[live] \
+            / (8.0 * rho[live])
+        assert np.max(np.abs(weizsaecker - tau[live])) \
+            < 1e-12 * np.max(tau[live])
+        grid_gradient = xc_grid.gradient(grid, rho)
+        mismatch = np.sum(grid_gradient * grid_gradient, axis=0)[live] \
+            / (8.0 * rho[live]) - tau[live]
+        assert np.max(np.abs(mismatch)) > 1e-6 * np.max(tau[live])
+
+    def test_the_gradient_term_is_the_derivative_in_the_density_matrix(self):
+        r"""``G_pq`` of :func:`gradient_term_matrix` satisfies ``int W .
+        grad rho[dD] = sum_pq dD_pq G_qp`` for any symmetric ``dD``."""
+        grid = _grid(grid_spacing=0.4)
+        rng = np.random.default_rng(3)
+        r2 = (grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2).reshape(-1)
+        centers = rng.normal(scale=0.5, size=(3, 3))
+        orbitals = np.stack([
+            np.exp(-0.7 * ((grid.X - c[0]) ** 2 + (grid.Y - c[1]) ** 2
+                           + (grid.Z - c[2]) ** 2)).reshape(-1)
+            for c in centers])
+        gradients = xc_grid.gradient(grid, orbitals)
+        W = rng.normal(size=(3, r2.size)) * np.exp(-0.2 * r2)
+        B = rng.normal(size=(3, 3))
+        dD = B + B.T
+        G = xc_grid.gradient_term_matrix(orbitals, gradients, W, grid.dV)
+        expected = np.sum(W * xc_grid.product_rule_gradient(
+            orbitals, gradients, dD)) * grid.dV
+        assert np.sum(dD * G.T) == pytest.approx(expected, rel=1e-12)
+        assert np.allclose(G, G.T, rtol=1e-12, atol=1e-14)
+
+    def test_the_derivative_of_the_term_moves_one_function_at_a_time(self):
+        r"""``gradient_term_derivative`` is the first-order change of
+        ``gradient_term_matrix`` when the listed functions change by
+        ``eps * moved`` (the rows of ``moved`` not zero), the rest fixed."""
+        grid = _grid(grid_spacing=0.4)
+        rng = np.random.default_rng(5)
+        r2 = (grid.X ** 2 + grid.Y ** 2 + grid.Z ** 2).reshape(-1)
+        orbitals = np.stack([np.exp(-0.7 * r2),
+                             np.exp(-0.5 * r2) * grid.X.reshape(-1)])
+        moved = np.stack([0.3 * np.exp(-0.6 * r2) * grid.Z.reshape(-1),
+                          np.zeros(r2.size)])
+        W = rng.normal(size=(3, r2.size)) * np.exp(-0.2 * r2)
+        eps = 1e-6
+        step = lambda sign: xc_grid.gradient_term_matrix(
+            orbitals + sign * eps * moved,
+            xc_grid.gradient(grid, orbitals + sign * eps * moved),
+            W, grid.dV)
+        numeric = (step(1.0) - step(-1.0)) / (2.0 * eps)
+        analytic = xc_grid.gradient_term_derivative(
+            grid, orbitals, xc_grid.gradient(grid, orbitals), moved, W)
+        assert np.allclose(analytic, numeric, rtol=1e-6, atol=1e-10)
+
+
 class TestHybrid:
     """The semilocal part of HSE06 (``screening=``)."""
 

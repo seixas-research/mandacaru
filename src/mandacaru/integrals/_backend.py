@@ -197,6 +197,29 @@ def _bind(lib):
         _C128_W,                     # out (nk * M * npts)
     ]
 
+    lib.mandacaru_bloch_block.restype = ctypes.c_long
+    lib.mandacaru_bloch_block.argtypes = []
+    lib.mandacaru_bloch_project.restype = None
+    lib.mandacaru_bloch_project.argtypes = [
+        _F64, _F64, _F64,            # x, y, z (npts)
+        ctypes.c_long,               # npts
+        _F64,                        # center (3)
+        _F64,                        # translations (n_images * 3)
+        ctypes.c_int,                # n_images
+        ctypes.c_double,             # support
+        _F64,                        # breaks (nb)
+        _F64,                        # coeffs ((nb - 1) * 4)
+        ctypes.c_int,                # nb
+        ctypes.c_double,             # rc (zero at r >= rc)
+        ctypes.c_int,                # l
+        ctypes.c_int,                # derivative (-1, or the axis)
+        ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),   # ms (nm)
+        ctypes.c_int,                # nm
+        _C128,                       # cols (P * npts)
+        ctypes.c_int,                # P
+        _C128_W,                     # out (n_blocks * n_images * nm * P)
+    ]
+
     _I32_W = ndpointer(dtype=np.int32, flags="C_CONTIGUOUS,WRITEABLE")
     _I64 = ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
     _F64_W = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS,WRITEABLE")
@@ -779,6 +802,40 @@ def bloch_shell(points, center, translations, phases, support, spline, l,
         np.ascontiguousarray(rows, dtype=np.int64), len(ms), out.shape[1],
         out)
     return True
+
+
+def bloch_project(points, center, translations, support, spline, l, ms,
+                  columns, derivative: int = -1):
+    """``(n_blocks, n_images, nm, P)`` image-resolved projections of one
+    shell on ``columns`` (``(P, npts)``): ``sum_j conj(phi_{R,i}(r_j))
+    columns[p, j]`` per block of :func:`bloch_block` consecutive points and
+    lattice image (``translations``); zero for an image that misses the
+    block.  The caller adds the blocks and applies the k-point phases.
+    ``None`` without the C backend."""
+    if not HAS_C_BACKEND or not hasattr(_LIB, "mandacaru_bloch_project"):
+        return None
+    x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
+    breaks, coeffs, rc = spline
+    translations = np.ascontiguousarray(translations, dtype=np.float64)
+    columns = np.ascontiguousarray(columns, dtype=np.complex128)
+    ms = np.ascontiguousarray(ms, dtype=np.int32)
+    block = bloch_block()
+    n_blocks = (x.size + block - 1) // block
+    out = np.zeros((n_blocks, len(translations), len(ms), len(columns)),
+                   dtype=np.complex128)
+    _LIB.mandacaru_bloch_project(
+        x, y, z, x.size, np.ascontiguousarray(center, dtype=np.float64),
+        translations, len(translations), float(support),
+        np.ascontiguousarray(breaks, dtype=np.float64),
+        np.ascontiguousarray(coeffs, dtype=np.float64), len(breaks),
+        float(rc), int(l), int(derivative), ms, len(ms), columns,
+        len(columns), out)
+    return out
+
+
+def bloch_block() -> int:
+    """Points per block of the Bloch kernels (``bloch_project`` slices)."""
+    return int(_LIB.mandacaru_bloch_block())
 
 
 def bader_ascent(starts, node_gradient, periodic, A, A_inv, origin, lattice,

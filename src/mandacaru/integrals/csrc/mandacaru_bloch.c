@@ -138,9 +138,12 @@ static double radial_slope(double r, const double *breaks,
     return (3.0 * c[0] * t + 2.0 * c[1]) * t + c[2];
 }
 
-/* Component `axis` of grad(R Y_l^m) at the offset (dx, dy, dz). */
+/* Component `axis` of grad(R Y_l^m) at the offset (dx, dy, dz); `R` and `dR`
+ * are the radial function and its slope at r, which the m components of a
+ * shell share (evaluated once per point by the caller). */
 static double _Complex gradient_value(double dx, double dy, double dz,
                                       double r, int axis, int l, int m,
+                                      double R, double dR,
                                       const double *breaks,
                                       const double *coeffs, int nb,
                                       double rc) {
@@ -175,13 +178,111 @@ static double _Complex gradient_value(double dx, double dy, double dz,
         const double _Complex y = Q * wm;
         const double _Complex dy_ = dQ * du * wm
                                     + (order ? Q * order * wm1 * dw : 0.0);
-        const double R = radial_value(r, breaks, coeffs, nb, rc, l);
-        const double dR = radial_slope(r, breaks, coeffs, nb, rc, l);
         g = dR * (x[axis] / r) * y + R * dy_;
     }
     if (m < 0)
         g = ((order & 1) ? -1.0 : 1.0) * conj(g);
     return g;
+}
+
+/* Points per block of the kernels below: rows of a grid, or 1-Bohr bins of
+ * a quadrature sphere, spatially compact.  Exported through
+ * `mandacaru_bloch_block` so the callers' per-block buffers agree. */
+enum { BLOCK = 256 };
+
+long mandacaru_bloch_block(void) {
+    return BLOCK;
+}
+
+/* The values of one shell's functions for the points j0 .. j0 + n of one
+ * lattice image, ``values[i * BLOCK + jj]`` (``nm`` functions): zero outside
+ * the support, R(r) Y_lm or, with ``derivative`` >= 0, the Cartesian
+ * derivative along that axis.  ``inside`` (optional) collects the indices
+ * jj of the points within the support; their number is returned. */
+static int image_values(const double *x, const double *y, const double *z,
+                        long j0, long n, const double *center,
+                        const double *shift, double support2,
+                        int derivative, int l, const int *ms, int nm,
+                        const double *breaks, const double *coeffs, int nb,
+                        double rc, double _Complex *values, int *inside) {
+    int n_inside = 0;
+    for (long jj = 0; jj < n; ++jj) {
+        const long j = j0 + jj;
+        for (int i = 0; i < nm; ++i)
+            values[i * BLOCK + jj] = 0.0;
+        const double dx = x[j] - center[0] - shift[0];
+        const double dy = y[j] - center[1] - shift[1];
+        const double dz = z[j] - center[2] - shift[2];
+        const double r2 = dx * dx + dy * dy + dz * dz;
+        if (r2 >= support2)
+            continue;
+        if (inside)
+            inside[n_inside++] = (int)jj;
+        const double r = sqrt(r2);
+        if (derivative >= 0) {
+            const double R = r >= 1e-12
+                ? radial_value(r, breaks, coeffs, nb, rc, l) : 0.0;
+            const double dR = r >= 1e-12
+                ? radial_slope(r, breaks, coeffs, nb, rc, l) : 0.0;
+            for (int i = 0; i < nm; ++i)
+                values[i * BLOCK + jj] = gradient_value(
+                    dx, dy, dz, r, derivative, l, ms[i], R, dR, breaks,
+                    coeffs, nb, rc);
+            continue;
+        }
+        const double radial = radial_value(r, breaks, coeffs, nb, rc, l);
+        if (radial == 0.0)
+            continue;
+        /* The angles of the NumPy path: theta = arccos(dz / r)
+         * (pi / 2 at the nucleus), phi = arctan2(dy, dx) (0 on the z
+         * axis). */
+        const double rho = sqrt(dx * dx + dy * dy);
+        const double cos_t = r > 0.0 ? dz / r : 0.0;
+        const double sin_t = r > 0.0 ? rho / r : 1.0;
+        const double _Complex unit = rho > 0.0 ? (dx + I * dy) / rho : 1.0;
+        for (int i = 0; i < nm; ++i) {
+            const int order = abs(ms[i]);
+            double _Complex e = 1.0;
+            for (int k = 0; k < order; ++k)
+                e *= unit;
+            double _Complex y_lm = legendre(l, order, cos_t, sin_t) * e;
+            if (ms[i] < 0)
+                y_lm = ((order & 1) ? -1.0 : 1.0) * conj(y_lm);
+            values[i * BLOCK + jj] = radial * y_lm;
+        }
+    }
+    return n_inside;
+}
+
+/* The lattice images whose support sphere reaches the bounding box of the
+ * points j0 .. j0 + n: their indices go to ``hits``, their number is
+ * returned. */
+static int block_hits(const double *x, const double *y, const double *z,
+                      long j0, long n, const double *center,
+                      const double *translations, int n_images,
+                      double support2, int *hits) {
+    double lo[3] = {x[j0], y[j0], z[j0]};
+    double hi[3] = {x[j0], y[j0], z[j0]};
+    for (long j = j0 + 1; j < j0 + n; ++j) {
+        const double p[3] = {x[j], y[j], z[j]};
+        for (int a = 0; a < 3; ++a) {
+            if (p[a] < lo[a]) lo[a] = p[a];
+            if (p[a] > hi[a]) hi[a] = p[a];
+        }
+    }
+    int n_hits = 0;
+    for (int R = 0; R < n_images; ++R) {
+        double gap2 = 0.0;
+        for (int a = 0; a < 3; ++a) {
+            const double c = center[a] + translations[3 * R + a];
+            const double g = c < lo[a] ? lo[a] - c
+                           : (c > hi[a] ? c - hi[a] : 0.0);
+            gap2 += g * g;
+        }
+        if (gap2 < support2)
+            hits[n_hits++] = R;
+    }
+    return n_hits;
 }
 
 void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
@@ -194,14 +295,12 @@ void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
                            const int *ms, const long *rows, int nm, long M,
                            double _Complex *out) {
     const double support2 = support * support;
-    /* Points are taken in blocks of consecutive indices -- rows of a grid,
-     * or 1-Bohr bins of a quadrature sphere, spatially compact.  An image is
+    /* Points are taken in blocks of consecutive indices.  An image is
      * skipped for a whole block when the support sphere misses the block's
      * bounding box; the images that reach it are evaluated once into a
      * buffer, and each k-point then accumulates its phases over contiguous
      * runs of points -- the k loop innermost per point wrote nk x M values
      * at a stride of npts and was memory-bound. */
-    enum { BLOCK = 256 };
     const long n_blocks = (npts + BLOCK - 1) / BLOCK;
 #ifdef _OPENMP
 #pragma omp parallel
@@ -216,27 +315,9 @@ void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
         for (long b = 0; b < n_blocks; ++b) {
             const long j0 = b * BLOCK;
             const long n = (j0 + BLOCK < npts ? j0 + BLOCK : npts) - j0;
-            double lo[3] = {x[j0], y[j0], z[j0]};
-            double hi[3] = {x[j0], y[j0], z[j0]};
-            for (long j = j0 + 1; j < j0 + n; ++j) {
-                const double p[3] = {x[j], y[j], z[j]};
-                for (int a = 0; a < 3; ++a) {
-                    if (p[a] < lo[a]) lo[a] = p[a];
-                    if (p[a] > hi[a]) hi[a] = p[a];
-                }
-            }
-            int n_hits = 0;
-            for (int R = 0; R < n_images; ++R) {
-                double gap2 = 0.0;
-                for (int a = 0; a < 3; ++a) {
-                    const double c = center[a] + translations[3 * R + a];
-                    const double g = c < lo[a] ? lo[a] - c
-                                   : (c > hi[a] ? c - hi[a] : 0.0);
-                    gap2 += g * g;
-                }
-                if (gap2 < support2)
-                    hits[n_hits++] = R;
-            }
+            const int n_hits = block_hits(x, y, z, j0, n, center,
+                                          translations, n_images, support2,
+                                          hits);
             if (n_hits == 0)
                 continue;
             const long need = (long)n_hits * nm * BLOCK;
@@ -245,52 +326,11 @@ void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
                 buffer = malloc(sizeof(double _Complex) * need);
                 capacity = need;
             }
-            for (int h = 0; h < n_hits; ++h) {
-                const int R = hits[h];
-                double _Complex *values = buffer + (long)h * nm * BLOCK;
-                for (long jj = 0; jj < n; ++jj) {
-                    const long j = j0 + jj;
-                    for (int i = 0; i < nm; ++i)
-                        values[i * BLOCK + jj] = 0.0;
-                    const double dx = x[j] - center[0] - translations[3 * R];
-                    const double dy = y[j] - center[1] - translations[3 * R + 1];
-                    const double dz = z[j] - center[2] - translations[3 * R + 2];
-                    const double r2 = dx * dx + dy * dy + dz * dz;
-                    if (r2 >= support2)
-                        continue;
-                    const double r = sqrt(r2);
-                    if (derivative >= 0) {
-                        for (int i = 0; i < nm; ++i)
-                            values[i * BLOCK + jj] = gradient_value(
-                                dx, dy, dz, r, derivative, l, ms[i], breaks,
-                                coeffs, nb, rc);
-                        continue;
-                    }
-                    const double radial = radial_value(r, breaks, coeffs, nb,
-                                                       rc, l);
-                    if (radial == 0.0)
-                        continue;
-                    /* The angles of the NumPy path: theta = arccos(dz / r)
-                     * (pi / 2 at the nucleus), phi = arctan2(dy, dx) (0 on
-                     * the z axis). */
-                    const double rho = sqrt(dx * dx + dy * dy);
-                    const double cos_t = r > 0.0 ? dz / r : 0.0;
-                    const double sin_t = r > 0.0 ? rho / r : 1.0;
-                    const double _Complex unit = rho > 0.0
-                        ? (dx + I * dy) / rho : 1.0;
-                    for (int i = 0; i < nm; ++i) {
-                        const int order = abs(ms[i]);
-                        double _Complex e = 1.0;
-                        for (int k = 0; k < order; ++k)
-                            e *= unit;
-                        double _Complex y_lm = legendre(l, order, cos_t, sin_t)
-                                               * e;
-                        if (ms[i] < 0)
-                            y_lm = ((order & 1) ? -1.0 : 1.0) * conj(y_lm);
-                        values[i * BLOCK + jj] = radial * y_lm;
-                    }
-                }
-            }
+            for (int h = 0; h < n_hits; ++h)
+                image_values(x, y, z, j0, n, center,
+                             translations + 3 * hits[h], support2,
+                             derivative, l, ms, nm, breaks, coeffs, nb, rc,
+                             buffer + (long)h * nm * BLOCK, NULL);
             for (int k = 0; k < nk; ++k) {
                 for (int i = 0; i < nm; ++i) {
                     double _Complex *target = out + ((long)k * M + rows[i])
@@ -307,6 +347,74 @@ void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
             }
         }
         free(buffer);
+        free(hits);
+    }
+}
+
+/* The image-resolved projections of one shell on weight columns:
+ *     out[b, R, i, p] = sum_{j in block b} conj(phi_{R,i}(r_j)) cols[p, j],
+ * for every lattice image R that reaches block b (the caller zeroes the rest).  The
+ * k-point phases are applied by the caller -- C(k) = sum_R e^{-ik.R} B(R) --
+ * so the work does not grow with the number of k-points, and each block is
+ * summed by one thread into its own slice of ``out``: the caller adds the
+ * blocks in order, and the result does not depend on the thread count. */
+void mandacaru_bloch_project(const double *x, const double *y,
+                             const double *z, long npts, const double *center,
+                             const double *translations, int n_images,
+                             double support,
+                             const double *breaks, const double *coeffs,
+                             int nb, double rc, int l, int derivative,
+                             const int *ms, int nm,
+                             const double _Complex *cols, int P,
+                             double _Complex *out) {
+    const double support2 = support * support;
+    const long n_blocks = (npts + BLOCK - 1) / BLOCK;
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+    {
+        int *hits = malloc(sizeof(int) * (n_images > 0 ? n_images : 1));
+        int inside[BLOCK];
+        double _Complex values[(size_t)BLOCK * 8];
+        double _Complex *wide = NULL;        /* when nm > 8 */
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+        for (long b = 0; b < n_blocks; ++b) {
+            const long j0 = b * BLOCK;
+            const long n = (j0 + BLOCK < npts ? j0 + BLOCK : npts) - j0;
+            const int n_hits = block_hits(x, y, z, j0, n, center,
+                                          translations, n_images, support2,
+                                          hits);
+            double _Complex *buffer = values;
+            if (nm > 8) {
+                if (!wide)
+                    wide = malloc(sizeof(double _Complex) * BLOCK * nm);
+                buffer = wide;
+            }
+            for (int h = 0; h < n_hits; ++h) {
+                const int R = hits[h];
+                const int n_inside = image_values(
+                    x, y, z, j0, n, center, translations + 3 * R, support2,
+                    derivative, l, ms, nm, breaks, coeffs, nb, rc, buffer,
+                    inside);
+                double _Complex *target = out
+                    + (((long)b * n_images + R) * nm) * (long)P;
+                for (int i = 0; i < nm; ++i) {
+                    for (int p = 0; p < P; ++p) {
+                        const double _Complex *column = cols + (long)p * npts
+                                                        + j0;
+                        double _Complex sum = 0.0;
+                        for (int t = 0; t < n_inside; ++t) {
+                            const int jj = inside[t];
+                            sum += conj(buffer[i * BLOCK + jj]) * column[jj];
+                        }
+                        target[(long)i * P + p] = sum;
+                    }
+                }
+            }
+        }
+        free(wide);
         free(hits);
     }
 }

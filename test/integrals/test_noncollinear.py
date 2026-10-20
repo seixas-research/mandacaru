@@ -200,6 +200,66 @@ def test_the_potential_and_field_are_the_energy_s_derivative(functional):
     assert numerical == pytest.approx(directional, rel=1e-7)
 
 
+@pytest.mark.parametrize("functional", ["r2scan", "r2scan+rvv10"])
+def test_gradients_given_by_the_caller_give_the_divergence_form(functional):
+    """``gradients=`` (the orbitals' product rule, for a molecule's
+    meta-GGA): handed the grid's own gradients of ``n`` and ``m`` the
+    evaluator returns the same energy, and its potential and field plus the
+    divergences of the vector fields it hands back are the divergence-form
+    ones."""
+    grid = _grid()
+    n, m = _noncollinear(grid)
+    tau, tau_m = _noncollinear_tau(grid, n, m)
+    plain = _evaluate(grid, functional, n, m, tau, tau_m)
+    given = evaluate_noncollinear(
+        grid, n, m, functional, tau=tau, tau_magnetization=tau_m,
+        gradients=(xc_grid.gradient(grid, n), xc_grid.gradient(grid, m)))
+    assert given.energy == pytest.approx(plain.energy, rel=1e-12)
+    assert plain.gradient_potential is None
+    potential = given.potential - xc_grid.divergence(
+        grid, given.gradient_potential)
+    field = given.field - np.stack([
+        xc_grid.divergence(grid, given.gradient_field[:, a])
+        for a in range(3)])
+    scale = max(np.max(np.abs(plain.potential)), np.max(np.abs(plain.field)))
+    assert np.max(np.abs(potential - plain.potential)) < 1e-8 * scale
+    assert np.max(np.abs(field - plain.field)) < 1e-8 * scale
+    assert np.allclose(given.tau_potential, plain.tau_potential)
+
+
+@pytest.mark.parametrize("functional", ["r2scan", "r2scan+rvv10"])
+def test_the_vector_fields_are_the_derivatives_in_the_given_gradients(
+        functional):
+    r"""dE = int (v dn + B . dm + W_n . d(grad n) + W_m : d(grad m)) for
+    gradients that are not those of the fields they accompany -- the
+    orbitals' product rule is only the density matrix's, not a function of
+    ``n`` and ``m`` -- with the axis of the magnetization turning."""
+    grid = _grid()
+    n, m = _noncollinear(grid)
+    tau, tau_m = _noncollinear_tau(grid, n, m)
+    grad_n, grad_m = xc_grid.gradient(grid, n), xc_grid.gradient(grid, m)
+    shape = np.exp(-0.2 * (grid.X ** 2 + grid.Y ** 2
+                           + grid.Z ** 2).reshape(-1))
+    d_grad_n = 0.05 * grad_n * shape * (1.0 + 0.3 * grid.Z.reshape(-1))
+    d_grad_m = 0.05 * grad_m * shape * (1.0 - 0.2 * grid.X.reshape(-1))
+    eps = 1e-5
+
+    def energy(step):
+        return evaluate_noncollinear(
+            grid, n, m, functional, tau=tau, tau_magnetization=tau_m,
+            gradients=(grad_n + step * d_grad_n,
+                       grad_m + step * d_grad_m)).energy
+
+    terms = evaluate_noncollinear(
+        grid, n, m, functional, tau=tau, tau_magnetization=tau_m,
+        gradients=(grad_n, grad_m))
+    directional = float((np.sum(terms.gradient_potential * d_grad_n)
+                         + np.sum(terms.gradient_field * d_grad_m))
+                        * grid.dV)
+    numerical = (energy(eps) - energy(-eps)) / (2 * eps)
+    assert numerical == pytest.approx(directional, rel=1e-6)
+
+
 def test_a_meta_gga_needs_the_kinetic_energy_density_matrix():
     grid = _grid()
     n, m = _noncollinear(grid)

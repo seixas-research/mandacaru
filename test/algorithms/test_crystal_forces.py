@@ -8,11 +8,12 @@
 
 Each is checked against a central difference of the **self-consistent** free
 energy on the same grid -- the derivative the analytic gradient (and the
-fixed-state strain) claims to be.  A crystal gradient costs about a minute
-even for two atoms at Gamma (the Bloch sums of a 7M-function extended basis),
-so everything that computes one is marked ``slow`` -- but one spin check on
-a coarse grid, a crystal that loses its moment against the restricted one:
-run them with ``pytest -m slow test/algorithms/test_crystal_forces.py``.
+fixed-state strain) claims to be.  Each check solves several crystals at
+tight tolerances, so those are marked ``slow`` -- but one spin check on a
+coarse grid, a crystal that loses its moment against the restricted one:
+run them with ``pytest -m slow test/algorithms/test_crystal_forces.py``.  The
+cost of one gradient (a few seconds for two atoms) is bounded by the cheap
+tests of :class:`TestTheCostOfAGradient`.
 Spin-polarized crystals are checked on doublets: LiH with one electron
 removed for the forces, the neutral Li2H for the stress.
 """
@@ -436,3 +437,119 @@ def test_the_crystal_derivatives_runs_single_threaded_blas():
     (:func:`~mandacaru.integrals._backend.single_threaded_blas`)."""
     for function in (crystal_gradient, crystal_stress):
         assert getattr(function, "__wrapped__", None) is not None
+
+
+# --------------------------------------------------------------------------- #
+# The cost of a crystal gradient (cheap: no finite-difference energies).
+# --------------------------------------------------------------------------- #
+
+def _count_bloch_calls(monkeypatch):
+    """``{kernel: calls}`` of the C Bloch kernels, counted from now on."""
+    from collections import Counter
+
+    from mandacaru.integrals import _backend
+
+    calls = Counter()
+    for name in ("bloch_shell", "bloch_project"):
+        original = getattr(_backend, name)
+
+        def counted(*args, _original=original, _name=name, **kwargs):
+            calls[_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(_backend, name, counted)
+    return calls
+
+
+class TestTheCostOfAGradient:
+    """Redundancy that once cost minutes stays out: the lattice sums are
+    analytic, the SCF's matrices are reused, and the Bloch sums of a sphere
+    are evaluated once for all k-points, not once per block of them."""
+
+    MESHES = (None, {"size": (2, 1, 1), "gamma": True})
+
+    @pytest.fixture(scope="class")
+    def solved(self):
+        atoms = _lih()
+        grid_spacing = float(np.linalg.norm(atoms.cell[0])) / 10
+        return {i: _solve(atoms, grid_spacing, kpts=kpts)[0]
+                for i, kpts in enumerate(self.MESHES)}
+
+    def test_the_sums_are_the_difference_of_the_sums(self, solved):
+        """The analytic ion-pair and ion-compensation derivatives against the
+        Richardson difference of the sums they replaced (``DEFAULT_DELTA``)."""
+        from mandacaru.algorithms.crystal_forces import (DEFAULT_DELTA,
+                                                         _sum_terms)
+
+        solver = solved[0]
+        c = solver.crystal
+        _rho, q, _tau = solver.output_density
+        analytic = _sum_terms(solver, {"density": solver.output_density})
+
+        def central(function, atom, d, h):
+            values = []
+            for sign in (+1.0, -1.0):
+                moved = [np.array(x, dtype=float) for x in c.centers]
+                moved[atom][d] += sign * h
+                values.append(function(moved))
+            return values
+
+        def value(atom, d, h):
+            plus, minus = central(c.short_range_ion_compensation, atom, d, h)
+            total = float(np.real(sum(q[ch] * (plus[ch] - minus[ch])
+                                      for ch in c.channels))) / (2.0 * h)
+            plus, minus = central(c.ion_constants, atom, d, h)
+            return total + (plus - minus) / (2.0 * h)
+
+        for atom, d in ((0, 1), (1, 2)):
+            numeric = (4.0 * value(atom, d, 0.5 * DEFAULT_DELTA)
+                       - value(atom, d, DEFAULT_DELTA)) / 3.0
+            assert analytic[atom, d] == pytest.approx(numeric, abs=1e-8)
+        assert analytic.sum(axis=0) == pytest.approx(0.0, abs=1e-12)
+
+    def test_the_scf_matrices_are_not_rebuilt(self, solved, monkeypatch):
+        solver = solved[1]
+        reference = crystal_gradient(solver).gradient
+
+        def refused(*args, **kwargs):
+            raise AssertionError("the SCF's k-point matrices were rebuilt")
+
+        monkeypatch.setattr(solver.crystal, "kpoint_matrices", refused)
+        assert crystal_gradient(solver).gradient == pytest.approx(
+            reference, abs=1e-12)
+
+    def test_the_gradient_does_not_depend_on_the_blocking(self, solved,
+                                                          monkeypatch):
+        """One k-point per block of grid sums and per wide chunk of spheres."""
+        from mandacaru.pseudopotentials import periodic_paw
+
+        solver = solved[1]
+        reference = crystal_gradient(solver)
+        monkeypatch.setattr(periodic_paw, "KPOINT_BLOCK_BYTES", 1)
+        blocked = crystal_gradient(solver)
+        assert blocked.hellmann_feynman == pytest.approx(
+            reference.hellmann_feynman, abs=1e-10)
+        assert blocked.pulay == pytest.approx(reference.pulay, abs=1e-10)
+
+    def test_the_bloch_kernels_run_once_per_sphere_not_per_k_block(
+            self, solved, monkeypatch):
+        """LiH's gradient took 170 ``bloch_shell`` calls (136 of them its own
+        extended basis, 34 rebuilding the SCF's matrices) at any mesh; the
+        counts below hold at 1 and at 2 k-points, and a block of k-points
+        no longer repeats the spheres."""
+        counts = []
+        for i in sorted(solved):
+            calls = _count_bloch_calls(monkeypatch)
+            crystal_gradient(solved[i])
+            counts.append(dict(calls))
+        assert counts[0] == counts[1]
+        assert counts[0]["bloch_shell"] <= 70
+        assert counts[0]["bloch_project"] <= 80
+
+    def test_a_projection_does_not_change_when_k_points_join_the_call(
+            self, solved):
+        crystal = solved[1].crystal
+        both = crystal.projections(crystal.kpoints)
+        alone = np.stack([crystal.projections(k[None, :])[0]
+                          for k in crystal.kpoints])
+        assert np.allclose(both, alone, atol=1e-13, rtol=0)

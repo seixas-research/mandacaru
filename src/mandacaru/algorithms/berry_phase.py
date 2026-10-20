@@ -479,7 +479,7 @@ def _voigt_strain(index: int, eta: float) -> np.ndarray:
 
 
 def piezoelectric_tensor(atoms, *, strain: float = DEFAULT_PIEZO_STRAIN,
-                         relax_ions: bool = False, fmax: float = 0.01,
+                         relax_ions: bool = False, fmax: float = 0.002,
                          kpts_polarization=None, components=None,
                          **options) -> PiezoelectricTensor:
     r"""The **proper** piezoelectric tensor of an insulating crystal.

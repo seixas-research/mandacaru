@@ -187,11 +187,19 @@ class XCTerms:
     ``energy`` is :math:`E_{xc}` (Hartree), ``potential`` the flat local
     :math:`v_{xc}` and ``tau_potential`` :math:`\\partial f/\\partial\\tau`
     (``None`` unless the functional is a meta-GGA).
+
+    ``gradient_potential`` is :math:`2\\,\\partial f/\\partial\\sigma\\,\\nabla\\rho`
+    ``(3, ngrid)``, returned only when the caller handed in the density
+    gradient itself (``gradient_field=``): ``potential`` then lacks the
+    divergence of that term, which the caller contracts with the gradient's
+    own dependence on the density matrix
+    (:func:`gradient_term_matrix`).  ``None`` otherwise.
     """
 
     energy: float
     potential: np.ndarray
     tau_potential: np.ndarray | None = None
+    gradient_potential: np.ndarray | None = None
 
 
 def _wavevectors(grid):
@@ -254,6 +262,55 @@ def divergence(grid, vector: np.ndarray) -> np.ndarray:
     return np.real(np.fft.ifftn(total)).reshape(-1)
 
 
+def product_rule_gradient(orbitals, orbital_gradients, D) -> np.ndarray:
+    r""":math:`\nabla\rho = 2\,\mathrm{Re}\sum_{pq}D_{pq}\,\phi_p\,
+    \nabla\phi_q^*` of the density :math:`\rho=\sum_{pq}D_{pq}\phi_p
+    \phi_q^*`, ``(3, ngrid)``, from the orbitals' own gradients
+    (``orbital_gradients``: :func:`gradient` of ``orbitals``).
+
+    A meta-GGA's :math:`\tau` is built from those orbital gradients, so its
+    iso-orbital indicator :math:`\alpha = (\tau-\tau_W)/\tau_{\rm unif}` has
+    :math:`\tau_W = |\nabla\rho|^2/8\rho` exactly equal to :math:`\tau` for a
+    single orbital only if :math:`\nabla\rho` is built the same way: the
+    grid's derivative of the sampled density does not obey the product
+    rule where the density is not resolved, and the mismatch with
+    :math:`\tau` put a 0.3 uHa ripple on the r2SCAN energy of a molecule
+    moved across the grid (HISTORY.md, 2026-10-19).
+    """
+    return np.stack([2.0 * np.real(np.sum(orbitals * (D @ dphi.conj()),
+                                          axis=0))
+                     for dphi in orbital_gradients])
+
+
+def gradient_term_matrix(orbitals, orbital_gradients, field, dV) -> np.ndarray:
+    r""":math:`G_{pq}=\int\mathbf W\cdot(\phi_p^*\nabla\phi_q+
+    \nabla\phi_p^*\,\phi_q)\,d^3r`: the derivative of
+    :math:`\int\mathbf W\cdot\nabla\rho` with respect to the density matrix
+    when :math:`\nabla\rho` is :func:`product_rule_gradient`, for the vector
+    field ``field`` (``XCTerms.gradient_potential``)."""
+    out = 0.0
+    for component, dphi in zip(field, orbital_gradients):
+        out = out + ((orbitals.conj() * component) @ dphi.T
+                     + (dphi.conj() * component) @ orbitals.T)
+    return out * dV
+
+
+def gradient_term_derivative(grid, orbitals, orbital_gradients, moved,
+                             field) -> np.ndarray:
+    r"""The change of :func:`gradient_term_matrix` when the basis functions
+    move by ``moved`` (``(M, ngrid)``, zero rows for the ones that stay)
+    under the fixed ``field``: the terms with one moved function, value or
+    gradient."""
+    out = 0.0
+    for component, dphi, dmoved in zip(field, orbital_gradients,
+                                       gradient(grid, moved)):
+        out = out + ((moved.conj() * component) @ dphi.T
+                     + (orbitals.conj() * component) @ dmoved.T
+                     + (dmoved.conj() * component) @ orbitals.T
+                     + (dphi.conj() * component) @ moved.T)
+    return out * grid.dV
+
+
 def _clipped(raw, potential) -> np.ndarray:
     """The potential of a density the functional clipped at zero: the
     functional sees ``max(raw, 0)``, so its derivative in ``raw`` vanishes
@@ -285,7 +342,8 @@ def _short_range_exchange(grid, density, omega: float, scale: float = 1.0):
 
 def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
              relativistic: bool = False, tau: np.ndarray | None = None,
-             screening=None, exchange_density=None) -> XCTerms:
+             screening=None, exchange_density=None,
+             gradient_field: np.ndarray | None = None) -> XCTerms:
     r"""``E_xc``, ``v_xc`` (and ``df/dtau``) of a flat density on ``grid``.
 
     Parameters
@@ -318,6 +376,15 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         semilocal exchange, core-valence included: it has no orbitals to
         take exact exchange from.  The potential is the derivative with
         respect to the valence density, which both parts depend on alike.
+    gradient_field : ndarray, optional
+        ``(3, ngrid)``: the gradient of ``density`` to use in place of the
+        grid's derivative of it, when the caller builds it from the orbitals
+        (:func:`product_rule_gradient`).  The semilocal functional's
+        :math:`\sigma` is then its square, ``XCTerms.potential`` leaves out
+        the divergence of :math:`2\,\partial f/\partial\sigma\,\nabla\rho`
+        and ``XCTerms.gradient_potential`` returns that vector field for the
+        caller to contract; rVV10 keeps the grid's derivative of the
+        density, and its divergence stays in ``potential``.
     """
     full = resolve_functional(functional)
     key = semilocal_part(full)
@@ -329,7 +396,9 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         return XCTerms(energy=float(np.sum(f) * dV),
                        potential=_clipped(density, df_drho))
 
-    grad = gradient(grid, rho)
+    stencil = gradient(grid, rho)
+    given = gradient_field is not None
+    grad = np.asarray(gradient_field, dtype=float) if given else stencil
     weighted = rho > GRADIENT_DENSITY_FLOOR
     sigma = np.where(weighted, np.sum(grad * grad, axis=0), 0.0)
     df_dtau = None
@@ -355,10 +424,19 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         from ..basis import r2scan
         f, df_drho, df_dsigma, df_dtau = r2scan.partials(
             np.where(weighted, rho, 0.0), sigma, np.asarray(tau, dtype=float))
-    e_nl, v_nl, s_nl = _nonlocal(grid, full, rho, sigma, weighted)
-    df_drho, df_dsigma = df_drho + v_nl, df_dsigma + s_nl
-    potential = _clipped(density, df_drho
-                         - divergence(grid, 2.0 * df_dsigma * grad))
+    if given:
+        # rVV10 differentiates the density on the grid, as it always did.
+        sigma_grid = np.where(weighted, np.sum(stencil * stencil, axis=0), 0.0)
+        e_nl, v_nl, s_nl = _nonlocal(grid, full, rho, sigma_grid, weighted)
+        vector = np.where(weighted, 2.0 * df_dsigma, 0.0) * grad
+        potential = _clipped(density, df_drho + v_nl
+                             - divergence(grid, 2.0 * s_nl * stencil))
+    else:
+        e_nl, v_nl, s_nl = _nonlocal(grid, full, rho, sigma, weighted)
+        df_drho, df_dsigma = df_drho + v_nl, df_dsigma + s_nl
+        vector = None
+        potential = _clipped(density, df_drho
+                             - divergence(grid, 2.0 * df_dsigma * grad))
     energy = float(np.sum(f) * dV) + e_nl
     if screening is not None and screening[1] != 0.0:
         omega, fraction = screening
@@ -368,7 +446,7 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
         potential = potential - fraction * v_sr
     return XCTerms(energy=energy,
                    potential=np.asarray(potential, dtype=float),
-                   tau_potential=df_dtau)
+                   tau_potential=df_dtau, gradient_potential=vector)
 
 
 @dataclass(frozen=True)
@@ -382,11 +460,14 @@ class SpinXCTerms:
     potential_dn: np.ndarray
     tau_potential_up: np.ndarray | None = None
     tau_potential_dn: np.ndarray | None = None
+    gradient_potential_up: np.ndarray | None = None
+    gradient_potential_dn: np.ndarray | None = None
 
 
 def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
                   relativistic: bool = False, tau_up=None, tau_dn=None,
-                  screening=None, exchange_densities=None) -> SpinXCTerms:
+                  screening=None, exchange_densities=None,
+                  gradient_fields=None) -> SpinXCTerms:
     r"""The spin-polarized :func:`evaluate`: ``E_xc`` and each channel's
     :math:`v_\sigma = \partial f/\partial\rho_\sigma -
     \nabla\cdot(2\,\partial f/\partial\sigma_{\sigma\sigma}\nabla\rho_\sigma
@@ -395,7 +476,13 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
     caller's to split: half of it in each channel.  ``screening`` as for
     :func:`evaluate`; ``exchange_densities`` is the ``(up, down)`` pair of
     its ``exchange_density`` (the short-range exchange of each channel
-    follows the exact spin scaling).
+    follows the exact spin scaling).  ``gradient_fields`` is the ``(up,
+    down)`` pair of the channels' own gradients, ``(3, ngrid)`` each, in
+    place of the grid's derivative of the densities, as for
+    :func:`evaluate`: the potentials then lack the divergence terms and
+    ``gradient_potential_up`` / ``_dn`` return the vector fields
+    :math:`2\,\partial f/\partial\sigma_{\sigma\sigma}\nabla\rho_\sigma
+    + \partial f/\partial\sigma_{\uparrow\downarrow}\nabla\rho_{\bar\sigma}`.
     """
     from ..basis.xc_spin import spin_partials
 
@@ -415,7 +502,10 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
     # terms (not the densities) dropped below the floor -- masking the
     # densities themselves would ring through the spectral derivative.
     weighted = (up + dn) > GRADIENT_DENSITY_FLOOR
-    grad_up, grad_dn = gradient(grid, up), gradient(grid, dn)
+    stencil_up, stencil_dn = gradient(grid, up), gradient(grid, dn)
+    given = gradient_fields is not None
+    grad_up, grad_dn = ((np.asarray(g, dtype=float) for g in gradient_fields)
+                        if given else (stencil_up, stencil_dn))
     s_uu = np.where(weighted, np.sum(grad_up * grad_up, axis=0), 0.0)
     s_ud = np.where(weighted, np.sum(grad_up * grad_dn, axis=0), 0.0)
     s_dd = np.where(weighted, np.sum(grad_dn * grad_dn, axis=0), 0.0)
@@ -437,14 +527,31 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
                         for d in (d_uu, d_ud, d_dd))
     # rVV10 sees the total density: one dE/dn for both channels, and
     # sigma = s_uu + 2 s_ud + s_dd spreads dE/dsigma as (1, 2, 1).
-    e_nl, v_nl, s_nl = _nonlocal(grid, full, total,
-                                 s_uu + 2.0 * s_ud + s_dd, weighted)
-    v_up, v_dn = v_up + v_nl, v_dn + v_nl
-    d_uu, d_ud, d_dd = d_uu + s_nl, d_ud + 2.0 * s_nl, d_dd + s_nl
-    potential_up = _clipped(density_up, v_up - divergence(
-        grid, 2.0 * d_uu * grad_up + d_ud * grad_dn))
-    potential_dn = _clipped(density_dn, v_dn - divergence(
-        grid, 2.0 * d_dd * grad_dn + d_ud * grad_up))
+    if given:
+        # rVV10 differentiates the total density on the grid.
+        grid_total = stencil_up + stencil_dn
+        e_nl, v_nl, s_nl = _nonlocal(
+            grid, full, total,
+            np.where(weighted, np.sum(grid_total * grid_total, axis=0), 0.0),
+            weighted)
+        v_up, v_dn = v_up + v_nl, v_dn + v_nl
+        vector_up = np.where(weighted, 2.0 * d_uu, 0.0) * grad_up \
+            + np.where(weighted, d_ud, 0.0) * grad_dn
+        vector_dn = np.where(weighted, 2.0 * d_dd, 0.0) * grad_dn \
+            + np.where(weighted, d_ud, 0.0) * grad_up
+        nonlocal_term = divergence(grid, 2.0 * s_nl * grid_total)
+        potential_up = _clipped(density_up, v_up - nonlocal_term)
+        potential_dn = _clipped(density_dn, v_dn - nonlocal_term)
+    else:
+        e_nl, v_nl, s_nl = _nonlocal(grid, full, total,
+                                     s_uu + 2.0 * s_ud + s_dd, weighted)
+        v_up, v_dn = v_up + v_nl, v_dn + v_nl
+        d_uu, d_ud, d_dd = d_uu + s_nl, d_ud + 2.0 * s_nl, d_dd + s_nl
+        vector_up = vector_dn = None
+        potential_up = _clipped(density_up, v_up - divergence(
+            grid, 2.0 * d_uu * grad_up + d_ud * grad_dn))
+        potential_dn = _clipped(density_dn, v_dn - divergence(
+            grid, 2.0 * d_dd * grad_dn + d_ud * grad_up))
     energy = float(np.sum(f) * dV) + e_nl
     if screening is not None and screening[1] != 0.0:
         omega, fraction = screening
@@ -460,7 +567,9 @@ def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
                        potential_up=np.asarray(potential_up, dtype=float),
                        potential_dn=np.asarray(potential_dn, dtype=float),
                        tau_potential_up=t_up if meta else None,
-                       tau_potential_dn=t_dn if meta else None)
+                       tau_potential_dn=t_dn if meta else None,
+                       gradient_potential_up=vector_up,
+                       gradient_potential_dn=vector_dn)
 
 
 # --------------------------------------------------------------------------- #

@@ -246,7 +246,7 @@ DEFAULT_NORM_DEFICITS = {"H": 0.05, "Li": 0.0, "C": 0.10, "N": 0.15,
 #: hydrogen +0.5 Ha gives a softer second projector (grid norm ratio 0.78
 #: instead of 0.75 at 0.25 Angstrom) and better logarithmic derivatives.
 DEFAULT_ENERGY_OFFSETS = {"H": 0.5, "Li": 0.5, "Co": 2.0, "Ni": 2.0,
-                          "Cu": 2.0, "Zn": 2.0, "Sc": 2.0, "Ti": 2.0}
+                          "Cu": 2.0, "Zn": 2.0, "Sc": 2.0, "Ti": 2.0, "V": 2.0}
 #: Per-dataset second reference energies (Hartree, absolute) of single
 #: channels, ``{(symbol, xc): {l: energy}}``, in place of the bound state plus
 #: :data:`DEFAULT_ENERGY_OFFSET`.  A compact shell more than 1 Ha deep put
@@ -311,6 +311,12 @@ DEFAULT_CUTOFFS = {
     # functionals), now 0.012 / 0.020 (HISTORY.md, 2026-10-11).
     "Sc": {2: 2.07},
     "Ti": {2: 1.86},
+    # Vanadium the same way, semicore (3s 3p in valence, 13 electrons) at 1.45x
+    # its old d sphere and +2 Ha: the valence-only dataset's 3.011 Bohr s
+    # sphere overlapped the O spheres of SrVO3 (V-O 3.63 Bohr) and its p
+    # channel scattered 0.4-0.5 rad off; now no ghost, phases <= 0.005 rad,
+    # intruding-1s miss 0.33 -> 0.009 (HISTORY.md, 2026-10-20).
+    "V": {2: 1.67},
 }
 #: Per-element raise of the local potential at the origin (Hartree, Hamann's
 #: ``dvloc0``).  The polynomial continuation of the screened all-electron
@@ -370,9 +376,9 @@ DEFAULT_HIGHEST_CHANNEL = {"Li": 1, "Be": 1,
 #: scattered right.  1.2-1.5 give the same lattice (3.372 / 3.373 in plane
 #: waves; 2.0: 3.346) and 1.5 is the softest on the 0.25 A grid.
 DEFAULT_CORE_RADII = {"Li": 1.5}
-#: The early d block, Sc, Ti, Y-Tc and Ta, has the same problem in its
+#: The early d block, Sc, Ti, V, Y-Tc and Ta, has the same problem in its
 #: empty p: with s and d (and 4f) channels only, the local potential alone
-#: scattered p 0.2-1.5 rad off in every repair, and all eight were flagged
+#: scattered p 0.2-1.5 rad off in every repair, and all nine were flagged
 #: in at least one functional (PBE ScH 11 % long, bcc Nb 4 % and Mo 12 %).  With the
 #: (n-1)s (n-1)p shell in valence each of them builds clean at zero deficit
 #: in LDA and PBE alike: no ghost, phases <= 0.036 rad, the unprojected
@@ -394,7 +400,7 @@ DEFAULT_CORE_RADII = {"Li": 1.5}
 #: 2026-10-06).
 DEFAULT_SEMICORE_SUBSHELLS = {
     symbol: ((n - 1, 0), (n - 1, 1))
-    for n, symbols in ((3, ("Na", "Mg")), (4, ("K", "Ca", "Sc", "Ti")),
+    for n, symbols in ((3, ("Na", "Mg")), (4, ("K", "Ca", "Sc", "Ti", "V")),
                        (5, ("Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc")),
                        (6, ("Ta",)))
     for symbol in symbols}
@@ -406,7 +412,7 @@ DEFAULT_SEMICORE_SUBSHELLS = {
 #:
 #: - the **s channel** misses a hydrogen 1s entering its sphere (the miss of
 #:   the projector expansion of that tail, > 1 before): a local-potential
-#:   shift and a tenth Bessel function, and for Tl, Po, Bi, Os, Re, Ta and V a
+#:   shift and a tenth Bessel function, and for Tl, Po, Bi, Os, Re and Ta a
 #:   shorter s sphere, bring it to 0.1-0.95;
 #: - the **semicore d** of Ga-Kr, I and Xe is so compact that its projectors
 #:   amplify the basis filter: a filtered 3d/4d function projected onto its own
@@ -445,7 +451,6 @@ _S_CHANNEL_REPAIRS = {
     ("Bi", "lda"): (10, 10.0), ("Bi", "pbe"): (10, 10.0),
     ("Os", "lda"): (10, 10.0), ("Os", "pbe"): (10, 50.0),
     ("Re", "lda"): (10, 10.0), ("Re", "pbe"): (10, 10.0),
-    ("V", "lda"): (10, 0.0), ("V", "pbe"): (10, 10.0),
 }
 _D_CHANNEL_REPAIRS = {
     # (element, xc): (d cutoff in Bohr, second reference energy in Hartree).
@@ -464,7 +469,7 @@ _D_CHANNEL_REPAIRS = {
 #: The tables the generator reads: per-l cutoffs, local shifts, second
 #: reference energies and norm deficits of the repaired datasets.  The
 #: cutoffs are every channel's, as each scan built it: the repaired s or d
-#: sphere (the s spheres of Tl, Po, Bi, Os, Re, Ta and V are 0.85-0.95 of
+#: sphere (the s spheres of Tl, Po, Bi, Os, Re and Ta are 0.85-0.95 of
 #: their old radii; the d spheres are _D_CHANNEL_REPAIRS') with the others
 #: as the library carried them -- a channel left to the generic rule can come
 #: out elsewhere (Os-PBE's f at 0.53 Bohr, 1.2 rad off in phase).
@@ -520,8 +525,6 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Sn', 'lda'): {0: 2.33, 1: 3.305, 2: 1.153},
     ('Sn', 'pbe'): {0: 2.33, 1: 3.305, 2: 1.153},
     ('Tl', 'lda'): {0: 2.678, 1: 3.773, 2: 1.451, 3: 3.773},
-    ('V', 'lda'): {0: 3.011, 2: 1.156},
-    ('V', 'pbe'): {0: 3.046, 2: 1.161},
     ('W', 'lda'): {0: 3.418, 2: 3.418, 3: 3.418},
     ('Xe', 'lda'): {0: 2.093, 1: 2.476, 2: 1.07},
     ('Xe', 'pbe'): {0: 2.104, 1: 2.487, 2: 1.07},
@@ -1134,6 +1137,18 @@ class PAWDataset(PseudoPotential):
         values = spline(np.clip(radius, self.r[0], self.r[-1]))
         return np.where(inside, values,
                         -self.valence_charge / np.maximum(radius, 1e-12))
+
+    def local_potential_derivative(self, radius) -> np.ndarray:
+        """``d/dr`` of :meth:`local_potential`, analytic: the spline's
+        derivative inside the table (zero below its first point, where the
+        potential is flat), ``Z_ion/r^2`` beyond it."""
+        spline = _local_spline(self)
+        radius = np.asarray(radius, dtype=float)
+        inside = radius <= self.r[-1]
+        values = spline(np.clip(radius, self.r[0], self.r[-1]), 1)
+        values = np.where(radius < self.r[0], 0.0, values)
+        return np.where(inside, values,
+                        self.valence_charge / np.maximum(radius, 1e-12) ** 2)
 
     def projector(self, l: int, radius, index: int = 0) -> np.ndarray:
         """Interpolate projector ``index`` of channel ``l`` onto ``radius``."""

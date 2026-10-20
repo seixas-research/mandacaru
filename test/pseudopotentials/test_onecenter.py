@@ -390,3 +390,42 @@ class TestOneCenterExact:
         hartree = 0.5 * np.einsum("ab,cd,abcd->", D, D, W)
         exchange = -0.5 * np.einsum("ad,cb,abcd->", D, D, W)
         assert hartree + exchange == pytest.approx(0.0, abs=1e-12)
+
+
+class TestTheDShellAgainstItsRadialIntegrals:
+    """``DeltaW`` of one d orbital, ``(d_xy d_xy | d_xy d_xy)``, is the
+    all-electron minus smooth-plus-compensation Slater combination
+    ``F0 + 4/49 F2 + 36/441 F4`` of the same radial pair, from the radial
+    integrals alone (vanadium's 3d, whose augmentation shape differs from
+    the all-electron wave by 0.4 to 0.9 eV in ``F^L``; the semicore
+    dataset's 1.67 Bohr d sphere holds 1.5 eV of it, the old 1.156 Bohr one
+    0.56 eV)."""
+
+    def test_the_tensor_is_the_slater_combination(self):
+        from mandacaru.pseudopotentials import get_paw
+        from mandacaru.pseudopotentials.multipoles import (partial_waves,
+                                                           shape_function)
+
+        vanadium = get_paw("V")
+        r_g = float(vanadium.compensation_radius)
+        projectors = [SimpleNamespace(l=2, m=m, real=True, index=0,
+                                      atom_index=0, projector_basis="dual")
+                      for m in range(-2, 3)]
+        tensor = one_center_coulomb(vanadium, projectors, "dual")
+        # real d_xy is m = -2
+        r = np.asarray(vanadium.r)
+        inside = r <= vanadium.channels[2].r_cut
+        r = r[inside]
+        ae, smooth = (w[0][inside] for w in partial_waves(vanadium, 2))
+        density = ae * ae
+        smooth_density = smooth * smooth
+        expected = 0.0
+        for L, factor in ((0, 1.0), (2, 4.0 / 49.0), (4, 36.0 / 441.0)):
+            moment = np.trapezoid((density - smooth_density) * r ** (L + 2),
+                                  r)
+            compensated = smooth_density + moment * shape_function(r, r_g, L)
+            expected += factor * (radial_coulomb(r, density, density, L)
+                                  - radial_coulomb(r, compensated,
+                                                   compensated, L))
+        assert tensor[0, 0, 0, 0] == pytest.approx(expected, rel=2e-3)
+        assert 0.05 < tensor[0, 0, 0, 0] < 0.06        # about 1.5 eV

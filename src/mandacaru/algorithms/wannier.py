@@ -1735,12 +1735,16 @@ class PairDensities:
     r"""Pair densities :math:`\rho_{pq} = w_p^*w_q` of a fragment's
     functions on the supercell's reciprocal grid: ``density`` (``(n, n,
     N_G)``, the smooth product plus the compensation charges), ``compact``
-    (the compensation charges alone) and ``charges[c]`` (``(N, n, n)``,
-    :math:`Q^{A\mathbf T}_{LM,pq}` of channel ``c`` per supercell cell)."""
+    (the compensation charges alone), ``charges[c]`` (``(N, n, n)``,
+    :math:`Q^{A\mathbf T}_{LM,pq}` of channel ``c`` per supercell cell) and
+    ``coefficients`` (``(n, N, P)``, the projector coefficients
+    :math:`\langle\tilde p_{p\mathbf T}|w_n\rangle` the on-site
+    remainders are built from)."""
 
     density: np.ndarray
     compact: np.ndarray
     charges: list
+    coefficients: np.ndarray
 
     @property
     def swapped(self) -> np.ndarray:
@@ -1825,7 +1829,38 @@ def pair_densities(box: SupercellCoulomb, values, projections,
             compact[:, :, part] += transforms[c][None, None] * np.moveaxis(
                 lattice_sum[index], 0, -1)
     density += compact
-    return PairDensities(density=density, compact=compact, charges=charges)
+    return PairDensities(density=density, compact=compact, charges=charges,
+                         coefficients=np.stack(coefficients))
+
+
+def onsite_integrals(crystal, first: PairDensities,
+                     second: PairDensities) -> np.ndarray:
+    r"""``(n, n, n', n')``: the Coulomb energy inside the augmentation
+    spheres that the smooth pair densities and their compensation charges
+    leave out, :math:`\sum_{A\mathbf T}\sum_{abcd}\bar c^{p}_a c^{q}_b
+    \bar c'^{r}_c c'^{s}_d\,\Delta W^A_{abcd}`
+    (:meth:`~mandacaru.pseudopotentials.periodic_paw.PeriodicPAW.onsite_remainder`)
+    from the projector coefficients of ``first`` and ``second``.  The
+    compensation charges carry the multipole moments of the all-electron
+    pair density, so the electrostatics between spheres is right; inside a
+    sphere the all-electron and the smooth-plus-compensation densities
+    differ, and a 3d shell's Slater integrals :math:`F^0, F^2, F^4` move by
+    0.4 to 0.9 eV."""
+    c1, c2 = first.coefficients, second.coefficients
+    n1, n2 = c1.shape[0], c2.shape[0]
+    out = np.zeros((n1, n1, n2, n2), dtype=complex)
+    for atom in range(len(crystal.centers)):
+        own = crystal.projector_columns(atom)
+        if not own:
+            continue
+        dW = crystal.onsite_remainder(atom)
+        a = c1[:, :, own]                                  # (n, N, m)
+        b = c2[:, :, own]
+        left = np.einsum("ptA,qtB,ABCD->pqtCD", np.conj(a), a, dW,
+                         optimize=True)
+        out += np.einsum("pqtCD,rtC,stD->pqrs", left, np.conj(b), b,
+                         optimize=True)
+    return out
 
 
 def coulomb_integrals(box: SupercellCoulomb, first: PairDensities,
@@ -1853,6 +1888,38 @@ def coulomb_integrals(box: SupercellCoulomb, first: PairDensities,
     out = out.reshape(n1, n1, n2, n2) / box.volume
     for tail, Qa, Qb in zip(box.tails, first.charges, second.charges):
         out += tail * np.einsum("tpq,trs->pqrs", Qa, Qb)
+    return out + onsite_integrals(box.crystal, first, second)
+
+
+def remainder_densities(box: SupercellCoulomb, pairs: PairDensities,
+                        m) -> np.ndarray:
+    r"""``(n, n, len(m[0]))``: what the compensation charges leave of the
+    augmentation pair densities of ``pairs`` at the vectors :math:`\mathbf
+    q + \mathbf G` of ``m`` (``(3, n)``, in the reciprocal vectors of the
+    supercell), :math:`\sum_{A\mathbf T}e^{-i\mathbf K\cdot(\mathbf R_A +
+    \mathbf T)}\sum_{ab}\bar c^p_a c^q_b\,E^A_{ab}(\mathbf K)`
+    (:meth:`~mandacaru.pseudopotentials.periodic_paw.PeriodicPAW.remainder_transforms`),
+    the part of :math:`\rho_{pq}(\mathbf K)` the smooth density plus the
+    multipole compensation misses."""
+    crystal = box.crystal
+    size = np.asarray(box.size, dtype=int)
+    B = rc.reciprocal_vectors(crystal.lattice)
+    K = B @ (np.asarray(m, dtype=float) / size[:, None])
+    cells = np.indices(tuple(size)).reshape(3, -1).T
+    lattice = np.asarray(crystal.lattice, dtype=float)       # columns
+    phase = np.exp(-1j * (K.T @ (lattice @ cells.T)))        # (nK, N)
+    c = pairs.coefficients
+    n = c.shape[0]
+    out = np.zeros((n, n, K.shape[1]), dtype=complex)
+    for atom in range(len(crystal.centers)):
+        own = crystal.projector_columns(atom)
+        if not own:
+            continue
+        E = crystal.remainder_transforms(atom, K)            # (m, m, nK)
+        a = c[:, :, own]                                     # (n, N, m)
+        pair = np.einsum("ptA,qtB->pqtAB", np.conj(a), a, optimize=True)
+        per_cell = np.einsum("pqtAB,ABk->pqtk", pair, E, optimize=True)
+        out += np.einsum("pqtk,kt->pqk", per_cell, phase, optimize=True)
     return out
 
 
@@ -1865,19 +1932,25 @@ def screening_correction(box: SupercellCoulomb, first: PairDensities,
     \rho_{qp}(\mathbf q+\mathbf G)^*\,[W - v]_{\mathbf G\mathbf G'}
     (\mathbf q)\,\rho_{rs}(\mathbf q+\mathbf G')`, from pair densities on
     the supercell ``box`` the ``screening`` (:func:`screened_interaction`)
-    was solved on."""
+    was solved on, each with its augmentation remainder
+    (:func:`remainder_densities`)."""
     if tuple(box.size) != tuple(screening.size):
         raise ValueError("the screened interaction belongs to another "
                          "supercell")
     n1 = first.density.shape[0]
     n2 = second.density.shape[0]
-    left = first.swapped
-    right = second.density.reshape(n2 * n2, -1)
     out = np.zeros((n1 * n1, n2 * n2), dtype=complex)
     total = np.asarray(box.total)[:, None]
     for m, delta in screening.blocks:
         index = np.ravel_multi_index(tuple(np.mod(m, total)), box.total)
-        out += np.conj(left[:, index]) @ delta @ right[:, index].T
+        rho_1 = first.density[:, :, index] + remainder_densities(box, first,
+                                                                 m)
+        rho_2 = rho_1 if second is first else (
+            second.density[:, :, index] + remainder_densities(box, second,
+                                                              m))
+        left = rho_1.transpose(1, 0, 2).reshape(n1 * n1, -1)
+        right = rho_2.reshape(n2 * n2, -1)
+        out += np.conj(left) @ delta @ right.T
     return out.reshape(n1, n1, n2, n2) / box.volume
 
 
@@ -2187,7 +2260,10 @@ def polarizability(crystal, channel_pairs, q, g, n_cells: int) -> tuple:
     of :func:`screening_states` at :math:`\mathbf k` and :math:`\mathbf k +
     \mathbf q`; each transition is weighted by :math:`(F_a - F_b) /
     (\varepsilon_a - \varepsilon_b)` (the smearing's slope for a degenerate
-    pair) times :math:`1 - p_a p_b`."""
+    pair) times :math:`1 - p_a p_b`.  A transition density is the smooth
+    product plus the compensation charges plus what the compensation leaves
+    of the augmentation density
+    (:meth:`~mandacaru.pseudopotentials.periodic_paw.PeriodicPAW.remainder_transforms`)."""
     grid = crystal.grid
     shape = tuple(int(n) for n in grid.shape)
     B = rc.reciprocal_vectors(crystal.lattice)
@@ -2200,6 +2276,12 @@ def polarizability(crystal, channel_pairs, q, g, n_cells: int) -> tuple:
     to_G = grid.dV * np.exp(-1j * (rc.grid_origin(grid) @ (B @ g)))
     transforms = crystal.compensation_transforms(qG)          # (n_ch, nG)
     q_phase = np.exp(-1j * (q @ r))
+    # What the compensation charges leave of each atom's augmentation
+    # density, (m^2, nG) per atom.
+    remainders = [(atom, crystal.remainder_transforms(atom, qG).reshape(
+        len(crystal.projector_columns(atom)) ** 2, -1))
+        for atom in range(len(crystal.centers))
+        if crystal.projector_columns(atom)]
     space = workspace(shape)
     step = space.batch(16)
     buffer = space.stack(step)
@@ -2242,6 +2324,11 @@ def polarizability(crystal, channel_pairs, q, g, n_cells: int) -> tuple:
                 Q = np.einsum("ip,ij,jp->p", np.conj(a1[own][:, a_index]),
                               blk, a2[own][:, b_index])
                 rho += Q[:, None] * transforms[c][None, :]
+            for atom, E in remainders:
+                own = crystal.projector_columns(atom)
+                pair = (np.conj(a1[own][:, a_index])[:, None, :]
+                        * a2[own][:, b_index][None, :, :])
+                rho += pair.reshape(len(own) ** 2, -1).T @ E
             chi += (rho.T * weight[a_index, b_index][None, :]) @ np.conj(rho)
     return chi / (n_cells * volume), qG
 
@@ -2292,8 +2379,9 @@ def screened_interaction(box: SupercellCoulomb, channels, targets, *,
 
     over the ``channels``' lowest ``n_bands`` Kohn-Sham states
     (:func:`polarizability`), with the transition densities' compensation
-    charges.  With ``exclude`` the weights ``p`` are each state's share of
-    the Bloch subspace of the channel's ``targets`` functions (constrained
+    charges and the remainder of their augmentation densities beyond the
+    multipoles (:func:`remainder_densities`).  With ``exclude`` the weights
+    ``p`` are each state's share of the Bloch subspace of the channel's ``targets`` functions (constrained
     RPA, Aryasetiawan et al. 2004, in the projector-weighted form of
     Sasioglu, Friedrich and Bluegel 2011): a transition inside the target
     subspace does not screen, one partly inside screens in proportion.

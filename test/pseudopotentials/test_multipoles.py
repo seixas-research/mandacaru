@@ -15,8 +15,12 @@ import pytest
 from ase import Atoms
 
 from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
-from mandacaru.pseudopotentials import get_paw
-from mandacaru.pseudopotentials.multipoles import partial_waves, radial_moments
+from mandacaru.integrals import reciprocal as rc
+from mandacaru.pseudopotentials import get_paw, multipoles
+from mandacaru.pseudopotentials.multipoles import (partial_waves,
+                                                    radial_moments,
+                                                    radial_remainder,
+                                                    shape_function)
 
 
 @pytest.fixture(scope="module")
@@ -51,6 +55,54 @@ class TestCrossMoments:
         own = np.abs(radial_moments(copper, 2, 2, 2)).max()
         assert cross < 1.0
         assert cross < 20.0 * max(own, 1e-2)
+
+
+class TestTheRemainderBeyondTheMultipoles:
+    """What the compensation shape leaves of the all-electron minus smooth
+    pair density, ``E^(L)_ij(q)``: its transform less the shape that carries
+    the moment."""
+
+    @staticmethod
+    def _shape(dataset, L, q):
+        r_g = float(dataset.compensation_radius)
+        r = np.linspace(0.0, r_g, 1201)
+        return rc.radial_transform(r, shape_function(r, r_g, L), L, q)
+
+    @pytest.mark.parametrize("L", [0, 2, 4])
+    def test_it_has_no_moment(self, copper, L):
+        """The shape restores the moment, so the remainder vanishes with
+        the wavevector (as ``q^(L+2)``): at 0.05 Bohr^-1 it is below 1e-3
+        of the largest transform of the pair."""
+        q = np.array([0.0, 0.05, 2.0])
+        E = radial_remainder(copper, 2, 2, L, q, self._shape(copper, L, q))
+        assert np.abs(E[0]).max() < 1e-6
+        assert np.abs(E[1]).max() < 1e-3 * np.abs(E[2]).max()
+
+    def test_it_is_the_transform_less_the_shape(self, copper):
+        """At a large wavevector the shape's transform has fallen away and
+        the remainder is the pair density's own transform."""
+        q = np.array([6.0])
+        E = radial_remainder(copper, 2, 2, 2, q, self._shape(copper, 2, q))
+        r = np.asarray(copper.r)
+        ae, smooth = partial_waves(copper, 2)
+        inside = r <= copper.channels[2].r_cut
+        from scipy.special import spherical_jn
+        density = ((ae[0] * ae[0] - smooth[0] * smooth[0])
+                   * r ** 2)[inside]
+        direct = np.trapezoid(spherical_jn(2, q[0] * r[inside]) * density,
+                              r[inside])
+        shape = self._shape(copper, 2, q)[0] * copper.multipole_moments(
+            2, 2, 2, "dual")[0, 0]
+        assert E[0, 0, 0] == pytest.approx(direct - shape, abs=1e-6)
+
+    def test_it_vanishes_without_an_augmentation(self, copper, monkeypatch):
+        """Smooth waves equal to the all-electron ones leave nothing."""
+        monkeypatch.setattr(multipoles, "partial_waves",
+                            lambda dataset, l: (lambda a: (a, a))(
+                                partial_waves(dataset, l)[0]))
+        q = np.array([0.5, 2.0, 4.0])
+        E = radial_remainder(copper, 2, 2, 2, q, np.zeros(3))
+        assert np.abs(E).max() < 1e-12
 
 
 def test_compensation_keeps_the_copper_coulomb_tensor_positive():

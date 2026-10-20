@@ -280,6 +280,47 @@ def radial_moments(dataset, l1: int, l2: int, L: int) -> np.ndarray:
     return moments
 
 
+def radial_remainder(dataset, l1: int, l2: int, L: int, q,
+                     shape_transform) -> np.ndarray:
+    r"""``E^{(L)}_{ij}(q)``, ``(len(q), n1, n2)``: what the compensation
+    charge leaves of the augmentation density at wavevector ``q``,
+
+    .. math::
+
+        E^{(L)}_{ij}(q) = \int (R_iR_j - \tilde R_i\tilde R_j)\,j_L(qr)\,
+        r^2\,dr - \Delta^{(L)}_{ij}\,\hat g_L(q),
+
+    the Fourier-Bessel transform of the all-electron minus smooth pair
+    density over the augmentation sphere, less the compensation shape that
+    carries its multipole moment :math:`\Delta^{(L)}_{ij}`
+    (:func:`radial_moments`).  ``shape_transform`` is
+    :math:`\hat g_L(q)` on ``q`` (the transform the crystal uses for the
+    compensation charge).  It vanishes at :math:`q = 0` for ``L = 0`` and as
+    :math:`q^{L+2}` beyond, because the moments agree; in the dual
+    projector basis the waves are the dataset's own.
+    """
+    from scipy.special import spherical_jn
+
+    q = np.asarray(q, dtype=float)
+    r = np.asarray(dataset.r, dtype=float)
+    ae1, ps1 = partial_waves(dataset, l1)
+    ae2, ps2 = partial_waves(dataset, l2)
+    r_cut = max(float(dataset.channels[int(l1)].r_cut),
+                float(dataset.channels[int(l2)].r_cut))
+    inside = r <= r_cut
+    radius = r[inside]
+    bessel = spherical_jn(int(L), np.outer(q, radius))
+    delta = dataset.multipole_moments(l1, l2, L, "dual")
+    out = np.zeros((q.size, len(ae1), len(ae2)))
+    for i in range(len(ae1)):
+        for j in range(len(ae2)):
+            density = (ae1[i][inside] * ae2[j][inside]
+                       - ps1[i][inside] * ps2[j][inside]) * radius ** 2
+            out[:, i, j] = simpson(bessel * density[None, :], x=radius,
+                                   axis=-1)
+    return out - delta[None] * np.asarray(shape_transform)[:, None, None]
+
+
 # --------------------------------------------------------------------------- #
 # Compensation-compensation Coulomb.
 # --------------------------------------------------------------------------- #

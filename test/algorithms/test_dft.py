@@ -72,13 +72,40 @@ class TestTheRun:
         rng = np.random.default_rng(7)
         B = rng.normal(size=D.shape) + 1j * rng.normal(size=D.shape)
         delta = 1e-2 * (B @ B.conj().T)
-        eps = 1e-4
+        eps = 1e-5            # the meta-GGA's quotient carries 2.5e-5 at 1e-4
         F, e0, _h, _x = solver._fock(D)
         e1 = solver._fock(D + eps * delta)[1]
         e2 = solver._fock(D + 2 * eps * delta)[1]
         directional = float(np.real(np.sum(F.T * delta)))
         assert (-3 * e0 + 4 * e1 - e2) / (2 * eps) == pytest.approx(
             directional, rel=1e-5)
+
+    def test_a_one_orbital_density_is_iso_orbital_for_the_meta_gga(self):
+        r"""``tau_W = |grad rho|^2/8 rho`` equals ``tau`` for H2's single
+        occupied orbital: the density gradient r2SCAN sees is the orbitals'
+        product rule, so the iso-orbital indicator is zero to round-off
+        wherever the density is not.  The grid's own derivative of the
+        sampled density is not (K1: that mismatch put a micro-Hartree ripple
+        on the energy)."""
+        from mandacaru.algorithms import dft
+        from mandacaru.integrals import exchange_correlation as xc_grid
+        atoms = h2()
+        _run(atoms, xc="r2scan", grid_spacing=0.3, basis=NAO_DZ)
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        scf = atoms.calc.result.scf
+        solver = dft.kohn_sham_solver(integrals, 2, scf.functional)
+        C = scf.mo_coefficients
+        D = 2.0 * np.outer(C[:, 0], C[:, 0].conj())
+        rho, tau = solver.density(D), solver.kinetic_energy_density(D)
+        live = rho > 1e-8
+
+        def mismatch(gradient):
+            weizsaecker = np.sum(gradient * gradient, axis=0) / (
+                8.0 * np.where(live, rho, 1.0))
+            return np.max(np.abs(weizsaecker - tau)[live]) / np.max(tau)
+
+        assert mismatch(solver.density_gradient(D)) < 1e-12
+        assert mismatch(xc_grid.gradient(solver.grid, rho)) > 1e-6
 
     def test_the_eigenvalues_are_ordered_and_the_gap_is_positive(self, converged):
         _xc, atoms, _energy = converged
@@ -438,16 +465,20 @@ class TestForces:
         integrals = atoms.calc.solver._gradient_context["integrals"]
         assert integrals._eri_ao is None
 
-    def test_it_is_the_gradient_through_the_tensor(self):
+    @pytest.mark.parametrize("xc, spacing, size", [
+        ("pbe", 0.25, "DZP"), ("r2scan", 0.3, "SZP")])
+    def test_it_is_the_gradient_through_the_tensor(self, xc, spacing, size):
         """The linearized Hartree term against ``hartree="tensor"``, which
         differentiates the dense tensor and its pair-density derivatives:
-        the same forces, up to the dense route's finite-difference step."""
+        the same forces, up to the dense route's finite-difference step.
+        r2SCAN adds the moving core's share of the vector field of its
+        density gradient on either route."""
         gradients = {}
         for route in ("poisson", "tensor"):
             atoms = lih()
-            atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=0.25,
+            atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=spacing,
                                    hartree=route, trace=False,
-                                   basis={"name": "PAW-LCAO", "size": "DZP"})
+                                   basis={"name": "PAW-LCAO", "size": size})
             atoms.get_forces()
             gradients[route] = atoms.calc.force_result
         linearized, dense = gradients["poisson"], gradients["tensor"]
@@ -457,18 +488,97 @@ class TestForces:
         assert linearized.details["energy_hartree"] == pytest.approx(
             dense.details["energy_hartree"], abs=1e-9)
 
-    def test_a_meta_gga_returns_forces_of_its_reported_energy(self):
-        """r2SCAN: the rebuilt energy matches and the forces are finite.
-
-        Its energy surface on a finite grid is too rough (~1 uHa) for a
-        finite-difference check at the precision of the LDA and PBE ones.
-        """
+    @pytest.mark.parametrize("kinetic", ["spectral", "fd"])
+    def test_a_meta_gga_force_is_the_derivative_of_its_energy(self, kinetic):
+        """r2SCAN: Richardson-extrapolated central differences on the
+        frozen grid, to the bound of the LDA and PBE checks above.  Its
+        energy surface used to be too rough for it (K1: 1.4 uHa, then the
+        spectral gradient's ringing); the analytic force and the difference
+        quotient now agree to 4e-5 eV/Angstrom, as PBE's do."""
         atoms = h2()
-        atoms.calc = Mandacaru(method="dft", xc="r2scan", grid_spacing=0.3, basis=NAO_DZ,
-                               trace=False)
+        atoms.calc = Mandacaru(method="dft", xc="r2scan", grid_spacing=0.3,
+                               basis=NAO_DZ, kinetic=kinetic, trace=False)
         forces = atoms.get_forces()
+        result = atoms.calc.force_result
         assert np.all(np.isfinite(forces))
         assert forces[1, 2] == pytest.approx(-forces[0, 2])
+
+        def energy(step):
+            moved = atoms.copy()
+            moved.positions[1, 2] += step
+            moved.calc = atoms.calc
+            return moved.get_potential_energy()
+
+        coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
+                        for s in (0.004, 0.002))
+        numerical = fine + (fine - coarse) / 3.0
+        assert abs(numerical) > 1.0                  # a real force
+        assert result.unprojected[1, 2] == pytest.approx(numerical, abs=1e-4)
+
+    def test_the_force_on_water_s_oxygen_is_the_derivative_of_its_energy(self):
+        """r2SCAN on water (PAW-LCAO SZ, ``grid_spacing`` 0.3), oxygen's z
+        component: 4.5e-6 eV/Angstrom.  With the density gradient taken from
+        the grid while tau comes from the orbitals' (the stencil alone) it was
+        5.3e-4, the micro-Hartree roughness of the energy surface (K1) that
+        the finite difference saw and the analytic force did not."""
+        from ase.build import molecule
+
+        atoms = molecule("H2O")
+        atoms.center(vacuum=4.0)
+        atoms.calc = Mandacaru(method="dft", xc="r2scan", grid_spacing=0.3,
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
+                               trace=False)
+        atoms.get_forces()
+        result = atoms.calc.force_result
+
+        def energy(step):
+            moved = atoms.copy()
+            moved.positions[0, 2] += step
+            moved.calc = atoms.calc
+            return moved.get_potential_energy()
+
+        coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
+                        for s in (0.004, 0.002))
+        numerical = fine + (fine - coarse) / 3.0
+        assert abs(numerical) > 1.0                  # a real force
+        assert result.unprojected[0, 2] == pytest.approx(numerical, abs=1e-4)
+
+
+class TestTheEnergySurface:
+    """The energy of a molecule moved a few thousandths of an Angstrom is a
+    smooth function of the displacement (K1)."""
+
+    @staticmethod
+    def _roughness(xc):
+        """RMS residual (micro-Hartree) of a cubic fit to the energy of
+        water with its oxygen moved along z, on a grid that follows the
+        molecule: 7 points over +-0.0045 Angstrom, SZ, ``grid_spacing`` 0.3."""
+        from ase.build import molecule
+
+        base = molecule("H2O")
+        base.center(vacuum=4.0)
+        steps = np.arange(-3, 4) * 0.0015
+        energies = []
+        for step in steps:
+            atoms = base.copy()
+            atoms.positions[0, 2] += step
+            atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.3,
+                                   basis={"name": "PAW-LCAO", "size": "SZ"},
+                                   trace=False)
+            energies.append(to_hartree(atoms.get_potential_energy(), "eV"))
+        energies = np.array(energies) * 1e6
+        fit = np.polyval(np.polyfit(steps, energies, 3), steps)
+        return float(np.sqrt(np.mean((energies - fit) ** 2)))
+
+    def test_r2scan_is_as_smooth_as_pbe(self):
+        """Measured (micro-Hartree rms): r2SCAN 0.0003, PBE 0.0001.  Before
+        the density gradient came from the orbitals' product rule (the
+        grid's derivative of the sampled density, while tau is the
+        orbitals') r2SCAN gave 0.016, and with the spectral density
+        gradient of v26.10.16 and earlier 0.49: the bounds sit above both
+        controls and below both of those."""
+        assert self._roughness("pbe") < 0.002
+        assert self._roughness("r2scan") < 0.005
 
 
 class TestForcesAfterTheEnergy:
@@ -858,7 +968,7 @@ class TestUnrestricted:
         problem = result.as_quantum_problem()
         assert problem["num_particles"] == (7, 5)
 
-    @pytest.mark.parametrize("xc", ["lda", "pbe"])
+    @pytest.mark.parametrize("xc", ["lda", "pbe", "r2scan"])
     def test_unrestricted_forces_are_the_derivative_of_the_energy(self, xc):
         """The OH radical (seven valence electrons, so unrestricted): the
         spin-averaged gradient plus the magnetization term, against
@@ -1103,6 +1213,8 @@ SPECTRAL_FORCE_CASES = {
                                        basis={"name": "UPAW-LCAO",
                                               "size": "SZ"})),
     "hse06/nao": (_tilted_h2, dict(xc="hse06", grid_spacing=0.3, basis=NAO_DZ)),
+    "r2scan/paw-lcao": (lih, dict(xc="r2scan", grid_spacing=0.3,
+                                  basis=PAW_SZP)),
     "uks-lda/paw-lcao": (_oh_radical, dict(xc="lda", grid_spacing=0.3,
                                            basis={"name": "PAW-LCAO",
                                                   "size": "SZ"})),
@@ -1147,17 +1259,6 @@ class TestSpectralKineticForces:
         numerical = fine + (fine - coarse) / 3.0
         assert abs(numerical) > 0.1                  # a real force
         assert result.unprojected[1, 2] == pytest.approx(numerical, abs=1e-4)
-
-    def test_a_meta_gga_returns_forces_of_its_reported_energy(self):
-        """r2SCAN with the spectral operator: the rebuilt energy matches (the
-        calculator checks it to 1e-6 Ha) and the forces are finite.  Its
-        energy surface is too rough (K1) for the finite-difference check."""
-        atoms = h2()
-        atoms.calc = Mandacaru(method="dft", xc="r2scan", grid_spacing=0.3,
-                               basis=NAO_DZ, kinetic="spectral", trace=False)
-        forces = atoms.get_forces()
-        assert np.all(np.isfinite(forces))
-        assert forces[1, 2] == pytest.approx(-forces[0, 2])
 
 
 class TestTheHartreeTerm:

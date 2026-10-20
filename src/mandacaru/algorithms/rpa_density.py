@@ -447,7 +447,8 @@ def _vectors_within(crystal, q, cutoff):
 def transition_densities(crystal, first, second, holes, particles, q, g):
     r"""``(n_pairs, n_G)``: :math:`\rho_p(\mathbf q+\mathbf G) = \int
     \psi^*_{n\mathbf k}\psi_{m,\mathbf k+\mathbf q}e^{-i(\mathbf q+\mathbf
-    G)\cdot\mathbf r}` with the compensation charges, for the pairs
+    G)\cdot\mathbf r}` with the compensation charges and the remainder of
+    the augmentation density beyond them, for the pairs
     (``holes[i]`` of state set ``first``, ``particles[i]`` of ``second``,
     each ``(psi, a, ...)``) on the vectors ``g`` (integer, ``(3, n)``) --
     the transition densities of
@@ -475,6 +476,16 @@ def transition_densities(crystal, first, second, holes, particles, q, g):
         Q = np.einsum("ip,ij,jp->p", np.conj(a1[own][:, holes]), blk,
                       a2[own][:, particles])
         rho += Q[:, None] * transforms[c][None, :]
+    # What the compensation charges leave of each atom's augmentation
+    # density, as in the screened interaction's polarizability.
+    for atom in range(len(crystal.centers)):
+        own = crystal.projector_columns(atom)
+        if not own:
+            continue
+        E = crystal.remainder_transforms(atom, qG).reshape(len(own) ** 2, -1)
+        pair = (np.conj(a1[own][:, holes])[:, None, :]
+                * a2[own][:, particles][None, :, :])
+        rho += pair.reshape(len(own) ** 2, -1).T @ E
     return rho
 
 

@@ -145,23 +145,43 @@ energy as `scf.exact_exchange_energy`, and the run log reports it.
 - The relativistic exchange factor of a relativistic dataset is not applied,
   as for r2SCAN.
 
-A molecule's grid (orthorhombic, not periodic) takes those gradients, the
-divergence of the potential and the orbital gradients of r2SCAN's
-$\tau$ with the symbol of an order-8 central difference (nine points per
-axis) in place of $i\mathbf{k}$. A spectral derivative of a density the grid
-does not resolve rings over the whole box, and the gradient functionals
-weight that ringing most where the density is small: on LiH at
+A molecule's grid (orthorhombic, not periodic) takes those gradients and the
+divergence of the potential with the symbol of an order-8 central difference
+(nine points per axis) in place of $i\mathbf{k}$. A spectral derivative of a
+density the grid does not resolve rings over the whole box, and the gradient
+functionals weight that ringing most where the density is small: on LiH at
 `grid_spacing = 0.3` Å it put a 3e-4 eV/Å ripple on the PBE force surface at the
 1e-3 Å scale, so the force and the finite difference of the energy disagreed
-by 5.5e-4 eV/Å, and r2SCAN's H$_2$O energy was rough at 0.9 µHa. With the
-stencil the ripple is 1.6e-7 eV/Å, the disagreement 1e-6 eV/Å and the
-roughness 0.005 µHa. The energy, the potential, the forces and
-rVV10 all differentiate the same operator, so the forces remain the
-derivative of the reported energy. Every molecular GGA energy moved by a
-fraction of a milli-Hartree against the spectral gradient (H$_2$O, DZP,
-`grid_spacing = 0.2` Å: PBE+D4 -0.26 mHa, r2SCAN+D4 -0.40 mHa; LDA has no
-gradient and is unchanged). Crystals keep the spectral derivative described
-next.
+by 5.5e-4 eV/Å. With the stencil the ripple is 1.6e-7 eV/Å and the
+disagreement 1e-6 eV/Å. The energy, the potential, the forces and rVV10 all
+differentiate the same operator, so the forces remain the derivative of the
+reported energy. Every molecular GGA energy moved by a fraction of a
+milli-Hartree against the spectral gradient (H$_2$O, DZP, `grid_spacing = 0.2` Å:
+PBE+D4 -0.26 mHa; LDA has no gradient and is unchanged). Crystals keep the
+spectral derivative described next.
+
+r2SCAN's density gradient on a molecule is not the derivative of the sampled
+density but the product rule on the orbitals,
+$\nabla n = 2\,\mathrm{Re}\sum_{pq}D_{pq}\,\phi_p\nabla\phi_q$, built
+from the same stencil gradients of the orbitals that give $\tau$. The density
+gradient (so $p$) and $\tau$ then come from one set of orbital gradients; before,
+they did not, and the iso-orbital indicator $\alpha$ of a one-orbital density was
+not 0. (rVV10 keeps the grid's derivative of the density.) The roughness of the
+H$_2$O energy against a rigid shift of oxygen (rms residual of a cubic fit, PAW-LCAO
+SZ, `grid_spacing = 0.3` Å, seven points over $\pm0.0045$ Å) fell from 0.49 µHa with the
+spectral density gradient to 0.016 µHa with the stencil of the density and to
+0.0003 µHa with the product rule (PBE: 0.0001 µHa); on DZP at `grid_spacing = 0.25` Å
+(17 points over $\pm0.04$ Å, quartic) it is 0.021 µHa against 0.16 before, PBE 0.007 and LDA
+0.0045. Those scans let the grid follow the molecule, as a single-point energy does; on
+the grid frozen at the first geometry, which forces and relaxations use, the
+ripple is the egg-box's (next to the forces below) and the product rule does not
+change it: water 0.15 µHa against PBE's 0.015, and 0.05 to 0.4 µHa for CO and
+N$_2$ with every functional. What the product rule does remove is the
+disagreement between force and energy (below). The r2SCAN total energy moved with it, by an amount that falls with the
+grid (H$_2$O, DZP, new minus old): +91 meV at `grid_spacing = 0.30` Å, +18.5 meV
+at 0.25, +5.0 meV at 0.20, +1.2 meV at 0.15 and +0.33 meV at 0.12. With the basis
+held fixed (`filter_cutoff` 600 eV) both discretizations converge to the same
+energy, -466.828 eV, within the 3 meV egg-box scatter.
 
 The density gradients PBE and r2SCAN need on a crystal are spectral derivatives built
 from the reciprocal vectors of the cell, so a skewed cell -- hexagonal,
@@ -311,7 +331,9 @@ molecules. Three points to keep in mind:
   `kinetic="fd"`, unless they say otherwise. The semilocal functionals' molecular numbers
   dated before the stencil gradient (v26.10.16 and earlier) also took their
   density gradient spectrally; the stencil moves a GGA total by a fraction of a
-  milli-Hartree (the H$_2$O table below was re-measured).
+  milli-Hartree, and r2SCAN's by more on a coarse grid (the product-rule gradient
+above; +5.0 meV on H$_2$O at `grid_spacing = 0.2` Å); the H$_2$O table below was
+re-measured.
 - The noble-gas atoms Ne and Ar in a PAW-LCAO basis need a spacing of about
   0.06 Å or smaller, well below the range above.
 
@@ -407,7 +429,7 @@ spectral kinetic default (the setup of
 | :--- | ---: | ---: |
 | LDA | -17.133249 | 7.66 |
 | PBE + D4 | -17.172320 | 7.65 |
-| r2SCAN + D4 | -17.164458 | 9.05 |
+| r2SCAN + D4 | -17.164274 | 9.05 |
 
 The D4 term is $-1.97\times10^{-4}$ Ha for PBE and $-4.7\times10^{-5}$ Ha for
 r2SCAN. The PBE and r2SCAN rows read the PBE datasets, so neither warns.
@@ -611,11 +633,37 @@ Angstrom ripples water's energy by 3.5 meV and CO's by 1.0 meV with both,
 while LiH's net force is about 1.5 times larger with the spectral operator
 (0.021 against 0.014 eV/Angstrom at grid_spacing = 0.25).
 
-r2SCAN forces are analytic too, but its energy surface on a finite real-space
-grid is rough at the micro-Hartree level -- the kinetic-energy density enters
-through a ratio that is ill-conditioned in the density tails -- so its
-finite-difference check is limited to about 0.02 eV/Angstrom, and a relaxation
-with `fmax` below that is not meaningful yet.
+r2SCAN forces are analytic too, and on a molecule they are the derivative of
+the energy on the frozen grid, as PBE's are: against a Richardson central
+difference of the energy the force agrees to 4e-5 eV/Angstrom for H$_2$ (NAO DZ,
+grid_spacing = 0.3 Angstrom), 4e-6 eV/Angstrom for water (DZP at grid_spacing = 0.25
+Angstrom, SZ at 0.3; the oxygen's z component was 5.3e-4 there before the density
+gradient came from the orbitals), for CO and N$_2$ (SZ, 0.3), and 4e-7 eV/Angstrom for LiH (the H
+component).
+
+What is not removed is the egg-box, the ripple of the energy when the molecule
+is translated rigidly across one grid period, and it is larger for r2SCAN than
+for the gradient functionals. Water
+(PAW-LCAO DZP), peak to peak in micro-Hartree, and the largest net force it puts
+on a rigidly translated molecule, $\pi\,(\text{peak to peak})/h$:
+
+| `grid_spacing` (Angstrom) | r2SCAN | PBE | LDA | r2SCAN net force | PBE net force |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.30 | 6730 | 1350 | 516 | 2 eV/Angstrom | 0.4 eV/Angstrom |
+| 0.25 | 3620 | 46 | 399 | 1.2 eV/Angstrom | 0.016 eV/Angstrom |
+| 0.20 | 578 | 26 | 87 | 0.25 eV/Angstrom | 0.011 eV/Angstrom |
+| 0.15 | 156 | 8.6 | 6.2 | 0.089 eV/Angstrom | 0.005 eV/Angstrom |
+| 0.12 | 38 | 5.3 | - | 0.027 eV/Angstrom | 0.004 eV/Angstrom |
+| 0.10 | 31 | 5.6 | - | 0.027 eV/Angstrom | 0.005 eV/Angstrom |
+
+A relaxation with r2SCAN therefore needs a finer grid than one with PBE, and
+neither functional's forces are better than a few 1e-3 eV/Angstrom (PBE) or a few
+1e-2 eV/Angstrom (r2SCAN) from the converged ones on any grid tried: take
+`grid_spacing` of 0.12 Angstrom or less for water with r2SCAN, and do not set
+`fmax` below the net-force noise of the grid you chose. This is a property of
+the grid integration, not of the functional's implementation.
+Second-row elements (HCl, SiH$_4$) show a 1-3 micro-Hartree ripple on a bond
+stretch that is the same for r2SCAN, PBE and LDA.
 
 ## Crystals: Bloch states, k-points and smearing
 
@@ -1883,14 +1931,15 @@ g = t2g.two_body                        # <pq|rs>, Hartree
 U, U_, J = g[0, 0, 0, 0], g[0, 1, 0, 1], g[0, 1, 1, 0]   # Hubbard-Kanamori
 ```
 
-- **Why windows.** The single-zeta basis puts a V p band inside the t2g
-  energy range: at R it lies 0.96 eV above the Fermi level, below the t2g
-  states at 1.71 eV. On a mesh containing R, bands 16–18 (above the Sr
-  4s and 4p semicore and O's twelve) are not the t2g
-  set and their projection on the t2g trials is singular there. The
-  disentanglement keeps the states below $E_F$ + 0.5 eV and takes the
-  smoothest t2g-like subspace from the rest of the window, as cRPA studies
-  do (Vaugier, Jiang and Biermann used a window of ±1.8 eV).
+- **Why windows.** They are the general recipe when the t2g bands entangle
+  with others, and the model keeps the states below $E_F$ + 0.5 eV and takes
+  the smoothest t2g-like subspace from the rest of the window, as cRPA
+  studies do (Vaugier, Jiang and Biermann used a window of ±1.8 eV). On the
+  3³ and 4³ meshes below they are not needed: bands 20–22 (above the V 3s and 3p and
+  Sr 4s and 4p semicore and O's twelve; 16–18 with the valence-only V) are an isolated group, $-1.34$ to $+1.71$ eV
+  from $E_F$, with a smallest direct gap of 0.78 eV to the next band (at R
+  the next triple lies at $+4.05$ eV), and the isolated-bands model and the
+  windowed one agree to three decimals ($U$ = 4.625 eV on 4³ for both).
 - **What it gives.** Three equivalent functions centered on V. In
   physicists' notation, $U = \langle aa|aa\rangle$,
   $U' = \langle ab|ab\rangle$ and $J = \langle ab|ba\rangle$, each the
@@ -1900,15 +1949,15 @@ U, U_, J = g[0, 0, 0, 0], g[0, 1, 0, 1], g[0, 1, 1, 0]   # Hubbard-Kanamori
 
 SrVO3 (LDA, PAW-LCAO SZP, grid_spacing = 0.2 Å, a 3.84 Å, the shipped
 library, Fermi-Dirac 0.05 eV, windows $E_F$ −2 to +2 eV with the states up
-to $E_F$ + 0.5 eV frozen, cRPA with the default 3 Bohr⁻¹ cutoff and all 49
+to $E_F$ + 0.5 eV frozen, cRPA with the default 3 Bohr⁻¹ cutoff and all 53
 bands):
 
 | mesh | spread (Å²) | U bare | U′ bare | J bare | U cRPA | U′ cRPA | J cRPA |
 |---|---|---|---|---|---|---|---|
-| 3³ | 1.63 | 15.32 | 14.31 | 0.465 | 5.040 | 4.133 | 0.433 |
-| 4³ | 1.84 | 15.25 | 14.25 | 0.462 | 4.625 | 3.725 | 0.430 |
-| 5³ | 1.96 | 15.23 | 14.23 | 0.461 | 4.439 | 3.541 | 0.429 |
-| 6³ | 2.03 | 15.23 | 14.23 | 0.463 | 4.348 | 3.449 | 0.429 |
+| 3³ | 1.65 | 15.57 | 14.43 | 0.528 | 4.721 | 3.713 | 0.484 |
+| 4³ | 1.86 | 15.49 | | | 4.298 | 3.297 | 0.480 |
+| 5³ (before the on-site remainder, valence-only V) | 1.96 | 15.23 | 14.23 | 0.461 | 4.439 | 3.541 | 0.429 |
+| 6³ (before the on-site remainder, valence-only V) | 2.03 | 15.23 | 14.23 | 0.463 | 4.348 | 3.449 | 0.429 |
 
 (eV; the 6³ cRPA took 6 h and 4.9 GB, the 5³ 1 h 50 min and 3.2 GB.) The
 three orbitals agree to 1e-4 eV in $U$ and $U'$, and to 0.5 %
@@ -1918,12 +1967,29 @@ $U' = U - 2J$ is exact only for a spherical atom. The interpolated bands
 inside the frozen window are within 144, 48, 25 and 8.6 meV of the true
 ones on 3³ to 6³ meshes (root mean square 68, 13, 9.4 and 3.3 meV).
 
+The 3³ and 4³ rows use the semicore vanadium (3s² 3p⁶ 3d³ 4s², 13 electrons)
+and include the PAW on-site remainder (with the valence-only vanadium they were
+15.76 / 5.144 / 0.503 on 3³ and 15.69 / 4.726 / 0.499 on 4³); the 5³ and 6³ rows
+(hours of runs) and the silicon bond tables above were measured before it and
+have not been re-measured. The remainder is the part of the all-electron pair
+density inside each augmentation sphere that the smooth density and its
+multipole compensation charges miss. It enters the bare integrals (the
+one-center Coulomb correction), the transition densities of the
+polarizability and the Wannier pair densities contracted with $W - v$. For
+the valence-only vanadium's 3d shell alone it moves the Slater integrals $F^0$, $F^2$ and
+$F^4$ by 0.42, 0.93 and 0.75 eV and the form factor of the pair density by
+9 % at 2 Bohr⁻¹ and 44 % at 3 Bohr⁻¹. In SrVO3 (3³, valence-only vanadium) it raises the bare $U$ by
+0.44 eV and $J$ by 0.07 eV (1.11 eV and 0.13 eV to $U'$ with the semicore vanadium, whose larger 3d sphere holds more of the pair density), increases the screening by 0.34 eV and leaves the
+screened $U$ 0.10 eV higher; the 3³ to 4³ step (−0.42 eV) is unchanged.
+
 **The mesh.** $U$ keeps falling, but more slowly each time (−0.41, −0.19,
 −0.09 eV for 3³→4³→5³→6³). Four points on $N_k = N^3$ fit best as
 $U_\infty + A/N^2$ (residuals under 7 meV), which is $N_k^{-2/3}$; a free
 exponent gives $N_k^{-0.74}$, and $1/N_k$ alone leaves 27 meV. A fit in
 $1/N$ ($N_k^{-1/3}$) leaves 40 meV and is the one to discard. The
-extrapolated values are
+extrapolated values (fitted before the on-site remainder; with it the 3³ to
+4³ step is unchanged, so $U$ is about 0.10 eV higher, about 4.25 eV, $U'$ about
+3.2 eV and $J$ about 0.50 eV: an estimate, not a refit) are
 
 | | $N_k^{-2/3}$ | free exponent | $1/N_k$ | adopted |
 |---|---|---|---|---|
@@ -1941,15 +2007,17 @@ mesh would. $J$ is converged on every mesh.
 $J$ = 0.44 eV and $U' = U - 2J$ = 2.3 eV, with a bare $V$ = 16.1 eV and
 $J_{bare}$ = 0.55 eV. Miyake and Aryasetiawan (*Phys. Rev. B* **77**, 085122,
 2008) report $U$ = 3.0 eV and $J$ = 0.43 eV, and Sakakibara and Kotani
-(arXiv:1812.03731, 2018) $U$ = 3.12, $U'$ = 2.17 and $J$ = 0.448 eV. Here
-$J$ agrees (0.43), and the bare $V$ is 6 % lower (15.2 against 16.1 eV). The
-extrapolated $U$ is **about 1.0 eV (30 %) above them** and $U'$ about
-1.0 eV; on 3³ the excess was 1.8 eV, so the mesh accounts for about half
-of it. The cause is the screening: cRPA keeps 27 % of the bare $U$ here,
-against 20 % in Vaugier et al., so 11.1 eV of the bare 15.2 eV is
-screened away here, against 12.9 eV there.
+(arXiv:1812.03731, 2018) $U$ = 3.12, $U'$ = 2.17 and $J$ = 0.448 eV. With the
+on-site remainder the bare $V$ (15.7 eV) and $J$ (0.54 eV) are within 3 % of
+the literature's, so the difference is in the screening: the estimated
+extrapolated $U$ is **about 1.0 eV (30 %) above the literature** and $U'$
+about 1.0 eV, and the screened $J$ (0.50 eV against 0.43 to 0.45) is lowered
+by 7 % from its bare value against 20 % there. On 3³ the excess was 1.9 eV,
+so the mesh accounts for about half of it. The screening is also short-ranged:
+the long-wavelength dielectric constant of the same machinery is right (the
+RPA $\varepsilon_\infty$ of SrTiO3 extrapolates to about 6.5 against about 6.2).
 
-Three settings were tried on 4³ (reference 4.625 eV, all 49 bands, a cutoff
+Three settings were tried on 4³ before the on-site remainder (reference 4.625 eV, all 49 bands, a cutoff
 of 3 Bohr⁻¹) and none closes it:
 
 - **The empty states.** Keeping the lowest 37 of the 49 bands raises $U$
@@ -1965,10 +2033,10 @@ So neither the empty states nor the cutoff nor the mesh explains the
 remaining 1 eV, and it is not shown to be an artifact. What would settle
 it: the mesh at 8³ or a second family of extrapolation points (the Wannier
 spread, 1.6 to 2.0 Å², still grows with the mesh); DZP or TZP on 5³ and 6³,
-since the single-zeta basis places a V p band 1 eV above $E_F$ at R,
-inside the t2g range, and the d-to-eg and O 2p-to-V d transitions that do
-the screening depend on the basis; a larger frozen window; and the position
-of those bands against the literature's LDA band structure.
+since the O 2p-to-V d transitions that do the screening depend on the
+basis; the frozen V 3s and 3p semicore, which is not polarizable here; and
+a basis with diffuse functions, to test whether the short-range response is
+limited by the empty states.
 
 bcc Fe is the spin-polarized check (DZP, h 0.2 Å, moment 2.01 μB on a
 6³ mesh). The projected s, p and d functions of each channel

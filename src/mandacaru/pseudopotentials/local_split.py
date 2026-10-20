@@ -240,6 +240,28 @@ def short_range_potential(dataset, sigma: float, radius) -> np.ndarray:
             - long_range_potential(dataset.valence_charge, sigma, radius))
 
 
+def long_range_potential_derivative(charge: float, sigma: float,
+                                    radius) -> np.ndarray:
+    r"""``d/dr`` of :func:`long_range_potential`; zero at the origin (the
+    potential is even there)."""
+    radius = np.asarray(radius, dtype=float)
+    charge, sigma = float(charge), float(sigma)
+    safe = np.maximum(radius, 1e-300)
+    a = 1.0 / (np.sqrt(2.0) * sigma)
+    value = -charge * (2.0 / np.sqrt(np.pi) * a * np.exp(-(a * safe) ** 2)
+                       / safe - erf(a * safe) / safe ** 2)
+    return np.where(radius < 1e-12 * sigma, 0.0, value)
+
+
+def short_range_potential_derivative(dataset, sigma: float, radius) -> np.ndarray:
+    """``d/dr`` of :func:`short_range_potential`, analytic (the dataset's
+    spline derivative less the Gaussian ion's)."""
+    radius = np.asarray(radius, dtype=float)
+    return (np.asarray(dataset.local_potential_derivative(radius), dtype=float)
+            - long_range_potential_derivative(dataset.valence_charge, sigma,
+                                              radius))
+
+
 def local_cutoff(dataset) -> float:
     """Radius (Bohr) beyond which the dataset's local potential is the ionic tail.
 

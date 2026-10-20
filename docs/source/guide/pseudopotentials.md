@@ -216,7 +216,7 @@ calculation that later reads it.
 | `extra_l` | `0`, La: `1`; K, Ca, Rb, Sr: up to d | Empty channels above the highest occupied valence $l$; a bound non-core atom level is the first reference when present, otherwise both references scatter |
 | `points`, `r_max` | per element | The radial grid of the reference atom |
 | `frozen_subshells` | Tl–Rn: `4f`; otherwise none | Move selected occupied subshells into the pseudopotential core |
-| `semicore_subshells` | Na, Mg, K, Ca, Rb, Sr, Sc, Ti, Y–Tc, Ta: $(n-1)s\,(n-1)p$; otherwise none | Move selected filled core subshells into the valence; `()` turns it off |
+| `semicore_subshells` | Na, Mg, K, Ca, Rb, Sr, Sc, Ti, V, Y–Tc, Ta: $(n-1)s\,(n-1)p$; otherwise none | Move selected filled core subshells into the valence; `()` turns it off |
 
 **Semicore valence.** An alkali or alkaline-earth atom with an $s$ channel
 alone has no projectors for $p$, and its $p$ scattering -- the metallic bond
@@ -239,14 +239,14 @@ flagged: their datasets warn on load that the local potential scatters
 wrongly.
 
 The early d block has the same gap in its empty $p$: with $s$ and $d$
-(and $4f$) channels alone, the local potential of Sc, Ti, Y–Tc and Ta
+(and $4f$) channels alone, the local potential of Sc, Ti, V, Y–Tc and Ta
 scattered $p$ 0.2–1.5 rad off for every repair, in LDA and PBE alike; PBE
 ScH came out 11 % long, bcc Nb 4 %, Mo 12 % and hcp Ti 6 %. With their
 $(n-1)s\,(n-1)p$ in valence (scandium: $3s^2 3p^6 3d^1 4s^2$, 11 electrons)
 each builds clean in both functionals (no ghost, phases within 0.04 rad,
 the unprojected channel within 0.09 rad, the intruding-1s miss 0.01–0.08),
 and PBE ScH, bcc Nb, Mo, Ta and hcp Ti come within 0.7 % of all-electron
-PBE. Sc and Ti take larger $d$ spheres (2.07 and 1.86 Bohr) so that their
+PBE. Sc, Ti and V take larger $d$ spheres (2.07, 1.86 and 1.67 Bohr) so that their
 filtered $3d$ still projects onto its own wave. Semicore Lu, Hf, W and Re
 also pass every atomic check but not the solid (bcc W 4 % and hcp Re 5 %
 short, hcp Hf and Lu without a converged SCF), and Ag, Cd and Ir lose their

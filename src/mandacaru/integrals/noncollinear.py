@@ -149,6 +149,8 @@ class NoncollinearXCTerms:
     field: np.ndarray
     tau_potential: np.ndarray | None = None
     tau_field: np.ndarray | None = None
+    gradient_potential: np.ndarray | None = None
+    gradient_field: np.ndarray | None = None
 
 
 def magnetization_axis(magnetization) -> tuple[np.ndarray, np.ndarray]:
@@ -211,7 +213,8 @@ def evaluate_noncollinear(grid, density, magnetization,
                           functional: str = "lda", *,
                           relativistic: bool = False, tau=None,
                           tau_magnetization=None, screening=None,
-                          exchange_density=None) -> NoncollinearXCTerms:
+                          exchange_density=None,
+                          gradients=None) -> NoncollinearXCTerms:
     r"""``E_xc``, :math:`\delta E/\delta n` and :math:`\mathbf B` of a
     noncollinear state on ``grid`` (the module docstring has the formulas).
 
@@ -245,6 +248,18 @@ def evaluate_noncollinear(grid, density, magnetization,
         semilocal exchange is subtracted on (the valence, no core), as for
         :func:`~.exchange_correlation.evaluate`: the channels
         :math:`\tfrac12(n_x \pm |\mathbf m|)` along the axis.
+    gradients : (ndarray, ndarray), optional
+        ``(grad_n, grad_m)``, ``(3, ngrid)`` and ``(3, 3, ngrid)`` (the
+        derivative index first): the gradients of :math:`n` and
+        :math:`\mathbf m` to use in place of the grid's derivative of them,
+        for a meta-GGA whose caller builds them from the orbitals
+        (:func:`~.exchange_correlation.product_rule_gradient`).  The
+        potential and the field then lack the divergence terms of the
+        gradient, which come back as ``gradient_potential``
+        :math:`\partial E/\partial\nabla n` and ``gradient_field``
+        :math:`\partial E/\partial(\partial_k m_a)` ``(3, 3, ngrid)`` for
+        the caller to contract with the gradients' own dependence on the
+        density matrix; rVV10 keeps the grid's derivative of :math:`n`.
     """
     from ..basis.xc_spin import spin_partials
 
@@ -279,8 +294,14 @@ def evaluate_noncollinear(grid, density, magnetization,
     rho, length = up + dn, up - dn
     m = length * axis
     weighted = (up + dn) > GRADIENT_DENSITY_FLOOR
-    grad_n = gradient(grid, rho)                       # (3 k, G)
-    grad_m = gradient(grid, m)                         # (3 k, 3 a, G)
+    stencil_n = gradient(grid, rho)                    # (3 k, G)
+    given = gradients is not None
+    if given:
+        grad_n = np.asarray(gradients[0], dtype=float)
+        grad_m = np.asarray(gradients[1], dtype=float)
+    else:
+        grad_n = stencil_n
+        grad_m = gradient(grid, m)                     # (3 k, 3 a, G)
     # Round-off magnetizations count as zero (their direction is noise).
     zero = length <= MAGNETIZATION_ROUNDOFF * rho
     if meta:
@@ -309,16 +330,37 @@ def evaluate_noncollinear(grid, density, magnetization,
         relativistic=relativistic)
     d_uu, d_ud, d_dd = (np.where(weighted, d, 0.0)
                         for d in (d_uu, d_ud, d_dd))
-    e_nl, v_nl, s_nl = _nonlocal(grid, full, total,
-                                 s_uu + 2.0 * s_ud + s_dd, weighted)
+    if given:
+        # rVV10 differentiates the total density on the grid.
+        e_nl, v_nl, s_nl = _nonlocal(
+            grid, full, total,
+            np.where(weighted, np.sum(stencil_n * stencil_n, axis=0), 0.0),
+            weighted)
+    else:
+        e_nl, v_nl, s_nl = _nonlocal(grid, full, total,
+                                     s_uu + 2.0 * s_ud + s_dd, weighted)
     v_up, v_dn = v_up + v_nl, v_dn + v_nl
-    d_uu, d_ud, d_dd = d_uu + s_nl, d_ud + 2.0 * s_nl, d_dd + s_nl
-    a_up = 2.0 * d_uu * g_up + d_ud * g_dn
-    a_dn = 2.0 * d_dd * g_dn + d_ud * g_up
-    potential = 0.5 * (v_up + v_dn) - divergence(grid, 0.5 * (a_up + a_dn))
-    C = 0.5 * (a_up - a_dn)
-    field = 0.5 * (v_up - v_dn) * axis - np.stack(
-        [divergence(grid, C * axis[a]) for a in range(3)])
+    if given:
+        a_up = 2.0 * d_uu * g_up + d_ud * g_dn
+        a_dn = 2.0 * d_dd * g_dn + d_ud * g_up
+        C = 0.5 * (a_up - a_dn)
+        # The derivatives with respect to the gradients the caller handed in,
+        # which the clipping of the densities does not touch.
+        potential = (0.5 * (v_up + v_dn)
+                     - divergence(grid, s_nl * stencil_n * 2.0))
+        gradient_potential = 0.5 * (a_up + a_dn)
+        gradient_field = C[:, None, :] * axis[None, :, :]
+        field = 0.5 * (v_up - v_dn) * axis
+    else:
+        d_uu, d_ud, d_dd = d_uu + s_nl, d_ud + 2.0 * s_nl, d_dd + s_nl
+        a_up = 2.0 * d_uu * g_up + d_ud * g_dn
+        a_dn = 2.0 * d_dd * g_dn + d_ud * g_up
+        gradient_potential = gradient_field = None
+        potential = (0.5 * (v_up + v_dn)
+                     - divergence(grid, 0.5 * (a_up + a_dn)))
+        C = 0.5 * (a_up - a_dn)
+        field = 0.5 * (v_up - v_dn) * axis - np.stack(
+            [divergence(grid, C * axis[a]) for a in range(3)])
     # The rotation of the axis: (1 - m_hat m_hat^T) (sum_k C_k d_k m) / |m|,
     # and for a meta-GGA (e_tau+ - e_tau-)/2 tau_m through tau_+-.
     w = np.einsum("kg,kag->ag", C, grad_m)
@@ -362,7 +404,9 @@ def evaluate_noncollinear(grid, density, magnetization,
     return NoncollinearXCTerms(energy=energy,
                                potential=np.asarray(potential, dtype=float),
                                field=field, tau_potential=tau_potential,
-                               tau_field=tau_field)
+                               tau_field=tau_field,
+                               gradient_potential=gradient_potential,
+                               gradient_field=gradient_field)
 
 
 def _short_range_noncollinear(grid, density, length, axis, omega, zero):

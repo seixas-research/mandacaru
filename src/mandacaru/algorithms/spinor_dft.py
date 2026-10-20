@@ -72,6 +72,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..integrals.exchange_correlation import gradient_term_matrix
 from ..integrals.noncollinear import (NONCOLLINEAR_FUNCTIONALS,
                                       evaluate_noncollinear,
                                       supports_noncollinear)
@@ -356,6 +357,28 @@ class SpinorKohnSham(KohnSham):
         return np.array([2.0 * np.real(t), -2.0 * np.imag(t),
                          np.real(np.trace(up) - np.trace(down))])
 
+    def _gradient_field(self, X) -> np.ndarray:
+        r""":math:`\nabla\sum_{pq}\phi_p X_{pq}\phi_q^*` on the grid,
+        ``(3, ngrid)`` complex, by the product rule on the orbitals' own
+        gradients."""
+        phi = self.orbitals
+        return np.stack([np.sum(dphi * (X @ phi.conj()), axis=0)
+                         + np.sum(phi * (X @ dphi.conj()), axis=0)
+                         for dphi in self._orbital_gradients])
+
+    def spin_gradients(self, D):
+        r"""``(grad_n, grad_m)``: the gradients of the valence density and
+        of the magnetization (:meth:`spin_densities`), ``(3, ngrid)`` and
+        ``(3, 3, ngrid)`` with the derivative index first, by the product
+        rule on the orbitals, so that a meta-GGA's :math:`\tau_W` is the
+        one its :math:`\tau` is measured against."""
+        up, down, mixed = self._blocks(D)
+        uu, dd, ud = (self._gradient_field(x) for x in (up, down, mixed))
+        grad_n = np.real(uu + dd)
+        grad_m = np.stack([2.0 * np.real(ud), -2.0 * np.imag(ud),
+                           np.real(uu - dd)], axis=1)
+        return grad_n, grad_m
+
     def _matrix(self, v) -> np.ndarray:
         r""":math:`\int\phi_p^* v\,\phi_q`."""
         phi = self.orbitals
@@ -411,19 +434,33 @@ class SpinorKohnSham(KohnSham):
         valence = n
         if self.core_density is not None:
             n = n + self.core_density
-        tau = tau_m = None
+        tau = tau_m = gradients = None
         if self.meta:
             tau, tau_m = self.spinor_kinetic_energy_density(D)
             if self._core_tau is not None:
                 tau = tau + self._core_tau
+            grad_n, grad_m = self.spin_gradients(D)
+            if self.core_density is not None:
+                grad_n = grad_n + self._core_gradient()
+            gradients = (grad_n, grad_m)
         terms = evaluate_noncollinear(self.grid, n, m, self.functional,
                                       relativistic=self.relativistic,
                                       tau=tau, tau_magnetization=tau_m,
                                       screening=self.screening,
-                                      exchange_density=valence)
+                                      exchange_density=valence,
+                                      gradients=gradients)
         M = self.M
-        V = self._pauli(M, self._matrix(terms.potential),
-                        *(self._matrix(b) for b in terms.field))
+        identity = self._matrix(terms.potential)
+        paulis = [self._matrix(b) for b in terms.field]
+        if terms.gradient_potential is not None:
+            def term(vector):
+                return gradient_term_matrix(
+                    self.orbitals, self._orbital_gradients, vector,
+                    self.grid.dV)
+            identity = identity + term(terms.gradient_potential)
+            paulis = [b + term(terms.gradient_field[:, a])
+                      for a, b in enumerate(paulis)]
+        V = self._pauli(M, identity, *paulis)
         if terms.tau_potential is not None:
             V = V + self._pauli(M, self._gradient_matrix(terms.tau_potential),
                                 *(self._gradient_matrix(b)
