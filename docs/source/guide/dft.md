@@ -1175,9 +1175,10 @@ BFGS(FrechetCellFilter(si)).run(fmax=0.01)
   leaves unchanged are applied, since the stress lies in their span: two
   rebuilds of a cubic crystal, twelve without symmetry. The
   basis filter is held at the cutoff the run used, so the stress never
-  includes the basis changing with the grid spacing (with the default
-  grid-tied filter, a relaxation's *next* geometry will rebuild the basis
-  at its own spacing: give `filter_cutoff` in eV to keep one basis throughout).
+  includes the basis changing with the grid spacing. The default grid-tied
+  filter (`"auto"`) is held across a relaxation the same way: see
+  [Fourier filtering](pseudopotentials.md) ("The `auto` cutoff is resolved
+  once per calculator").
 - **Fixed node counts.** The grid follows the cell during a relaxation with
   the node counts set by `grid_spacing`; when a count changes, the energy steps. Choose
   `grid_spacing` so the counts stay put over the range the cell explores (the check

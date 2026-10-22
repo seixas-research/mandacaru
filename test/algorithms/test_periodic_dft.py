@@ -155,6 +155,61 @@ class TestTheCalculator:
             Mandacaru(method="dft", smearing={"method": "cold"})
 
 
+class TestFilterCutoffIsHeldAcrossCells:
+    """``filter_cutoff="auto"`` is resolved at the first crystal build of a
+    calculator and held while its cell changes (a relaxation with a cell
+    filter, a lattice scan on one calculator)."""
+
+    @staticmethod
+    def _calculator(**basis):
+        return Mandacaru(method="dft", xc="lda", grid_spacing=0.34,
+                         kpts={"size": (1, 1, 1), "gamma": True},
+                         smearing={"method": "fermi-dirac", "width": 0.01},
+                         basis={"name": "PAW-LCAO", "size": "SZ", **basis},
+                         trace=False)
+
+    @staticmethod
+    def _energy(atoms, calc):
+        atoms.calc = calc
+        energy = atoms.get_potential_energy()
+        return energy, calc.solver._gradient_context
+
+    def test_a_scan_keeps_one_basis_and_a_single_point_is_unchanged(self):
+        calc = self._calculator()
+        energy, first = self._energy(bulk("Si", "diamond", a=5.43), calc)
+        fresh, _ = self._energy(bulk("Si", "diamond", a=5.43),
+                                self._calculator())
+        assert abs(energy - fresh) < 1e-12 * abs(fresh)     # 1e-12 relative
+        assert first["filter_held"] is False
+        from mandacaru.units import HARTREE_TO_EV
+        k_c = first["filter_wavevector"]
+        assert calc.filter_cutoff_ev == pytest.approx(
+            0.5 * k_c ** 2 * HARTREE_TO_EV, rel=1e-12)
+        # 0.34 Angstrom gives 11 nodes on the lattice vector, 12 when it is
+        # 4 % longer: the unpinned cutoff pi/h differs between the two.
+        stretched = bulk("Si", "diamond", a=5.43 * 1.04)
+        _e, again = self._energy(stretched, calc)
+        assert tuple(again["crystal"].grid.shape) != tuple(
+            first["crystal"].grid.shape)
+        assert again["filter_held"] is True
+        assert again["filter_wavevector"] == k_c
+        assert again["crystal"].filter_wavevector == k_c
+        _e, alone = self._energy(bulk("Si", "diamond", a=5.43 * 1.04),
+                                 self._calculator())
+        assert alone["filter_wavevector"] != k_c
+
+    def test_an_explicit_cutoff_is_not_held_and_release_forgets(self):
+        calc = self._calculator(filter_cutoff=250.0)
+        _e, context = self._energy(bulk("Si", "diamond", a=5.43), calc)
+        assert context["filter_held"] is False
+        assert calc.filter_cutoff_ev is None
+        auto = self._calculator()
+        self._energy(bulk("Si", "diamond", a=5.43), auto)
+        assert auto.filter_cutoff_ev is not None
+        auto.release_filter_cutoff()
+        assert auto.filter_cutoff_ev is None
+
+
 #: Silicon on a grid commensurate with its primitive cell (8 nodes per
 #: lattice vector): small enough for the engine-level tests below.
 SILICON = bulk("Si", "diamond", a=5.43)

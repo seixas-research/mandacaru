@@ -521,6 +521,10 @@ def piezoelectric_tensor(atoms, *, strain: float = DEFAULT_PIEZO_STRAIN,
 
     def raw(geometry):
         geometry.calc = Mandacaru(**options)
+        # A strained cell rebuilds its grid: the "auto" filter cutoff stays
+        # the unstrained reference's, or the strain would also change the
+        # basis (a spurious polarization along the strain).
+        geometry.calc._filter_pin = pin
         if relax_ions:
             from ase.optimize import BFGS
             geometry.set_constraint(_FixedCentroid())
@@ -531,6 +535,7 @@ def piezoelectric_tensor(atoms, *, strain: float = DEFAULT_PIEZO_STRAIN,
 
     reference = atoms.copy()
     reference.calc = Mandacaru(**options)
+    pin = reference.calc._filter_pin
     reference.get_potential_energy()
     solver = reference.calc.solver._periodic_solver
     if relax_ions and solver.two_component:

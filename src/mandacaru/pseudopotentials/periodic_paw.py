@@ -1937,7 +1937,7 @@ def spin_orbit_symbols(atoms, options: dict | None = None,
 def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=None,
                   family: str = "paw-lcao", grid=None, ghosts=(),
                   symmetry: bool = True, full_mesh: bool = False,
-                  spin_orbit: bool = False):
+                  spin_orbit: bool = False, filter_pin=None):
     r"""``(crystal, context)`` for a periodic ``atoms`` with a PAW-LCAO basis.
 
     The basis, projectors and dataset blocks are the molecular builder's
@@ -1965,6 +1965,12 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     ``pbe-fr/``) is attached (:meth:`PeriodicPAW.spin_orbit_matrix`).
     Without it such a set is refused -- dropping the term would report a
     scalar-relativistic crystal under the spin-orbit set's name.
+
+    ``filter_pin`` (a :class:`~mandacaru.basis.filtering.FilterPin`) is the
+    calculator's holder of the ``filter_cutoff="auto"`` cutoff: the first
+    build fills it, later builds of other cells reuse it, and
+    ``context["filter_held"]`` says which happened.  Without one, ``"auto"``
+    is resolved from this grid alone.
     """
     from ..algorithms._hamiltonian_from_atoms import monkhorst_pack_kpts
     from ..basis.filtering import resolve_filter_cutoff
@@ -2020,8 +2026,14 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
             raise ValueError(
                 "an explicit grid for a crystal must be periodic and span "
                 "its cell (Grid(..., cell=atoms.cell, periodic=True))")
-    k_c = resolve_filter_cutoff(options.get("filter_cutoff"),
-                                max(g.dx, g.dy, g.dz))
+    # ``filter_pin`` holds the "auto" cutoff of the first build across the
+    # cells of one calculator (see :class:`~mandacaru.basis.filtering.FilterPin`).
+    spacing = max(g.dx, g.dy, g.dz)
+    k_c, held = (filter_pin.resolve(options.get("filter_cutoff"), spacing,
+                                    symbols)
+                 if filter_pin is not None else
+                 (resolve_filter_cutoff(options.get("filter_cutoff"), spacing),
+                  False))
     confinement: dict = {}
     polarization: dict = {}
     # Ghosts lend their basis functions; everything physical is the real
@@ -2077,7 +2089,8 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
                                                       potentials)),
                "ghosts": tuple(sorted(ghosts)),
                "pseudopotentials": potentials, "family": family,
-               "filter_wavevector": k_c, "options": dict(options),
+               "filter_wavevector": k_c, "filter_held": held,
+               "options": dict(options),
                "confinement": confinement, "polarization": polarization,
                "kpts_size": size, "kpts_gamma": gamma,
                "kpoints_fractional": reduced, "full_mesh": bool(full_mesh)}

@@ -293,6 +293,54 @@ def resolve_filter_cutoff(spec, spacing_bohr=None) -> float | None:
     return float(np.sqrt(2.0 * float(spec) * EV_TO_HARTREE))
 
 
+class FilterPin:
+    """The ``filter_cutoff="auto"`` cutoff of one calculator, resolved once.
+
+    ``"auto"`` puts :math:`k_c` at the Nyquist wave-vector :math:`\\pi/h` of the
+    grid *as built*.  A crystal whose cell changes during one calculation (a
+    relaxation with a cell filter, a finite-strain stress, a lattice scan on
+    one calculator) rebuilds its grid every time, and a node count that
+    jumps or a cell that stretches moves :math:`\\pi/h`; the Fourier-filtered
+    basis functions then change from one cell to the next, which is a spurious
+    force on the lattice (a negative pressure that biased the lattice
+    constants of the transition metals 2-5 % low).
+
+    The pin removes it: the **first** build of a calculator resolves
+    ``"auto"`` from its own grid, exactly as before, and every later build of
+    that calculator reuses that :math:`k_c`.  An explicit ``filter_cutoff``
+    (a number in eV) or ``False`` is never pinned.  The pin is forgotten when
+    the set of chemical symbols changes (another material needs its own
+    cutoff) and by :meth:`release`.
+    """
+
+    def __init__(self):
+        self.wavevector: float | None = None
+        self._key: tuple | None = None
+
+    def resolve(self, spec, spacing_bohr, symbols=()):
+        """``(k_c, held)`` -- the cutoff in Bohr^-1 (``None`` when off) and
+        whether it was held from an earlier build."""
+        spec = validate_filter_cutoff(spec)
+        if spec is not True:
+            return resolve_filter_cutoff(spec, spacing_bohr), False
+        key = tuple(sorted(set(symbols)))
+        if self.wavevector is not None and key == self._key:
+            return self.wavevector, True
+        self.wavevector = resolve_filter_cutoff(True, spacing_bohr)
+        self._key = key
+        return self.wavevector, False
+
+    def release(self):
+        """Forget the cutoff: the next build resolves ``"auto"`` afresh."""
+        self.wavevector, self._key = None, None
+
+    @property
+    def cutoff_ev(self) -> float | None:
+        """The pinned cutoff in eV, or ``None`` before the first build."""
+        return (None if self.wavevector is None
+                else cutoff_energy_ev(self.wavevector))
+
+
 def filter_label(spec) -> str:
     """One short phrase describing the option, for the dry run and the log."""
     spec = validate_filter_cutoff(spec)

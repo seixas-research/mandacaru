@@ -619,3 +619,40 @@ class TestWhatItBuys:
         # 0.0025 Angstrom shift of the minimum; measured across the filter and
         # the exact local potential, H2's d_eq stays within 0.9132-0.9147.
         assert forces["on"] == pytest.approx(forces["off"], abs=0.05)
+
+
+class TestFilterPin:
+    """``filter_cutoff="auto"`` is resolved once per calculator."""
+
+    def test_the_first_build_resolves_exactly_as_before(self):
+        from mandacaru.basis.filtering import FilterPin, resolve_filter_cutoff
+        pin = FilterPin()
+        k_c, held = pin.resolve("auto", 0.5, ["Si", "Si"])
+        assert not held
+        assert k_c == resolve_filter_cutoff("auto", 0.5)
+
+    def test_later_builds_keep_the_first_cutoff(self):
+        from mandacaru.basis.filtering import FilterPin
+        pin = FilterPin()
+        first, _ = pin.resolve(True, 0.5, ["Si"])
+        for spacing in (0.45, 0.55, 0.9):
+            k_c, held = pin.resolve("auto", spacing, ["Si"])
+            assert held and k_c == first
+
+    def test_an_explicit_cutoff_or_off_is_never_pinned(self):
+        from mandacaru.basis.filtering import FilterPin, resolve_filter_cutoff
+        pin = FilterPin()
+        pin.resolve("auto", 0.5, ["Si"])
+        k_c, held = pin.resolve(300.0, 0.9, ["Si"])
+        assert not held and k_c == resolve_filter_cutoff(300.0)
+        assert pin.resolve(False, 0.9, ["Si"]) == (None, False)
+
+    def test_another_material_or_a_release_resolves_afresh(self):
+        from mandacaru.basis.filtering import FilterPin, resolve_filter_cutoff
+        pin = FilterPin()
+        pin.resolve("auto", 0.5, ["Si"])
+        k_c, held = pin.resolve("auto", 0.4, ["Cu"])
+        assert not held and k_c == resolve_filter_cutoff("auto", 0.4)
+        pin.release()
+        assert pin.cutoff_ev is None
+        assert pin.resolve("auto", 0.3, ["Cu"])[1] is False

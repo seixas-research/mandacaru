@@ -1225,6 +1225,38 @@ PAW-LCAO library is regenerated or extended the same way,
 with `mandacaru-build --pp PAW --all --install`
 (or `build_paw_library` from Python, above).
 
+### The solid-state gate
+
+A dataset that passes every atomic check can still fail to hold its own crystal
+together, so `test/pseudopotentials/test_solid_state_gate.py` scans the
+elemental crystal (or a proxy at its atomic volume) over lattice constants from
+-12 % to +12 % at a fixed number of grid points per primitive vector, with the
+Fourier-filter cutoff **pinned** at the value of the coarsest point (the default
+cutoff follows the grid, which changes the basis function itself along the
+scan and can create or hide a minimum), and asks one question: is there an
+interior energy minimum? Alongside it run rule tests (the OK < 3 %, SUSPECT
+3-6 %, FAIL flags and the quartic and Birch-Murnaghan fits against analytic
+curves), a library check that every dataset declaring a semicore shell has its
+channel, and a bound (1e3 Ha) on the one-center integrals, which blow up when a
+scattering reference grows outside the sphere. The library checks need
+`MANDACARU_PAW_PATH`; `-m slow` adds three SZP sentinels (Al, V, Ta) and the
+bound for Cu. The sweep over every element of `lda-sr` and `pbe-sr` (DZP, seven
+points) and the one-center bound for every dataset (about 20-30 s per element)
+take hours, so they run only with `MANDACARU_LIBRARY_AUDIT=1`, on an idle
+machine:
+
+```bash
+MANDACARU_LIBRARY_AUDIT=1 MANDACARU_PAW_PATH=/path/to/mandacaru-paw OMP_NUM_THREADS=2 \
+  python -m pytest test/pseudopotentials/test_solid_state_gate.py -m "slow or not slow" \
+  -k "every_element or unbounded_one_center" -p no:cacheprovider -rxX --durations=20
+```
+
+Elements listed in `KNOWN_FAILURES` (one table in the test module, with the
+reason and the date of the measurement) are expected failures: an `XPASS` in the
+report means a dataset has been fixed and its row should be deleted. The
+sweep checks that a minimum exists, not that the lattice constant is right; for
+that, compare with the all-electron value at the converged settings.
+
 ## File format
 
 Pseudopotentials are stored as **Parquet by default**, with JSON retained as an
@@ -1774,6 +1806,25 @@ or `False`. Anything else raises at construction. It is **on by default for
 need no edit. `filter_cutoff=False` reproduces the unfiltered basis byte for
 byte. The measurements in the rest of this section were made with
 `kinetic="fd"`, the finite-difference stencil.
+
+**The `auto` cutoff is resolved once per calculator.** A crystal rebuilds its
+grid whenever its cell changes, and a node count that steps, or a cell that
+stretches at a fixed count, moves `π/h`; a basis filtered at each cell's own
+`π/h` is a different basis at every cell, which acts as a spurious pressure
+(lattice constants of the transition metals came out 2-5 % small). So the
+first crystal build of a `Mandacaru` calculator resolves `"auto"` from its own
+grid, exactly as before, and every later cell of that calculator (a cell-filter
+relaxation, a stress or `ase` strain loop, a lattice scan that reuses the
+calculator by setting `grid_spacing`, the strained cells of the piezoelectric
+tensor) keeps that cutoff. A single point is unchanged. `calc.filter_cutoff_ev`
+reports the held value (`None` before the first build, and for an explicit
+`filter_cutoff` or `False`, which are never held), `calc.release_filter_cutoff()`
+forgets it, and it is dropped by itself when the elements change. The run log's
+`[BASIS]` block (its only owner) marks a held value. A scan that builds a
+*new* calculator per cell still resolves `"auto"` per cell: give the cutoff in
+eV, taken from the coarsest cell, to keep one basis; on one calculator, start
+a scan at its coarsest (largest) cell, since the first build sets the cutoff. A molecule needs none of
+this: its grid is its fixed cell.
 
 ### Why the cutoff sits exactly at Nyquist
 

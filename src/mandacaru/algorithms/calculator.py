@@ -81,6 +81,7 @@ from .ansatz_spec import resolve_ansatz
 from .bloch import BLOCH_METHODS
 from ..pseudopotentials.environment import (DEFAULT_LIBRARY_FOLDER,
                                             default_library_folder)
+from ..basis.filtering import FilterPin
 from ..units import BOHR_TO_ANGSTROM, DEFAULT_GRID_SPACING
 
 if TYPE_CHECKING:
@@ -732,6 +733,9 @@ class Mandacaru(Calculator):
         # materializes the problem it is estimating.
         self._solver = None
         self._solver_is_fresh = False
+        #: The ``filter_cutoff="auto"`` cutoff of this calculator's first
+        #: crystal build, held for every later cell (:class:`FilterPin`).
+        self._filter_pin = FilterPin()
         probe = self._make_solver(grid=self._grid, dry_run=True)
         if not self.solver_kwargs.get("dry_run", False):
             probe._check_shots_for_hardware()    # the one check a dry run waives
@@ -758,6 +762,23 @@ class Mandacaru(Calculator):
     @solver.setter
     def solver(self, value) -> None:
         self._solver, self._solver_is_fresh = value, False
+
+    @property
+    def filter_cutoff_ev(self) -> float | None:
+        """The ``filter_cutoff="auto"`` cutoff in eV this calculator holds for
+        every cell it builds, or ``None`` before the first crystal build (and
+        for a molecule, an explicit ``filter_cutoff`` or ``False``).
+
+        ``"auto"`` is resolved once, at the first crystal build, as
+        :math:`\\pi/h` of that grid, and kept while the cell changes
+        (:class:`~mandacaru.basis.filtering.FilterPin`).
+        """
+        return self._filter_pin.cutoff_ev
+
+    def release_filter_cutoff(self) -> None:
+        """Forget the held ``"auto"`` cutoff: the next crystal build resolves
+        it afresh from its own grid."""
+        self._filter_pin.release()
 
     @property
     def result(self):
@@ -1178,6 +1199,7 @@ class Mandacaru(Calculator):
         # The per-job ceilings bound a shot-based run's own measurements
         # too (ADAPT's gradient jobs), not only the final one.
         solver.measurement_budget = self.measurement_budget
+        solver.filter_pin = self._filter_pin
         # A periodic driver keeps the primitive cell aside (its own `atoms`
         # becomes the supercell once it runs); hand over the attached geometry
         # so the band structure is available without a calculation.

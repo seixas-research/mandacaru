@@ -665,10 +665,13 @@ class TestCopperDShell:
 
     @pytest.mark.slow
     def test_the_cell_holds_the_valence(self, copper):
-        """Every occupied state lies in the frozen window, so the nine
-        functions of a cell hold every electron of the mesh's states --
-        Cu's eleven, up to the few meV between these eigenvalues and the
-        last SCF iteration's."""
+        """Every occupied state of the model's window lies in the frozen
+        window, so the nine functions of a cell hold every electron of the
+        mesh's states in it -- Cu's eleven (3d and 4s), up to the few meV
+        between these eigenvalues and the last SCF iteration's.  The copper
+        dataset also carries its 3s and 3p in valence (19 electrons, eight
+        of them in bands more than 30 eV below the window, which the nine
+        functions do not model)."""
         from mandacaru.algorithms.periodic_dft import occupation
 
         atoms, w = copper
@@ -677,11 +680,17 @@ class TestCopperDShell:
         B = rc.reciprocal_vectors(solver.crystal.lattice)
         energies = np.asarray(solver.bands(w.kpoints @ B.T)[0])
         fermi = float(atoms.calc.solver._scf.fermi_level)
-        electrons = 2.0 * np.mean(np.sum(occupation(
-            (energies - fermi) / solver.width, solver.method), axis=1))
+        occupied = 2.0 * occupation((energies - fermi) / solver.width,
+                                    solver.method)
+        lowest = copper_windows(atoms)["frozen"][0]
+        modeled = occupied * (energies * HARTREE_TO_EV >= lowest)
+        electrons = np.mean(np.sum(modeled, axis=1))
         assert np.trace(problem.density_matrix).real == pytest.approx(
             electrons, abs=1e-8)
         assert electrons == pytest.approx(11.0, abs=0.01)
+        # 19 -> 11: the semicore 3s and 3p (8 electrons) lie below the window.
+        assert np.mean(np.sum(occupied, axis=1)) == pytest.approx(19.0,
+                                                                 abs=0.01)
         assert problem.num_particles == (6, 5)
 
     def test_the_d_model(self, copper):
@@ -868,9 +877,11 @@ def iron():
     return atoms, w
 
 
-def mesh_occupations(atoms, kpoints, projections=False):
+def mesh_occupations(atoms, kpoints, projections=False, lowest=None):
     """Electrons per state on the mesh ``kpoints`` (fractional) at the SCF
-    Fermi level, per spin, and with ``projections`` the Loewdin weights."""
+    Fermi level, per spin, and with ``projections`` the Loewdin weights.
+    States below ``lowest`` (eV) -- the semicore bands under the model's
+    window -- hold no electrons here."""
     from mandacaru.algorithms.periodic_dft import occupation
 
     solver = atoms.calc.solver._periodic_solver
@@ -879,6 +890,8 @@ def mesh_occupations(atoms, kpoints, projections=False):
     fermi = float(atoms.calc.solver._scf.fermi_level)
     f = (2.0 / solver.n_spins) * occupation(
         (np.asarray(energies) - fermi) / solver.width, solver.method)
+    if lowest is not None:
+        f = f * (np.asarray(energies) * HARTREE_TO_EV >= lowest)
     return f, weights
 
 
@@ -899,13 +912,16 @@ class TestIronSpin:
             assert spreads[d].max() < spreads[0]
 
     def test_the_moment_and_the_d_occupations(self, iron):
-        """The occupied states lie in the frozen window: the traces of the
-        two channels' density matrices count the mesh's electrons, and
+        """The occupied states of the window lie in the frozen window (the
+        iron dataset's 3s and 3p semicore bands, eight electrons, lie below
+        it): the traces of the two channels' density matrices count the
+        mesh's electrons in the window, and
         their difference is the moment.  The d functions' occupations sit
         near the crystal's Loewdin d populations, and their spin
         difference, the d moment, agrees closely."""
         atoms, w = iron
-        f, weights = mesh_occupations(atoms, w.up.kpoints, projections=True)
+        f, weights = mesh_occupations(atoms, w.up.kpoints, projections=True,
+                                      lowest=-30.0)
         crystal = atoms.calc.solver._periodic_solver.crystal
         d_orbitals = [mu for mu, function in enumerate(crystal.basis)
                       if function.l == 2]

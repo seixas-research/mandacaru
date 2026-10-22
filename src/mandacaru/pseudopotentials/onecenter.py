@@ -521,6 +521,11 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
         energy.append(float(np.trapezoid(f * shell, r)))
         potentials.append((df_drho, 2.0 * df_dsigma * slope))
     blocks, linear = {}, 0.0
+    # The partial waves are the all-electron ones outside the augmentation
+    # sphere, and a scattering reference grows there: integrate over the
+    # sphere only (as :func:`exact_one_center_terms` does for its V).
+    inside = int(np.searchsorted(r, max(dataset.projector_radius(l)
+                                        for l in waves))) + 1
     for l, pair in waves.items():
         size = len(pair[0])
         V = np.zeros((size, size))
@@ -531,7 +536,8 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
                     product = pair[side][i] * pair[side][j]
                     integrand = (local * product + gradient
                                  * _radial_derivative(r, product)) * r * r
-                    V[i, j] += sign * float(np.trapezoid(integrand, r))
+                    V[i, j] += sign * float(np.trapezoid(integrand[:inside],
+                                                         r[:inside]))
         V = 0.5 * (V + V.T)
         linear += sum(occupation * V[i, i] for i, occupation
                       in enumerate(_occupations(dataset, l)))
@@ -865,18 +871,26 @@ def exact_one_center_terms(dataset, basis: str = "raw") -> dict:
     _e, v_ps = xc_potential(r, smooth, dataset.xc, relativistic=relativistic)
     core = core_orbitals(dataset)
     extent = _core_extent(r, core)
+    sphere = max(dataset.projector_radius(l) for l in channels)
     rc = r[:extent]
     out = {}
     for l in channels:
         ae, ps = waves[l]
         size = len(ae)
+        # The difference is the sphere's: outside it the smooth waves are the
+        # all-electron ones.  A scattering reference below zero grows as
+        # exp(kappa r) there (3e14 at 30 Bohr for the copper p channel), so
+        # integrating on to r_max multiplies round-off by it.  One radius for
+        # every channel -- the dataset's largest -- because the frozen
+        # Hartree term this V replaces integrates over the same sphere.
+        inside = int(np.searchsorted(r, sphere)) + 1
         V = np.zeros((size, size))
         K = np.zeros((size, size))
         for i in range(size):
             for j in range(size):
-                V[i, j] = float(np.trapezoid((v_ae * ae[i] * ae[j]
-                                              - v_ps * ps[i] * ps[j]) * r * r,
-                                             r))
+                V[i, j] = float(np.trapezoid(
+                    ((v_ae * ae[i] * ae[j] - v_ps * ps[i] * ps[j])
+                     * r * r)[:inside], r[:inside]))
                 total = 0.0
                 for _n, lc, occupation, R in core:
                     per_spin = occupation / (2.0 * (2 * lc + 1))

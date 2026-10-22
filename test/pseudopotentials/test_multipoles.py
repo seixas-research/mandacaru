@@ -71,12 +71,15 @@ class TestTheRemainderBeyondTheMultipoles:
     @pytest.mark.parametrize("L", [0, 2, 4])
     def test_it_has_no_moment(self, copper, L):
         """The shape restores the moment, so the remainder vanishes with
-        the wavevector (as ``q^(L+2)``): at 0.05 Bohr^-1 it is below 1e-3
-        of the largest transform of the pair."""
+        the wavevector (as ``q^(L+2)``): at 0.05 Bohr^-1 it is below 2e-3
+        of the largest transform of the pair.  (1e-3 -> 2e-3, 2026-10-21:
+        the semicore copper's compensation radius grew from 1.12 to
+        1.50 Bohr, so the L = 0 ratio went from 7.3e-4 to 1.03e-3; L = 2 and
+        4 stay at 6e-7 and 3e-10.)"""
         q = np.array([0.0, 0.05, 2.0])
         E = radial_remainder(copper, 2, 2, L, q, self._shape(copper, L, q))
         assert np.abs(E[0]).max() < 1e-6
-        assert np.abs(E[1]).max() < 1e-3 * np.abs(E[2]).max()
+        assert np.abs(E[1]).max() < 2e-3 * np.abs(E[2]).max()
 
     def test_it_is_the_transform_less_the_shape(self, copper):
         """At a large wavevector the shape's transform has fallen away and
@@ -122,8 +125,12 @@ def test_compensation_keeps_the_copper_coulomb_tensor_positive():
         return np.linalg.eigvalsh(0.5 * (matrix + matrix.conj().T)).min()
 
     assert lowest(total) > lowest(grid) - 0.05
-    energy = integrals.open_shell_hartree_fock(6, 5).electronic_energy
-    assert -60.0 < energy < -30.0
+    # The copper atom's 19 valence electrons (3s 3p 3d 4s since 2026-10-21;
+    # (6, 5) was the eleven of the valence-only dataset): (10, 9) fills the
+    # ten functions of this basis but one.  Window -60..-30 -> -215..-175
+    # Ha (measured -195.9 Ha).
+    energy = integrals.open_shell_hartree_fock(10, 9).electronic_energy
+    assert -215.0 < energy < -175.0
 
 
 class TestRealAngularTables:

@@ -580,17 +580,26 @@ class TestAtomic:
     def test_the_local_potential_alone_binds_no_ghost(self):
         """Iron's p channel has no projectors.  With r_cl at 0.9 x the compact
         3d cutoff, the bare all-electron well bound a p level at -4.6 Ha
-        (4p: -0.05); with r_cl at the 4s cutoff it binds nothing extra."""
+        (4p: -0.05); with r_cl at the 4s cutoff it binds nothing extra.
+
+        The valence-only iron: the shipped one now carries its 3s and 3p
+        (DEFAULT_SEMICORE_SUBSHELLS, 2026-10-21), whose p channel has
+        projectors, so this guards the channel without projectors by
+        building iron with ``semicore_subshells=()`` (old -4.6 Ha ghost
+        reproduced: -4.58 Ha)."""
         from mandacaru.pseudopotentials import partial_waves, paw
+        valence_only = {"semicore_subshells": ()}
         # The atom alone: a full repair of iron runs several constructions.
-        atom = generate_paw("Fe", ghosts="keep").atom
+        atom = generate_paw("Fe", ghosts="keep", **valence_only).atom
         # The historical construction: the compact local radius and no raise
-        # of the local potential (iron's default is now 10 Ha).
+        # of the local potential (iron's 10 Ha entry went with the semicore
+        # p channel; here the default raise is 0).
         old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
-                           r_cut_local=0.828, local_shift=0.0)
+                           r_cut_local=0.828, local_shift=0.0, **valence_only)
         assert old.unconstructed_ghosts()[1] < -4.0
         assert 1 in partial_waves.ghost_errors(old, paw._paw_levels)
-        new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom)
+        new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
+                           **valence_only)
         assert new.unconstructed_ghosts() == {}
 
     def test_semicore_sodium_carries_its_2s2p_in_valence(self, tmp_path):
@@ -944,7 +953,15 @@ class TestLibrary:
         by 6e-12 (the thread-independent sampling, K30) pick the other one.
         The bound sits above both and far below the 154 eV collapse.  With the
         spectral default the gap is 1.3 eV, but the UHF at 1.39 Angstrom does
-        not converge in 1000 iterations (Phase N, 2026-10-13)."""
+        not converge in 1000 iterations (Phase N, 2026-10-13).
+
+        The semicore iron (3s 3p in valence, 2026-10-21) takes the quartet,
+        FeH's own ground-state multiplicity (X 4Delta): its doublet, the
+        (9, 8) determinant this guard used before, has no converged UHF
+        solution at 1.39 Angstrom in 1000 iterations (SZ with fd and
+        spectral, DZ with fd; E(1.39) - E(2.93) = -1.2 eV unconverged, so no collapse
+        either).  The quartet converges at both distances, 4.3 eV
+        lower at 1.39 Angstrom (-3415.07 and -3410.80 eV)."""
         from mandacaru.algorithms.hartree_fock import UHF
 
         pp = get_paw("Fe")
@@ -959,8 +976,9 @@ class TestLibrary:
                 None, 0.20, 0, None, spin=True, kinetic="fd")
             integrals = context["integrals"]
             electrons = context["n_electrons"]
+            alpha = electrons // 2 + 2          # (10, 7): 3 unpaired spins
             result = UHF(integrals.one_body(), integrals.two_body(),
-                         electrons // 2 + 1, electrons // 2).solve(
+                         alpha, electrons - alpha).solve(
                              max_iter=1000, tol=1e-6)
             assert result.converged
             energies.append(result.electronic_energy

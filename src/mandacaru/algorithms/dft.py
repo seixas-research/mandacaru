@@ -1783,6 +1783,9 @@ class DFTDriver(_MeanFieldDriver):
     #: gradient needs no orbital response: the calculator asks
     #: :meth:`nuclear_gradient` instead of refusing forces.
     analytic_gradient = True
+    #: The calculator's :class:`~mandacaru.basis.filtering.FilterPin`, set by
+    #: ``Mandacaru._make_solver``; ``None`` resolves ``"auto"`` per build.
+    filter_pin = None
 
     def __init__(self, xc: str = DEFAULT_XC, vdw: str | None = None,
                  smearing=None, hartree: str = DEFAULT_HARTREE,
@@ -1844,7 +1847,7 @@ class DFTDriver(_MeanFieldDriver):
             kpts={"size": tuple(self.kpts), "gamma": self.kpts_gamma},
             family=family.name, grid=self.grid, ghosts=self.ghosts,
             full_mesh=self.electric_field is not None or whole,
-            spin_orbit=spinor)
+            spin_orbit=spinor, filter_pin=self.filter_pin)
         context["integrals"] = crystal
         context["n_electrons"] = float(context["n_electrons"]) - float(
             self.charge)

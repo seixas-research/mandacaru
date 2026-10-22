@@ -118,7 +118,9 @@ def _pseudo_report(name, context, symbols, fields, tables):
     fields["filter_cutoff"] = (
         "unfiltered" if k_c is None else
         f"{k_c:.4f} Bohr^-1 ({cutoff_energy_ev(k_c):.2f} eV), "
-        + filter_label(options.get("filter_cutoff")))
+        + filter_label(options.get("filter_cutoff"))
+        + (", held from this calculator's first build"
+           if context.get("filter_held") else ""))
 
     # How the local potential is integrated (PAW-LCAO's range separation).
     if getattr(integrals, "split_local_potential", False):
