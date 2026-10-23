@@ -960,10 +960,11 @@ class Logger:
                 self._emit_body(f"{key}: {value}")
         self._emit(_BANNER if framed else "")
 
-    def start_scf_iterations(self, energy_unit: str, *, spin: bool = False) -> None:
+    def start_scf_iterations(self, energy_unit: str, *, spin: bool = False,
+                              energy_name: str = "electronic_energy") -> None:
         """Open a self-consistency table before writing live iteration rows."""
         self._scf_spin = spin
-        columns = [("iter", 5), ("time_s", 9), (f"energy_{energy_unit}", 20),
+        columns = [("iter", 5), ("time_s", 9), (f"{energy_name}_{energy_unit}", 20),
                    (f"dE_{energy_unit}", 18), ("residual", 12)]
         if spin:
             columns.append(("moment_muB", 11))
@@ -986,12 +987,14 @@ class Logger:
         """Separate the live iteration table from the next block."""
         self._emit("")
 
-    def write_scf_iterations(self, rows, energy_unit: str) -> None:
+    def write_scf_iterations(self, rows, energy_unit: str, *,
+                              energy_name: str = "electronic_energy") -> None:
         """Write saved SCF records using the same renderer as live rows."""
         rows = list(rows)
         if rows:
             self.start_scf_iterations(energy_unit,
-                                      spin=any("moment" in row for row in rows))
+                                      spin=any("moment" in row for row in rows),
+                                      energy_name=energy_name)
             for row in rows:
                 self.write_scf_iteration(row)
             self.finish_scf_iterations()

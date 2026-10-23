@@ -548,13 +548,20 @@ three blocks of its own, read back by `parse_output` as `"setup"`,
   the largest density-matrix change are below $10^{-8}$ Hartree, with DIIS and
   a level shift that is on only while the energy rises by more than
   $10^{-6}$ Hartree.
-- `[SCF ITERATIONS]` has one row per iteration: the time, the energy (the
-  free energy of a crystal), its change, the residual the convergence test
+- `[SCF ITERATIONS]` has one row per iteration: the time, the electronic
+  energy of a molecule (`electronic_energy_eV`, or `_Ha` in atomic units)
+  or the free energy of a crystal (`free_energy_eV`), its change, the residual the convergence test
   measures and, for a spin-polarized crystal, the moment per cell.
-- `[SCF SUMMARY]` gives the energy and its decomposition: the total, the
-  reference energy of the exported Hamiltonian, the Hartree and
-  exchange-correlation energies, the core-correction energy when the basis has
-  a core correction and the dispersion energy when D4 ran.
+- `[SCF SUMMARY]` gives the total and, for a molecule, its additive
+  contributions: `electronic_energy`, `ion_ion_energy`, `one_center_energy`
+  (the frozen PAW spheres), `core_correction_energy` and `dispersion_energy`,
+  each suffixed with the energy unit. Zero contributions are included.
+  Any other density-independent term, such as the ions' coupling to an
+  electric field, appears as `other_constant_energy`. Their sum is
+  `optimal_energy`. The Hartree and exchange-correlation energies are
+  components of `electronic_energy`; a hybrid's `exact_exchange_energy`
+  is already part of `xc_energy`. The reference energy of the exported
+  Hamiltonian is reported separately.
 
 The run also writes a `references.bib`: the Hohenberg-Kohn and Kohn-Sham
 papers, the functional that ran and, with `vdw="d4"`, the D4 paper.

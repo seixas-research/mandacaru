@@ -309,7 +309,8 @@ class _MeanFieldDriver(VariationalDriver):
             if logger is not None:
                 if not streamed:
                     logger.write_scf_iterations(self._scf_iteration_rows(),
-                                                self._energy_unit_label())
+                                                self._energy_unit_label(),
+                                                energy_name=self._scf_energy_name())
                 logger.write_block("SCF SUMMARY", self._scf_summary_fields(
                     result), framed=True)
         finally:
@@ -426,6 +427,10 @@ class _MeanFieldDriver(VariationalDriver):
                 getattr(integrals, "spin_orbit_coupling", None)))
         fields["energy_unit"] = self._energy_unit_label()
         return fields
+
+    def _scf_energy_name(self) -> str:
+        """Energy quantity carried by a molecular SCF iteration record."""
+        return "electronic_energy"
 
     def _scf_iteration_rows(self) -> list:
         """``[SCF ITERATIONS]`` rows, energies in the run's unit: the SCF's

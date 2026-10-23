@@ -173,33 +173,70 @@ class TestConvergence:
             _run(atoms, xc=xc, grid_spacing=0.25, basis={"name": "PAW-LCAO"})
             assert atoms.calc.result.scf.n_iterations < 30
 
-    def test_the_log_holds_every_iteration(self, tmp_path):
+    @pytest.mark.parametrize("basis,atomic_units,electric_field", [
+        ("HAO", False, None),
+        ({"name": "PAW-LCAO", "size": "SZ"}, False, None),
+        ({"name": "PAW-LCAO", "size": "SZ"}, True, None),
+        ({"name": "PAW-LCAO", "size": "SZ"}, False, [0.001, 0.0, 0.0]),
+    ])
+    def test_the_log_holds_every_iteration(self, tmp_path, basis, atomic_units,
+                                          electric_field):
         """``[SCF ITERATIONS]``: one row per iteration, ending where the
         convergence test stopped and on the energy the summary reports."""
         from mandacaru.utils.logging import parse_output, reset_log
         path = str(tmp_path / "dft.txt")
-        atoms = h2()
-        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.35, txt=path,
-                               trace=False)
+        if basis == "HAO":
+            atoms = h2()
+        else:
+            from ase.build import molecule
+            atoms = molecule("H2O")
+            atoms.center(vacuum=2.0)
+        atoms.calc = Mandacaru(method="dft", xc="pbe", basis=basis,
+                               grid_spacing=0.35, txt=path, trace=False,
+                               atomic_units=atomic_units, electric_field=electric_field)
         energy = atoms.get_potential_energy()
         reset_log(path)
         parsed = parse_output(path)
         rows = parsed["scf_iterations"]
         scf = atoms.calc.result.scf
+        unit = atoms.calc.result.energy_unit
         assert [r["iter"] for r in rows] == list(range(1, scf.n_iterations
                                                        + 1))
-        assert rows[0]["dE_eV"] is None
+        assert rows[0][f"dE_{unit}"] is None
         for before, after in zip(rows, rows[1:]):
-            assert after["dE_eV"] == pytest.approx(
-                after["energy_eV"] - before["energy_eV"], abs=2e-10)
+            assert after[f"dE_{unit}"] == pytest.approx(
+                after[f"electronic_energy_{unit}"] - before[f"electronic_energy_{unit}"],
+                abs=2e-10)
             assert after["time_s"] >= before["time_s"]
         assert rows[-1]["residual"] < 1e-8           # what stopped it
         # The last row is the converged electronic energy; the summary adds
         # the constants, so the two differ by exactly those.
-        constant = float(parsed["summary"]["optimal_energy_eV"]) - \
-            rows[-1]["energy_eV"]
-        assert energy == pytest.approx(rows[-1]["energy_eV"] + constant,
-                                       abs=1e-9)
+        summary = parsed["summary"]
+        assert float(summary[f"electronic_energy_{unit}"]) == pytest.approx(
+            rows[-1][f"electronic_energy_{unit}"], abs=1e-9)
+        integrals = atoms.calc.solver._gradient_context["integrals"]
+        assert float(summary[f"ion_ion_energy_{unit}"]) == pytest.approx(
+            from_hartree(integrals.nuclear_repulsion, unit), abs=1e-9)
+        one_center = (sum(d.one_center_energy for d in integrals.datasets)
+                      if basis != "HAO" else 0.0)
+        assert float(summary[f"one_center_energy_{unit}"]) == pytest.approx(
+            from_hartree(one_center, unit), abs=1e-9)
+        assert float(summary[f"core_correction_energy_{unit}"]) == pytest.approx(
+            from_hartree(scf.core_correction_energy, unit), abs=1e-9)
+        if basis != "HAO":
+            assert one_center != 0.0 and scf.core_correction_energy != 0.0
+        contributions = ("electronic_energy", "ion_ion_energy", "one_center_energy",
+                         "core_correction_energy", "dispersion_energy")
+        if electric_field is not None:
+            ionic = sum(z * np.asarray(c) for z, c in integrals._potentials.nuclei)
+            assert float(summary[f"other_constant_energy_{unit}"]) == pytest.approx(
+                from_hartree(-np.dot(electric_field, ionic), unit), abs=1e-9)
+            contributions += ("other_constant_energy",)
+        else:
+            assert f"other_constant_energy_{unit}" not in summary
+        total = sum(float(summary[f"{name}_{unit}"]) for name in contributions)
+        assert total == pytest.approx(float(summary[f"optimal_energy_{unit}"]), abs=1e-9)
+        assert from_hartree(to_hartree(total, unit), "eV") == pytest.approx(energy, abs=1e-8)
 
     def test_an_r2scan_scf_does_not_stall(self):
         """DIIS restarts: this geometry oscillated at 1e-8 Ha for 200
@@ -1542,6 +1579,7 @@ class TestLiveSCFOutput:
         assert len(parse_output(path)["scf_iterations"]) == 1
         for text in observed.values():
             assert "[SCF ITERATIONS]" in text
+            assert "electronic_energy_eV" in text
             assert "[SCF SUMMARY]" not in text
             assert "[SCF SETUP]" in text
         assert observed["file"].index("[SCF SETUP]") < observed["file"].index("[SCF ITERATIONS]")

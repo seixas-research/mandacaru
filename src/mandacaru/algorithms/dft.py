@@ -2048,7 +2048,8 @@ class DFTDriver(_MeanFieldDriver):
                 return
             if record["iter"] == 1:
                 logger.start_scf_iterations(self._energy_unit_label(),
-                                             spin="moment" in record)
+                                             spin="moment" in record,
+                                             energy_name=self._scf_energy_name())
             row = dict(record)
             row["energy"] = self._to_energy_units(record["energy"])
             if record["dE"] is not None:
@@ -3378,6 +3379,10 @@ class DFTDriver(_MeanFieldDriver):
             "energy_unit": self._energy_unit_label(),
         }
 
+    def _scf_energy_name(self) -> str:
+        """Crystals iterate the free energy; molecules the electronic energy."""
+        return "free_energy" if self._periodic else "electronic_energy"
+
     def _scf_summary_fields(self, result: MeanFieldResult) -> dict:
         """``[SCF SUMMARY]``: the Kohn-Sham energy and its decomposition."""
         if self._periodic:
@@ -3414,6 +3419,23 @@ class DFTDriver(_MeanFieldDriver):
         unit = result.energy_unit
         to_unit = self._to_energy_units
         scf = self._scf
+        integrals = self._gradient_context["integrals"]
+        one_center = (sum(d.one_center_energy for d in integrals.datasets)
+                      if getattr(integrals, "one_center", None) == "frozen" else 0.0)
+        contributions = {
+            "electronic_energy": scf.electronic_energy,
+            "ion_ion_energy": integrals.nuclear_repulsion,
+            "one_center_energy": one_center,
+            "core_correction_energy": scf.core_correction_energy,
+            "dispersion_energy": scf.dispersion_energy,
+        }
+        # A uniform field also adds a density-independent ionic term to
+        # constant_energy; keep it separate from the frozen PAW spheres.
+        other_constant = float(integrals.constant_energy) - one_center
+        if other_constant:
+            contributions["other_constant_energy"] = other_constant
+        fields.update({f"{name}_{unit}": f"{to_unit(value):.10f}"
+                       for name, value in contributions.items()})
         # The exported problem starts from the Kohn-Sham determinant, whose
         # energy in the many-body Hamiltonian is not the Kohn-Sham energy.
         fields[f"reference_energy_{unit}"] = \
@@ -3426,12 +3448,6 @@ class DFTDriver(_MeanFieldDriver):
             # exchange-correlation energy that the exact exchange carries.
             fields[f"exact_exchange_energy_{unit}"] = \
                 f"{to_unit(scf.exact_exchange_energy):.10f}"
-        if scf.core_correction_energy:
-            fields[f"core_correction_energy_{unit}"] = \
-                f"{to_unit(scf.core_correction_energy):.10f}"
-        if self.vdw == "d4":
-            fields[f"dispersion_energy_{unit}"] = \
-                f"{to_unit(scf.dispersion_energy):.10f}"
         if self._spinor():
             # Against the collinear solution the SCF started from: not a
             # term of the sum above, the change the spinors made.

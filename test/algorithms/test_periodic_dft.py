@@ -728,7 +728,7 @@ def test_the_log_holds_every_crystal_iteration(name, tmp_path):
     rows = parsed["scf_iterations"]
     assert parsed["electrons"]["kinetic operator"] == "spectral"
     assert len(rows) == atoms.calc.result.scf.n_iterations
-    assert rows[-1]["energy_eV"] == pytest.approx(
+    assert rows[-1]["free_energy_eV"] == pytest.approx(
         float(parsed["summary"]["free_energy_eV"]), abs=1e-9)
     assert rows[-1]["residual"] < 1e-5
     if name == "oxygen":
