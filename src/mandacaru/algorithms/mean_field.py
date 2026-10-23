@@ -298,16 +298,18 @@ class _MeanFieldDriver(VariationalDriver):
         self._check_kpts()
         timings, run_t0 = self._make_timings()
         self._show_banner()
-        logger = None
-        if self.log_targets:
+        logger = self.__dict__.pop("_scf_logger", None)
+        streamed = logger is not None
+        if self.log_targets and logger is None:
             logger = self._open_header_logger(self.log_targets, geometry, cell)
         try:
-            if logger is not None:
+            if logger is not None and not streamed:
                 logger.write_block("SCF SETUP", self._scf_setup_fields())
             result = self._result(timings, run_t0)
             if logger is not None:
-                logger.write_scf_iterations(self._scf_iteration_rows(),
-                                            self._energy_unit_label())
+                if not streamed:
+                    logger.write_scf_iterations(self._scf_iteration_rows(),
+                                                self._energy_unit_label())
                 logger.write_block("SCF SUMMARY", self._scf_summary_fields(
                     result), framed=True)
         finally:

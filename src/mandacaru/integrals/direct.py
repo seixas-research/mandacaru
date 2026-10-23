@@ -52,6 +52,8 @@ physicists' :math:`\langle pq|rs\rangle` (electron 1 carries :math:`p, r`),
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 import numpy as np
 
 __all__ = ["DirectCoulomb", "augmentation_coulomb", "augmentation_exchange",
@@ -180,6 +182,7 @@ class DirectCoulomb:
         grid, exact to round-off.
     """
 
+    @profile_stage('SCF: Poisson kernel initialization')
     def __init__(self, integrals, box_threshold: float | None = None):
         if getattr(integrals, "periodic", False):
             raise NotImplementedError(
@@ -207,6 +210,7 @@ class DirectCoulomb:
 
     # -- the family augmentation ------------------------------------------- #
 
+    @profile_stage('integration: PAW augmentation setup')
     def augmentation(self):
         r"""``(Q, W, U)`` per channel (AO basis), or ``None``.
 
@@ -254,6 +258,7 @@ class DirectCoulomb:
                 and bool(getattr(self.solver, "even", False)))
         return np.float64 if real else np.complex128
 
+    @profile_stage('SCF: Poisson solves')
     def potential(self, densities, out=None) -> np.ndarray:
         """Hartree potentials of a ``(k, G)`` stack of densities, written to
         ``out`` when given (see
@@ -545,6 +550,7 @@ class DirectCoulomb:
             out = out + np.real(extra)
         return out
 
+    @profile_stage('SCF: occupied reference integrals')
     def orbital_integrals(self, C) -> np.ndarray:
         r""":math:`\langle pq|rs\rangle` over the orbitals ``C`` (AO columns).
 

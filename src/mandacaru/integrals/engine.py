@@ -18,6 +18,8 @@ dropped in unchanged.
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 from collections.abc import Callable, Sequence
 
 import numpy as np
@@ -223,6 +225,7 @@ class IntegralEngine:
         The shared integration grid.  All functions are sampled on it.
     """
 
+    @profile_stage('integration: basis sampling')
     def __init__(self, basis: Sequence[BasisFunction], grid: Grid,
                  periodic: bool = False):
         """``periodic`` selects the Coulomb boundary condition of the two-body
@@ -339,6 +342,7 @@ class IntegralEngine:
 
     # -- one body ---------------------------------------------------------- #
 
+    @profile_stage('integration: local potential matrix')
     def one_body(self, potential: PotentialFn, energy_units: str = "eV",
                  kinetic: str | None = "spectral"):
         """Kinetic ``T`` and potential ``V`` matrices over the basis.
@@ -413,6 +417,7 @@ class IntegralEngine:
             self._g_squared_cache = cached
         return cached[1]
 
+    @profile_stage('integration: kinetic FFT')
     def spectral_laplacian(self, samples) -> np.ndarray:
         r""":math:`\nabla^2` of each row of ``samples``, by FFT (``-|G|^2``).
 
@@ -455,6 +460,7 @@ class IntegralEngine:
 
         return workspace(self.grid.shape, None, -1)
 
+    @profile_stage('integration: spectral kinetic matrix')
     def _spectral_kinetic(self) -> np.ndarray:
         r"""``T[a,b] = -1/2 <psi_a | nabla^2 psi_b>`` with the FFT Laplacian.
 

@@ -142,3 +142,33 @@ class TestADAPTProfiling:
         out = capsys.readouterr().out
         assert "integration:" in out
         assert atoms.calc.result.integration_profile is not None
+
+
+class TestExclusiveProfiling:
+    def test_nested_stages_do_not_double_count(self, monkeypatch):
+        from mandacaru.utils import profiling
+        clock = iter([0.0, 3.0, 7.0, 10.0])
+        monkeypatch.setattr(profiling.time, "perf_counter", lambda: next(clock))
+        timings = Timings()
+        with timings.exclusive("outer"):
+            with timings.exclusive("inner"):
+                pass
+        assert timings.stages == {"inner": 4.0, "outer": 6.0}
+        assert timings.total == 10.0
+
+    def test_scope_and_stage_are_restored_after_an_exception(self):
+        from mandacaru.utils.profiling import profile_stage
+        timings = Timings()
+
+        @profile_stage("failed stage")
+        def fail():
+            raise RuntimeError("expected failure")
+
+        with pytest.raises(RuntimeError):
+            with timings.activate():
+                fail()
+        recorded = dict(timings.stages)
+        with pytest.raises(RuntimeError):
+            fail()
+        assert timings.stages == recorded
+        assert timings._frames == []

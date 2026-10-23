@@ -104,6 +104,8 @@ from a Kohn-Sham reference.
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 import inspect
 import warnings
 import time
@@ -564,6 +566,7 @@ class KohnSham:
         occupied = C[:, :self.n_occ]
         return 2.0 * (occupied @ occupied.conj().T)
 
+    @profile_stage('SCF: XC density')
     def density(self, D) -> np.ndarray:
         r"""Valence density :math:`\sum_{pq} D_{pq}\phi_p\phi_q^*` on the grid."""
         phi = self.orbitals
@@ -596,6 +599,7 @@ class KohnSham:
                 self.grid, self.core_density)
         return self._core_density_gradient
 
+    @profile_stage('SCF: Hartree matrix assembly')
     def _hartree(self, D) -> np.ndarray:
         r""":math:`J_{pq} = \sum_{rs} D_{sr}\langle pr|qs\rangle`: one
         Poisson solve on the Poisson route, else the same contraction as the
@@ -605,6 +609,7 @@ class KohnSham:
             return self.poisson.coulomb(D)
         return np.einsum("sr,prqs->pq", D, self.eri, optimize=True)
 
+    @profile_stage('SCF: reference integral transformation')
     def _mo_integrals(self, C, n_occupied: int):
         """``(h_mo, eri_mo, g_occ)`` in the orbitals ``C``: ``eri_mo`` the
         whole tensor, or on the Poisson route its deferred
@@ -625,6 +630,7 @@ class KohnSham:
         return np.einsum("sr,prsq->pq", R, self.short_range_eri,
                          optimize=True)
 
+    @profile_stage('SCF: XC matrix projection')
     def _xc(self, D):
         """``(E_xc, V_xc)``: the functional's energy and its matrix.
 
@@ -829,6 +835,7 @@ class UnrestrictedKohnSham(KohnSham):
         occupied = C[:, :n]
         return occupied @ occupied.conj().T
 
+    @profile_stage('SCF: spin XC matrix projection')
     def _xc_spin(self, Da, Db):
         """``(E_xc, V_xc^alpha, V_xc^beta)``."""
         half_core = None if self.core_density is None else \
@@ -1046,6 +1053,7 @@ def resolve_hartree(hartree) -> str:
     return key
 
 
+@profile_stage('SCF: orbital and core preparation')
 def kohn_sham_solver(integrals, n_electrons: int,
                      functional: str = DEFAULT_XC, spins=None,
                      screening=None, hartree: str = DEFAULT_HARTREE
@@ -1117,6 +1125,7 @@ def _centers(integrals):
     return [np.asarray(c, dtype=float) for _Z, c in integrals._potentials.nuclei]
 
 
+@profile_stage('SCF: diagonalization and mixing')
 def kohn_sham(integrals, n_electrons: int, functional: str = DEFAULT_XC,
               spins=None, screening=None, hartree: str = DEFAULT_HARTREE,
               spin_directions=None, **run_options):
@@ -1798,6 +1807,7 @@ class DFTDriver(_MeanFieldDriver):
         #: a crystal's is always a periodic Poisson solve.
         self.hartree = resolve_hartree(hartree)
         self._periodic = False
+        self._automatic_two_center = driver_kwargs.get("two_center") is None
         driver_kwargs.pop("device", None)
         super().__init__(**driver_kwargs)
 
@@ -1808,6 +1818,25 @@ class DFTDriver(_MeanFieldDriver):
         return atoms is not None and bool(np.any(atoms.get_pbc()))
 
     def _build_hamiltonian(self, atoms):
+        """Profile setup and resolve the molecular DFT integration default."""
+        from ..utils.profiling import Timings
+        from ._hamiltonian_from_atoms import pseudopotential_family, resolve_basis
+
+        self._dft_timings = Timings()
+        if self._automatic_two_center:
+            name, options = resolve_basis(self.basis)
+            family = pseudopotential_family(name)
+            folder = str((options or {}).get("paw_dataset", "")).rstrip("/")
+            supported = (family is not None
+                         and family.name in ("paw-lcao", "upaw-lcao")
+                         and not folder.endswith("-fr")
+                         and self.kinetic is None and not self._is_periodic(atoms))
+            self.two_center = "analytic" if supported else "grid"
+        with self._dft_timings.activate(), self._dft_timings.exclusive(
+                "integration: basis and dataset setup"):
+            return self._build_dft_hamiltonian(atoms)
+
+    def _build_dft_hamiltonian(self, atoms):
         """A crystal is built by :func:`~mandacaru.pseudopotentials.periodic_paw.build_crystal`;
         a molecule by the shared builder."""
         self._check_noncollinear_moments(atoms)
@@ -2006,6 +2035,44 @@ class DFTDriver(_MeanFieldDriver):
 
     def _configure(self, hamiltonian: Fermion, num_particles: tuple[int, int],
                    n_orbitals: int) -> None:
+        """Stream SCF records while setup and the solver are still running."""
+        from ..utils.logging import observe_scf
+
+        self._check_kpts()
+        self.num_particles = tuple(num_particles)
+        self.n_spatial_orbitals = int(n_orbitals)
+        self.n_qubits = 0 if self._periodic else 2 * int(n_orbitals)
+        logger = None
+        def publish(record):
+            if logger is None:
+                return
+            if record["iter"] == 1:
+                logger.start_scf_iterations(self._energy_unit_label(),
+                                             spin="moment" in record)
+            row = dict(record)
+            row["energy"] = self._to_energy_units(record["energy"])
+            if record["dE"] is not None:
+                row["dE"] = self._to_energy_units(record["dE"])
+            logger.write_scf_iteration(row)
+
+        try:
+            if self.log_targets:
+                logger = self._open_header_logger(self.log_targets, self.atoms, None)
+                self._scf_logger = logger
+                logger.write_block("SCF SETUP", self._scf_setup_fields())
+            with self._dft_timings.activate(), self._dft_timings.exclusive(
+                    "SCF: driver setup"), observe_scf(publish):
+                self._configure_dft(hamiltonian, num_particles, n_orbitals)
+            if logger is not None:
+                logger.finish_scf_iterations()
+        except BaseException:
+            if logger is not None:
+                logger.close()
+                self.__dict__.pop("_scf_logger", None)
+            raise
+
+    def _configure_dft(self, hamiltonian: Fermion,
+                       num_particles: tuple[int, int], n_orbitals: int) -> None:
         """Solve Kohn-Sham on the builder's integrals and export the
         Hamiltonian in the Kohn-Sham orbitals."""
         context = self._gradient_context or {}
@@ -2131,7 +2198,8 @@ class DFTDriver(_MeanFieldDriver):
                 field=self.electric_field,
                 field_size=(tuple(self.kpts)
                             if self.electric_field is not None else None))
-        self._scf = solver.run()
+        with self._dft_timings.exclusive("SCF: periodic iterations"):
+            self._scf = solver.run()
         # The D4 lattice sum: a constant of the electronic problem, added to
         # the reported energies (`_result`) and its derivatives to the
         # forces and the stress.
@@ -3148,6 +3216,15 @@ class DFTDriver(_MeanFieldDriver):
             return np.asarray(scf.mode_coefficients)
         return np.asarray(scf.mo_coefficients)
 
+    def _finalize_timings(self, timings, run_t0) -> None:
+        """Report exclusive DFT stages without adding overlapping engine times."""
+        profile = getattr(self, "_dft_timings", None)
+        if profile is None:
+            return super()._finalize_timings(timings, run_t0)
+        for name, seconds in profile.stages.items():
+            timings.add(name, seconds)
+        timings.wall_time = time.perf_counter() - run_t0
+
     def _result(self, timings, run_t0) -> MeanFieldResult:
         """The :class:`MeanFieldResult` of the Kohn-Sham SCF.
 
@@ -3207,7 +3284,7 @@ class DFTDriver(_MeanFieldDriver):
             crystal = self._gradient_context["integrals"]
             moments = np.asarray(self.atoms.get_initial_magnetic_moments(),
                                  float)
-            spinor = self._spinor_crystal()
+            spinor = (crystal.has_spin_orbit or moments.ndim == 2)
             if self._gradient_context.get("full_mesh"):
                 reduction = f"{len(crystal.kpoints)} (the full mesh, unreduced)"
             elif crystal.symmetry is None:
@@ -3218,18 +3295,18 @@ class DFTDriver(_MeanFieldDriver):
                     f"of {crystal.symmetry.n_space_group} space-group "
                     f"operations on the grid, and time reversal)")
             if spinor:
-                scf = self._scf
+                time_reversal = moments.ndim != 2 and not np.any(moments)
                 method_label = (
                     "periodic two-component (spinor) Kohn-Sham (Bloch "
                     "spinors), started from the collinear crystal; "
                     + ("time-reversal symmetry imposed (no initial "
                        "moments): the magnetization is zero"
-                       if scf.time_reversal else
+                       if time_reversal else
                        "noncollinear (local spin axis)"
                        + (", each atom's share of the magnetization turned "
                           "to its initial moment vector"
                           if moments.ndim == 2 else "")))
-                extra = {"spin_orbit_coupling": str(bool(scf.spin_orbit))}
+                extra = {"spin_orbit_coupling": str(bool(crystal.has_spin_orbit))}
             else:
                 method_label = "periodic Kohn-Sham (Bloch states)"
                 extra = {}
@@ -3240,12 +3317,12 @@ class DFTDriver(_MeanFieldDriver):
                 listed = [round(float(m), 3) for m in moments]
             if spinor:
                 spin = ("two-component, magnetic (initial moments "
-                        f"{listed})" if not self._scf.time_reversal
+                        f"{listed})" if not time_reversal
                         else "two-component, non-magnetic")
             else:
                 spin = (f"polarized (initial moments {listed})" if polarized
                         else "restricted")
-            magnetized = polarized or (spinor and not self._scf.time_reversal)
+            magnetized = polarized or (spinor and not time_reversal)
             return {
                 "scf_method": method_label,
                 **extra,
@@ -3266,7 +3343,9 @@ class DFTDriver(_MeanFieldDriver):
             }
         defaults = inspect.signature(KohnSham.run).parameters
         hybrid = _hybrid_setup(self.xc)
-        if self._spinor():
+        integrals = self._gradient_context["integrals"]
+        spin_orbit = bool(getattr(integrals, "spin_orbit_coupling", None))
+        if spin_orbit or np.ndim(self.atoms.get_initial_magnetic_moments()) == 2:
             noncollinear_start = np.ndim(
                 self.atoms.get_initial_magnetic_moments()) == 2
             method = ("two-component (spinor) Kohn-Sham, noncollinear "
@@ -3275,10 +3354,10 @@ class DFTDriver(_MeanFieldDriver):
                                     "magnetization turned to its initial "
                                     "moment vector"
                                     if noncollinear_start else ""))
-            spinor = {"spin_orbit_coupling": str(bool(self._scf.spin_orbit))}
+            spinor = {"spin_orbit_coupling": str(spin_orbit)}
         else:
             method = ("unrestricted Kohn-Sham (open shell)"
-                      if self._unrestricted() else
+                      if self.num_particles[0] != self.num_particles[1] else
                       "restricted Kohn-Sham (closed shell)")
             spinor = {}
         return {

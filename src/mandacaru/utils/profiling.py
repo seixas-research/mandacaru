@@ -29,6 +29,29 @@ import sys
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+
+
+_ACTIVE_TIMINGS = ContextVar("mandacaru_active_timings", default=None)
+
+
+def profile_stage(name):
+    """Measure exclusive wall time only inside an active profiling scope.
+
+    Nested stages subtract their duration from their parent, so the printed
+    sum never counts the same work twice. Other methods incur no timers.
+    """
+    def decorate(function):
+        @wraps(function)
+        def measured(*args, **kwargs):
+            timings = _ACTIVE_TIMINGS.get()
+            if timings is None:
+                return function(*args, **kwargs)
+            with timings.exclusive(name):
+                return function(*args, **kwargs)
+        return measured
+    return decorate
 
 
 def peak_memory_mb() -> float:
@@ -98,6 +121,30 @@ class Timings:
         self.backend = backend
         self.wall_time: float | None = None      # end-to-end wall time (optional)
         self._peak_mb = peak_memory_mb()
+        self._frames = []
+
+    @contextmanager
+    def activate(self):
+        """Enable stage instrumentation for the current calculation."""
+        token = _ACTIVE_TIMINGS.set(self)
+        try:
+            yield self
+        finally:
+            _ACTIVE_TIMINGS.reset(token)
+
+    @contextmanager
+    def exclusive(self, name: str):
+        """Time this stage, excluding time attributed to nested stages."""
+        frame = [time.perf_counter(), 0.0]
+        self._frames.append(frame)
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter() - frame[0]
+            self._frames.pop()
+            self.add(name, max(0.0, elapsed - frame[1]))
+            if self._frames:
+                self._frames[-1][1] += elapsed
 
     @contextmanager
     def time(self, name: str):

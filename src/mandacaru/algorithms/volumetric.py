@@ -810,6 +810,14 @@ def dipole_moment(integrals, gamma, *, frozen=(), active=None,
                 f"the compensation monopoles hold {held:.10f} electrons but "
                 f"the overlap augmentation {augmentation_charge:.10f}: the "
                 f"multipole convention assumed here does not match")
+    if getattr(integrals, "two_center", "grid") == "analytic":
+        # Separate the constant part of r from its centered quadrature.
+        # Its integral is fixed by the analytic overlap, not by a small
+        # Cartesian normalization error multiplied by the box origin.
+        origin = np.mean(positions, axis=0)
+        norm_error = (float(np.real(np.trace(D))) - augmentation_charge
+                      - float(np.sum(np.real(values)) * grid.dV))
+        smooth = smooth + origin * norm_error
     electrons = smooth + augmentation
     return DipoleMoment(
         total=np.asarray(ionic, dtype=float) - electrons,

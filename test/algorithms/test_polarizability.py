@@ -56,11 +56,12 @@ class TestTheField:
         slope = (e_plus - e_minus) / (2 * step)
         assert slope == pytest.approx(-float(mu0 @ unit), abs=1e-5)
 
-    def test_the_dipole_matrices_are_the_dipole(self):
+    @pytest.mark.parametrize("method", ["rhf", "dft"])
+    def test_the_dipole_matrices_are_the_dipole(self, method):
         from mandacaru.algorithms.volumetric import (OrbitalExpansion,
                                                      _spinors,
                                                      spin_resolved_rdm)
-        _e, _mu, atoms = _run(basis={"name": "PAW-LCAO", "size": "SZ"})
+        _e, _mu, atoms = _run(method=method, basis={"name": "PAW-LCAO", "size": "SZ"})
         calc = atoms.calc
         solver, integrals, frozen, active = calc._volumetric_context()
         gamma, _ = calc._state_rdms(solver, psi=calc._volumetric_state(

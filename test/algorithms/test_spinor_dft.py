@@ -97,10 +97,12 @@ class TestANoncollinearStart:
         the lowering (0.2 meV) is far above the SCF's (1e-8 Ha) and
         round-off; the total moment is 2e-4 (the cubic grid breaks the
         threefold axis), the site angles 120 to 0.01 degrees."""
-        uks = _run(_triangle(), "lda", [1.0, 0.0, 0.0])
+        # This numerical pin describes the sampled operator and its SCF basin.
+        uks = _run(_triangle(), "lda", [1.0, 0.0, 0.0], two_center="grid")
         angles = 2 * np.pi * np.arange(3) / 3
         spinor = _run(_triangle(), "lda",
-                      np.c_[np.cos(angles), np.sin(angles), np.zeros(3)])
+                      np.c_[np.cos(angles), np.sin(angles), np.zeros(3)],
+                      two_center="grid")
         assert spinor.converged
         lowering = (spinor.electronic_energy
                     - uks.electronic_energy) * HARTREE_TO_EV * 1e3

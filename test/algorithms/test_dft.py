@@ -1512,3 +1512,75 @@ class TestAnalyticTwoCenter:
             Mandacaru(method="adapt-vqe", basis=self.PAW,
                       two_center="analytic",
                       load_hamiltonian=str(tmp_path / "missing.json"))
+
+
+class TestLiveSCFOutput:
+    def test_each_row_is_flushed_before_the_next_iteration(self, tmp_path, monkeypatch, capsys):
+        from mandacaru.algorithms.dft import KohnSham
+        from mandacaru.utils.logging import parse_output
+
+        path = tmp_path / "live.txt"
+        original = KohnSham._fock
+        calls = 0
+        observed = {}
+
+        def stop_after_first_iteration(solver, density):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                observed["file"] = path.read_text()
+                observed["stdout"] = capsys.readouterr().out
+                raise RuntimeError("stop after the first visible iteration")
+            return original(solver, density)
+
+        monkeypatch.setattr(KohnSham, "_fock", stop_after_first_iteration)
+        atoms = h2()
+        atoms.calc = Mandacaru(method="dft", basis="HAO", grid_spacing=0.5,
+                               txt=path, trace=True, references=None)
+        with pytest.raises(RuntimeError, match="first visible iteration"):
+            atoms.get_potential_energy()
+        assert len(parse_output(path)["scf_iterations"]) == 1
+        for text in observed.values():
+            assert "[SCF ITERATIONS]" in text
+            assert "[SCF SUMMARY]" not in text
+            assert "[SCF SETUP]" in text
+        assert observed["file"].index("[SCF SETUP]") < observed["file"].index("[SCF ITERATIONS]")
+        assert "_scf_logger" not in atoms.calc.solver.__dict__
+
+    def test_completed_rows_are_not_replayed_at_the_end(self, tmp_path):
+        from mandacaru.utils.logging import parse_output
+
+        path = tmp_path / "completed.txt"
+        atoms = h2()
+        atoms.calc = Mandacaru(method="dft", basis="HAO", grid_spacing=0.5,
+                               txt=path, trace=False, references=None)
+        atoms.get_potential_energy()
+        output = path.read_text()
+        assert output.count("[SCF ITERATIONS]") == 1
+        assert output.count("[SCF SETUP]") == 1
+        parsed = parse_output(path)
+        assert len(parsed["scf_iterations"]) == atoms.calc.result.scf.n_iterations
+        stages = parsed["performance"]["stages_s"]
+        assert "SCF: XC density" in stages
+        assert "SCF: Poisson solves" in stages
+        assert "SCF: occupied reference integrals" in stages
+        assert parsed["performance"]["total_s"] <= parsed["performance"]["wall_time_s"] + 0.001
+
+
+class TestDFTIntegrationDefault:
+    @pytest.mark.parametrize("basis", ["PAW-LCAO", "UPAW-LCAO"])
+    def test_supported_molecules_default_to_analytic(self, basis):
+        atoms = h2()
+        _run(atoms, basis={"name": basis, "size": "SZ"}, grid_spacing=0.4)
+        assert atoms.calc.solver._gradient_context["integrals"].two_center == "analytic"
+
+    @pytest.mark.parametrize("options", [{"two_center": "grid"}, {"kinetic": "spectral"}])
+    def test_explicit_grid_operator_is_preserved(self, options):
+        atoms = h2()
+        _run(atoms, basis={"name": "PAW-LCAO", "size": "SZ"},
+             grid_spacing=0.4, **options)
+        assert atoms.calc.solver._gradient_context["integrals"].two_center == "grid"
+
+    def test_other_methods_keep_the_grid_default(self):
+        calc = Mandacaru(method="rhf", basis="PAW-LCAO", trace=False)
+        assert calc.solver.two_center == "grid"

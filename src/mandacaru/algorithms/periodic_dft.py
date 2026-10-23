@@ -43,6 +43,8 @@ projected density of states and fat bands follow (:func:`broadened_dos`).
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 import time
 from dataclasses import dataclass, field
 
@@ -90,11 +92,14 @@ def scf_record(iteration: int, start: float, energy: float, previous: float,
     """One row of an SCF's iteration history (Hartree; ``time`` in seconds
     since ``start``, a :func:`time.perf_counter` reading; ``dE`` is ``None``
     on the first iteration)."""
-    return {"iter": int(iteration), "time": time.perf_counter() - start,
+    record = {"iter": int(iteration), "time": time.perf_counter() - start,
             "energy": float(energy),
             "dE": None if not np.isfinite(previous) else float(energy
                                                                - previous),
             "residual": float(residual), **extra}
+    from ..utils.logging import notify_scf_iteration
+    notify_scf_iteration(record)
+    return record
 
 
 def loewdin_weights(S, C) -> np.ndarray:
@@ -534,6 +539,7 @@ class PeriodicKohnSham:
     def _vector(self, q) -> np.ndarray:
         return np.array([q[c] for c in self.crystal.channels], dtype=complex)
 
+    @profile_stage('SCF: periodic electrostatics')
     def _electrostatics(self, rho, q):
         """``(V_es, w)``: the electrostatic potential of the total smooth
         density and the derivatives of the energy in the moments."""
@@ -555,6 +561,7 @@ class PeriodicKohnSham:
                      - self.onsite.get(ch, 0.0))
         return V_es, w
 
+    @profile_stage('SCF: periodic potential assembly')
     def _potentials(self, rho, q, tau):
         """``(V_grid, v_tau, w, xc_terms)`` of an input ``(n~, q, tau)``."""
         c = self.crystal
@@ -594,6 +601,7 @@ class PeriodicKohnSham:
             tau_dn=tau_dn + half_tau if self.meta else None,
             screening=self.screening, exchange_densities=(up, dn))
 
+    @profile_stage('SCF: spin periodic potential assembly')
     def _potentials_spin(self, up, dn, q, tau_up=None, tau_dn=None):
         """``([V_up, V_dn], [v_tau_up, v_tau_dn], w, xc_terms)``: one
         electrostatic potential of the total, a spin-resolved
@@ -663,6 +671,7 @@ class PeriodicKohnSham:
 
     # -- the energy --------------------------------------------------------- #
 
+    @profile_stage('SCF: periodic energy evaluation')
     def energy_terms(self, matrices, rho, q, tau) -> dict:
         """Every term of the Kohn-Sham energy of the density matrices (Ha).
 
@@ -696,6 +705,7 @@ class PeriodicKohnSham:
         return {"band_fixed": band, "electrostatic": electrostatic,
                 "xc": e_xc, "constant": self.constant}
 
+    @profile_stage('SCF: periodic electrostatic energy')
     def electrostatic_energy(self, rho, q) -> float:
         """The Coulomb energy of the smooth density ``rho``, the compensation
         moments ``q`` and the ions, per cell (Hartree)."""

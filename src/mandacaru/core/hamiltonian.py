@@ -33,6 +33,8 @@ Conventions (atomic units, Hartree):
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -530,6 +532,7 @@ class MolecularIntegrals(MeanFieldMixin):
                 self.basis, self.kb_projectors if projectors else None)
         return self._tables[key]
 
+    @profile_stage('integration: overlap matrix')
     def bare_overlap(self) -> np.ndarray:
         r"""Overlap ``S_pq = <p|q>`` of the (generally non-orthogonal) basis,
         sampled on the grid or, with ``two_center="analytic"``, exact."""
@@ -641,6 +644,7 @@ class MolecularIntegrals(MeanFieldMixin):
         return (self._potentials.pseudopotential if self.uses_pseudopotentials
                 else self._potentials.nuclear_potential)
 
+    @profile_stage('integration: grid projector diagnostics')
     def projections(self) -> np.ndarray:
         r"""Projections ``C[mu, p] = <phi_mu|chi_p>`` of the basis on the projectors.
 
@@ -848,6 +852,7 @@ class MolecularIntegrals(MeanFieldMixin):
         self._compute_one_body()
         self._compute_two_body()
 
+    @profile_stage('integration: one-body assembly')
     def _compute_one_body(self):
         """The one-body block only -- no electron-repulsion tensor.
 
@@ -1076,6 +1081,10 @@ class MolecularIntegrals(MeanFieldMixin):
                 out[axis] += (np.conj(chunk) * coords[axis][start:start + block]
                               ) @ chunk.T
         out *= grid.dV
+        if self.two_center == "analytic":
+            origin = np.mean([r for _z, r in self._potentials.nuclei], axis=0)
+            sampled_overlap = (psi.conj() @ psi.T) * grid.dV
+            out += origin[:, None, None] * (self.bare_overlap() - sampled_overlap)
         moments = getattr(self, "compensation_moments", None)
         channels = moments() if moments is not None else {}
         positions = [np.asarray(c, dtype=float)

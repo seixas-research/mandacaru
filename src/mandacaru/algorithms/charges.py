@@ -879,6 +879,19 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
     beta_flat, _ = expansion.density(D_beta)
     alpha = np.real(alpha_flat).reshape(used.shape)
     beta = np.real(beta_flat).reshape(used.shape)
+    analytic_normalization = getattr(integrals, "two_center", "grid") == "analytic" \
+        and (grid is None or grid is integrals.grid)
+    if analytic_normalization:
+        # The analytic overlap fixes each channel's norm independently of
+        # Cartesian quadrature. Preserve that norm in its atomic partition,
+        # keeping the one-center augmentation separate from the smooth part.
+        for channel, matrix in ((alpha, D_alpha), (beta, D_beta)):
+            augmentation = _augmentation_by_atom(
+                integrals, expansion.natural_orbitals(matrix), n_atoms)
+            target = float(np.real(np.trace(matrix)) - np.sum(augmentation))
+            sampled = float(np.sum(channel) * used.dV)
+            if sampled != 0.0:
+                channel *= target / sampled
     density = alpha + beta
 
     datasets = getattr(integrals, "datasets", None)
@@ -926,6 +939,9 @@ def partition_state(integrals, gamma, *, method: str = "hirshfeld",
     moments = moments + spin_augmentation
 
     notes = []
+    if analytic_normalization:
+        notes.append("smooth spin densities normalized to the analytic overlap "
+                     "for charge-conserving atomic partitions")
     if valence:
         notes.append("pseudopotential run: Z is the valence charge and the "
                      "Hirshfeld reference is the valence free atom")

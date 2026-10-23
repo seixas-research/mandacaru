@@ -138,6 +138,8 @@ the molecular Hamiltonian; no projectors above the valence :math:`l`.
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 import os
 import warnings
 from collections.abc import Sequence
@@ -146,7 +148,6 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from scipy.integrate import simpson
 
-from ..basis.base import values_and_gradients
 from ..basis.relativity import relativistic_exchange
 from ..basis.xc import _resolve as _resolve_xc
 from ..basis.xc import xc_potential
@@ -2339,21 +2340,34 @@ def _projector_sphere(projector, *, split_radial: bool = False):
     return points, weights
 
 
+def _projector_groups(projectors, split_radial):
+    """Projectors on the same quadrature sphere share sampled basis values."""
+    groups = {}
+    for column, projector in enumerate(projectors):
+        key = (tuple(np.asarray(projector.center, dtype=float)),
+               float(projector.r_cut),
+               float(getattr(projector, "channel_r_cut", projector.r_cut))
+               if split_radial else None)
+        groups.setdefault(key, []).append(column)
+    return groups.values()
+
+
 def atom_centered_projections(basis, projectors, *,
                               split_radial: bool = False) -> np.ndarray:
-    r"""``C[mu, p] = <phi_mu|p_p>`` by quadrature over each projector's sphere.
+    r"""``C[mu, p] = <phi_mu|p_p>`` on shared projector spheres."""
+    from ..integrals.sampling import sample_functions
 
-    See :meth:`PAWIntegrals.projections`.  Returns an ``(M, P)`` array.
-    """
     real = all(getattr(f, "real", False) for f in (*basis, *projectors))
-    C = np.zeros((len(basis), len(projectors)),
-                 dtype=float if real else complex)
-    for p, projector in enumerate(projectors):
-        points, weights = _projector_sphere(projector,
-                                            split_radial=split_radial)
-        values = projector.evaluate(*points) * weights
-        for mu in _reaching(basis, projector.center, points):
-            C[mu, p] = np.sum(np.conj(basis[mu].evaluate(*points)) * values)
+    C = np.zeros((len(basis), len(projectors)), dtype=float if real else complex)
+    for columns in _projector_groups(projectors, split_radial):
+        projector = projectors[columns[0]]
+        points, weights = _projector_sphere(projector, split_radial=split_radial)
+        reaching = _reaching(basis, projector.center, points)
+        if not reaching:
+            continue
+        phi, _ = sample_functions([basis[mu] for mu in reaching], points)
+        values, _ = sample_functions([projectors[p] for p in columns], points)
+        C[np.ix_(reaching, columns)] = phi.conj() @ (values * weights.ravel()).T
     return C
 
 
@@ -2387,19 +2401,28 @@ def atom_centered_projection_gradients(basis, projectors,
     moving the projector instead gives ``-G``.  Returns an ``(M, P, 3)``
     array.
     """
+    from ..integrals.sampling import sample_functions
+
     real = all(getattr(f, "real", False) for f in (*basis, *projectors))
-    G = np.zeros((len(basis), len(projectors), 3),
-                 dtype=float if real else complex)
-    for p, projector in enumerate(projectors):
-        points, weights = _projector_sphere(projector,
-                                            split_radial=split_radial)
-        values = (projector.evaluate(*points) * weights).ravel()
+    G = np.zeros((len(basis), len(projectors), 3), dtype=float if real else complex)
+    for columns in _projector_groups(projectors, split_radial):
+        projector = projectors[columns[0]]
+        points, weights = _projector_sphere(projector, split_radial=split_radial)
         reaching = _reaching(basis, projector.center, points, margin=delta)
-        _none, gradient = values_and_gradients(
-            [basis[mu] for mu in reaching], *(c.ravel() for c in points),
-            delta, values=False)                            # (n, 3, N)
-        G[reaching, p, :] = -np.conj(gradient) @ values
+        if not reaching:
+            continue
+        values, _ = sample_functions([projectors[p] for p in columns], points)
+        _, gradient = sample_functions([basis[mu] for mu in reaching], points,
+                                        gradients=True, delta=delta)
+        G[np.ix_(reaching, columns, range(3))] = (
+            -gradient.conj() @ (values * weights.ravel()).T).transpose(0, 2, 1)
     return G
+
+
+#: Maximum bytes of compensation fields contracted together.  A grid larger
+#: than this budget still needs one complete field; pair products are tiled
+#: separately by ``contract_pair_potentials``.
+COMPENSATION_FIELD_BYTES = 64 * 2**20
 
 
 class PAWIntegrals(MolecularIntegrals):
@@ -2521,6 +2544,7 @@ class PAWIntegrals(MolecularIntegrals):
         return long_range_sampler(self._potentials.nuclei, self.datasets,
                                   self.local_split_width())
 
+    @profile_stage('integration: PAW short-range local quadrature')
     def short_range_local_matrices(self, *, gradients: bool = False,
                                    delta=None):
         """``({atom: I_A}, {atom: G_A})`` of the short-range local term.
@@ -2596,6 +2620,7 @@ class PAWIntegrals(MolecularIntegrals):
                  long_range_potential(Z, s, radius))
                 for dataset in self.datasets]
 
+    @profile_stage('integration: PAW projector quadrature')
     def projections(self) -> np.ndarray:
         r"""``C[mu, p] = <phi_mu|p_p>``, integrated over each projector's sphere.
 
@@ -2678,26 +2703,66 @@ class PAWIntegrals(MolecularIntegrals):
                 self._Q[(atom, L, M)] = Ca @ matrix @ Ca.conj().T
         return self._Q
 
+    @profile_stage('integration: PAW compensation matrices')
     def compensation_potentials(self) -> dict:
         r"""``{(atom, L, M): W}`` -- :math:`W^{A,LM}_{qs} = \int
         \tilde\phi_q^*\tilde\phi_s\,v_L(r_A)\,Y_{LM}(\hat r_A)\,d^3r`
         on the grid."""
         if self._W is None:
-            psi = self._engine._psi
-            X, Y, Z = (self.grid.X.ravel(), self.grid.Y.ravel(),
-                       self.grid.Z.ravel())
-            self._W = {}
-            for atom, L, M in sorted(self.compensation_moments()):
-                _z, center = self._potentials.nuclei[atom]
-                dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
-                radius = np.sqrt(dx * dx + dy * dy + dz * dz)
-                v = _multipole_grid_potential(
-                    radius, dx, dy, dz,
-                    self.datasets[atom].compensation_radius, L, M,
-                    real=self.real_harmonics)
-                self._W[(atom, L, M)] = (np.conj(psi) * v) @ psi.T * self.grid.dV
+            self._W = self._compensation_grid_matrices()
         return self._W
 
+    def _compensation_grid_matrices(self, potential=None) -> dict:
+        """Contract compensation fields in memory-bounded channel blocks.
+
+        Geometry is evaluated once per atom and the radial potential once
+        per ``(atom, L)``, including across block boundaries.  Only the
+        current atom's geometry and current L's radial values survive the
+        next channel; fields use at most :data:`COMPENSATION_FIELD_BYTES`
+        (or one field).  Coulomb and screened W use the same grid quadrature.
+        """
+        from ..basis._angular import spherical_harmonic
+        from ..integrals.engine import contract_pair_potentials
+        from .multipoles import shape_potential
+
+        channels = self.multipole_channels()
+        if not channels:
+            return {}
+        psi = self._engine._psi
+        conjugate = psi.conj() if np.iscomplexobj(psi) else psi
+        real = self.real_harmonics
+        dtype = np.result_type(psi.dtype, float if real else complex)
+        width = max(1, min(len(channels), COMPENSATION_FIELD_BYTES
+                           // max(1, psi.shape[1] * dtype.itemsize)))
+        fields = np.empty((width, psi.shape[1]), dtype=dtype)
+        points = (self.grid.X.ravel(), self.grid.Y.ravel(), self.grid.Z.ravel())
+        kernel = shape_potential if potential is None else potential
+        last_atom = last_L = None
+        result = {}
+        for start in range(0, len(channels), width):
+            block = channels[start:start + width]
+            for row, (atom, L, M) in enumerate(block):
+                if atom != last_atom:
+                    center = self._potentials.nuclei[atom][1]
+                    dx, dy, dz = (p - c for p, c in zip(points, center))
+                    radius = np.sqrt(dx * dx + dy * dy + dz * dz)
+                    theta = np.arccos(np.clip(
+                        dz / np.maximum(radius, 1e-300), -1.0, 1.0))
+                    phi = np.arctan2(dy, dx)
+                    last_atom, last_L = atom, None
+                if L != last_L:
+                    radial = kernel(radius,
+                                    self.datasets[atom].compensation_radius, L)
+                    last_L = L
+                harmonic = spherical_harmonic(
+                    L, M, theta if L else 0.0, phi if L else 0.0, real=real)
+                fields[row] = radial * harmonic
+            matrices = contract_pair_potentials(conjugate, psi, fields[:len(block)])
+            matrices *= self.grid.dV
+            result.update(zip(block, matrices))
+        return result
+
+    @profile_stage('integration: PAW multipole coupling')
     def compensation_coulomb(self) -> np.ndarray:
         """``U[a, b]`` over :meth:`multipole_channels` -- the Coulomb energy of
         the unit compensation multipoles.
@@ -2785,6 +2850,7 @@ class PAWIntegrals(MolecularIntegrals):
             out[(atom, L, M)] = total
         return out
 
+    @profile_stage('integration: PAW ionic compensation')
     def compensation_ionic(self) -> dict:
         """:meth:`compensation_ionic_at` at the actual nuclear positions."""
         if self._Vion is None:
@@ -2871,20 +2937,9 @@ class PAWIntegrals(MolecularIntegrals):
         cache = self.__dict__.setdefault("_long_range_compensation", {})
         if omega in cache:
             return cache[omega]
-        psi = self._engine._psi
-        X, Y, Z = (self.grid.X.ravel(), self.grid.Y.ravel(),
-                   self.grid.Z.ravel())
         channels = self.multipole_channels()
         potential = long_range_multipole_potential(omega)
-        W = {}
-        for atom, L, M in channels:
-            _z, center = self._potentials.nuclei[atom]
-            dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
-            radius = np.sqrt(dx * dx + dy * dy + dz * dz)
-            v = _multipole_grid_potential(
-                radius, dx, dy, dz, self.datasets[atom].compensation_radius,
-                L, M, potential=potential, real=self.real_harmonics)
-            W[(atom, L, M)] = (np.conj(psi) * v) @ psi.T * self.grid.dV
+        W = self._compensation_grid_matrices(potential)
         index = {c: i for i, c in enumerate(channels)}
         per_atom: dict = {}
         for atom, L, M in channels:

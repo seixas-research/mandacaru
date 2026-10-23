@@ -104,7 +104,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import erf
 
-from ..basis.base import values_and_gradients
+from ..integrals.sampling import sample_functions
 
 #: Width of the Gaussian ion, in units of the grid spacing (Bohr).  At 1.4 the
 #: long-range potential's Fourier weight at the Nyquist wave-vector ``pi/h`` is
@@ -145,10 +145,10 @@ AZIMUTHAL_POINTS = 64
 #: eigenvalues by <= 3e-3 meV, below the 3e-7 Ha the larger rule carries
 #: against the reference -- while a crystal's build and forces, which those
 #: spheres dominate, run 2.2x faster (262k -> 33k points per atom).
-#: Molecules keep the rule above: they never paid for it, and a change at
-#: the 1e-7 Ha level re-rolls which of two degenerate orbitals (LiH's pi
-#: pair) a solver returns, which the orbital tracking of
-#: ``transfer=True`` does not follow (orbital_tracking, "Not done").
+#: Molecules retain their original nodes and weights to preserve numerical
+#: results and orbital tracking. Their basis values now use the same native
+#: shell evaluator as the crystal, sharing spline interpolation among m
+#: components instead of evaluating every function separately in Python.
 #: The azimuthal count is a multiple of 12, so the rule (polar axis z,
 #: azimuths at half steps from x) maps onto itself under the rotations about
 #: z by multiples of 30 and 90 degrees and the mirrors and two-fold axes
@@ -355,15 +355,14 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
         w_block = weight[start:stop].ravel()
         flat = tuple(p.ravel() for p in points)
         if not gradients:
-            psi = np.stack([np.asarray(fn.evaluate(*flat)).ravel()
-                            for fn in basis])
+            psi, _ = sample_functions(basis, flat)
             I[block_ix] += (np.conj(psi) * w_block) @ psi.T
             continue
         # d phi / d R_k is minus the function's gradient (as
         # `atom_centered_projection_gradients` has it for the projectors):
         # analytic for the tabulated functions, a step-`delta` central
         # difference for the rest.
-        psi, gradient = values_and_gradients(basis, *flat, float(delta))
+        psi, gradient = sample_functions(basis, flat, gradients=True, delta=float(delta))
         I[block_ix] += (np.conj(psi) * w_block) @ psi.T
         for k in range(3):
             dpsi = -gradient[:, k]

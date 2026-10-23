@@ -395,7 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
                        choices=TWO_CENTER_METHODS,
                        help="overlap, kinetic and projector matrices of a "
                             "PAW-LCAO or UPAW-LCAO molecule: sampled on the "
-                            "real-space grid (default) or analytic, from the "
+                            "real-space grid or analytic (the molecular DFT "
+                            "default), from the "
                             "Fourier-Bessel transforms of the radial "
                             "functions")
     basis.add_argument("--mapping", default="jordan_wigner",

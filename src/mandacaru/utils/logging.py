@@ -70,6 +70,7 @@ used by the tests).
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
 from datetime import datetime
 import os
 from pathlib import Path
@@ -192,6 +193,26 @@ def _indent(lines: Iterable[str], level: int = 1) -> list[str]:
     """
     pad = INDENT * level
     return [pad + line if line else line for line in lines]
+
+
+_SCF_OBSERVER = ContextVar("mandacaru_scf_observer", default=None)
+
+
+@contextlib.contextmanager
+def observe_scf(callback):
+    """Observe iterations in this calculation without global mutable hooks."""
+    token = _SCF_OBSERVER.set(callback)
+    try:
+        yield
+    finally:
+        _SCF_OBSERVER.reset(token)
+
+
+def notify_scf_iteration(record):
+    """Publish a completed SCF record before the next iteration starts."""
+    callback = _SCF_OBSERVER.get()
+    if callback is not None:
+        callback(record)
 
 
 class Logger:
@@ -939,22 +960,9 @@ class Logger:
                 self._emit_body(f"{key}: {value}")
         self._emit(_BANNER if framed else "")
 
-    def write_scf_iterations(self, rows, energy_unit: str) -> None:
-        """Write ``[SCF ITERATIONS]``: one row per self-consistency iteration.
-
-        ``rows`` are :func:`~mandacaru.algorithms.periodic_dft.scf_record`
-        dicts with the energies already in ``energy_unit``.  The columns are
-        single tokens -- ``iter``, ``time_s`` (seconds since the SCF began),
-        ``energy_<unit>``, ``dE_<unit>`` (``-`` on the first row),
-        ``residual`` (what the convergence test measures: the density
-        residual in electrons for a crystal, the largest density-matrix
-        change for a molecule) and, for a spin-polarized crystal,
-        ``moment_muB``.
-        """
-        rows = list(rows)
-        if not rows:
-            return
-        spin = any("moment" in row for row in rows)
+    def start_scf_iterations(self, energy_unit: str, *, spin: bool = False) -> None:
+        """Open a self-consistency table before writing live iteration rows."""
+        self._scf_spin = spin
         columns = [("iter", 5), ("time_s", 9), (f"energy_{energy_unit}", 20),
                    (f"dE_{energy_unit}", 18), ("residual", 12)]
         if spin:
@@ -962,16 +970,31 @@ class Logger:
         self._emit("[SCF ITERATIONS]")
         heading = " ".join(f"{name:>{width}}" for name, width in columns)
         self._emit_body(heading, "-" * len(heading))
-        for row in rows:
-            cells = [f"{row['iter']:>5d}", f"{row['time']:>9.3f}",
-                     f"{row['energy']:>20.10f}",
-                     (f"{'-':>18}" if row["dE"] is None
-                      else f"{row['dE']:>+18.10f}"),
-                     f"{row['residual']:>12.3e}"]
-            if spin:
-                cells.append(f"{row.get('moment', 0.0):>11.6f}")
-            self._emit_body(" ".join(cells))
+
+    def write_scf_iteration(self, row) -> None:
+        """Write and flush one completed self-consistency iteration."""
+        cells = [f"{row['iter']:>5d}", f"{row['time']:>9.3f}",
+                 f"{row['energy']:>20.10f}",
+                 (f"{'-':>18}" if row["dE"] is None
+                  else f"{row['dE']:>+18.10f}"),
+                 f"{row['residual']:>12.3e}"]
+        if self._scf_spin:
+            cells.append(f"{row.get('moment', 0.0):>11.6f}")
+        self._emit_body(" ".join(cells))
+
+    def finish_scf_iterations(self) -> None:
+        """Separate the live iteration table from the next block."""
         self._emit("")
+
+    def write_scf_iterations(self, rows, energy_unit: str) -> None:
+        """Write saved SCF records using the same renderer as live rows."""
+        rows = list(rows)
+        if rows:
+            self.start_scf_iterations(energy_unit,
+                                      spin=any("moment" in row for row in rows))
+            for row in rows:
+                self.write_scf_iteration(row)
+            self.finish_scf_iterations()
 
     # -- footer / teardown ------------------------------------------------- #
 

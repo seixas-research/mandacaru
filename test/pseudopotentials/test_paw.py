@@ -1200,8 +1200,138 @@ class TestResolution:
 
 
 # --------------------------------------------------------------------------- #
-# (b) The augmented overlap on H2.
+# (b) Compensation matrices and the augmented overlap.
 # --------------------------------------------------------------------------- #
+
+class TestCompensationBlocks:
+    """Blocked W keeps the scalar grid quadrature and complex conventions."""
+
+    @pytest.mark.parametrize("real,complex_basis", [(True, False), (True, True),
+                                                     (False, False), (False, True)])
+    @pytest.mark.parametrize("block_width", [0, 1, 5, 64])
+    def test_w_matches_individual_grid_integrals(self, monkeypatch, real,
+                                                complex_basis, block_width):
+        from types import SimpleNamespace
+
+        rng = np.random.default_rng(371)
+        xyz = np.meshgrid(*([np.linspace(-1.0, 1.0, 7)] * 3), indexing="ij")
+        psi = rng.normal(size=(4, xyz[0].size))
+        if complex_basis:
+            psi = psi + 1j * rng.normal(size=psi.shape)
+        integrals = PAWIntegrals.__new__(PAWIntegrals)
+        integrals._engine = SimpleNamespace(_psi=psi)
+        integrals.grid = SimpleNamespace(X=xyz[0], Y=xyz[1], Z=xyz[2], dV=0.037)
+        integrals.kb_projectors = [SimpleNamespace(real=real)]
+        centers = [np.zeros(3), np.array([0.3, -0.2, 0.7])]
+        integrals._potentials = SimpleNamespace(nuclei=[(1, c) for c in centers])
+        integrals.datasets = [SimpleNamespace(compensation_radius=r) for r in (0.8, 1.2)]
+        channels = [(a, L, M) for a in range(2) for L in range(4)
+                    for M in range(-L, L + 1)]
+        integrals._Q = dict.fromkeys(reversed(channels))
+        integrals._W = None
+        field_bytes = xyz[0].size * np.result_type(
+            psi.dtype, float if real else complex).itemsize
+        monkeypatch.setattr(paw, "COMPENSATION_FIELD_BYTES", block_width * field_bytes)
+
+        from mandacaru.integrals import engine
+        contract = engine.contract_pair_potentials
+        widths = []
+
+        def record_block(conjugate, values, fields):
+            widths.append(len(fields))
+            assert fields.nbytes <= max(field_bytes, block_width * field_bytes)
+            return contract(conjugate, values, fields, workers=1)
+
+        monkeypatch.setattr(engine, "contract_pair_potentials", record_block)
+        from mandacaru.pseudopotentials import multipoles
+        coulomb = multipoles.shape_potential
+        for potential in (None, paw.long_range_multipole_potential(0.11)):
+            radial_calls = []
+            kernel = coulomb if potential is None else potential
+
+            def record_radial(radius, r_g, L):
+                radial_calls.append((r_g, L))
+                return kernel(radius, r_g, L)
+
+            monkeypatch.setattr(multipoles, "shape_potential", record_radial)
+            actual = (integrals.compensation_potentials() if potential is None
+                      else integrals._compensation_grid_matrices(record_radial))
+            assert radial_calls == [(r, L) for r in (0.8, 1.2) for L in range(4)]
+            assert list(actual) == channels
+            if potential is None:
+                assert integrals.compensation_potentials() is actual
+            for channel in channels:
+                atom, L, M = channel
+                dx, dy, dz = (x.ravel() - c for x, c in zip(xyz, centers[atom]))
+                radius = np.sqrt(dx * dx + dy * dy + dz * dz)
+                field = paw._multipole_grid_potential(
+                    radius, dx, dy, dz, integrals.datasets[atom].compensation_radius,
+                    L, M, potential=potential, real=real)
+                expected = (psi.conj() * field) @ psi.T * integrals.grid.dV
+                np.testing.assert_allclose(actual[channel], expected, atol=2e-13,
+                                           rtol=2e-13)
+        assert sum(widths) == 2 * len(channels)
+        assert max(widths) <= max(1, block_width)
+
+    def test_no_channels_need_no_grid_fields(self):
+        integrals = PAWIntegrals.__new__(PAWIntegrals)
+        integrals._Q = {}
+        integrals._W = None
+        integrals.kb_projectors = []
+        assert integrals.compensation_potentials() == {}
+        W, U = integrals.long_range_compensation(0.11)
+        assert W == {} and U.shape == (0, 0)
+
+    @pytest.mark.parametrize("method,xc", [("dft", "pbe"), ("dft", "hse06"),
+                                           ("vqe", None), ("adapt-vqe", None)])
+    def test_public_methods_keep_the_energy_and_one_center_terms(
+            self, monkeypatch, method, xc):
+        from ase.build import molecule
+
+        def scalar_matrices(integrals, potential=None):
+            psi = integrals._engine._psi
+            grid = integrals.grid
+            points = (grid.X.ravel(), grid.Y.ravel(), grid.Z.ravel())
+            W = {}
+            for atom, L, M in integrals.multipole_channels():
+                center = integrals._potentials.nuclei[atom][1]
+                dx, dy, dz = (p - c for p, c in zip(points, center))
+                radius = np.sqrt(dx * dx + dy * dy + dz * dz)
+                field = paw._multipole_grid_potential(
+                    radius, dx, dy, dz, integrals.datasets[atom].compensation_radius,
+                    L, M, potential=potential, real=integrals.real_harmonics)
+                W[atom, L, M] = (psi.conj() * field) @ psi.T * grid.dV
+            return W
+
+        blocked = PAWIntegrals._compensation_grid_matrices
+        outputs = []
+        for kernel in (scalar_matrices, blocked):
+            monkeypatch.setattr(PAWIntegrals, "_compensation_grid_matrices", kernel)
+            atoms = molecule("H2O")
+            atoms.rotate(23, (1, 2, 3))
+            atoms.center(vacuum=2.0)
+            options = {"xc": xc} if xc else {
+                "active_space": {"orbitals": 5},
+                "optimizer": {"method": "SLSQP", "maxiter": 1, "tol": 1e-8}}
+            if method == "adapt-vqe":
+                options.update(pool="fermionic", max_iterations=1)
+            atoms.calc = Mandacaru(
+                method=method, basis={"name": "PAW-LCAO", "size": "SZ"},
+                grid_spacing=0.4, two_center="analytic", trace=False,
+                references=None, **options)
+            energy = atoms.get_potential_energy()
+            integrals = atoms.calc.solver._gradient_context["integrals"]
+            assert integrals.one_center == ("frozen" if xc else "exact")
+            assert (integrals.one_center_factors() is None) == bool(xc)
+            outputs.append((energy, integrals.two_body_augmentation().dense(),
+                            integrals.compensation_coulomb().copy(),
+                            integrals.constant_energy))
+        before, after = outputs
+        assert after[0] == pytest.approx(before[0], abs=1e-8)
+        np.testing.assert_allclose(after[1], before[1], atol=1e-12, rtol=1e-12)
+        np.testing.assert_array_equal(after[2], before[2])
+        assert after[3] == before[3]
+
 
 class TestOverlap:
     def test_augmented_overlap_on_h2(self):

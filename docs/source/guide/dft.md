@@ -355,11 +355,14 @@ and exchange-correlation potentials, the two-electron tensor) stay on the
 grid, as does every method reading the one-body integrals: Hartree-Fock, VQE
 and ADAPT-VQE use the same matrices.
 
-The default is `two_center="grid"`; nothing changes unless the option is
-written. The analytic route computes its own kinetic energy, so `kinetic=`
+The molecular DFT default is `two_center="analytic"` for scalar-relativistic
+PAW-LCAO and UPAW-LCAO bases when `kinetic` is omitted. Use
+`two_center="grid"` to recover the sampled operator. Crystals, spin-orbit
+datasets, other basis families and an explicit `kinetic` keep the grid route.
+The integration route can also be selected explicitly. The analytic route computes its own kinetic energy, so `kinetic=`
 with it is an error, and the `kinetic operator` line of `[ELECTRONS]` reads
 `analytic (two-center)`. It is refused for crystals, for the spin-orbit
-`lda-fr` set, for any basis but PAW-LCAO and UPAW-LCAO, and for
+`lda-fr` and `pbe-fr` sets, for any basis but PAW-LCAO and UPAW-LCAO, and for
 `force_method="scf-response"`.
 
 The matrices agree with the grid's as the grid is refined (1e-6 and better
@@ -2076,6 +2079,33 @@ The following are refused or unavailable:
 
 A molecule's polarizability is in {doc}`polarizability`; a crystal's
 electronic dielectric tensor is above.
+
+
+## Local-potential quadrature
+
+Molecular and periodic PAW-LCAO calculations use the same native radial-spline
+and spherical-harmonic evaluator. Shell components share interpolation, cubic
+coefficients are cached by the spline object, and projectors on the same sphere
+share sampled basis values. The fallback keeps the same basis evaluation
+contract. This applies independently of functional, spin, atom or basis size,
+including polarization and diffuse shells; no quadrature nodes or weights are
+removed. Periodic sphere chunks also avoid repeated coordinate sorting.
+
+## Live SCF output and timing
+
+Each completed SCF iteration is written and flushed immediately to `txt` and,
+when enabled, the terminal. This includes restricted, unrestricted, periodic
+and two-component calculations. The table is available before convergence and
+before the occupied-orbital reference integrals are built.
+
+`[PERFORMANCE]` lists exclusive wall times for basis sampling, overlap and
+projector integration, short-range local quadrature, PAW compensation matrices,
+Poisson solves, density construction, XC evaluation and matrix projection,
+SCF diagonalization and mixing, and occupied reference integrals. Nested stages
+exclude their children's time, so their sum can be compared with total wall
+time without double counting. Integration backend and OpenMP thread counts
+describe the integral library; they do not measure BLAS thread utilization.
+
 
 ## References
 

@@ -661,6 +661,8 @@ class Mandacaru(Calculator):
                              f"got {force_method!r}")
         self.force_method = str(force_method)
         from ..integrals.two_center import validate_two_center
+        if self.method == "dft" and self.force_method == "scf-response":
+            solver_kwargs.setdefault("two_center", "grid")
         if (validate_two_center(solver_kwargs.get("two_center")) == "analytic"
                 and self.force_method == "scf-response"):
             raise ValueError(

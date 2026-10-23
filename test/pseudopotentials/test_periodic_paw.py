@@ -37,6 +37,100 @@ def _energy(atoms, grid_spacing, options, kpts=None):
     return result
 
 
+class TestCompensationTransforms:
+    """Shared transforms retain phases, multipoles and arbitrary vector shapes."""
+
+    @pytest.mark.parametrize("shape", [(), (13,), (2, 3, 4), (0,)])
+    def test_matches_the_channel_transforms(self, shape, monkeypatch):
+        from collections import Counter
+        from types import SimpleNamespace
+        from scipy.special import spherical_jn
+        from mandacaru.basis import _angular
+
+        crystal = pp.PeriodicPAW.__new__(pp.PeriodicPAW)
+        crystal.centers = [np.array(c) for c in ((0, 0, 0), (0.2, -0.7, 1.1),
+                                                (-0.3, 0.5, 0.9))]
+        radii = (1.1, 1.1, 1.7)
+        crystal.datasets = [SimpleNamespace(compensation_radius=r) for r in radii]
+        crystal.channels = [(a, L, M) for a in range(3) for L in (0, 1, 2, 6)
+                            for M in range(-L, L + 1)]
+        radial_calls = []
+
+        def radial(atom, L, q):
+            radial_calls.append((radii[atom], L))
+            return spherical_jn(L, radii[atom] * q) * np.exp(-0.2 * q * q)
+
+        crystal._shape_transform = radial
+        vectors = np.random.default_rng(719).normal(size=(3,) + shape)
+        if vectors.size:
+            vectors.reshape(3, -1)[:, 0] = 0.0
+        norm = rc.spherical(vectors)[0]
+        reference = np.stack([rc.multipole_transform(
+            vectors, crystal.centers[a], radial(a, L, norm), L, M)
+            for a, L, M in crystal.channels])
+        radial_calls.clear()
+        spherical, phase, harmonic = rc.spherical, rc.structure_factor, _angular.spherical_harmonic
+        calls = Counter()
+
+        def record(name, function):
+            def wrapped(*args, **kwargs):
+                calls[name] += 1
+                return function(*args, **kwargs)
+            return wrapped
+
+        monkeypatch.setattr(rc, "spherical", record("spherical", spherical))
+        monkeypatch.setattr(rc, "structure_factor", record("phase", phase))
+        monkeypatch.setattr(_angular, "spherical_harmonic", record("harmonic", harmonic))
+        actual = crystal.compensation_transforms(vectors)
+        np.testing.assert_array_equal(actual, reference)
+        assert calls == {"spherical": 1, "phase": 3, "harmonic": 22}
+        assert Counter(radial_calls) == {key: 1 for key in
+                                        {(r, L) for r in radii for L in (0, 1, 2, 6)}}
+
+        # Neither changed vectors nor moved atoms may read a stale phase.
+        crystal.centers[1] += np.array([0.1, 0.2, -0.3])
+        shifted = vectors + 0.25
+        expected = np.stack([rc.multipole_transform(
+            shifted, crystal.centers[a], radial(a, L, spherical(shifted)[0]), L, M)
+            for a, L, M in crystal.channels])
+        np.testing.assert_array_equal(crystal.compensation_transforms(shifted), expected)
+
+    def test_empty_channels_keep_the_vector_shape(self):
+        crystal = pp.PeriodicPAW.__new__(pp.PeriodicPAW)
+        crystal.channels = []
+        result = crystal.compensation_transforms(np.zeros((3, 2, 4)))
+        assert result.shape == (0, 2, 4) and result.dtype == complex
+
+    def test_dense_sums_keep_the_coulomb_screened_and_gradient_terms(self, monkeypatch):
+        from mandacaru.integrals.poisson import short_range_coulomb_kernel
+
+        crystal, _ = pp.build_crystal(SILICON, SILICON_H, SILICON_BASIS)
+        shared = crystal.compensation_transforms
+        # Exercise block boundaries in the dense reciprocal set as well.
+        monkeypatch.setattr(pp, "DENSE_BLOCK", 4096)
+
+        def individual(vectors):
+            norm = rc.spherical(vectors)[0]
+            return np.stack([rc.multipole_transform(
+                vectors, crystal.centers[a], crystal._shape_transform(a, L, norm), L, M)
+                for a, L, M in crystal.channels])
+
+        shift = np.array([0.13, -0.07, 0.11])
+
+        def kernel(q_squared):
+            return short_range_coulomb_kernel(q_squared, 0.11)
+
+        outputs = []
+        for transform in (individual, shared):
+            monkeypatch.setattr(crystal, "compensation_transforms", transform)
+            crystal._compensation_coulomb = None
+            U, ion, energy = crystal.dense_coulomb()
+            outputs.append((U, ion, energy, crystal.dense_compensation(shift, kernel),
+                            crystal.dense_compensation_gradient(shift, kernel)))
+        for before, after in zip(*outputs):
+            np.testing.assert_array_equal(after, before)
+
+
 class TestKPoints:
     def test_a_gamma_centered_even_mesh_is_its_own_time_reverse(self):
         from mandacaru.algorithms._hamiltonian_from_atoms import \

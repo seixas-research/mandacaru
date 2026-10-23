@@ -68,6 +68,8 @@ The conventions that make the energy the molecular one in a large cell
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -248,14 +250,9 @@ def _radial_spline(function):
     """
     if isinstance(function, BasisGradient):
         return _radial_spline(function.parent)
-    spline = getattr(function, "_spline", None)
-    if spline is None or _radial_table(function) is None \
-            or not hasattr(spline, "c") or spline.c.shape[0] != 4:
-        return None
-    rc = float(getattr(function, "r_c", np.inf))
-    return (np.asarray(spline.x, dtype=float),
-            np.ascontiguousarray(np.asarray(spline.c, dtype=float).T),
-            rc if np.isfinite(rc) else np.inf)
+    from ..integrals.sampling import radial_spline
+    return radial_spline(function)
+
 
 
 #: ``(r_g, L) -> (q, F_L(q))`` of a compensation shape (see
@@ -318,8 +315,9 @@ def reaching(functions, lattice, region_center, region_radius) -> np.ndarray:
     return np.flatnonzero(keep)
 
 
+@profile_stage('integration: crystal basis sampling')
 def bloch_values(functions, lattice, kpoints, points, region_center,
-                 region_radius) -> np.ndarray:
+                 region_radius, *, presorted=False) -> np.ndarray:
     r"""``(nk, M, npts)`` Bloch sums of ``functions`` at ``points``.
 
     ``points`` is an ``(x, y, z)`` triple of flat arrays (Bohr) lying within
@@ -337,8 +335,9 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
     # The points are visited in 1-Bohr bins: the C kernel culls lattice
     # images per block of consecutive points, which a quadrature sphere's
     # radial-major order would spread over the whole sphere.
-    order = np.lexsort((np.floor(z), np.floor(y), np.floor(x)))
-    x, y, z = x[order], y[order], z[order]
+    order = None if presorted else np.lexsort((np.floor(z), np.floor(y), np.floor(x)))
+    if order is not None:
+        x, y, z = x[order], y[order], z[order]
     kpoints = np.atleast_2d(np.asarray(kpoints, dtype=float))
     out = np.zeros((len(kpoints), len(functions), x.size), dtype=complex)
     region_center = np.asarray(region_center, dtype=float)
@@ -418,13 +417,14 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
             images = csr_matrix((np.concatenate(values[mu]), (rows, cols)),
                                 shape=(len(translations), x.size))
             out[:, mu, :] += (images.T @ phases.T).T
-    if np.array_equal(order, np.arange(order.size)):
+    if order is None or np.array_equal(order, np.arange(order.size)):
         return out
     restored = np.empty_like(out)
     restored[:, :, order] = out
     return restored
 
 
+@profile_stage('integration: crystal basis projection')
 def bloch_projections(functions, lattice, kpoints, points, columns,
                       region_center, region_radius) -> np.ndarray:
     r"""``(nk, M, P)``: :math:`\sum_x \chi^*_{\mu\mathbf k}(x)\,
@@ -860,6 +860,7 @@ class PeriodicPAW:
         return np.atleast_2d(np.asarray(fractional, dtype=float)) @ B.T
 
     @single_threaded_blas
+    @profile_stage('integration: crystal k-point assembly')
     def kpoint_matrices(self, kpoints, weights=None) -> list:
         """:class:`KPointMatrices` at arbitrary Cartesian ``kpoints`` (Bohr^-1).
 
@@ -957,6 +958,7 @@ class PeriodicPAW:
         u = (psi * phase[None, :]).reshape(len(psi), *g.shape)
         return np.fft.fftn(u, axes=(1, 2, 3)) * g.dV
 
+    @profile_stage('integration: crystal kinetic matrices')
     def _kinetic(self, psi, k) -> np.ndarray:
         r""":math:`\tfrac12\int|\nabla\chi|^2`, spectral on the periodic part.
 
@@ -990,6 +992,7 @@ class PeriodicPAW:
             out.append(u.reshape(len(psi), -1) * phase[None, :])
         return np.stack(out)
 
+    @profile_stage('integration: crystal projector quadrature')
     def _projections(self, kpoints, only=None, projectors=None) -> np.ndarray:
         r"""``C[k, mu, p]`` :math:`= \langle\chi_{\mu\mathbf k}|\tilde p_p\rangle`.
 
@@ -1057,6 +1060,7 @@ class PeriodicPAW:
             out[:, rows[0][:, None], rows[1][None, :]] = block
         return out
 
+    @profile_stage("integration: PAW short-range local quadrature")
     def _short_range_block(self, atom, kpoints, center, bra, ket):
         """``((bra rows, ket rows), block)``: the short-range sphere's matrix
         between the functions of ``bra`` and ``ket`` that reach it (the same
@@ -1089,9 +1093,9 @@ class PeriodicPAW:
         for part, weighted in _sphere_chunks(points, weights * potential,
                                              size=size):
             chi = bloch_values(near_bra, self.lattice, kpoints, part, center,
-                               radius)
+                               radius, presorted=True)
             chi_ket = chi if same else bloch_values(
-                near_ket, self.lattice, kpoints, part, center, radius)
+                near_ket, self.lattice, kpoints, part, center, radius, presorted=True)
             for i in range(len(kpoints)):
                 # conj(chi) w chi^T, with the conjugation left to BLAS (the
                 # Fortran views of the C-ordered rows, ``A^H B``): no
@@ -1249,14 +1253,31 @@ class PeriodicPAW:
     def compensation_transforms(self, vectors) -> np.ndarray:
         r"""``(n_ch, ...)``: every channel's compensation shape,
         :math:`\int e^{-i\mathbf g\cdot\mathbf r}\hat g_{LM}(\mathbf r -
-        \mathbf R_A)\,d\mathbf r`, at the vectors ``(3, ...)``."""
+        \mathbf R_A)\,d\mathbf r`, at the vectors ``(3, ...)``.
+
+        Share spherical coordinates, atom phases, harmonics and radial
+        transforms within this call.  No vector-dependent cache survives a
+        reciprocal block or a displaced geometry.
+        """
+        from ..basis._angular import spherical_harmonic
+
         vectors = np.asarray(vectors, dtype=float)
-        norm = rc.spherical(vectors)[0]
         if not self.channels:
             return np.zeros((0,) + vectors.shape[1:], dtype=complex)
-        return np.stack([rc.multipole_transform(
-            vectors, self.centers[atom], self._shape_transform(atom, L, norm),
-            L, M) for atom, L, M in self.channels])
+        norm, theta, phi = rc.spherical(vectors)
+        phases, harmonics, radial = {}, {}, {}
+        out = np.empty((len(self.channels),) + vectors.shape[1:], dtype=complex)
+        for row, (atom, L, M) in enumerate(self.channels):
+            if atom not in phases:
+                phases[atom] = rc.structure_factor(vectors, self.centers[atom])
+            if (L, M) not in harmonics:
+                harmonics[L, M] = spherical_harmonic(L, M, theta, phi, real=False)
+            key = (float(self.datasets[atom].compensation_radius), L)
+            if key not in radial:
+                radial[key] = self._shape_transform(atom, L, norm)
+            out[row] = (4.0 * np.pi * (-1j) ** int(L) * harmonics[L, M]
+                        * radial[key] * phases[atom])
+        return out
 
     def remainder_transforms(self, atom, vectors) -> np.ndarray:
         r"""``(n, n, ...)``: what the compensation charges leave of the
@@ -1477,6 +1498,7 @@ class PeriodicPAW:
         each frequency the mean over its aliases."""
         return rc.alias_mean(self.grid, self._ion_transform)
 
+    @profile_stage('integration: crystal multipole coupling')
     def dense_coulomb(self):
         r"""``(U, U_ion, E_ion)`` of the compact charges, dense in G.
 
@@ -1497,12 +1519,9 @@ class PeriodicPAW:
         E_ion = 0.0
         for start in range(0, Gs.shape[1], DENSE_BLOCK):
             G = Gs[:, start:start + DENSE_BLOCK]
-            norm = rc.spherical(G)[0]
+            norm = np.sqrt(np.sum(G * G, axis=0))
             kernel = 4.0 * np.pi / norm ** 2
-            F = np.stack([rc.multipole_transform(
-                G, self.centers[atom], self._shape_transform(atom, L, norm),
-                L, M) for atom, L, M in self.channels]) if n else \
-                np.zeros((0, G.shape[1]), dtype=complex)
+            F = self.compensation_transforms(G)
             ion = self._ion_transform(G)
             U += (F.conj() * kernel) @ F.T
             U_ion += (F.conj() * kernel) @ ion

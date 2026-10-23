@@ -67,6 +67,8 @@ datasets share their zero.
 
 from __future__ import annotations
 
+from ..utils.profiling import profile_stage
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -340,6 +342,7 @@ def _short_range_exchange(grid, density, omega: float, scale: float = 1.0):
     return float(np.sum(f) * grid.dV) / scale, potential
 
 
+@profile_stage('SCF: XC functional and gradients')
 def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
              relativistic: bool = False, tau: np.ndarray | None = None,
              screening=None, exchange_density=None,
@@ -464,6 +467,7 @@ class SpinXCTerms:
     gradient_potential_dn: np.ndarray | None = None
 
 
+@profile_stage('SCF: spin XC functional and gradients')
 def evaluate_spin(grid, density_up, density_dn, functional: str = "lda", *,
                   relativistic: bool = False, tau_up=None, tau_dn=None,
                   screening=None, exchange_densities=None,
