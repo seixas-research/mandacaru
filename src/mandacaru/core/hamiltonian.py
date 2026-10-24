@@ -294,8 +294,6 @@ class MeanFieldMixin:
         starting determinants.
         """
         from ..algorithms.hartree_fock import GHF
-        if self.cholesky_integrals:
-            raise NotImplementedError(CHOLESKY_SPINOR_REFUSAL)
         particles = (int(n_alpha), int(n_beta))
         cached = getattr(self, "_last_ghf_result", None)
         if cached is not None and cached[0] == particles:
@@ -306,7 +304,12 @@ class MeanFieldMixin:
         h[:M, :M] = h[M:, M:] = one
         if getattr(self, "spin_orbit_coupling", None):
             h = h + self.spin_orbit_matrix()
-        solver = GHF(h, self.two_body(), sum(particles))
+        if self.cholesky_integrals:
+            X = self._lowdin_x()
+            eri = self.cholesky_two_body().active_tensor(X)
+        else:
+            eri = self.two_body()
+        solver = GHF(h, eri, sum(particles))
         guesses = []
         if particles[0] == particles[1]:
             rhf = self.hartree_fock(sum(particles))
@@ -1180,19 +1183,17 @@ class MolecularIntegrals(MeanFieldMixin):
         builds the factors of those pivots instead (the displaced geometries
         of an active-space force)."""
         from ..integrals.cholesky import cholesky_two_body
-        from ..integrals.poisson import PoissonFFTSolver
+        from ..integrals.poisson import PeriodicPoissonSolver, PoissonFFTSolver
 
-        if self.periodic:
-            raise NotImplementedError(
-                "the Cholesky two-body integrals are molecular only: a "
-                "crystal's Coulomb kernel is periodic and its pair densities "
-                "carry Bloch phases.  Use two_body='dense' for a periodic "
-                "calculation")
         tolerance = self.two_body_spec.tolerance
         if self._cholesky is None or self._cholesky.tolerance != tolerance:
             grid = self.grid
-            solver = PoissonFFTSolver(grid.shape, step=grid.step)
-            augmentation = self.direct_coulomb().augmentation()
+            if self.periodic:
+                solver = PeriodicPoissonSolver(grid.shape, step=grid.step)
+                augmentation = None
+            else:
+                solver = PoissonFFTSolver(grid.shape, step=grid.step)
+                augmentation = self.direct_coulomb().augmentation()
             with self._engine.timings.time("two-body integrals (cholesky)"):
                 self._cholesky = cholesky_two_body(
                     self._engine._psi, solver, tolerance,
@@ -1337,14 +1338,12 @@ class MolecularIntegrals(MeanFieldMixin):
         spec = resolve_active_space_spec(active_space)
         frozen = _frozen_indices(spec)
         if self.cholesky_integrals:
-            if self.spin_orbit_coupling:
-                raise NotImplementedError(CHOLESKY_SPINOR_REFUSAL)
             if not mo_basis:
                 raise ValueError(
                     "the Cholesky two-body integrals build the molecular-"
                     "orbital Hamiltonian (mo_basis=True); the atomic-orbital "
                     "one is the dense tensor (two_body='dense')")
-            direct = True
+            direct = not self.spin_orbit_coupling
         if direct is None:
             direct = mo_basis and self._integral_direct_route(
                 spec, frozen, n_electrons, num_particles, open_shell)
@@ -1398,7 +1397,7 @@ class MolecularIntegrals(MeanFieldMixin):
             h, g = self.one_body(), self.stored_two_body()
             if self.spin_orbit_coupling:
                 h_spin = self.spin_orbit_matrix()
-        if self.cholesky_integrals:
+        if self.cholesky_integrals and spin_blocked:
             # The factors do not resolve an integral below their tolerance:
             # the symmetry-forbidden ones come out as noise up to about the
             # tolerance (ethanol TZP: 14,251 Pauli terms against the dense
@@ -1407,6 +1406,8 @@ class MolecularIntegrals(MeanFieldMixin):
             # central difference never sees one cross the cut.
             H = Fermion.from_spatial_integrals(
                 h, g, h_spin, tol=self.two_body_spec.tolerance)
+        elif self.cholesky_integrals:
+            H = Fermion.from_integrals(h, g, tol=self.two_body_spec.tolerance)
         elif spin_blocked:
             H = Fermion.from_spatial_integrals(h, g, h_spin)
         else:
@@ -1414,8 +1415,9 @@ class MolecularIntegrals(MeanFieldMixin):
         n_modes = 2 * h.shape[0] if spin_blocked else h.shape[0]
         const = core_energy + self.constant_energy + (
             self.nuclear_repulsion if include_nuclear_repulsion else 0.0)
-        if mo_basis and space is not None and (space.deleted
-                                               or self.integral_direct):
+        if mo_basis and ((space is not None and (space.deleted
+                                                 or self.integral_direct))
+                         or self.cholesky_integrals):
             # Reuse the *reduced* integrals for finite-difference forces.  They
             # already contain the frozen-core potential and the selected virtual
             # space, before mapping and optional Z2 tapering.  An

@@ -451,11 +451,6 @@ class VariationalDriver(Calculator):
         # (`two_body={"method": "cholesky", "tolerance": ...}`), validated now.
         from ..integrals.cholesky import resolve_two_body
         self.two_body = resolve_two_body(two_body)
-        if self.two_body.cholesky and self.periodic_hamiltonian:
-            raise NotImplementedError(
-                "the Cholesky two-body integrals are molecular only in this "
-                "version: a crystal's pair densities carry Bloch phases and "
-                "a periodic kernel.  Use two_body='dense' (the default)")
         self.initial_state = resolve_initial_state(initial_state)
         # Monkhorst-Pack mesh (ASE); the engine is Gamma-point (molecular), so a
         # denser mesh is stored on ``kpoints`` but rejected at run time.

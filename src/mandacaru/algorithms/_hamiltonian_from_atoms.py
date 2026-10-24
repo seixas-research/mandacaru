@@ -867,6 +867,10 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
     if space is not None:
         context["active"] = tuple(space.active)
         context["deleted"] = tuple(space.deleted)
+    else:
+        context["active"] = tuple(p for p in range(len(basis_fns))
+                                  if p not in set(frozen))
+        context["deleted"] = ()
     n_active = (space.n_active if space is not None
                 else len(basis_fns) - len(frozen))
     return (hamiltonian, num_particles, n_active,

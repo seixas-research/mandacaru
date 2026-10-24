@@ -894,3 +894,20 @@ ho(\mathbf G), \qquad
         stack), as for :meth:`PoissonFFTSolver.solve_stack`.
         """
         return convolve_stack(self, rho_stack, out, 1.0)
+
+    def self_energies(self, rho_stack: np.ndarray,
+                      workspace=None) -> np.ndarray:
+        r""":math:`\iint \rho_p v \rho_p` of each periodic real density in a
+        ``(P, G)`` stack, by Parseval: forward transforms only."""
+        if not self.even:
+            raise ValueError(
+                "self_energies needs the even (real) kernel of an "
+                "orthogonal grid; solve the densities instead")
+        space = self.workspace if workspace is None else workspace
+        if space.shape != self.workspace.shape:
+            raise ValueError("the workspace must have the solver's grid shape")
+        rho = np.ascontiguousarray(rho_stack, dtype=float)
+        half = self._kernel[..., :space.half]
+        scale = self.dV / float(np.prod(self.L))
+        return space.power(rho, half) * scale
+

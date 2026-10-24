@@ -611,14 +611,6 @@ class Mandacaru(Calculator):
         Calculator.__init__(self)
         self._attached_atoms = None      # the geometry ASE attached (set_atoms)
         self.method, self._solver_class = resolve_method(method)
-        from ..integrals.cholesky import resolve_two_body
-        if resolve_two_body(solver_kwargs.get("two_body")).cholesky \
-                and self.method in ("dft", "ghf", *BLOCH_METHODS):
-            raise NotImplementedError(
-                f"method={self.method!r} does not take the Cholesky two-body "
-                f"integrals: Kohn-Sham DFT has its own Hartree term, GHF a "
-                f"spinor tensor and a crystal a periodic kernel.  Use "
-                f"two_body='dense' (the default)")
         if self.method in ("rhf", "uhf", "ghf", "dft") \
                 and measurement_provider is not None:
             raise ValueError("classical RHF/UHF/GHF/DFT has no quantum state to "
@@ -1419,19 +1411,6 @@ class Mandacaru(Calculator):
                 "classical SCF result")
         if want_forces:
             self._require_atom_centered_basis(self.basis)
-            if getattr(getattr(self.solver, "two_body", None), "cholesky",
-                       False) and getattr(self.solver, "active_space",
-                                          None) is None:
-                # With an active space the force is the central difference
-                # of the reduced Hamiltonian, rebuilt from factors on the
-                # reference's pivots; without one it would be the analytic
-                # gradient, which differentiates the integrals themselves.
-                raise NotImplementedError(
-                    "nuclear forces with the Cholesky two-body integrals need "
-                    "an active_space: they are the central difference of the "
-                    "reduced active Hamiltonian, and the analytic gradient of "
-                    "the factors is not implemented.  Give an active_space, "
-                    "or use two_body='dense' (the default)")
             # Forces measure the RDMs: a provider that cannot return many
             # expectation values of one state is refused now, before the
             # optimization it would otherwise fail after.
@@ -2240,7 +2219,8 @@ class Mandacaru(Calculator):
                 self._project_translation(result)
             return result
 
-        if getattr(context.get("integrals"), "integral_direct", False):
+        if getattr(context.get("integrals"), "integral_direct", False) \
+                or getattr(context.get("integrals"), "cholesky_integrals", False):
             # No tensor for the analytic gradient: the reduced Hamiltonian's
             # central difference, each geometry rebuilt the same way.
             return self._direct_active_space_gradient(

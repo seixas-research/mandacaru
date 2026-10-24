@@ -451,6 +451,10 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
     if space is not None:
         context["active"] = tuple(space.active)
         context["deleted"] = tuple(space.deleted)
+    else:
+        context["active"] = tuple(p for p in range(len(basis_fns))
+                                  if p not in set(frozen))
+        context["deleted"] = ()
     if overlap_blocks is not None:
         context["nonlocal_overlap"] = overlap_blocks
     n_active = space.n_active if space is not None else len(basis_fns)

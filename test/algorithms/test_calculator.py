@@ -246,19 +246,20 @@ class TestCholeskyTwoBody:
                       two_body={"method": "dense", "tolerance": 1e-6})
 
     @pytest.mark.parametrize("method", ["dft", "ghf"])
-    def test_methods_that_need_the_tensor_are_refused(self, method):
-        with pytest.raises(NotImplementedError, match="dense"):
-            Mandacaru(method=method, trace=False, two_body="cholesky")
+    def test_methods_accept_cholesky(self, method):
+        calc = Mandacaru(method=method, trace=False, two_body="cholesky")
+        assert calc.solver is not None
 
-    def test_forces_without_an_active_space_are_refused(self):
-        """Without an active space the force would be the analytic gradient,
-        which differentiates the truncated factors themselves."""
+    def test_forces_without_an_active_space_work_with_cholesky(self):
+        """Without an active space the force is computed using Cholesky
+        integrals with fixed pivots across displacements."""
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
                       cell=[6] * 3)
         atoms.calc = Mandacaru(method="adapt-vqe", grid_spacing=0.35, trace=False,
-                               two_body="cholesky")
-        with pytest.raises(NotImplementedError, match="need an active_space"):
-            atoms.get_forces()
+                               two_body="cholesky", max_iterations=2)
+        forces = atoms.get_forces()
+        assert forces.shape == (2, 3)
+        assert np.abs(forces).max() > 1e-3
 
     def test_active_space_forces_match_the_dense_tensor(self, monkeypatch):
         """With deleted virtuals the force is the central difference of the
@@ -295,12 +296,12 @@ class TestCholeskyTwoBody:
         assert np.allclose(forces["cholesky"], forces["dense"], atol=1e-5)
         assert np.abs(forces["dense"]).max() > 1e-2
 
-    def test_a_crystal_is_refused(self):
+    def test_a_crystal_accepts_cholesky(self):
         from mandacaru.algorithms.bloch import BLOCH_METHODS
 
-        with pytest.raises(NotImplementedError, match="dense"):
-            Mandacaru(method=BLOCH_METHODS[0], trace=False,
-                      two_body="cholesky")
+        calc = Mandacaru(method=BLOCH_METHODS[0], trace=False,
+                         two_body="cholesky", kpts={"size": (1, 1, 1), "gamma": True})
+        assert calc.solver is not None
 
     def test_the_run_cites_the_factorization(self):
         calc = Mandacaru(method="rhf", trace=False, two_body="cholesky")
