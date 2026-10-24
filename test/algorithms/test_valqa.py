@@ -98,6 +98,10 @@ class TestTheModelStartsWhereMCASVQEIs:
         assert "model synthetic not ready: too few groups" in \
             setup["proposal"]
         assert setup["proposal_model"] == model
+        text = path.read_text()
+        assert "time (HH:MM:SS)" in text and "T (eV)" in text
+        assert "dE (eV)" in text
+        assert len(parse_output(str(path))["markov_chain"]) == 3
 
 
 class TestAReadyModel:

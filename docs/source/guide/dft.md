@@ -548,9 +548,11 @@ three blocks of its own, read back by `parse_output` as `"setup"`,
   the largest density-matrix change are below $10^{-8}$ Hartree, with DIIS and
   a level shift that is on only while the energy rises by more than
   $10^{-6}$ Hartree.
-- `[SCF ITERATIONS]` has one row per iteration: the time, the electronic
-  energy of a molecule (`electronic_energy_eV`, or `_Ha` in atomic units)
-  or the free energy of a crystal (`free_energy_eV`), its change, the residual the convergence test
+- `[SCF ITERATIONS]` has one row per iteration: the local completion time
+  (`time (HH:MM:SS)`), the electronic
+  energy of a molecule (`electronic_energy (eV)`, or `(Ha)` in atomic units)
+  or the free energy of a crystal (`free_energy (eV)`), its change (`dE (eV)`),
+  the residual the convergence test
   measures and, for a spin-polarized crystal, the moment per cell.
 - `[SCF SUMMARY]` gives the total and, for a molecule, its additive
   contributions: `electronic_energy`, `ion_ion_energy`, `one_center_energy`

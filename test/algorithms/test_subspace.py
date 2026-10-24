@@ -112,6 +112,75 @@ def _ss_adapt(h2_hamiltonian, k, **kwargs):
 # Reference determinants and weights.
 # --------------------------------------------------------------------------- #
 
+class TestSubspaceADAPTLog:
+    @pytest.mark.parametrize("atomic_units", [False, True])
+    @pytest.mark.parametrize("trace", [False, True])
+    def test_shared_table_and_excited_energies_round_trip(
+            self, h2_hamiltonian, tmp_path, capsys, atomic_units, trace):
+        from mandacaru.utils.logging import parse_output
+
+        path = tmp_path / "subspace.txt"
+        calc = Mandacaru(
+            method="subspace-adapt-vqe", hamiltonian=h2_hamiltonian,
+            pool="fermionic", num_states=2, num_particles=(1, 1), n_spatial_orbitals=2,
+            optimizer={"method": "SLSQP", "maxiter": 50, "tol": 1e-8},
+            max_iterations=3, profile=False, trace=trace, references=None,
+            txt=str(path), atomic_units=atomic_units)
+        result = calc.run()
+        printed = capsys.readouterr().out
+        if trace:
+            assert printed.count("[ITERATIONS]") == 1
+        else:
+            assert not printed
+        parsed = parse_output(str(path))
+        unit = result.energy_unit
+        assert path.read_text().count("[ITERATIONS]") == 1
+        assert "time (HH:MM:SS)" in path.read_text()
+        assert "|grad| (eV)" in path.read_text()
+        assert int(parsed["setup"]["num_states"]) == 2
+        assert parsed["setup"]["gradient_objective"] == "weighted subspace energy"
+        assert parsed["iterations"]
+        assert parsed["iterations"][-1]["energy"] == pytest.approx(
+            result.optimal_energy, abs=1e-9)
+        assert float(parsed["summary"][f"excited_state_1_energy_{unit}"]) == pytest.approx(
+            result.energies[1], abs=1e-9)
+        assert float(parsed["summary"][f"optimal_energy_{unit}"]) == pytest.approx(
+            result.optimal_energy, abs=1e-9)
+        assert "performance" in parsed
+
+    def test_geometry_mode_writes_the_same_protocol(self, tmp_path):
+        from mandacaru.utils.logging import parse_output
+
+        atoms = h2()
+        path = tmp_path / "molecule.txt"
+        atoms.calc = Mandacaru(
+            method="subspace-adapt-vqe", basis="HAO", grid_spacing=0.4,
+            num_states=2, max_iterations=2, trace=False, profile=False,
+            references=None, txt=str(path))
+        energy = atoms.get_potential_energy()
+        parsed = parse_output(str(path))
+        assert parsed["basis"]
+        assert float(parsed["summary"]["optimal_energy_eV"]) == pytest.approx(energy, abs=1e-9)
+        assert path.read_text().count("[SYSTEM]") == 1
+
+    def test_failed_growth_closes_the_log(self, h2_hamiltonian, tmp_path, monkeypatch):
+        path = tmp_path / "failed.txt"
+        calc = Mandacaru(
+            method="subspace-adapt-vqe", hamiltonian=h2_hamiltonian,
+            num_states=2, num_particles=(1, 1), n_spatial_orbitals=2,
+            txt=str(path), trace=False, profile=False, references=None)
+        solver = calc.solver
+
+        def fail(*args):
+            raise RuntimeError("screening failed")
+
+        monkeypatch.setattr(solver, "_weighted_gradients", fail)
+        with pytest.raises(RuntimeError, match="screening failed"):
+            calc.run()
+        assert "_subspace_logger" not in solver.__dict__
+        assert "[OPTIMIZATION SETUP]" in path.read_text()
+        assert "[VARIATIONAL QUANTUM SUMMARY]" not in path.read_text()
+
 class TestReferences:
     def test_determinants_start_at_hartree_fock(self):
         dets = subspace_determinants(4, [0, 2], 4)

@@ -183,6 +183,7 @@ class TestConvergence:
                                           electric_field):
         """``[SCF ITERATIONS]``: one row per iteration, ending where the
         convergence test stopped and on the energy the summary reports."""
+        import re
         from mandacaru.utils.logging import parse_output, reset_log
         path = str(tmp_path / "dft.txt")
         if basis == "HAO":
@@ -200,6 +201,9 @@ class TestConvergence:
         rows = parsed["scf_iterations"]
         scf = atoms.calc.result.scf
         unit = atoms.calc.result.energy_unit
+        heading = (tmp_path / "dft.txt").read_text().split("[SCF ITERATIONS]\n")[1].splitlines()[0]
+        assert re.split(r" {4,}", heading.strip()) == [
+            "iter", "time (HH:MM:SS)", f"electronic_energy ({unit})", f"dE ({unit})", "residual"]
         assert [r["iter"] for r in rows] == list(range(1, scf.n_iterations
                                                        + 1))
         assert rows[0][f"dE_{unit}"] is None
@@ -207,7 +211,10 @@ class TestConvergence:
             assert after[f"dE_{unit}"] == pytest.approx(
                 after[f"electronic_energy_{unit}"] - before[f"electronic_energy_{unit}"],
                 abs=2e-10)
-            assert after["time_s"] >= before["time_s"]
+        for row, record in zip(rows, scf.history):
+            assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", row["time"])
+            assert row["time"] == record["clock_time"]
+            assert record["time"] >= 0.0  # elapsed seconds remain in the history
         assert rows[-1]["residual"] < 1e-8           # what stopped it
         # The last row is the converged electronic energy; the summary adds
         # the constants, so the two differ by exactly those.
@@ -1579,7 +1586,7 @@ class TestLiveSCFOutput:
         assert len(parse_output(path)["scf_iterations"]) == 1
         for text in observed.values():
             assert "[SCF ITERATIONS]" in text
-            assert "electronic_energy_eV" in text
+            assert "electronic_energy (eV)" in text
             assert "[SCF SUMMARY]" not in text
             assert "[SCF SETUP]" in text
         assert observed["file"].index("[SCF SETUP]") < observed["file"].index("[SCF ITERATIONS]")

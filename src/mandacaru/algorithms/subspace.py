@@ -372,14 +372,15 @@ class SubspaceMixin:
 
     # -- shared outer loop ----------------------------------------------- #
 
-    # The subspace ``run()`` below replaces the common one and does not go
-    # through `_make_logger`, `_write_checkpoint` or `_load_resume`, so those
-    # options would be accepted and silently ignored.  `Mandacaru` refuses them
-    # rather than letting a run report nothing at all.
+    # Fixed-ansatz subspace runs retain their console report. Adaptive runs
+    # opt into the shared structured logger through the hooks below.
     writes_output_log = False
     supports_checkpoints = False
 
-    def run(self, initial_parameters=None, **_ignored):
+    def _make_subspace_logger(self, geometry, cell, ref_energy):
+        return None
+
+    def run(self, initial_parameters=None, geometry=None, cell=None, **_ignored):
         """Optimize the shared unitary and return the ``num_states`` levels."""
         if self.dry_run:
             return self._dry_run_estimate()
@@ -394,33 +395,45 @@ class SubspaceMixin:
         timings, run_t0 = self._make_timings()
         ref_energy = self.reference_energy()
 
-        if self.verbose:
+        logger = self._make_subspace_logger(geometry, cell, ref_energy)
+        self._subspace_logger = logger
+        if self.verbose and not self.writes_output_log:
             self._show_banner()
             self._emit_run_header(ref_energy)
             print(f"Subspace search: {self.num_states} states, weights = "
                   f"{np.array2string(weights, precision=3)}")
 
-        energies, params, states, extra = self._subspace_optimize(
-            refs, weights, initial_parameters, timings)
+        try:
+            energies, params, states, extra = self._subspace_optimize(
+                refs, weights, initial_parameters, timings)
 
-        order = np.argsort(energies)
-        energies = np.asarray(energies, dtype=float)[order]
-        states = [states[i] for i in order]
-        # State j is U|phi_j>: sorting the levels must carry the references
-        # along, or exporting "the ground state" would prepare U|HF> whichever
-        # reference the lowest level actually grew from.
-        determinants = self._reference_determinants()
-        self.state_determinants = (None if determinants is None
-                                   else [determinants[i] for i in order])
+            order = np.argsort(energies)
+            energies = np.asarray(energies, dtype=float)[order]
+            states = [states[i] for i in order]
+            # State j is U|phi_j>: sorting the levels must carry the references
+            # along, or exporting "the ground state" would prepare U|HF> whichever
+            # reference the lowest level actually grew from.
+            determinants = self._reference_determinants()
+            self.state_determinants = (None if determinants is None
+                                       else [determinants[i] for i in order])
 
-        self._finalize_timings(timings, run_t0)
-        # The single Hartree -> output-unit boundary of the subspace search.
-        result = self._make_subspace_result(
-            self._to_energy_units(energies), params, weights, states,
-            self._to_energy_units(ref_energy), timings, extra)
-        if self.verbose:
-            self._print_subspace_summary(result, timings)
+            self._finalize_timings(timings, run_t0)
+            # The single Hartree -> output-unit boundary of the subspace search.
+            result = self._make_subspace_result(
+                self._to_energy_units(energies), params, weights, states,
+                self._to_energy_units(ref_energy), timings, extra)
+            if logger is not None:
+                self._write_subspace_log_summary(logger, result)
+            elif self.verbose and not self.writes_output_log:
+                self._print_subspace_summary(result, timings)
+        finally:
+            self.__dict__.pop("_subspace_logger", None)
+            if logger is not None:
+                logger.close()
+        if self.writes_output_log:
+            self.write_performance(timings)
         return result
+
 
     # -- export ------------------------------------------------------------ #
 
@@ -611,9 +624,8 @@ class SubspaceVQE(SubspaceMixin, VQE):
     def _print_header(self, ref_energy: float) -> None:
         """Print the run configuration banner.
 
-        The Hamiltonian's Pauli-string expansion is not printed (see
-        :meth:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE._print_header`); only its
-        term count is.
+        Only the Hamiltonian's term count is printed; its Pauli-string
+        expansion remains on the result.
         """
         rule = "=" * 70
         print(rule)
@@ -709,6 +721,7 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
     """
 
     citation_method = "subspace-adapt-vqe"
+    writes_output_log = True
     #: The weighted screening needs every reference's evolved state, which a
     #: shot-based run does not build (no measured form yet).
     _measures_pool_gradients = False
@@ -721,8 +734,32 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
     def _reference_occupied(self):
         return self.pool.occupied_orbitals
 
-    def _emit_run_header(self, ref_energy) -> None:
-        self._print_header(ref_energy, self._energy_unit_label())
+    def _make_subspace_logger(self, geometry, cell, ref_energy):
+        return self._make_logger(self.log_targets, geometry, cell, ref_energy,
+                                 self.max_iterations, self.convergence)
+
+    def _setup_fields(self) -> dict:
+        return {**super()._setup_fields(),
+                "num_states": self.num_states,
+                "state_weights": resolve_weights(self._weights_spec, self.num_states).tolist(),
+                "iteration_energy": "lowest subspace energy",
+                "gradient_objective": "weighted subspace energy"}
+
+    def _gradient_description(self):
+        return "analytic", "weighted sum, g_i = sum_j w_j 2 Re<H psi_j|A_i psi_j>"
+
+    def _write_subspace_log_summary(self, logger, result):
+        unit = result.energy_unit
+        logger.write_summary(
+            converged=result.converged, optimal_energy=result.optimal_energy,
+            energy_unit=unit, reference_energy=result.reference_energy,
+            num_operators=result.num_operators,
+            num_parameters=len(result.optimal_parameters),
+            final_max_gradient=result.final_max_gradient,
+            num_evaluations=result.num_evaluations, metrics=result.metrics,
+            optimizer=self.optimizer.method,
+            extra={f"excited_state_{i}_energy_{unit}": f"{energy:.10f}"
+                   for i, energy in enumerate(result.energies) if i})
 
     def _weighted_gradients(self, evolved: np.ndarray,
                             weights: np.ndarray) -> np.ndarray:
@@ -749,10 +786,11 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
         # The energy change of the last growth step (the trace's dE, on the
         # lowest level), for the energy criterion; None before the first.
         delta_energy: float | None = None
-        if self.verbose:
-            self._print_iteration_heading(self._energy_unit_label())
+        logger = getattr(self, "_subspace_logger", None)
+        if logger is not None:
+            logger._previous_energy = self._to_energy_units(energy)
 
-        for _ in range(max_iterations):
+        for growth_step in range(1, max_iterations + 1):
             with timings.time("gradient screening"):
                 evolved = ansatz.evolve(params, refs)
                 grads = self._weighted_gradients(evolved, weights)
@@ -786,12 +824,13 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
                          for j in range(k))
             delta_energy = energy - previous_energy
 
-            if self.verbose:
-                self._print_iteration(len(selected), op, max_grad, energy,
-                                      energy - previous_energy,
-                                      CircuitMetrics(None, None,
-                                                     ansatz.num_parameters),
-                                      self._energy_unit_label())
+            if logger is not None:
+                logger.write_iteration(
+                    growth_step, self._pool_ops, grads, idx, None,
+                    self._to_energy_units(energy), ansatz.num_parameters,
+                    energy_unit=self._energy_unit_label(),
+                    metrics=CircuitMetrics(None, None, ansatz.num_parameters),
+                    optimizer_steps=result.nit)
 
         # Final per-level energies (bare expectation values).
         evolved = ansatz.evolve(params, refs)
@@ -828,18 +867,3 @@ class SubspaceADAPTVQE(SubspaceMixin, ADAPTVQE):
             timings=timings.as_dict(),
             integration_profile=self._integration_profile,
             energy_unit=self._energy_unit_label())
-
-    def _print_subspace_summary(self, result: SubspaceADAPTVQEResult,
-                                timings) -> None:
-        rule = "=" * 70
-        print(rule)
-        status = "converged" if result.converged else "not converged"
-        print(f"Subspace-ADAPT-VQE finished ({status}): {result.num_states} "
-              f"levels, {result.num_operators} operators, "
-              f"final |grad| = {result.final_max_gradient:.6e}")
-        for i, e in enumerate(result.energies):
-            tag = "ground" if i == 0 else f"excited {i}"
-            print(f"  E[{i}] ({tag:>9s}) = {e:+.8f} {result.energy_unit}")
-        if timings is not None:
-            print(timings.format_report())
-        print(rule)

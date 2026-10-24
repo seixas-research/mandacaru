@@ -48,7 +48,6 @@ deflation, growing a fresh deflated ansatz per level -- see
 
 from __future__ import annotations
 
-import shutil
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -301,16 +300,6 @@ def _max_abs(values) -> float:
 #: energy its state evaluates to, for the *same* Hamiltonian, before the resume
 #: says so.  It is a consistency check on the file, not a convergence threshold.
 RESUME_ENERGY_TOLERANCE = 1e-8
-
-MIN_LABEL_WIDTH = 3
-
-#: Longest an operator label is allowed to push the row before it is elided.
-#: A CEO label such as ``CEO[q0,q2,q3,q5]{D(0,3->2,5)}`` is 29 characters and
-#: would otherwise cost four of the columns the table exists to show; the
-#: elided label still identifies the excitation, and the full one is on
-#: ``result.operators``.  Only the VQE / subspace trace elides: ADAPT's table
-#: is the log protocol's, which never abbreviates.
-MAX_LABEL_WIDTH = 22
 
 #: Random parameter samples per expressivity estimate (two states each).
 EXPRESSIVITY_SAMPLES = 400
@@ -691,12 +680,6 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         # need it, and it is |pool| dense diagonalizations of the full
         # register that the default analytic screening never looks at.
         self._pool_eig = None
-        # The column layout depends on this pool's labels and on the register,
-        # so it cannot outlive a reconfiguration: one driver instance reused
-        # for a second molecule (a new geometry on the calculator) would otherwise
-        # keep the first one's columns and print rows wider than the terminal.
-        self._layout_cache = None
-        self._label_width = None
         # The screened operators and their measurement plan belong to this
         # Hamiltonian and pool.
         self._screened = None
@@ -1467,7 +1450,6 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         # Resolved once, before the heading: whether this run computes the
         # expressivity at all decides whether the column exists.
         self._expressivity_on = self._expressivity_wanted(log_expressivity)
-        self._layout_cache = None
 
         # In calculator mode the wall clock is seeded in calculate() so it spans
         # the integration too; in direct mode it starts here.
@@ -1910,154 +1892,7 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
                else ansatz.reference_state())
         return self.energy(psi), psi, ansatz.num_parameters, total_evals
 
-    # -- standard-output trace ------------------------------------------- #
-
-    #: Column layout of the per-iteration table: (heading, width).
-    #:
-    #: One row per grown operator, one column per property computed at that
-    #: step: the screening gradient that drove the selection, the energy and
-    #: its change, the ansatz expressivity, the circuit cost (parameters,
-    #: CNOTs, single-qubit gates, depth) and the selected operator's kind and
-    #: label.  The *pool* is not printed -- its name and size are in the
-    #: header and its contents go to ``pool.json`` with
-    #: ``verbose_operators=True``.
-    #:
-    #: ``(key, heading, width, format)``.  Headings are terse because the row
-    #: has to fit a terminal: at 80 columns the full table is 79 characters
-    #: wide.
-    #: ``energy`` is 13 wide because a total energy runs to five digits before
-    #: the point once a molecule has more than a couple of electrons
-    #: (``-1092.918983``); at 11 the value overflowed its column and shifted
-    #: every column after it by one.  ``expr`` and the gate counts are sized
-    #: the same way, for the value rather than the heading.
-    _ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
-                          ("grad", "|grad|", 8, ".2e"),
-                          ("energy", "E", 13, ".6f"),
-                          ("dE", "dE", 8, ".1e"),
-                          ("expr", "expr", 7, ".2f"),
-                          ("steps", "steps", 6, "s"),
-                          ("cnot", "cnot", 6, "s"),
-                          ("1q", "1q", 6, "s"),
-                          ("depth", "depth", 6, "s"),
-                          ("type", "type", 6, "s"),
-                          ("operator", "operator", 0, "s"))
-
-    #: Order in which columns are sacrificed when the row will not fit, least
-    #: costly first: ``dE`` is the difference of consecutive energies, so it
-    #: carries no new information; only after it does the table give up
-    #: something it exists to show.
-    #: ``iter``, ``grad``, ``energy``, ``type`` and ``operator`` are never
-    #: dropped.
-    #: ``steps`` goes before ``cnot`` because the classical effort is
-    #: reconstructible from ``[PERFORMANCE]`` and the summary's total, while
-    #: the CNOT count of a given ansatz size is not.
-    #: ``expr`` is absent unless it was explicitly asked for, so it is never
-    #: dropped: having asked for it, you get it.
-    _ITERATION_DROP_ORDER = ("dE", "1q", "depth", "steps", "cnot")
-
-    #: Terminal width assumed when it cannot be detected (piped output).
-    FALLBACK_TERMINAL_WIDTH = 80
-
-    def _extra_header_lines(self) -> list[str]:
-        """Extra configuration lines for the verbose header (subclass hook).
-
-        A subclass overrides this to report its own
-        stochastic-selection temperature schedule.
-        """
-        return []
-
-    def _iteration_layout(self, e_unit: str = "eV"):
-        """The columns that fit on one line, cached per configuration.
-
-        A wrapped row is not a row: the point of the table is that one
-        iteration is one line.  So when the terminal is too narrow, the columns
-        that are derivable elsewhere are dropped (cheapest sufficient one
-        first, see :data:`_ITERATION_DROP_ORDER`) and, if that is still not
-        enough, the operator label is elided -- down to
-        :data:`MIN_LABEL_WIDTH`.  Below roughly 38 columns even the mandatory
-        set does not fit and the row can still wrap; that is a terminal too
-        narrow to tabulate anything.
-
-        The operator label's width comes from the pool, so the choice is made
-        once and every row matches the heading.  It is reset in ``_configure``
-        because a reused driver may be given a different pool and register.
-        """
-        if getattr(self, "_layout_cache", None) is not None:
-            return self._layout_cache
-        labels = [op.label for op in getattr(self, "_pool_ops", []) or []]
-        label_width = max([len(label) for label in labels] + [len("operator")])
-        available = shutil.get_terminal_size(
-            (self.FALLBACK_TERMINAL_WIDTH, 24)).columns
-        # Cap the label first: a long one must not cost the data columns.
-        label_width = min(label_width, MAX_LABEL_WIDTH)
-
-        def width_of(columns):
-            total = label_width + len(columns) - 1          # one space between
-            for key, heading, width, _fmt in columns:
-                if key != "operator":
-                    total += max(width, len(self._heading(heading, e_unit)))
-            return total
-
-        columns = list(self._ITERATION_COLUMNS)
-        if not getattr(self, "_expressivity_on", True):
-            # Not computed anywhere in this run: an all-"-" column is worse
-            # than no column, so it does not appear at all.
-            columns = [c for c in columns if c[0] != "expr"]
-        # Drop the *least valuable column that alone closes the gap*, not a
-        # prefix of the drop order: a small deficit used to cost two columns
-        # where the second one alone would have closed it.
-        while width_of(columns) > available:
-            present = [c for c in self._ITERATION_DROP_ORDER
-                       if any(col[0] == c for col in columns)]
-            if not present:
-                break                      # only the mandatory columns are left
-            victim = next(
-                (c for c in present
-                 if width_of([col for col in columns if col[0] != c]) <= available),
-                present[0])
-            columns = [col for col in columns if col[0] != victim]
-        self._label_width = label_width
-        if width_of(columns) > available:
-            # Nothing droppable is left: shorten the label rather than wrap.
-            # A wrapped row is not a row, which is the whole contract.
-            over = width_of(columns) - available
-            self._label_width = max(MIN_LABEL_WIDTH, label_width - over)
-        self._layout_cache = tuple(columns)
-        return self._layout_cache
-
-    def _elide(self, label: str) -> str:
-        """``label`` shortened to the layout's budget, with an ellipsis."""
-        width = getattr(self, "_label_width", None)
-        if width is None or len(label) <= width:
-            return label
-        return label[:max(1, width - 1)] + "\u2026"
-
-    @staticmethod
-    def _heading(heading: str, e_unit: str) -> str:
-        """The printed heading -- the energy column carries the unit."""
-        return f"E ({e_unit})" if heading == "E" else heading
-
-    def _iteration_heading(self, e_unit: str) -> str:
-        """The column-heading line of the per-iteration table."""
-        cells = []
-        for key, heading, width, _fmt in self._iteration_layout(e_unit):
-            label = self._heading(heading, e_unit)
-            cells.append(label if key == "operator"
-                         else f"{label:>{max(width, len(label))}}")
-        return " ".join(cells).rstrip()
-
-    def _iteration_rule(self) -> str:
-        """Horizontal rule spanning the whole row, labels included."""
-        e_unit = self._energy_unit_label()
-        layout = self._iteration_layout(e_unit)
-        width = getattr(self, "_label_width", len("operator"))
-        for key, heading, column, _fmt in layout:
-            if key != "operator":
-                width += max(column, len(self._heading(heading, e_unit))) + 1
-        return "-" * width
-
-    #: Width of the label column in the run-configuration block.
-    HEADER_LABEL_WIDTH = 24
+    # -- gradient descriptions ------------------------------------------- #
 
     def _parameter_gradient_description(self) -> str:
         """How the classical optimizer gets the gradient of the energy in the
@@ -2085,188 +1920,3 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         if overridden and self.gradient != "analytic":
             note += f" (overrides {self.gradient}: sparse pool)"
         return effective, note
-
-    def _basis_description(self) -> str:
-        """The single-particle basis, compactly."""
-        basis = self.basis
-        if isinstance(basis, dict):
-            name = basis.get("name")
-            if name is None:                       # a per-element mapping
-                return ", ".join(f"{k}: {v}" for k, v in basis.items())
-            rest = ", ".join(f"{k}: {v}" for k, v in basis.items()
-                             if k != "name")
-            return f"{name}" + (f" ({rest})" if rest else "")
-        return str(basis)
-
-    def _header_rows(self, ref_energy: float, e_unit: str,
-                     max_iterations=None, convergence=None) -> list:
-        """``(label, value)`` pairs -- one option per line -- and ``None`` rules.
-
-        Grouped by what the option controls: the problem, the qubit register,
-        the algorithm, and where it executes.  A subclass extends it through
-        :meth:`_extra_header_lines`.
-        """
-        gradient, gradient_note = self._gradient_description()
-        frozen = self._frozen_label()
-        particles = self.num_particles
-        n_terms = len(self.hamiltonian.simplify().terms)
-        shots = (f"{self.shots}" if self.shots
-                 else "0 (exact expectation values)")
-        rows = [
-            ("basis", self._basis_description()),
-            ("grid spacing", f"{self.grid_spacing:g} Angstrom"),
-            ("kinetic operator", self._kinetic_label()),
-            ("k-points", self._kpts_label()),
-            ("spin-polarized", self._spin_polarized_label()),
-            ("reference state", str(self.initial_state)),
-            ("frozen core", str(frozen)),
-            ("active space", self._active_space_label()),
-            ("Z2 tapering", self._taper_label()),
-            None,
-            ("qubits", str(self.n_qubits)),
-            ("electrons (alpha, beta)", str(particles)),
-            ("spatial orbitals", str(getattr(self, "n_spatial_orbitals", None)
-                                     or self.pool.n_spatial_orbitals)),
-            ("mapping", str(self.mapping)),
-            ("qubit Hamiltonian", f"{n_terms} Pauli terms"),
-            None,
-            ("operator pool", f"{getattr(self.pool, 'name', '?')} "
-                              f"({len(self._pool_ops)} operators)"),
-            ("operator selection", "largest |gradient| (greedy)"),
-            # Same names as the log's `gradient_method` / `gradient_formula`,
-            # so a reader who saw one report recognizes the other.
-            ("gradient method", gradient),
-            ("  formula", gradient_note),
-            ("state-vector backend", self._backend_description()),
-            ("re-optimize all", str(self.quenching)),
-            ("optimizer", str(self.optimizer.method)),
-            ("max operators", str(max_iterations)
-             if max_iterations is not None else None),
-            ("convergence", convergence.describe(
-                self._to_energy_units(1.0), e_unit)
-             if convergence is not None else None),
-            ("circuit profiling", str(self.profile)),
-            None,
-            ("device", str(self.device)),
-            ("backend provider", str(self.backend_provider)),
-            ("circuit execution", str(self.execute_circuits)),
-            ("shots", shots),
-            None,
-            ("Hartree-Fock reference",
-             f"{self._to_energy_units(ref_energy):+.8f} {e_unit}"),
-        ]
-        return [r for r in rows if r is None or r[1] is not None]
-
-    def _print_header(self, ref_energy: float, e_unit: str,
-                      max_iterations=None, convergence=None) -> None:
-        """Print the run configuration, **one option per line**.
-
-        The qubit Hamiltonian's Pauli expansion is deliberately not printed --
-        it runs to thousands of lines for a realistic active space.  Only its
-        size is reported; the operator is on ``self.hamiltonian``, and
-        ``verbose_hamiltonian=True`` writes it to ``hamiltonian.inspect.json``.
-        """
-        rule = "=" * 70
-        width = self.HEADER_LABEL_WIDTH
-        print(rule)
-        print("ADAPT-VQE")
-        print(rule)
-        for row in self._header_rows(ref_energy, e_unit, max_iterations,
-                                     convergence):
-            if row is None:
-                print("-" * 70)
-            else:
-                label, value = row
-                print(f"{label:<{width}}{value}")
-        for line in self._extra_header_lines():
-            print(line)
-        print(rule)
-
-    def _print_iteration_heading(self, e_unit: str) -> None:
-        """Print the column heading of the per-iteration table."""
-        print(self._iteration_heading(e_unit))
-        print(self._iteration_rule())
-
-    def _operator_kind(self, op: PoolOperator) -> str:
-        """The ``type`` cell: what kind of excitation was selected.
-
-        ``"fermionic-double"`` -> ``"double"``, ``"qeb-single"`` -> ``"single"``
-        (the pool's name is already in the header, so repeating it per row says
-        nothing).  ``CEOPool`` tags every operator ``"ceo"``, which would make
-        the column a constant copy of the header, so the excitation is read
-        off the label instead -- ``CEO[...]{D(...)}`` is a double,
-        ``{S(...)}`` a single.
-        """
-        name = str(getattr(self.pool, "name", ""))
-        kind = str(op.kind)
-        prefix = f"{name}-"
-        if name and kind.startswith(prefix):
-            return kind[len(prefix):]
-        if kind == name:                      # uninformative: read the label
-            label = str(op.label)
-            if "{D(" in label or label.startswith("D("):
-                return "double"
-            if "{S(" in label or label.startswith("S("):
-                return "single"
-        return kind
-
-    def _print_iteration(self, iteration: int, op: PoolOperator,
-                         max_grad: float, energy: float, delta: float,
-                         metrics: CircuitMetrics | None, e_unit: str,
-                         expressivity: float | None = None,
-                         optimizer_steps: int | None = None) -> None:
-        """Print one iteration as a single, column-aligned line.
-
-        One column per property of the step: the largest pool gradient that
-        drove the selection, the energy and its change, the ansatz's
-        expressivity (KL divergence from Haar), the classical optimizer's step
-        count for this growth step, the compiled CNOT / single-qubit-gate
-        counts and depth, and the selected operator's kind and label.  Which of those fit is
-        :meth:`_iteration_layout`'s decision -- the line is never wrapped.
-        Neither the pool nor the operator's Pauli-string expansion is printed;
-        they are on ``result.operators`` and, with ``verbose_operators=True``,
-        in ``pool.json``.
-        """
-        def count(value):
-            return "-" if value is None else str(value)
-
-        values = {
-            "iter": iteration,
-            "grad": float(max_grad),
-            "energy": self._to_energy_units(energy),
-            "dE": self._to_energy_units(delta),
-            "expr": (None if expressivity is None
-                     or not np.isfinite(expressivity) else float(expressivity)),
-            "steps": count(optimizer_steps),
-            "cnot": count(None if metrics is None else metrics.cnot_count),
-            "1q": count(None if metrics is None else metrics.num_1q_gates),
-            "depth": count(None if metrics is None else metrics.depth),
-            "type": self._operator_kind(op),
-            "operator": op.label,
-        }
-        cells = []
-        for key, heading, width, fmt in self._iteration_layout(e_unit):
-            value = values[key]
-            width = max(width, len(self._heading(heading, e_unit)))
-            if key == "operator":
-                cells.append(self._elide(str(value)))
-            elif value is None:
-                cells.append(f"{'-':>{width}}")
-            elif fmt == "s":
-                cells.append(f"{value:>{width}}")
-            else:
-                cells.append(f"{value:>{width}{fmt}}")
-        print(" ".join(cells).rstrip())
-
-    def _print_summary(self, result: ADAPTVQEResult, e_unit: str,
-                       timings=None) -> None:
-        """Print the closing summary: result line plus timings / resources."""
-        rule = "=" * 70
-        print(self._iteration_rule())
-        status = "converged" if result.converged else "NOT converged"
-        print(f"{status}: E = {result.optimal_energy:+.8f} {e_unit}, "
-              f"{result.num_operators} operators, "
-              f"|grad| = {result.final_max_gradient:.2e}")
-        if timings is not None:
-            print(timings.format_report())
-        print(rule)

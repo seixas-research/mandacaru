@@ -421,6 +421,7 @@ class _MeanFieldDriver(VariationalDriver):
                                     f"change and largest density change)"),
             "acceleration": (f"DIIS; level shift {LEVEL_SHIFT:g} Hartree "
                              f"after the first energy rise"),
+            "scf_history": "selected lowest-energy start; original completion times",
         }
         if self._kind == "ghf":
             fields["spin_orbit_coupling"] = str(bool(
@@ -450,6 +451,8 @@ class _MeanFieldDriver(VariationalDriver):
         scf = self._scf
         fields = {"converged": str(bool(scf.converged)),
                   f"optimal_energy_{unit}": f"{result.optimal_energy:.10f}"}
+        fields.update({f"{name}_{unit}": f"{self._to_energy_units(value):.10f}"
+                       for name, value in self._scf_energy_contributions().items()})
         if isinstance(scf, UHFResult):
             # The natural-orbital determinant the exported problem starts
             # from; its energy differs from the UHF one.
@@ -465,6 +468,19 @@ class _MeanFieldDriver(VariationalDriver):
                 f"lumo_energy_{unit}": f"{to_unit(scf.lumo_energy):.6f}",
                 f"homo_lumo_gap_{unit}": f"{to_unit(scf.homo_lumo_gap):.6f}"})
         fields["scf_iterations"] = result.num_evaluations
+        return fields
+
+    def _scf_energy_contributions(self) -> dict:
+        """Additive contributions to the molecular total energy, in Hartree."""
+        integrals = self._gradient_context["integrals"]
+        one_center = (sum(d.one_center_energy for d in integrals.datasets)
+                      if getattr(integrals, "one_center", None) == "frozen" else 0.0)
+        fields = {"electronic_energy": self._scf.electronic_energy,
+                  "ion_ion_energy": integrals.nuclear_repulsion,
+                  "one_center_energy": one_center}
+        other = float(integrals.constant_energy) - one_center
+        if other:
+            fields["other_constant_energy"] = other
         return fields
 
 

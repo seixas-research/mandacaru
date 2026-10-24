@@ -1390,6 +1390,8 @@ class TestVerbosePauliOutput:
 
     def test_iterations_are_single_aligned_lines(self, h2_hamiltonian,
                                                 capsys):
+        import re
+
         adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
                           pool="ceo", num_particles=(1, 1),
                           n_spatial_orbitals=2, profile=True, trace=True,
@@ -1403,8 +1405,8 @@ class TestVerbosePauliOutput:
         # only when the expressivity was asked for.
         lines = out.splitlines()
         heading = next(line for line in lines if line.split()[:1] == ["iter"])
-        # "energy (eV)" is one column but two whitespace-separated tokens.
-        columns = heading.replace("energy (eV)", "energy").split()
+        columns = [label.split(" (", 1)[0]
+                   for label in re.split(r" {4,}", heading.strip())]
         for column in ("iter", "time", "dE", "|grad|", "expr", "cnot", "1q",
                        "depth", "operator"):
             assert column in columns
@@ -1444,6 +1446,8 @@ class TestVerbosePauliOutput:
         of silently losing a column -- and the screen can be compared with the
         file line for line, which is the point.
         """
+        import re
+
         headings = {}
         for columns in ("80", "200"):
             monkeypatch.setenv("COLUMNS", columns)
@@ -1453,12 +1457,12 @@ class TestVerbosePauliOutput:
                               max_iterations=2, convergence={"gradient": 1e-6})
             adapt.run(log_expressivity=True)     # the `expr` column is opt-in
             out = capsys.readouterr().out
-            headings[columns] = next(line.split() for line in out.splitlines()
-                                     if line.split()[:1] == ["iter"])
+            heading = next(line for line in out.splitlines()
+                           if line.split()[:1] == ["iter"])
+            headings[columns] = re.split(r" {4,}", heading.strip())
         assert headings["80"] == headings["200"]
-        assert set(" ".join(headings["80"]).replace("energy (eV)",
-                                                    "energy").split()) == {
-            "iter", "time", "energy", "expr", "dE", "|grad|", "steps", "cnot",
+        assert set(headings["80"]) == {
+            "iter", "time (HH:MM:SS)", "energy (eV)", "expr", "dE (eV)", "|grad| (eV)", "steps", "cnot",
             "1q", "depth", "operator"}
 
     def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
@@ -1640,15 +1644,23 @@ class TestIterationColumns:
             logger.write_iteration(2, pool, [3.2e-7], 0, None, -1.5, 2)
         text = open(path, encoding="utf-8").read()
         table = text.split("[ITERATIONS]", 1)[1].splitlines()
-        heading = table[1].split()
+        heading = re.split(r" {4,}", table[1].strip())
         assert re.fullmatch(r"\d\d:\d\d:\d\d", table[3].split()[1])
         return heading, parse_output(path)["iterations"], table
 
     def test_the_order_puts_the_time_second_and_drops_the_type(self, rows):
-        heading, _entries, _table = rows
-        assert heading[:2] == ["iter", "time"]
-        assert heading.index("dE") < heading.index("|grad|")
+        import re
+
+        heading, _entries, table = rows
+        assert heading[:2] == ["iter", "time (HH:MM:SS)"]
+        assert heading.index("dE (eV)") < heading.index("|grad| (eV)")
         assert "type" not in heading
+        assert re.split(r" {4,}", table[1].strip()) == [
+            "iter", "time (HH:MM:SS)", "energy (eV)", "dE (eV)", "|grad| (eV)", "steps",
+            "1q", "cnot", "depth", "operator"]
+        raw_heading = table[1]
+        assert (raw_heading.index("dE (eV)")
+                - raw_heading.index("energy (eV)") - len("energy (eV)")) == 12
 
     def test_de_is_from_the_previous_row_and_first_from_the_reference(
             self, rows):
@@ -1660,9 +1672,23 @@ class TestIterationColumns:
     def test_the_gradient_has_six_decimals(self, rows):
         _heading, entries, table = rows
         cells = [line.split() for line in table[3:5]]
-        column = rows[0].index("|grad|") - 1   # "energy (eV)": two heading tokens
-        assert [row[column] for row in cells] == ["0.250000", "0.000000"]
+        column = rows[0].index("|grad| (eV)")
+        assert [row[column] for row in cells] == ["6.802847", "0.000009"]
         assert entries[0]["max_gradient"] == pytest.approx(0.25)
+
+    @pytest.mark.parametrize("label", ["long operator " * 20, "operator\nsecond line"])
+    def test_long_operator_names_keep_one_line_per_iteration(self, tmp_path, label):
+        path = tmp_path / "operators.txt"
+        pool = [SimpleNamespace(label=label + str(i)) for i in range(2)]
+        with Logger(str(path), n_qubits=4) as logger:
+            for i in range(2):
+                logger.write_iteration(i + 1, pool, [0.1, 0.2], i, None, -1.0, i + 1)
+        table = path.read_text().split("[ITERATIONS]\n")[1].splitlines()
+        assert len(table) == 4  # heading, rule and exactly two data rows
+        assert [line.split()[-1] for line in table[2:]] == ["pool[0]", "pool[1]"]
+        assert [row["selected_operator"] for row in parse_output(str(path))["iterations"]] == [
+            "pool[0]", "pool[1]"]
+        assert pool[0].label == label + "0"  # display never changes the full label
 
 
 class TestConvergenceMarkers:
@@ -1699,7 +1725,8 @@ class TestConvergenceMarkers:
         assert [r["gradient_met"] for r in parsed["iterations"]] == \
             [False, False, True]
         # The marker is stripped: the numbers still parse.
-        assert parsed["iterations"][2]["max_gradient"] == pytest.approx(5e-4)
+        assert parsed["iterations"][2]["max_gradient"] == pytest.approx(
+            5e-4, abs=0.5e-6 / HARTREE_TO_EV)
         assert parsed["iterations"][2]["delta_energy"] == pytest.approx(-1e-4)
         assert parsed["summary"]["gradient_met"] is True
         assert float(parsed["summary"]["final_max_gradient"]) == \
@@ -1712,7 +1739,7 @@ class TestConvergenceMarkers:
                          rows, final_gradient=1e-4)
         table = path.read_text().split("[ITERATIONS]")[1].split("=")[0]
         heading, _rule, first, second = table.strip("\n").splitlines()[:4]
-        end = heading.index("|grad|") + len("|grad|") + 2
+        end = heading.index("|grad| (eV)") + len("|grad| (eV)") + 2
         # Marked or not, every row's |grad| cell ends where the heading's
         # marker slot does, and a marker sits one space after its value.
         assert first[end - 2:end] == "  " and second[end - 2:end] == " *"

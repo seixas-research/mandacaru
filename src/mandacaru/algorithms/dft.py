@@ -120,7 +120,7 @@ from ..units import to_bohr
 from .hartree_fock import (DIIS, LEVEL_SHIFT, GHFResult, RHFResult,
                            UHFResult, _level_shifted, natural_orbitals,
                            transform_integrals)
-from .periodic_dft import scf_record
+from ..utils.logging import scf_record
 from .pseudo_forces import AlgebraicEnergy
 from .mean_field import MeanFieldResult, _MeanFieldDriver
 
@@ -356,7 +356,7 @@ class KohnShamResult(_DeferredTensor, RHFResult):
     exact_exchange_energy: float = 0.0
     core_correction_energy: float = 0.0
     dispersion_energy: float = 0.0
-    #: One record per iteration (:func:`~.periodic_dft.scf_record`), for the
+    #: One record per iteration (:func:`~mandacaru.utils.logging.scf_record`), for the
     #: run log's ``[SCF ITERATIONS]`` table.
     history: list = field(default_factory=list)
     #: Fractional occupations of the canonical orbitals, or ``None``.
@@ -803,7 +803,7 @@ class KohnShamUResult(_DeferredTensor, UHFResult):
     exact_exchange_energy: float = 0.0
     core_correction_energy: float = 0.0
     dispersion_energy: float = 0.0
-    #: One record per iteration (:func:`~.periodic_dft.scf_record`).
+    #: One record per iteration (:func:`~mandacaru.utils.logging.scf_record`).
     history: list = field(default_factory=list)
     #: Fractional occupations of each channel's canonical orbitals, or None.
     occupations_alpha: np.ndarray | None = None
@@ -3460,6 +3460,11 @@ class DFTDriver(_MeanFieldDriver):
         """Crystals iterate the free energy; molecules the electronic energy."""
         return "free_energy" if self._periodic else "electronic_energy"
 
+    def _scf_energy_contributions(self) -> dict:
+        return {**super()._scf_energy_contributions(),
+                "core_correction_energy": self._scf.core_correction_energy,
+                "dispersion_energy": self._scf.dispersion_energy}
+
     def _scf_summary_fields(self, result: MeanFieldResult) -> dict:
         """``[SCF SUMMARY]``: the Kohn-Sham energy and its decomposition."""
         if self._periodic:
@@ -3496,23 +3501,6 @@ class DFTDriver(_MeanFieldDriver):
         unit = result.energy_unit
         to_unit = self._to_energy_units
         scf = self._scf
-        integrals = self._gradient_context["integrals"]
-        one_center = (sum(d.one_center_energy for d in integrals.datasets)
-                      if getattr(integrals, "one_center", None) == "frozen" else 0.0)
-        contributions = {
-            "electronic_energy": scf.electronic_energy,
-            "ion_ion_energy": integrals.nuclear_repulsion,
-            "one_center_energy": one_center,
-            "core_correction_energy": scf.core_correction_energy,
-            "dispersion_energy": scf.dispersion_energy,
-        }
-        # A uniform field also adds a density-independent ionic term to
-        # constant_energy; keep it separate from the frozen PAW spheres.
-        other_constant = float(integrals.constant_energy) - one_center
-        if other_constant:
-            contributions["other_constant_energy"] = other_constant
-        fields.update({f"{name}_{unit}": f"{to_unit(value):.10f}"
-                       for name, value in contributions.items()})
         # The exported problem starts from the Kohn-Sham determinant, whose
         # energy in the many-body Hamiltonian is not the Kohn-Sham energy.
         fields[f"reference_energy_{unit}"] = \

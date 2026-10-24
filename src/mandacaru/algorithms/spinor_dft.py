@@ -87,7 +87,8 @@ from .periodic_device import make_device
 from . import periodic_exchange as exact_exchange
 from .periodic_dft import (HYBRID_TOL, PeriodicKohnSham,
                            PeriodicKohnShamResult, PulayMixer, entropy,
-                           fermi_level, occupation, scf_record)
+                           fermi_level, occupation)
+from ..utils.logging import scf_record
 
 
 class SpinorTensor(MOTensor):
@@ -135,7 +136,7 @@ class KohnShamGResult(_DeferredTensor, GHFResult):
     exact_exchange_energy: float = 0.0
     core_correction_energy: float = 0.0
     dispersion_energy: float = 0.0
-    #: One record per iteration (:func:`~.periodic_dft.scf_record`).
+    #: One record per iteration (:func:`~mandacaru.utils.logging.scf_record`).
     history: list = field(default_factory=list)
     occupations: np.ndarray | None = None
     #: :attr:`determinant_energy`, computed by the SCF.

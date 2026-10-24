@@ -41,9 +41,9 @@ it is refused with a message pointing at `trace=`.
 ```{note}
 `txt=` is accepted only by a method whose `run()` goes through this protocol —
 `"rhf"`, `"uhf"`, `"ghf"`, `"dft"`, `"vqe"` (including `ansatz="hva"`), `"adapt-vqe"`,
-`"mcas-vqe"` and `"valqa"` today — and refused with a message by the others rather than
-leaving an empty file. `"subspace-vqe"` and `"subspace-adapt-vqe"` print their
-own run header, which is not this one.
+`"mcas-vqe"`, `"valqa"` and `"subspace-adapt-vqe"` — and refused with a message
+by the others rather than leaving an empty file. `"subspace-vqe"` retains its
+console report.
 
 There is one standard output per process, so consecutive printed runs number
 their blocks `step: 1`, `step: 2`, … just as consecutive runs sharing one
@@ -57,12 +57,12 @@ The block every run is read through, whichever destination it went to:
 
 ```text
 [ITERATIONS]
-    iter     time        energy (eV)                 dE         |grad|    steps      1q    cnot   depth operator
-    ------------------------------------------------------------------------------------------------------------
-       1 13:45:10     -33.1720283176      -0.1939118279       0.225802        3      38     104     121 D(0,4->3,7)
-       2 13:45:10     -33.2886620234      -0.1166337058       0.158793        4      73     176     209 D(0,4->1,7)
-       3 13:45:10     -33.3953428910      -0.1066808676       0.151665        5     108     256     304 D(0,4->3,5)
-       4 13:45:10     -33.4961593720      -0.1008164810       0.134065        7     143     304     368 D(0,4->1,5)
+    iter    time (HH:MM:SS)           energy (eV)            dE (eV)      |grad| (eV)      steps         1q       cnot      depth    operator
+    -----------------------------------------------------------------------------------------------------------------------------------------
+       1           13:45:10        -33.1720283176      -0.1939118279         6.144385          3         38        104        121    D(0,4->3,7)
+       2           13:45:10        -33.2886620234      -0.1166337058         4.320978          4         73        176        209    D(0,4->1,7)
+       3           13:45:10        -33.3953428910      -0.1066808676         4.127015          5        108        256        304    D(0,4->3,5)
+       4           13:45:10        -33.4961593720      -0.1008164810         3.648094          7        143        304        368    D(0,4->1,5)
 ```
 
 The **pool's type and size** and the Hamiltonian's **term count** are in the
@@ -116,9 +116,10 @@ row per proposal, accepted or not:
 
 ```text
 [MARKOV CHAIN]
-     step     time    move   L    energy (eV)         dE   current (eV)          T     ln(a)  acc   steps action
-        4 05:35:17  insert   2     -27.958716  -0.501456     -27.958716  2.848e-02   +18.383  yes       4 insert(QD(0,2->1,3)@1)
-        5 05:35:17  delete   1     -27.457260  +0.501456     -27.958716  1.874e-02   -27.519   no       1 delete(1)
+     step    time (HH:MM:SS)       move      L       energy (eV)       dE (eV)      current (eV)        T (eV)        ln(a)     acc      steps    action
+    ----------------------------------------------------------------------------------------------------------------------------------------------------
+        4           05:35:17     insert      2        -27.958716     -0.501456        -27.958716     2.848e-02      +18.383     yes          4    insert(QD(0,2->1,3)@1)
+        5           05:35:17     delete      1        -27.457260     +0.501456        -27.958716     1.874e-02      -27.519      no          1    delete(1)
 ```
 
 | column | meaning |
@@ -139,6 +140,19 @@ acceptance of each move. It has no `converged:` line, because a chain stops on
 its step budget, not on a criterion.
 {func}`~mandacaru.utils.logging.parse_output` returns the rows under
 `"markov_chain"`.
+
+The clock column is `time (HH:MM:SS)`. Energies, including `dE` and `T`,
+carry parenthesized units; the architecture temperature is an energy,
+not a temperature in Kelvin. All columns have at least four spaces between
+them. Actions exceeding 40 characters or containing control characters use
+`step[index]`; the result retains each step's full move and architecture.
+
+`method="subspace-adapt-vqe"` uses the same `[ITERATIONS]` table as ADAPT-VQE,
+including eV screening gradients, compact operator names and `txt=` support.
+Its setup records `num_states` and `state_weights`. The table's energy is
+the lowest subspace energy; the screening gradient belongs to the weighted
+subspace objective. The summary reports the ground energy as `optimal_energy`
+and each excited level as `excited_state_<index>_energy_<unit>`.
 
 ## A fixed ansatz
 
@@ -182,7 +196,10 @@ differs.
 `method="rhf"`, `"uhf"`, `"ghf"` and `"dft"` write the same `[SYSTEM]` and `[BASIS]`
 blocks, a classical `[ELECTRONS]` -- grid, charge, spin, orbitals and electrons,
 with no reference state, mapping, register or qubit Hamiltonian, since none is
-built -- and then two blocks of their own:
+built -- and then `[SCF SETUP]`, `[SCF ITERATIONS]` and `[SCF SUMMARY]`.
+RHF, UHF and GHF retain the history of the selected lowest-energy start,
+with each iteration's original clock time and density residual. A two-stage
+direct RHF run retains both its coarse and exact stages in that history:
 
 ```text
 [SCF SETUP]
@@ -190,16 +207,26 @@ built -- and then two blocks of their own:
     max_iterations: 200
     convergence_Hartree: 1e-09 (energy change and largest density change)
     acceleration: DIIS; level shift 0.5 Hartree after the first energy rise
+    scf_history: selected lowest-energy start; original completion times
     energy_unit: eV
+
+[SCF ITERATIONS]
+     iter    time (HH:MM:SS)    electronic_energy (eV)               dE (eV)        residual
+    ----------------------------------------------------------------------------------------
+        1           23:57:55            -44.2307330029                     -       1.332e-15
+        2           23:57:55            -44.2307330029         +0.0000000000       0.000e+00
 
 ========================================================================
 [SCF SUMMARY]
     converged: True
-    optimal_energy_eV: -187.7936353791
-    homo_energy_eV: -5.156580
-    lumo_energy_eV: 12.730481
-    homo_lumo_gap_eV: 17.887062
-    scf_iterations: 24
+    optimal_energy_eV: -24.7717526266
+    electronic_energy_eV: -44.2307330029
+    ion_ion_energy_eV: 19.4589803763
+    one_center_energy_eV: 0.0000000000
+    homo_energy_eV: -14.466156
+    lumo_energy_eV: 14.271960
+    homo_lumo_gap_eV: 28.738116
+    scf_iterations: 2
 ========================================================================
 ```
 
@@ -210,15 +237,18 @@ pairing (`spin_orbit_coupling` is in the GHF setup).
 `"setup"` and `[SCF SUMMARY]` under `"summary"`, the keys a variational run's
 blocks are read under.
 
-`method="dft"` writes the same two blocks with Kohn-Sham content
+`method="dft"` writes the same blocks with Kohn-Sham content
 ({doc}`dft`). `[SCF SETUP]` adds `xc_functional`, `vdw` (`NONE` when
 there is none) and, for a molecule, `hartree` (a Poisson solve per iteration,
 or the two-body tensor with `hartree="tensor"`), and states the convergence criteria and the level shift of the
 Kohn-Sham iteration. `[SCF SUMMARY]` adds the `reference_energy_<unit>` of the
 exported Hamiltonian, `hartree_energy_<unit>` and `xc_energy_<unit>`, then
-`core_correction_energy_<unit>` when the basis has a core correction and
-`dispersion_energy_<unit>` when D4 ran, so the total reads as the sum of its
-parts. A hybrid (`xc="hse06"`) adds `exact_exchange` to `[SCF SETUP]` (the
+`core_correction_energy_<unit>` and `dispersion_energy_<unit>`, including
+zero contributions. Molecular summaries also report `electronic_energy`,
+`ion_ion_energy` and `one_center_energy` (each suffixed by its unit), plus
+`other_constant_energy` when present, so the total reads as their sum.
+Hartree and XC are already included in the electronic contribution.
+A hybrid (`xc="hse06"`) adds `exact_exchange` to `[SCF SETUP]` (the
 fraction and the range separation) and `exact_exchange_energy_<unit>` to
 `[SCF SUMMARY]`: the part of `xc_energy_<unit>` the exact exchange carries,
 not a further term of the sum. A crystal's summary holds no energy terms, so
@@ -243,25 +273,26 @@ a magnetic one; its `[SCF SUMMARY]` adds `spin_orbit_energy_<unit>` (or
 on the same mesh, and the per-cell `spin_moment_bohr_magneton` in place of
 `magnetic_moment_bohr_magneton`.
 
-Between the two, a Kohn-Sham run writes `[SCF ITERATIONS]`, one row per
+Between setup and summary, every mean-field run writes `[SCF ITERATIONS]`, one row per
 iteration, so the convergence can be followed and diagnosed:
 
 ```text
 [SCF ITERATIONS]
-     iter    time_s            energy_eV              dE_eV     residual  moment_muB
-    --------------------------------------------------------------------------------
-        1     0.167      -366.8600438496                  -    6.872e+00    0.000001
-        2     0.172      -366.8962799616      -0.0362361119    5.212e+00    0.000000
-      ...
-       19     0.254      -366.9776701675      +0.0000000009    7.906e-06    0.000000
+     iter    time (HH:MM:SS)        free_energy (eV)               dE (eV)        residual    moment (muB)
+    ------------------------------------------------------------------------------------------------------
+        1           13:45:10         -366.8600438496                     -       6.872e+00        0.000001
+        2           13:45:11         -366.8962799616         -0.0362361119       5.212e+00        0.000000
+       19           13:45:12         -366.9776701675         +0.0000000009       7.906e-06        0.000000
 ```
 
-`time_s` is the time since the SCF began; `energy_<unit>` is the Kohn-Sham
-electronic energy of a molecule (no constants: the summary adds them) and the
-free energy of a crystal; `dE_<unit>` its change (`-` on the first row);
+`time (HH:MM:SS)` is the local completion time, also preserved when a history
+is replayed. Elapsed seconds remain in each solver's history.
+`electronic_energy (<unit>)` is the molecular electronic energy (the summary
+adds its constants); `free_energy (<unit>)` is the free energy of a crystal.
+`dE (<unit>)` is its change (`-` on the first row);
 `residual` what the convergence test measures -- the largest density-matrix
 change of a molecule, the density residual (electrons) of a crystal; and a
-spin-polarized crystal adds `moment_muB`, the moment per cell (for a magnetic
+spin-polarized crystal adds `moment (muB)`, the moment per cell (for a magnetic
 two-component crystal the length of its spin moment vector).
 `parse_output` returns the rows under `"scf_iterations"`, one dict per row
 keyed by the column headings.
@@ -409,9 +440,9 @@ read off the left margin:
     reference_energy_eV: -476.8628634829
 
 [ITERATIONS]
-    iter     time        energy (eV)                 dE         |grad|    steps      1q    cnot   depth operator
-    ------------------------------------------------------------------------------------------------------------
-       1 13:45:10     -33.1720283176      -0.1939118279       0.225802        3      38     104     121 D(0,4->3,7)
+    iter    time (HH:MM:SS)           energy (eV)            dE (eV)      |grad| (eV)      steps         1q       cnot      depth    operator
+    -----------------------------------------------------------------------------------------------------------------------------------------
+       1           13:45:10        -33.1720283176      -0.1939118279         6.144385          3         38        104        121    D(0,4->3,7)
 ========================================================================
 [VARIATIONAL QUANTUM SUMMARY]
     converged: True
@@ -607,11 +638,19 @@ of the grown ansatz it started from.
 
 `gradient_method` is the `gradient=` option of the driver: how the pool
 screening gradients in the `|grad|` column were computed. It sits directly above
-`convergence_gradient`, which is compared against those numbers, and
+`convergence_gradient`, which is compared against the internal gradients, and
 `gradient_formula` says in one line what was evaluated. `gradient_units` is
-`Hartree` whatever unit the energy columns are in -- the gradient is an
-expectation value of the Hamiltonian's commutator, not an energy in the reported
-unit.
+`Hartree` whatever unit the energy columns are in: it describes the internal
+expectation value of the Hamiltonian's commutator and its stopping threshold.
+The iteration table displays `|grad| (eV)`, multiplying that value by
+27.211386245988. `parse_output` returns `max_gradient` in Hartree, consistent
+with the threshold and the final screening gradient in the summary.
+
+The `operator` column uses a pool's compact name when available. Names longer
+than 40 characters, or containing control characters, appear as `pool[index]`
+with the zero-based pool index. The full names remain in the result,
+checkpoints and, with `verbose_operators=True`, `pool.json`. This keeps each
+iteration on one line without an unbounded operator label.
 
 #### The convergence criteria
 

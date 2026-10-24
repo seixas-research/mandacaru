@@ -273,12 +273,30 @@ class TestRunLog:
                         txt=str(path), **options).run()
         return result, parse_output(str(path)), path.read_text()
 
+    @pytest.mark.parametrize("action", ["very long operator " * 50, "operator\nnext line"])
+    def test_long_actions_keep_one_line(self, tmp_path, action):
+        from mandacaru.utils.logging import Logger, parse_output
+
+        path = tmp_path / "chain.txt"
+        with Logger(str(path), banner=False) as logger:
+            logger.write_chain_step(1, "insert", 1, -1.0, -0.1, -1.0,
+                                     0.02, 0.0, True, action=action)
+        lines = path.read_text().split("[MARKOV CHAIN]\n")[1].splitlines()
+        assert len(lines) == 3
+        assert parse_output(str(path))["markov_chain"][0]["action"] == "step[1]"
+
     def test_one_row_per_step_matching_the_result(self, h2_hamiltonian,
                                                   tmp_path):
+        import re
+
         result, log, text = self._log(h2_hamiltonian, tmp_path)
         assert "[MARKOV CHAIN]" in text and "[ITERATIONS]" not in text
         assert "MCAS-VQE (QubitPool)" in text
         rows = log["markov_chain"]
+        heading = text.split("[MARKOV CHAIN]\n")[1].splitlines()[0]
+        assert re.split(r" {4,}", heading.strip()) == [
+            "step", "time (HH:MM:SS)", "move", "L", "energy (eV)", "dE (eV)",
+            "current (eV)", "T (eV)", "ln(a)", "acc", "steps", "action"]
         assert [r["step"] for r in rows] == list(range(1, 16))
         for row, step in zip(rows, result.steps):
             assert row["move"] == step.move
@@ -289,6 +307,8 @@ class TestRunLog:
             assert row["current"] == pytest.approx(step.current_energy,
                                                    abs=1e-6)
             assert row["energy_unit"] == "eV"
+            assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", row["time"])
+            assert row["T"] == pytest.approx(step.temperature, rel=1e-3)
 
     def test_de_is_measured_from_the_state_before_the_step(
             self, h2_hamiltonian, tmp_path):

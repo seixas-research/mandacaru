@@ -203,7 +203,7 @@ def test_scf_writes_the_shared_run_log(method, tmp_path, capsys):
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     for block in ("[SYSTEM]", "[BASIS]", "[ELECTRONS]", "[SCF SETUP]",
-                  "[SCF SUMMARY]", "[PERFORMANCE]"):
+                  "[SCF ITERATIONS]", "[SCF SUMMARY]", "[PERFORMANCE]"):
         assert block in text
     assert method.upper() in text
     # Nothing quantum was built, so nothing quantum is reported.
@@ -222,6 +222,16 @@ def test_scf_writes_the_shared_run_log(method, tmp_path, capsys):
         energy_ev, abs=1e-9)
     assert int(summary["scf_iterations"]) == \
         atoms.calc.result.num_evaluations
+    rows = parsed["scf_iterations"]
+    scf = atoms.calc.result.scf
+    assert [row["iter"] for row in rows] == list(range(1, scf.n_iterations + 1))
+    assert [row["time"] for row in rows] == [row["clock_time"] for row in scf.history]
+    assert rows[0]["dE_eV"] is None
+    assert rows[-1]["electronic_energy_eV"] == pytest.approx(
+        from_hartree(scf.electronic_energy, "eV"), abs=1e-7)
+    terms = ("electronic_energy", "ion_ion_energy", "one_center_energy")
+    assert sum(float(summary[f"{name}_eV"]) for name in terms) == pytest.approx(
+        energy_ev, abs=1e-9)
 
 
 def test_rhf_summary_reports_the_frontier_orbitals(tmp_path):

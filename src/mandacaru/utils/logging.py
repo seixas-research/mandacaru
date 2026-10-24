@@ -74,10 +74,14 @@ from contextvars import ContextVar
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 import sys
+import time
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 import numpy as np
+
+from ..units import HARTREE_TO_EV
 
 if TYPE_CHECKING:
     from ..algorithms.hartree_fock import RHFResult
@@ -213,6 +217,18 @@ def notify_scf_iteration(record):
     callback = _SCF_OBSERVER.get()
     if callback is not None:
         callback(record)
+
+
+def scf_record(iteration: int, start: float, energy: float, previous: float,
+               residual: float, **extra) -> dict:
+    """One SCF record: Hartree energies, elapsed seconds and local clock time."""
+    record = {"iter": int(iteration), "time": time.perf_counter() - start,
+              "clock_time": datetime.now().strftime("%H:%M:%S"),
+              "energy": float(energy),
+              "dE": None if not np.isfinite(previous) else float(energy - previous),
+              "residual": float(residual), **extra}
+    notify_scf_iteration(record)
+    return record
 
 
 class Logger:
@@ -618,24 +634,27 @@ class Logger:
     #: (``HH:MM:SS``), the energy, the expressivity, the energy change from
     #: the previous step (``dE``; the first row's is from the reference
     #: state), the screening gradient, the optimizer steps and the circuit
-    #: cost, with the operator's label last (the only variable-width field).
+    #: cost, with the operator's label last (bounded by
+    #: :data:`ITERATION_OPERATOR_MAX_CHARS`).
     #: The operator's kind is not a column: the label already says it
     #: (``D(0,2->1,3)``), and the pool is named in the setup block.  A pool
     #: whose labels are too wide for a row gives a short name
     #: (``PoolOperator.short_label``, e.g. ``CEO(0,1,6,7)+``); the full label
     #: stays on the result, in checkpoints and in ``pool.json``.
+    #: Longer names or names with control characters use ``pool[index]``,
+    #: the operator's zero-based index, so one iteration remains one line.
     #:
     #: This is a **file**, so nothing is dropped to fit a terminal.
     ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
-                         ("time", "time", 8, "s"),
+                         ("time", "time (HH:MM:SS)", 8, "s"),
                          ("energy", "energy", 18, ".10f"),
                          ("expr", "expr", 10, ".6f"),
-                         # Signed, and as wide as the energy it differences.
-                         ("dE", "dE", 18, "+.10f"),
+                         # Signed; three characters narrower than the energy.
+                         ("dE", "dE", 15, "+.10f"),
                          # Fixed-point, six decimals: a gradient below
-                         # 5e-7 reads as 0.000000 -- far below any
+                         # 5e-7 eV reads as 0.000000 -- far below any
                          # gradient threshold the loop stops on.
-                         ("grad", "|grad|", 13, ".6f"),
+                         ("grad", "|grad| (eV)", 13, ".6f"),
                          # Classical effort of this growth step: how many
                          # parameter updates the optimizer made to re-optimize
                          # the grown ansatz (not cost evaluations -- the two
@@ -650,17 +669,19 @@ class Logger:
                          ("depth", "depth", 7, "s"),
                          ("operator", "operator", 0, "s"))
 
+    ITERATION_OPERATOR_MAX_CHARS = 40
+
     def _iteration_heading(self, energy_unit: str) -> str:
         cells = []
         for key, heading, width, _fmt in (self._columns
                                           or self.ITERATION_COLUMNS):
-            label = f"energy ({energy_unit})" if key == "energy" else heading
+            label = f"{heading} ({energy_unit})" if key in ("energy", "dE") else heading
             cell = (label if key == "operator"
                     else f"{label:>{max(width, len(label))}}")
             if self._thresholds.get(key) is not None:
                 cell += UNMARKED            # the marker slot of the rows
             cells.append(cell)
-        return " ".join(cells).rstrip()
+        return "    ".join(cells).rstrip()
 
     def write_iteration(self, iteration: int, pool_operators: Sequence,
                         gradients: Iterable[float], selected_index: int,
@@ -685,7 +706,8 @@ class Logger:
         pool_operators : sequence of PoolOperator
             The operator pool at this step (only the selected entry is read).
         gradients : iterable of float
-            Screening gradient of each pool operator, in the same order.
+            Screening gradient of each pool operator in Hartree, in the
+            same order. The table displays their magnitudes in eV.
         selected_index : int
             Index of the operator chosen for the ansatz.
         expressivity : float or None
@@ -704,6 +726,12 @@ class Logger:
         """
         grads = [float(g) for g in gradients]
         selected = pool_operators[selected_index]
+        operator = str(getattr(selected, "short_label", selected.label))
+        if not self.detailed:
+            operator = "(omitted)"
+        elif (len(operator) > self.ITERATION_OPERATOR_MAX_CHARS
+              or not operator.isprintable()):
+            operator = f"pool[{selected_index}]"
 
         if not self._table_open:
             # Whether the expressivity is computed is a per-run setting, so the
@@ -732,18 +760,17 @@ class Logger:
             "energy": energy,
             "expr": None if expressivity is None else float(expressivity),
             "dE": delta,
-            "grad": abs(grads[selected_index]),
+            "grad": abs(grads[selected_index]) * HARTREE_TO_EV,
             "steps": count(optimizer_steps),
             "cnot": count(getattr(metrics, "cnot_count", None)),
             "depth": count(getattr(metrics, "depth", None)),
             "1q": count(getattr(metrics, "num_1q_gates", None)),
-            "operator": (getattr(selected, "short_label", selected.label)
-                         if self.detailed else "(omitted)"),
+            "operator": operator,
         }
         cells = []
         for key, heading, width, fmt in (self._columns
                                          or self.ITERATION_COLUMNS):
-            label = f"energy ({energy_unit})" if key == "energy" else heading
+            label = f"{heading} ({energy_unit})" if key in ("energy", "dE") else heading
             width = max(width, len(label))
             value = values[key]
             if key == "operator":
@@ -761,9 +788,12 @@ class Logger:
             if threshold is not None:
                 # The same strict test the loop applies
                 # (Convergence.reached); a dash never meets it.
-                met = value is not None and abs(value) < threshold
+                # Screening and its threshold remain in Hartree; only the
+                # table's displayed gradient is converted to eV.
+                criterion = abs(grads[selected_index]) if key == "grad" else value
+                met = criterion is not None and abs(criterion) < threshold
                 cells[-1] += MARKED if met else UNMARKED
-        self._emit_body(" ".join(cells).rstrip())
+        self._emit_body("    ".join(cells).rstrip())
 
         if self.log_pool:
             # Opt-in only: the per-iteration pool listing this table replaced.
@@ -789,7 +819,7 @@ class Logger:
     #: (micro-eV, or micro-Hartree in atomic units), which keeps the row
     #: narrow; the result object carries them in full.
     CHAIN_COLUMNS = (("step", "step", 5, "d"),
-                     ("time", "time", 8, "s"),
+                     ("time", "time (HH:MM:SS)", 14, "s"),
                      ("move", "move", 7, "s"),
                      ("L", "L", 3, "d"),
                      ("energy", "energy", 14, ".6f"),
@@ -803,7 +833,7 @@ class Logger:
 
     @staticmethod
     def _chain_label(key: str, heading: str, energy_unit: str) -> str:
-        return (f"{heading} ({energy_unit})" if key in ("energy", "current")
+        return (f"{heading} ({energy_unit})" if key in ("energy", "dE", "current", "T")
                 else heading)
 
     def write_chain_step(self, step: int, move: str, length: int,
@@ -826,11 +856,15 @@ class Logger:
                 label = self._chain_label(key, head, energy_unit)
                 cells.append(label if key == "action"
                              else f"{label:>{max(width, len(label))}}")
-            heading = " ".join(cells).rstrip()
+            heading = "    ".join(cells).rstrip()
             self._emit("[MARKOV CHAIN]")
             self._emit_body(heading, "-" * len(heading))
             self._table_open = True
 
+        action = str(action)
+        if len(action) > self.ITERATION_OPERATOR_MAX_CHARS or any(
+                not character.isprintable() for character in action):
+            action = f"step[{step}]"
         values = {
             "step": int(step),
             "time": datetime.now().strftime("%H:%M:%S"),
@@ -844,7 +878,7 @@ class Logger:
             "lna": float(log_acceptance),
             "acc": "yes" if accepted else "no",
             "steps": "-" if optimizer_steps is None else str(optimizer_steps),
-            "action": str(action),
+            "action": action,
         }
         cells = []
         for key, head, width, fmt in self._columns:
@@ -860,7 +894,7 @@ class Logger:
                 cells.append(f"{value:>+{width}{fmt[1:]}}")
             else:
                 cells.append(f"{value:>{width}{fmt}}")
-        self._emit_body(" ".join(cells).rstrip())
+        self._emit_body("    ".join(cells).rstrip())
 
     # -- summary block ----------------------------------------------------- #
 
@@ -964,24 +998,25 @@ class Logger:
                               energy_name: str = "electronic_energy") -> None:
         """Open a self-consistency table before writing live iteration rows."""
         self._scf_spin = spin
-        columns = [("iter", 5), ("time_s", 9), (f"{energy_name}_{energy_unit}", 20),
-                   (f"dE_{energy_unit}", 18), ("residual", 12)]
+        columns = [("iter", 5), ("time (HH:MM:SS)", 14), (f"{energy_name} ({energy_unit})", 20),
+                   (f"dE ({energy_unit})", 18), ("residual", 12)]
         if spin:
-            columns.append(("moment_muB", 11))
+            columns.append(("moment (muB)", 11))
+        self._scf_columns = [(name, max(width, len(name))) for name, width in columns]
         self._emit("[SCF ITERATIONS]")
-        heading = " ".join(f"{name:>{width}}" for name, width in columns)
+        heading = "    ".join(f"{name:>{width}}" for name, width in self._scf_columns)
         self._emit_body(heading, "-" * len(heading))
 
     def write_scf_iteration(self, row) -> None:
         """Write and flush one completed self-consistency iteration."""
-        cells = [f"{row['iter']:>5d}", f"{row['time']:>9.3f}",
-                 f"{row['energy']:>20.10f}",
-                 (f"{'-':>18}" if row["dE"] is None
-                  else f"{row['dE']:>+18.10f}"),
-                 f"{row['residual']:>12.3e}"]
+        cells = [f"{row['iter']:d}", row["clock_time"],
+                 f"{row['energy']:.10f}",
+                 "-" if row["dE"] is None else f"{row['dE']:+.10f}",
+                 f"{row['residual']:.3e}"]
         if self._scf_spin:
-            cells.append(f"{row.get('moment', 0.0):>11.6f}")
-        self._emit_body(" ".join(cells))
+            cells.append(f"{row.get('moment', 0.0):.6f}")
+        self._emit_body("    ".join(f"{value:>{width}}" for value, (_name, width)
+                                    in zip(cells, self._scf_columns)))
 
     def finish_scf_iterations(self) -> None:
         """Separate the live iteration table from the next block."""
@@ -1660,6 +1695,8 @@ def parse_output(path: str) -> dict:
     Setup keys that have been renamed are read back under their current name
     (:data:`_SETUP_ALIASES`), so a log written by an earlier version answers the
     same question through the same key as a log written today.
+    Screening gradients are returned in Hartree, including when the table
+    displays them in eV; this is also the unit of the stopping threshold.
     """
     steps: list[dict[str, Any]] = []
     step: dict[str, Any] | None = None
@@ -1667,6 +1704,7 @@ def parse_output(path: str) -> dict:
     section = None
     columns: list[str] = []
     energy_unit = "eV"
+    gradient_scale = 1.0
     table = None                      # which force table rows are landing in
     basis_columns = None              # heading of the [BASIS] table being read
     echo_columns = None               # heading of the current echo table
@@ -1906,14 +1944,13 @@ def parse_output(path: str) -> dict:
                         performance[key] = numeric
             elif section == "markov_chain":
                 if not columns:
-                    # "energy (eV)" and "current (eV)" are one column each.
+                    # Units and clock formats belong to their preceding label.
                     head = stripped
                     for unit in ("eV", "Ha"):
-                        for name in ("energy", "current"):
+                        for name in ("energy", "dE", "current", "T"):
                             if f"{name} ({unit})" in head:
                                 energy_unit = unit
-                                head = head.replace(f"{name} ({unit})", name)
-                    columns = head.split()
+                    columns = re.sub(r"(\S+) \([^)]+\)", r"\1", head).split()
                     continue
                 record = dict(zip(columns,
                                   stripped.split(None, len(columns) - 1)))
@@ -1931,10 +1968,14 @@ def parse_output(path: str) -> dict:
                 if not stripped or set(stripped) == {"-"}:
                     continue
                 if not columns:
-                    columns = stripped.split()
+                    # Parenthesized units belong to the preceding label;
+                    # retain the unit-qualified keys returned by the reader.
+                    head = stripped.replace("time (HH:MM:SS)", "time")
+                    columns = re.sub(r"(\S+) \(([^)]+)\)", r"\1_\2", head).split()
                     continue
                 step["scf_iterations"].append({
-                    name: (int(value) if name == "iter" else
+                    name: (value if name == "time" else
+                           int(value) if name == "iter" else
                            None if value == "-" else float(value))
                     for name, value in zip(columns, stripped.split())})
             elif section == "iterations":
@@ -1942,13 +1983,13 @@ def parse_output(path: str) -> dict:
                     continue
                 fields = stripped.split()
                 if not columns:
-                    # The heading: "energy (eV)" is one column, two tokens.
+                    # A label and its parenthesized unit form one column.
                     head = stripped
+                    gradient_scale = HARTREE_TO_EV if "|grad| (eV)" in head else 1.0
                     for unit in ("eV", "Ha"):
                         if f"energy ({unit})" in head:
                             energy_unit = unit
-                            head = head.replace(f"energy ({unit})", "energy")
-                    columns = head.split()
+                    columns = re.sub(r"(\S+) \([^)]+\)", r"\1", head).split()
                     continue
                 if not fields[0].isdigit():
                     continue                       # an opt-in pool listing line
@@ -1962,6 +2003,7 @@ def parse_output(path: str) -> dict:
                     fields = fields[:-len(MARKED)] + MARKER
                 fields = fields.split(None, len(columns) - 1)
                 record = dict(zip(columns, fields))
+                gradient = number(record.get("|grad|", "").rstrip(MARKER))
                 entry: dict[str, Any] = {
                     "index": int(record["iter"]),
                     "selected_operator": record.get("operator", ""),
@@ -1975,8 +2017,8 @@ def parse_output(path: str) -> dict:
                     "energy_met": record.get("dE", "").endswith(MARKER),
                     "energy_unit": energy_unit,
                     "expressivity_E": record.get("expr", "-"),
-                    "max_gradient": number(
-                        record.get("|grad|", "").rstrip(MARKER)),
+                    "max_gradient": (None if gradient is None
+                                     else gradient / gradient_scale),
                     "gradient_met": record.get("|grad|", "").endswith(MARKER),
                     # Not serialized by the writer: reported as unknown rather
                     # than inferred from the growth index, which they coincide

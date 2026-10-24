@@ -45,11 +45,13 @@ integral used inside the Fock build is :math:`(pq|rs) = \langle pr|qs\rangle`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import time
 
 import numpy as np
 
 from ..integrals.packed import dense_tensor, is_packed
+from ..utils.logging import scf_record
 
 
 @dataclass
@@ -64,6 +66,7 @@ class RHFResult:
     h_mo: np.ndarray                  # one-body core Hamiltonian in the MO basis
     eri_mo: np.ndarray                # <pq|rs> (physicists') in the MO basis
     n_iterations: int = 0
+    history: list = field(default_factory=list)
 
     def _frontier_energies(self) -> tuple[float, float]:
         """Validated occupied/unoccupied frontier energies in Hartree."""
@@ -305,6 +308,7 @@ class RHF:
         it = 0
         mixer = DIIS() if diis else None
         shift = 0.0
+        history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
             F = self._fock(D)
             F = 0.5 * (F + F.conj().T)
@@ -316,6 +320,8 @@ class RHF:
                 F_iter = _level_shifted(F_iter, 0.5 * D, shift)
             eps, C = np.linalg.eigh(F_iter)
             D_new = self._density(C)
+            history.append(scf_record(it, start, current, energy,
+                                      float(np.max(np.abs(D_new - D)))))
             if abs(current - energy) < tol and np.max(np.abs(D_new - D)) < tol:
                 D, energy = D_new, current
                 converged = True
@@ -331,7 +337,7 @@ class RHF:
             electronic_energy=energy, mo_energies=np.real(eps),
             mo_coefficients=C, n_occupied=self.n_occ, converged=converged,
             h_mo=np.real_if_close(h_mo), eri_mo=_real_if_close(eri_mo),
-            n_iterations=it)
+            n_iterations=it, history=history)
 
 
 #: Tolerance (energy and density) the coarse stage of a two-stage
@@ -391,14 +397,20 @@ class DirectRHF(RHF):
         """
         if self._coarse is None:
             return super()._scf(D, max_iter, tol, diis)
+        start = time.perf_counter()
         self._two_electron = self._coarse
         first = super()._scf(D, min(max_iter, COARSE_MAX_ITERATIONS),
                              max(tol, COARSE_TOLERANCE), diis)
         self._two_electron = self._exact
+        elapsed_offset = time.perf_counter() - start
         second = super()._scf(self._density(first.mo_coefficients),
                               max_iter, tol, diis)
         self._two_electron = self._coarse
         second.n_iterations = first.n_iterations + second.n_iterations
+        history = [dict(row, stage="coarse") for row in first.history]
+        history += [dict(row, stage="exact", time=row["time"] + elapsed_offset)
+                    for row in second.history]
+        second.history = [dict(row, iter=i + 1) for i, row in enumerate(history)]
         second.coarse_iterations = first.n_iterations
         return second
 
@@ -430,6 +442,7 @@ class UHFResult:
     converged: bool
     n_iterations: int = 0
     reference_energy: float = 0.0     # <ref| H_elec |ref> of the NO reference determinant
+    history: list = field(default_factory=list)
 
     @property
     def spin_contamination(self) -> float:
@@ -578,6 +591,7 @@ class UHF:
         it = 0
         mixer_a, mixer_b = DIIS(), DIIS()
         shift = 0.0
+        history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
             Fa, Fb = self._fock_pair(Da, Db)
             new_energy = self._energy(Da, Db, Fa, Fb)
@@ -590,6 +604,9 @@ class UHF:
             epsa, Ca = np.linalg.eigh(Fa_it)
             epsb, Cb = np.linalg.eigh(Fb_it)
             Da_new, Db_new = self._density(Ca, self.na), self._density(Cb, self.nb)
+            residual = max(float(np.max(np.abs(Da_new - Da))),
+                           float(np.max(np.abs(Db_new - Db))))
+            history.append(scf_record(it, start, new_energy, energy, residual))
             if (abs(new_energy - energy) < tol
                     and np.max(np.abs(Da_new - Da)) < tol
                     and np.max(np.abs(Db_new - Db)) < tol):
@@ -619,7 +636,8 @@ class UHF:
             mo_coefficients_alpha=Ca, mo_coefficients_beta=Cb,
             natural_occupations=occ, natural_orbitals=C_no,
             h_mo=np.real_if_close(h_mo), eri_mo=_real_if_close(eri_mo),
-            converged=converged, n_iterations=it, reference_energy=reference)
+            converged=converged, n_iterations=it, reference_energy=reference,
+            history=history)
 
 
 class DirectUHF(UHF):
@@ -682,6 +700,7 @@ class GHFResult:
     #: occupied spinors: zero for a Kramers-paired (time-reversal
     #: symmetric) closed shell.  Measured, not imposed.
     kramers_pairing: float = 0.0
+    history: list = field(default_factory=list)
 
     def __repr__(self) -> str:
         return (f"GHFResult(E_elec={self.electronic_energy:.6f}, "
@@ -856,6 +875,7 @@ class GHF:
         it = 0
         mixer = DIIS()
         shift = 0.0
+        history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
             F = self._fock(D)
             current = self._energy(D, F)
@@ -866,6 +886,8 @@ class GHF:
                 F_iter = _level_shifted(F_iter, D, shift)
             _eps, C = np.linalg.eigh(F_iter)
             D_new = self._density(C)
+            history.append(scf_record(it, start, current, energy,
+                                      float(np.max(np.abs(D_new - D)))))
             if abs(current - energy) < tol and np.max(np.abs(D_new - D)) < tol:
                 D, energy = D_new, current
                 converged = True
@@ -883,4 +905,4 @@ class GHF:
             mo_energies=np.real(eps), mo_coefficients=C, h_mo=h_mo,
             eri_mo=eri_mo, mode_coefficients=ordered, converged=converged,
             n_iterations=it,
-            kramers_pairing=pairing)
+            kramers_pairing=pairing, history=history)

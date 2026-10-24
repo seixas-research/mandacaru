@@ -112,6 +112,11 @@ class TestDirectHartreeFock:
         tensor = integrals.hartree_fock(n_electrons)
         assert staged.converged
         assert staged.coarse_iterations > 0
+        assert len(staged.history) == staged.n_iterations
+        assert [row["iter"] for row in staged.history] == list(range(1, staged.n_iterations + 1))
+        assert staged.history[staged.coarse_iterations]["stage"] == "exact"
+        assert all(after["time"] >= before["time"]
+                   for before, after in zip(staged.history, staged.history[1:]))
         assert staged.electronic_energy == pytest.approx(
             tensor.electronic_energy, abs=1e-9)
 

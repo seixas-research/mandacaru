@@ -14,6 +14,28 @@ from mandacaru import Mandacaru
 from mandacaru.algorithms import periodic_dft as pd
 
 
+def test_scf_logs_keep_the_recorded_clock_time_when_replayed(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    from mandacaru.utils import logging as run_logging
+    from mandacaru.utils.logging import Logger, parse_output
+
+    completed = iter([datetime(2026, 1, 1, 23, 59, 59),
+                      datetime(2026, 1, 2, 0, 0, 1)])
+    monkeypatch.setattr(run_logging, "datetime", SimpleNamespace(now=lambda: next(completed)))
+    start = run_logging.time.perf_counter()
+    history = [run_logging.scf_record(1, start, -1.0, np.inf, 0.1),
+               run_logging.scf_record(2, start, -1.1, -1.0, 1e-9)]
+    path = tmp_path / "replayed_scf.txt"
+    with Logger(str(path), banner=False) as logger:
+        logger.write_scf_iterations(history, "Ha")
+    rows = parse_output(str(path))["scf_iterations"]
+    assert [row["time"] for row in rows] == ["23:59:59", "00:00:01"]
+    assert history[1]["time"] >= history[0]["time"] >= 0.0
+    assert rows[0]["dE_Ha"] is None
+    assert rows[1]["dE_Ha"] == pytest.approx(-0.1)
+
+
 class TestSmearing:
     @pytest.mark.parametrize("method", pd.SMEARING_METHODS)
     def test_occupations_fall_from_one_to_zero(self, method):

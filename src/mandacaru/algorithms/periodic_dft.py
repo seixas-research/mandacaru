@@ -47,6 +47,7 @@ from ..utils.profiling import profile_stage
 
 import time
 from dataclasses import dataclass, field
+from ..utils.logging import scf_record
 
 import numpy as np
 from scipy.special import erfc
@@ -86,21 +87,6 @@ HYBRID_TOL = 1e-6
 # --------------------------------------------------------------------------- #
 # Densities of states.
 # --------------------------------------------------------------------------- #
-
-def scf_record(iteration: int, start: float, energy: float, previous: float,
-               residual: float, **extra) -> dict:
-    """One row of an SCF's iteration history (Hartree; ``time`` in seconds
-    since ``start``, a :func:`time.perf_counter` reading; ``dE`` is ``None``
-    on the first iteration)."""
-    record = {"iter": int(iteration), "time": time.perf_counter() - start,
-            "energy": float(energy),
-            "dE": None if not np.isfinite(previous) else float(energy
-                                                               - previous),
-            "residual": float(residual), **extra}
-    from ..utils.logging import notify_scf_iteration
-    notify_scf_iteration(record)
-    return record
-
 
 def loewdin_weights(S, C) -> np.ndarray:
     r"""``|S^{1/2} C|^2``: each state's weight on each orbital, ``(M, n)``.

@@ -76,6 +76,7 @@ were grown.
 
 ```python
 atoms.calc = Mandacaru(method="subspace-adapt-vqe",
+                       txt="subspace.txt",
                        basis="HAO",
                        grid_spacing=0.20,
                        pool="fermionic",
@@ -88,6 +89,11 @@ result = atoms.calc.result
 print(result.energies)                     # eV
 print(result.num_operators)                # operators in the shared ansatz
 ```
+
+The log uses the shared `[ITERATIONS]` table with local clock times and
+screening gradients displayed in eV. Its setup names the state weights;
+the iteration energy is the lowest level while the gradient screens the
+weighted objective. The summary includes the excited-state energies.
 
 ---
 
