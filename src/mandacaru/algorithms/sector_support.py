@@ -27,7 +27,7 @@ class SectorMixin:
     """The ``sector=`` option of a driver whose states may live in a sector."""
 
     #: Registers at least this wide use the particle-number sector by default.
-    SECTOR_AUTO_QUBITS = 16
+    SECTOR_AUTO_QUBITS = 10
     #: Drivers whose states cannot live in a sector override this.
     _supports_sector = True
     #: Largest ``sector.dim * len(terms)`` product worth checking for leakage.
@@ -56,7 +56,14 @@ class SectorMixin:
         internal = (self.ansatz_provider() is None
                     and self._sector_simulates_states())
         if isinstance(spec, str):
-            use = (int(n_qubits) >= self.SECTOR_AUTO_QUBITS
+            pool = getattr(self, "pool", None)
+            threshold = (16 if (pool is not None
+                                and not getattr(pool,
+                                                "conserves_particle_number",
+                                                True)
+                                and self.SECTOR_AUTO_QUBITS >= 10)
+                         else self.SECTOR_AUTO_QUBITS)
+            use = (int(n_qubits) >= threshold
                    and self._supports_sector and internal)
         else:
             use = bool(spec)
@@ -121,6 +128,16 @@ class SectorMixin:
 
         if affordable(qubit_h) and not sector.conserves(qubit_h):
             return "the Hamiltonian"
+        from ..circuits.pools import _STANDARD_POOL_CLASSES
+        pool = getattr(self, "pool", None)
+        if (pool is not None
+                and type(pool) in _STANDARD_POOL_CLASSES
+                and getattr(pool, "conserves_particle_number", False)
+                and getattr(pool, "conserves_spin_projection", True)
+                == getattr(self, "spin_conserving", True)
+                and getattr(self, "_taper_info", None) is None
+                and operators is getattr(self, "_pool_ops", None)):
+            return None
         for index, op in enumerate(operators):
             generator = getattr(op, "generator", op)
             if affordable(generator) and not sector.conserves(generator):

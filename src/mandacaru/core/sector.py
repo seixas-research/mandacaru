@@ -35,6 +35,7 @@ Bit convention: qubit ``k`` is bit ``n - 1 - k`` of the basis-state index
 
 from __future__ import annotations
 
+from functools import lru_cache
 from itertools import combinations
 from math import comb
 
@@ -56,6 +57,7 @@ MAX_SECTOR_QUBITS = 62
 LEAK_ATOL = 1e-10
 
 
+@lru_cache(maxsize=65536)
 def pauli_masks(label: str) -> tuple[int, int, int]:
     """``(flip, phase, n_y)`` bit masks of a Pauli string.
 
@@ -106,13 +108,96 @@ def flip_groups(operator: PauliSum) -> dict:
     return groups
 
 
+@lru_cache(maxsize=4096)
+def _mask_bit_positions(mask: int) -> tuple[tuple[int, ...], np.ndarray]:
+    positions = []
+    m = int(mask)
+    while m:
+        lsb = m & -m
+        positions.append(lsb.bit_length() - 1)
+        m ^= lsb
+    pos_tuple = tuple(positions)
+    n_buckets = 1 << len(pos_tuple)
+    buckets = np.arange(n_buckets, dtype=np.int64)
+    rep = np.zeros(n_buckets, dtype=np.int64)
+    for k, pos in enumerate(pos_tuple):
+        rep |= ((buckets >> k) & 1) << pos
+    rep.flags.writeable = False
+    return pos_tuple, rep
+
+
+def _extract_bits(states: np.ndarray,
+                  bit_positions: tuple[int, ...]) -> np.ndarray:
+    bucket = (states >> bit_positions[0]) & 1
+    if len(bit_positions) == 1:
+        return bucket
+    bucket = bucket.copy()
+    tmp = np.empty_like(states)
+    for k in range(1, len(bit_positions)):
+        np.right_shift(states, bit_positions[k], out=tmp)
+        tmp &= 1
+        tmp <<= k
+        bucket |= tmp
+    return bucket
+
+
+def _group_lut_info(members):
+    if len(members) <= 1:
+        return None
+    base_phase = members[0][0]
+    union_dz = 0
+    for phase, _ in members[1:]:
+        union_dz |= phase ^ base_phase
+    n_bits = union_dz.bit_count()
+    if n_bits == 0 or n_bits > 6:
+        return None
+    bit_positions, rep_states = _mask_bit_positions(union_dz)
+    lut = np.zeros(rep_states.size, dtype=complex)
+    for phase, factor in members:
+        dz = phase ^ base_phase
+        if not dz:
+            lut += factor
+        else:
+            p = np.bitwise_count(rep_states & np.int64(dz)) & 1
+            lut += factor * (1 - 2 * p.astype(np.int8))
+    lut[np.abs(lut) < 1e-15] = 0.0
+    nz_lut = lut != 0
+    return base_phase, bit_positions, lut, nz_lut
+
+
 def group_amplitudes(members, states: np.ndarray) -> np.ndarray:
     r"""Summed amplitude of one :func:`flip_groups` group on each of
     ``states``: :math:`\sum_t c_t\, s_t(x)`, the coefficient of
     :math:`|x \oplus f\rangle` in the group applied to :math:`|x\rangle`."""
+    if states.size == 0:
+        return np.zeros(0, dtype=complex)
+    if len(members) == 1:
+        phase, factor = members[0]
+        if not phase:
+            return np.full(states.size, factor, dtype=complex)
+        parity = np.bitwise_count(states & np.int64(phase)) & 1
+        return factor * (1 - 2 * parity.astype(np.int8))
+    lut_info = _group_lut_info(members)
+    if lut_info is not None:
+        base_phase, bit_positions, lut, nz_lut = lut_info
+        if not np.any(nz_lut):
+            return np.zeros(states.size, dtype=complex)
+        bucket = _extract_bits(states, bit_positions)
+        vals = lut[bucket]
+        if base_phase:
+            if not np.all(nz_lut):
+                active = nz_lut[bucket]
+                parity = np.bitwise_count(
+                    states[active] & np.int64(base_phase)) & 1
+                vals[active] *= (1 - 2 * parity.astype(np.int8))
+            else:
+                parity = np.bitwise_count(states & np.int64(base_phase)) & 1
+                vals *= (1 - 2 * parity.astype(np.int8))
+        return vals
     values = np.zeros(states.size, dtype=complex)
     counts = np.empty(states.size, dtype=np.uint8)
     scratch = np.empty(states.size, dtype=np.int64)
+    signs = np.empty(states.size, dtype=np.int8)
     for phase, factor in members:
         if not phase:
             # No Y and no Z: the sign is +1 on every state.
@@ -120,7 +205,9 @@ def group_amplitudes(members, states: np.ndarray) -> np.ndarray:
             continue
         np.bitwise_and(states, phase, out=scratch)
         np.bitwise_count(scratch, out=counts)
-        values += factor * (1 - 2 * (counts & 1).astype(np.int8))
+        counts &= 1
+        np.subtract(1, 2 * counts, out=signs, casting="unsafe")
+        values += factor * signs
     return values
 
 
@@ -187,6 +274,9 @@ def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
     """
     import scipy.sparse as sp
 
+    if not groups or dim == 0:
+        return sp.csr_matrix((dim, dim), dtype=complex)
+
     columns = np.arange(dim, dtype=np.int64)
 
     def reach(flip):
@@ -196,28 +286,147 @@ def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
             return rows, columns, states
         return rows[inside], columns[inside], states[inside]
 
+    if len(groups) == 1:
+        (flip, members), = groups.items()
+        rows, cols, kept = reach(flip)
+        if rows.size == 0:
+            return sp.csr_matrix((dim, dim), dtype=complex)
+        vals = group_amplitudes(members, kept)
+        nz = np.flatnonzero(vals)
+        if nz.size == 0:
+            return sp.csr_matrix((dim, dim), dtype=complex)
+        if nz.size != vals.size:
+            rows = rows[nz]
+            cols = cols[nz]
+            vals = vals[nz]
+        if flip and rows.size > 1:
+            order = np.argsort(rows)
+            rows = rows[order]
+            cols = cols[order]
+            vals = vals[order]
+        index_type = np.int32 if dim < np.iinfo(np.int32).max else np.int64
+        counts = np.zeros(dim, dtype=index_type)
+        counts[rows] = 1
+        indptr = np.empty(dim + 1, dtype=index_type)
+        indptr[0] = 0
+        np.cumsum(counts, out=indptr[1:])
+        matrix = sp.csr_matrix((vals, cols.astype(index_type), indptr),
+                               shape=(dim, dim))
+        matrix.has_sorted_indices = True
+        return matrix
+
+    lut_infos = {flip: _group_lut_info(members)
+                 for flip, members in groups.items()}
     counts = np.zeros(dim, dtype=np.int64)
     for flip in groups:
-        rows, _cols, _states = reach(flip)
+        info = lut_infos[flip]
+        if info is not None and not np.any(info[3]):
+            continue
+        rows = locate(states ^ np.int64(flip))
+        inside = rows >= 0
+        if not inside.all():
+            rows = rows[inside]
+            kept = states[inside]
+        else:
+            kept = states
+        if rows.size == 0:
+            continue
+        if info is not None and not np.all(info[3]):
+            active = info[3][_extract_bits(kept, info[1])]
+            rows = rows[active]
         counts[rows] += 1
     indptr = np.zeros(dim + 1, dtype=np.int64)
     np.cumsum(counts, out=indptr[1:])
     nnz = int(indptr[-1])
+    if nnz == 0:
+        return sp.csr_matrix((dim, dim), dtype=complex)
     index_type = np.int32 if nnz < np.iinfo(np.int32).max else np.int64
     indices = np.empty(nnz, dtype=index_type)
     data = np.empty(nnz, dtype=complex)
     fill = indptr[:-1].copy()
     for flip, members in groups.items():
+        info = lut_infos[flip]
+        if info is not None and not np.any(info[3]):
+            continue
         rows, cols, kept = reach(flip)
+        if rows.size == 0:
+            continue
+        if info is not None:
+            base_phase, bit_positions, lut, nz_lut = info
+            bucket = _extract_bits(kept, bit_positions)
+            if not np.all(nz_lut):
+                active = nz_lut[bucket]
+                rows = rows[active]
+                cols = cols[active]
+                kept = kept[active]
+                bucket = bucket[active]
+            vals = lut[bucket]
+            if base_phase and kept.size:
+                parity = np.bitwise_count(kept & np.int64(base_phase)) & 1
+                vals = np.where(parity, -vals, vals)
+        else:
+            vals = group_amplitudes(members, kept)
         slot = fill[rows]
         indices[slot] = cols
-        data[slot] = group_amplitudes(members, kept)
+        data[slot] = vals
         fill[rows] += 1
     matrix = sp.csr_matrix((data, indices, indptr.astype(index_type)),
                            shape=(dim, dim))
     matrix.sort_indices()
     matrix.eliminate_zeros()
     return matrix
+
+
+_EMPTY_INT64 = np.zeros(0, dtype=np.int64)
+
+
+@lru_cache(maxsize=32)
+def _sector_basis_cached(n_qubits: int, num_particles: tuple[int, int],
+                         mapping: str, spin_conserving: bool):
+    n_alpha, n_beta = num_particles
+    n_modes = n_qubits + (2 if mapping == "parity_reduced" else 0)
+    M = n_modes // 2
+    n_total = n_alpha + n_beta
+    dim = (comb(M, n_alpha) * comb(M, n_beta) if spin_conserving
+           else comb(2 * M, n_total))
+    if spin_conserving:
+        alpha = np.zeros((comb(M, n_alpha), M), dtype=np.int64)
+        for i, occupied in enumerate(combinations(range(M), n_alpha)):
+            alpha[i, list(occupied)] = 1
+        beta = np.zeros((comb(M, n_beta), M), dtype=np.int64)
+        for i, occupied in enumerate(combinations(range(M), n_beta)):
+            beta[i, list(occupied)] = 1
+        occupations = np.concatenate(
+            [np.repeat(alpha, beta.shape[0], axis=0),
+             np.tile(beta, (alpha.shape[0], 1))], axis=1)
+    else:
+        occupations = np.zeros((dim, 2 * M), dtype=np.int64)
+        for i, occupied in enumerate(combinations(range(2 * M), n_total)):
+            occupations[i, list(occupied)] = 1
+
+    # Qubit register q = beta_matrix . x (mod 2), as reference_qubit_bits.
+    encoding = _encoding_matrix(mapping, n_modes).astype(np.int64)
+    bits = (occupations @ encoding.T) % 2
+    if mapping == "parity_reduced":
+        drop = set(parity_tapered_qubits(n_modes))
+        bits = bits[:, [k for k in range(n_modes) if k not in drop]]
+    weights = np.int64(1) << (np.int64(n_qubits) - 1
+                              - np.arange(n_qubits, dtype=np.int64))
+    index = bits @ weights
+    order = np.argsort(index)
+    indices = index[order]
+    occupations = occupations[order]
+    if np.unique(indices).size != indices.size:
+        raise RuntimeError("two determinants share a basis state; the "
+                           "encoding is not invertible on this sector")
+    indices.flags.writeable = False
+    occupations.flags.writeable = False
+    lookup_table = None
+    if n_qubits <= 16:
+        lookup_table = np.full(1 << n_qubits, -1, dtype=np.int32)
+        lookup_table[indices] = np.arange(indices.size, dtype=np.int32)
+        lookup_table.flags.writeable = False
+    return indices, occupations, lookup_table
 
 
 class ParticleSector:
@@ -282,36 +491,13 @@ class ParticleSector:
                 f"the {self.num_particles} sector of {M} orbitals has {dim} "
                 f"states (limit {MAX_SECTOR_DIMENSION})")
 
-        if self.spin_conserving:
-            alpha = np.zeros((comb(M, n_alpha), M), dtype=np.int64)
-            for i, occupied in enumerate(combinations(range(M), n_alpha)):
-                alpha[i, list(occupied)] = 1
-            beta = np.zeros((comb(M, n_beta), M), dtype=np.int64)
-            for i, occupied in enumerate(combinations(range(M), n_beta)):
-                beta[i, list(occupied)] = 1
-            occupations = np.concatenate(
-                [np.repeat(alpha, beta.shape[0], axis=0),
-                 np.tile(beta, (alpha.shape[0], 1))], axis=1)
-        else:
-            occupations = np.zeros((dim, 2 * M), dtype=np.int64)
-            for i, occupied in enumerate(combinations(range(2 * M), n_total)):
-                occupations[i, list(occupied)] = 1
-
-        # Qubit register q = beta_matrix . x (mod 2), as reference_qubit_bits.
-        encoding = _encoding_matrix(self.mapping, self.n_modes).astype(np.int64)
-        bits = (occupations @ encoding.T) % 2
-        if self.mapping == "parity_reduced":
-            drop = set(parity_tapered_qubits(self.n_modes))
-            bits = bits[:, [k for k in range(self.n_modes) if k not in drop]]
-        weights = np.int64(1) << (np.int64(self.n_qubits) - 1
-                                  - np.arange(self.n_qubits, dtype=np.int64))
-        index = bits @ weights
-        order = np.argsort(index)
-        self.indices = index[order]
-        self.occupations = occupations[order]
-        if np.unique(self.indices).size != self.indices.size:
-            raise RuntimeError("two determinants share a basis state; the "
-                               "encoding is not invertible on this sector")
+        indices, occupations, lookup_table = _sector_basis_cached(
+            self.n_qubits, self.num_particles, self.mapping,
+            self.spin_conserving)
+        self.indices = indices
+        self.occupations = occupations
+        if lookup_table is not None:
+            self.__dict__["_lookup_table"] = lookup_table
 
     # -- lookup ----------------------------------------------------------- #
 
@@ -390,6 +576,22 @@ class ParticleSector:
 
     # -- states ----------------------------------------------------------- #
 
+    def _outside_states(self, flip: int) -> np.ndarray:
+        cache = self.__dict__.get("_outside_cache")
+        if cache is not None:
+            cached = cache.get(flip)
+            if cached is not None:
+                return cached
+        outside = self.positions(self.indices ^ np.int64(flip)) < 0
+        states = self.indices[outside] if outside.any() else _EMPTY_INT64
+        if self.dim <= 10_000:
+            if cache is None:
+                cache = {}
+                self.__dict__["_outside_cache"] = cache
+            if len(cache) < 2048:
+                cache[flip] = states
+        return states
+
     def conserves(self, operator: PauliSum, atol: float = LEAK_ATOL) -> bool:
         r"""Whether ``operator`` maps the sector into itself.
 
@@ -413,10 +615,10 @@ class ParticleSector:
         for flip, members in flip_groups(operator).items():
             if not flip:
                 continue                  # diagonal: every image is its source
-            outside = self.positions(self.indices ^ np.int64(flip)) < 0
-            if not outside.any():
+            outside_states = self._outside_states(flip)
+            if outside_states.size == 0:
                 continue
-            values = group_amplitudes(members, self.indices[outside])
+            values = group_amplitudes(members, outside_states)
             if np.any(np.abs(values) > atol):
                 return False
         return True

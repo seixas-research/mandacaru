@@ -368,6 +368,8 @@ class HamiltonianVariationalAnsatz:
         self.mapped_groups = tuple(mapped_groups)
         self._matrices = tuple((-1j * group.to_sparse_matrix()).tocsr()
                                for group in self.mapped_groups)
+        self._matrix_traces = tuple(complex(m.diagonal().sum())
+                                    for m in self._matrices)
         self._occupied_qubits = tuple(i for i, bit in enumerate(bits) if bit)
         index = sum(int(bit) << (self.n_qubits - 1 - qubit)
                     for qubit, bit in enumerate(bits))
@@ -544,11 +546,13 @@ class HamiltonianVariationalAnsatz:
             raise ValueError("reference state has the wrong register dimension")
         out = out.copy()
         if self.evolution == "exact":
-            for angle, generator in zip(angles, self._matrices * self.layers):
+            for angle, generator, trace in zip(
+                    angles, self._matrices * self.layers,
+                    self._matrix_traces * self.layers):
                 if angle:
                     out = expm_multiply(
                         angle * generator, out,
-                        traceA=angle * generator.diagonal().sum())
+                        traceA=angle * trace)
             return out
         indices = np.arange(out.shape[0], dtype=np.int64)
         for label, weight, logical in self._rotations:

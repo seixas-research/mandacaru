@@ -52,6 +52,7 @@ any encoding.  Bravyi-Kitaev's Fenwick structure makes ``|U|, |P|, |F|`` all
 
 from __future__ import annotations
 
+from functools import lru_cache
 
 import numpy as np
 
@@ -148,15 +149,18 @@ class PauliSum:
 
     def __add__(self, other: "PauliSum") -> "PauliSum":
         width = self._shared_width(other, "add")
-        out = PauliSum(dict(self.terms), num_qubits=width)
+        terms = dict(self.terms)
         for label, coeff in other.terms.items():
-            out.terms[label] = out.terms.get(label, 0j) + coeff
-        return out
+            terms[label] = terms.get(label, 0j) + coeff
+        return PauliSum._from_valid_terms(terms, num_qubits=width)
 
     def __mul__(self, scalar: complex) -> "PauliSum":
-        return PauliSum({label: coeff * scalar
-                         for label, coeff in self.terms.items()},
-                        num_qubits=self._num_qubits)
+        value = complex(scalar)
+        if not (np.isfinite(value.real) and np.isfinite(value.imag)):
+            raise ValueError(f"non-finite scalar {scalar!r}")
+        return PauliSum._from_valid_terms(
+            {label: coeff * value for label, coeff in self.terms.items()},
+            num_qubits=self._num_qubits)
 
     __rmul__ = __mul__
 
@@ -193,22 +197,27 @@ class PauliSum:
 
     def simplify(self, atol: float = 1e-12) -> "PauliSum":
         """Drop terms with negligible coefficient, keeping the register width."""
-        return PauliSum({l: c for l, c in self.terms.items() if abs(c) > atol},
-                        num_qubits=self.num_qubits or None)
+        return PauliSum._from_valid_terms(
+            {l: c for l, c in self.terms.items() if abs(c) > atol},
+            num_qubits=self.num_qubits or None)
 
     def is_hermitian(self, atol: float = 1e-9) -> bool:
         return all(abs(c.imag) < atol for c in self.simplify().terms.values())
 
     def to_matrix(self) -> np.ndarray:
         """Dense matrix (qubit 0 is the leftmost Kronecker factor)."""
+        from .matrix_free import register_indices
+        from .sector import flip_groups, group_amplitudes
+
         n = self.num_qubits
-        dim = 2 ** n
+        dim = 1 << n
         mat = np.zeros((dim, dim), dtype=complex)
-        for label, coeff in self.terms.items():
-            m = np.array([[1.0 + 0j]])
-            for ch in label:
-                m = np.kron(m, _SINGLE[ch])
-            mat += coeff * m
+        if not self.terms:
+            return mat
+        cols = register_indices(n)
+        for flip, members in flip_groups(self).items():
+            rows = cols ^ np.int64(flip) if flip else cols
+            mat[rows, cols] = group_amplitudes(members, cols)
         return mat
 
     def to_sparse_matrix(self):
@@ -223,11 +232,13 @@ class PauliSum:
         :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE` for larger active
         spaces.
         """
+        from .matrix_free import register_indices
         from .sector import csr_from_flip_groups, flip_groups
 
-        dim = 1 << self.num_qubits
+        n = self.num_qubits
+        dim = 1 << n
         return csr_from_flip_groups(
-            flip_groups(self), np.arange(dim, dtype=np.int64),
+            flip_groups(self), register_indices(n),
             lambda images: images, dim)
 
     def hermitian_part(self) -> "PauliSum":
@@ -278,40 +289,56 @@ def _gf2_inverse(mat: np.ndarray) -> np.ndarray:
     return inv
 
 
-def _encoding_matrix(method: str, n: int) -> np.ndarray:
-    method = _base_method(method)
+@lru_cache(maxsize=64)
+def _encoding_matrix_cached(method: str, n: int) -> np.ndarray:
     if method == "jordan_wigner":
-        return np.eye(n, dtype=np.int8)
-    if method == "parity":
-        return np.tril(np.ones((n, n), dtype=np.int8))
-    if method == "bravyi_kitaev":
+        beta = np.eye(n, dtype=np.int8)
+    elif method == "parity":
+        beta = np.tril(np.ones((n, n), dtype=np.int8))
+    elif method == "bravyi_kitaev":
         beta = np.zeros((n, n), dtype=np.int8)
         for j in range(n):
             i = j
             while i < n:
                 beta[i, j] = 1
                 i = i | (i + 1)         # Fenwick-tree update ancestor
-        return beta
-    raise ValueError(f"unknown mapping method {method!r}")
+    else:
+        raise ValueError(f"unknown mapping method {method!r}")
+    beta.flags.writeable = False
+    return beta
 
 
+def _encoding_matrix(method: str, n: int) -> np.ndarray:
+    return _encoding_matrix_cached(_base_method(method), int(n))
+
+
+@lru_cache(maxsize=64)
+def _encoding_inverse(method: str, n: int) -> np.ndarray:
+    inv = _gf2_inverse(_encoding_matrix(method, int(n)))
+    inv.flags.writeable = False
+    return inv
+
+
+@lru_cache(maxsize=64)
 def _mapping_sets(method: str, n: int):
     """Return per-mode ``(U, P, R)`` sets (R = parity-set XOR flip-set)."""
-    beta = _encoding_matrix(method, n)
-    inv = _gf2_inverse(beta)
+    base = _base_method(method)
+    n = int(n)
+    beta = _encoding_matrix_cached(base, n)
+    inv = _encoding_inverse(base, n)
     update, parity, remainder = [], [], []
     for j in range(n):
-        U = {i for i in range(n) if beta[i, j] and i != j}
-        F = {i for i in range(n) if inv[j, i] and i != j}
+        U = frozenset(i for i in range(n) if beta[i, j] and i != j)
+        F = frozenset(i for i in range(n) if inv[j, i] and i != j)
         row = np.zeros(n, dtype=np.int8)
         for k in range(j):                     # parity of modes 0..j-1
             row ^= inv[k]
-        P = {i for i in range(n) if row[i]}
+        P = frozenset(i for i in range(n) if row[i])
         R = P ^ F                              # symmetric difference
         update.append(U)
         parity.append(P)
         remainder.append(R)
-    return update, parity, remainder
+    return tuple(update), tuple(parity), tuple(remainder)
 
 
 def _ladder_pauli(n: int, j: int, dagger: bool,
@@ -371,6 +398,40 @@ def _qubit_ladder_pauli(n: int, j: int, dagger: bool,
                     num_qubits=n)
 
 
+@lru_cache(maxsize=512)
+def _qubit_ladder_pauli_cached(base_method: str, n: int, j: int,
+                               dagger: bool) -> PauliSum:
+    update, parity, remainder = _mapping_sets(base_method, n)
+    return _qubit_ladder_pauli(
+        n, j, dagger, update[j], parity[j] ^ remainder[j])
+
+
+@lru_cache(maxsize=8192)
+def _qubit_excitation_terms(modes_out: tuple[int, ...],
+                            modes_in: tuple[int, ...],
+                            n: int, canonical: str,
+                            num_particles: tuple[int, int] | None
+                            ) -> tuple[tuple[str, complex], ...]:
+    reduced = canonical == "parity_reduced"
+    base_method = _base_method(canonical)
+    term = PauliSum.identity(n)
+    for j in modes_out:
+        term = term.compose(_qubit_ladder_pauli_cached(
+            base_method, n, j, True))
+    for j in modes_in:
+        term = term.compose(_qubit_ladder_pauli_cached(
+            base_method, n, j, False))
+    # A Pauli string is Hermitian, so the adjoint only conjugates coefficients.
+    adjoint = PauliSum({label: np.conj(coeff)
+                        for label, coeff in term.terms.items()}, num_qubits=n)
+    generator = (term + (-1.0) * adjoint).simplify()
+    if reduced:
+        if num_particles is None:
+            raise ValueError("parity_reduced requires num_particles")
+        generator = two_qubit_reduce(generator, n, num_particles)
+    return tuple(generator.terms.items())
+
+
 def qubit_excitation(modes_out, modes_in, n_modes: int,
                      method: str = "jordan_wigner",
                      num_particles: tuple[int, int] | None = None) -> PauliSum:
@@ -398,30 +459,16 @@ def qubit_excitation(modes_out, modes_in, n_modes: int,
         fixed parity qubits.  A qubit excitation conserves both particle
         numbers, so the tapering is exact.
     """
-    method = _canonical_method(method)
-    reduced = method == "parity_reduced"
-    base_method = _base_method(method)
+    canonical = _canonical_method(method)
     n = int(n_modes)
-    update, parity, remainder = _mapping_sets(base_method, n)
-    term = PauliSum.identity(n)
-    for j in modes_out:
-        # R = P XOR F, so F = P XOR R.
-        term = term.compose(_qubit_ladder_pauli(
-            n, int(j), True, update[int(j)],
-            parity[int(j)] ^ remainder[int(j)]))
-    for j in modes_in:
-        term = term.compose(_qubit_ladder_pauli(
-            n, int(j), False, update[int(j)],
-            parity[int(j)] ^ remainder[int(j)]))
-    # A Pauli string is Hermitian, so the adjoint only conjugates coefficients.
-    adjoint = PauliSum({label: np.conj(coeff)
-                        for label, coeff in term.terms.items()}, num_qubits=n)
-    generator = (term + (-1.0) * adjoint).simplify()
-    if reduced:
-        if num_particles is None:
-            raise ValueError("parity_reduced requires num_particles")
-        generator = two_qubit_reduce(generator, n, num_particles)
-    return generator
+    np_key = (None if num_particles is None
+              else (int(num_particles[0]), int(num_particles[1])))
+    terms = _qubit_excitation_terms(
+        tuple(int(j) for j in modes_out),
+        tuple(int(j) for j in modes_in),
+        n, canonical, np_key)
+    width = n - 2 if canonical == "parity_reduced" else n
+    return PauliSum._from_valid_terms(dict(terms), num_qubits=width)
 
 
 # --------------------------------------------------------------------------- #
@@ -775,7 +822,7 @@ def reencode_pauli(operator: PauliSum, mapping: str, *,
     canonical = resolve_mapping(mapping)
     n = operator.num_qubits
     beta = _encoding_matrix(canonical, n)
-    inverse = _gf2_inverse(beta)
+    inverse = _encoding_inverse(canonical, n)
     out: dict[str, complex] = {}
     for label, coefficient in operator.terms.items():
         x = np.fromiter((letter in "XY" for letter in label), dtype=np.int8)

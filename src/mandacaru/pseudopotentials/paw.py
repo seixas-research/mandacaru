@@ -1162,8 +1162,17 @@ class PAWDataset(PseudoPotential):
         """
         spline = _local_spline(self)
         radius = np.asarray(radius, dtype=float)
-        inside = radius <= self.r[-1]
-        values = spline(np.clip(radius, self.r[0], self.r[-1]))
+        r0 = float(self.r[0])
+        r_max = float(self.r[-1])
+        if radius.ndim > 0 and radius.size > 0:
+            r_min_val = float(radius.min())
+            r_max_val = float(radius.max())
+            if r_min_val >= r0 and r_max_val <= r_max:
+                return spline(radius)
+            if r_min_val > r_max:
+                return -self.valence_charge / radius
+        inside = radius <= r_max
+        values = spline(np.clip(radius, r0, r_max))
         return np.where(inside, values,
                         -self.valence_charge / np.maximum(radius, 1e-12))
 
@@ -1173,9 +1182,18 @@ class PAWDataset(PseudoPotential):
         potential is flat), ``Z_ion/r^2`` beyond it."""
         spline = _local_spline(self)
         radius = np.asarray(radius, dtype=float)
-        inside = radius <= self.r[-1]
-        values = spline(np.clip(radius, self.r[0], self.r[-1]), 1)
-        values = np.where(radius < self.r[0], 0.0, values)
+        r0 = float(self.r[0])
+        r_max = float(self.r[-1])
+        if radius.ndim > 0 and radius.size > 0:
+            r_min_val = float(radius.min())
+            r_max_val = float(radius.max())
+            if r_min_val >= r0 and r_max_val <= r_max:
+                return spline(radius, 1)
+            if r_min_val > r_max:
+                return self.valence_charge / (radius * radius)
+        inside = radius <= r_max
+        values = spline(np.clip(radius, r0, r_max), 1)
+        values = np.where(radius < r0, 0.0, values)
         return np.where(inside, values,
                         self.valence_charge / np.maximum(radius, 1e-12) ** 2)
 
@@ -2546,7 +2564,7 @@ class PAWIntegrals(MolecularIntegrals):
 
     @profile_stage('integration: PAW short-range local quadrature')
     def short_range_local_matrices(self, *, gradients: bool = False,
-                                   delta=None):
+                                   delta=None, values: bool = True):
         """``({atom: I_A}, {atom: G_A})`` of the short-range local term.
 
         ``I_A`` is atom ``A``'s sphere integral and ``G_A[p, q, k]`` the same
@@ -2565,7 +2583,8 @@ class PAWIntegrals(MolecularIntegrals):
         return short_range_matrices(
             self.basis, centers, self.datasets, self.local_split_width(),
             gradients=gradients,
-            delta=DEFAULT_DELTA if delta is None else float(delta))
+            delta=DEFAULT_DELTA if delta is None else float(delta),
+            values=values)
 
     def short_range_local(self):
         r"""``sum_A int phi_p^* phi_q v^{sr}_A``, by atom-centered quadrature.
@@ -2796,20 +2815,11 @@ class PAWIntegrals(MolecularIntegrals):
             self._U = U
         return self._U
 
-    def compensation_ionic_at(self, centers) -> dict:
-        r"""``{(atom, L, M): int ghat_{A,LM} sum_{B != A} v^ion_B}`` (Hartree)
-        for atoms at ``centers`` (Bohr).
-
-        Integrated on an **atom-centered** spherical quadrature, not the grid:
-        the shape spans only a few grid points at grid_spacing = 0.20 Angstrom, so a grid
-        sum would be inaccurate and would put an egg-box straight into the
-        force.  The on-site term (``B = A``) is left out -- the isolated atom's
-        own compensation-ion interaction is already inside the dataset, which
-        is calibrated to reproduce the reference atom's energy.
-
-        Taking ``centers`` as an argument is what lets the force re-evaluate it
-        at displaced positions (:func:`~mandacaru.algorithms.pseudo_forces._ionic_shift`).
-        """
+    def _compensation_ionic_quadrature(self) -> dict:
+        """Per-atom spherical quadrature tables for :meth:`compensation_ionic_at`."""
+        cached = getattr(self, "_Vion_quadrature", None)
+        if cached is not None:
+            return cached
         from .multipoles import shape_function
         from ..basis._angular import spherical_harmonic
 
@@ -2826,28 +2836,106 @@ class PAWIntegrals(MolecularIntegrals):
         theta = np.arccos(np.clip(direction[:, 2], -1.0, 1.0))
         phi = np.arctan2(direction[:, 1], direction[:, 0])
 
-        out = {}
+        per_atom: dict = {}
         for atom, L, M in sorted(self.compensation_moments()):
+            per_atom.setdefault(atom, []).append((int(L), int(M)))
+
+        quadrature = {}
+        for atom, channels_a in per_atom.items():
             dataset = self.datasets[atom]
             r_g = float(dataset.compensation_radius)
             radius = 0.5 * r_g * (x + 1.0)
             weight = 0.5 * r_g * wx * radius * radius
-            points = (np.asarray(centers[atom], dtype=float)[None, None, :]
-                      + radius[:, None, None] * direction[None, :, :])
-            shape = shape_function(radius, r_g, L)
-            harmonic = spherical_harmonic(int(L), int(M), theta, phi,
-                                          real=self.real_harmonics)
-            total = 0.0
+            offsets = (radius[:, None, None]
+                       * direction[None, :, :]).reshape(-1, 3)
+            shapes = {L: shape_function(radius, r_g, L)
+                      for L, _M in set(channels_a)}
+            rows = []
+            for L, M in channels_a:
+                harmonic = spherical_harmonic(L, M, theta, phi,
+                                              real=self.real_harmonics)
+                rows.append(((weight * shapes[L])[:, None]
+                             * (w_ang * harmonic)[None, :]).ravel())
+            quadrature[atom] = (channels_a, offsets, np.stack(rows))
+        self._Vion_quadrature = quadrature
+        return quadrature
+
+    def compensation_ionic_at(self, centers) -> dict:
+        r"""``{(atom, L, M): int ghat_{A,LM} sum_{B != A} v^ion_B}`` (Hartree)
+        for atoms at ``centers`` (Bohr).
+
+        Integrated on an **atom-centered** spherical quadrature, not the grid:
+        the shape spans only a few grid points at grid_spacing = 0.20 Angstrom, so a grid
+        sum would be inaccurate and would put an egg-box straight into the
+        force.  The on-site term (``B = A``) is left out -- the isolated atom's
+        own compensation-ion interaction is already inside the dataset, which
+        is calibrated to reproduce the reference atom's energy.
+
+        Taking ``centers`` as an argument is what lets the force re-evaluate it
+        at displaced positions (:func:`~mandacaru.algorithms.pseudo_forces._ionic_shift`).
+        """
+        quadrature = self._compensation_ionic_quadrature()
+        centers_arr = [np.asarray(c, dtype=float) for c in centers]
+        out = {}
+        for atom, (channels_a, offsets, weighted) in quadrature.items():
+            points = centers_arr[atom][None, :] + offsets
+            v_sum = np.zeros(offsets.shape[0], dtype=float)
             for other, neighbor in enumerate(self.datasets):
                 if other == atom:
                     continue
-                center = np.asarray(centers[other], dtype=float)
-                distance = np.linalg.norm(points - center[None, None, :], axis=2)
-                v = neighbor.local_potential(distance)
-                total = total + np.sum(weight[:, None] * w_ang[None, :]
-                                       * shape[:, None] * harmonic[None, :]
-                                       * v)
-            out[(atom, L, M)] = total
+                distance = np.linalg.norm(
+                    points - centers_arr[other][None, :], axis=1)
+                v_sum += neighbor.local_potential(distance)
+            totals = weighted @ v_sum
+            for (L, M), total in zip(channels_a, totals):
+                out[(atom, L, M)] = total
+        return out
+
+    def compensation_ionic_gradients(self, centers, step: float) -> dict:
+        r"""``{(atom, k): {channel: dV}}`` for all atoms and axes at once.
+
+        Moving ``atom`` along ``k`` changes both its own compensation shapes'
+        integrals against every neighbor's ionic potential and every
+        neighbor's compensation shapes' integrals against ``atom``'s ionic
+        potential.  Each ordered pair ``(owner, other)`` depends only on
+        ``centers[owner] - centers[other]``, so one pair evaluation supplies
+        both derivatives with opposite signs.
+        """
+        quadrature = self._compensation_ionic_quadrature()
+        centers_arr = [np.asarray(c, dtype=float) for c in centers]
+        channels = sorted(self.compensation_moments())
+        n_atoms = len(self.datasets)
+        zero = 0.0 if self.real_harmonics else 0.0j
+        out = {(a, k): {c: zero for c in channels}
+               for a in range(n_atoms) for k in range(3)}
+        step = float(step)
+        two_s = 2.0 * step
+        s2 = step * step
+        by_dataset: dict = {}
+        for other, neighbor in enumerate(self.datasets):
+            by_dataset.setdefault(id(neighbor), (neighbor, []))[1].append(other)
+        for owner, (channels_a, offsets, weighted) in quadrature.items():
+            c_owner = centers_arr[owner]
+            for neighbor, others in by_dataset.values():
+                valid = [o for o in others if o != owner]
+                if not valid:
+                    continue
+                other_c = np.stack([centers_arr[o] for o in valid])
+                rel = (c_owner[None, :] - other_c)[:, None, :] + offsets[None, :, :]
+                r2 = np.sum(rel * rel, axis=2)[:, :, None]
+                d_both = np.sqrt(np.maximum(
+                    np.stack([r2 + two_s * rel + s2, r2 - two_s * rel + s2]),
+                    0.0))
+                v_both = neighbor.local_potential(d_both)
+                dv = (v_both[0] - v_both[1]) / two_s          # (n_valid, N_quad, 3)
+                for idx_o, other in enumerate(valid):
+                    slopes = weighted @ dv[idx_o]
+                    for i, (L, M) in enumerate(channels_a):
+                        ch = (owner, L, M)
+                        for k in range(3):
+                            val = slopes[i, k]
+                            out[(owner, k)][ch] = out[(owner, k)][ch] + val
+                            out[(other, k)][ch] = out[(other, k)][ch] - val
         return out
 
     @profile_stage('integration: PAW ionic compensation')

@@ -592,6 +592,20 @@ class KohnSham:
             gradient = gradient + core_fraction * self._core_gradient()
         return gradient
 
+    def _meta_fields(self, D, core_fraction: float = 1.0):
+        """``(tau, gradient_field)`` sharing ``D @ dphi.conj()`` across both."""
+        tau = np.zeros(self.orbitals.shape[1])
+        grads = []
+        phi = self.orbitals
+        for dphi in self._orbital_gradients:
+            Ddphi = D @ dphi.conj()
+            tau += np.real(np.sum(dphi * Ddphi, axis=0))
+            grads.append(2.0 * np.real(np.sum(phi * Ddphi, axis=0)))
+        gradient = np.stack(grads)
+        if self.core_density is not None:
+            gradient = gradient + core_fraction * self._core_gradient()
+        return 0.5 * tau, gradient
+
     def _core_gradient(self) -> np.ndarray:
         """The grid's derivative of the partial core, taken once."""
         if self._core_density_gradient is None:
@@ -645,10 +659,9 @@ class KohnSham:
             rho = rho + self.core_density
         tau = gradient_field = None
         if self.meta:
-            tau = self.kinetic_energy_density(D)
+            tau, gradient_field = self._meta_fields(D)
             if self._core_tau is not None:
                 tau = tau + self._core_tau
-            gradient_field = self.density_gradient(D)
         terms = xc_grid.evaluate(self.grid, rho, self.functional,
                                  relativistic=self.relativistic, tau=tau,
                                  screening=self.screening,
@@ -842,23 +855,24 @@ class UnrestrictedKohnSham(KohnSham):
             0.5 * self.core_density
         rho = []
         tau = []
+        grad_fields = []
         valence = []
         for D in (Da, Db):
             valence.append(self.density(D))
             rho.append(valence[-1] + (0.0 if half_core is None
                                       else half_core))
             if self.meta:
-                t = self.kinetic_energy_density(D)
+                t, gf = self._meta_fields(D, 0.5)
                 tau.append(t + (0.0 if self._core_tau is None
                                 else 0.5 * self._core_tau))
+                grad_fields.append(gf)
         terms = xc_grid.evaluate_spin(
             self.grid, rho[0], rho[1], self.functional,
             relativistic=self.relativistic,
             tau_up=tau[0] if self.meta else None,
             tau_dn=tau[1] if self.meta else None, screening=self.screening,
             exchange_densities=valence,
-            gradient_fields=(tuple(self.density_gradient(D, 0.5)
-                                   for D in (Da, Db)) if self.meta else None))
+            gradient_fields=tuple(grad_fields) if self.meta else None)
         phi, dV = self.orbitals, self.grid.dV
         energy = terms.energy
         exact = 0.0
@@ -1260,7 +1274,7 @@ class KohnShamField:
 
     def __init__(self, grid, psi, potential, tau_potential, core_functions,
                  core_tau_functions, centers, delta, core_potential=None,
-                 gradient_potential=None):
+                 gradient_potential=None, grad_psi=None):
         self.grid = grid
         self.psi = psi
         self.v = potential
@@ -1275,9 +1289,12 @@ class KohnShamField:
         self.core_tau_functions = core_tau_functions
         self.centers = centers
         self.delta = float(delta)
-        self.grad_psi = (xc_grid.gradient(grid, psi)
-                         if tau_potential is not None
-                         or gradient_potential is not None else None)
+        if grad_psi is not None:
+            self.grad_psi = grad_psi
+        else:
+            self.grad_psi = (xc_grid.gradient(grid, psi)
+                             if tau_potential is not None
+                             or gradient_potential is not None else None)
 
     def matrix(self) -> np.ndarray:
         """``V_xc`` over the AO basis (Hartree)."""
@@ -1296,18 +1313,41 @@ class KohnShamField:
                 V = V + 0.5 * ((d.conj() * v_tau) @ d.T) * dV
         return 0.5 * (V + V.conj().T)
 
-    def _pulay_with(self, v, v_tau, dpsi, w=None) -> np.ndarray:
+    def _pulay_cross(self, v, v_tau, dpsi, w=None, grad_dpsi=None) -> np.ndarray:
         psi, dV = self.psi, self.grid.dV
-        out = ((dpsi.conj() * v) @ psi.T + (psi.conj() * v) @ dpsi.T) * dV
+        cross = ((dpsi.conj() * v) @ psi.T) * dV
+        if (w is not None or v_tau is not None) and grad_dpsi is None:
+            grad_dpsi = xc_grid.gradient(self.grid, dpsi)
         if w is not None:
-            out = out + xc_grid.gradient_term_derivative(
-                self.grid, psi, self.grad_psi, dpsi, w)
+            for component, dphi, dmoved in zip(w, self.grad_psi, grad_dpsi):
+                cross = cross + ((dpsi.conj() * component) @ dphi.T
+                                 + (dmoved.conj() * component) @ psi.T) * dV
         if v_tau is not None:
             w_tau = 0.5 * v_tau
-            for d, dd in zip(self.grad_psi, xc_grid.gradient(self.grid, dpsi)):
-                out = out + ((dd.conj() * w_tau) @ d.T
-                             + (d.conj() * w_tau) @ dd.T) * dV
-        return out
+            for d, dd in zip(self.grad_psi, grad_dpsi):
+                cross = cross + ((dd.conj() * w_tau) @ d.T) * dV
+        return cross
+
+    def _pulay_with(self, v, v_tau, dpsi, w=None, grad_dpsi=None) -> np.ndarray:
+        cross = self._pulay_cross(v, v_tau, dpsi, w, grad_dpsi=grad_dpsi)
+        return cross + cross.conj().T
+
+    def pulay_tables(self, derivatives) -> list[np.ndarray]:
+        """Per Cartesian axis ``k``, the one-sided Pulay cross matrix for all orbitals."""
+        need_grad = self.w is not None or self.v_tau is not None
+        tables = []
+        for k in range(3):
+            dpsi_k = derivatives[k]
+            grad_k = xc_grid.gradient(self.grid, dpsi_k) if need_grad else None
+            tables.append(self._pulay_cross(self.v, self.v_tau, dpsi_k,
+                                            self.w, grad_dpsi=grad_k))
+        return tables
+
+    @staticmethod
+    def pulay_from_table(table: np.ndarray, own: np.ndarray) -> np.ndarray:
+        out = np.zeros_like(table)
+        out[own, :] = table[own, :]
+        return out + out.conj().T
 
     def hellmann_feynman(self, atom: int, k: int) -> float:
         function = self.core_functions[atom]
@@ -1342,11 +1382,12 @@ class UnrestrictedKohnShamField(KohnShamField):
 
     def __init__(self, grid, psi, v_mean, v_tau_mean, v_half, v_tau_half,
                  magnetization, core_functions, core_tau_functions, centers,
-                 delta, core_potential=None, w_mean=None, w_half=None):
+                 delta, core_potential=None, w_mean=None, w_half=None,
+                 grad_psi=None):
         super().__init__(grid, psi, v_mean, v_tau_mean, core_functions,
                          core_tau_functions, centers, delta,
                          core_potential=core_potential,
-                         gradient_potential=w_mean)
+                         gradient_potential=w_mean, grad_psi=grad_psi)
         if self.grad_psi is None and (v_tau_half is not None
                                       or w_half is not None):
             self.grad_psi = xc_grid.gradient(grid, psi)
@@ -1355,8 +1396,25 @@ class UnrestrictedKohnShamField(KohnShamField):
         self.w_half = w_half
         self.Dm = np.asarray(magnetization, dtype=complex)
         self.delta_matrix = self._matrix_of(v_half, v_tau_half, w_half)
+        self._half_tables = None
+        self._pm_cache = None
 
-    def spin_term(self, S0, dS, dpsi, step) -> float:
+    def pulay_tables(self, derivatives) -> list[np.ndarray]:
+        need_grad = (self.w is not None or self.v_tau is not None
+                     or self.w_half is not None or self.v_tau_half is not None)
+        tables, half_tables = [], []
+        for k in range(3):
+            dpsi_k = derivatives[k]
+            grad_k = xc_grid.gradient(self.grid, dpsi_k) if need_grad else None
+            tables.append(self._pulay_cross(self.v, self.v_tau, dpsi_k,
+                                            self.w, grad_dpsi=grad_k))
+            half_tables.append(self._pulay_cross(
+                self.v_half, self.v_tau_half, dpsi_k, self.w_half,
+                grad_dpsi=grad_k))
+        self._half_tables = half_tables
+        return tables
+
+    def spin_term(self, S0, dS, dpsi, step, *, k=None, own=None) -> float:
         from .pseudo_forces import AlgebraicEnergy
 
         def magnetization(S):
@@ -1368,10 +1426,17 @@ class UnrestrictedKohnShamField(KohnShamField):
             dPm = (magnetization(S0 + step * dS)
                    - magnetization(S0 - step * dS)) / (2.0 * step)
             value += float(np.real(np.sum(dPm * self.delta_matrix.T)))
-        if dpsi is not None:
+        if k is not None and own is not None and self._half_tables is not None:
+            if self._pm_cache is None or self._pm_cache[0] is not S0:
+                self._pm_cache = (S0, magnetization(S0))
+            dDelta = self.pulay_from_table(self._half_tables[k], own)
+            value += float(np.real(np.sum(self._pm_cache[1] * dDelta.T)))
+        elif dpsi is not None:
+            if self._pm_cache is None or self._pm_cache[0] is not S0:
+                self._pm_cache = (S0, magnetization(S0))
             dDelta = self._pulay_with(self.v_half, self.v_tau_half, dpsi,
                                       self.w_half)
-            value += float(np.real(np.sum(magnetization(S0) * dDelta.T)))
+            value += float(np.real(np.sum(self._pm_cache[1] * dDelta.T)))
         return value
 
 
@@ -1444,16 +1509,16 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     valence = rho = solver.density(D)
     if solver.core_density is not None:
         rho = rho + solver.core_density
-    tau = None
+    tau = gradient_field = None
     if solver.meta:
-        tau = solver.kinetic_energy_density(D)
+        tau, gradient_field = solver._meta_fields(D)
         if solver._core_tau is not None:
             tau = tau + solver._core_tau
     terms = xc_grid.evaluate(
         integrals.grid, rho, solver.functional,
         relativistic=solver.relativistic, tau=tau, screening=solver.screening,
         exchange_density=valence,
-        gradient_field=solver.density_gradient(D) if solver.meta else None)
+        gradient_field=gradient_field)
     core_potential = None
     if solver.screening is not None and solver.core_density is not None:
         core_potential = xc_grid.evaluate(
@@ -1477,13 +1542,17 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
         potential, e_xc = potential + V_H, e_xc + e_hartree
     datasets = integrals.pseudopotentials or []
     nothing = [None] * len(integrals.nuclei)
+    grad_psi = None
+    if solver.meta and solver._orbital_gradients is not None:
+        inv_xt = np.linalg.inv(X.T)
+        grad_psi = np.stack([inv_xt @ g for g in solver._orbital_gradients])
     field = KohnShamField(
         integrals.grid, np.ascontiguousarray(integrals._engine._psi),
         potential, terms.tau_potential,
         _core_functions(datasets) if datasets else nothing,
         _core_tau_functions(datasets) if datasets else nothing,
         _centers(integrals), delta, core_potential=core_potential,
-        gradient_potential=terms.gradient_potential)
+        gradient_potential=terms.gradient_potential, grad_psi=grad_psi)
     V_xc = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:
@@ -1579,18 +1648,21 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
     half_core = (0.0 if solver.core_density is None
                  else 0.5 * solver.core_density)
     tau = [None, None]
+    grad_fields = None
     if solver.meta:
         half_tau = (0.0 if solver._core_tau is None
                     else 0.5 * solver._core_tau)
-        tau = [solver.kinetic_energy_density(D) + half_tau for D in (Da, Db)]
+        ta, gfa = solver._meta_fields(Da, 0.5)
+        tb, gfb = solver._meta_fields(Db, 0.5)
+        tau = [ta + half_tau, tb + half_tau]
+        grad_fields = (gfa, gfb)
     valence = [solver.density(Da), solver.density(Db)]
     terms = xc_grid.evaluate_spin(
         integrals.grid, valence[0] + half_core, valence[1] + half_core,
         solver.functional, relativistic=solver.relativistic, tau_up=tau[0],
         tau_dn=tau[1], screening=solver.screening,
         exchange_densities=valence,
-        gradient_fields=(tuple(solver.density_gradient(D_s, 0.5)
-                               for D_s in (Da, Db)) if solver.meta else None))
+        gradient_fields=grad_fields)
     meta = terms.tau_potential_up is not None
     X = integrals._lowdin_x()
     D = Da + Db
@@ -1628,6 +1700,10 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         v_mean, e_xc = v_mean + V_H, e_xc + e_hartree
     datasets = integrals.pseudopotentials or []
     nothing = [None] * len(integrals.nuclei)
+    grad_psi = None
+    if solver.meta and solver._orbital_gradients is not None:
+        inv_xt = np.linalg.inv(X.T)
+        grad_psi = np.stack([inv_xt @ g for g in solver._orbital_gradients])
     field = UnrestrictedKohnShamField(
         integrals.grid, np.ascontiguousarray(integrals._engine._psi),
         v_mean,
@@ -1639,7 +1715,8 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         _core_tau_functions(datasets) if datasets else nothing,
         _centers(integrals), delta, core_potential=core_potential,
         w_mean=mean(terms.gradient_potential_up, terms.gradient_potential_dn),
-        w_half=half(terms.gradient_potential_up, terms.gradient_potential_dn))
+        w_half=half(terms.gradient_potential_up, terms.gradient_potential_dn),
+        grad_psi=grad_psi)
     V_mean = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:

@@ -324,21 +324,56 @@ def _angular_rule(polar: int, azimuthal: int):
     return directions, np.repeat(wt, n_phi) * (2.0 * np.pi / n_phi)
 
 
+_SPHERE_OFFSET_CACHE: dict = {}
+
+
+def _sorted_sphere_chunks(radii: np.ndarray, directions: np.ndarray,
+                          chunk_size: int):
+    key = (float(radii[0]), float(radii[-1]), int(radii.size),
+           int(directions.shape[1]), float(directions[0, 0]), int(chunk_size))
+    cached = _SPHERE_OFFSET_CACHE.get(key)
+    if cached is None:
+        ox = (radii[:, None] * directions[0][None, :]).ravel()
+        oy = (radii[:, None] * directions[1][None, :]).ravel()
+        oz = (radii[:, None] * directions[2][None, :]).ravel()
+        octant = ((oz >= 0.0).astype(int) * 4
+                  + (oy >= 0.0).astype(int) * 2
+                  + (ox >= 0.0).astype(int))
+        order = np.lexsort((np.floor(oz), np.floor(oy), np.floor(ox), octant))
+        ox_s = np.ascontiguousarray(ox[order])
+        oy_s = np.ascontiguousarray(oy[order])
+        oz_s = np.ascontiguousarray(oz[order])
+        chunks = []
+        for start in range(0, ox_s.size, int(chunk_size)):
+            stop = min(start + int(chunk_size), ox_s.size)
+            cx = ox_s[start:stop]
+            cy = oy_s[start:stop]
+            cz = oz_s[start:stop]
+            lo = np.array([cx.min(), cy.min(), cz.min()], dtype=float)
+            hi = np.array([cx.max(), cy.max(), cz.max()], dtype=float)
+            chunks.append((cx, cy, cz, order[start:stop], lo, hi))
+        cached = chunks
+        _SPHERE_OFFSET_CACHE[key] = cached
+    return cached
+
+
 def _atom_matrices(basis, center, weight, radii, directions, *,
-                   gradients: bool, delta: float, block: int):
+                   gradients: bool, delta: float, block: int,
+                   values: bool = True):
     """``I`` (and ``G``) of one sphere, accumulated block of shells at a time."""
     M = len(basis)
     # Real functions (a molecule's real harmonics) give real matrices.
     dtype = (float if all(getattr(fn, "real", False) for fn in basis)
              else complex)
-    I = np.zeros((M, M), dtype=dtype)
+    I = np.zeros((M, M), dtype=dtype) if values else None
     G = np.zeros((M, M, 3), dtype=dtype) if gradients else None
     center = np.asarray(center, dtype=float)
     # Only functions whose support reaches this sphere contribute; the rest
     # are exactly zero on every one of its points.  Without this every atom
     # evaluates every basis function, which made the quadrature N^2 (26100
     # evaluations, 32 s of a 56 s C8H18 setup).
-    reach = float(np.max(radii)) + (float(delta) if gradients else 0.0)
+    extra = float(delta) if gradients else 0.0
+    reach = float(np.max(radii)) + extra
     near = [m for m, fn in enumerate(basis)
             if getattr(fn, "support_radius", None) is None
             or np.linalg.norm(np.asarray(fn.center, dtype=float) - center)
@@ -346,27 +381,68 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
     if not near:
         return I, G
     basis = [basis[m] for m in near]
-    block_ix = np.ix_(near, near)
-    for start in range(0, radii.size, int(block)):
-        stop = min(start + int(block), radii.size)
-        r_block = radii[start:stop]
-        points = tuple(center[i] + r_block[:, None] * directions[i][None, :]
-                       for i in range(3))
-        w_block = weight[start:stop].ravel()
-        flat = tuple(p.ravel() for p in points)
+    n_near = len(near)
+    I_near = np.zeros((n_near, n_near), dtype=dtype) if values else None
+    G_near = np.zeros((n_near, 3, n_near), dtype=dtype) if gradients else None
+    rel_centers = np.array([np.asarray(fn.center, dtype=float) - center
+                            for fn in basis], dtype=float)
+    reach2 = np.array([
+        np.inf if getattr(fn, "support_radius", None) is None
+        else (float(fn.support_radius) + extra) ** 2
+        for fn in basis
+    ], dtype=float)
+    chunk_size = max(131072, int(block) * int(directions.shape[1]))
+    w_flat = weight.ravel()
+    for ox, oy, oz, order_c, lo, hi in _sorted_sphere_chunks(
+            radii, directions, chunk_size):
+        gx = np.maximum(0.0, np.maximum(lo[0] - rel_centers[:, 0],
+                                        rel_centers[:, 0] - hi[0]))
+        gy = np.maximum(0.0, np.maximum(lo[1] - rel_centers[:, 1],
+                                        rel_centers[:, 1] - hi[1]))
+        gz = np.maximum(0.0, np.maximum(lo[2] - rel_centers[:, 2],
+                                        rel_centers[:, 2] - hi[2]))
+        active = np.flatnonzero(gx * gx + gy * gy + gz * gz <= reach2)
+        if not active.size:
+            continue
+        basis_c = ([basis[i] for i in active]
+                   if active.size < n_near else basis)
+        flat = (center[0] + ox, center[1] + oy, center[2] + oz)
+        w_block = w_flat[order_c]
         if not gradients:
-            psi, _ = sample_functions(basis, flat)
-            I[block_ix] += (np.conj(psi) * w_block) @ psi.T
+            psi, _ = sample_functions(basis_c, flat)
+            contrib = (np.conj(psi) * w_block) @ psi.T
+            if active.size < n_near:
+                I_near[np.ix_(active, active)] += contrib
+            else:
+                I_near += contrib
             continue
         # d phi / d R_k is minus the function's gradient (as
         # `atom_centered_projection_gradients` has it for the projectors):
         # analytic for the tabulated functions, a step-`delta` central
         # difference for the rest.
-        psi, gradient = sample_functions(basis, flat, gradients=True, delta=float(delta))
-        I[block_ix] += (np.conj(psi) * w_block) @ psi.T
+        psi, gradient = sample_functions(basis_c, flat, gradients=True,
+                                         delta=float(delta))
+        n_c = len(basis_c)
+        weighted_psi_T = (psi * w_block).T
+        if values:
+            contrib_I = np.conj(psi) @ weighted_psi_T
+            if n_c < n_near:
+                I_near[np.ix_(active, active)] += contrib_I
+            else:
+                I_near += contrib_I
+        contrib_G = (np.conj(gradient).reshape(3 * n_c, -1)
+                     @ weighted_psi_T).reshape(n_c, 3, n_c)
+        if n_c < n_near:
+            for k in range(3):
+                G_near[active[:, None], k, active[None, :]] -= contrib_G[:, k, :]
+        else:
+            G_near -= contrib_G
+    block_ix = np.ix_(near, near)
+    if values:
+        I[block_ix] = I_near
+    if gradients:
         for k in range(3):
-            dpsi = -gradient[:, k]
-            G[block_ix + (k,)] += (np.conj(dpsi) * w_block) @ psi.T
+            G[block_ix + (k,)] = G_near[:, k, :]
     return I, G
 
 
@@ -374,7 +450,8 @@ def short_range_matrices(basis, centers, datasets, sigma: float, *,
                          gradients: bool = False, delta: float = DEFAULT_DELTA,
                          radial: int = RADIAL_POINTS, polar: int = POLAR_POINTS,
                          azimuthal: int = AZIMUTHAL_POINTS,
-                         block: int = SHELL_BLOCK):
+                         block: int = SHELL_BLOCK,
+                         values: bool = True):
     r"""Per-atom short-range local matrices, by atom-centered quadrature.
 
     Returns ``(I, G)`` with ``I[A][p, q]`` the ``(M, M)`` matrix
@@ -402,15 +479,17 @@ def short_range_matrices(basis, centers, datasets, sigma: float, *,
     constants and are arguments only so a convergence study can raise them.
     """
     directions, w_angular = _angular_rule(polar, azimuthal)
-    matrices, derivatives = {}, ({} if gradients else None)
+    matrices, derivatives = ({} if values else None), ({} if gradients else None)
     for atom, dataset in enumerate(datasets):
         radius = short_range_radius(dataset, sigma)
         radii, w_radial = _radial_rule(radius, local_cutoff(dataset), radial)
         potential = short_range_potential(dataset, sigma, radii)
         weight = (w_radial * potential)[:, None] * w_angular[None, :]
         I, G = _atom_matrices(basis, centers[atom], weight, radii, directions,
-                              gradients=gradients, delta=delta, block=block)
-        matrices[atom] = I
+                              gradients=gradients, delta=delta, block=block,
+                              values=values)
+        if values:
+            matrices[atom] = I
         if gradients:
             derivatives[atom] = G
     return matrices, derivatives

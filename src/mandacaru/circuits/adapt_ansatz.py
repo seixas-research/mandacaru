@@ -17,9 +17,11 @@ because it is a circuit primitive, not a driver: it conforms to the same
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 
-from ..core.mapping import reference_qubit_bits, resolve_mapping
+from ..core.mapping import PauliSum, reference_qubit_bits, resolve_mapping
 from ..core.matrix_free import MATRIX_FREE_CACHE_BYTES, PauliOperator
 from .pools import PoolOperator
 
@@ -28,6 +30,22 @@ def _spm_norm(spm) -> float:
     """Largest-magnitude entry of a scipy sparse matrix (0 for the empty matrix)."""
     data = spm.tocoo().data
     return float(np.max(np.abs(data))) if data.size else 0.0
+
+
+@lru_cache(maxsize=2048)
+def _pauli_rodrigues(terms_key: tuple[tuple[str, complex], ...],
+                     n_qubits: int) -> bool:
+    """Whether ``A^3 = -A`` holds in the Pauli algebra."""
+    if not terms_key:
+        return True
+    if len(terms_key) == 1:
+        _label, coeff = terms_key[0]
+        return abs(coeff.real) < 1e-12 and abs(abs(coeff.imag) - 1.0) < 1e-9
+    generator = PauliSum._from_valid_terms(dict(terms_key),
+                                           num_qubits=n_qubits)
+    square = generator.compose(generator)
+    residual = (generator.compose(square) + generator).simplify(1e-9)
+    return not residual.terms
 
 
 class AdaptAnsatz:
@@ -137,31 +155,28 @@ class AdaptAnsatz:
             # (expensive) dense eigendecomposition / sparse powers entirely.
             return
         if self.matrix_free:
-            # A^2 is formed in the Pauli algebra, and A^3 = -A is checked there
-            # too: no matrix at any point.
+            # A^3 = -A is checked in the Pauli algebra: no matrix at any point.
             generator = op.generator
-            square = generator.compose(generator)
-            residual = (generator.compose(square) + generator).simplify(1e-9)
-            pair = []
-            for operator in (generator, square.simplify()):
-                # Every evaluation applies every appended generator, so each
-                # stores its CSR block while the ansatz's shared budget lasts
-                # and is recomputed on every product after that.
-                bound = PauliOperator(operator, sector=self.sector,
-                                      cache_bytes=0).stored_bytes_bound()
-                keep = bound if bound <= self._cache_left else 0
-                self._cache_left -= keep
-                pair.append(PauliOperator(operator, sector=self.sector,
-                                          cache_bytes=keep))
-            self._sparse_ops.append((*pair, not residual.terms))
+            rodrigues = _pauli_rodrigues(
+                tuple(generator.terms.items()), generator.num_qubits)
+            bound = PauliOperator(generator, sector=self.sector,
+                                  cache_bytes=0).stored_bytes_bound()
+            keep = bound if bound <= self._cache_left else 0
+            self._cache_left -= keep
+            op_mf = PauliOperator(generator, sector=self.sector,
+                                  cache_bytes=keep)
+            self._sparse_ops.append((op_mf, None, rodrigues))
             return
         if self.sparse:
             A = (self.sector.restrict(op.generator) if self.sector is not None
                  else op.generator.to_sparse_matrix())
-            A2 = (A @ A).tocsr()
-            # Rodrigues closed form is valid iff A^3 = -A (excitation generators).
-            rodrigues = _spm_norm(A @ A2 + A) < 1e-9 * max(1.0, _spm_norm(A))
-            self._sparse_ops.append((A, A2, rodrigues))
+            rodrigues = _pauli_rodrigues(
+                tuple(op.generator.terms.items()), op.generator.num_qubits)
+            if not rodrigues:
+                A2 = (A @ A).tocsr()
+                rodrigues = (_spm_norm(A @ A2 + A)
+                             < 1e-9 * max(1.0, _spm_norm(A)))
+            self._sparse_ops.append((A, None, rodrigues))
             return
         a = op.matrix()
         # A anti-Hermitian => (-i A) is Hermitian: -i A = V diag(w) V^dag, so
@@ -183,7 +198,7 @@ class AdaptAnsatz:
         if self.matrix_free:
             # Its stored blocks go back to the shared budget.
             A, A2, _ = self._sparse_ops[index]
-            self._cache_left += A._budget + A2._budget
+            self._cache_left += A._budget + (0 if A2 is None else A2._budget)
         for cache in (self._sparse_ops, self._eig):
             if cache:
                 cache.pop(index)
@@ -245,11 +260,14 @@ class AdaptAnsatz:
 
     def _exponential(self, k: int, angle: float, out: np.ndarray) -> np.ndarray:
         """``exp(angle A_k) out`` for a stack of column vectors ``out``."""
+        if angle == 0.0:
+            return out
         if self.sparse:
-            A, A2, rodrigues = self._sparse_ops[k]
+            A, _A2, rodrigues = self._sparse_ops[k]
             if rodrigues:
-                return (out + np.sin(angle) * (A @ out)
-                        + (1.0 - np.cos(angle)) * (A2 @ out))
+                a1 = A @ out
+                a2 = A @ a1
+                return out + np.sin(angle) * a1 + (1.0 - np.cos(angle)) * a2
             from scipy.sparse.linalg import expm_multiply
             if self.matrix_free:
                 return expm_multiply(angle * A.as_linear_operator(), out,
@@ -295,10 +313,21 @@ class AdaptAnsatz:
         energy = float(np.real(np.vdot(psi, lam)))
         gradient = np.empty(theta.size)
         for k in range(theta.size - 1, -1, -1):
-            gradient[k] = 2.0 * float(np.real(
-                np.vdot(lam, self._generator(k, psi))))
-            psi = self._exponential(k, -theta[k], psi)
-            lam = self._exponential(k, -theta[k], lam)
+            a1_psi = self._generator(k, psi)
+            gradient[k] = 2.0 * float(np.real(np.vdot(lam, a1_psi)))
+            angle = -theta[k]
+            if angle == 0.0:
+                continue
+            if self.sparse and self._sparse_ops[k][2]:
+                A = self._sparse_ops[k][0]
+                s = np.sin(angle)
+                c1 = 1.0 - np.cos(angle)
+                psi = psi + s * a1_psi + c1 * (A @ a1_psi)
+                a1_lam = A @ lam
+                lam = lam + s * a1_lam + c1 * (A @ a1_lam)
+            else:
+                psi = self._exponential(k, angle, psi)
+                lam = self._exponential(k, angle, lam)
         return energy, gradient
 
     def _evolve_on_provider(self, theta, refs: np.ndarray) -> np.ndarray:

@@ -53,6 +53,8 @@ monopole-only code exactly: :math:`g_L` is normalized to
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 from scipy.integrate import simpson
 
@@ -73,6 +75,7 @@ COINCIDENT_TOLERANCE = 1e-10
 # Radial shape and its potential.
 # --------------------------------------------------------------------------- #
 
+@lru_cache(maxsize=256)
 def shape_norm(r_g: float, L: int) -> float:
     r"""``1 / int_0^{r_g} r^{2L+2} (1 - r^2/r_g^2)^3 dr`` -- the factor that
     normalizes :func:`shape_function` to unit multipole moment.
@@ -118,17 +121,35 @@ def shape_potential(radius, r_g: float, L: int = 0) -> np.ndarray:
     polynomials, so they are evaluated in closed form.
     """
     radius = np.asarray(radius, dtype=float)
+    scalar = radius.ndim == 0
+    radius = np.atleast_1d(radius)
     L = int(L)
     r_g = float(r_g)
     prefactor = 4.0 * np.pi / (2 * L + 1)
-    x = np.clip(radius / r_g, 0.0, None)
+    safe = np.maximum(radius, 1e-300)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        if L == 0:
+            result = prefactor / safe
+        elif L == 1:
+            inv = 1.0 / safe
+            result = prefactor * (inv * inv)
+        elif L == 2:
+            inv = 1.0 / safe
+            result = prefactor * (inv * inv * inv)
+        else:
+            result = prefactor / safe ** (L + 1)
+    inside = radius < r_g
+    if not np.any(inside):
+        return result[0] if scalar else result
+
+    r_in = radius[inside]
+    xin = np.clip(r_in / r_g, 0.0, None)
     norm = shape_norm(r_g, L)
 
     # int_0^r g_L s^{L+2} ds = N_L r_g^{2L+3} sum_k C_k x^{2L+3+2k}/(2L+3+2k)
     coefficients = ((0, 1.0), (1, -3.0), (2, 3.0), (3, -1.0))
-    inner_charge = np.zeros_like(radius)
-    tail = np.zeros_like(radius)
-    xin = np.minimum(x, 1.0)
+    inner_charge = np.zeros_like(r_in)
+    tail = np.zeros_like(r_in)
     for k, c in coefficients:
         power = 2 * L + 3 + 2 * k
         inner_charge += c * xin ** power / power
@@ -139,33 +160,41 @@ def shape_potential(radius, r_g: float, L: int = 0) -> np.ndarray:
     inner_charge *= norm * r_g ** (2 * L + 3)
     tail *= norm * r_g ** 2
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        near = prefactor * (np.where(radius > 0.0,
-                                     inner_charge / np.maximum(radius, 1e-300)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        near = prefactor * (np.where(r_in > 0.0,
+                                     inner_charge / np.maximum(r_in, 1e-300)
                                      ** (L + 1), 0.0)
-                            + radius ** L * tail)
-        far = prefactor / np.maximum(radius, 1e-300) ** (L + 1)
-    result = np.where(x < 1.0, near, far)
+                            + r_in ** L * tail)
     if L == 0:
         # At the origin only the tail survives and is finite.
-        result = np.where(radius <= 0.0, prefactor * tail, result)
-    return result
+        near = np.where(r_in <= 0.0, prefactor * tail, near)
+    result[inside] = near
+    return result[0] if scalar else result
 
 
 # --------------------------------------------------------------------------- #
 # Angular coupling.
 # --------------------------------------------------------------------------- #
 
+_ANGULAR_GRID_CACHE: dict = {}
+
+
 def _angular_grid(polar: int = GAUNT_POLAR_POINTS,
                   azimuthal: int = GAUNT_AZIMUTHAL_POINTS):
     """``(theta, phi, weights)`` of a product rule normalized to ``int dOmega``."""
+    key = (int(polar), int(azimuthal))
+    cached = _ANGULAR_GRID_CACHE.get(key)
+    if cached is not None:
+        return cached
     mu, wmu = np.polynomial.legendre.leggauss(int(polar))
     phi = 2.0 * np.pi * (np.arange(int(azimuthal)) + 0.5) / int(azimuthal)
     wphi = 2.0 * np.pi / int(azimuthal)
     theta = np.arccos(mu)
     T, P = np.meshgrid(theta, phi, indexing="ij")
     W = np.outer(wmu, np.full(int(azimuthal), wphi))
-    return T.ravel(), P.ravel(), W.ravel()
+    out = (T.ravel(), P.ravel(), W.ravel())
+    _ANGULAR_GRID_CACHE[key] = out
+    return out
 
 
 _GAUNT_CACHE: dict = {}
@@ -332,6 +361,136 @@ def _harmonics(channels, theta, phi, *, real: bool) -> np.ndarray:
                      for L, M in channels])
 
 
+def multipole_potentials_cartesian(dx, dy, dz, radius, r_g: float, channels,
+                                   potential=None, *, real: bool) -> dict:
+    """All ``{(L, M): v_L(r) Y_LM}`` at Cartesian offsets ``(dx, dy, dz)``."""
+    channels = [(int(L), int(M)) for L, M in channels]
+    if not channels:
+        return {}
+    unique_L = sorted({L for L, _M in channels})
+    kernel = shape_potential if potential is None else potential
+    r_g = float(r_g)
+    radials = {L: kernel(radius, r_g, L) for L in unique_L}
+    c00 = 1.0 / np.sqrt(4.0 * np.pi)
+    max_L = unique_L[-1]
+    if max_L == 0:
+        val0 = radials[0] * (c00 if real else complex(c00))
+        return {(0, 0): val0}
+
+    inv_r = 1.0 / np.maximum(radius, 1e-300)
+    u = np.clip(dz * inv_r, -1.0, 1.0)
+    max_order = max(abs(M) for _L, M in channels)
+    if max_order > 0:
+        nonzero = radius > 0.0
+        ux = np.where(nonzero, dx * inv_r, 1.0)
+        uy = np.where(nonzero, dy * inv_r, 0.0)
+        w_powers = [None] * (max_order + 1)
+        w_powers[1] = (ux, uy)
+        for m in range(2, max_order + 1):
+            cx, cy = w_powers[m - 1]
+            w_powers[m] = (cx * ux - cy * uy, cy * ux + cx * uy)
+
+    by_order: dict[int, set[int]] = {}
+    for L, M in channels:
+        by_order.setdefault(abs(M), set()).add(L)
+
+    q_table: dict[tuple[int, int], np.ndarray | float] = {}
+    for order, degrees in by_order.items():
+        top_l = max(degrees)
+        q0 = c00
+        for k in range(1, order + 1):
+            q0 *= -np.sqrt((2.0 * k + 1.0) / (2.0 * k))
+        if order in degrees:
+            q_table[(order, order)] = q0
+        if top_l > order:
+            q1 = (np.sqrt(2.0 * order + 3.0) * q0) * u
+            if (order + 1) in degrees:
+                q_table[(order + 1, order)] = q1
+            q_prev, q_curr = q0, q1
+            for degree in range(order + 2, top_l + 1):
+                a = np.sqrt((4.0 * degree * degree - 1.0)
+                            / (degree * degree - order * order))
+                b = np.sqrt(((degree - 1.0) ** 2 - order * order)
+                            / (4.0 * (degree - 1.0) ** 2 - 1.0))
+                q_prev, q_curr = q_curr, a * (u * q_curr - b * q_prev)
+                if degree in degrees:
+                    q_table[(degree, order)] = q_curr
+
+    sqrt2 = np.sqrt(2.0)
+    out = {}
+    for L, M in channels:
+        if (L, M) in out:
+            continue
+        order = abs(M)
+        rad_q = radials[L] * q_table[(L, order)]
+        if order == 0:
+            out[(L, 0)] = rad_q if real else rad_q.astype(complex)
+        elif real:
+            sign = sqrt2 * ((-1) ** order)
+            cx, cy = w_powers[order]
+            out[(L, M)] = (sign * rad_q) * (cx if M > 0 else cy)
+        else:
+            cx, cy = w_powers[order]
+            if M > 0:
+                out[(L, M)] = rad_q * (cx + 1j * cy)
+            else:
+                out[(L, M)] = ((-1) ** order * rad_q) * (cx - 1j * cy)
+    return out
+
+
+@lru_cache(maxsize=32)
+def _radial_grid(points: int):
+    x, wx = np.polynomial.legendre.leggauss(int(points))
+    x.flags.writeable = False
+    wx.flags.writeable = False
+    return x, wx
+
+
+@lru_cache(maxsize=16)
+def _unit_directions_cached(polar_points: int, azimuthal_points: int):
+    theta, phi, wang = _angular_grid()
+    sin_t = np.sin(theta)
+    direction = np.stack([sin_t * np.cos(phi), sin_t * np.sin(phi),
+                          np.cos(theta)], axis=1)
+    for arr in (theta, phi, wang, direction):
+        arr.flags.writeable = False
+    return theta, phi, wang, direction
+
+
+def _unit_directions():
+    return _unit_directions_cached(GAUNT_POLAR_POINTS, GAUNT_AZIMUTHAL_POINTS)
+
+
+@lru_cache(maxsize=64)
+def _weighted_b_densities_cached(r_b: float, channels_b: tuple, points: int,
+                                 real: bool, polar_points: int,
+                                 azimuthal_points: int):
+    theta, phi, wang, direction = _unit_directions_cached(
+        polar_points, azimuthal_points)
+    x, wx = _radial_grid(points)
+    rp = 0.5 * float(r_b) * (x + 1.0)
+    wr = 0.5 * float(r_b) * wx
+    y_b = _harmonics(channels_b, theta, phi, real=real)         # (nb, nang)
+    g_b = np.stack([shape_function(rp, r_b, L) for L, _M in channels_b])
+    weight = (wr * rp * rp)[:, None] * wang[None, :]            # (nr, nang)
+    weighted_b = (g_b[:, :, None] * y_b[:, None, :]
+                  * weight[None, :, :]).reshape(len(channels_b), -1)
+    offsets_b = np.ascontiguousarray(
+        (rp[:, None, None] * direction[None, :, :]).reshape(-1, 3),
+        dtype=float)
+    r2_b = np.repeat(rp * rp, direction.shape[0])
+    for arr in (offsets_b, r2_b, weighted_b):
+        arr.flags.writeable = False
+    return offsets_b, r2_b, weighted_b
+
+
+def _weighted_b_densities(r_b: float, channels_b: tuple, points: int,
+                          real: bool):
+    return _weighted_b_densities_cached(
+        float(r_b), channels_b, int(points), bool(real),
+        GAUNT_POLAR_POINTS, GAUNT_AZIMUTHAL_POINTS)
+
+
 def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
                              displacement, points: int = 50,
                              potential=None, *, real: bool) -> np.ndarray:
@@ -354,30 +513,22 @@ def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
     for real ones).
     """
     displacement = np.asarray(displacement, dtype=float)
-    channels_a, channels_b = list(channels_a), list(channels_b)
-    theta, phi, wang = _angular_grid()
-    x, wx = np.polynomial.legendre.leggauss(int(points))
-    rp = 0.5 * r_b * (x + 1.0)
-    wr = 0.5 * r_b * wx
+    channels_a = [(int(L), int(M)) for L, M in channels_a]
+    channels_b = tuple((int(L), int(M)) for L, M in channels_b)
+    if not channels_a or not channels_b:
+        return np.zeros((len(channels_a), len(channels_b)),
+                        dtype=float if real else complex)
+    offsets_b, r2_b, weighted_b = _weighted_b_densities(
+        r_b, channels_b, points, real)
+    dx = displacement[0] + offsets_b[:, 0]
+    dy = displacement[1] + offsets_b[:, 1]
+    dz = displacement[2] + offsets_b[:, 2]
+    d2 = float(displacement @ displacement)
+    dist = np.sqrt(np.maximum(d2 + r2_b + 2.0 * (offsets_b @ displacement),
+                              0.0))
 
-    sin_t = np.sin(theta)
-    direction = np.stack([sin_t * np.cos(phi), sin_t * np.sin(phi),
-                          np.cos(theta)], axis=1)              # (nang, 3)
-    rel = displacement[None, None, :] + rp[:, None, None] * direction[None, :, :]
-    dist = np.linalg.norm(rel, axis=2)                          # (nr, nang)
-    safe = np.maximum(dist, 1e-300)
-    polar_a = np.arccos(np.clip(rel[:, :, 2] / safe, -1.0, 1.0))
-    azimuth_a = np.arctan2(rel[:, :, 1], rel[:, :, 0])
+    pots = multipole_potentials_cartesian(
+        dx, dy, dz, dist, r_a, channels_a, potential=potential, real=real)
+    v_a = np.stack([pots[ch] for ch in channels_a])
 
-    # Potentials of every A multipole at the B quadrature points.
-    potential = shape_potential if potential is None else potential
-    v_a = np.stack([potential(dist, r_a, L)
-                    * spherical_harmonic(L, M, polar_a, azimuth_a, real=real)
-                    for L, M in channels_a])                    # (na, nr, nang)
-    # Densities of every B multipole on the same points.
-    y_b = _harmonics(channels_b, theta, phi, real=real)         # (nb, nang)
-    g_b = np.stack([shape_function(rp, r_b, L) for L, _M in channels_b])
-    density_b = g_b[:, :, None] * y_b[:, None, :]               # (nb, nr, nang)
-
-    weight = (wr * rp * rp)[:, None] * wang[None, :]            # (nr, nang)
-    return np.einsum("arg,brg,rg->ab", v_a, density_b, weight)
+    return v_a @ weighted_b.T

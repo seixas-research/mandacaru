@@ -265,8 +265,18 @@ def _moved_function(function, grid, k: int, delta: float,
     return -cache[id(function)][k]
 
 
-def _moved_radial(radial, center, grid, k: int, delta: float) -> np.ndarray:
+def _moved_radial(radial, center, grid, k: int, delta: float,
+                  atom_geom=None) -> np.ndarray:
     """``d v(|r - R|) / d R_k`` of a spherical potential centered at ``center``."""
+    delta = float(delta)
+    if atom_geom is not None:
+        dx, dy, dz, r2 = atom_geom
+        dk = (dx, dy, dz)[k]
+        d2 = delta * delta
+        r_plus = np.sqrt(np.maximum(r2 - (2.0 * delta) * dk + d2, 0.0))
+        r_minus = np.sqrt(np.maximum(r2 + (2.0 * delta) * dk + d2, 0.0))
+        return (np.asarray(radial(r_plus), dtype=float).ravel()
+                - np.asarray(radial(r_minus), dtype=float).ravel()) / (2.0 * delta)
     out = []
     for sign in (+1.0, -1.0):
         c = np.array(center, dtype=float)
@@ -329,6 +339,56 @@ def _moved_multipole(dataset, center, grid, L, M, k, delta, potential=None,
              - _sampled_multipole(dataset, center - step, grid, L, M,
                                   potential, real=real))
             / (2.0 * float(delta)))
+
+
+def _sampled_multipoles_atom(dataset, center, grid, levels, potential=None, *,
+                             real: bool, geom=None) -> dict:
+    """All ``{(L, M): v_L(|r - center|) Y_LM}`` of one atom, sharing geometry."""
+    from ..pseudopotentials.multipoles import multipole_potentials_cartesian
+
+    if not levels:
+        return {}
+    if geom is None:
+        dx = grid.X.ravel() - center[0]
+        dy = grid.Y.ravel() - center[1]
+        dz = grid.Z.ravel() - center[2]
+        radius = np.sqrt(dx * dx + dy * dy + dz * dz)
+    else:
+        dx, dy, dz, radius = geom
+    return multipole_potentials_cartesian(
+        dx, dy, dz, radius, float(dataset.compensation_radius), levels,
+        potential=potential, real=real)
+
+
+def _moved_multipoles_atom(dataset, center, grid, levels, k, delta,
+                           potential=None, *, real: bool,
+                           atom_geom=None) -> dict:
+    """Derivative of :func:`_sampled_multipoles_atom` along ``k``."""
+    delta = float(delta)
+    if atom_geom is None:
+        dx = grid.X.ravel() - center[0]
+        dy = grid.Y.ravel() - center[1]
+        dz = grid.Z.ravel() - center[2]
+        r2 = dx * dx + dy * dy + dz * dz
+    else:
+        dx, dy, dz, r2 = atom_geom
+    coords = [dx, dy, dz]
+    dk = coords[k]
+    d2 = delta * delta
+    r_plus = np.sqrt(np.maximum(r2 - (2.0 * delta) * dk + d2, 0.0))
+    r_minus = np.sqrt(np.maximum(r2 + (2.0 * delta) * dk + d2, 0.0))
+    coords_plus = list(coords)
+    coords_minus = list(coords)
+    coords_plus[k] = dk - delta
+    coords_minus[k] = dk + delta
+    plus = _sampled_multipoles_atom(
+        dataset, center, grid, levels, potential, real=real,
+        geom=(coords_plus[0], coords_plus[1], coords_plus[2], r_plus))
+    minus = _sampled_multipoles_atom(
+        dataset, center, grid, levels, potential, real=real,
+        geom=(coords_minus[0], coords_minus[1], coords_minus[2], r_minus))
+    inv = 1.0 / (2.0 * delta)
+    return {lm: (plus[lm] - minus[lm]) * inv for lm in plus}
 
 
 # --------------------------------------------------------------------------- #
@@ -578,9 +638,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     psi = np.ascontiguousarray(integrals._engine._psi)
     projectors = list(integrals.kb_projectors)
     P = len(projectors)
+    exact_projections = bool(getattr(integrals, "exact_projections", False)) and P > 0
     chi = (np.stack([p.evaluate(grid.X, grid.Y, grid.Z).ravel()
                      for p in projectors])
-           if P else np.zeros((0, ngrid), dtype=complex))
+           if P and not exact_projections else np.zeros((0, ngrid), dtype=complex))
     centers = [np.asarray(c, dtype=float) for _z, c in integrals._potentials.nuclei]
     charges = [float(z) for z, _c in integrals.nuclei]
     n_atoms = len(centers)
@@ -692,12 +753,23 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         channels = integrals.multipole_channels()
         channel_index = {c: i for i, c in enumerate(channels)}
         comp_atoms = sorted({A for A, _L, _M in channels})
+        channels_by_atom = {
+            A: [c[1:] for c in channels if c[0] == A] for A in comp_atoms
+        }
         blocks = integrals._atom_positions()
         moment_blocks = paw_multipole_blocks(projectors, integrals.datasets)
-        v_comp = {c: _sampled_multipole(datasets[c[0]], centers[c[0]], grid,
-                                        c[1], c[2],
-                                        real=integrals.real_harmonics)
-                  for c in channels}
+        v_comp = {}
+        for A in comp_atoms:
+            for (L, M_val), vals in _sampled_multipoles_atom(
+                    datasets[A], centers[A], grid, channels_by_atom[A],
+                    real=integrals.real_harmonics).items():
+                v_comp[(A, L, M_val)] = vals
+        ionic_gradients = (
+            integrals.compensation_ionic_gradients(
+                centers, COMPENSATION_DISTANCE_STEP)
+            if hasattr(integrals, "compensation_ionic_gradients")
+            else None
+        )
     # -- PAW-LCAO exact spheres: the one-center Coulomb tensor --
     # sum_k lambda_k G^k (x) G^k with G^k = C_A U^k C_A^T moves only with the
     # projections; the one-body part (frozen functional out, core exchange
@@ -749,6 +821,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             q_mom = np.array([trace(Q_mom[c]) for c in channels])
             w_mom = np.array([trace(W_mom[c]) for c in channels])
             coupling = 0.5 * (U + U.T) @ q_mom
+            v_comp_tot = (sum(q_mom[a] * v_comp[ca]
+                              for a, ca in enumerate(channels))
+                          if channels else np.zeros(ngrid, dtype=float))
 
         def augmentation_contracted(dQ, dwd, dU):
             """``(1/2) P0 P0 dg_aug`` for the moments' change ``dQ``, the
@@ -763,14 +838,13 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 value += 0.5 * (q_mom @ dU @ q_mom)
             return float(np.real(value))
 
-        def pair_change(dpsi):
+        def pair_change(dpsi_k, moved):
             """``sum_ac P0_ca d(psi_a^* psi_c)`` on the grid, for the
             functions ``dpsi`` of one atom (the rows that moved)."""
-            moved = np.any(dpsi != 0.0, axis=1)
-            return (np.sum(dpsi[moved].conj() * P_psi[moved], axis=0)
-                    + np.sum(dpsi[moved] * P_psi_conj[moved], axis=0))
+            dpsi_moved = dpsi_k[moved]
+            return (np.sum(dpsi_moved.conj() * P_psi[moved], axis=0)
+                    + np.sum(dpsi_moved * P_psi_conj[moved], axis=0))
 
-    exact_projections = bool(getattr(integrals, "exact_projections", False)) and P > 0
     if exact_projections:
         projection_gradients = integrals.projection_gradients(delta)
     orbital_atoms = np.asarray(atom_of_orbital)
@@ -781,7 +855,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     # separations: moving a basis function contributes +G, moving the sphere
     # (with its potential) -G.  Their sum over a rigid translation is zero.
     sr_gradients = (integrals.short_range_local_matrices(gradients=True,
-                                                         delta=delta)[1]
+                                                         delta=delta,
+                                                         values=False)[1]
                     if split_local else None)
 
     def short_range_pulay(atom, k):
@@ -908,6 +983,19 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             fixed_second = dict(zip(keys, second))
         del pair
 
+    W_S_T = None
+    if not two_body and not spinor and hasattr(energy, "V_xc"):
+        evals_s, U_s = np.linalg.eigh(_hermitian(S0))
+        root_s = np.sqrt(np.maximum(evals_s, 1e-12))
+        X0 = (U_s / root_s) @ U_s.conj().T
+        K_loewner = -1.0 / (root_s[:, None] * root_s[None, :]
+                            * (root_s[:, None] + root_s[None, :]))
+        H_eff = h0 + energy.V_xc
+        M0 = U_s.conj().T @ (energy.D @ X0 @ H_eff
+                             + H_eff @ X0 @ energy.D) @ U_s
+        W_S_T = np.ascontiguousarray(
+            (U_s @ (K_loewner * M0) @ U_s.conj().T).T)
+
     def overlap_directional(dS, dh, dh_so) -> float:
         """``<dE/dS, dS> + <dE/dh, dh>`` at the fixed tensor: the energy's
         directional derivative by a central difference, which is exact in
@@ -919,6 +1007,12 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         ``S`` and ``g`` parts; split, the ``S`` part alone was 5x worse at
         the same step (water SZP: 7.9e-6 against 1.6e-6 eV/Angstrom from the
         zero-step limit), extrapolated it is 1e-7 (round-off)."""
+        if W_S_T is not None and dh_so is None:
+            val = float(np.real(np.sum(P0.T * dh)))
+            if dS is not None:
+                val += float(np.real(np.sum(W_S_T * dS)))
+            return val
+
         def central(step):
             return energy.directional(S0, h0, g0, dS, dh, None, step,
                                       dh_so=dh_so)
@@ -965,9 +1059,12 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
 
             lr_potential = long_range_multipole_potential(exchange.omega)
             W_lr, U_lr = integrals.long_range_compensation(exchange.omega)
-            v_comp_lr = {c: _sampled_multipole(
-                datasets[c[0]], centers[c[0]], grid, c[1], c[2], lr_potential,
-                real=integrals.real_harmonics) for c in channels}
+            v_comp_lr = {}
+            for A in comp_atoms:
+                for (L, M_val), vals in _sampled_multipoles_atom(
+                        datasets[A], centers[A], grid, channels_by_atom[A],
+                        lr_potential, real=integrals.real_harmonics).items():
+                    v_comp_lr[(A, L, M_val)] = vals
 
     def resolved(X):
         """A term's factor as an array (a fixed factor's key resolved)."""
@@ -990,28 +1087,27 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                                        + C.conj().T @ Pw @ dC))
         return float(np.real(value))
 
-    def long_range_augmentation_derivative(atom, k, dQ):
+    def long_range_augmentation_derivative(atom, k, dQ, atom_geom=None):
         """The long-range augmentation's change when ``atom``'s operators
         (projections, compensation shapes) move along ``k``, as
         :func:`augmentation_terms` terms."""
         from ..pseudopotentials.multipoles import multipole_coulomb_matrix
 
         dW_lr = {}
-        for channel in channels:
-            if channel[0] != atom:
-                continue
-            w_comp = _moved_multipole(datasets[atom], centers[atom], grid,
-                                      channel[1], channel[2], k, delta,
-                                      lr_potential,
-                                      real=integrals.real_harmonics)
-            dW_lr[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
+        levels_a = channels_by_atom.get(atom, [])
+        if levels_a:
+            moved_lr = _moved_multipoles_atom(
+                datasets[atom], centers[atom], grid, levels_a, k, delta,
+                lr_potential, real=integrals.real_harmonics,
+                atom_geom=atom_geom)
+            for (L, M_val), w_comp in moved_lr.items():
+                dW_lr[(atom, L, M_val)] = ((psi.conj() * w_comp) @ psi.T) * dV
         dU_lr = np.zeros_like(U_lr)
         step = COMPENSATION_DISTANCE_STEP
-        levels_a = [c[1:] for c in channels if c[0] == atom]
         for B in comp_atoms:
             if B == atom or not levels_a:
                 continue
-            levels_b = [c[1:] for c in channels if c[0] == B]
+            levels_b = channels_by_atom[B]
             shift = np.zeros(3)
             shift[k] = step
             base = centers[B] - centers[atom]
@@ -1034,6 +1130,34 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dU_lr[v, u] = slope[i, j]
         return augmentation_terms(dQ, dW_lr, dU_lr, W_lr, U_lr)
 
+    cross_h_tables = None
+    overlap_cross_tables = None
+    field_pulay_tables = None
+    if include_pulay:
+        if kinetic != "fd":
+            cross_h_tables = [
+                one_body_cross(psi, derivatives[k], vext, grid, kinetic,
+                               laplacian)
+                for k in range(3)
+            ]
+        if not analytic:
+            overlap_cross_tables = [
+                (derivatives[k].conj() @ psi.T) * dV for k in range(3)
+            ]
+        if field is not None and hasattr(field, "pulay_tables"):
+            field_pulay_tables = field.pulay_tables(derivatives)
+
+    need_dpsi_stack = (
+        (cross_h_tables is None)
+        or (P and not exact_projections)
+        or (paw and two_body)
+        or spinor
+        or (field is not None and field_pulay_tables is None)
+    )
+    X_flat = grid.X.ravel()
+    Y_flat = grid.Y.ravel()
+    Z_flat = grid.Z.ravel()
+
     hf = np.zeros((n_atoms, 3))
     pulay = np.zeros((n_atoms, 3))
     moved_cache: dict = {}
@@ -1041,31 +1165,41 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         moved_cache.clear()
         own_projectors = [p for p, proj in enumerate(projectors)
                           if proj.atom_index == atom]
+        own_mask = orbital_atoms == atom
+        has_own = bool(np.any(own_mask))
         orbital_stack = (atom_rows(derivatives, atom_of_orbital, atom)
-                         if include_pulay else None)
+                         if include_pulay and has_own and need_dpsi_stack
+                         else None)
+        dx_a = X_flat - centers[atom][0]
+        dy_a = Y_flat - centers[atom][1]
+        dz_a = Z_flat - centers[atom][2]
+        atom_geom = (dx_a, dy_a, dz_a, dx_a * dx_a + dy_a * dy_a + dz_a * dz_a)
 
         for k in range(3):
             # ---------------- Pulay: the basis functions of `atom` move ----
-            if include_pulay and np.any(orbital_stack[k]):
-                dpsi = orbital_stack[k]
-                cross_h = one_body_cross(psi, dpsi, vext, grid, kinetic,
-                                         laplacian)
+            if include_pulay and has_own and np.any(derivatives[k, own_mask]):
+                dpsi = orbital_stack[k] if orbital_stack is not None else None
+                if cross_h_tables is not None:
+                    cross_h = np.zeros((M, M), dtype=complex)
+                    cross_h[own_mask] = cross_h_tables[k][own_mask]
+                else:
+                    cross_h = one_body_cross(psi, dpsi, vext, grid, kinetic,
+                                             laplacian)
                 dh = cross_h + cross_h.conj().T
                 if analytic:
-                    dS = _displacement_derivative(overlap_slope[k],
-                                                  orbital_atoms == atom)
+                    dS = _displacement_derivative(overlap_slope[k], own_mask)
                     dh = dh + _displacement_derivative(kinetic_slope[k],
-                                                       orbital_atoms == atom)
+                                                       own_mask)
                 else:
-                    cross = (dpsi.conj() @ psi.T) * dV
+                    cross = np.zeros((M, M), dtype=complex)
+                    cross[own_mask] = overlap_cross_tables[k][own_mask]
                     dS = cross + cross.conj().T
                 if split_local:
                     dh = dh + short_range_pulay(atom, k)
                 if P:
                     if exact_projections:
                         dC = np.zeros((M, P), dtype=complex)
-                        own = orbital_atoms == atom
-                        dC[own] = projection_gradients[own, :, k]
+                        dC[own_mask] = projection_gradients[own_mask, :, k]
                     else:
                         dC = _backend.kb_projections(dpsi, chi, dV)
                     dh_nl, dS_aug = nonlocal_terms(dC)
@@ -1084,11 +1218,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 if paw and not two_body:
                     # tr(P0 dW) is the compensation potential against the
                     # change of the density the moved functions make.
-                    drho = pair_change(dpsi)
+                    drho = pair_change(derivatives[k], own_mask)
                     dQ = moment_derivatives(dC)
-                    extra += augmentation_contracted(
-                        dQ, {c: dV * (v_comp[c] @ drho) for c in channels},
-                        None)
+                    extra += (augmentation_contracted(dQ, {}, None)
+                              + dV * float(np.real(v_comp_tot @ drho)))
                     dh = dh + ionic_derivative(dQ, None)
                 elif paw:
                     dW = {}
@@ -1120,7 +1253,10 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dh = dh + ionic_derivative(dQ, None)
                 dh_so = (so_terms(_backend.kb_projections(dpsi, chi_so, dV))
                          if spinor else None)
-                if field is not None:
+                if field_pulay_tables is not None:
+                    dh = dh + field.pulay_from_table(
+                        field_pulay_tables[k], own_mask)
+                elif field is not None:
                     dh = dh + field.pulay(dpsi)
                 if terms:
                     extra += two_body_contracted(terms)
@@ -1129,21 +1265,30 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 if field is not None and hasattr(field, "spin_term"):
                     # A spin-resolved potential: the magnetization part the
                     # spin-averaged energy does not see.
-                    pulay[atom, k] += field.spin_term(
-                        S0, _hermitian(dS), dpsi, algebraic_step)
+                    if field_pulay_tables is not None:
+                        pulay[atom, k] += field.spin_term(
+                            S0, _hermitian(dS), None, algebraic_step,
+                            k=k, own=own_mask)
+                    else:
+                        pulay[atom, k] += field.spin_term(
+                            S0, _hermitian(dS), dpsi, algebraic_step)
                 if exchange is not None:
                     pulay[atom, k] += extra_sr + exchange_term(
                         terms_sr, dC if P else None)
 
             # ---------------- Hellmann-Feynman: the operators of `atom` move --
             w_loc = _moved_radial(atom_potentials[atom], centers[atom],
-                                  grid, k, delta)
-            dh = ((psi.conj() * w_loc) @ psi.T) * dV
+                                  grid, k, delta, atom_geom=atom_geom)
+            if not two_body and not spinor:
+                dh = np.zeros((M, M), dtype=complex)
+                extra = dV * float(w_loc @ rho0)
+            else:
+                dh = ((psi.conj() * w_loc) @ psi.T) * dV
+                extra = 0.0
             if split_local:
                 dh = dh + short_range_hellmann_feynman(atom, k)
             dS = None
             terms, terms_sr = [], None
-            extra = 0.0
             if P:
                 if exact_projections:
                     dC = np.zeros((M, P), dtype=complex)
@@ -1163,17 +1308,18 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                         multipole_coulomb_matrix)
 
                     dW = {}
-                    for channel in channels:
-                        if channel[0] != atom:
-                            continue
-                        w_comp = _moved_multipole(
-                            datasets[atom], centers[atom], grid, channel[1],
-                            channel[2], k, delta,
-                            real=integrals.real_harmonics)
-                        if two_body:
-                            dW[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
-                        else:
-                            dW[channel] = dV * (w_comp @ rho0)
+                    levels_a = channels_by_atom.get(atom, [])
+                    if levels_a:
+                        moved_atom = _moved_multipoles_atom(
+                            datasets[atom], centers[atom], grid, levels_a, k,
+                            delta, real=integrals.real_harmonics,
+                            atom_geom=atom_geom)
+                        for (L, M_val), w_comp in moved_atom.items():
+                            channel = (atom, L, M_val)
+                            if two_body:
+                                dW[channel] = ((psi.conj() * w_comp) @ psi.T) * dV
+                            else:
+                                dW[channel] = dV * (w_comp @ rho0)
 
                     # Multipole-multipole Coulomb depends on the *direction*
                     # between the centers, not only the distance as the
@@ -1182,10 +1328,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dU = np.zeros_like(U)
                     step = COMPENSATION_DISTANCE_STEP
                     for B in comp_atoms:
-                        if B == atom:
+                        if B == atom or not levels_a:
                             continue
-                        levels_a = [c[1:] for c in channels if c[0] == atom]
-                        levels_b = [c[1:] for c in channels if c[0] == B]
+                        levels_b = channels_by_atom[B]
                         ra = datasets[atom].compensation_radius
                         rb = datasets[B].compensation_radius
                         shift = np.zeros(3)
@@ -1208,7 +1353,9 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     # The electron-ion attraction of the compensation charges
                     # changes both because this atom's shape moves and because
                     # its ionic potential moves under everyone else's shape.
-                    dV_ion = _ionic_shift(integrals, centers, atom, k, step)
+                    dV_ion = (ionic_gradients[(atom, k)]
+                              if ionic_gradients is not None
+                              else _ionic_shift(integrals, centers, atom, k, step))
                     dQ = moment_derivatives(dC)
                     if two_body:
                         terms += augmentation_terms(dQ, dW, dU)
@@ -1218,7 +1365,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     if exchange is not None:
                         terms_sr = terms + [
                             (-c, X, Y, side) for c, X, Y, side in
-                            long_range_augmentation_derivative(atom, k, dQ)]
+                            long_range_augmentation_derivative(
+                                atom, k, dQ, atom_geom=atom_geom)]
             dh_so = None
             if spinor:
                 dchi_so = np.zeros_like(chi_so)

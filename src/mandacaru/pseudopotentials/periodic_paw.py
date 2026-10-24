@@ -1626,19 +1626,28 @@ class PeriodicPAW:
 
         centers = self.centers
         out = {}
+        by_owner = {}
         for owner, L, M in self.channels:
+            by_owner.setdefault(owner, []).append((L, M))
+        for owner, lms in by_owner.items():
             r_g = float(self.datasets[owner].compensation_radius)
             points, weights, r, dirs = _sphere_rule(
                 centers[owner], r_g, COMPENSATION_RADIAL_POINTS,
                 PROJECTION_POLAR_POINTS, PROJECTION_AZIMUTHAL_POINTS)
             theta = np.arccos(np.clip(dirs[2], -1.0, 1.0))
             phi = np.arctan2(dirs[1], dirs[0])
-            density = (shape_function(r, r_g, L)[:, None]
-                       * spherical_harmonic(L, M, theta, phi,
-                                            real=False)[None, :]).ravel()
+            shapes = {}
+            weighted_all = []
+            for L, M in lms:
+                if L not in shapes:
+                    shapes[L] = shape_function(r, r_g, L)[:, None]
+                density = (shapes[L]
+                           * spherical_harmonic(L, M, theta, phi,
+                                                real=False)[None, :]).ravel()
+                weighted_all.append(weights * density)
+            weighted_mat = np.stack(weighted_all, axis=0)
             x = np.stack(points, axis=1)
-            weighted = weights * density
-            grad = np.zeros((len(centers), 3), dtype=complex)
+            grads = np.zeros((len(lms), len(centers), 3), dtype=complex)
             for other, dataset in enumerate(self.datasets):
                 if other == owner:
                     continue
@@ -1652,11 +1661,12 @@ class PeriodicPAW:
                     distance = np.linalg.norm(vector, axis=1)
                     slope = short_range_potential_derivative(
                         dataset, self.sigma, distance)
-                    pull = (weighted * slope / np.maximum(distance, 1e-300)
-                            ) @ vector
-                    grad[owner] += pull
-                    grad[other] -= pull
-            out[(owner, L, M)] = grad
+                    scale = (slope / np.maximum(distance, 1e-300))[:, None] * vector
+                    pull = weighted_mat @ scale
+                    grads[:, owner] += pull
+                    grads[:, other] -= pull
+            for idx, (L, M) in enumerate(lms):
+                out[(owner, L, M)] = grads[idx]
         return out
 
     def onsite_ion_compensation(self) -> dict:
@@ -1693,18 +1703,28 @@ class PeriodicPAW:
 
         centers = self.centers if centers is None else centers
         out = {}
+        by_owner = {}
         for owner, L, M in self.channels:
+            by_owner.setdefault(owner, []).append((L, M))
+        for owner, lms in by_owner.items():
             r_g = float(self.datasets[owner].compensation_radius)
             points, weights, r, dirs = _sphere_rule(
                 centers[owner], r_g, COMPENSATION_RADIAL_POINTS,
                 PROJECTION_POLAR_POINTS, PROJECTION_AZIMUTHAL_POINTS)
             theta = np.arccos(np.clip(dirs[2], -1.0, 1.0))
             phi = np.arctan2(dirs[1], dirs[0])
-            density = (shape_function(r, r_g, L)[:, None]
-                       * spherical_harmonic(L, M, theta, phi,
-                                            real=False)[None, :]).ravel()
+            shapes = {}
+            weighted_all = []
+            for L, M in lms:
+                if L not in shapes:
+                    shapes[L] = shape_function(r, r_g, L)[:, None]
+                density = (shapes[L]
+                           * spherical_harmonic(L, M, theta, phi,
+                                                real=False)[None, :]).ravel()
+                weighted_all.append(weights * density)
+            weighted_mat = np.stack(weighted_all, axis=0)
             x = np.stack(points, axis=1)
-            total = 0.0j
+            pot_sum = np.zeros(x.shape[0], dtype=float)
             for other, dataset in enumerate(self.datasets):
                 if atom is not None and atom not in (other, owner):
                     continue
@@ -1718,11 +1738,11 @@ class PeriodicPAW:
                         continue
                     distance = np.linalg.norm(
                         x - (centers[other] + R)[None, :], axis=1)
-                    total += np.sum(weights * density
-                                    * short_range_potential(dataset,
-                                                            self.sigma,
-                                                            distance))
-            out[(owner, L, M)] = total
+                    pot_sum += short_range_potential(dataset, self.sigma,
+                                                     distance)
+            totals = weighted_mat @ pot_sum
+            for idx, (L, M) in enumerate(lms):
+                out[(owner, L, M)] = complex(totals[idx])
         return out
 
     def core_density(self) -> np.ndarray | None:
@@ -1770,45 +1790,85 @@ class PeriodicPAW:
         ``center`` (default: the atom) -- what a force moves."""
         from scipy.interpolate import CubicSpline
 
-        g = self.grid
-        x = np.stack(self._grid_points(), axis=1)
         dataset = self.datasets[atom]
-        center = self.centers[atom] if center is None else np.asarray(center,
-                                                                      float)
         values_r = table(dataset)
         if values_r is None:
             return None
+        g = self.grid
+        gx, gy, gz = self._grid_points()
+        center = self.centers[atom] if center is None else np.asarray(center,
+                                                                      float)
         r = np.asarray(dataset.r, dtype=float)
         values_r = np.asarray(values_r, dtype=float)
         peak = float(np.max(np.abs(values_r)))
         significant = np.nonzero(np.abs(values_r) > 1e-14 * peak)[0]
         support = float(r[significant[-1]]) if significant.size else 0.0
+        support2 = support * support
         spline = CubicSpline(r, values_r)
         values = np.zeros(g.size)
+        cell_center, cell_radius = self._cell_region()
+        reach = support + cell_radius
         for R in rc.lattice_translations(
-                self.lattice, support + 2.0 * self._cell_region()[1]):
-            distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
-            inside = distance <= support
-            values[inside] += spline(distance[inside])
+                self.lattice, support + 2.0 * cell_radius):
+            pos = center + R
+            if np.linalg.norm(pos - cell_center) > reach:
+                continue
+            cand = np.flatnonzero(np.abs(gx - pos[0]) <= support)
+            if not cand.size:
+                continue
+            cand = cand[np.abs(gy[cand] - pos[1]) <= support]
+            if not cand.size:
+                continue
+            cand = cand[np.abs(gz[cand] - pos[2]) <= support]
+            if not cand.size:
+                continue
+            dx = gx[cand] - pos[0]
+            dy = gy[cand] - pos[1]
+            dz = gz[cand] - pos[2]
+            r2 = dx * dx + dy * dy + dz * dz
+            in_ball = r2 <= support2
+            if np.any(in_ball):
+                idx = cand[in_ball]
+                values[idx] += spline(np.sqrt(r2[in_ball]))
         return values
 
     def _superposed_valence(self, dataset, center) -> np.ndarray:
         """One atom's smooth valence density summed over its images on the
         cell grid (flat)."""
         from scipy.interpolate import CubicSpline
-        x = np.stack(self._grid_points(), axis=1)
+        gx, gy, gz = self._grid_points()
         out = np.zeros(self.grid.size)
         r = np.asarray(dataset.r, dtype=float)
         values = np.asarray(dataset.valence_density, dtype=float)
         peak = float(np.max(np.abs(values)))
         significant = np.nonzero(np.abs(values) > 1e-12 * peak)[0]
         support = float(r[significant[-1]])
+        support2 = support * support
         spline = CubicSpline(r, values)
+        cell_center, cell_radius = self._cell_region()
+        reach = support + cell_radius
         for R in rc.lattice_translations(self.lattice,
-                                         support + 2.0 * self._cell_region()[1]):
-            distance = np.linalg.norm(x - (center + R)[None, :], axis=1)
-            inside = distance <= support
-            out[inside] += spline(distance[inside])
+                                         support + 2.0 * cell_radius):
+            pos = center + R
+            if np.linalg.norm(pos - cell_center) > reach:
+                continue
+            cand = np.flatnonzero(np.abs(gx - pos[0]) <= support)
+            if not cand.size:
+                continue
+            cand = cand[np.abs(gy[cand] - pos[1]) <= support]
+            if not cand.size:
+                continue
+            cand = cand[np.abs(gz[cand] - pos[2]) <= support]
+            if not cand.size:
+                continue
+            dx = gx[cand] - pos[0]
+            dy = gy[cand] - pos[1]
+            dz = gz[cand] - pos[2]
+            r2 = dx * dx + dy * dy + dz * dz
+            in_ball = r2 <= support2
+            if np.any(in_ball):
+                idx = cand[in_ball]
+                out[idx] += spline(np.sqrt(r2[in_ball]))
         return out
 
     def initial_density(self) -> tuple[np.ndarray, dict]:

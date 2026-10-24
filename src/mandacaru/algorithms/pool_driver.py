@@ -169,6 +169,7 @@ class PoolDriver(SectorMixin, VariationalDriver):
         # The commutator observables of a shot-based run, built when first
         # measured (:attr:`pool_gradients`).
         self._pool_gradient_tables = None
+        self._pool_flip_plan = None
         if self.shots:
             # Every gradient is measured on the device: no generator is
             # materialized in any representation.
@@ -179,15 +180,105 @@ class PoolDriver(SectorMixin, VariationalDriver):
             self._pool_matrices = [
                 PauliOperator(op.generator, sector=self._sector, cache_bytes=0)
                 for op in self._pool_ops]
-        elif self._sector is not None:
-            self._pool_matrices = [self._sector.restrict(op.generator)
-                                   for op in self._pool_ops]
-        elif self._sparse:
-            self._pool_matrices = [op.generator.to_sparse_matrix()
-                                   for op in self._pool_ops]
+            self._pool_flip_plan = self._build_pool_flip_plan()
         else:
-            self._pool_matrices = [op.matrix() for op in self._pool_ops]
+            self.__dict__["_pool_matrices_value"] = None
+            self.__dict__["_pool_matrices_lazy"] = True
+            self._pool_flip_plan = self._build_pool_flip_plan()
         self._configured = True
+
+    @property
+    def _pool_matrices(self):
+        mats = self.__dict__.get("_pool_matrices_value")
+        if mats is None and self.__dict__.get("_pool_matrices_lazy"):
+            if self._sector is not None:
+                mats = [self._sector.restrict(op.generator)
+                        for op in self._pool_ops]
+            else:
+                mats = [op.generator.to_sparse_matrix()
+                        for op in self._pool_ops]
+            self.__dict__["_pool_matrices_value"] = mats
+        return mats
+
+    @_pool_matrices.setter
+    def _pool_matrices(self, value):
+        self.__dict__["_pool_matrices_value"] = value
+        self.__dict__["_pool_matrices_lazy"] = False
+
+    def _build_pool_flip_plan(self):
+        from ..core.sector import (_extract_bits, _mask_bit_positions,
+                                   flip_groups)
+
+        by_flip: dict[int, list[tuple[int, int, complex]]] = {}
+        for op_idx, op in enumerate(self._pool_ops):
+            for flip, members in flip_groups(op.generator).items():
+                bucket_list = by_flip.setdefault(flip, [])
+                for phase, factor in members:
+                    bucket_list.append((op_idx, phase, factor))
+
+        sector = self._sector
+        precompute_sector = sector is not None and sector.dim <= 50_000
+        plan = []
+        for flip, entries in by_flip.items():
+            base_phase = entries[0][1]
+            union_dz = 0
+            for _op_idx, phase, _factor in entries[1:]:
+                union_dz |= phase ^ base_phase
+            n_bits = union_dz.bit_count()
+            if n_bits <= 6:
+                bit_positions, rep_states = (
+                    _mask_bit_positions(union_dz) if n_bits
+                    else ((), np.zeros(1, dtype=np.int64)))
+                op_map: dict[int, int] = {}
+                op_ids_list: list[int] = []
+                phase_signs: dict[int, np.ndarray | float] = {0: 1.0}
+                for op_idx, phase, _factor in entries:
+                    if op_idx not in op_map:
+                        op_map[op_idx] = len(op_ids_list)
+                        op_ids_list.append(op_idx)
+                    dz = phase ^ base_phase
+                    if dz not in phase_signs:
+                        p = np.bitwise_count(rep_states & np.int64(dz)) & 1
+                        phase_signs[dz] = 1 - 2 * p.astype(np.int8)
+                op_ids = np.asarray(op_ids_list, dtype=np.int32)
+                M = np.zeros((op_ids.size, rep_states.size), dtype=complex)
+                for op_idx, phase, factor in entries:
+                    M[op_map[op_idx], :] += factor * phase_signs[
+                        phase ^ base_phase]
+                active_buckets = np.any(np.abs(M) > 1e-15, axis=0)
+                if not np.any(active_buckets):
+                    continue
+                if precompute_sector:
+                    rows = sector.positions(sector.indices ^ np.int64(flip))
+                    inside = rows >= 0
+                    if not np.any(inside):
+                        continue
+                    rows = rows[inside]
+                    cols = np.flatnonzero(inside)
+                    kept = sector.indices[inside]
+                    if n_bits:
+                        b = _extract_bits(kept, bit_positions)
+                        if not np.all(active_buckets):
+                            act = active_buckets[b]
+                            if not np.any(act):
+                                continue
+                            rows = rows[act]
+                            cols = cols[act]
+                            kept = kept[act]
+                            b = b[act]
+                        b = b.astype(np.intp)
+                    else:
+                        b = None
+                    parity = ((np.bitwise_count(kept & np.int64(base_phase))
+                               & 1).astype(bool) if base_phase else None)
+                    plan.append(("sector_lut", rows.astype(np.int32),
+                                 cols.astype(np.int32), parity, b, M, op_ids))
+                else:
+                    plan.append(("lut", flip, base_phase, bit_positions,
+                                 active_buckets, M, op_ids))
+            else:
+                plan.append(("raw", flip, entries))
+        return plan
 
     @property
     def pool_gradients(self):
@@ -203,9 +294,105 @@ class PoolDriver(SectorMixin, VariationalDriver):
     def _analytic_gradients(self, psi: np.ndarray) -> np.ndarray:
         r"""Exact pool gradients ``g_i = 2 Re<H psi | A_i psi>`` (reference)."""
         h_psi = self._h_matrix @ psi
-        grads = np.empty(len(self._pool_matrices))
-        for i, a in enumerate(self._pool_matrices):
-            grads[i] = 2.0 * np.real(np.vdot(h_psi, a @ psi))
+        plan = getattr(self, "_pool_flip_plan", None)
+        if plan is None or psi.ndim != 1:
+            grads = np.empty(len(self._pool_matrices))
+            for i, a in enumerate(self._pool_matrices):
+                grads[i] = 2.0 * np.real(np.vdot(h_psi, a @ psi))
+            return grads
+
+        from ..core.matrix_free import register_indices
+        from ..core.sector import _extract_bits
+
+        grads = np.zeros(len(self._pool_ops), dtype=float)
+        sector = self._sector
+        states = (sector.indices if sector is not None
+                  else register_indices(self.n_qubits))
+        for item in plan:
+            kind = item[0]
+            if kind == "sector_lut":
+                _, rows, cols, parity, b, M, op_ids = item
+                w = np.conj(h_psi[rows]) * psi[cols]
+                if parity is not None:
+                    w = np.where(parity, -w, w)
+                if b is None:
+                    grads[op_ids] += 2.0 * np.real(M[:, 0] * np.sum(w))
+                else:
+                    n_b = M.shape[1]
+                    bsum = (np.bincount(b, weights=w.real, minlength=n_b)
+                            + 1j * np.bincount(b, weights=w.imag,
+                                               minlength=n_b))
+                    grads[op_ids] += 2.0 * np.real(M @ bsum)
+            elif kind == "lut":
+                _, flip, base_phase, bit_positions, active_buckets, M, op_ids = item
+                if sector is not None:
+                    rows = sector.positions(states ^ np.int64(flip))
+                    inside = rows >= 0
+                    if not np.any(inside):
+                        continue
+                    rows = rows[inside]
+                    cols = np.flatnonzero(inside)
+                    kept = states[inside]
+                else:
+                    cols = None
+                    kept = states
+                if bit_positions:
+                    b = _extract_bits(kept, bit_positions)
+                    if not np.all(active_buckets):
+                        act = active_buckets[b]
+                        if not np.any(act):
+                            continue
+                        if cols is None:
+                            cols = np.flatnonzero(act)
+                            kept = cols
+                            rows = cols ^ np.int64(flip) if flip else cols
+                        else:
+                            rows = rows[act]
+                            cols = cols[act]
+                            kept = kept[act]
+                        b = b[act]
+                    elif cols is None:
+                        rows = kept ^ np.int64(flip) if flip else kept
+                else:
+                    b = None
+                    if cols is None:
+                        rows = kept ^ np.int64(flip) if flip else kept
+                w = (np.conj(h_psi[rows]) * psi if cols is None
+                     else np.conj(h_psi[rows]) * psi[cols])
+                if base_phase:
+                    parity = np.bitwise_count(kept & np.int64(base_phase)) & 1
+                    w = np.where(parity, -w, w)
+                if b is None:
+                    grads[op_ids] += 2.0 * np.real(M[:, 0] * np.sum(w))
+                else:
+                    n_b = M.shape[1]
+                    bsum = (np.bincount(b, weights=w.real, minlength=n_b)
+                            + 1j * np.bincount(b, weights=w.imag,
+                                               minlength=n_b))
+                    grads[op_ids] += 2.0 * np.real(M @ bsum)
+            else:
+                _, flip, entries = item
+                if sector is not None:
+                    rows = sector.positions(states ^ np.int64(flip))
+                    inside = rows >= 0
+                    if not np.any(inside):
+                        continue
+                    rows = rows[inside]
+                    cols = np.flatnonzero(inside)
+                    kept = states[inside]
+                    w = np.conj(h_psi[rows]) * psi[cols]
+                else:
+                    rows = states ^ np.int64(flip) if flip else states
+                    kept = states
+                    w = np.conj(h_psi[rows]) * psi
+                total_w = np.sum(w)
+                for op_idx, phase, factor in entries:
+                    if not phase:
+                        s = total_w
+                    else:
+                        parity = np.bitwise_count(kept & np.int64(phase)) & 1
+                        s = total_w - 2.0 * np.dot(parity, w)
+                    grads[op_idx] += 2.0 * float(np.real(factor * s))
         return grads
 
     def _operator_matrix(self, op: PoolOperator):
@@ -221,9 +408,7 @@ class PoolDriver(SectorMixin, VariationalDriver):
                                  cache_bytes=0)
         if self._sector is not None:
             return self._sector.restrict(op.generator)
-        if getattr(self, "_sparse", False):
-            return op.generator.to_sparse_matrix()
-        return op.matrix()
+        return op.generator.to_sparse_matrix()
 
     def _resolve_taper(self, qubit_h):
         """The :class:`TaperedRegister` this run uses, or ``None``.
@@ -329,13 +514,13 @@ class PoolDriver(SectorMixin, VariationalDriver):
             # reference.  Its 1-positions are handed over as the "occupied" list
             # and the encoding is the identity, which is what Jordan-Wigner is.
             return AdaptAnsatz(self.n_qubits, info.occupied, "jordan_wigner",
-                               sparse=getattr(self, "_sparse", False),
+                               sparse=True,
                                matrix_free=getattr(self, "_matrix_free", False),
                                provider=self.ansatz_provider(),
                                num_particles=None, sector=None,
                                simulate=not self.shots)
         return AdaptAnsatz(self.n_qubits, self.pool.occupied_orbitals,
-                           self.mapping, sparse=getattr(self, "_sparse", False),
+                           self.mapping, sparse=True,
                            matrix_free=getattr(self, "_matrix_free", False),
                            provider=self.ansatz_provider(),
                            num_particles=self.num_particles,

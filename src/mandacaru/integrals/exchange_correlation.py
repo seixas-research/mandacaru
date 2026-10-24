@@ -246,6 +246,31 @@ def gradient(grid, field: np.ndarray) -> np.ndarray:
     """
     field = np.asarray(field)
     lead = field.shape[:-1]
+    if grid.is_orthorhombic:
+        arr = field.reshape(*lead, *grid.shape)
+        k_vecs = _wavevectors(grid)
+        k_1ds = (k_vecs[0][:, 0, 0], k_vecs[1][0, :, 0], k_vecs[2][0, 0, :])
+        is_real = np.isrealobj(field)
+        out = np.empty((3, *lead, grid.size),
+                       dtype=float if is_real else complex)
+        for ax, k_1d in enumerate(k_1ds):
+            fft_ax = len(lead) + ax
+            n_ax = grid.shape[ax]
+            if is_real:
+                k_r = k_1d[: n_ax // 2 + 1]
+                shape_k = [1] * arr.ndim
+                shape_k[fft_ax] = k_r.size
+                spec = np.fft.rfft(arr, axis=fft_ax)
+                spec *= (1j * k_r).reshape(shape_k)
+                out[ax] = np.fft.irfft(spec, n=n_ax, axis=fft_ax).reshape(
+                    *lead, -1)
+            else:
+                shape_k = [1] * arr.ndim
+                shape_k[fft_ax] = n_ax
+                spec = np.fft.fft(arr, axis=fft_ax)
+                spec *= (1j * k_1d).reshape(shape_k)
+                out[ax] = np.fft.ifft(spec, axis=fft_ax).reshape(*lead, -1)
+        return out
     values = np.fft.fftn(field.reshape(*lead, *grid.shape), axes=(-3, -2, -1))
     out = []
     for k in _wavevectors(grid):
@@ -258,6 +283,20 @@ def gradient(grid, field: np.ndarray) -> np.ndarray:
 def divergence(grid, vector: np.ndarray) -> np.ndarray:
     """Divergence of a flat ``(3, ngrid)`` real vector field: minus the adjoint
     of :func:`gradient`."""
+    if grid.is_orthorhombic:
+        k_vecs = _wavevectors(grid)
+        k_1ds = (k_vecs[0][:, 0, 0], k_vecs[1][0, :, 0], k_vecs[2][0, 0, :])
+        total = np.zeros(grid.shape, dtype=float)
+        for ax, (component, k_1d) in enumerate(zip(vector, k_1ds)):
+            n_ax = grid.shape[ax]
+            arr = np.asarray(component, dtype=float).reshape(grid.shape)
+            k_r = k_1d[: n_ax // 2 + 1]
+            shape_k = [1, 1, 1]
+            shape_k[ax] = k_r.size
+            spec = np.fft.rfft(arr, axis=ax)
+            spec *= (1j * k_r).reshape(shape_k)
+            total += np.fft.irfft(spec, n=n_ax, axis=ax)
+        return total.reshape(-1)
     total = np.zeros(grid.shape, dtype=complex)
     for component, k in zip(vector, _wavevectors(grid)):
         total += 1j * k * np.fft.fftn(component.reshape(grid.shape))
@@ -290,11 +329,10 @@ def gradient_term_matrix(orbitals, orbital_gradients, field, dV) -> np.ndarray:
     :math:`\int\mathbf W\cdot\nabla\rho` with respect to the density matrix
     when :math:`\nabla\rho` is :func:`product_rule_gradient`, for the vector
     field ``field`` (``XCTerms.gradient_potential``)."""
-    out = 0.0
+    half = 0.0
     for component, dphi in zip(field, orbital_gradients):
-        out = out + ((orbitals.conj() * component) @ dphi.T
-                     + (dphi.conj() * component) @ orbitals.T)
-    return out * dV
+        half = half + (orbitals.conj() * component) @ dphi.T
+    return (half + half.conj().T) * dV
 
 
 def gradient_term_derivative(grid, orbitals, orbital_gradients, moved,

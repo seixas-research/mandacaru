@@ -159,14 +159,25 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
     ``delta`` for the others.  Only the points inside a function's support
     are evaluated, and the array is ``float64`` when every function is real.
     """
+    from ..integrals.sampling import sample_functions
+
     delta = DEFAULT_ORBITAL_DELTA if delta is None else float(delta)
     M = len(basis)
     real = all(getattr(fn, "real", False) for fn in basis)
-    out = np.zeros((3, M, grid.size), dtype=np.float64 if real else complex)
-    for mu, fn in enumerate(basis):
-        if atom is not None and atom_of_orbital[mu] != atom:
-            continue
-        out[:, mu] = -fn.sample_gradient(grid, delta)
+    dtype = np.float64 if real else complex
+    if atom is None:
+        if M == 0:
+            return np.zeros((3, 0, grid.size), dtype=dtype)
+        _, slopes = sample_functions(basis, (grid.X, grid.Y, grid.Z),
+                                     gradients=True, delta=delta, values=False)
+        return np.ascontiguousarray(-slopes.transpose(1, 0, 2))
+    out = np.zeros((3, M, grid.size), dtype=dtype)
+    own = [mu for mu in range(M) if atom_of_orbital[mu] == atom]
+    if own:
+        _, slopes = sample_functions([basis[mu] for mu in own],
+                                     (grid.X, grid.Y, grid.Z),
+                                     gradients=True, delta=delta, values=False)
+        out[:, own] = -slopes.transpose(1, 0, 2)
     return out
 
 
@@ -174,7 +185,9 @@ def atom_rows(derivatives, atom_of_orbital, atom):
     """``orbital_derivatives(..., atom)`` from the every-function array
     (``atom=None``): the rows of ``atom``'s functions, zeros elsewhere."""
     own = np.asarray(atom_of_orbital) == atom
-    return np.where(own[None, :, None], derivatives, 0.0)
+    out = np.zeros_like(derivatives)
+    out[:, own] = derivatives[:, own]
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -202,13 +215,15 @@ def orbital_gradients(basis, grid, delta=None):
     computed for all orbitals at once, since the density gradient needs them all
     regardless of which atom they sit on.
     """
+    from ..integrals.sampling import sample_functions
+
     delta = DEFAULT_ORBITAL_DELTA if delta is None else float(delta)
     real = all(getattr(fn, "real", False) for fn in basis)
-    out = np.zeros((3, len(basis), grid.size),
-                   dtype=np.float64 if real else complex)
-    for mu, fn in enumerate(basis):
-        out[:, mu] = fn.sample_gradient(grid, delta)
-    return out
+    if not basis:
+        return np.zeros((3, 0, grid.size), dtype=np.float64 if real else complex)
+    _, slopes = sample_functions(basis, (grid.X, grid.Y, grid.Z),
+                                 gradients=True, delta=delta, values=False)
+    return np.ascontiguousarray(slopes.transpose(1, 0, 2))
 
 
 def density_gradient(density_ao, psi_grid, grad_psi):

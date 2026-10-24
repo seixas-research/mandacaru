@@ -352,26 +352,125 @@ def _matrix_terms(solver, state):
                           // (16 * (n_atoms + 1) * ext.M ** 2)))
     for outer in range(0, len(kpoints), wide):
         wide_chunk = kpoints[outer:outer + wide]
-        C_wide = np.concatenate(
-            [np.stack([d.projections
-                       for d in c.kpoint_data[outer:outer + wide]]),
-             derivatives.projections(wide_chunk)], axis=1)
-        spheres_wide = []
-        for atom in range(n_atoms):
-            cross = c.short_range_cross(atom, wide_chunk, extended[M:],
-                                        extended[:M])
-            V = np.zeros((len(wide_chunk), ext.M, ext.M), dtype=complex)
-            V[:, M:, :M] = cross
-            V[:, :M, M:] = cross.conj().transpose(0, 2, 1)
-            spheres_wide.append(V)
-        for start in range(outer, outer + len(wide_chunk), block):
-            _matrix_block(solver, state, ext, start, outer, block, base,
-                          grad, C_wide, spheres_wide, pulay, hf)
+        C_grad_wide = derivatives.projections(wide_chunk)
+        cross_spheres_wide = [
+            c.short_range_cross(atom, wide_chunk, extended[M:], extended[:M])
+            for atom in range(n_atoms)
+        ]
+        if solver.screening is not None:
+            C_wide = np.concatenate(
+                [np.stack([d.projections
+                           for d in c.kpoint_data[outer:outer + wide]]),
+                 C_grad_wide], axis=1)
+            spheres_wide = []
+            for cross in cross_spheres_wide:
+                V = np.zeros((len(wide_chunk), ext.M, ext.M), dtype=complex)
+                V[:, M:, :M] = cross
+                V[:, :M, M:] = cross.conj().transpose(0, 2, 1)
+                spheres_wide.append(V)
+            for start in range(outer, outer + len(wide_chunk), block):
+                _matrix_block(solver, state, ext, derivatives, start, outer,
+                              block, base, grad, C_wide, spheres_wide, pulay,
+                              hf)
+        else:
+            for start in range(outer, outer + len(wide_chunk), block):
+                _matrix_block_cross(solver, state, derivatives, start, outer,
+                                    block, C_grad_wide, cross_spheres_wide,
+                                    pulay, hf)
     return pulay, hf
 
 
-def _matrix_block(solver, state, ext, start, outer, block, base, grad, C_wide,
-                  spheres_wide, pulay, hf):
+def _matrix_block_cross(solver, state, derivatives, start, outer, block,
+                        C_grad_wide, cross_spheres_wide, pulay, hf):
+    """Fast cross-only path for :func:`_matrix_terms` when ``solver.screening
+    is None``: evaluates only the ``(3M, M)`` cross blocks between the
+    derivative functions and the SCF's already-cached base Bloch sums."""
+    c = solver.crystal
+    M = c.M
+    dV = c.grid.dV
+    _V, _v_tau, w, _terms = state["potentials"]
+    D_mom = c.moment_operator(w)
+    D_tot = c.D_ion + D_mom
+    channels = state["channels"]
+    n_atoms = len(c.centers)
+    owner = np.asarray(c.atom_of_orbital)
+    own_masks = [(owner == atom).astype(float) for atom in range(n_atoms)]
+    kpoints, weights = state["kpoints"], state["weights"]
+    chunk = kpoints[start:start + block]
+    shift = start - outer
+    psi_grad_all = derivatives.bloch_sums(chunk)
+    C_grad_all = C_grad_wide[shift:shift + len(chunk)]
+    cross_spheres = [v[shift:shift + len(chunk)] for v in cross_spheres_wide]
+    for i, k in enumerate(chunk):
+        index = start + i
+        d_base = c.kpoint_data[index]
+        psi_base, C0 = d_base.psi, d_base.projections
+        psi_grad, C_grad = psi_grad_all[i], C_grad_all[i]
+        # Cross overlap (3M, M)
+        S_cross = ((psi_grad.conj() @ psi_base.T) * dV
+                   + C_grad @ (c.q_overlap @ C0.conj().T))
+        # Cross kinetic (3M, M)
+        u_grad = c._periodic_part(psi_grad, k).reshape(3 * M, -1)
+        u_base = c._periodic_part(psi_base, k).reshape(M, -1)
+        _vectors, squares = rc.bloch_aliases(c.grid, k)
+        k_weight = 0.5 * squares.ravel() / c.volume
+        T_cross = (u_grad.conj() * k_weight) @ u_base.T
+        fixed_cross = (T_cross + sum(v[i] for v in cross_spheres)
+                       + C_grad @ (D_tot @ C0.conj().T))
+        if solver.meta:
+            grad_psi_grad = derivatives.bloch_gradients(psi_grad, k)
+            grad_psi_base = (solver._gradients[index]
+                             if getattr(solver, "_gradients", None) is not None
+                             else c.bloch_gradients(psi_base, k))
+        H_cross_channels = []
+        for s, channel in enumerate(channels):
+            V_s, v_tau_s = channel["V"], channel["v_tau"]
+            H_cross = fixed_cross + ((psi_grad.conj() * V_s) @ psi_base.T) * dV
+            if v_tau_s is not None:
+                for dg, db in zip(grad_psi_grad, grad_psi_base):
+                    H_cross = H_cross + 0.5 * ((dg.conj() * v_tau_s) @ db.T) * dV
+            H_cross_channels.append(H_cross)
+        P, W, wk = state["P"][index], state["W"][index], weights[index]
+        P_channels = [channel["P"][index] for channel in channels]
+        for d in range(3):
+            sl = slice(d * M, (d + 1) * M)
+            G_Hs = [H_c[sl] for H_c in H_cross_channels]
+            G_S = S_cross[sl]
+            # Pulay: one atom's functions move.
+            for atom in range(n_atoms):
+                own = own_masks[atom]
+                band = sum(
+                    _trace(P_s, -(own[:, None] * G_H
+                                  + G_H.conj().T * own[None, :]))
+                    for P_s, G_H in zip(P_channels, G_Hs))
+                dS = -(own[:, None] * G_S + G_S.conj().T * own[None, :])
+                pulay[atom, d] += wk * (band - _trace(W, dS))
+            # A short-range sphere moves: minus all functions moving.
+            for atom in range(n_atoms):
+                G_V = cross_spheres[atom][i][sl]
+                hf[atom, d] += wk * _trace(P, G_V + G_V.conj().T)
+            # A projector moves: minus all functions moving, its column.
+            dC_all = C_grad[sl]
+            for atom in range(n_atoms):
+                columns = c.projector_columns(atom)
+                if not columns:
+                    continue
+                dC = np.zeros_like(C0)
+                dC[:, columns] = dC_all[:, columns]
+                dH = (dC @ c.D_ion @ C0.conj().T
+                      + C0 @ c.D_ion @ dC.conj().T)
+                dS = (dC @ c.q_overlap @ C0.conj().T
+                      + C0 @ c.q_overlap @ dC.conj().T)
+                Ca, dCa = C0[:, columns], dC[:, columns]
+                for ch, blk in c.multipole_blocks.items():
+                    if ch[0] == atom:
+                        dH = dH + w[ch] * (dCa @ blk @ Ca.conj().T
+                                           + Ca @ blk @ dCa.conj().T)
+                hf[atom, d] += wk * (_trace(P, dH) - _trace(W, dS))
+
+
+def _matrix_block(solver, state, ext, derivatives, start, outer, block, base,
+                  grad, C_wide, spheres_wide, pulay, hf):
     """Accumulate :func:`_matrix_terms` over the k-points ``start`` ..
     ``start + block`` (those of the wide chunk that begins at ``outer``)."""
     from ..pseudopotentials.periodic_paw import KPointMatrices
@@ -384,12 +483,14 @@ def _matrix_block(solver, state, ext, start, outer, block, base, grad, C_wide,
     kpoints, weights = state["kpoints"], state["weights"]
     chunk = kpoints[start:start + block]
     shift = start - outer
-    psi_all = ext.bloch_sums(chunk)
+    psi_grad_all = derivatives.bloch_sums(chunk)
     C_all = C_wide[shift:shift + len(chunk)]
     spheres = [v[shift:shift + len(chunk)] for v in spheres_wide]
     for i, k in enumerate(chunk):
         index = start + i
-        psi, C = psi_all[i], C_all[i]
+        psi = np.concatenate([c.kpoint_data[index].psi, psi_grad_all[i]],
+                             axis=0)
+        C = C_all[i]
         S = (psi.conj() @ psi.T) * c.grid.dV + C @ c.q_overlap @ C.conj().T
         fixed = (ext._kinetic(psi, k) + sum(v[i] for v in spheres)
                  + C @ c.D_ion @ C.conj().T)
@@ -519,13 +620,12 @@ def _electrostatic(solver, state):
     Gs = Gs[:, np.sum(Gs * Gs, axis=0) > 0.0]
     for start in range(0, Gs.shape[1], DENSE_BLOCK):
         G = Gs[:, start:start + DENSE_BLOCK]
-        norm = rc.spherical(G)[0]
+        norm = np.sqrt(np.sum(G * G, axis=0))
         kernel = 4.0 * np.pi / norm ** 2
         per_atom = [_ion_transform_atom(c, atom, G) for atom in range(n_atoms)]
-        for atom, L, M in c.channels:
-            per_atom[atom] = per_atom[atom] + q[(atom, L, M)] * \
-                rc.multipole_transform(G, c.centers[atom],
-                                       c._shape_transform(atom, L, norm), L, M)
+        transforms = c.compensation_transforms(G)
+        for row, (atom, L, M) in enumerate(c.channels):
+            per_atom[atom] = per_atom[atom] + q[(atom, L, M)] * transforms[row]
         total = sum(per_atom)
         for atom in range(n_atoms):
             for d in range(3):
@@ -744,8 +844,12 @@ def carried_energy(solver, state, atoms, options, family, kpts,
         smearing=None, relativistic=solver.relativistic,
         constant=solver.constant, screening=solver.screening,
         magnetic_moments=solver.initial_moments if state["spin"] else None)
-    carry = [_matrix_power(data.overlap, -0.5) @ _matrix_power(S0, 0.5)
-             for data, S0 in zip(crystal.kpoint_data, state["overlaps"])]
+    overlaps_half = state.get("overlaps_half")
+    if overlaps_half is None:
+        overlaps_half = [_matrix_power(S0, 0.5) for S0 in state["overlaps"]]
+        state["overlaps_half"] = overlaps_half
+    carry = [_matrix_power(data.overlap, -0.5) @ S0_half
+             for data, S0_half in zip(crystal.kpoint_data, overlaps_half)]
     carried = []                  # per channel: (vectors, matrices)
     for channel in state["channels"]:
         vectors = [T @ C0 for T, C0 in zip(carry, channel["vectors"])]

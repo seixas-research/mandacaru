@@ -275,18 +275,7 @@ class UCCSD:
         if self.provider is not None:
             out = self._evolve_on_provider(theta, refs)
             return out[:, 0] if single else out
-        if self.sector is not None:
-            out = self._evolve_in_sector(theta, refs)
-            return out[:, 0] if single else out
-        if self.trotter:
-            out = refs.copy()
-            for angle, gen in zip(theta, self._generators):
-                out = expm(angle * gen) @ out
-        else:
-            cluster = sum(
-                (angle * gen for angle, gen in zip(theta, self._generators)),
-                np.zeros((2 ** self.n_qubits,) * 2, dtype=complex))
-            out = expm(cluster) @ refs
+        out = self._evolve_in_sector(theta, refs)
         return out[:, 0] if single else out
 
     # -- the sector representation ---------------------------------------- #
@@ -307,17 +296,18 @@ class UCCSD:
             from .adapt_ansatz import AdaptAnsatz
 
             ansatz = AdaptAnsatz(
-                self.n_qubits, self._occupied, self.mapping,
+                self.n_qubits, self._occupied, self.mapping, sparse=True,
                 num_particles=self.num_particles, sector=self.sector)
             for k, generator in enumerate(self._pauli_generators):
                 ansatz.append(PoolOperator(f"uccsd-{k}", generator, (),
                                            "uccsd"))
             self._sector_cache = ansatz
             return ansatz
-        dim = self.sector.dim
+        dim = self.sector.dim if self.sector is not None else (1 << self.n_qubits)
         rows, cols, values, owner = [], [], [], []
         for k, generator in enumerate(self._pauli_generators):
-            matrix = self.sector.restrict(generator).tocoo()
+            matrix = (self.sector.restrict(generator) if self.sector is not None
+                      else generator.to_sparse_matrix()).tocoo()
             rows.append(matrix.row.astype(np.int64))
             cols.append(matrix.col.astype(np.int64))
             values.append(matrix.data)
@@ -350,7 +340,7 @@ class UCCSD:
         import scipy.sparse as sp
 
         values, owner, starts, indices, indptr = self._sector_state()
-        dim = self.sector.dim
+        dim = self.sector.dim if self.sector is not None else (1 << self.n_qubits)
         if not starts.size:
             return sp.csr_matrix((dim, dim), dtype=complex)
         data = np.add.reduceat(values * theta[owner], starts)
@@ -359,17 +349,37 @@ class UCCSD:
     def _evolve_in_sector(self, theta: np.ndarray, refs: np.ndarray
                           ) -> np.ndarray:
         """``U(theta)`` on sector vectors ``refs`` of shape ``(dim, k)``."""
-        if refs.shape[0] != self.sector.dim:
+        dim = self.sector.dim if self.sector is not None else (1 << self.n_qubits)
+        if refs.shape[0] != dim:
             raise ValueError(
-                f"expected sector vectors of {self.sector.dim} amplitudes, "
+                f"expected sector vectors of {dim} amplitudes, "
                 f"got {refs.shape[0]}")
         if self.trotter:
             return self._sector_state().evolve(theta, refs)
         if not theta.size or not np.any(theta):
             return refs.copy()
+        cluster = self._cluster(theta)
+        if cluster.nnz == 0:
+            return refs.copy()
+        row_nnz = np.diff(cluster.indptr)
+        nonzero_rows = np.flatnonzero(row_nnz)
+        norm1 = float(np.max(np.add.reduceat(
+            np.abs(cluster.data), cluster.indptr[nonzero_rows])))
+        if norm1 <= 8.0:
+            steps = max(1, int(np.ceil(norm1)))
+            scale = 1.0 / steps
+            out = refs.copy()
+            for _ in range(steps):
+                term = out
+                for k in range(1, 25):
+                    term = (cluster @ term) * (scale / k)
+                    out = out + term
+                    if np.max(np.abs(term)) <= 1e-15 * np.max(np.abs(out)):
+                        break
+            return out
         from scipy.sparse.linalg import expm_multiply
 
-        return expm_multiply(self._cluster(theta), refs)
+        return expm_multiply(cluster, refs, traceA=0.0)
 
     @property
     def energy_and_gradient(self):

@@ -39,6 +39,7 @@ calculators (the returned ASE energy is the ground state).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from itertools import combinations
 
 import numpy as np
@@ -56,18 +57,10 @@ from .vqe import VQE
 # Reference determinants for the search subspace.
 # --------------------------------------------------------------------------- #
 
-def subspace_determinants(n_qubits: int, occupied, num_states: int) -> list[tuple]:
-    """The ``num_states`` lowest determinants of the Hartree-Fock particle sector.
-
-    Enumerates Slater determinants with the same ``(n_alpha, n_beta)`` occupation
-    as the Hartree-Fock reference ``occupied`` (spin-blocked spin-orbital
-    indices), ordered by excitation level from HF then lexicographically, and
-    returns the first ``num_states`` as tuples of occupied spin-orbital indices.
-    These are mutually orthogonal and share the electron count, so the
-    number-conserving ansatz keeps them in the physical sector.
-    """
+@lru_cache(maxsize=32)
+def _subspace_determinants_cached(n_qubits: int,
+                                  occ: tuple[int, ...]) -> tuple[tuple[int, ...], ...]:
     M = n_qubits // 2
-    occ = sorted(int(o) for o in occupied)
     n_alpha = sum(1 for o in occ if o < M)
     n_beta = len(occ) - n_alpha
     alpha_orbitals = range(M)
@@ -81,11 +74,26 @@ def subspace_determinants(n_qubits: int, occupied, num_states: int) -> list[tupl
             level = len(det - hf)                 # number of promoted electrons
             dets.append((level, tuple(sorted(det))))
     dets.sort(key=lambda t: (t[0], t[1]))
+    return tuple(d[1] for d in dets)
+
+
+def subspace_determinants(n_qubits: int, occupied, num_states: int) -> list[tuple]:
+    """The ``num_states`` lowest determinants of the Hartree-Fock particle sector.
+
+    Enumerates Slater determinants with the same ``(n_alpha, n_beta)`` occupation
+    as the Hartree-Fock reference ``occupied`` (spin-blocked spin-orbital
+    indices), ordered by excitation level from HF then lexicographically, and
+    returns the first ``num_states`` as tuples of occupied spin-orbital indices.
+    These are mutually orthogonal and share the electron count, so the
+    number-conserving ansatz keeps them in the physical sector.
+    """
+    occ = tuple(sorted(int(o) for o in occupied))
+    dets = _subspace_determinants_cached(int(n_qubits), occ)
     if num_states > len(dets):
         raise ValueError(
             f"requested {num_states} states but the particle-number sector only "
             f"has {len(dets)} determinants")
-    return [d[1] for d in dets[:num_states]]
+    return list(dets[:num_states])
 
 
 def _determinant_vector(mapping: str, n_qubits: int, occupied) -> np.ndarray:
@@ -108,12 +116,8 @@ def reference_matrix(mapping: str, n_qubits: int, occupied,
     return np.column_stack(cols)
 
 
-def spin_squared(n_spatial_orbitals: int) -> Fermion:
-    r""":math:`S^2 = S_- S_+ + S_z^2 + S_z` on a spin-blocked register.
-
-    Spin-orbital ``p`` is alpha for ``p < M`` and ``p + M`` its beta partner,
-    so :math:`S_+ = \sum_p a^\dagger_{p\alpha} a_{p\beta}`.
-    """
+@lru_cache(maxsize=32)
+def _spin_squared_terms(n_spatial_orbitals: int):
     M = int(n_spatial_orbitals)
     n = 2 * M
     raise_spin = Fermion({((p, True), (p + M, False)): 1.0 for p in range(M)},
@@ -122,7 +126,18 @@ def spin_squared(n_spatial_orbitals: int) -> Fermion:
                          n_modes=n)
     s_z = Fermion({((p, True), (p, False)): (0.5 if p < M else -0.5)
                    for p in range(n)}, n_modes=n)
-    return lower_spin * raise_spin + s_z * s_z + s_z
+    op = lower_spin * raise_spin + s_z * s_z + s_z
+    return tuple(op.terms.items()), n
+
+
+def spin_squared(n_spatial_orbitals: int) -> Fermion:
+    r""":math:`S^2 = S_- S_+ + S_z^2 + S_z` on a spin-blocked register.
+
+    Spin-orbital ``p`` is alpha for ``p < M`` and ``p + M`` its beta partner,
+    so :math:`S_+ = \sum_p a^\dagger_{p\alpha} a_{p\beta}`.
+    """
+    terms, n = _spin_squared_terms(int(n_spatial_orbitals))
+    return Fermion(dict(terms), n_modes=n)
 
 
 def spin_adapted_references(mapping: str, n_qubits: int, num_particles,

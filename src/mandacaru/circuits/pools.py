@@ -52,6 +52,7 @@ unoccupied in the reference; ``ceo`` does not (see :class:`CEOPool`).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
 
@@ -135,13 +136,42 @@ GRADIENT_FLOOR = 1e-12
 
 def _support_of(op: PauliSum) -> tuple[int, ...]:
     """Qubit indices acted on by any non-identity Pauli in ``op``."""
-    s = op.simplify()
-    qubits: set[int] = set()
-    for label in s.terms:
-        for k, ch in enumerate(label):
-            if ch != "I":
-                qubits.add(k)
-    return tuple(sorted(qubits))
+    from ..core.sector import pauli_masks
+
+    n = op.num_qubits
+    mask = 0
+    for label, coeff in op.terms.items():
+        if abs(coeff) > 1e-12:
+            flip, phase, _ = pauli_masks(label)
+            mask |= flip | phase
+    return tuple(k for k in range(n) if mask & (1 << (n - 1 - k)))
+
+
+@lru_cache(maxsize=64)
+def _spin_conserving_excitations_cached(n_spatial_orbitals: int,
+                                        num_particles: tuple[int, int]):
+    M = int(n_spatial_orbitals)
+    na, nb = int(num_particles[0]), int(num_particles[1])
+    occ = tuple(list(range(na)) + list(range(M, M + nb)))
+    occ_set = set(occ)
+    virt = tuple([a for a in range(M) if a not in occ_set]
+                 + [a for a in range(M, 2 * M) if a not in occ_set])
+
+    def spin(p):
+        return p // M
+
+    singles = tuple((i, a) for i in occ for a in virt if spin(i) == spin(a))
+
+    doubles = []
+    for x in range(len(occ)):
+        for y in range(x + 1, len(occ)):
+            i, j = occ[x], occ[y]
+            for p in range(len(virt)):
+                for q in range(p + 1, len(virt)):
+                    a, b = virt[p], virt[q]
+                    if spin(i) + spin(j) == spin(a) + spin(b):
+                        doubles.append((i, j, a, b))
+    return occ, virt, singles, tuple(doubles)
 
 
 def _spin_conserving_excitations(n_spatial_orbitals: int,
@@ -153,27 +183,9 @@ def _spin_conserving_excitations(n_spatial_orbitals: int,
     spin-orbitals; singles connect same-spin occ/virt, doubles conserve total
     ``S_z``.
     """
-    M = int(n_spatial_orbitals)
-    na, nb = int(num_particles[0]), int(num_particles[1])
-    occ = list(range(na)) + list(range(M, M + nb))
-    virt = ([a for a in range(M) if a not in occ]
-            + [a for a in range(M, 2 * M) if a not in occ])
-
-    def spin(p):
-        return p // M
-
-    singles = [(i, a) for i in occ for a in virt if spin(i) == spin(a)]
-
-    doubles = []
-    for x in range(len(occ)):
-        for y in range(x + 1, len(occ)):
-            i, j = occ[x], occ[y]
-            for p in range(len(virt)):
-                for q in range(p + 1, len(virt)):
-                    a, b = virt[p], virt[q]
-                    if spin(i) + spin(j) == spin(a) + spin(b):
-                        doubles.append((i, j, a, b))
-    return occ, virt, singles, doubles
+    occ, virt, singles, doubles = _spin_conserving_excitations_cached(
+        int(n_spatial_orbitals), (int(num_particles[0]), int(num_particles[1])))
+    return list(occ), list(virt), list(singles), list(doubles)
 
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +246,12 @@ class PoolBase:
     def operators(self) -> list[PoolOperator]:
         """The pool's candidate generators (built once and cached)."""
         if self._operators is None:
-            self._operators = self._build()
+            if type(self) in _STANDARD_POOL_CLASSES:
+                self._operators = list(_pool_operators_cached(
+                    type(self), self.n_spatial_orbitals, self.num_particles,
+                    self.mapping))
+            else:
+                self._operators = self._build()
         return self._operators
 
     def __len__(self) -> int:
@@ -651,6 +668,16 @@ _POOLS = {
     "ceo-ovp": OVPCEOPool,
     "spin-orbit": SpinOrbitPool,
 }
+
+_STANDARD_POOL_CLASSES = frozenset(_POOLS.values())
+
+
+@lru_cache(maxsize=64)
+def _pool_operators_cached(cls: type, n_spatial_orbitals: int,
+                           num_particles: tuple[int, int],
+                           mapping: str) -> tuple[PoolOperator, ...]:
+    pool = cls(n_spatial_orbitals, num_particles, mapping=mapping)
+    return tuple(pool._build())
 
 # Friendly aliases.
 _POOL_ALIASES = {

@@ -805,7 +805,8 @@ class ADAPTVQE(DeflationMixin, PoolDriver):
         if self._pool_eig is None:
             self._pool_eig = []
             for a in self._pool_matrices:
-                w, V = np.linalg.eigh(-1j * np.asarray(a))
+                dense = a.toarray() if hasattr(a, "toarray") else np.asarray(a)
+                w, V = np.linalg.eigh(-1j * dense)
                 self._pool_eig.append((w, V, _unique_frequencies(w)))
         return self._pool_eig
 
