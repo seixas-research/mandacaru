@@ -896,10 +896,10 @@ Every evaluation closes with where its time and memory went:
         sum of timed stages                        41.8739
     untimed_s: 7.0650
     wall_time_s: 48.9390
-    integration_backend: C (OpenMP)
-    openmp_threads: 8
+    integration_backend: Rust (8 threads)
+    threads: 8
     cpu_count: 8
-    mpi: not used (single process, shared-memory OpenMP)
+    mpi: not used (single process, shared-memory scoped threads)
     peak_memory_MiB: 4971.7
     resident_memory_MiB: 1497.5
     solver_wall_time_s: 16.6582
@@ -916,8 +916,9 @@ work no stage wraps (building the Hamiltonian, the fermion-to-qubit mapping,
 materializing the operator). `peak_memory_MiB` is the process high-water mark and
 therefore monotonic across a relaxation; `resident_memory_MiB` is what is
 resident at the end of *this* step, so the two together show whether a stage
-allocated and released. `openmp_threads` is what the C integral backend used
-against the `cpu_count` the machine offers, and `mpi` states plainly that there
+allocated and released. `integration_backend` reports the active native engine
+(`Rust` with `std::thread::scope` or `C (OpenMP)`), `threads` is the number of
+worker threads used against the `cpu_count` the machine offers, and `mpi` states plainly that there
 is no distributed parallelism -- Mandacaru is a single process.
 
 When a run reaches a quantum processor the block also carries the QPU

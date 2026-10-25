@@ -98,12 +98,21 @@ def cpu_count() -> int | None:
 
 
 def backend_cores() -> int | None:
-    """OpenMP thread count of the C integral backend, or ``None`` (NumPy path)."""
+    """Thread count of the native integral backend, or ``None`` (NumPy path)."""
     try:
         from ..integrals import _backend
+        return _backend.num_threads()
     except Exception:
         return None
-    return _backend.num_threads()
+
+
+def backend_label() -> str:
+    """Label of the active native backend (Rust or C or NumPy)."""
+    try:
+        from ..integrals import _backend
+        return _backend.check_backend().label
+    except Exception:
+        return "NumPy"
 
 
 class Timings:
@@ -183,18 +192,23 @@ class Timings:
     def resources(self) -> dict:
         """The machine context for a performance report.
 
-        ``openmp_threads`` is what the C integral backend actually used and
-        ``cpu_count`` what the machine offers; ``mpi`` records that there is no
-        distributed parallelism at all (Mandacaru is a single process --
-        shared-memory OpenMP inside the C kernels), which is worth stating
+        ``threads`` / ``openmp_threads`` is what the native integral backend
+        actually used and ``cpu_count`` what the machine offers; ``mpi`` records
+        that there is no distributed parallelism at all (Mandacaru is a single process --
+        shared-memory threads inside the native kernels), which is worth stating
         rather than leaving to be inferred.
         """
-        backend = self.backend or ("C (OpenMP)" if self.n_cores else "NumPy")
+        backend = self.backend or backend_label()
+        cores = self.n_cores if self.n_cores is not None else backend_cores()
+        is_rust = "Rust" in backend
+        threads_key = "threads" if is_rust else "openmp_threads"
+        mpi_desc = ("not used (single process, shared-memory scoped threads)"
+                    if is_rust else "not used (single process, shared-memory OpenMP)")
         return {
             "integration_backend": backend,
-            "openmp_threads": self.n_cores,
+            threads_key: cores,
             "cpu_count": cpu_count(),
-            "mpi": "not used (single process, shared-memory OpenMP)",
+            "mpi": mpi_desc,
             "peak_memory_MiB": self.peak_memory_mb,
             "resident_memory_MiB": current_memory_mb(),
         }

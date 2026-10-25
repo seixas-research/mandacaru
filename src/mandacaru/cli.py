@@ -327,6 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
     basis.add_argument("--grid-spacing", type=float, default=DEFAULT_GRID_SPACING,
                        help="real-space grid spacing in Angstrom "
                             f"(default {DEFAULT_GRID_SPACING:.2f})")
+    basis.add_argument("--precision", choices=("double", "single"), default="double",
+                       help="calculation precision: 'double' (float64/complex128) or "
+                            "'single' (float32 real-space grid with mixed-precision "
+                            "Hamiltonian accumulation, saving up to 50% grid RAM; default: double)")
     basis.add_argument("--frozen", nargs="?", const="auto", default=None,
                        type=_frozen, metavar="auto|N|[i,j,...]",
                        help="active_space 'frozen': the frozen-core "
@@ -651,7 +655,7 @@ def solver_options(args) -> dict:
                  "proposal",
                  "proposal_temperature", "record", "proposal_model",
                  "update_between_geometries", "screen_insertions", "xc",
-                 "vdw"):
+                 "vdw", "precision"):
         value = getattr(args, name)
         if value is not None:
             options[name] = value
@@ -774,22 +778,23 @@ def build_backend_command() -> int:
     if status.available:
         where = status.path or "(already loaded)"
         built = "compiled" if status.compiled else "already built"
-        threads = (f", {status.n_threads} OpenMP thread(s)"
+        backend_name = "Rust" if getattr(status, "is_rust", False) else "C"
+        threads = (f", {status.n_threads} thread(s)"
                    if status.n_threads else "")
-        print(f"C integral backend: {built}{threads}\n  {where}")
+        print(f"{backend_name} integral backend: {built}{threads}\n  {where}")
         if policy == "numpy":
             print("\nMANDACARU_BACKEND=numpy is set, so calculations in this "
                   "environment will still use the NumPy reference kernels.")
         return 0
 
     log = _backend._BUILD_DIR / "build.log"
-    print(f"C integral backend unavailable: {status.message}")
+    print(f"Integral backend unavailable: {status.message}")
     if log.is_file():
         print(f"\n--- {log} ---")
         print(log.read_text().strip()[-2000:])
     print("\nMandacaru will run on the NumPy reference kernels, which give the "
-          "same numbers more slowly.  A C compiler (and ideally CMake) on PATH "
-          "is all that is needed; on macOS `brew install libomp` adds OpenMP.")
+          "same numbers more slowly.  Rust (cargo) or a C compiler (and CMake) on PATH "
+          "is all that is needed.")
     return 1
 
 

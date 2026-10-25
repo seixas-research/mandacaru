@@ -357,12 +357,18 @@ class BackendStatus:
     message: str
 
     @property
+    def is_rust(self) -> bool:
+        """True if the active backend is the Rust crate."""
+        if not self.available or _LIB is None:
+            return False
+        return hasattr(_LIB, "mandacaru_real_shell_f32")
+
+    @property
     def label(self) -> str:
         """Short backend label for summaries (``"Rust (8 threads)"`` or ``"C (OpenMP, 8 threads)"``)."""
         if not self.available:
             return "NumPy (backend unavailable)"
-        is_rust = hasattr(_LIB, "mandacaru_real_shell_f32")
-        name = "Rust" if is_rust else "C (OpenMP)"
+        name = "Rust" if self.is_rust else "C (OpenMP)"
         if self.n_threads and self.n_threads > 1:
             return f"{name} ({self.n_threads} threads)"
         return f"{name} (serial)"
@@ -588,21 +594,55 @@ def build_backend(build_dir: str | os.PathLike | None = None, *,
 def check_backend() -> BackendStatus:
     """Report which integral backend is in use, without trying to build."""
     if HAS_C_BACKEND:
-        return BackendStatus(True, _find_library(), num_threads(), False,
-                             "C backend loaded")
+        is_rust = hasattr(_LIB, "mandacaru_real_shell_f32")
+        desc = "Rust backend loaded" if is_rust else "C backend loaded"
+        return BackendStatus(True, _find_library(), num_threads(), False, desc)
     return BackendStatus(False, None, None, False,
                          "C backend not built; NumPy reference kernels in use")
 
 
+def build_rust_backend(verbose: bool = False,
+                       timeout: float = _BUILD_TIMEOUT) -> Path | None:
+    """Compile the Rust integral backend crate using cargo."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        return None
+    manifest = _PKG_DIR / "rust" / "Cargo.toml"
+    if not manifest.is_file():
+        return None
+    cmd = [cargo, "build", "--release", "--manifest-path", str(manifest)]
+    if verbose:
+        print("[mandacaru] " + " ".join(cmd))
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        if run.returncode != 0:
+            if verbose:
+                print(run.stderr)
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    target_lib = _PKG_DIR / "rust" / "target" / "release" / _native_lib_name()
+    if target_lib.is_file():
+        dest = _PKG_DIR / _native_lib_name()
+        try:
+            shutil.copyfile(target_lib, dest)
+        except OSError:
+            pass
+        _reload(fresh=True)
+        return target_lib
+    return None
+
+
 def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatus:
-    """Make sure the C integral backend is available, compiling it if needed.
+    """Make sure the C/Rust integral backend is available, compiling it if needed.
 
     Call this before integrating.  The policy is ``MANDACARU_BACKEND``
-    (:func:`mandacaru.backend_policy.backend_preference`): under ``"auto"`` (default) and ``"c"`` a
-    missing or stale library is compiled once per process with
-    :func:`build_backend` and loaded on the spot; the NumPy reference kernels
-    are used only when that compile fails (``"c"`` raises instead).
-    ``"numpy"`` skips the C library altogether.
+    (:func:`mandacaru.backend_policy.backend_preference`): under ``"auto"`` (default),
+    ``"rust"`` and ``"c"`` a missing or stale library is compiled once per process with
+    :func:`build_rust_backend` / :func:`build_backend` and loaded on the spot;
+    the NumPy reference kernels are used only when that compile fails (``"rust"``
+    or ``"c"`` raises instead).  ``"numpy"`` skips the native library altogether.
 
     Returns
     -------
@@ -615,12 +655,27 @@ def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatu
             _unload()
         return BackendStatus(False, None, None, False,
                              "MANDACARU_BACKEND=numpy: reference kernels forced")
+    if preference == "rust":
+        if HAS_C_BACKEND and getattr(check_backend(), "is_rust", False):
+            return check_backend()
+        if build and not _build_attempted:
+            _build_attempted = True
+            path = build_rust_backend(verbose=verbose)
+            if path is not None and HAS_C_BACKEND and getattr(check_backend(), "is_rust", False):
+                return BackendStatus(True, _find_library(), num_threads(), True,
+                                     f"Rust backend compiled into {path.parent}")
+        raise RuntimeError("MANDACARU_BACKEND=rust requires the Rust backend, but it could not be loaded or built")
     if HAS_C_BACKEND or _reload():
         return check_backend()
     compiled = False
     message = "C backend not built"
     if build and not _build_attempted:
         _build_attempted = True
+        path = build_rust_backend(verbose=verbose)
+        if path is not None and (HAS_C_BACKEND or _reload(fresh=True)):
+            compiled = True
+            return BackendStatus(True, _find_library(), num_threads(), True,
+                                 f"Rust backend compiled into {path.parent}")
         path = build_backend(verbose=verbose)
         if path is not None and (HAS_C_BACKEND or _reload(fresh=True)):
             compiled = True

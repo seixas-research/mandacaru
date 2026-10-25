@@ -23,14 +23,15 @@ from __future__ import annotations
 import os
 
 #: The values ``MANDACARU_BACKEND`` accepts.
-BACKEND_POLICIES = ("auto", "c", "numpy")
+BACKEND_POLICIES = ("auto", "rust", "c", "numpy")
 
 
 def backend_preference() -> str:
-    """The ``MANDACARU_BACKEND`` policy: ``"auto"`` (default), ``"c"`` or ``"numpy"``.
+    """The ``MANDACARU_BACKEND`` policy: ``"auto"`` (default), ``"rust"``, ``"c"`` or ``"numpy"``.
 
-    ``"auto"`` prefers the C library and compiles it when it is missing;
-    ``"c"`` does the same but raises when no C backend can be had;
+    ``"auto"`` prefers the Rust or C library and compiles it when it is missing;
+    ``"rust"`` requires the Rust backend (raising if unavailable);
+    ``"c"`` requires the C library (raising if unavailable);
     ``"numpy"`` forces the reference kernels (benchmarks, debugging).  Unset
     or blank means ``"auto"``; case and surrounding spaces are ignored.
 

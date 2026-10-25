@@ -2083,9 +2083,11 @@ class DFTDriver(_MeanFieldDriver):
     def _build_hamiltonian(self, atoms):
         """Profile setup and resolve the molecular DFT integration default."""
         from ..utils.profiling import Timings
+        from ..integrals import _backend
         from ._hamiltonian_from_atoms import pseudopotential_family, resolve_basis
 
-        self._dft_timings = Timings()
+        status = _backend.check_backend()
+        self._dft_timings = Timings(n_cores=status.n_threads, backend=status.label)
         if self._automatic_two_center:
             name, options = resolve_basis(self.basis)
             family = pseudopotential_family(name)

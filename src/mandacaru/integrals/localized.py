@@ -19,6 +19,7 @@ class LocalizedBasisCollection:
     only within a small bounding box :math:`\Omega_A \subset \Omega`.
 
     This collection manages:
+
     1. Per-atom bounding boxes :math:`\Omega_A` and local subgrid slices.
     2. Overlapping atom pairs :math:`(A, B)` and their intersection boxes :math:`\Omega_{AB}`.
     3. Memory-efficient evaluation of the real-space density without

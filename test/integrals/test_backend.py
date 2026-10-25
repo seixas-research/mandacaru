@@ -67,7 +67,7 @@ class TestStatus:
                 ("libmandacaru_integrals.dylib", "libmandacaru_integrals.so",
                  "mandacaru_integrals.dll"))
             assert status.n_threads >= 1
-            assert status.label.startswith("C (")
+            assert status.label.startswith(("C (", "Rust ("))
         else:
             assert status.path is None and status.n_threads is None
             assert status.label.startswith("NumPy")
@@ -393,8 +393,8 @@ class TestBuildCommand:
             pytest.skip("no C backend on this machine")
         assert main(["--build-backend"]) == 0
         out = capsys.readouterr().out
-        assert "C integral backend" in out
-        assert "OpenMP thread" in out
+        assert ("C integral backend" in out or "Rust integral backend" in out)
+        assert "thread" in out
 
     def test_needs_no_geometry(self, backend_state, monkeypatch):
         monkeypatch.setattr(_backend, "ensure_backend",
@@ -451,6 +451,11 @@ def _inside():
 
 class TestSingleThreadedBLAS:
     """BLAS limited to one thread around the crystal workflow."""
+
+    @pytest.fixture(autouse=True)
+    def check_blas_available(self):
+        if not _blas_threads():
+            pytest.skip("No BLAS thread pool discovered by threadpoolctl on this system")
 
     def test_blas_runs_one_thread_inside(self):
         with threadpool_limits(limits=2, user_api="blas"):

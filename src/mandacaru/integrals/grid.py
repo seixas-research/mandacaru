@@ -132,6 +132,11 @@ class Grid:
     precision: str = "double"
 
     def __post_init__(self):
+        prec = str(self.precision).strip().lower()
+        if prec not in ("double", "single"):
+            raise ValueError(
+                f"precision must be 'double' or 'single', got {self.precision!r}")
+        self.precision = prec
         # Convert the user-facing lengths to the atomic units the backend uses.
         center_bohr = np.asarray(to_bohr(self.center, self.units), dtype=float)
         h_bohr = np.abs(np.asarray(to_bohr(self.grid_spacing, self.units),
@@ -321,6 +326,16 @@ class Grid:
     def dV(self) -> float:
         """Voxel volume ``|det(step)|`` (``dx*dy*dz`` for an orthorhombic grid)."""
         return float(abs(np.linalg.det(self.step)))
+
+    @property
+    def real_dtype(self):
+        """Float dtype corresponding to this grid's precision."""
+        return np.float32 if self.precision == "single" else np.float64
+
+    @property
+    def complex_dtype(self):
+        """Complex dtype corresponding to this grid's precision."""
+        return np.complex64 if self.precision == "single" else np.complex128
 
     def metric_inverse(self) -> np.ndarray:
         """Inverse metric ``(step^T step)^{-1}`` for the general FD Laplacian.
