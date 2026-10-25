@@ -32,6 +32,7 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -351,13 +352,94 @@ void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
     }
 }
 
+void mandacaru_real_shell(const double *x, const double *y, const double *z,
+                          long npts, const double *center,
+                          double support,
+                          const double *breaks, const double *coeffs, int nb,
+                          double rc, int l, int derivative,
+                          const int *ms, const long *rows, int nm, long M,
+                          double *out) {
+    const double support2 = support * support;
+    const double sqrt2 = 1.41421356237309504880;
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (long j = 0; j < npts; ++j) {
+        const double dx = x[j] - center[0];
+        const double dy = y[j] - center[1];
+        const double dz = z[j] - center[2];
+        const double r2 = dx * dx + dy * dy + dz * dz;
+        if (r2 >= support2) {
+            for (int i = 0; i < nm; ++i) {
+                const long row = rows ? rows[i] : (long)i;
+                out[row * npts + j] = 0.0;
+            }
+            continue;
+        }
+        const double r = sqrt(r2);
+        if (derivative >= 0) {
+            const double R = r >= 1e-12
+                ? radial_value(r, breaks, coeffs, nb, rc, l) : 0.0;
+            const double dR = r >= 1e-12
+                ? radial_slope(r, breaks, coeffs, nb, rc, l) : 0.0;
+            for (int i = 0; i < nm; ++i) {
+                const int m_val = ms[i];
+                const int order = abs(m_val);
+                const double _Complex g = gradient_value(
+                    dx, dy, dz, r, derivative, l, order, R, dR, breaks,
+                    coeffs, nb, rc);
+                double val;
+                if (order == 0) {
+                    val = creal(g);
+                } else {
+                    const double scale = (order & 1) ? -sqrt2 : sqrt2;
+                    val = scale * (m_val > 0 ? creal(g) : cimag(g));
+                }
+                const long row = rows ? rows[i] : (long)i;
+                out[row * npts + j] = val;
+            }
+        } else {
+            const double radial = radial_value(r, breaks, coeffs, nb, rc, l);
+            if (radial == 0.0) {
+                for (int i = 0; i < nm; ++i) {
+                    const long row = rows ? rows[i] : (long)i;
+                    out[row * npts + j] = 0.0;
+                }
+                continue;
+            }
+            const double rho = sqrt(dx * dx + dy * dy);
+            const double cos_t = r > 0.0 ? dz / r : 0.0;
+            const double sin_t = r > 0.0 ? rho / r : 1.0;
+            const double _Complex unit = rho > 0.0 ? (dx + I * dy) / rho : 1.0;
+            for (int i = 0; i < nm; ++i) {
+                const int m_val = ms[i];
+                const int order = abs(m_val);
+                double _Complex e = 1.0;
+                for (int k = 0; k < order; ++k)
+                    e *= unit;
+                const double p_lm = legendre(l, order, cos_t, sin_t);
+                double val;
+                if (order == 0) {
+                    val = radial * p_lm;
+                } else {
+                    const double scale = (order & 1) ? -sqrt2 : sqrt2;
+                    val = radial * (scale * p_lm * (m_val > 0 ? creal(e) : cimag(e)));
+                }
+                const long row = rows ? rows[i] : (long)i;
+                out[row * npts + j] = val;
+            }
+        }
+    }
+}
+
 /* The image-resolved projections of one shell on weight columns:
- *     out[b, R, i, p] = sum_{j in block b} conj(phi_{R,i}(r_j)) cols[p, j],
- * for every lattice image R that reaches block b (the caller zeroes the rest).  The
+ *     out[R, i, p] = sum_j conj(phi_{R,i}(r_j)) cols[p, j],
+ * for every lattice image R that reaches the shell.  The
  * k-point phases are applied by the caller -- C(k) = sum_R e^{-ik.R} B(R) --
- * so the work does not grow with the number of k-points, and each block is
- * summed by one thread into its own slice of ``out``: the caller adds the
- * blocks in order, and the result does not depend on the thread count. */
+ * so the work does not grow with the number of k-points.
+ * Each OpenMP thread accumulates into its private (n_images, nm, P) buffer,
+ * and threads reduce into `out` at the end, eliminating large intermediate arrays. */
 void mandacaru_bloch_project(const double *x, const double *y,
                              const double *z, long npts, const double *center,
                              const double *translations, int n_images,
@@ -369,6 +451,9 @@ void mandacaru_bloch_project(const double *x, const double *y,
                              double _Complex *out) {
     const double support2 = support * support;
     const long n_blocks = (npts + BLOCK - 1) / BLOCK;
+    const long total_size = (long)n_images * nm * P;
+    memset(out, 0, sizeof(double _Complex) * (total_size > 0 ? total_size : 1));
+
 #ifdef _OPENMP
 #pragma omp parallel
 #endif
@@ -377,6 +462,9 @@ void mandacaru_bloch_project(const double *x, const double *y,
         int inside[BLOCK];
         double _Complex values[(size_t)BLOCK * 8];
         double _Complex *wide = NULL;        /* when nm > 8 */
+        double _Complex *local_out = calloc(total_size > 0 ? (size_t)total_size : 1,
+                                            sizeof(double _Complex));
+
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
@@ -398,8 +486,8 @@ void mandacaru_bloch_project(const double *x, const double *y,
                     x, y, z, j0, n, center, translations + 3 * R, support2,
                     derivative, l, ms, nm, breaks, coeffs, nb, rc, buffer,
                     inside);
-                double _Complex *target = out
-                    + (((long)b * n_images + R) * nm) * (long)P;
+                double _Complex *target = local_out
+                    + ((long)R * nm) * (long)P;
                 for (int i = 0; i < nm; ++i) {
                     for (int p = 0; p < P; ++p) {
                         const double _Complex *column = cols + (long)p * npts
@@ -409,11 +497,22 @@ void mandacaru_bloch_project(const double *x, const double *y,
                             const int jj = inside[t];
                             sum += conj(buffer[i * BLOCK + jj]) * column[jj];
                         }
-                        target[(long)i * P + p] = sum;
+                        target[(long)i * P + p] += sum;
                     }
                 }
             }
         }
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+        {
+            for (long k = 0; k < total_size; ++k) {
+                out[k] += local_out[k];
+            }
+        }
+
+        free(local_out);
         free(wide);
         free(hits);
     }

@@ -332,12 +332,13 @@ class TestOneCenterExact:
 
     def test_the_factors_reproduce_the_tensor(self, water_projectors):
         """sum_k lambda_k U^k (x) U^k is Delta W, with the antisymmetric pairs
-        as the only null space: rank 33 of oxygen's 64 pairs, 3 of
-        hydrogen's 4."""
+        as the only null space: rank 33 of each atom's 64 pairs.
+        Hydrogen had 3 of 4 (an s channel only) until 2026-10-25, when its
+        dataset gained an empty p channel: 8 projectors, as oxygen has."""
         projectors, datasets = water_projectors
         exact = OneCenterExact(projectors, datasets)
         ranks = [len(entry["values"]) for entry in exact.atoms]
-        assert ranks == [33, 3, 3] and exact.rank == 39
+        assert ranks == [33, 33, 33] and exact.rank == 99
         for entry in exact.atoms:
             U, lam, W = entry["factors"], entry["values"], entry["W"]
             rebuilt = np.einsum("k,kab,kcd->abcd", lam, U, U)

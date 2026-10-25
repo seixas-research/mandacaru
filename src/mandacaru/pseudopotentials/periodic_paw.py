@@ -482,7 +482,7 @@ def bloch_projections(functions, lattice, kpoints, points, columns,
             continue
         # Blocks are added in order: the sum does not depend on how many
         # threads evaluated them.
-        images = blocks.sum(axis=0)                    # (n_R, nm, P)
+        images = blocks if blocks.ndim == 3 else blocks.sum(axis=0)
         phases = np.exp(-1j * (kpoints @ translations.T))        # (nk, n_R)
         out[:, members, :] += np.einsum("kr,rmp->kmp", phases, images)
     if rest:

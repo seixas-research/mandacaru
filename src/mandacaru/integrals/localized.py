@@ -69,14 +69,21 @@ class LocalizedBasisCollection:
                 rc_list.append(float(r_val))
             rc = max(rc_list) if rc_list else 10.0
 
-            dx = X3d - center[0]
-            dy = Y3d - center[1]
-            dz = Z3d - center[2]
-            mask = (dx * dx + dy * dy + dz * dz) <= rc * rc
-
-            x_hits = np.flatnonzero(mask.any(axis=(1, 2)))
-            y_hits = np.flatnonzero(mask.any(axis=(0, 2)))
-            z_hits = np.flatnonzero(mask.any(axis=(0, 1)))
+            if not getattr(grid, "skewed", False):
+                X1d = X3d[:, 0, 0]
+                Y1d = Y3d[0, :, 0]
+                Z1d = Z3d[0, 0, :]
+                x_hits = np.flatnonzero(np.abs(X1d - center[0]) <= rc)
+                y_hits = np.flatnonzero(np.abs(Y1d - center[1]) <= rc)
+                z_hits = np.flatnonzero(np.abs(Z1d - center[2]) <= rc)
+            else:
+                dx = X3d - center[0]
+                dy = Y3d - center[1]
+                dz = Z3d - center[2]
+                mask = (dx * dx + dy * dy + dz * dz) <= rc * rc
+                x_hits = np.flatnonzero(mask.any(axis=(1, 2)))
+                y_hits = np.flatnonzero(mask.any(axis=(0, 2)))
+                z_hits = np.flatnonzero(mask.any(axis=(0, 1)))
 
             if x_hits.size == 0 or y_hits.size == 0 or z_hits.size == 0:
                 self.atom_boxes.append((slice(0, 0), slice(0, 0), slice(0, 0)))

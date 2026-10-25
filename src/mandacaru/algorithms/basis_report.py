@@ -77,8 +77,8 @@ def _pseudo_report(name, context, symbols, fields, tables):
     fields["family"] = f"{family.label} ({family.description})"
     fields["size"] = _option_text(options.get("size", "SZ"))
     # Which split-valence scheme built the extra zetas.  The two are not
-    # comparable digit for digit (a tail *norm* of 0.16 is a squared-norm
-    # fraction of 0.0256), so the line names the scheme, not just a number.
+    # comparable digit for digit (a tail *norm* of 0.15 is a squared-norm
+    # fraction of 0.0225), so the line names the scheme, not just a number.
     split_norm, tail_norms = resolve_split_scheme(options.get("zeta_split"))
     if tail_norms is not None:
         fields["zeta_split"] = (

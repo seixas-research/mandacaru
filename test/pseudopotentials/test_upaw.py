@@ -98,9 +98,11 @@ class TestUnitarity:
         the projectors are large, so a small correction to the metric is
         visible in its smallest eigenvalue.  What matters is that it stays
         well above :data:`~mandacaru.pseudopotentials.paw.OVERLAP_MINIMUM`,
-        which is what the generator refuses below."""
+        which is what the generator refuses below.  Since the hydrogen sphere is
+        1.0 Bohr and carries an empty p channel (2026-10-25), that channel's
+        minimum is 0.9394 and the s channel's stays at 0.99."""
         for channel in hydrogen.channels.values():
-            assert 0.98 < channel.overlap_minimum < 1.0
+            assert 0.93 < channel.overlap_minimum < 1.0
 
     def test_paw_keeps_a_nonzero_correction(self):
         """The contrast: the default family deliberately gives up some norm."""

@@ -211,14 +211,18 @@ class TestBasis:
 #: free -29.408554 -> -29.043049, confined -29.829699 -> -29.436117 (gain
 #: 0.4211 -> 0.3931 eV), DZP Gaussian -32.146900 -> -31.458701, DZP
 #: unconfined -31.707244 -> -31.079967.
-UNCONFINED_EV = -29.043049
-CONFINED_EV = -29.436117
+#: Re-measured 2026-10-25, with the hydrogen dataset of a 1.0 Bohr sphere and an
+#: empty p channel (HISTORY.md "LiH bisect"): free -29.043049 -> -29.022231,
+#: confined -29.436117 -> -29.420596 (gain 0.3931 -> 0.3984 eV), DZP Gaussian
+#: -31.458701 -> -31.544676, DZP unconfined -31.079967 -> -31.133553.
+UNCONFINED_EV = -29.022231
+CONFINED_EV = -29.420596
 #: The same molecule in the DZP basis with a Gaussian polarization shell,
-#: 20 qubits.  Re-measured in the same rebuild: -33.374833 -> -33.360087.
-DZP_GAUSSIAN_EV = -31.458701
+#: 20 qubits.  Re-measured with DEFAULT_TAIL_NORMS=(0.15, 0.31, 0.54): -31.526417.
+DZP_GAUSSIAN_EV = -31.526417
 #: The same, with the confinement switched off (orbital polarization).
-#: -32.884195 -> -32.869555 in the same rebuild.
-DZP_UNCONFINED_EV = -31.079967
+#: Re-measured with DEFAULT_TAIL_NORMS=(0.15, 0.31, 0.54): -31.102504.
+DZP_UNCONFINED_EV = -31.102504
 
 
 @needs_library
@@ -252,7 +256,7 @@ class TestMolecule:
         confined, _ = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
         assert free == pytest.approx(UNCONFINED_EV, abs=2e-5)
         assert confined == pytest.approx(CONFINED_EV, abs=2e-5)
-        assert free - confined == pytest.approx(0.3931, abs=1e-3)
+        assert free - confined == pytest.approx(0.3984, abs=1e-3)
 
     def test_the_context_reports_the_radii(self):
         _, atoms = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
@@ -332,16 +336,16 @@ class TestTheReferenceRecipe:
 
     @pytest.mark.parametrize("symbol", sorted(REFERENCE_RECIPE))
     def test_cutoff_and_split_radii(self, symbol):
-        from mandacaru.basis.multizeta import DEFAULT_TAIL_NORMS, split_radius
+        from mandacaru.basis.multizeta import split_radius
 
         pp, reference = get_paw(symbol), REFERENCE_RECIPE[symbol]
         r = np.asarray(pp.r)
         for l, expected in reference["r_c"].items():
             orbital = confined_orbital(pp, l, 0.1)
             assert orbital.r_c == pytest.approx(expected, abs=0.06)
-            # The first_zeta tail norm is a *norm*: 0.16 -> 0.0256 of the
-            # squared norm.
-            split = split_radius(r, orbital.radial, DEFAULT_TAIL_NORMS[0] ** 2)
+            # The reference recipe's first_zeta tail norm is a *norm*: 0.16 -> 0.0256
+            # of the squared norm.
+            split = split_radius(r, orbital.radial, 0.16 ** 2)
             assert split == pytest.approx(reference["r_split"][l], abs=0.08)
 
     @pytest.mark.parametrize("symbol", sorted(REFERENCE_RECIPE))
@@ -485,8 +489,8 @@ class TestNewOptionsEndToEnd:
         default = self._energy({"name": "PAW-LCAO", "size": "DZP"})[0]
         gaussian = self._energy({"name": "PAW-LCAO", "size": "DZP",
                                  "polarization_method": "gaussian"})[0]
-        assert default == gaussian == pytest.approx(DZP_GAUSSIAN_EV,
-                                                    abs=5e-5)
+        assert default == pytest.approx(gaussian, abs=1e-8)
+        assert default == pytest.approx(DZP_GAUSSIAN_EV, abs=5e-5)
         unconfined = self._energy({"name": "PAW-LCAO", "size": "DZP",
                                    "energy_shift": None})[0]
         assert unconfined == pytest.approx(DZP_UNCONFINED_EV, abs=5e-5)

@@ -55,7 +55,7 @@ def _center_node_indices(points, center, cache: dict) -> np.ndarray:
 
 
 def sample_functions(functions, points, *, gradients=False, delta=1e-3,
-                     values=True):
+                     values=True, out_samples=None, out_slopes=None):
     """Return values ``(M, N)`` and optional gradients ``(M, 3, N)``.
 
     Real and complex harmonics, polarization and diffuse shells use the same
@@ -70,9 +70,24 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
     size = len(points[0])
     real = all(getattr(f, "real", False) for f in functions)
     dtype = float if real else complex
-    samples = (np.empty((len(functions), size), dtype=dtype)
-               if values else None)
-    slopes = np.empty((len(functions), 3, size), dtype=dtype) if gradients else None
+
+    if out_samples is not None:
+        samples = out_samples
+    elif values:
+        samples = np.empty((len(functions), size), dtype=dtype)
+    else:
+        samples = None
+
+    if out_slopes is not None:
+        slopes_is_out = True
+        slopes = out_slopes
+    elif gradients:
+        slopes_is_out = False
+        slopes = np.empty((3, len(functions), size), dtype=dtype)
+    else:
+        slopes_is_out = False
+        slopes = None
+
     groups, fallback = {}, []
     for row, function in enumerate(functions):
         spline = radial_spline(function)
@@ -92,15 +107,11 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
             else ([0, 1, 2] if gradients else [-1]))
     sqrt2 = np.sqrt(2.0)
     center_nodes: dict = {}
+    has_real_shell = _backend.HAS_C_BACKEND and hasattr(_backend._LIB, "mandacaru_real_shell")
+
     for (_, center, l, is_real, _rc), members in groups.items():
         first = functions[members[0]]
         spline = radial_spline(first)
-        if is_real:
-            ms = sorted({abs(int(functions[i].m)) for i in members})
-            m_pos = {m_val: idx for idx, m_val in enumerate(ms)}
-        else:
-            ms = [int(functions[i].m) for i in members]
-        rows = list(range(len(ms)))
         sup_r = getattr(first, "support_radius", None)
         max_break = float(spline[0][-1])
         if sup_r is not None:
@@ -108,28 +119,56 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
             support = np.nextafter(reach, np.inf)
         else:
             support = np.nextafter(max_break, np.inf)
-        native = np.empty((1, len(ms), size), dtype=complex)
-        for axis in axes:
-            native.fill(0.0)
-            used = _backend.bloch_shell(points, center, zero, phase, support,
-                                         spline, l, ms, rows, native,
+
+        if is_real and has_real_shell:
+            ms = [int(functions[i].m) for i in members]
+            rows = members
+            used = True
+            for axis in axes:
+                if axis == -1:
+                    target = samples
+                else:
+                    target = slopes[axis] if (slopes.shape[0] == 3) else slopes[:, axis]
+                ok = _backend.real_shell(points, center, support, spline, l, ms, rows, target,
                                          derivative=axis)
+                if not ok:
+                    used = False
+                    break
             if not used:
                 fallback.extend(members)
-                break
-            target = samples if axis == -1 else slopes[:, axis]
+        else:
             if is_real:
-                for row_idx in members:
-                    m_val = int(functions[row_idx].m)
-                    order = abs(m_val)
-                    col = native[0, m_pos[order]]
-                    if order == 0:
-                        target[row_idx] = col.real
-                    else:
-                        scale = ((-1) ** order) * sqrt2
-                        target[row_idx] = scale * (col.real if m_val > 0 else col.imag)
+                ms = sorted({abs(int(functions[i].m)) for i in members})
+                m_pos = {m_val: idx for idx, m_val in enumerate(ms)}
             else:
-                target[members] = native[0]
+                ms = [int(functions[i].m) for i in members]
+            rows = list(range(len(ms)))
+            native = np.empty((1, len(ms), size), dtype=complex)
+            for axis in axes:
+                native.fill(0.0)
+                used = _backend.bloch_shell(points, center, zero, phase, support,
+                                             spline, l, ms, rows, native,
+                                             derivative=axis)
+                if not used:
+                    fallback.extend(members)
+                    break
+                if axis == -1:
+                    target = samples
+                else:
+                    target = slopes[axis] if (slopes.shape[0] == 3) else slopes[:, axis]
+                if is_real:
+                    for row_idx in members:
+                        m_val = int(functions[row_idx].m)
+                        order = abs(m_val)
+                        col = native[0, m_pos[order]]
+                        if order == 0:
+                            target[row_idx] = col.real
+                        else:
+                            scale = ((-1) ** order) * sqrt2
+                            target[row_idx] = scale * (col.real if m_val > 0 else col.imag)
+                else:
+                    target[members] = native[0]
+
         if gradients:
             # Preserve the basis contract at a nucleus, including its tiny
             # offset convention for spline endpoint derivatives.
@@ -137,7 +176,11 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
             if on_center.size:
                 node_points = tuple(p[on_center] for p in points)
                 for row in members:
-                    slopes[row][:, on_center] = functions[row].gradient(*node_points, delta)
+                    g = functions[row].gradient(*node_points, delta)
+                    if slopes.shape[0] == 3:
+                        slopes[:, row, on_center] = g
+                    else:
+                        slopes[row, :, on_center] = g
 
     if fallback:
         from ..basis.base import values_and_gradients
@@ -146,7 +189,10 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
             val_arr, derivative = values_and_gradients(selected, *points, delta)
             if samples is not None:
                 samples[fallback] = val_arr
-            slopes[fallback] = derivative
+            if slopes.shape[0] == 3:
+                slopes[:, fallback] = derivative.transpose(1, 0, 2)
+            else:
+                slopes[fallback] = derivative
             if samples is not None:
                 for row in fallback:
                     function = functions[row]
@@ -184,4 +230,6 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
                     if radial not in radials:
                         radials[radial] = function.radial(radius)
                     samples[row] = radials[radial] * harmonics[angular]
+    if slopes is not None and not slopes_is_out:
+        slopes = slopes.transpose(1, 0, 2)
     return samples, slopes

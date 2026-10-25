@@ -65,18 +65,18 @@ from collections import OrderedDict
 import numpy as np
 from scipy import fft as sfft
 
-__all__ = ["FFTWorkspace", "workspace", "parallel_chunks", "parallel_blocks",
+__all__ = ["FFTWorkspace", "workspace", "clear_workspaces", "parallel_chunks", "parallel_blocks",
            "parallel_matmul", "thread_count",
            "WORKSPACE_BYTES", "WORKSPACE_CACHE_BYTES", "PARALLEL_MIN_VALUES"]
 
 #: Bytes of padded volumes one workspace keeps for a batch: the batch is as
 #: many volumes as fit (at least one).
-WORKSPACE_BYTES = 64 * 2 ** 20
+WORKSPACE_BYTES = 16 * 2 ** 20
 
 #: Bytes of buffers all cached workspaces may hold together; the least
 #: recently used workspace is dropped beyond it (a solver holding one keeps
 #: it alive).
-WORKSPACE_CACHE_BYTES = 256 * 2 ** 20
+WORKSPACE_CACHE_BYTES = 64 * 2 ** 20
 
 
 class FFTWorkspace:
@@ -574,3 +574,10 @@ def workspace(shape, padded=None, workers: int = -1) -> FFTWorkspace:
             continue
         held -= _WORKSPACES.pop(other).nbytes
     return found
+
+
+def clear_workspaces() -> None:
+    """Drop all cached FFT workspaces and release their buffers."""
+    for w in list(_WORKSPACES.values()):
+        w.release()
+    _WORKSPACES.clear()

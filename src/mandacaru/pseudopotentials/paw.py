@@ -2514,7 +2514,7 @@ def atom_centered_projection_gradients(basis, projectors,
 #: Maximum bytes of compensation fields contracted together.  A grid larger
 #: than this budget still needs one complete field; pair products are tiled
 #: separately by ``contract_pair_potentials``.
-COMPENSATION_FIELD_BYTES = 64 * 2**20
+COMPENSATION_FIELD_BYTES = 16 * 2**20
 
 
 class PAWIntegrals(MolecularIntegrals):
@@ -3039,11 +3039,14 @@ class PAWIntegrals(MolecularIntegrals):
                 other_c = np.stack([centers_arr[o] for o in valid])
                 rel = (c_owner[None, :] - other_c)[:, None, :] + offsets[None, :, :]
                 r2 = np.sum(rel * rel, axis=2)[:, :, None]
-                d_both = np.sqrt(np.maximum(
-                    np.stack([r2 + two_s * rel + s2, r2 - two_s * rel + s2]),
-                    0.0))
-                v_both = neighbor.local_potential(d_both)
-                dv = (v_both[0] - v_both[1]) / two_s          # (n_valid, N_quad, 3)
+                shift = two_s * rel
+                d_plus = np.sqrt(np.maximum(r2 + shift + s2, 0.0))
+                v_plus = neighbor.local_potential(d_plus)
+                d_minus = np.sqrt(np.maximum(r2 - shift + s2, 0.0))
+                v_minus = neighbor.local_potential(d_minus)
+                dv = v_plus
+                dv -= v_minus
+                dv /= two_s          # (n_valid, N_quad, 3)
                 for idx_o, other in enumerate(valid):
                     slopes = weighted @ dv[idx_o]
                     for i, (L, M) in enumerate(channels_a):

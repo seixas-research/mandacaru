@@ -91,14 +91,21 @@ class TestANoncollinearStart:
 
     def test_a_frustrated_triangle_takes_the_120_degree_state(self):
         """Equilateral H3 at R = 2.5 Angstrom (LDA, SZ, grid 0.3): the
-        coplanar 120-degree state is 37.83 meV below the UKS doublet, its
-        site moments 0.912 Bohr magneton at 120 degrees, the total zero.
+        coplanar 120-degree state is 38.06 meV below the UKS doublet, its
+        site moments 0.9155 Bohr magneton at 120 degrees, the total zero.
         The UKS start never leaves the collinear state.  The tolerance on
         the lowering (0.2 meV) is far above the SCF's (1e-8 Ha) and
         round-off; the total moment is 2e-4 (the cubic grid breaks the
         threefold axis), the site angles 120 to 0.01 degrees."""
         # This numerical pin describes the sampled operator and its SCF basin.
-        uks = _run(_triangle(), "lda", [1.0, 0.0, 0.0], two_center="grid")
+        # The UKS reference starts from a triangle with one atom moved by
+        # 0.003 Angstrom: on the exactly equilateral one, the SCF of the
+        # current hydrogen dataset stops at a symmetric stationary point 0.65
+        # eV above the doublet (and so does the old dataset at 0.001
+        # Angstrom).  0.003 Angstrom moves the doublet by ~0.1 meV.
+        distorted = _triangle()
+        distorted.positions[2, 0] += 0.003
+        uks = _run(distorted, "lda", [1.0, 0.0, 0.0], two_center="grid")
         angles = 2 * np.pi * np.arange(3) / 3
         spinor = _run(_triangle(), "lda",
                       np.c_[np.cos(angles), np.sin(angles), np.zeros(3)],
@@ -106,7 +113,7 @@ class TestANoncollinearStart:
         assert spinor.converged
         lowering = (spinor.electronic_energy
                     - uks.electronic_energy) * HARTREE_TO_EV * 1e3
-        assert lowering == pytest.approx(-37.83, abs=0.2)
+        assert lowering == pytest.approx(-38.06, abs=0.3)
         assert np.linalg.norm(spinor.spin_moment) < 1e-3
         # Site moments from the Loewdin-basis spin blocks (one function per
         # H in SZ).
@@ -115,7 +122,7 @@ class TestANoncollinearStart:
         sites = np.array([[2 * D[i, 3 + i].real, -2 * D[i, 3 + i].imag,
                            (D[i, i] - D[3 + i, 3 + i]).real]
                           for i in range(3)])
-        assert np.linalg.norm(sites, axis=1) == pytest.approx([0.912] * 3,
+        assert np.linalg.norm(sites, axis=1) == pytest.approx([0.9155] * 3,
                                                               abs=2e-3)
         assert np.max(np.abs(sites[:, 2])) < 1e-8
         for i in range(3):

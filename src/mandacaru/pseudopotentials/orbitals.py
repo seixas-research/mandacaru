@@ -26,6 +26,7 @@ integral engine unchanged.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -306,7 +307,12 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             return values
         pp = potentials.get(symbol)
         pp_id = getattr(pp, "sha256", None) or id(pp)
-        cache_key = (pp_id, key, round(k_c, 8))
+        # The values are part of the key: the same dataset and radial function
+        # is a different table once a confinement shift or a polarization shape
+        # changes it, and the cache outlives the calculator.
+        digest = hashlib.blake2b(np.ascontiguousarray(values, dtype=float),
+                                 digest_size=8).hexdigest()
+        cache_key = (pp_id, key, round(k_c, 8), digest)
         memo = cache.get(cache_key)
         if memo is None:
             memo, _info = filter_radial(r, values, l, k_c)
@@ -318,7 +324,12 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             return table
         pp = potentials.get(symbol)
         pp_id = getattr(pp, "sha256", None) or id(pp)
-        cache_key = (pp_id, key, round(k_c, 8))
+        # The values are part of the key: the same dataset and radial function
+        # is a different table once a confinement shift or a polarization shape
+        # changes it, and the cache outlives the calculator.
+        digest = hashlib.blake2b(np.ascontiguousarray(table.values, dtype=float),
+                                 digest_size=8).hexdigest()
+        cache_key = (pp_id, key, round(k_c, 8), digest)
         memo = cache.get(cache_key)
         if memo is None:
             memo, _info = filter_table(table, k_c)
@@ -488,10 +499,15 @@ _LEVEL_CACHE: dict = {}
 
 
 def _lowest_level(pp, l: int) -> float:
-    from .paw import paw_spectrum
     entry = _LEVEL_CACHE.get((id(pp), int(l)))
     if entry is None or entry[0] is not pp:
-        entry = (pp, float(paw_spectrum(pp, int(l), n_states=1)[0]))
+        from .confinement import _eigenvalue
+        from .paw import _channel_operator, _spectrum_extent
+        r_max = _spectrum_extent(pp, int(l))
+        fine = _eigenvalue(*_channel_operator(pp, int(l), r_max, 2), state=0)
+        coarse = _eigenvalue(*_channel_operator(pp, int(l), r_max, 4), state=0)
+        extrapolated = float((4.0 * fine - coarse) / 3.0)
+        entry = (pp, extrapolated)
         _LEVEL_CACHE[(id(pp), int(l))] = entry
     return entry[1]
 

@@ -55,7 +55,12 @@ _PKG_DIR = Path(__file__).resolve().parent
 # ndpointer specs reused across signatures (C-contiguous, correct dtype).
 _C128 = ndpointer(dtype=np.complex128, flags="C_CONTIGUOUS")
 _C128_W = ndpointer(dtype=np.complex128, flags="C_CONTIGUOUS,WRITEABLE")
+_C64 = ndpointer(dtype=np.complex64, flags="C_CONTIGUOUS")
+_C64_W = ndpointer(dtype=np.complex64, flags="C_CONTIGUOUS,WRITEABLE")
 _F64 = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
+_F64_W = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS,WRITEABLE")
+_F32 = ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
+_F32_W = ndpointer(dtype=np.float32, flags="C_CONTIGUOUS,WRITEABLE")
 
 
 _LIB_NAMES = {"Darwin": "libmandacaru_integrals.dylib",
@@ -79,7 +84,12 @@ def _find_library() -> str | None:
     env = os.environ.get("MANDACARU_INTEGRALS_LIB")
     if env:
         candidates.append(Path(env))
-    search_dirs = [_PKG_DIR, _PKG_DIR / "csrc", _PKG_DIR / "csrc" / "build"]
+    search_dirs = [
+        _PKG_DIR / "rust" / "target" / "release",
+        _PKG_DIR,
+        _PKG_DIR / "csrc",
+        _PKG_DIR / "csrc" / "build",
+    ]
     candidates += [d / name for d in search_dirs]
     for c in candidates:
         if c.is_file():
@@ -197,6 +207,70 @@ def _bind(lib):
         _C128_W,                     # out (nk * M * npts)
     ]
 
+    if hasattr(lib, "mandacaru_real_shell"):
+        lib.mandacaru_real_shell.restype = None
+        lib.mandacaru_real_shell.argtypes = [
+            _F64, _F64, _F64,            # x, y, z (npts)
+            ctypes.c_long,               # npts
+            _F64,                        # center (3)
+            ctypes.c_double,             # support
+            _F64,                        # breaks (nb)
+            _F64,                        # coeffs ((nb - 1) * 4)
+            ctypes.c_int,                # nb
+            ctypes.c_double,             # rc (zero at r >= rc)
+            ctypes.c_int,                # l
+            ctypes.c_int,                # derivative (-1, or the axis)
+            ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),   # ms (nm)
+            ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"),   # rows (nm)
+            ctypes.c_int,                # nm
+            ctypes.c_long,               # M
+            _F64_W,                      # out (M * npts)
+        ]
+
+    if hasattr(lib, "mandacaru_real_shell_f32"):
+        lib.mandacaru_real_shell_f32.restype = None
+        lib.mandacaru_real_shell_f32.argtypes = [
+            _F64, _F64, _F64,            # x, y, z (npts)
+            ctypes.c_long,               # npts
+            _F64,                        # center (3)
+            ctypes.c_double,             # support
+            _F64,                        # breaks (nb)
+            _F64,                        # coeffs ((nb - 1) * 4)
+            ctypes.c_int,                # nb
+            ctypes.c_double,             # rc (zero at r >= rc)
+            ctypes.c_int,                # l
+            ctypes.c_int,                # derivative (-1, or the axis)
+            ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),   # ms (nm)
+            ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"),   # rows (nm)
+            ctypes.c_int,                # nm
+            ctypes.c_long,               # M
+            _F32_W,                      # out (M * npts)
+        ]
+
+    if hasattr(lib, "mandacaru_laplacian_real_f32"):
+        lib.mandacaru_laplacian_real_f32.restype = None
+        lib.mandacaru_laplacian_real_f32.argtypes = [
+            _F32,                        # field (n * ngrid)
+            _F32_W,                      # lap
+            ctypes.c_int,                # n
+            ctypes.c_int,                # nx
+            ctypes.c_int,                # ny
+            ctypes.c_int,                # nz
+            _F64,                        # ginv  (9, row-major inverse metric)
+        ]
+
+    if hasattr(lib, "mandacaru_kb_project_f32"):
+        lib.mandacaru_kb_project_f32.restype = None
+        lib.mandacaru_kb_project_f32.argtypes = [
+            _C64,                        # psi (M * ngrid)
+            _C64,                        # chi (P * ngrid)
+            ctypes.c_int,                # M
+            ctypes.c_int,                # P
+            ctypes.c_long,               # ngrid
+            ctypes.c_double,             # dV
+            _C128_W,                     # out_P (M * P)
+        ]
+
     lib.mandacaru_bloch_block.restype = ctypes.c_long
     lib.mandacaru_bloch_block.argtypes = []
     lib.mandacaru_bloch_project.restype = None
@@ -222,7 +296,6 @@ def _bind(lib):
 
     _I32_W = ndpointer(dtype=np.int32, flags="C_CONTIGUOUS,WRITEABLE")
     _I64 = ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
-    _F64_W = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS,WRITEABLE")
     lib.mandacaru_bader_ascent.restype = None
     lib.mandacaru_bader_ascent.argtypes = [
         _F64, ctypes.c_long,         # starts (n * 3), n
@@ -285,12 +358,14 @@ class BackendStatus:
 
     @property
     def label(self) -> str:
-        """Short backend label for summaries (``"C (OpenMP, 8 threads)"``)."""
+        """Short backend label for summaries (``"Rust (8 threads)"`` or ``"C (OpenMP, 8 threads)"``)."""
         if not self.available:
-            return "NumPy (C backend unavailable)"
+            return "NumPy (backend unavailable)"
+        is_rust = hasattr(_LIB, "mandacaru_real_shell_f32")
+        name = "Rust" if is_rust else "C (OpenMP)"
         if self.n_threads and self.n_threads > 1:
-            return f"C (OpenMP, {self.n_threads} threads)"
-        return "C (serial)"
+            return f"{name} ({self.n_threads} threads)"
+        return f"{name} (serial)"
 
 
 def _reload(fresh: bool = False) -> bool:
@@ -749,13 +824,31 @@ def kb_projections(psi_stack, chi_stack, dV):
     are one real ``gemm``, and a real ``(M, P)`` result.
     """
     if not (np.iscomplexobj(psi_stack) or np.iscomplexobj(chi_stack)):
-        psi_stack = np.asarray(psi_stack, dtype=np.float64)
-        chi_stack = np.asarray(chi_stack, dtype=np.float64)
+        is_f32 = (psi_stack.dtype == np.float32 or chi_stack.dtype == np.float32)
+        target_dtype = np.float32 if is_f32 else np.float64
+        psi_stack = np.asarray(psi_stack, dtype=target_dtype)
+        chi_stack = np.asarray(chi_stack, dtype=target_dtype)
         if chi_stack.shape[1] != psi_stack.shape[1]:
             raise ValueError(
                 f"projectors are sampled on {chi_stack.shape[1]} points but "
                 f"the basis on {psi_stack.shape[1]}")
         return (psi_stack @ chi_stack.T) * float(dV)
+    is_c64 = (psi_stack.dtype == np.complex64 or chi_stack.dtype == np.complex64)
+    if is_c64 and HAS_C_BACKEND and hasattr(_LIB, "mandacaru_kb_project_f32"):
+        psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex64)
+        chi_stack = np.ascontiguousarray(chi_stack, dtype=np.complex64)
+        M, ngrid = psi_stack.shape
+        P = chi_stack.shape[0]
+        if chi_stack.shape[1] != ngrid:
+            raise ValueError(
+                f"projectors are sampled on {chi_stack.shape[1]} points but the "
+                f"basis on {ngrid}")
+        if P == 0:
+            return np.zeros((M, 0), dtype=np.complex128)
+        out = np.empty((M, P), dtype=np.complex128)
+        _LIB.mandacaru_kb_project_f32(psi_stack, chi_stack, M, P, ngrid,
+                                      float(dV), out)
+        return out
     psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
     chi_stack = np.ascontiguousarray(chi_stack, dtype=np.complex128)
     M, ngrid = psi_stack.shape
@@ -804,6 +897,38 @@ def bloch_shell(points, center, translations, phases, support, spline, l,
     return True
 
 
+def real_shell(points, center, support, spline, l, ms, rows, out,
+               derivative: int = -1) -> bool:
+    """Evaluate real-valued spherical harmonics or Cartesian derivatives directly into float64 or float32 out array."""
+    if not HAS_C_BACKEND:
+        return False
+    if out.dtype == np.float32 and hasattr(_LIB, "mandacaru_real_shell_f32"):
+        x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
+        breaks, coeffs, rc = spline
+        _LIB.mandacaru_real_shell_f32(
+            x, y, z, x.size, np.ascontiguousarray(center, dtype=np.float64),
+            float(support), np.ascontiguousarray(breaks, dtype=np.float64),
+            np.ascontiguousarray(coeffs, dtype=np.float64), len(breaks),
+            float(rc), int(l), int(derivative),
+            np.ascontiguousarray(ms, dtype=np.int32),
+            np.ascontiguousarray(rows, dtype=np.int64), len(ms), out.shape[0],
+            out)
+        return True
+    if hasattr(_LIB, "mandacaru_real_shell"):
+        x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
+        breaks, coeffs, rc = spline
+        _LIB.mandacaru_real_shell(
+            x, y, z, x.size, np.ascontiguousarray(center, dtype=np.float64),
+            float(support), np.ascontiguousarray(breaks, dtype=np.float64),
+            np.ascontiguousarray(coeffs, dtype=np.float64), len(breaks),
+            float(rc), int(l), int(derivative),
+            np.ascontiguousarray(ms, dtype=np.int32),
+            np.ascontiguousarray(rows, dtype=np.int64), len(ms), out.shape[0],
+            out)
+        return True
+    return False
+
+
 def bloch_project(points, center, translations, support, spline, l, ms,
                   columns, derivative: int = -1):
     """``(n_blocks, n_images, nm, P)`` image-resolved projections of one
@@ -819,9 +944,7 @@ def bloch_project(points, center, translations, support, spline, l, ms,
     translations = np.ascontiguousarray(translations, dtype=np.float64)
     columns = np.ascontiguousarray(columns, dtype=np.complex128)
     ms = np.ascontiguousarray(ms, dtype=np.int32)
-    block = bloch_block()
-    n_blocks = (x.size + block - 1) // block
-    out = np.zeros((n_blocks, len(translations), len(ms), len(columns)),
+    out = np.zeros((len(translations), len(ms), len(columns)),
                    dtype=np.complex128)
     _LIB.mandacaru_bloch_project(
         x, y, z, x.size, np.ascontiguousarray(center, dtype=np.float64),
@@ -959,25 +1082,32 @@ def laplacian_real(samples, shape, ginv, out=None) -> np.ndarray:
     r"""The finite-difference Laplacian of real samples ``(n, G)`` on a grid
     of node counts ``shape`` and inverse metric ``ginv``, the stencil and
     boundary of the one-body kernels, into ``out`` (``(n, G)``, allocated
-    when omitted).  The C kernel ``mandacaru_laplacian_real`` when the
+    when omitted).  The backend kernel ``mandacaru_laplacian_real`` when the
     library is loaded, else :func:`_laplacian_general` row by row; the two
-    agree to round-off, and the C result does not depend on its thread
+    agree to round-off, and the backend result does not depend on its thread
     count (each node is one thread's)."""
     nx, ny, nz = _as_shape(shape)
-    samples = np.ascontiguousarray(samples, dtype=np.float64)
+    is_f32 = samples.dtype == np.float32
+    target_dtype = np.float32 if is_f32 else np.float64
+    samples = np.ascontiguousarray(samples, dtype=target_dtype)
     n = samples.shape[0]
     if out is None:
-        out = np.empty((n, nx * ny * nz))
+        out = np.empty((n, nx * ny * nz), dtype=target_dtype)
     if samples.shape != (n, nx * ny * nz) or out.shape != samples.shape \
-            or not out.flags.c_contiguous or out.dtype != np.float64:
+            or not out.flags.c_contiguous or out.dtype != target_dtype:
         raise ValueError(f"laplacian_real: samples and out must be (n, "
-                         f"{nx * ny * nz}) float64, got {samples.shape} and "
+                         f"{nx * ny * nz}) {target_dtype}, got {samples.shape} and "
                          f"{out.shape}")
     ginv = np.ascontiguousarray(ginv, dtype=np.float64)
     if HAS_C_BACKEND and n:
-        _LIB.mandacaru_laplacian_real(samples.reshape(-1), out.reshape(-1),
-                                      n, nx, ny, nz, ginv.reshape(-1))
-        return out
+        if is_f32 and hasattr(_LIB, "mandacaru_laplacian_real_f32"):
+            _LIB.mandacaru_laplacian_real_f32(samples.reshape(-1), out.reshape(-1),
+                                              n, nx, ny, nz, ginv.reshape(-1))
+            return out
+        if not is_f32 and hasattr(_LIB, "mandacaru_laplacian_real"):
+            _LIB.mandacaru_laplacian_real(samples.reshape(-1), out.reshape(-1),
+                                          n, nx, ny, nz, ginv.reshape(-1))
+            return out
     for row, target in zip(samples, out):
         target[:] = _laplacian_general(row.reshape(nx, ny, nz),
                                        ginv).reshape(-1)

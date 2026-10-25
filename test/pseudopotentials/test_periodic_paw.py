@@ -200,7 +200,7 @@ class TestEnergies:
                       cell=[8.0] * 3, pbc=True)
         atoms.center()
         result = _energy(atoms, 0.25, {"size": "DZP"})
-        assert result.extrapolated_energy == pytest.approx(-1.1269, abs=5e-4)
+        assert result.extrapolated_energy == pytest.approx(-1.1281, abs=5e-4)
 
 
 def _grid(atoms, nodes):

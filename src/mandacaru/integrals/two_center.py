@@ -254,10 +254,19 @@ class RadialFunction:
         """:math:`F_l(k)` on the wave-number nodes (memoized by content)."""
         cached = _TRANSFORMS.get(self.digest)
         if cached is None:
-            F = _bessel_rows(self.l, self.panel, self.values.size).T @ self.values
+            n_rows = self.values.size
+            n_panels = -(-n_rows // R_NODES)
+            edges = self.panel * np.arange(n_panels + 1)
+            r = _panel_nodes(edges[:-1], edges[1:])[0][:n_rows]
+            F = np.zeros(_K.size)
+            for start in range(0, n_rows, 256):
+                stop = min(start + 256, n_rows)
+                block_r = r[start:stop]
+                block_jn = spherical_jn(self.l, block_r[:, None] * _K[None, :])
+                F += block_jn.T @ self.values[start:stop]
             if self.tail is not None:
-                r, wf = self.tail
-                F = F + spherical_jn(self.l, _K[:, None] * r[None, :]) @ wf
+                r_tail, wf = self.tail
+                F = F + spherical_jn(self.l, _K[:, None] * r_tail[None, :]) @ wf
             if len(_TRANSFORMS) >= _CACHE_LIMIT:
                 _TRANSFORMS.clear()
             cached = _TRANSFORMS[self.digest] = F
@@ -298,7 +307,12 @@ def pair_table(f1: RadialFunction, f2: RadialFunction, kind: str) -> PairTable:
     multipole, splines, slopes = [], [], []
     for L in multipoles(f1.l, f2.l):
         sign = (-1) ** ((f1.l - f2.l - L) // 2)
-        s = 8.0 * sign * (_bessel_rows(L, 0, n) @ weight)
+        s = np.zeros(n)
+        for start in range(0, n, 256):
+            stop = min(start + 256, n)
+            block_r = R[start:stop]
+            block_jn = spherical_jn(L, block_r[:, None] * _K[None, :])
+            s[start:stop] = 8.0 * sign * (block_jn @ weight)
         spline = CubicSpline(R, s)
         multipole.append(L)
         splines.append(spline)

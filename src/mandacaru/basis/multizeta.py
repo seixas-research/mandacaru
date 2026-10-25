@@ -89,17 +89,28 @@ DEFAULT_SPLIT_NORM = 0.15
 
 #: ``zeta_split="first_zeta"``: the **norm** -- not the squared norm -- of the
 #: tail left outside the split radius of the second, third and fourth zeta,
-#: every one of them split from the *first* zeta.  0.16 is a squared-norm
-#: fraction of 0.0256, so it is not comparable with
+#: every one of them split from the *first* zeta.  0.15 is a squared-norm
+#: fraction of 0.0225, so it is not comparable with
 #: :data:`DEFAULT_SPLIT_NORM` digit for digit.
-DEFAULT_TAIL_NORMS = (0.16, 0.3, 0.6)
+DEFAULT_TAIL_NORMS = (0.15, 0.31, 0.54)
 
 
 def validate_zeta_split(spec):
     """Normalize a ``zeta_split`` option to one of :data:`ZETA_SPLITS`, or
+    a numeric tail norm (or sequence of tail norms) for first-zeta mode, or
     ``None`` when it was not written."""
     if spec is None:
         return None
+    if isinstance(spec, (int, float)):
+        val = float(spec)
+        if not (0.0 < val < 1.0):
+            raise ValueError(f"zeta_split tail norm must be in (0, 1), got {spec!r}")
+        return val
+    if isinstance(spec, (tuple, list)):
+        vals = tuple(float(x) for x in spec)
+        if not vals or any(not (0.0 < x < 1.0) for x in vals):
+            raise ValueError(f"zeta_split tail norms must be numbers in (0, 1), got {spec!r}")
+        return vals
     key = str(spec).strip().lower().replace("-", "_")
     if key not in ZETA_SPLITS:
         raise ValueError(f"zeta_split must be one of {list(ZETA_SPLITS)}, "
@@ -110,15 +121,22 @@ def validate_zeta_split(spec):
 def resolve_split_scheme(zeta_split=None):
     """``(split_norm, tail_norms)`` of the split-valence scheme ``zeta_split``.
 
-    The scheme fixes its own parameter, which is never written by hand:
+    The scheme fixes its own parameter:
     ``"first_zeta"`` (the default) returns ``(None, DEFAULT_TAIL_NORMS)`` --
     every extra zeta split from the first by the tail's **norm** -- and
     ``"last_zeta"`` returns ``(DEFAULT_SPLIT_NORM, None)`` -- each zeta split
     from the previous one by the tail's **squared** norm, halved per zeta.
+    A float or tuple of floats specifies custom tail norms for ``"first_zeta"`` mode.
     """
-    scheme = validate_zeta_split(zeta_split) or DEFAULT_ZETA_SPLIT
-    if scheme == "first_zeta":
+    scheme = validate_zeta_split(zeta_split)
+    if scheme is None or scheme == "first_zeta":
         return None, DEFAULT_TAIL_NORMS
+    if scheme == "last_zeta":
+        return DEFAULT_SPLIT_NORM, None
+    if isinstance(scheme, tuple):
+        return None, scheme
+    if isinstance(scheme, float):
+        return None, (scheme, *DEFAULT_TAIL_NORMS[1:])
     return DEFAULT_SPLIT_NORM, None
 
 #: Default NAO size.  Double zeta plus polarization: single zeta gives a shell

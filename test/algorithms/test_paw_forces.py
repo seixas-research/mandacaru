@@ -131,8 +131,11 @@ def test_hellmann_feynman_and_pulay(h2):
     # 2026-10-13 the kinetic operator is spectral, which the stencil had
     # under-estimated: the minimum moved out again to 0.785 A (bond force
     # -1.352 / -0.173 / +0.495 eV/Angstrom at 0.75 / 0.78 / 0.80 A), and the
-    # force here from -0.5 ... -1.2 to -1.35.
-    assert -1.6 < bond_force(forces) < -1.1
+    # force here from -0.5 ... -1.2 to -1.35.  Since 2026-10-25 the hydrogen
+    # dataset has a 1.0 Bohr sphere and an empty p channel, which brings the
+    # overlap excess down (HISTORY.md "LiH bisect"): the minimum moves back in
+    # and the force here is -0.95.
+    assert -1.3 < bond_force(forces) < -0.7
 
 
 def test_the_last_zeta_split_is_still_available():
@@ -144,8 +147,9 @@ def test_the_last_zeta_split_is_still_available():
     # pre-2026-09-20 behavior (> 1.0); with the exact spheres (2026-10-12) the
     # minimum moved past 0.75 A (-0.22 eV/Angstrom), as for the default basis,
     # and with the spectral kinetic default (2026-10-13) to 0.776 A
-    # (-0.954 / +0.141 eV/Angstrom at 0.75 / 0.78 A).
-    assert -1.2 < bond_force(atoms.get_forces()) < -0.7
+    # (-0.954 / +0.141 eV/Angstrom at 0.75 / 0.78 A); with the 1.0 Bohr
+    # hydrogen sphere (2026-10-25) the force at 0.75 A is -0.497.
+    assert -0.8 < bond_force(atoms.get_forces()) < -0.3
 
 
 @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])

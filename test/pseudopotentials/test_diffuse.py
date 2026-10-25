@@ -182,8 +182,9 @@ def _radial_overlap(a, b, r):
 class TestShells:
     def test_free_atom_reference(self):
         # The scale the widths are measured in: the dataset's own free
-        # valence orbitals (Bohr).
-        assert free_valence_rms(get_paw("H"))[0] == pytest.approx(1.974,
+        # valence orbitals (Bohr).  Hydrogen's 1.974 became 1.967 with the
+        # 1.0 Bohr sphere (2026-10-25).
+        assert free_valence_rms(get_paw("H"))[0] == pytest.approx(1.967,
                                                                   abs=2e-3)
         reference = free_valence_rms(get_paw("O"))
         assert reference[0] == pytest.approx(1.316, abs=2e-3)

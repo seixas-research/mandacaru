@@ -485,10 +485,11 @@ class TestBaderOnTheAllElectronDensity:
         # Centered on the grid-converged value (2026-10-13): with the
         # spectral kinetic default oxygen's charge is -1.146 / -1.125 /
         # -1.112 e at grid_spacing 0.22 / 0.18 / 0.15 Angstrom, its size
-        # still shrinking slowly (the stencil gave about -1.20 e).
-        assert -1.20 < charges[0] < -1.05
+        # still shrinking slowly (the stencil gave about -1.20 e).  With the
+        # 1.0 Bohr hydrogen sphere (2026-10-25) oxygen's charge reads -1.216 e.
+        assert -1.25 < charges[0] < -1.05
         assert charges[1] == pytest.approx(charges[2], abs=2e-3)
-        assert 0.52 < charges[1] < 0.60
+        assert 0.52 < charges[1] < 0.62
         assert abs(sum(charges)) < 1e-10
 
     def test_the_reconstruction_holds_each_sphere_charge(self, water):

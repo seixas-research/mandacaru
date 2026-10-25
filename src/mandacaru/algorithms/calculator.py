@@ -600,6 +600,7 @@ class Mandacaru(Calculator):
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
                  paw_dataset: str | None = None,
                  grid_spacing: float = DEFAULT_GRID_SPACING, grid=None,
+                 precision: str = "double",
                  include_pulay: bool = True, force_method: str | None = None,
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
@@ -639,6 +640,11 @@ class Mandacaru(Calculator):
                                         required=named)
         self.basis = basis
         self.grid_spacing = float(grid_spacing)
+        prec = str(precision).strip().lower()
+        if prec not in ("double", "single"):
+            raise ValueError(
+                f"precision must be 'double' or 'single', got {precision!r}")
+        self.precision = prec
         self.include_pulay = bool(include_pulay)
         # `1 in (True, False, "auto")` is True in Python, so the check is by
         # type: an int is a typo for a boolean, not a boolean.
@@ -662,7 +668,7 @@ class Mandacaru(Calculator):
                     f"force_method must be one of {VALID_FORCE_METHODS}, "
                     f"got {force_method!r}")
             self.force_method = fm
-        SUPPORTED_EFFECTIVE_POTENTIAL_METHODS = ("dft", "vqe", "adapt-vqe")
+        SUPPORTED_EFFECTIVE_POTENTIAL_METHODS = ("dft", "vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe")
         if self.method not in SUPPORTED_EFFECTIVE_POTENTIAL_METHODS and self.force_method == "effective-potential":
             raise ValueError(
                 f"force_method='effective-potential' is supported for methods "
@@ -1202,6 +1208,7 @@ class Mandacaru(Calculator):
 
     def _make_solver(self, grid, **overrides):
         options = {**self.solver_kwargs, **overrides}
+        options.setdefault("precision", self.precision)
         solver = self._solver_class(basis=self.basis, grid=grid,
                                     grid_spacing=self.grid_spacing,
                                     verbose=self._show_trace(), **options)
@@ -1401,6 +1408,11 @@ class Mandacaru(Calculator):
         """
         Calculator.calculate(self, atoms, properties, system_changes)
         atoms = self.atoms
+        if atoms is None:
+            raise RuntimeError(
+                "this calculator has no attached Atoms geometry: when running "
+                "in direct mode with an explicit Hamiltonian, call calc.run() "
+                "instead of get_potential_energy()")
         if np.ndim(atoms.get_initial_magnetic_moments()) == 2 and \
                 not getattr(self._solver_class, "noncollinear_start", False):
             raise NotImplementedError(

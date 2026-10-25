@@ -255,10 +255,15 @@ class IntegralEngine:
         sample = (self._sample_periodic if self.periodic
                   else (lambda function: function.sample(grid)))
         #: Whether every function is real (a molecule's real harmonics): the
-        #: samples, and every integral built from them, are then ``float64``.
+        #: samples, and every integral built from them, are then ``float64`` (or ``float32``).
         self.real = bool(self.basis) and all(getattr(f, "real", False) for f in self.basis)
+        self.precision = getattr(grid, "precision", "double")
+        if self.precision == "single":
+            self.dtype = np.float32 if self.real else np.complex64
+        else:
+            self.dtype = np.float64 if self.real else np.complex128
         self._psi = np.empty((len(self.basis), grid.size),
-                             dtype=np.float64 if self.real else np.complex128)
+                             dtype=self.dtype)
         for row, function in zip(self._psi, self.basis):
             row[:] = sample(function)
 

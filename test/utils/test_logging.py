@@ -611,7 +611,13 @@ class TestBasisBlock:
         import hashlib
         with open(get_paw("H").source, "rb") as handle:
             assert dataset["sha256"] == hashlib.sha256(handle.read()).hexdigest()
-        (orbital,) = block["orbitals"]
+        # One entry per channel of the dataset: since 2026-10-25 hydrogen has
+        # an (empty, unconfined) 2p channel beside the 1s.  The basis itself
+        # is still the 1s alone: the function count below does not move.
+        orbital, p_channel = block["orbitals"]
+        assert p_channel["symbol"] == "H" and p_channel["l"] == 1
+        assert p_channel["r_c_Bohr"] == "unconfined"
+        assert p_channel["shift_eV"] == 0.0
         expected = confined_orbital(get_paw("H"), 0, 0.1)
         assert orbital["l"] == 0 and orbital["zetas"] == 2
         assert orbital["r_c_Bohr"] == pytest.approx(expected.r_c, abs=1e-4)

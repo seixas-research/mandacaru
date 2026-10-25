@@ -1178,9 +1178,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         own_mask = orbital_atoms == atom
         has_own = bool(np.any(own_mask))
         if stream_derivatives and include_pulay and has_own:
-            d_atom = orbital_derivatives(basis, grid, atom_of_orbital, atom, delta)
-            orbital_stack = atom_rows(d_atom, atom_of_orbital, atom)
-            del d_atom
+            orbital_stack = orbital_derivatives(basis, grid, atom_of_orbital, atom, delta)
         else:
             orbital_stack = (atom_rows(derivatives, atom_of_orbital, atom)
                              if include_pulay and has_own and need_dpsi_stack

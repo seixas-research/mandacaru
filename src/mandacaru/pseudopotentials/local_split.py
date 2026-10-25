@@ -422,7 +422,7 @@ def _atom_matrices(basis, center, weight, radii, directions, *,
         else (float(fn.support_radius) + extra) ** 2
         for fn in basis
     ], dtype=float)
-    chunk_size = max(131072, int(block) * int(directions.shape[1]))
+    chunk_size = max(16384, int(block) * int(directions.shape[1]))
     w_flat = weight.ravel()
     for ox, oy, oz, order_c, lo, hi in _sorted_sphere_chunks(
             radii, directions, chunk_size):

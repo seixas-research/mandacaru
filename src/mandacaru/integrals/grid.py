@@ -129,6 +129,7 @@ class Grid:
     #: band pair split by 0.087 Ha.  With 16 nodes both are zero to 1e-14.
     #: ``None`` (the default) leaves the node count alone.
     commensurate: tuple | None = None
+    precision: str = "double"
 
     def __post_init__(self):
         # Convert the user-facing lengths to the atomic units the backend uses.

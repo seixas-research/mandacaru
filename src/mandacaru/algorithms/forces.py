@@ -168,16 +168,22 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
     if atom is None:
         if M == 0:
             return np.zeros((3, 0, grid.size), dtype=dtype)
-        _, slopes = sample_functions(basis, (grid.X, grid.Y, grid.Z),
-                                     gradients=True, delta=delta, values=False)
-        return np.ascontiguousarray(-slopes.transpose(1, 0, 2))
+        out = np.empty((3, M, grid.size), dtype=dtype)
+        sample_functions(basis, (grid.X, grid.Y, grid.Z),
+                         gradients=True, delta=delta, values=False,
+                         out_slopes=out)
+        out *= -1.0
+        return out
     out = np.zeros((3, M, grid.size), dtype=dtype)
     own = [mu for mu in range(M) if atom_of_orbital[mu] == atom]
     if own:
-        _, slopes = sample_functions([basis[mu] for mu in own],
-                                     (grid.X, grid.Y, grid.Z),
-                                     gradients=True, delta=delta, values=False)
-        out[:, own] = -slopes.transpose(1, 0, 2)
+        own_out = np.empty((3, len(own), grid.size), dtype=dtype)
+        sample_functions([basis[mu] for mu in own],
+                         (grid.X, grid.Y, grid.Z),
+                         gradients=True, delta=delta, values=False,
+                         out_slopes=own_out)
+        own_out *= -1.0
+        out[:, own] = own_out
     return out
 
 
@@ -185,6 +191,8 @@ def atom_rows(derivatives, atom_of_orbital, atom):
     """``orbital_derivatives(..., atom)`` from the every-function array
     (``atom=None``): the rows of ``atom``'s functions, zeros elsewhere."""
     own = np.asarray(atom_of_orbital) == atom
+    if np.all(derivatives[:, ~own] == 0.0):
+        return derivatives
     out = np.zeros_like(derivatives)
     out[:, own] = derivatives[:, own]
     return out

@@ -115,6 +115,17 @@ void mandacaru_bloch_shell(const double *x, const double *y, const double *z,
                            const int *ms, const long *rows, int nm, long M,
                            double _Complex *out);
 
+/* Real-valued spherical harmonics and Cartesian derivatives for an isolated shell:
+ * evaluates R(|r_j - center|) S_lm(r_j - center) or its Cartesian derivative
+ * directly into out[rows[i] * npts + j] in float64 without complex allocation. */
+void mandacaru_real_shell(const double *x, const double *y, const double *z,
+                          long npts, const double *center,
+                          double support,
+                          const double *breaks, const double *coeffs, int nb,
+                          double rc, int l, int derivative,
+                          const int *ms, const long *rows, int nm, long M,
+                          double *out);
+
 /* Points per block of the Bloch kernels (and of mandacaru_bloch_project's
  * output slices). */
 long mandacaru_bloch_block(void);

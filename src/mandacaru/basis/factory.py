@@ -251,7 +251,7 @@ class NAOBasisSet(BasisSet):
     zeta_split : {"first_zeta", "last_zeta"}
         Which function every extra zeta is split from, and so where: the
         **first** zeta (the default), at the radius leaving a tail of *norm*
-        ``(0.16, 0.3, 0.6)`` outside for the second, third and fourth zeta,
+        ``(0.15, 0.31, 0.54)`` outside for the second, third and fourth zeta,
         or the previous, **last** one, at the radius leaving ``0.15`` of its
         *squared* norm outside, halved for every further zeta
         (:func:`~mandacaru.basis.multizeta.resolve_split_scheme`).
