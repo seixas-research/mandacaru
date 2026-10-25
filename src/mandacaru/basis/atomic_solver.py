@@ -238,7 +238,9 @@ def relaxed_configuration(atomic_number: int, *, xc: str = "lda",
     number shrinking toward zero, which could still change sign.  Acting on it
     would be acting on noise, so this function **declines to reproduce the Cr
     and Cu anomalies** rather than claim a variational result it cannot support.
-    No table of experimental configurations enters the repository either way.
+    No table of experimental configurations enters this function either way;
+    the only overrides are the two PAW-LCAO reference configurations of Pa and
+    U in ``pseudopotentials.paw.DEFAULT_REFERENCE_CONFIGURATIONS``.
 
     **Cost.**  A configuration with no occupied ``f`` shell in its valence
     returns immediately, with no solve at all: the aufbau ``d`` shell of a

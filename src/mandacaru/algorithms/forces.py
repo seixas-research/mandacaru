@@ -668,7 +668,8 @@ def pair_derivative_integrals(psi_grid, derivatives, phi):
 
 
 def _two_body_pulay(psi_grid, derivatives, grid, de_dg, atom_of_orbital,
-                    n_atoms, solver=None, pair_layout: bool = False):
+                    n_atoms, solver=None, pair_layout: bool = False,
+                    basis=None, delta=None):
     r"""``<dE/dg, dg/dR>`` of every atom and direction, without ``dg``.
 
     With ``g[m,n,l,s] = <mn|ls> = int rho_ml(1) Phi_ns(1)``, the derivative has
@@ -680,34 +681,73 @@ def _two_body_pulay(psi_grid, derivatives, grid, de_dg, atom_of_orbital,
     E/\partial g_{cadb}`.
 
     The pair potentials are streamed (:func:`pair_potential_blocks`) and
-    each block is contracted into every atom's gradient at once
-    (:func:`pair_derivative_integrals`): one pass of ``M^2`` Poisson solves
-    for the whole gradient, and no ``M^2 G`` array.  Returns ``(n_atoms,
-    3)``.
+    accumulated into the factored one-particle intermediate fields
+    :math:`W_a(\mathbf{r}) = \sum_{b,j} K_{ab,j} \phi_b(\mathbf{r}) \Phi_j(\mathbf{r})`
+    and :math:`Z_b(\mathbf{r}) = \sum_{a,j} K_{ab,j} \phi_a^*(\mathbf{r}) \Phi_j(\mathbf{r})`.
+    Derivatives are contracted either against ``derivatives`` or streamed
+    atom-by-atom from ``basis``, eliminating large 4D intermediate tensors
+    and global derivative allocations.  Returns ``(n_atoms, 3)``.
 
     ``pair_layout`` takes ``de_dg`` as the ``(M^2, M^2)`` matrix
     :math:`P_{(ac),(bd)} = \partial E/\partial g_{abcd}`, whose
     :math:`K` is :math:`P + P^T` (no ``M^4`` transpose besides).
     """
-    M = psi_grid.shape[0]
+    M, ngrid = psi_grid.shape
     if pair_layout:
         K = (de_dg + de_dg.T).reshape(M, M, M * M)
     else:
         K = (np.einsum("acbd->abcd", de_dg)
              + np.einsum("cadb->abcd", de_dg)).reshape(M, M, M * M)
-    rows = np.zeros((3, M), dtype=complex)          # derivative on a
-    columns = np.zeros((3, M), dtype=complex)       # derivative on b
+
+    if derivatives is not None:
+        rows = np.zeros((3, M), dtype=complex)
+        columns = np.zeros((3, M), dtype=complex)
+        for start, stop, phi in pair_potential_blocks(psi_grid, grid, solver):
+            T1, T2 = pair_derivative_integrals(psi_grid, derivatives, phi)
+            block = K[:, :, start:stop]
+            rows += np.einsum("kabj,abj->ka", T1, block)
+            columns += np.einsum("kabj,abj->kb", T2, block)
+        out = np.zeros((n_atoms, 3))
+        owner = np.asarray(atom_of_orbital)
+        for atom in range(n_atoms):
+            own = owner == atom
+            out[atom] = np.real(rows[:, own].sum(axis=1)
+                                + columns[:, own].sum(axis=1)) * grid.dV
+        return out
+
+    if basis is None:
+        raise ValueError(
+            "either derivatives or basis must be provided to _two_body_pulay")
+
+    dtype = np.result_type(psi_grid, K)
+    W = np.zeros((M, ngrid), dtype=dtype)
+    Z = np.zeros((M, ngrid), dtype=dtype)
+    psi_conj = np.conj(psi_grid)
+
     for start, stop, phi in pair_potential_blocks(psi_grid, grid, solver):
-        T1, T2 = pair_derivative_integrals(psi_grid, derivatives, phi)
         block = K[:, :, start:stop]
-        rows += np.einsum("kabj,abj->ka", T1, block)
-        columns += np.einsum("kabj,abj->kb", T2, block)
+        for a in range(M):
+            Va = block[a] @ phi
+            W[a] += np.sum(psi_grid * Va, axis=0)
+            Ub = block[:, a, :] @ phi
+            Z[a] += np.sum(psi_conj * Ub, axis=0)
+
     out = np.zeros((n_atoms, 3))
     owner = np.asarray(atom_of_orbital)
     for atom in range(n_atoms):
-        own = owner == atom
-        out[atom] = np.real(rows[:, own].sum(axis=1)
-                            + columns[:, own].sum(axis=1)) * grid.dV
+        own = np.where(owner == atom)[0]
+        if len(own) == 0:
+            continue
+        dpsi_atom = orbital_derivatives(basis, grid, atom_of_orbital, atom,
+                                        delta=delta)
+        dpsi_own = dpsi_atom[:, own, :]
+        W_own = W[own, :]
+        Z_own = Z[own, :]
+        for k in range(3):
+            term_row = np.sum(dpsi_own[k].conj() * W_own)
+            term_col = np.sum(dpsi_own[k] * Z_own)
+            out[atom, k] = np.real(term_row + term_col) * grid.dV
+
     return out
 
 

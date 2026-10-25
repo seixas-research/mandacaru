@@ -163,7 +163,6 @@ def repository_path(family: str) -> str:
     return path
 
 
-@lru_cache(maxsize=64)
 def paw_dataset_folder(family: str, xc: str = DEFAULT_XC, paw_dataset=None, *,
                       must_exist: bool = True,
                       relativity: str = "scalar") -> str:
@@ -176,6 +175,19 @@ def paw_dataset_folder(family: str, xc: str = DEFAULT_XC, paw_dataset=None, *,
     and without it (for writing) it is simply returned for the caller to
     create.
     """
+    return _paw_dataset_folder(family, xc, paw_dataset, must_exist, relativity,
+                               _variable_value(family))
+
+
+def _variable_value(family: str) -> str:
+    """The family's variable as set now: part of every cache key below, so a
+    changed variable is never answered from an earlier value."""
+    return os.environ.get(FAMILY_VARIABLES.get(_family(family), ""), "")
+
+
+@lru_cache(maxsize=64)
+def _paw_dataset_folder(family, xc, paw_dataset, must_exist, relativity,
+                        variable_value) -> str:
     if paw_dataset is not None:
         p = os.fspath(paw_dataset)
         if not os.path.isdir(p):
@@ -203,7 +215,6 @@ def paw_dataset_folder(family: str, xc: str = DEFAULT_XC, paw_dataset=None, *,
 FOLDER_FAMILIES = ("paw-lcao",)
 
 
-@lru_cache(maxsize=64)
 def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
     """``<checkout>/<folder>`` of ``family``'s library, which must exist.
 
@@ -221,6 +232,11 @@ def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
         When the variable is unset, or the folder is not in the checkout; the
         message lists the folders that are.
     """
+    return _library_folder(family, folder, _variable_value(family))
+
+
+@lru_cache(maxsize=64)
+def _library_folder(family, folder, variable_value) -> str:
     name = str(folder).strip()
     if (not name or name in (".", "..") or os.sep in name
             or (os.altsep and os.altsep in name) or os.path.isabs(name)):
@@ -255,7 +271,7 @@ def upaw_dataset_folder(xc: str = DEFAULT_XC, paw_dataset=None) -> str | None:
         p = os.fspath(paw_dataset)
         if not os.path.isdir(p):
             try:
-                return library_folder(family, p)
+                return library_folder("upaw-lcao", p)
             except Exception:
                 pass
         return p

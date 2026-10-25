@@ -648,13 +648,15 @@ class Mandacaru(Calculator):
                 f"project_translation must be one of "
                 f"{PROJECT_TRANSLATION_CHOICES}, got {project_translation!r}")
         self.project_translation = project_translation
-        VALID_FORCE_METHODS = ("effective-potential", "single-particle", "rdm", "scf-response")
+        VALID_FORCE_METHODS = ("effective-potential", "single-particle", "rdm", "scf-response", "finite-difference", "finite_difference")
         if force_method is None or force_method == "auto":
             self.force_method = "effective-potential" if self.method == "dft" else "rdm"
         else:
             fm = str(force_method).strip().lower()
             if fm == "single-particle":
                 fm = "effective-potential"
+            elif fm in ("finite-difference", "finite_difference"):
+                fm = "finite-difference"
             if fm not in VALID_FORCE_METHODS:
                 raise ValueError(
                     f"force_method must be one of {VALID_FORCE_METHODS}, "
@@ -2421,6 +2423,33 @@ class Mandacaru(Calculator):
                 self._project_translation(result)
             return result
 
+        if self.force_method == "finite-difference":
+            from .forces import ForceResult
+            if context.get("deleted") or context.get("frozen"):
+                from .active_space_forces import (
+                    ACTIVE_SPACE_STEP_ANGSTROM, active_space_gradient)
+                total_gradient = active_space_gradient(
+                    self.atoms, solver, active_gamma, active_gamma2)
+                result = ForceResult(
+                    forces=-total_gradient,
+                    gradient=total_gradient,
+                    hellmann_feynman=np.zeros_like(total_gradient),
+                    pulay=total_gradient,
+                    details={"force_method": "finite-difference",
+                             "active_space_step_angstrom": ACTIVE_SPACE_STEP_ANGSTROM})
+            else:
+                forces = self.calculate_numerical_forces(self.atoms, d=self.orbital_delta or 0.0025)
+                result = ForceResult(
+                    forces=forces,
+                    gradient=-forces,
+                    hellmann_feynman=np.zeros_like(forces),
+                    pulay=-forces,
+                    details={"force_method": "finite-difference"})
+            self._check_translational_invariance(result)
+            if self.project_translation and self._projection_applies(result):
+                self._project_translation(result)
+            return result
+
         if self.force_method == "scf-response":
             legacy = nuclear_gradient(
                 context["integrals"], gamma, gamma2,
@@ -2587,7 +2616,11 @@ class Mandacaru(Calculator):
             P0 = np.real(P0)
 
         psi = np.ascontiguousarray(integrals._engine._psi)
-        valence = np.real(np.sum((P0.T @ psi) * psi.conj(), axis=0))
+        lbc = getattr(integrals, "localized_basis", lambda: None)(context.get("atom_of_orbital"))
+        if lbc is not None and not np.iscomplexobj(psi):
+            valence = lbc.density(P0)
+        else:
+            valence = np.real(np.sum((P0.T @ psi) * psi.conj(), axis=0))
         rho = valence
         datasets = getattr(integrals, "pseudopotentials", None) or []
         if datasets and any(getattr(d, "has_core_density", False) for d in datasets):
@@ -2611,7 +2644,7 @@ class Mandacaru(Calculator):
             integrals.grid, psi, potential, terms.tau_potential,
             _core_functions(datasets) if datasets else nothing,
             _core_tau_functions(datasets) if datasets else nothing,
-            centers, delta)
+            centers, delta, localized=lbc)
 
         V_eff = field.matrix() + J_aug
         h0 = integrals.one_body()

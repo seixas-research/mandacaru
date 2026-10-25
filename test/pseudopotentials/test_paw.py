@@ -813,6 +813,19 @@ class TestLibrary:
             pytest.skip("MANDACARU_PAW_PATH is not configured here")
         assert {"C", "F", "H", "Li", "N", "O"} <= set(shipped)
 
+    def test_protactinium_and_uranium_reference_an_occupied_6d(self):
+        # The aufbau 5f / 7s2 reference of Pa and U leaves no 6d, so the d
+        # channel scattered 0.26-0.52 rad off; the override gives it a bound
+        # reference, and the shipped files carry a d channel.
+        assert paw.DEFAULT_REFERENCE_CONFIGURATIONS == {
+            "Pa": {(5, 3): 2, (6, 2): 1}, "U": {(5, 3): 3, (6, 2): 1}}
+        for symbol in ("Pa", "U"):
+            try:
+                pp = get_paw(symbol)
+            except LibraryPathError:
+                pytest.skip("MANDACARU_PAW_PATH is not configured here")
+            assert 2 in pp.channels
+
     @pytest.mark.parametrize("symbol", ["H", "Li", "C", "N", "O", "F"])
     def test_shipped_file_loads(self, symbol):
         pp = get_paw(symbol)

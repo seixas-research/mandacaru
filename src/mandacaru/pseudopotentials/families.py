@@ -422,6 +422,7 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
         **({} if one_center is None else {"one_center": one_center}),
         **extra_integ,
         **{potentials_keyword: [potentials[s] for s in real_symbols]})
+    integrals.atom_of_orbital = tuple(atom_of_orbital)
     if electric_field is not None:
         integrals.apply_electric_field(electric_field)
     diffuse_box = None

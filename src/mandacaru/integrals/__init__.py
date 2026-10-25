@@ -13,10 +13,12 @@ from ._backend import (BackendStatus, build_backend, check_backend,
                        ensure_backend)
 from .engine import IntegralEngine
 from .grid import Grid
+from .localized import LocalizedBasisCollection
 from .poisson import PoissonFFTSolver
 from .potentials import Potentials
 
-__all__ = ["IntegralEngine", "Grid", "PoissonFFTSolver", "Potentials",
+__all__ = ["IntegralEngine", "Grid", "LocalizedBasisCollection",
+           "PoissonFFTSolver", "Potentials",
            "HAS_C_BACKEND", "BackendStatus", "build_backend", "check_backend",
            "ensure_backend"]
 

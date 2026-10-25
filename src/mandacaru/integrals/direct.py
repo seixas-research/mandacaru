@@ -272,12 +272,18 @@ class DirectCoulomb:
         The density of a Hermitian ``D`` is real, and is solved through the
         real transforms."""
         D = np.asarray(D)
-        psi = self.psi
-        density = np.sum((D.T @ psi) * np.conj(psi), axis=0)
-        if np.array_equal(D, D.conj().T):
-            density = np.ascontiguousarray(density.real)
-        V = self.potential(density[None, :])[0]
-        J = (np.conj(psi) * V) @ psi.T * self.dV
+        localized = getattr(self.integrals, "localized_basis", lambda: None)()
+        if localized is not None and not np.iscomplexobj(self.psi):
+            density = localized.density(D)
+            V = self.potential(density[None, :])[0]
+            J = localized.potential_matrix(V, self.dV)
+        else:
+            psi = self.psi
+            density = np.sum((D.T @ psi) * np.conj(psi), axis=0)
+            if np.array_equal(D, D.conj().T):
+                density = np.ascontiguousarray(density.real)
+            V = self.potential(density[None, :])[0]
+            J = (np.conj(psi) * V) @ psi.T * self.dV
         aug = self.augmentation()
         if aug is not None:
             J = J + augmentation_coulomb(aug, D)

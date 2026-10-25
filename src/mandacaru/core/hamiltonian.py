@@ -508,6 +508,18 @@ class MolecularIntegrals(MeanFieldMixin):
         #: ``two_body``).
         self.two_body_spec = TwoBodySpec()
         self._cholesky = None
+        self._localized = None
+        self.atom_of_orbital = None
+
+    def localized_basis(self, atom_of_orbital=None):
+        """Atom-centered localized representation of basis functions on the grid."""
+        if getattr(self, "_localized", None) is None:
+            from ..integrals.localized import LocalizedBasisCollection
+            owners = getattr(self, "atom_of_orbital", None) if atom_of_orbital is None else atom_of_orbital
+            psi = getattr(self._engine, "_psi", None)
+            self._localized = LocalizedBasisCollection(
+                self.basis, self.grid, atom_of_orbital=owners, psi_full=psi)
+        return self._localized
 
     @property
     def n_orbitals(self) -> int:
@@ -1416,6 +1428,7 @@ class MolecularIntegrals(MeanFieldMixin):
         const = core_energy + self.constant_energy + (
             self.nuclear_repulsion if include_nuclear_repulsion else 0.0)
         if mo_basis and ((space is not None and (space.deleted
+                                                 or space.frozen
                                                  or self.integral_direct))
                          or self.cholesky_integrals):
             # Reuse the *reduced* integrals for finite-difference forces.  They

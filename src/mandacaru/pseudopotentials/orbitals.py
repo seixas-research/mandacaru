@@ -213,6 +213,9 @@ class KBProjector(_RadialTabulated):
 # Building the valence basis and the projector set for a molecule.
 # --------------------------------------------------------------------------- #
 
+_FILTER_RADIAL_CACHE: dict = {}
+
+
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                  size="SZ", split_norm=None, filter_wavevector=None,
                  first_zeta=None, tail_norms=None, polarization_shape=None,
@@ -295,25 +298,31 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     split = DEFAULT_SPLIT_NORM if split_norm is None else float(split_norm)
     # One filter evaluation per (element, radial function), not per atom and
     # not per m: water's two hydrogens are the same element, and a p shell is
-    # three functions off one table.
-    cache: dict = {}
+    # three functions off one table. Shared across steps via _FILTER_RADIAL_CACHE.
+    cache = _FILTER_RADIAL_CACHE
 
     def filtered(symbol, key, r, values, l):
         if k_c is None:
             return values
-        memo = cache.get((symbol, key))
+        pp = potentials.get(symbol)
+        pp_id = getattr(pp, "sha256", None) or id(pp)
+        cache_key = (pp_id, key, round(k_c, 8))
+        memo = cache.get(cache_key)
         if memo is None:
             memo, _info = filter_radial(r, values, l, k_c)
-            cache[(symbol, key)] = memo
+            cache[cache_key] = memo
         return memo
 
     def filtered_table(symbol, key, table):
         if k_c is None:
             return table
-        memo = cache.get((symbol, key))
+        pp = potentials.get(symbol)
+        pp_id = getattr(pp, "sha256", None) or id(pp)
+        cache_key = (pp_id, key, round(k_c, 8))
+        memo = cache.get(cache_key)
         if memo is None:
             memo, _info = filter_table(table, k_c)
-            cache[(symbol, key)] = memo
+            cache[cache_key] = memo
         return memo
 
     confined: dict = {}

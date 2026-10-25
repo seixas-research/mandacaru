@@ -501,7 +501,8 @@ class KohnSham:
     def __init__(self, h, eri, orbitals, grid, n_electrons: int,
                  functional: str = DEFAULT_XC, core_density=None,
                  relativistic: bool = False, core_tau=None,
-                 short_range_eri=None, screening=None, one_center=None):
+                 short_range_eri=None, screening=None, one_center=None,
+                 localized=None, X=None):
         # Real matrices (a molecule's real harmonics) keep a real SCF and
         # real Kohn-Sham orbitals.
         self.h = np.asarray(h, dtype=np.result_type(np.asarray(h), float))
@@ -512,6 +513,8 @@ class KohnSham:
                         np.asarray(eri), float)))
         self.orbitals = np.asarray(orbitals)
         self.grid = grid
+        self.localized = localized
+        self.X = None if X is None else np.asarray(X)
         self.M = self.h.shape[0]
         self._set_electrons(n_electrons)
         self.functional = xc_grid.resolve_functional(functional)
@@ -569,6 +572,9 @@ class KohnSham:
     @profile_stage('SCF: XC density')
     def density(self, D) -> np.ndarray:
         r"""Valence density :math:`\sum_{pq} D_{pq}\phi_p\phi_q^*` on the grid."""
+        if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not np.iscomplexobj(self.orbitals):
+            P = self.X @ D @ self.X.conj().T
+            return self.localized.density(P)
         phi = self.orbitals
         D_phi = D @ phi.conj()
         return np.real(np.einsum("ip,ip->p", phi, D_phi))
@@ -721,8 +727,12 @@ class KohnSham:
         phi = self.orbitals
         dV = self.grid.dV
         V_eff_grid = V_H + terms.potential
-        phi_weighted = phi.conj() * (V_eff_grid * dV)
-        V = phi_weighted @ phi.T
+        if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta and not np.iscomplexobj(self.orbitals):
+            V_ao = self.localized.potential_matrix(V_eff_grid, dV)
+            V = self.X.conj().T @ V_ao @ self.X
+        else:
+            phi_weighted = phi.conj() * (V_eff_grid * dV)
+            V = phi_weighted @ phi.T
         if terms.gradient_potential is not None:
             V = V + xc_grid.gradient_term_matrix(
                 phi, self._orbital_gradients, terms.gradient_potential, dV)
@@ -949,7 +959,11 @@ class UnrestrictedKohnSham(KohnSham):
                  terms.gradient_potential_up),
                 (Db, terms.potential_dn, terms.tau_potential_dn,
                  terms.gradient_potential_dn))):
-            V = (phi.conj() * v) @ phi.T * dV
+            if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta and not np.iscomplexobj(self.orbitals):
+                V_ao = self.localized.potential_matrix(v, dV)
+                V = self.X.conj().T @ V_ao @ self.X
+            else:
+                V = (phi.conj() * v) @ phi.T * dV
             if w is not None:
                 V = V + xc_grid.gradient_term_matrix(
                     phi, self._orbital_gradients, w, dV)
@@ -1033,7 +1047,11 @@ class UnrestrictedKohnSham(KohnSham):
                 (Db, terms.potential_dn, terms.tau_potential_dn,
                  terms.gradient_potential_dn))):
             V_eff_s = V_H + v
-            V = (phi.conj() * (V_eff_s * dV)) @ phi.T
+            if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta and not np.iscomplexobj(self.orbitals):
+                V_ao = self.localized.potential_matrix(V_eff_s, dV)
+                V = self.X.conj().T @ V_ao @ self.X
+            else:
+                V = (phi.conj() * (V_eff_s * dV)) @ phi.T
             if w is not None:
                 V = V + xc_grid.gradient_term_matrix(
                     phi, self._orbital_gradients, w, dV)
@@ -1264,12 +1282,13 @@ def kohn_sham_solver(integrals, n_electrons: int,
                                        spheres))
     coulomb = (PoissonHartree(integrals) if hartree == "poisson"
                else integrals.two_body())
+    localized = getattr(integrals, "localized_basis", lambda: None)()
     if spins is not None and int(spins[0]) != int(spins[1]):
         return UnrestrictedKohnSham(integrals.one_body(), coulomb, orbitals,
                                     integrals.grid, int(spins[0]),
-                                    int(spins[1]), **options)
+                                    int(spins[1]), localized=localized, X=X, **options)
     return KohnSham(integrals.one_body(), coulomb, orbitals,
-                    integrals.grid, n_electrons, **options)
+                    integrals.grid, n_electrons, localized=localized, X=X, **options)
 
 
 def _centers(integrals):
@@ -1415,9 +1434,10 @@ class KohnShamField:
 
     def __init__(self, grid, psi, potential, tau_potential, core_functions,
                  core_tau_functions, centers, delta, core_potential=None,
-                 gradient_potential=None, grad_psi=None):
+                 gradient_potential=None, grad_psi=None, localized=None):
         self.grid = grid
         self.psi = psi
+        self.localized = localized
         self.v = potential
         self.v_core = potential if core_potential is None else core_potential
         self.v_tau = tau_potential
@@ -1445,6 +1465,8 @@ class KohnShamField:
         return self._pulay_with(self.v, self.v_tau, dpsi, self.w)
 
     def _matrix_of(self, v, v_tau, w=None) -> np.ndarray:
+        if getattr(self, "localized", None) is not None and v_tau is None and w is None and not np.iscomplexobj(self.psi):
+            return self.localized.potential_matrix(v, self.grid.dV)
         psi, dV = self.psi, self.grid.dV
         V = ((psi.conj() * v) @ psi.T) * dV
         if w is not None:
@@ -1524,11 +1546,12 @@ class UnrestrictedKohnShamField(KohnShamField):
     def __init__(self, grid, psi, v_mean, v_tau_mean, v_half, v_tau_half,
                  magnetization, core_functions, core_tau_functions, centers,
                  delta, core_potential=None, w_mean=None, w_half=None,
-                 grad_psi=None):
+                 grad_psi=None, localized=None):
         super().__init__(grid, psi, v_mean, v_tau_mean, core_functions,
                          core_tau_functions, centers, delta,
                          core_potential=core_potential,
-                         gradient_potential=w_mean, grad_psi=grad_psi)
+                         gradient_potential=w_mean, grad_psi=grad_psi,
+                         localized=localized)
         if self.grad_psi is None and (v_tau_half is not None
                                       or w_half is not None):
             self.grad_psi = xc_grid.gradient(grid, psi)
@@ -1701,7 +1724,8 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
         _core_functions(datasets) if datasets else nothing,
         _core_tau_functions(datasets) if datasets else nothing,
         _centers(integrals), delta, core_potential=core_potential,
-        gradient_potential=terms.gradient_potential, grad_psi=grad_psi)
+        gradient_potential=terms.gradient_potential, grad_psi=grad_psi,
+        localized=getattr(integrals, "localized_basis", lambda: None)())
     V_xc = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:
@@ -1877,7 +1901,8 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         _centers(integrals), delta, core_potential=core_potential,
         w_mean=mean(terms.gradient_potential_up, terms.gradient_potential_dn),
         w_half=half(terms.gradient_potential_up, terms.gradient_potential_dn),
-        grad_psi=grad_psi)
+        grad_psi=grad_psi,
+        localized=getattr(integrals, "localized_basis", lambda: None)())
     V_mean = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:

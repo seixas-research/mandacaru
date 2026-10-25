@@ -283,7 +283,12 @@ DEFAULT_LOCAL_FACTOR = 0.9
 #: Per-element augmentation radii (Bohr), which the molecular tests showed
 #: to be resolvable on a 0.25-0.30 Angstrom grid.
 DEFAULT_CUTOFFS = {
-    "H": {0: 1.30},
+    # Hydrogen's sphere is compact (1.0 Bohr) and its dataset carries an empty p
+    # channel (DEFAULT_HIGHEST_CHANNEL): a bonded neighbor's tail has p
+    # character inside the sphere.  Against the basis-limit Hartree-Fock bond
+    # lengths this takes H2 from +0.015 to +0.003 Angstrom, HF from +0.025 to
+    # +0.005, CH4 from +0.022 to +0.016 (TZP).
+    "H": {0: 1.00},
     "Li": {0: 2.60},
     "C": {0: 1.50, 1: 1.50},
     "N": {0: 1.45, 1: 1.45},
@@ -375,7 +380,8 @@ DEFAULT_LOCAL_SHIFTS = {"C": 12.0, "N": 10.0, "O": 6.0, "F": 8.0}
 #: sphere was refused with a ghost; now Hf -3 %, Re +1 %, Pt and Au +3 % in
 #: LDA (HISTORY.md, 2026-10-20).
 DEFAULT_FROZEN_SUBSHELLS = {symbol: ((4, 3),) for symbol in
-                            ("Ta", "Hf", "Re", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn")}
+                            ("Lu", "Hf", "Ta", "W", "Re", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi",
+                             "Po", "At", "Rn")}
 #: Filled core subshells moved into the valence by default: the
 #: ``(n-1)s (n-1)p`` shell of the alkali and alkaline-earth atoms.  With an
 #: ``s`` channel alone their ``p`` scattering is the local potential's, and
@@ -405,8 +411,18 @@ SEMICORE_CUTOFF_FRACTION = 0.7
 #: scatters p 0.28-0.42 rad off at every local radius the repair keeps
 #: ghost-free (PBE Be was flagged at 0.28), with a p channel 0.02 rad in both
 #: functionals (HISTORY.md, 2026-10-11).
-DEFAULT_HIGHEST_CHANNEL = {"Li": 1, "Be": 1,
-                           **{symbol: 2 for symbol in ("K", "Ca", "Rb", "Sr")}}
+DEFAULT_HIGHEST_CHANNEL = {"H": 1, "Li": 1, "Be": 1,
+                           **{symbol: 2 for symbol in ("K", "Ca", "Rb", "Sr")},
+                           **{symbol: 3 for symbol in ("Cs", "Ba", "La", "Ra", "Ac", "Th")}}
+#: Reference configuration overrides, ``{symbol: {(n, l): occupancy}}``, laid over the
+#: relaxed ground-state configuration of the reference atom.  Pa and U keep their
+#: 5f in valence (aufbau 5f3 / 5f4 7s2) and so had no occupied 6d: no d channel, a
+#: 6d scattering 0.26-0.52 rad off from the local potential alone.  The
+#: configurations 5f2 6d1 7s2 (Pa) and 5f3 6d1 7s2 (U) give the d channel its
+#: own bound reference.  The relaxed configuration is solved on the generation
+#: grid (``points``), which is the grid the shipped Pa and U files were built on.
+DEFAULT_REFERENCE_CONFIGURATIONS = {"Pa": {(5, 3): 2, (6, 2): 1},
+                                    "U": {(5, 3): 3, (6, 2): 1}}
 #: Radius (Bohr) at which an element's frozen core is pseudized into the smooth
 #: core of its unscreening and of every grid xc term, when not the
 #: compensation radius r_g.  Lithium's 1s overlaps the 2s out to ~1.5 Bohr;
@@ -437,11 +453,18 @@ DEFAULT_CORE_RADII = {"Li": 1.5}
 #: in the core), and barium's and francium's f scatter 0.7-1.5 rad off for
 #: every repair while their s channel binds a ghost (HISTORY.md,
 #: 2026-10-06).
+#: WP-5b (2026-10-21): Cs, Ba, La, Lu, W, Ir (5s 5p) and Ra, Ac, Th, Pa, U (6s 6p) join the
+#: table.  Without a p channel their spheres (3-5 Bohr) overlapped the neighbors by
+#: 1-2.6 Bohr and the energy fell on expansion (no minimum for Ba, Ra, Ac, Th, Pa,
+#: U; Cs +5 to +15 %, Ir +9 % at SZP).  Their datasets are screened clean (no ghost,
+#: phases <= 0.02 rad on occupied channels) at the spheres of DEFAULT_CUTOFFS_BY_DATASET;
+#: Cs-Th add an empty f channel (DEFAULT_HIGHEST_CHANNEL), the 4f of Lu, Ir, W, Au is frozen.
 DEFAULT_SEMICORE_SUBSHELLS = {
     symbol: ((n - 1, 0), (n - 1, 1))
     for n, symbols in ((3, ("Na", "Mg")), (4, ("K", "Ca", "Sc", "Ti", "V", "Mn", "Fe", "Co", "Ni", "Cu", "Zn")),
                        (5, ("Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ag", "Cd")),
-                       (6, ("Ta", "Hf", "Re", "Pt", "Au", "Hg", "Pb", "Po")))
+                       (6, ("Cs", "Ba", "La", "Lu", "Hf", "Ta", "W", "Re", "Ir", "Pt", "Au", "Hg", "Pb", "Po")),
+                       (7, ("Ra", "Ac", "Th", "Pa", "U")))
     for symbol in symbols}
 #: Per-dataset repairs of the d-block and 6p libraries (HISTORY.md, 2026-09-28,
 #: "the d-block and 6p repairs"), keyed by ``(element, functional)`` and taking
@@ -466,11 +489,34 @@ DEFAULT_SEMICORE_SUBSHELLS = {
 #: channels.
 _S_CHANNEL_REPAIRS = {
     # (element, xc): (n_bessel, local_shift) -- scalar s-miss fixed by these.
-    ("Ac", "lda"): (10, 20.0), ("Ac", "pbe"): (10, 10.0),
-    ("Au", "lda"): (10, 0.0), ("Au", "pbe"): (10, 0.0),
+    # WP-5b (2026-10-21): large-sphere Mode B elements.  Cs, Ba, Ra, La, Lu, Ir, W, Au and the
+    # actinides Ac, Th, Pa, U with their (n-1)s (n-1)p semicore, an f channel (empty for
+    # Cs-Th), the 4f frozen (Lu, Ir, W, Au) and spheres of 2.0-3.45 Bohr: (n_bessel, local shift).
+    ("Cs", "lda"): (10, 12.0),
+    ("Cs", "pbe"): (10, 12.0),
+    ("Ba", "lda"): (10, 12.0),
+    ("Ba", "pbe"): (10, 12.0),
+    ("La", "lda"): (10, 16.0),
+    ("La", "pbe"): (10, 16.0),
+    ("Lu", "lda"): (8, 0.0),
+    ("Lu", "pbe"): (8, 0.0),
+    ("W", "lda"): (10, 10.0),
+    ("W", "pbe"): (10, 10.0),
+    ("Ir", "lda"): (10, 20.0),
+    ("Ir", "pbe"): (10, 20.0),
+    ("Au", "lda"): (10, 20.0),
+    ("Au", "pbe"): (10, 20.0),
+    ("Ra", "lda"): (10, 16.0),
+    ("Ra", "pbe"): (10, 16.0),
+    ("Ac", "lda"): (10, 16.0),
+    ("Ac", "pbe"): (10, 16.0),
+    ("Th", "lda"): (10, 12.0),
+    ("Th", "pbe"): (10, 12.0),
+    ("Pa", "lda"): (10, 12.0),
+    ("Pa", "pbe"): (10, 12.0),
+    ("U", "lda"): (10, 12.0),
+    ("U", "pbe"): (10, 12.0),
     ("Cr", "lda"): (10, 40.0), ("Cr", "pbe"): (10, 0.0),
-    ("Ir", "lda"): (9, 50.0), ("Ir", "pbe"): (10, 50.0),
-    ("La", "lda"): (10, 10.0), ("La", "pbe"): (10, 15.0),
     ("Pd", "lda"): (9, 50.0), ("Pd", "pbe"): (10, 50.0),
     ("Pt", "lda"): (10, 0.0), ("Pt", "pbe"): (10, 0.0),
     ("Rh", "lda"): (10, 50.0), ("Rh", "pbe"): (10, 50.0),
@@ -478,9 +524,14 @@ _S_CHANNEL_REPAIRS = {
     # Sn and Bi in PBE take their LDA repairs: with the local potential no
     # longer matched to noise (GGA_LOCAL_FIT_FRACTION) the generic PBE
     # construction missed by 0.97 / 0.96, these by 0.23 / 0.24.
-    ("Sb", "lda"): (9, 10.0),
-    ("Sn", "lda"): (9, 10.0), ("Sn", "pbe"): (9, 10.0),
-    ("W", "lda"): (10, 0.0),
+    # Sb (LDA) and Sn take no local shift: the 10 Ha raise widened their local
+    # potential (r_cl 2.7-3.0 Bohr against 2.1-2.2) and left the f channel,
+    # which has no projectors, scattering 0.157-0.158 rad off the atom; at
+    # shift 0 it is 0.043-0.054 rad with the s-channel miss of an intruding
+    # hydrogen 1s at 0.75-0.81 (tolerance 1.0), and the lattice constants move
+    # from +1.2..1.4 % to 0.0..+0.7 % (LDA) and from +1.3 % to +0.2 % (Sn PBE).
+    ("Sb", "lda"): (9, 0.0),
+    ("Sn", "lda"): (9, 0.0), ("Sn", "pbe"): (9, 0.0),
     # With a shorter s sphere (DEFAULT_CUTOFFS_BY_DATASET).
     ("Tl", "lda"): (10, 10.0),
     ("Bi", "lda"): (10, 10.0), ("Bi", "pbe"): (10, 10.0),
@@ -509,12 +560,33 @@ _D_CHANNEL_REPAIRS = {
 #: as the library carried them -- a channel left to the generic rule can come
 #: out elsewhere (Os-PBE's f at 0.53 Bohr, 1.2 rad off in phase).
 DEFAULT_CUTOFFS_BY_DATASET = {
-    ('Ac', 'lda'): {0: 4.818, 2: 3.468},
-    ('Ac', 'pbe'): {0: 4.87, 2: 3.449},
+    # WP-5b (see _S_CHANNEL_REPAIRS): every channel's sphere, as screened and scanned.
+    ('Cs', 'lda'): {0: 3.0, 1: 3.0, 2: 3.0, 3: 3.0},
+    ('Cs', 'pbe'): {0: 3.0, 1: 3.0, 2: 3.0, 3: 3.0},
+    ('Ba', 'lda'): {0: 3.2, 1: 3.2, 2: 3.2, 3: 3.2},
+    ('Ba', 'pbe'): {0: 3.2, 1: 3.2, 2: 3.2, 3: 3.2},
+    ('La', 'lda'): {0: 2.5, 1: 2.5, 2: 2.5, 3: 2.5},
+    ('La', 'pbe'): {0: 2.6, 1: 2.6, 2: 2.6, 3: 2.6},
+    ('Lu', 'lda'): {0: 2.0, 1: 2.0, 2: 2.2, 3: 2.2},
+    ('Lu', 'pbe'): {0: 2.0, 1: 2.0, 2: 2.2, 3: 2.2},
+    ('W', 'lda'): {0: 2.97, 1: 1.78, 2: 3.3, 3: 3.3},
+    ('W', 'pbe'): {0: 2.97, 1: 1.78, 2: 3.3, 3: 3.3},
+    ('Ir', 'lda'): {0: 2.4, 1: 1.67, 2: 2.4, 3: 2.4},
+    ('Ir', 'pbe'): {0: 2.4, 1: 1.67, 2: 2.4, 3: 2.4},
+    ('Au', 'lda'): {0: 2.4, 1: 1.58, 2: 2.4, 3: 2.4},
+    ('Au', 'pbe'): {0: 2.4, 1: 1.58, 2: 2.4, 3: 2.4},
+    ('Ra', 'lda'): {0: 2.9, 1: 2.9, 2: 2.9, 3: 2.9},
+    ('Ra', 'pbe'): {0: 2.9, 1: 2.9, 2: 2.9, 3: 2.9},
+    ('Ac', 'lda'): {0: 2.6, 1: 2.6, 2: 2.6, 3: 2.6},
+    ('Ac', 'pbe'): {0: 2.6, 1: 2.6, 2: 2.6, 3: 2.6},
+    ('Th', 'lda'): {0: 3.0, 1: 3.0, 2: 3.0, 3: 3.0},
+    ('Th', 'pbe'): {0: 3.0, 1: 3.0, 2: 3.0, 3: 3.0},
+    ('Pa', 'lda'): {0: 2.8, 1: 2.8, 2: 2.8, 3: 2.4},
+    ('Pa', 'pbe'): {0: 2.8, 1: 2.8, 2: 2.8, 3: 2.4},
+    ('U', 'lda'): {0: 2.6, 1: 2.6, 2: 2.6, 3: 2.4},
+    ('U', 'pbe'): {0: 2.6, 1: 2.6, 2: 2.6, 3: 2.4},
     ('As', 'lda'): {0: 2.081, 1: 2.564, 2: 1.606},
     ('As', 'pbe'): {0: 2.095, 1: 2.582, 2: 1.612},
-    ('Au', 'lda'): {0: 2.923, 2: 2.923, 3: 2.923},
-    ('Au', 'pbe'): {0: 2.928, 2: 2.928, 3: 2.928},
     ('Bi', 'lda'): {0: 2.294, 1: 3.183, 2: 1.344, 3: 3.183},
     ('Bi', 'pbe'): {0: 2.294, 1: 3.183, 2: 1.344, 3: 3.183},
     ('Br', 'lda'): {0: 1.829, 1: 2.159, 2: 1.006},
@@ -527,12 +599,8 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Ge', 'pbe'): {0: 2.261, 1: 2.882, 2: 1.696},
     ('I', 'lda'): {0: 2.194, 1: 2.628, 2: 1.113},
     ('I', 'pbe'): {0: 2.206, 1: 2.641, 2: 1.113},
-    ('Ir', 'lda'): {0: 3.093, 2: 3.093, 3: 3.093},
-    ('Ir', 'pbe'): {0: 3.102, 2: 3.102, 3: 3.102},
     ('Kr', 'lda'): {0: 1.727, 1: 2.011, 2: 1.066},
     ('Kr', 'pbe'): {0: 1.736, 1: 2.019, 2: 1.07},
-    ('La', 'lda'): {0: 4.868, 2: 2.91},
-    ('La', 'pbe'): {0: 4.943, 2: 2.881},
     ('Os', 'lda'): {0: 2.871, 2: 3.19, 3: 3.19},
     ('Os', 'pbe'): {0: 3.041, 2: 3.201, 3: 3.201},
     ('Pd', 'lda'): {0: 3.178, 2: 1.4},
@@ -554,7 +622,6 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Sn', 'lda'): {0: 2.33, 1: 3.305, 2: 2.0},
     ('Sn', 'pbe'): {0: 2.33, 1: 3.305, 2: 2.0},
     ('Tl', 'lda'): {0: 2.678, 1: 3.773, 2: 1.451, 3: 3.773},
-    ('W', 'lda'): {0: 3.418, 2: 3.418, 3: 3.418},
     ('Xe', 'lda'): {0: 2.093, 1: 2.476, 2: 1.07},
     ('Xe', 'pbe'): {0: 2.104, 1: 2.487, 2: 1.07},
 }
@@ -1601,12 +1668,19 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
     partial_wave_treatment = "scalar" if relativity == "dirac" else relativity
     if atom is None:
         from .partial_waves import REFERENCE_MIXING, REFERENCE_TOLERANCE
-        atom = solve_atom(atomic_number,
-                          points=(generation_points(atomic_number)
-                                  if points is None else int(points)),
+        n_points = (generation_points(atomic_number)
+                    if points is None else int(points))
+        configuration = None
+        if symbol in DEFAULT_REFERENCE_CONFIGURATIONS:
+            from ..basis.atomic_solver import relaxed_configuration
+            configuration = {**relaxed_configuration(
+                atomic_number, xc=xc, relativity=relativity, r_max=r_max,
+                points=n_points), **DEFAULT_REFERENCE_CONFIGURATIONS[symbol]}
+            configuration = {k: v for k, v in configuration.items() if v > 0}
+        atom = solve_atom(atomic_number, points=n_points,
                           r_max=r_max, tolerance=REFERENCE_TOLERANCE,
                           mixing=REFERENCE_MIXING, xc=xc,
-                          relativity=relativity)
+                          relativity=relativity, configuration=configuration)
     from .partial_waves import check_reference_atom
     check_reference_atom(atom, xc, relativity)
     valence_config, core_config = _valence_configuration(

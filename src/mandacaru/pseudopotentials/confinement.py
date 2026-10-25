@@ -536,9 +536,10 @@ def confined_orbital(pp, l: int, energy_shift: float,
         raise ValueError("confined_orbital needs a positive energy_shift")
     amplitude, inner = validate_confinement_potential(confinement_potential)
     state = int(state)
-    key = (id(pp), l, round(shift, 12), amplitude, inner, state)
+    pp_key = getattr(pp, "sha256", None) or id(pp)
+    key = (pp_key, l, round(shift, 12), amplitude, inner, state)
     entry = _CACHE.get(key)
-    if entry is not None and entry[0] is pp:
+    if entry is not None and (entry[0] is pp or entry[0] == pp_key):
         return entry[1]
 
     # A channel whose orbital already lies inside its sphere (a deep semicore
@@ -558,7 +559,7 @@ def confined_orbital(pp, l: int, energy_shift: float,
                               r_c=float(r_c), energy=float(energy),
                               free_energy=free_energy(pp, l, state),
                               radial=radial, state=state)
-    _CACHE[key] = (pp, orbital)
+    _CACHE[key] = (pp_key, orbital)
     return orbital
 
 

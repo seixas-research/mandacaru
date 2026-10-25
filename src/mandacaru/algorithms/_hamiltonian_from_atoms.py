@@ -855,6 +855,7 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
     frozen = list(space.frozen) if space is not None else list(frozen)
     n_active_el = n_el - 2 * len(frozen)
     num_particles = _num_particles(n_active_el, n_unpaired, name)
+    integrals.atom_of_orbital = tuple(atom_of_orbital)
     context = {"integrals": integrals, "atom_of_orbital": atom_of_orbital,
                "frozen": tuple(frozen), "n_electrons": n_el,
                "active_space": space}

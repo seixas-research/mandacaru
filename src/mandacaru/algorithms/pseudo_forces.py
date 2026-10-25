@@ -842,7 +842,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         def pair_change(dpsi_k, moved):
             """``sum_ac P0_ca d(psi_a^* psi_c)`` on the grid, for the
             functions ``dpsi`` of one atom (the rows that moved)."""
-            dpsi_moved = dpsi_k[moved]
+            dpsi_moved = dpsi_k if dpsi_k.shape[0] != M else dpsi_k[moved]
             return (np.sum(dpsi_moved.conj() * P_psi[moved], axis=0)
                     + np.sum(dpsi_moved * P_psi_conj[moved], axis=0))
 
@@ -948,8 +948,11 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     # spheres) through the derivative contracted once with each fixed
     # factor.  For real functions only the real part of dE/dg reaches a real
     # dg, so it is kept real.
+    stream_derivatives = (include_pulay and exchange is None
+                          and kinetic != "fd")
     derivatives = (orbital_derivatives(basis, grid, atom_of_orbital, None,
-                                       delta) if include_pulay else None)
+                                       delta) if (include_pulay and not stream_derivatives)
+                   else None)
     pulay_pairs = None
     # The fixed factors of the low-rank terms (spheres, compensation
     # charges), by key.
@@ -973,7 +976,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
         if include_pulay:
             pulay_pairs = _two_body_pulay(psi, derivatives, grid, pair,
                                           atom_of_orbital, n_atoms,
-                                          pair_layout=True)
+                                          pair_layout=True,
+                                          basis=basis, delta=delta)
         if fixed:
             keys = list(fixed)
             stack = np.stack([fixed[key] for key in keys]).reshape(len(keys),
@@ -1056,7 +1060,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 pair_sr = np.ascontiguousarray(pair_sr.real)
             pulay_pairs_sr = _two_body_pulay(psi, derivatives, grid, pair_sr,
                                              atom_of_orbital, n_atoms,
-                                             short_range, pair_layout=True)
+                                             short_range, pair_layout=True,
+                                             basis=basis, delta=delta)
             del pair_sr
         if paw:
             from ..pseudopotentials.paw import long_range_multipole_potential
@@ -1137,7 +1142,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     cross_h_tables = None
     overlap_cross_tables = None
     field_pulay_tables = None
-    if include_pulay:
+    if include_pulay and not stream_derivatives:
         if kinetic != "fd":
             cross_h_tables = [
                 one_body_cross(psi, derivatives[k], vext, grid, kinetic,
@@ -1152,7 +1157,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
             field_pulay_tables = field.pulay_tables(derivatives)
 
     need_dpsi_stack = (
-        (cross_h_tables is None)
+        stream_derivatives
+        or (cross_h_tables is None)
         or (P and not exact_projections)
         or (paw and two_body)
         or spinor
@@ -1171,9 +1177,14 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                           if proj.atom_index == atom]
         own_mask = orbital_atoms == atom
         has_own = bool(np.any(own_mask))
-        orbital_stack = (atom_rows(derivatives, atom_of_orbital, atom)
-                         if include_pulay and has_own and need_dpsi_stack
-                         else None)
+        if stream_derivatives and include_pulay and has_own:
+            d_atom = orbital_derivatives(basis, grid, atom_of_orbital, atom, delta)
+            orbital_stack = atom_rows(d_atom, atom_of_orbital, atom)
+            del d_atom
+        else:
+            orbital_stack = (atom_rows(derivatives, atom_of_orbital, atom)
+                             if include_pulay and has_own and need_dpsi_stack
+                             else None)
         dx_a = X_flat - centers[atom][0]
         dy_a = Y_flat - centers[atom][1]
         dz_a = Z_flat - centers[atom][2]
@@ -1181,7 +1192,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
 
         for k in range(3):
             # ---------------- Pulay: the basis functions of `atom` move ----
-            if include_pulay and has_own and np.any(derivatives[k, own_mask]):
+            if include_pulay and has_own and (stream_derivatives or np.any(derivatives[k, own_mask])):
                 dpsi = orbital_stack[k] if orbital_stack is not None else None
                 if cross_h_tables is not None:
                     cross_h = np.zeros((M, M), dtype=complex)
@@ -1195,8 +1206,11 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dh = dh + _displacement_derivative(kinetic_slope[k],
                                                        own_mask)
                 else:
-                    cross = np.zeros((M, M), dtype=complex)
-                    cross[own_mask] = overlap_cross_tables[k][own_mask]
+                    if overlap_cross_tables is not None:
+                        cross = np.zeros((M, M), dtype=complex)
+                        cross[own_mask] = overlap_cross_tables[k][own_mask]
+                    else:
+                        cross = (dpsi.conj() @ psi.T) * dV
                     dS = cross + cross.conj().T
                 if split_local:
                     dh = dh + short_range_pulay(atom, k)
@@ -1222,7 +1236,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 if paw and not two_body:
                     # tr(P0 dW) is the compensation potential against the
                     # change of the density the moved functions make.
-                    drho = pair_change(derivatives[k], own_mask)
+                    drho = (pair_change(dpsi, own_mask) if stream_derivatives
+                            else pair_change(derivatives[k], own_mask))
                     dQ = moment_derivatives(dC)
                     extra += (augmentation_contracted(dQ, {}, None)
                               + dV * float(np.real(v_comp_tot @ drho)))
@@ -1261,7 +1276,19 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     dh = dh + field.pulay_from_table(
                         field_pulay_tables[k], own_mask)
                 elif field is not None:
-                    dh = dh + field.pulay(dpsi)
+                    cross_f = ((dpsi.conj() * field.v) @ psi.T) * dV
+                    if getattr(field, "w", None) is not None or getattr(field, "v_tau", None) is not None:
+                        from ..integrals import exchange_correlation as xc_grid
+                        grad_dpsi = xc_grid.gradient(grid, dpsi)
+                        if field.w is not None:
+                            for component, dphi, dmoved in zip(field.w, field.grad_psi, grad_dpsi):
+                                cross_f = cross_f + ((dpsi.conj() * component) @ dphi.T
+                                                     + (dmoved.conj() * component) @ psi.T) * dV
+                        if field.v_tau is not None:
+                            w_tau = 0.5 * field.v_tau
+                            for d, dd in zip(field.grad_psi, grad_dpsi):
+                                cross_f = cross_f + ((dd.conj() * w_tau) @ d.T) * dV
+                    dh = dh + (cross_f + cross_f.conj().T)
                 if terms:
                     extra += two_body_contracted(terms)
                 pulay[atom, k] = extra + overlap_directional(
@@ -1276,6 +1303,33 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                         pulay[atom, k] += field.spin_term(
                             S0, dS_spin, None, algebraic_step,
                             k=k, own=own_mask)
+                    elif hasattr(field, "v_half"):
+                        if getattr(field, "_pm_cache", None) is None or field._pm_cache[0] is not S0:
+                            X_mag = AlgebraicEnergy.lowdin(S0)
+                            field._pm_cache = (S0, X_mag @ field.Dm @ X_mag.conj().T)
+                        val_spin = 0.0
+                        if dS_spin is not None:
+                            def mag(S):
+                                Xm = AlgebraicEnergy.lowdin(S)
+                                return Xm @ field.Dm @ Xm.conj().T
+                            dPm = (mag(S0 + algebraic_step * dS_spin)
+                                   - mag(S0 - algebraic_step * dS_spin)) / (2.0 * algebraic_step)
+                            val_spin += float(np.real(np.sum(dPm * field.delta_matrix.T)))
+                        cross_half = ((dpsi.conj() * field.v_half) @ psi.T) * dV
+                        if getattr(field, "w_half", None) is not None or getattr(field, "v_tau_half", None) is not None:
+                            from ..integrals import exchange_correlation as xc_grid
+                            grad_dpsi = xc_grid.gradient(grid, dpsi)
+                            if field.w_half is not None:
+                                for comp, dphi, dmoved in zip(field.w_half, field.grad_psi, grad_dpsi):
+                                    cross_half = cross_half + ((dpsi.conj() * comp) @ dphi.T
+                                                               + (dmoved.conj() * comp) @ psi.T) * dV
+                            if field.v_tau_half is not None:
+                                w_tau = 0.5 * field.v_tau_half
+                                for d, dd in zip(field.grad_psi, grad_dpsi):
+                                    cross_half = cross_half + ((dd.conj() * w_tau) @ d.T) * dV
+                        dDelta = cross_half + cross_half.conj().T
+                        val_spin += float(np.real(np.sum(field._pm_cache[1] * dDelta.T)))
+                        pulay[atom, k] += val_spin
                     else:
                         pulay[atom, k] += field.spin_term(
                             S0, dS_spin, dpsi, algebraic_step)

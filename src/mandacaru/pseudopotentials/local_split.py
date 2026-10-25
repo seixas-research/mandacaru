@@ -117,6 +117,14 @@ SIGMA_FACTOR = 1.4
 #: the ionic charge -- far below the 1e-6 Hartree the quadrature targets.
 RADIUS_SIGMAS = 6.5
 
+#: Hartree.  ``v^sr`` is taken to vanish where the dataset's local potential is
+#: within this of the ionic tail ``-Z/r``; table noise beyond the tail is ~3e-7.
+TAIL_TOLERANCE = 1e-5
+
+#: Bohr.  The table is scanned out to here; beyond it ``local_potential`` is
+#: ``-Z/r`` by construction.
+TAIL_SCAN_MAX = 8.0
+
 #: Gauss-Legendre points per **radial panel**.  The interval is split at the
 #: dataset's local cutoff, where the pseudized polynomial joins the ionic tail
 #: and the third derivative jumps; a single panel across that junction
@@ -277,16 +285,39 @@ def local_cutoff(dataset) -> float:
     return cutoff
 
 
+def tail_radius(dataset) -> float:
+    """Radius (Bohr) beyond which the dataset's local potential is the ionic
+    tail ``-Z/r`` to :data:`TAIL_TOLERANCE`, measured on its own table.
+
+    ``r_cut_local`` is where the generation's polynomial ends, not where the
+    tail begins: the shipped Cd table is still 2e-2 Ha off ``-Z/r`` just
+    outside it and joins the tail near 2.2 Bohr.  Cached on the dataset.
+    """
+    cached = getattr(dataset, "_tail_radius", None)
+    if cached is None:
+        r = np.linspace(0.3, TAIL_SCAN_MAX, 7701)
+        deviation = np.abs(dataset.local_potential(r)
+                           + float(dataset.valence_charge) / r)
+        outside = np.flatnonzero(deviation > TAIL_TOLERANCE)
+        cached = float(r[outside[-1]] + 0.01) if outside.size else 0.0
+        dataset._tail_radius = cached
+    return cached
+
+
 def short_range_radius(dataset, sigma: float) -> float:
     """Radius (Bohr) of the sphere that holds all of ``v^sr`` for this dataset.
 
     :data:`RADIUS_SIGMAS` widths of the Gaussian, but never less than the
-    dataset's own local cutoff: on a fine grid ``sigma`` shrinks with ``grid_spacing``
-    while the pseudized region does not, and truncating inside it would throw
-    away the part of ``v^sr`` that is *not* the erfc tail (Li's local cutoff is
-    2.34 Bohr against ``6.5 sigma = 1.7`` Bohr at grid_spacing = 0.10 Angstrom).
+    dataset's own local cutoff or its measured tail (:func:`tail_radius`): on a
+    fine grid ``sigma`` shrinks with ``grid_spacing`` while the pseudized region
+    does not, and truncating inside it throws away the part of ``v^sr`` that is
+    *not* the erfc tail (Li's local cutoff is 2.34 Bohr against
+    ``6.5 sigma = 1.7`` Bohr at grid_spacing = 0.10 Angstrom; Cd's table joins
+    the tail at 2.2 Bohr, past its 1.98 Bohr cutoff, a staircase of
+    0.1-0.4 eV/atom below grid_spacing 0.13 Angstrom).
     """
-    return max(RADIUS_SIGMAS * float(sigma), local_cutoff(dataset))
+    return max(RADIUS_SIGMAS * float(sigma), local_cutoff(dataset),
+               tail_radius(dataset))
 
 
 # --------------------------------------------------------------------------- #
