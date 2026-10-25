@@ -986,16 +986,19 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
 
     W_S_T = None
     if not two_body and not spinor and hasattr(energy, "V_xc"):
-        evals_s, U_s = np.linalg.eigh(_hermitian(S0))
-        root_s = np.sqrt(np.maximum(evals_s, 1e-12))
-        X0 = (U_s / root_s) @ U_s.conj().T
-        K_loewner = -1.0 / (root_s[:, None] * root_s[None, :]
-                            * (root_s[:, None] + root_s[None, :]))
-        H_eff = h0 + energy.V_xc
-        M0 = U_s.conj().T @ (energy.D @ X0 @ H_eff
-                             + H_eff @ X0 @ energy.D) @ U_s
-        W_S_T = np.ascontiguousarray(
-            (U_s @ (K_loewner * M0) @ U_s.conj().T).T)
+        if getattr(energy, "E_occ", None) is not None:
+            W_S_T = -np.ascontiguousarray(energy.E_occ.T)
+        else:
+            evals_s, U_s = np.linalg.eigh(_hermitian(S0))
+            root_s = np.sqrt(np.maximum(evals_s, 1e-12))
+            X0 = (U_s / root_s) @ U_s.conj().T
+            K_loewner = -1.0 / (root_s[:, None] * root_s[None, :]
+                                * (root_s[:, None] + root_s[None, :]))
+            H_eff = h0 + energy.V_xc
+            M0 = U_s.conj().T @ (energy.D @ X0 @ H_eff
+                                 + H_eff @ X0 @ energy.D) @ U_s
+            W_S_T = np.ascontiguousarray(
+                (U_s @ (K_loewner * M0) @ U_s.conj().T).T)
 
     def overlap_directional(dS, dh, dh_so) -> float:
         """``<dE/dS, dS> + <dE/dh, dh>`` at the fixed tensor: the energy's
@@ -1265,14 +1268,17 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                     _hermitian(dS), _hermitian(dh), dh_so)
                 if field is not None and hasattr(field, "spin_term"):
                     # A spin-resolved potential: the magnetization part the
-                    # spin-averaged energy does not see.
+                    # spin-averaged energy does not see. When E_occ is supplied,
+                    # the overlap derivative dS is already fully accounted for in
+                    # W_S_T = -E_occ.T for both spin channels.
+                    dS_spin = None if getattr(energy, "E_occ", None) is not None else _hermitian(dS)
                     if field_pulay_tables is not None:
                         pulay[atom, k] += field.spin_term(
-                            S0, _hermitian(dS), None, algebraic_step,
+                            S0, dS_spin, None, algebraic_step,
                             k=k, own=own_mask)
                     else:
                         pulay[atom, k] += field.spin_term(
-                            S0, _hermitian(dS), dpsi, algebraic_step)
+                            S0, dS_spin, dpsi, algebraic_step)
                 if exchange is not None:
                     pulay[atom, k] += extra_sr + exchange_term(
                         terms_sr, dC if P else None)
@@ -1382,7 +1388,7 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
                 _hermitian(dS) if dS is not None else None, _hermitian(dh),
                 dh_so)
             if field is not None and hasattr(field, "spin_term") \
-                    and dS is not None:
+                    and dS is not None and getattr(energy, "E_occ", None) is None:
                 hf[atom, k] += field.spin_term(S0, _hermitian(dS), None,
                                                algebraic_step)
             if field is not None:

@@ -229,13 +229,22 @@ def _wavevectors(grid):
     tau of a meta-GGA, forces) goes through here, so they all differentiate
     the same discrete energy.
     """
+    cached = getattr(grid, "_xc_wavevectors", None)
+    if cached is not None:
+        return cached
     from .reciprocal import symmetric_wavevectors
     k = tuple(symmetric_wavevectors(grid))
     if grid.periodic or not grid.is_orthorhombic:
-        return k
-    return tuple(sum(2.0 * c * np.sin((m + 1) * kx * hx)
-                     for m, c in enumerate(XC_STENCIL)) / hx
-                 for kx, hx in zip(k, np.diag(grid.step)))
+        res = k
+    else:
+        res = tuple(sum(2.0 * c * np.sin((m + 1) * kx * hx)
+                        for m, c in enumerate(XC_STENCIL)) / hx
+                    for kx, hx in zip(k, np.diag(grid.step)))
+    try:
+        grid._xc_wavevectors = res
+    except (AttributeError, TypeError):
+        pass
+    return res
 
 
 def gradient(grid, field: np.ndarray) -> np.ndarray:
@@ -248,8 +257,14 @@ def gradient(grid, field: np.ndarray) -> np.ndarray:
     lead = field.shape[:-1]
     if grid.is_orthorhombic:
         arr = field.reshape(*lead, *grid.shape)
-        k_vecs = _wavevectors(grid)
-        k_1ds = (k_vecs[0][:, 0, 0], k_vecs[1][0, :, 0], k_vecs[2][0, 0, :])
+        k_1ds = getattr(grid, "_xc_k_1ds", None)
+        if k_1ds is None:
+            k_vecs = _wavevectors(grid)
+            k_1ds = (k_vecs[0][:, 0, 0], k_vecs[1][0, :, 0], k_vecs[2][0, 0, :])
+            try:
+                grid._xc_k_1ds = k_1ds
+            except (AttributeError, TypeError):
+                pass
         is_real = np.isrealobj(field)
         out = np.empty((3, *lead, grid.size),
                        dtype=float if is_real else complex)
@@ -284,8 +299,14 @@ def divergence(grid, vector: np.ndarray) -> np.ndarray:
     """Divergence of a flat ``(3, ngrid)`` real vector field: minus the adjoint
     of :func:`gradient`."""
     if grid.is_orthorhombic:
-        k_vecs = _wavevectors(grid)
-        k_1ds = (k_vecs[0][:, 0, 0], k_vecs[1][0, :, 0], k_vecs[2][0, 0, :])
+        k_1ds = getattr(grid, "_xc_k_1ds", None)
+        if k_1ds is None:
+            k_vecs = _wavevectors(grid)
+            k_1ds = (k_vecs[0][:, 0, 0], k_vecs[1][0, :, 0], k_vecs[2][0, 0, :])
+            try:
+                grid._xc_k_1ds = k_1ds
+            except (AttributeError, TypeError):
+                pass
         total = np.zeros(grid.shape, dtype=float)
         for ax, (component, k_1d) in enumerate(zip(vector, k_1ds)):
             n_ax = grid.shape[ax]

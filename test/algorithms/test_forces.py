@@ -501,6 +501,21 @@ class TestMandacaru:
                                  trace=False)
         assert np.abs(stencil.get_forces() - legacy).max() > 0.1
 
+    def test_effective_potential_works_for_vqe(self, fixed_grid):
+        """VQE can compute fast single-particle effective potential forces."""
+        atoms = h2(0.74)
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid=fixed_grid,
+                               force_method="effective-potential", trace=False)
+        forces = atoms.get_forces()
+        assert forces.shape == (2, 3)
+        assert np.isfinite(forces).all()
+        assert np.allclose(forces[0] + forces[1], 0.0, atol=1e-8)
+
+    def test_effective_potential_rejected_for_unsupported_methods(self):
+        """Effective-potential force method is rejected for unsupported solvers."""
+        with pytest.raises(ValueError, match="supported for methods"):
+            Mandacaru(method="subspace-vqe", force_method="effective-potential")
+
     def test_energy_matches_the_bare_driver(self, fixed_grid):
         atoms = h2(0.74)
         atoms.calc = Mandacaru(method="vqe", basis="HAO",

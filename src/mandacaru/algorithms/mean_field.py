@@ -360,7 +360,7 @@ class _MeanFieldDriver(VariationalDriver):
                 "the one-particle picture of a GHF determinant (spinor modes) "
                 "is not wired")
         context = self._gradient_context or {}
-        if context.get("frozen") or context.get("active") is not None:
+        if context.get("frozen") or context.get("active_space") is not None:
             raise NotImplementedError(
                 "the mean-field density with an active space is not wired; "
                 "run without active_space for populations and cube files")

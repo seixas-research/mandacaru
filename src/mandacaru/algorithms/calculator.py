@@ -478,16 +478,16 @@ class Mandacaru(Calculator):
         without making a coarse grid trustworthy.  Under periodic boundary
         conditions the sum over a cell's atoms is not this identity, so nothing
         is projected there and an explicit ``True`` says so.
-    force_method : {"rdm", "scf-response"}
-        How the nuclear gradient is taken.  ``"rdm"`` (default) differentiates
-        the energy expression the solver actually reported, holding the reduced
-        density matrices and molecular orbitals fixed
-        (:func:`~mandacaru.algorithms.pseudo_forces.pseudo_nuclear_gradient`): it
-        is complex-safe, covers pseudopotential projectors, augmented overlaps
-        and compensation charges when the family has them, refills a frozen
-        core, and reports its orbital-response residual in
-        ``force_result.details["orbital_gradient"]``.  ``"scf-response"`` is the
-        legacy path through a real-arithmetic differentiated SCF
+    force_method : {"effective-potential", "rdm", "scf-response"}
+        How the nuclear gradient is taken.  For DFT calculations,
+        ``"effective-potential"`` (the default) evaluates the forces using the
+        analytical method based on the single-particle effective potential and
+        energy-weighted density matrix: it is strictly O(M^2) + O(M G), fast,
+        and never forms two-body reconstruction tensors or M^4 arrays.  ``"rdm"``
+        uses the two-body reconstruction route and is only executed when
+        explicitly specified.  For non-DFT methods (e.g. active space or VQE),
+        ``"rdm"`` is the default.  ``"scf-response"`` is the legacy path through
+        a real-arithmetic differentiated SCF
         (:func:`~mandacaru.algorithms.forces.nuclear_gradient`); it assumes a
         closed-shell real reference and does not carry the pseudopotential
         terms, and is kept only for comparison.
@@ -600,7 +600,7 @@ class Mandacaru(Calculator):
     def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
                  paw_dataset: str | None = None,
                  grid_spacing: float = DEFAULT_GRID_SPACING, grid=None,
-                 include_pulay: bool = True, force_method: str = "rdm",
+                 include_pulay: bool = True, force_method: str | None = None,
                  project_translation: bool = DEFAULT_PROJECT_TRANSLATION,
                  hellmann_feynman: str = "analytic", orbital_delta=None,
                  scf_iterations: int = 40,
@@ -648,10 +648,23 @@ class Mandacaru(Calculator):
                 f"project_translation must be one of "
                 f"{PROJECT_TRANSLATION_CHOICES}, got {project_translation!r}")
         self.project_translation = project_translation
-        if str(force_method) not in ("rdm", "scf-response"):
-            raise ValueError(f"force_method must be 'rdm' or 'scf-response', "
-                             f"got {force_method!r}")
-        self.force_method = str(force_method)
+        VALID_FORCE_METHODS = ("effective-potential", "single-particle", "rdm", "scf-response")
+        if force_method is None or force_method == "auto":
+            self.force_method = "effective-potential" if self.method == "dft" else "rdm"
+        else:
+            fm = str(force_method).strip().lower()
+            if fm == "single-particle":
+                fm = "effective-potential"
+            if fm not in VALID_FORCE_METHODS:
+                raise ValueError(
+                    f"force_method must be one of {VALID_FORCE_METHODS}, "
+                    f"got {force_method!r}")
+            self.force_method = fm
+        SUPPORTED_EFFECTIVE_POTENTIAL_METHODS = ("dft", "vqe", "adapt-vqe")
+        if self.method not in SUPPORTED_EFFECTIVE_POTENTIAL_METHODS and self.force_method == "effective-potential":
+            raise ValueError(
+                f"force_method='effective-potential' is supported for methods "
+                f"{SUPPORTED_EFFECTIVE_POTENTIAL_METHODS}, got method={self.method!r}.")
         from ..integrals.two_center import validate_two_center
         if self.method == "dft" and self.force_method == "scf-response":
             solver_kwargs.setdefault("two_center", "grid")
@@ -659,8 +672,8 @@ class Mandacaru(Calculator):
                 and self.force_method == "scf-response"):
             raise ValueError(
                 "force_method='scf-response' differentiates the grid overlap "
-                "and kinetic matrices; two_center='analytic' needs the "
-                "default force_method='rdm'")
+                "and kinetic matrices; two_center='analytic' needs "
+                "force_method='effective-potential' or 'rdm'")
         # Population analysis on every evaluation, so a written file carries
         # it.  Off by default: the partition costs a grid pass (and a basin
         # search, for Bader) that a relaxation has no use for.
@@ -2206,7 +2219,8 @@ class Mandacaru(Calculator):
             from .pseudo_forces import ENERGY_CHECK_TOLERANCE
 
             result = solver.nuclear_gradient(orbital_delta=self.orbital_delta,
-                                             include_pulay=self.include_pulay)
+                                             include_pulay=self.include_pulay,
+                                             force_method=self.force_method)
             reported = float(solver._from_energy_units(
                 solver.result.optimal_energy, "Ha"))
             rebuilt = result.details["energy_hartree"]
@@ -2226,6 +2240,9 @@ class Mandacaru(Calculator):
             # central difference, each geometry rebuilt the same way.
             return self._direct_active_space_gradient(
                 solver, context, rdms, reference_energy)
+
+        if self.force_method == "effective-potential":
+            return self._effective_potential_gradient(solver, context, rdms)
 
         gamma, gamma2 = self._state_rdms(solver) if rdms is None else rdms
         active_gamma, active_gamma2 = gamma, gamma2
@@ -2404,18 +2421,22 @@ class Mandacaru(Calculator):
                 self._project_translation(result)
             return result
 
-        legacy = nuclear_gradient(
-            context["integrals"], gamma, gamma2,
-            n_electrons=context["n_electrons"],
-            atom_of_orbital=context["atom_of_orbital"],
-            frozen=context["frozen"], orbital_delta=self.orbital_delta,
-            scf_iterations=self.scf_iterations,
-            include_pulay=self.include_pulay,
-            hellmann_feynman=self.hellmann_feynman)
-        self._check_translational_invariance(legacy)
-        if self.project_translation and self._projection_applies(legacy):
-            self._project_translation(legacy)
-        return legacy
+        if self.force_method == "scf-response":
+            legacy = nuclear_gradient(
+                context["integrals"], gamma, gamma2,
+                n_electrons=context["n_electrons"],
+                atom_of_orbital=context["atom_of_orbital"],
+                frozen=context["frozen"], orbital_delta=self.orbital_delta,
+                scf_iterations=self.scf_iterations,
+                include_pulay=self.include_pulay,
+                hellmann_feynman=self.hellmann_feynman)
+            self._check_translational_invariance(legacy)
+            if self.project_translation and self._projection_applies(legacy):
+                self._project_translation(legacy)
+            return legacy
+
+        raise ValueError(
+            f"Unsupported force_method {self.force_method!r} for method {self.method!r}.")
 
     @staticmethod
     def _warn_near_degenerate(result) -> None:
@@ -2524,6 +2545,96 @@ class Mandacaru(Calculator):
                      "active_space_step_angstrom":
                          ACTIVE_SPACE_STEP_ANGSTROM,
                      "decomposition": "not available (integral-direct)"})
+        self._check_translational_invariance(result)
+        if self.project_translation and self._projection_applies(result):
+            self._project_translation(result)
+        return result
+
+    def _effective_potential_gradient(self, solver, context, rdms=None):
+        """Analytical forces from the single-particle effective potential and 1-RDM.
+
+        Evaluates the nuclear gradient directly from the one-particle density matrix
+        without constructing or contracting the two-particle reduced density matrix (2-RDM).
+        """
+        from .volumetric import spin_resolved_rdm
+        from .dft import (_centers, _core_functions, _core_tau_functions,
+                          _hartree_linearization, KohnShamEnergy, KohnShamField)
+        from .pseudo_forces import pseudo_nuclear_gradient
+        from ..integrals import exchange_correlation as xc_grid
+
+        integrals = context["integrals"]
+        if rdms is not None:
+            gamma = rdms[0] if isinstance(rdms, tuple) else rdms
+        else:
+            gamma, _ = self._state_rdms(solver, two_body=False)
+
+        frozen = context.get("frozen") or ()
+        active = context.get("active")
+        n_spatial = len(integrals.basis)
+        D_alpha, D_beta = spin_resolved_rdm(
+            gamma, n_spatial, frozen=frozen, active=active)
+        D_spatial = D_alpha + D_beta
+
+        mo = integrals.mo_coefficients
+        if mo is None:
+            raise RuntimeError(
+                "molecular orbitals are required to project the 1-RDM to the "
+                "atomic-orbital basis; build the Hamiltonian with mo_basis=True")
+        D_loewdin = mo @ D_spatial @ mo.conj().T
+        X = integrals._lowdin_x()
+        P0 = X @ D_loewdin @ X.conj().T
+        if not np.iscomplexobj(integrals._engine._psi):
+            P0 = np.real(P0)
+
+        psi = np.ascontiguousarray(integrals._engine._psi)
+        valence = np.real(np.sum((P0.T @ psi) * psi.conj(), axis=0))
+        rho = valence
+        datasets = getattr(integrals, "pseudopotentials", None) or []
+        if datasets and any(getattr(d, "has_core_density", False) for d in datasets):
+            core_dens = sum(xc_grid.core_density_on_grid(d, integrals.grid)
+                            for d in datasets if getattr(d, "has_core_density", False))
+            rho = rho + core_dens
+
+        V_H, J_aug, e_hartree = _hartree_linearization(integrals, valence, P0)
+
+        xc_name = getattr(self, "xc", None) or "lda"
+        xc_functional = xc_grid.resolve_functional(xc_name)
+        terms = xc_grid.evaluate(integrals.grid, rho, xc_functional)
+        potential = terms.potential + V_H
+        e_xc = terms.energy + e_hartree
+
+        nothing = [None] * len(integrals.nuclei)
+        centers = _centers(integrals)
+        delta = self.orbital_delta or 0.001
+
+        field = KohnShamField(
+            integrals.grid, psi, potential, terms.tau_potential,
+            _core_functions(datasets) if datasets else nothing,
+            _core_tau_functions(datasets) if datasets else nothing,
+            centers, delta)
+
+        V_eff = field.matrix() + J_aug
+        h0 = integrals.one_body()
+        F_eff = h0 + V_eff
+        F_low = X.conj().T @ F_eff @ X
+        eps, U_mo = np.linalg.eigh(F_low)
+        DE_low = U_mo @ np.diag(eps) @ U_mo.conj().T @ D_loewdin
+        E_occ = X @ DE_low @ X.conj().T
+        if not np.iscomplexobj(psi):
+            E_occ = np.real(E_occ)
+
+        constant = e_xc - float(np.real(np.sum(P0 * V_eff.T)))
+        energy = KohnShamEnergy(D_loewdin, V_eff, constant, two_body=False, E_occ=E_occ)
+
+        result = pseudo_nuclear_gradient(
+            integrals, None, None,
+            atom_of_orbital=context["atom_of_orbital"],
+            orbital_delta=self.orbital_delta,
+            include_pulay=self.include_pulay,
+            energy=energy,
+            field=field)
+
+        result.details["force_method"] = "effective-potential"
         self._check_translational_invariance(result)
         if self.project_translation and self._projection_applies(result):
             self._project_translation(result)
