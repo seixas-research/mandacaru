@@ -2482,12 +2482,19 @@ class PAWIntegrals(MolecularIntegrals):
     """
 
     def __init__(self, nuclei, basis, grid, *, datasets,
-                 one_center: str = "exact", **kwargs):
+                 one_center: str = "exact", cell=None, n_electrons=None, **kwargs):
         from .onecenter import ONE_CENTER_TREATMENTS, OneCenterExact
 
         if one_center not in ONE_CENTER_TREATMENTS:
             raise ValueError(f"unknown one_center treatment {one_center!r}; "
                              f"use one of {ONE_CENTER_TREATMENTS}")
+        self.n_electrons = None if n_electrons is None else int(n_electrons)
+        if cell is not None:
+            from ..units import to_bohr
+            self.cell = to_bohr(np.asarray(cell, dtype=float).reshape(3, 3),
+                                kwargs.get("units", "angstrom"))
+            kwargs["periodic"] = True
+
         super().__init__(nuclei, basis, grid, pseudos=datasets,
                          **kwargs)
         self.datasets = list(datasets)
@@ -2506,6 +2513,12 @@ class PAWIntegrals(MolecularIntegrals):
         else:
             self.constant_energy = float(sum(d.one_center_energy
                                              for d in self.datasets))
+        if self.periodic:
+            from ..core.ewald import madelung_constant
+            v_M = madelung_constant(self.cell)
+            self.constant_energy = 0.5 * (self.n_electrons or 0.0) * v_M
+            if one_center != "exact":
+                self.constant_energy += float(sum(d.one_center_energy for d in self.datasets))
         self._Q = None
         self._W = None
         self._U = None
@@ -2524,6 +2537,17 @@ class PAWIntegrals(MolecularIntegrals):
     exact_local_potential = True
 
     # -- the range-separated local potential ------------------------------- #
+
+    @property
+    def nuclear_repulsion(self) -> float:
+        if self.periodic:
+            from ..core.ewald import ewald_energy
+            from ..units import to_bohr
+            sites = np.array([to_bohr(position, self.units)
+                              for _charge, position in self.nuclei], dtype=float)
+            charges = np.array([float(charge) for charge, _p in self.nuclei])
+            return float(ewald_energy(sites, charges, self.cell))
+        return super().nuclear_repulsion
 
     @property
     def real_harmonics(self) -> bool:
@@ -2556,6 +2580,24 @@ class PAWIntegrals(MolecularIntegrals):
         :meth:`short_range_local`.  Off, it is the full local channel as
         :class:`~mandacaru.core.hamiltonian.MolecularIntegrals` samples it.
         """
+        if self.periodic:
+            from ..core.ewald import ewald_potential
+            from ..units import to_bohr
+            sites = np.array([to_bohr(position, self.units)
+                              for _charge, position in self.nuclei], dtype=float)
+            charges = np.array([-float(charge) for charge, _p in self.nuclei])
+            sigma = self.local_split_width() if self.split_local_potential else 0.0
+
+            def potential(x, y, z):
+                points = np.stack([np.asarray(x, dtype=float).ravel(),
+                                   np.asarray(y, dtype=float).ravel(),
+                                   np.asarray(z, dtype=float).ravel()], axis=1)
+                values = ewald_potential(sites, charges, self.cell, points,
+                                         softening=sigma)
+                return values.reshape(np.asarray(x).shape)
+
+            return potential
+
         if not self.split_local_potential:
             return super().external_potential()
         from .local_split import long_range_sampler

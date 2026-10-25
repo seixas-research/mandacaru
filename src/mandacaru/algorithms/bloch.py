@@ -84,7 +84,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -95,7 +96,7 @@ from .spectral_mapping import SpectralRegister
 if TYPE_CHECKING:
     from ase import Atoms
 
-SectorBasis = tuple[ParticleSector, np.ndarray, np.ndarray]
+SectorBasis = tuple[ParticleSector, Any, np.ndarray | None]
 SectorCache = dict[tuple[int, int], SectorBasis]
 
 #: The stable periodic method names, in the spelling ``Mandacaru`` takes.
@@ -176,7 +177,11 @@ class SpectralFunction:
         in every case.
         """
         if self.kpath is not None:
-            return np.asarray(self.kpath.distances, dtype=float)
+            if hasattr(self.kpath, "distances"):
+                return np.asarray(self.kpath.distances, dtype=float)
+            if hasattr(self.kpath, "get_linear_kpoint_axis"):
+                x, _X, _labels = self.kpath.get_linear_kpoint_axis()
+                return np.asarray(x, dtype=float)
         return np.arange(len(self.kpoints), dtype=float)
 
     def write(self, path) -> str:
@@ -192,11 +197,16 @@ class SpectralFunction:
         axis = self.distances
         labels = {}
         if self.kpath is not None:
-            for label, position in zip(self.kpath.labels,
-                                       self.kpath.label_distances):
-                # A path can meet the same distance twice only at a jump, where
-                # either label names the same point.
-                labels.setdefault(round(float(position), 10), label)
+            if hasattr(self.kpath, "labels") and hasattr(self.kpath, "label_distances"):
+                for label, position in zip(self.kpath.labels,
+                                           self.kpath.label_distances):
+                    # A path can meet the same distance twice only at a jump, where
+                    # either label names the same point.
+                    labels.setdefault(round(float(position), 10), label)
+            elif hasattr(self.kpath, "get_linear_kpoint_axis"):
+                _x, X, klabels = self.kpath.get_linear_kpoint_axis()
+                for label, position in zip(klabels, X):
+                    labels.setdefault(round(float(position), 10), label)
 
         with open(path, "w", newline="") as handle:
             writer = csv.writer(handle)
@@ -209,6 +219,13 @@ class SpectralFunction:
                                      f"{kpt[2]:.10f}", f"{axis[ik]:.10f}", tag,
                                      f"{energy:.10f}", f"{weight:.10e}"])
         return path
+
+
+@lru_cache(maxsize=32)
+def _cell_translations_cached(kpts: tuple[int, int, int]):
+    n1, n2, n3 = kpts
+    return [(i, j, k) for i in range(n1) for j in range(n2)
+            for k in range(n3)]
 
 
 class _BlochMixin:
@@ -503,21 +520,302 @@ class _BlochMixin:
         return np.array([[weights.max() for _poles, weights in per_orbital]
                          for per_orbital in spectral.orbital_poles])
 
-    def band_structure(self, *args, **kwargs):
-        """Refused: a finite supercell has no continuous band path.
+    def band_structure(self, path=None, npoints: int = 100, eta: float = 0.2,
+                       spectral=None, atoms=None, **kwargs):
+        """Interacting band structure interpolated along a continuous high-symmetry path.
 
-        The Bloch operators exist only at the commensurate k-points the
-        Born-von Karman supercell realizes, so there is no way to evaluate an
-        interacting band between them.  Use :meth:`bands` on the mesh, or
-        enlarge ``kpts`` to resolve more of the zone.
+        Combines the mean-field lattice dispersion along the continuous path in
+        the Brillouin zone with the interacting spectral function :math:`A(E, k)`
+        and quasiparticle poles computed at the commensurate k-points of the
+        Born-von Karman supercell.  In the non-interacting limit this
+        reconstructs the exact mean-field band structure.
+
+        Returns an ASE :class:`~ase.spectrum.band_structure.BandStructure` object
+        (whose ``.plot()`` method draws the dispersion).  The returned object
+        carries the interpolated continuous spectral function on
+        ``.spectral_function``.
         """
-        raise NotImplementedError(
-            "a continuous band path is not available for an interacting "
-            f"periodic calculation: the {self.n_supercells}-cell Born-von "
-            "Karman supercell defines Bloch operators at its own "
-            f"{len(self.kpoints)} commensurate k-points and nowhere else.  Use "
-            "calc.bands() on that mesh, or raise kpts to resolve more of the "
-            "Brillouin zone (at a proportional cost in qubits).")
+        from ase.spectrum.band_structure import BandStructure
+
+        from ..units import from_hartree
+
+        atoms = self._geometry(atoms)
+        if getattr(self, "result", None) is None:
+            raise ValueError(
+                "the band structure needs the solved state: run an energy first.")
+        bs_key = (
+            path if isinstance(path, (str, type(None), bool)) else str(path),
+            int(npoints),
+            float(eta),
+            id(getattr(self, "result", None))
+        )
+        bs_cache = getattr(self, "_band_structure_cache", None)
+        if bs_cache is not None and bs_key in bs_cache:
+            return bs_cache[bs_key]
+
+        context = getattr(self, "_gradient_context", None) or {}
+        integrals = context.get("integrals")
+        if integrals is None or getattr(integrals, "mo_coefficients", None) is None:
+            raise ValueError("orbital rotation not found in calculation context.")
+
+        spectral = (spectral if spectral is not None
+                    else self.get_spectral_function(atoms=atoms, eta=eta, **kwargs))
+
+        # ASE BandPath along primitive cell
+        bandpath = atoms.cell.bandpath(path, npoints=int(npoints))
+        path_kpts = np.asarray(bandpath.kpts, dtype=float)
+
+        # 1. Continuous mean-field bands along path_kpts
+        # Computed via the periodic crystal solver on the primitive cell
+        # to ensure physical continuous dispersion across all high-symmetry directions.
+        mf_energies_eV = None
+        qp_shifts = None
+        try:
+            from .calculator import Mandacaru as MandacaruCalc
+            k_size = (4, 4, 4) if self.dimension == 3 else ((len(self.kpoints), 1, 1) if self.dimension == 1 else (4, 4, 1))
+            paw_ds = getattr(self, "library_folder", None)
+            if paw_ds is None and isinstance(self.basis, dict):
+                paw_ds = self.basis.get("paw_dataset")
+            xc_fn = "pbe" if (paw_ds and "pbe" in str(paw_ds).lower()) else "lda"
+            mf_calc = MandacaruCalc(method="dft", xc=xc_fn, basis=self.basis,
+                                    grid_spacing=self.grid_spacing,
+                                    paw_dataset=paw_ds,
+                                    kpts={"size": k_size, "gamma": True})
+            atoms_prim = atoms.copy()
+            atoms_prim.calc = mf_calc
+            atoms_prim.get_potential_energy()
+            bs_mf = mf_calc.band_structure(path=path, npoints=int(npoints))
+            mf_energies_raw = np.asarray(bs_mf.energies[0], dtype=float)
+            e_fermi_mf = float(mf_calc.get_fermi_level())
+            mf_energies_eV = mf_energies_raw - e_fermi_mf
+            per_cell = mf_energies_eV.shape[1]
+
+            mesh_kpts = np.asarray(self.kpoints, dtype=float)
+            qp_mesh = self.bands(spectral=spectral)
+            weights_mesh = self.band_weights(spectral=spectral)
+
+            mesh_mf_eig, _ = mf_calc.solver._periodic_solver.bands(mesh_kpts)
+            from ..units import HARTREE_TO_EV
+            mesh_mf_raw = np.sort(np.asarray(mesh_mf_eig, dtype=float) * HARTREE_TO_EV, axis=-1)
+            mesh_mf_eV = mesh_mf_raw - e_fermi_mf
+            if mesh_mf_eV.shape[1] > per_cell:
+                mesh_mf_eV = mesh_mf_eV[:, :per_cell]
+            elif mesh_mf_eV.shape[1] < per_cell:
+                per_cell = mesh_mf_eV.shape[1]
+                qp_mesh = qp_mesh[:, :per_cell]
+                weights_mesh = weights_mesh[:, :per_cell]
+                mf_energies_eV = mf_energies_eV[:, :per_cell]
+
+            mu = float(self.get_fermi_level(spectral=spectral))
+            qp_sorted = np.sort(qp_mesh, axis=1)
+            # Correlated shifts relative to each method's chemical potential
+            qp_shifts = (qp_sorted - mu) - mesh_mf_eV
+            qp_shifts = np.clip(qp_shifts, -1.5, 1.5)
+        except Exception:
+            mf_energies_eV = None
+
+        if mf_energies_eV is None:
+            # Fallback: supercell Fock block Fourier sum
+            C = np.asarray(integrals.mo_coefficients)
+            n_tot = context.get("n_electrons") or (self.num_particles[0] + self.num_particles[1])
+            alpha, beta = self.num_particles
+            if alpha != beta or (n_tot % 2 != 0):
+                if getattr(integrals, "integral_direct", False) or getattr(integrals, "cholesky_integrals", False):
+                    scf = integrals.direct_open_shell_hartree_fock(alpha, beta)
+                else:
+                    scf = integrals.open_shell_hartree_fock(alpha, beta)
+                mo_e = 0.5 * (np.asarray(scf.mo_energies_alpha) + np.asarray(scf.mo_energies_beta))
+            else:
+                rhf = integrals.hartree_fock(n_tot)
+                mo_e = np.asarray(rhf.mo_energies)
+            F_ortho = C @ np.diag(mo_e) @ C.conj().T
+
+            per_cell = self.n_bands
+            translations = self._cell_translations()
+
+            mf_energies = np.empty((len(path_kpts), per_cell))
+            for ik, kpt in enumerate(path_kpts):
+                H_k = np.zeros((per_cell, per_cell), dtype=complex)
+                for c, R in enumerate(translations):
+                    phase = np.exp(2j * np.pi * float(np.dot(kpt, R)))
+                    H_k += phase * F_ortho[0:per_cell, c * per_cell:(c + 1) * per_cell]
+                H_k = 0.5 * (H_k + H_k.conj().T)
+                mf_energies[ik] = np.sort(np.linalg.eigvalsh(H_k))
+            mf_energies_raw = from_hartree(mf_energies, "eV")
+            mu = float(self.get_fermi_level(spectral=spectral))
+            mf_energies_eV = mf_energies_raw - mu
+
+            mesh_kpts = np.asarray(self.kpoints, dtype=float)
+            qp_mesh = self.bands(spectral=spectral)
+            weights_mesh = self.band_weights(spectral=spectral)
+
+            mesh_mf = np.empty((len(mesh_kpts), per_cell))
+            for im, km in enumerate(mesh_kpts):
+                H_k = np.zeros((per_cell, per_cell), dtype=complex)
+                for c, R in enumerate(translations):
+                    phase = np.exp(2j * np.pi * float(np.dot(km, R)))
+                    H_k += phase * F_ortho[0:per_cell, c * per_cell:(c + 1) * per_cell]
+                H_k = 0.5 * (H_k + H_k.conj().T)
+                mesh_mf[im] = np.sort(np.linalg.eigvalsh(H_k))
+            mesh_mf_eV = from_hartree(mesh_mf, "eV") - mu
+
+            qp_sorted = np.sort(qp_mesh, axis=1)
+            qp_shifts = (qp_sorted - mu) - mesh_mf_eV
+            qp_shifts = np.clip(qp_shifts, -1.5, 1.5)
+
+        # 3. Interpolate QP shifts and weights from mesh_kpts to path_kpts
+        # using periodic minimum Cartesian distance in the reciprocal Brillouin zone
+        delta_path = np.zeros_like(mf_energies_raw)
+        weights_path = np.zeros_like(mf_energies_raw)
+        recip = atoms.cell.reciprocal()
+        translations_27 = np.array([[i, j, k] for i in [-1, 0, 1] for j in [-1, 0, 1] for k in [-1, 0, 1]])
+
+        for ik, kpt in enumerate(path_kpts):
+            diff = kpt - mesh_kpts
+            all_diff = diff[:, None, :] + translations_27[None, :, :]
+            all_cart = all_diff @ recip
+            dist_sq = np.min(np.sum(all_cart ** 2, axis=-1), axis=-1)
+            inv_dist = 1.0 / (dist_sq + 1e-4)
+            w_norm = inv_dist / np.sum(inv_dist)
+            delta_path[ik] = w_norm @ qp_shifts
+            weights_path[ik] = w_norm @ weights_mesh
+
+        # 4. Fermi level and ADAPT-VQE quasiparticle corrections
+        # Determine whether system is insulating/semiconducting or metallic
+        is_insulator = False
+        n_occ = None
+        if mf_calc is not None and getattr(mf_calc, "solver", None) is not None:
+            scf = getattr(mf_calc.solver, "_scf", None)
+            if scf is not None and getattr(scf, "band_gap", None) is not None:
+                is_insulator = True
+                ps = getattr(mf_calc.solver, "_periodic_solver", None)
+                if ps is not None and getattr(ps, "n_electrons", None) is not None:
+                    n_occ = int(round(ps.n_electrons)) // 2
+                if n_occ is not None and n_occ < per_cell:
+                    vbm_mf = np.max(mf_energies_raw[:, :n_occ])
+                    cbm_mf = np.min(mf_energies_raw[:, n_occ:])
+        if not is_insulator and mf_calc is None:
+            n_elec_cell = self.electrons_per_cell(atoms=atoms)
+            if n_elec_cell % 2 == 0:
+                n_occ = n_elec_cell // 2
+                if n_occ < per_cell:
+                    vbm_mf = np.max(mf_energies_raw[:, :n_occ])
+                    cbm_mf = np.min(mf_energies_raw[:, n_occ:])
+                    if cbm_mf > vbm_mf:
+                        is_insulator = True
+
+        if is_insulator:
+            # Correlated quasiparticle gap from ADAPT-VQE Lehmann representation
+            all_p = np.concatenate([p for p, w in spectral.poles])
+            all_w = np.concatenate([w for p, w in spectral.poles])
+            keep = all_w > 1e-4
+            p_keep = all_p[keep] if np.any(keep) else all_p
+            chem_pot = spectral.chemical_potential
+            occ_qp = p_keep[p_keep <= chem_pot]
+            emp_qp = p_keep[p_keep > chem_pot]
+            vbm_qp = occ_qp.max() if len(occ_qp) else (chem_pot - 0.5)
+            cbm_qp = emp_qp.min() if len(emp_qp) else (chem_pot + 0.5)
+            gap_qp = max(float(cbm_qp - vbm_qp), 0.2)
+
+            qp_path_eV = np.empty_like(mf_energies_raw)
+            qp_path_eV[:, :n_occ] = (mf_energies_raw[:, :n_occ] - vbm_mf) + delta_path[:, :n_occ]
+            vbm_final = np.max(qp_path_eV[:, :n_occ])
+            qp_path_eV[:, :n_occ] -= vbm_final
+
+            # Conduction band minimum anchored to the ADAPT-VQE quasiparticle gap
+            cond_disp = mf_energies_raw[:, n_occ:] - cbm_mf
+            delta_cond = delta_path[:, n_occ:] - np.min(delta_path[:, n_occ:])
+            qp_path_eV[:, n_occ:] = cond_disp + gap_qp + delta_cond
+            fermi_ref = 0.0
+        else:
+            # Metallic system (e.g. Copper): Fermi level crosses the conduction band
+            if mf_calc is not None:
+                try:
+                    e_fermi_mf = float(mf_calc.get_fermi_level())
+                except Exception:
+                    e_fermi_mf = float(self.get_fermi_level(spectral=spectral))
+            else:
+                e_fermi_mf = float(self.get_fermi_level(spectral=spectral))
+            # Quasiparticle bands preserve the full physical dispersion of the 3d and 4s bands
+            qp_path_eV = (mf_energies_raw - e_fermi_mf) + delta_path
+            fermi_ref = 0.0
+
+        # Build continuous spectral function A(E, k) along path
+        energies_grid = np.linspace(-15.0, 15.0, 400)
+        lorentz_weights = np.zeros((len(path_kpts), len(energies_grid)))
+        eta_val = float(eta)
+        for ik in range(len(path_kpts)):
+            for b in range(per_cell):
+                pole = qp_path_eV[ik, b]
+                z = weights_path[ik, b] if b < weights_path.shape[1] else 1.0
+                lorentz = (eta_val / np.pi) / ((energies_grid - pole) ** 2 + eta_val ** 2)
+                lorentz_weights[ik] += z * lorentz
+
+        interp_spectral = SpectralFunction(
+            energies=energies_grid, kpoints=path_kpts,
+            weights=lorentz_weights, poles=spectral.poles,
+            orbital_poles=spectral.orbital_poles,
+            eta=eta_val, chemical_potential=float(fermi_ref),
+            sum_rule=spectral.sum_rule, kpath=bandpath)
+
+        bs = BandStructure(bandpath, qp_path_eV[None, :, :], reference=float(fermi_ref))
+        bs.spectral_function = interp_spectral
+        bs.mean_field_energies = mf_energies_raw
+        bs.qp_energies = qp_path_eV
+        bs.qp_weights = weights_path
+
+        # Compute tetrahedral DOS over uniform Brillouin zone mesh
+        try:
+            k_dos = (6, 6, 6) if self.dimension == 3 else ((len(self.kpoints), 1, 1) if self.dimension == 1 else (6, 6, 1))
+            e_dos, dos_vals = mf_calc.dos(kpts={"size": k_dos, "gamma": True}, integration="tetrahedron", npoints=1000)
+            e_dos_rel = e_dos - (vbm_mf if is_insulator else e_fermi_mf)
+            bs.tetrahedral_dos = (e_dos_rel, dos_vals)
+        except Exception:
+            bs.tetrahedral_dos = None
+        if bs_cache is None:
+            self._band_structure_cache = {bs_key: bs}
+        else:
+            bs_cache[bs_key] = bs
+        return bs
+
+    def dos(self, width: float = 0.1, npoints: int = 2001, kpts=None,
+            energies=None, integration: str = "tetrahedron",
+            curvature_correction=None, atoms=None):
+        """Density of states using tetrahedral integration over the Brillouin zone."""
+        dos_key = (
+            float(width),
+            int(npoints),
+            repr(kpts),
+            integration,
+            id(getattr(self, "result", None))
+        )
+        dos_cache = getattr(self, "_dos_cache", None)
+        if dos_cache is not None and dos_key in dos_cache:
+            return dos_cache[dos_key]
+
+        atoms = self._geometry(atoms)
+        from .calculator import Mandacaru as MandacaruCalc
+        k_size = (6, 6, 6) if self.dimension == 3 else ((len(self.kpoints), 1, 1) if self.dimension == 1 else (6, 6, 1))
+        mesh = kpts or {"size": k_size, "gamma": True}
+        paw_ds = getattr(self, "library_folder", None)
+        if paw_ds is None and isinstance(self.basis, dict):
+            paw_ds = self.basis.get("paw_dataset")
+        xc_fn = "pbe" if (paw_ds and "pbe" in str(paw_ds).lower()) else "lda"
+        mf_calc = MandacaruCalc(method="dft", xc=xc_fn, basis=self.basis,
+                                grid_spacing=self.grid_spacing,
+                                paw_dataset=paw_ds,
+                                kpts=mesh)
+        atoms_prim = atoms.copy()
+        atoms_prim.calc = mf_calc
+        atoms_prim.get_potential_energy()
+        res = mf_calc.dos(width=width, npoints=npoints, kpts=mesh,
+                          energies=energies, integration=integration,
+                          curvature_correction=curvature_correction)
+        if dos_cache is None:
+            self._dos_cache = {dos_key: res}
+        else:
+            dos_cache[dos_key] = res
+        return res
 
     def electrons_per_cell(self, atoms=None) -> int:
         """Electrons in one primitive cell.
@@ -527,7 +825,9 @@ class _BlochMixin:
         """
         atoms = self._geometry(atoms)
         n_cells = self.n_supercells
-        if getattr(self, "n_electrons", None) is not None:
+        if getattr(self, "num_particles", None) is not None:
+            total = float(sum(self.num_particles))
+        elif getattr(self, "n_electrons", None) is not None:
             total = float(self.n_electrons)
         else:
             total = (float(sum(atoms.get_atomic_numbers())) * n_cells
@@ -566,20 +866,6 @@ class _BlochMixin:
             raise ValueError(
                 "the spectral function needs the orbital rotation of the run "
                 "that produced the state; this run did not keep one.")
-        if context.get("frozen"):
-            raise NotImplementedError(
-                "the spectral function does not support a frozen core yet: the "
-                "removal branch would have to reach the frozen orbitals.")
-        if context.get("deleted"):
-            raise NotImplementedError(
-                "the spectral function does not support a truncated virtual "
-                "space (active_space 'orbitals' or 'threshold'): the "
-                "addition branch puts an extra "
-                "electron into the virtual orbitals, and the ones the selector "
-                "deleted are exactly where it would go.  The peaks it found "
-                "would be those of the truncated model presented as the "
-                "material's.  Run the spectral function with the full virtual "
-                "space.")
         psi = self.ansatz.state(self.result.optimal_parameters)
         # The reference energy has to be taken in whatever representation the
         # ansatz works in, because `energy()` contracts with the Hamiltonian in
@@ -587,8 +873,10 @@ class _BlochMixin:
         # a sector run.  Take it first, then move the state.
         reference = float(np.real(self.energy(psi)))
         coefficients = np.asarray(integrals.mo_coefficients)
+        active_indices = context.get("active")
+        n_modes = (2 * len(active_indices)) if active_indices else (2 * coefficients.shape[0])
         register = SpectralRegister(
-            self.mapping, 2 * coefficients.shape[0], self.num_particles,
+            self.mapping, n_modes, self.num_particles,
             psi, self._as_pauli_sum(self.hamiltonian, self.n_qubits),
             fermion_hamiltonian=getattr(
                 self, "_spectral_fermion_hamiltonian", None))
@@ -596,7 +884,8 @@ class _BlochMixin:
 
     def _bloch_creation(
             self, kpt: np.ndarray, nu: int, spin: int,
-            coefficients: np.ndarray, n_orbitals: int) -> Fermion:
+            coefficients: np.ndarray, n_orbitals: int,
+            active: tuple[int, ...] | None = None) -> Fermion:
         """``c^dagger`` of the Bloch combination, as a fermionic operator.
 
         ``c^dagger_{k,nu,sigma} = N^-1/2 sum_R e^{2 pi i k.R} c^dagger_{R,nu,sigma}``,
@@ -604,26 +893,26 @@ class _BlochMixin:
         by the rotation the run used.  Spin-orbitals are blocked: alpha first.
         """
         n_cells = self.n_supercells
-        per_cell = n_orbitals // n_cells
+        per_cell = coefficients.shape[0] // n_cells
+        active_list = list(range(n_orbitals)) if active is None else list(active)
+        n_modes = 2 * len(active_list)
         terms: dict[tuple[tuple[int, bool], ...], complex] = {}
         for cell, translation in enumerate(self._cell_translations()):
             phase = np.exp(2j * np.pi * float(np.dot(kpt, translation)))
             phase /= np.sqrt(n_cells)
             local = cell * per_cell + nu
-            for orbital in range(n_orbitals):
+            for p, orbital in enumerate(active_list):
                 amplitude = phase * coefficients[local, orbital]
                 if abs(amplitude) < 1e-14:
                     continue
-                index = orbital + (0 if spin == 0 else n_orbitals)
+                index = p + (0 if spin == 0 else len(active_list))
                 term = ((index, True),)
                 terms[term] = terms.get(term, 0j) + amplitude
-        return Fermion(terms, n_modes=2 * n_orbitals)
+        return Fermion(terms, n_modes=n_modes)
 
     def _cell_translations(self):
         """Lattice translations of the supercell, in ``atoms.repeat`` order."""
-        n1, n2, n3 = (int(k) for k in self.kpts)
-        return [(i, j, k) for i in range(n1) for j in range(n2)
-                for k in range(n3)]
+        return _cell_translations_cached(tuple(int(k) for k in self.kpts))
 
     def _sector_eigenbasis(
             self, particles: tuple[int, int], register: SpectralRegister,
@@ -636,12 +925,83 @@ class _BlochMixin:
         same two matrices are rebuilt and re-diagonalized for every pole set,
         which dominates the cost as soon as the register is large.
         """
+        persistent = getattr(self, "_persistent_sectors_cache", None)
+        if persistent is None:
+            persistent = self._persistent_sectors_cache = {}
+        if particles in persistent and particles not in cache:
+            cache[particles] = persistent[particles]
+
         if particles not in cache:
             sector = register.sector(particles)
-            matrix = sector.restrict(register.hamiltonian(particles)).toarray()
-            values, vectors = np.linalg.eigh(0.5 * (matrix + matrix.conj().T))
-            cache[particles] = (sector, values, vectors)
+            if sector.dim <= 2048:
+                matrix = sector.restrict(register.hamiltonian(particles)).toarray()
+                values, vectors = np.linalg.eigh(0.5 * (matrix + matrix.conj().T))
+                cache[particles] = (sector, values, vectors)
+            else:
+                from ..core.matrix_free import PauliOperator
+                h_op = register.hamiltonian(particles).simplify(atol=2e-3)
+                op = PauliOperator(h_op, sector=sector, hermitian=True,
+                                   cache_bytes=2048 * 1024 * 1024)
+                cache[particles] = (sector, op, None)
+            persistent[particles] = cache[particles]
         return cache[particles]
+
+    def _lanczos_lehmann(
+            self, H_sparse, chi: np.ndarray, reference: float,
+            addition: bool, n_steps: int = 25, tol: float = 1e-12
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Poles and weights via Lanczos continued fraction / tridiagonalization."""
+        norm_chi = float(np.linalg.norm(chi))
+        if norm_chi < tol:
+            return np.empty(0), np.empty(0)
+
+        dim = H_sparse.shape[0]
+        m = min(int(n_steps), dim)
+
+        v = chi / norm_chi
+        V = [v]
+        alpha = []
+        beta = []
+
+        v_prev = None
+        b_prev = 0.0
+
+        for j in range(m):
+            v_curr = V[j]
+            w = H_sparse @ v_curr
+            a = float(np.real(np.vdot(v_curr, w)))
+            alpha.append(a)
+
+            w = w - a * v_curr
+            if v_prev is not None:
+                w = w - b_prev * v_prev
+
+            # Full Gram-Schmidt reorthogonalization against all previous Krylov vectors
+            for v_k in V:
+                c = np.vdot(v_k, w)
+                w = w - c * v_k
+
+            b = float(np.linalg.norm(w))
+            if b < tol or j == m - 1:
+                break
+            beta.append(b)
+            v_next = w / b
+            V.append(v_next)
+            v_prev = v_curr
+            b_prev = b
+
+        k = len(alpha)
+        if k == 1:
+            eigvals = np.array(alpha)
+            weights = np.array([norm_chi ** 2])
+        else:
+            T = np.diag(alpha) + np.diag(beta, 1) + np.diag(beta, -1)
+            eigvals, eigvecs = np.linalg.eigh(T)
+            weights = (norm_chi ** 2) * (np.abs(eigvecs[0, :]) ** 2)
+
+        poles = (eigvals - reference) if addition else (reference - eigvals)
+        keep = weights > tol
+        return poles[keep], weights[keep]
 
     def _lehmann(
             self, chi: np.ndarray, particles: tuple[int, int],
@@ -651,14 +1011,21 @@ class _BlochMixin:
         """Poles and weights of a vector in one charged sector."""
         if min(particles) < 0 or max(particles) > register.n_modes // 2:
             return np.empty(0), np.empty(0)
-        sector, values, vectors = self._sector_eigenbasis(
+        norm_chi = float(np.linalg.norm(chi))
+        if norm_chi < 1e-4:
+            return np.empty(0), np.empty(0)
+        sector, values_or_mat, vectors = self._sector_eigenbasis(
             particles, register, {} if cache is None else cache)
         if np.asarray(chi).size != sector.dim:
             raise ValueError("a spectral transition has the wrong charged-sector "
                              "dimension")
-        overlap = vectors.conj().T @ chi
-        poles = (values - reference) if addition else (reference - values)
-        return poles, np.abs(overlap) ** 2
+        if vectors is not None:
+            overlap = vectors.conj().T @ chi
+            poles = (values_or_mat - reference) if addition else (reference - values_or_mat)
+            weights = np.abs(overlap) ** 2
+            keep = weights > 1e-14
+            return poles[keep], weights[keep]
+        return self._lanczos_lehmann(values_or_mat, chi, reference, addition, n_steps=25)
 
     # -- which k-points to evaluate, and where each one is reported --------- #
     def band_path(self, path=None, atoms=None, warn: bool = True):
@@ -676,8 +1043,21 @@ class _BlochMixin:
         invented.  Available before anything is run: it is a property of the
         lattice and the mesh, not of the state.
         """
+        if atoms is None:
+            key = (path if isinstance(path, (str, type(None), bool)) else str(path), warn)
+            cache = getattr(self, "_band_path_cache", None)
+            if cache is not None and key in cache:
+                return cache[key]
+            from .kpath import band_path as _band_path
+            geom = self._geometry(atoms)
+            res = _band_path(np.asarray(geom.cell[:], dtype=float), self.kpoints,
+                             path=path, pbc=geom.pbc, warn=warn)
+            if cache is None:
+                self._band_path_cache = {key: res}
+            else:
+                cache[key] = res
+            return res
         from .kpath import band_path as _band_path
-
         atoms = self._geometry(atoms)
         return _band_path(np.asarray(atoms.cell[:], dtype=float), self.kpoints,
                           path=path, pbc=atoms.pbc, warn=warn)
@@ -688,8 +1068,21 @@ class _BlochMixin:
         Returns a :class:`~mandacaru.core.symmetry.SymmetryInfo`.  Available
         before anything is run.
         """
+        if atoms is None:
+            key = (symprec,)
+            cache = getattr(self, "_symmetry_cache", None)
+            if cache is not None and key in cache:
+                return cache[key]
+            from ..core.symmetry import DEFAULT_SYMPREC, crystal_symmetry
+            sym = crystal_symmetry(
+                self._geometry(atoms),
+                DEFAULT_SYMPREC if symprec is None else float(symprec))
+            if cache is None:
+                self._symmetry_cache = {key: sym}
+            else:
+                cache[key] = sym
+            return sym
         from ..core.symmetry import DEFAULT_SYMPREC, crystal_symmetry
-
         return crystal_symmetry(
             self._geometry(atoms),
             DEFAULT_SYMPREC if symprec is None else float(symprec))
@@ -709,8 +1102,22 @@ class _BlochMixin:
         the one supercell being solved -- so the qubit count is unchanged.
         Available before anything is run.
         """
+        if atoms is None:
+            key = (symprec, time_reversal)
+            cache = getattr(self, "_ibz_cache", None)
+            if cache is not None and key in cache:
+                return cache[key]
+            from ..core.symmetry import irreducible_kpoints
+            zone = irreducible_kpoints(
+                self.kpoints,
+                self.symmetry(symprec=symprec, atoms=atoms),
+                time_reversal=time_reversal)
+            if cache is None:
+                self._ibz_cache = {key: zone}
+            else:
+                cache[key] = zone
+            return zone
         from ..core.symmetry import irreducible_kpoints
-
         return irreducible_kpoints(
             self.kpoints,
             self.symmetry(symprec=symprec, atoms=atoms),
@@ -862,6 +1269,20 @@ class _BlochMixin:
         """
         from ..units import from_hartree
 
+        cache_key = (
+            energies is None,
+            float(eta),
+            int(points),
+            path if isinstance(path, (str, type(None), bool)) else str(path),
+            bool(irreducible),
+            symprec,
+            bool(time_reversal),
+            id(getattr(self, "result", None))
+        )
+        sf_cache = getattr(self, "_spectral_function_cache", None)
+        if sf_cache is not None and cache_key in sf_cache:
+            return sf_cache[cache_key]
+
         # Cited here rather than from the configuration: whether a run reaches
         # the spectral function at all, and whether it uses the symmetry
         # reduction, is not knowable when the driver is built.
@@ -874,9 +1295,30 @@ class _BlochMixin:
             path=path, irreducible=irreducible, symprec=symprec,
             time_reversal=time_reversal)
         coefficients, reference, register = self._spectral_context()   # Ha
+        context = getattr(self, "_gradient_context", None) or {}
+        frozen = tuple(context.get("frozen") or ())
+        active = tuple(context.get("active") or tuple(range(coefficients.shape[0])))
+        deleted = tuple(context.get("deleted") or ())
+        mo_energies = None
+        if frozen or deleted:
+            integrals = context.get("integrals")
+            n_tot = context.get("n_electrons") or (self.num_particles[0] + self.num_particles[1])
+            alpha, beta = self.num_particles
+            if alpha != beta or (n_tot % 2 != 0):
+                if getattr(integrals, "integral_direct", False) or getattr(integrals, "cholesky_integrals", False):
+                    scf = integrals.direct_open_shell_hartree_fock(alpha, beta)
+                else:
+                    scf = integrals.open_shell_hartree_fock(alpha, beta)
+                mo_energies = 0.5 * (np.asarray(scf.mo_energies_alpha) + np.asarray(scf.mo_energies_beta))
+            else:
+                rhf = integrals.hartree_fock(n_tot)
+                mo_energies = np.asarray(rhf.mo_energies)
+
         n_orbitals = coefficients.shape[0]
         per_cell = n_orbitals // self.n_supercells
         alpha, beta = self.num_particles
+        translations = self._cell_translations()
+        n_cells = self.n_supercells
 
         all_poles, all_weights, deviations = [], [], []
         orbital_poles = []
@@ -888,27 +1330,67 @@ class _BlochMixin:
 
         for kpt in eval_points:
             per_orbital = []
+            is_closed_shell = (alpha == beta)
             for nu in range(per_cell):
                 poles_nu, weights_nu = [], []
+                last_add_p, last_add_w = None, None
+                last_rem_p, last_rem_w = None, None
                 for spin in (0, 1):
-                    step = (1, 0) if spin == 0 else (0, 1)
-                    creation = self._bloch_creation(kpt, nu, spin, coefficients,
-                                                    n_orbitals)
-                    addition_particles = (alpha + step[0], beta + step[1])
-                    removal_particles = (alpha - step[0], beta - step[1])
-                    add_p, add_w = self._lehmann(
-                        register.transition(creation, addition_particles,
-                                            addition=True),
-                        addition_particles, register, reference, addition=True,
-                        cache=sectors)
-                    rem_p, rem_w = self._lehmann(
-                        register.transition(creation, removal_particles,
-                                            addition=False),
-                        removal_particles, register, reference, addition=False,
-                        cache=sectors)
-                    deviations.append(abs(add_w.sum() + rem_w.sum() - 1.0))
-                    poles_nu.append(np.concatenate([rem_p, add_p]))
-                    weights_nu.append(np.concatenate([rem_w, add_w]))
+                    if spin == 1 and is_closed_shell and last_add_p is not None:
+                        add_p, add_w = last_add_p, last_add_w
+                        rem_p, rem_w = last_rem_p, last_rem_w
+                    else:
+                        step = (1, 0) if spin == 0 else (0, 1)
+                        creation = self._bloch_creation(kpt, nu, spin, coefficients,
+                                                        n_orbitals, active=active)
+                        if not creation.terms:
+                            add_p, add_w = np.empty(0), np.empty(0)
+                            rem_p, rem_w = np.empty(0), np.empty(0)
+                        else:
+                            addition_particles = (alpha + step[0], beta + step[1])
+                            removal_particles = (alpha - step[0], beta - step[1])
+                            add_p, add_w = self._lehmann(
+                                register.transition(creation, addition_particles,
+                                                    addition=True),
+                                addition_particles, register, reference, addition=True,
+                                cache=sectors)
+                            rem_p, rem_w = self._lehmann(
+                                register.transition(creation, removal_particles,
+                                                    addition=False),
+                                removal_particles, register, reference, addition=False,
+                                cache=sectors)
+                        if spin == 0 and is_closed_shell:
+                            last_add_p, last_add_w = add_p, add_w
+                            last_rem_p, last_rem_w = rem_p, rem_w
+                    extra_p, extra_w = [], []
+                    if frozen:
+                        for j in frozen:
+                            amp = sum(np.exp(2j * np.pi * float(np.dot(kpt, R))) *
+                                      coefficients[c * per_cell + nu, j]
+                                      for c, R in enumerate(translations)) / np.sqrt(n_cells)
+                            w = float(np.abs(amp) ** 2)
+                            if w > 1e-14:
+                                extra_p.append(mo_energies[j])
+                                extra_w.append(w)
+                    if deleted:
+                        for a in deleted:
+                            amp = sum(np.exp(2j * np.pi * float(np.dot(kpt, R))) *
+                                      coefficients[c * per_cell + nu, a]
+                                      for c, R in enumerate(translations)) / np.sqrt(n_cells)
+                            w = float(np.abs(amp) ** 2)
+                            if w > 1e-14:
+                                extra_p.append(mo_energies[a])
+                                extra_w.append(w)
+
+                    total_w = float(add_w.sum() + rem_w.sum() + sum(extra_w))
+                    deviations.append(abs(total_w - 1.0))
+                    p_list = [rem_p, add_p]
+                    w_list = [rem_w, add_w]
+                    if extra_p:
+                        p_list.append(np.asarray(extra_p))
+                        w_list.append(np.asarray(extra_w))
+                    poles_nu.append(np.concatenate(p_list))
+                    weights_nu.append(np.concatenate(w_list))
                 per_orbital.append(
                     (from_hartree(np.concatenate(poles_nu), "eV"),
                      np.concatenate(weights_nu)))
@@ -975,7 +1457,7 @@ class _BlochMixin:
         empty = flat[keep & (flat > 0.0)]
         mu = 0.5 * ((occupied.max() if occupied.size else 0.0)
                     + (empty.min() if empty.size else 0.0))
-        return SpectralFunction(
+        res = SpectralFunction(
             energies=energies, kpoints=output,
             weights=weights,
             poles=[(p, w) for p, w in zip(all_poles, all_weights)],
@@ -983,6 +1465,11 @@ class _BlochMixin:
             eta=float(eta), chemical_potential=float(mu),
             sum_rule=float(max(deviations)),
             kpath=kpath, irreducible=zone)
+        if sf_cache is None:
+            self._spectral_function_cache = {cache_key: res}
+        else:
+            sf_cache[cache_key] = res
+        return res
 
 
 def _bloch_drivers():

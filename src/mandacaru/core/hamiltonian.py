@@ -1511,9 +1511,9 @@ class MolecularIntegrals(MeanFieldMixin):
             self._direct = None
         n_el, n_alpha, n_beta, open_shell = resolve_reference(
             n_electrons, num_particles, open_shell)
-        if self.periodic:
+        if self.periodic and not self.cholesky_integrals:
             raise NotImplementedError(
-                "the integral-direct build is molecular only")
+                "the integral-direct build without Cholesky is molecular only")
         occupations = None
         if open_shell:
             uhf = self.direct_open_shell_hartree_fock(n_alpha, n_beta)
@@ -1558,9 +1558,10 @@ class MolecularIntegrals(MeanFieldMixin):
             core_energy = float(np.real(sum(2.0 * h_mo[i, i] + G[i, i]
                                             for i in frozen)))
             h_mo = h_mo + G
-        h_act = np.real_if_close(h_mo[np.ix_(active, active)])
-        eri_act = np.real_if_close(provider.direct.orbital_integrals(
-            provider.X @ C[:, active]))
+        h_act = h_mo[np.ix_(active, active)]
+        h_act = np.real(0.5 * (h_act + h_act.conj().T)) if not self.spin_orbit_coupling else np.real_if_close(h_act)
+        eri_act = provider.direct.orbital_integrals(provider.X @ C[:, active])
+        eri_act = np.real(eri_act) if not self.spin_orbit_coupling else np.real_if_close(eri_act)
         return h_act, eri_act, core_energy, space
 
     def _spinor_problem(self, n_electrons, num_particles, open_shell, frozen,

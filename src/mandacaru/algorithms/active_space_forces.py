@@ -251,6 +251,8 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
                 shifted, solver.basis, reference.grid, solver.grid_spacing,
                 solver.charge, solver.n_electrons, spin=solver.spin,
                 kinetic=solver.kinetic,
+                periodic=getattr(solver, "periodic_hamiltonian", False),
+                commensurate=solver._grid_commensurate() if hasattr(solver, "_grid_commensurate") else None,
                 active_space=solver._active_space_request(),
                 ghosts=getattr(solver, "ghosts", ()), two_body=two_body,
                 two_center=solver.two_center)
@@ -265,7 +267,9 @@ def active_space_gradient(atoms: Atoms, solver: VariationalDriver,
             tuple(displaced["active"]), gauge)
         return reduced_energy(displaced["integrals"], gamma, gamma2, rotation)
 
-    directions = (internal_directions(positions)
+    directions = (np.eye(positions.size)
+                  if getattr(solver, "periodic_hamiltonian", False)
+                  else internal_directions(positions)
                   if context.get("family") is not None
                   else np.eye(positions.size))
     gradient = np.zeros(positions.size)

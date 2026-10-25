@@ -50,7 +50,7 @@ def _terms_key(generator: PauliSum, time: float = 1.0) -> tuple[tuple[str, float
     return tuple(items)
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=2048)
 def _pauli_evolution_gate_cached(terms_key: tuple[tuple[str, float], ...],
                                  time: float = 1.0):
     from qiskit.circuit.library import PauliEvolutionGate
@@ -76,7 +76,7 @@ def _pauli_evolution_gate(generator: PauliSum, time=1.0):
                                         float(time))
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=2048)
 def _compiled_evolution_block(n_qubits: int,
                               terms_key: tuple[tuple[str, float], ...]):
     from qiskit import QuantumCircuit, transpile
@@ -89,7 +89,7 @@ def _compiled_evolution_block(n_qubits: int,
     return transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=1024)
 def _profile_qiskit_cached(n_qubits: int, occupied: tuple[int, ...],
                            ops_key: tuple[tuple[tuple[str, float], ...], ...]
                            ) -> tuple[int, int, int, int]:

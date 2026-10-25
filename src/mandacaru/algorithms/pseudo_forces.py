@@ -177,6 +177,7 @@ class AlgebraicEnergy:
     def lowdin(S):
         S = 0.5 * (S + S.conj().T)
         w, U = np.linalg.eigh(S)
+        w = np.maximum(w, 1e-14)
         return (U * (1.0 / np.sqrt(w))) @ U.conj().T
 
     def with_orbitals(self, A, h, g) -> float:

@@ -170,6 +170,7 @@ class PoolDriver(SectorMixin, VariationalDriver):
         # measured (:attr:`pool_gradients`).
         self._pool_gradient_tables = None
         self._pool_flip_plan = None
+        self.__dict__.pop("_sector_flip_positions_cache", None)
         if self.shots:
             # Every gradient is measured on the device: no generator is
             # materialized in any representation.
@@ -325,42 +326,68 @@ class PoolDriver(SectorMixin, VariationalDriver):
                     grads[op_ids] += 2.0 * np.real(M @ bsum)
             elif kind == "lut":
                 _, flip, base_phase, bit_positions, active_buckets, M, op_ids = item
-                if sector is not None:
-                    rows = sector.positions(states ^ np.int64(flip))
-                    inside = rows >= 0
-                    if not np.any(inside):
+                lut_cache = self.__dict__.setdefault("_lut_plan_cache", {})
+                cached = lut_cache.get(id(item), False)
+                if cached is not False:
+                    if cached is None:
                         continue
-                    rows = rows[inside]
-                    cols = np.flatnonzero(inside)
-                    kept = states[inside]
+                    rows, cols, parity, b = cached
                 else:
-                    cols = None
-                    kept = states
-                if bit_positions:
-                    b = _extract_bits(kept, bit_positions)
-                    if not np.all(active_buckets):
-                        act = active_buckets[b]
-                        if not np.any(act):
-                            continue
-                        if cols is None:
-                            cols = np.flatnonzero(act)
-                            kept = cols
-                            rows = cols ^ np.int64(flip) if flip else cols
+                    if sector is not None:
+                        pos_cache = self.__dict__.setdefault("_sector_flip_positions_cache", {})
+                        if flip in pos_cache:
+                            cached_entry = pos_cache[flip]
+                            if cached_entry is None:
+                                lut_cache[id(item)] = None
+                                continue
+                            rows, cols, kept = cached_entry
                         else:
-                            rows = rows[act]
-                            cols = cols[act]
-                            kept = kept[act]
-                        b = b[act]
-                    elif cols is None:
-                        rows = kept ^ np.int64(flip) if flip else kept
-                else:
-                    b = None
-                    if cols is None:
-                        rows = kept ^ np.int64(flip) if flip else kept
+                            r = sector.positions(states ^ np.int64(flip))
+                            inside = r >= 0
+                            if not np.any(inside):
+                                pos_cache[flip] = None
+                                lut_cache[id(item)] = None
+                                continue
+                            rows = r[inside] if r[inside].dtype == np.int32 else r[inside].astype(np.int32)
+                            cols = np.flatnonzero(inside).astype(np.int32)
+                            kept = states[inside]
+                            if len(pos_cache) > 2048:
+                                del pos_cache[next(iter(pos_cache))]
+                            pos_cache[flip] = (rows, cols, kept)
+                    else:
+                        cols = None
+                        kept = states
+                    if bit_positions:
+                        b = _extract_bits(kept, bit_positions)
+                        if not np.all(active_buckets):
+                            act = active_buckets[b]
+                            if not np.any(act):
+                                lut_cache[id(item)] = None
+                                continue
+                            if cols is None:
+                                cols = np.flatnonzero(act).astype(np.int32)
+                                kept = cols
+                                rows = (cols ^ np.int64(flip) if flip else cols).astype(np.int32)
+                            else:
+                                rows = rows[act]
+                                cols = cols[act]
+                                kept = kept[act]
+                            b = b[act]
+                        elif cols is None:
+                            rows = kept ^ np.int64(flip) if flip else kept
+                        b = b.astype(np.intp)
+                    else:
+                        b = None
+                        if cols is None:
+                            rows = kept ^ np.int64(flip) if flip else kept
+                    parity = (np.bitwise_count(kept & np.int64(base_phase)) & 1).astype(bool) if base_phase else None
+                    if len(lut_cache) > 4096:
+                        del lut_cache[next(iter(lut_cache))]
+                    lut_cache[id(item)] = (rows, cols, parity, b)
+
                 w = (np.conj(h_psi[rows]) * psi if cols is None
                      else np.conj(h_psi[rows]) * psi[cols])
-                if base_phase:
-                    parity = np.bitwise_count(kept & np.int64(base_phase)) & 1
+                if parity is not None:
                     w = np.where(parity, -w, w)
                 if b is None:
                     grads[op_ids] += 2.0 * np.real(M[:, 0] * np.sum(w))

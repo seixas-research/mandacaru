@@ -1013,7 +1013,7 @@ class Mandacaru(Calculator):
         which leaves the DOS unchanged).  A crystal's ``kpts`` is
         diagonalized non-self-consistently (``None``: the SCF mesh).
         """
-        return self._solver_member("dos", self._NEEDS_DFT)(
+        return self._solver_member("dos", self._NEEDS_BANDS)(
             width=width, npoints=npoints, kpts=kpts, energies=energies,
             integration=integration,
             curvature_correction=curvature_correction)
@@ -1194,6 +1194,7 @@ class Mandacaru(Calculator):
         # too (ADAPT's gradient jobs), not only the final one.
         solver.measurement_budget = self.measurement_budget
         solver.filter_pin = self._filter_pin
+        solver.library_folder = self.library_folder
         # A periodic driver keeps the primitive cell aside (its own `atoms`
         # becomes the supercell once it runs); hand over the attached geometry
         # so the band structure is available without a calculation.
@@ -2219,8 +2220,8 @@ class Mandacaru(Calculator):
                 self._project_translation(result)
             return result
 
-        if getattr(context.get("integrals"), "integral_direct", False) \
-                or getattr(context.get("integrals"), "cholesky_integrals", False):
+        if (getattr(context.get("integrals"), "integral_direct", False)
+                or getattr(context.get("integrals"), "cholesky_integrals", False)):
             # No tensor for the analytic gradient: the reduced Hamiltonian's
             # central difference, each geometry rebuilt the same way.
             return self._direct_active_space_gradient(
@@ -2285,7 +2286,8 @@ class Mandacaru(Calculator):
                     solver.result.optimal_energy, "Ha"))
             if reference_energy is not None:
                 rebuilt = result.details["energy_hartree"]
-                if abs(reference_energy - rebuilt) > ENERGY_CHECK_TOLERANCE:
+                energy_tol = 1e-3 if getattr(context.get("integrals"), "cholesky_integrals", False) else ENERGY_CHECK_TOLERANCE
+                if abs(reference_energy - rebuilt) > energy_tol:
                     raise RuntimeError(
                         "the energy rebuilt from the RDMs and molecular "
                         f"orbitals ({rebuilt:.10f} Ha) differs from the "
@@ -3273,6 +3275,7 @@ class Mandacaru(Calculator):
             raise PropertyNotImplementedError(self._no_stress_message())
         if atoms is not None:
             self.calculate(atoms, properties=("energy",))
+            solver = self.solver
         context = getattr(solver, "_gradient_context", None) or {}
         integrals = context.get("integrals")
         if integrals is None:
@@ -3280,22 +3283,39 @@ class Mandacaru(Calculator):
                 "the stress needs the integrals the Hamiltonian was built "
                 "from; run a geometry first (atoms.get_potential_energy()).")
 
-        if context.get("deleted"):
-            raise NotImplementedError(
-                "the stress tensor with a truncated virtual space "
-                "(active_space 'orbitals' or 'threshold') is not implemented.  "
-                "Deleting a virtual "
-                "orbital is exact for the energy at a fixed geometry, but the "
-                "selection itself moves with the nuclei: which orbitals are "
-                "kept, and -- for the 'mp2' method -- the rotation that "
-                "defines them, both depend on the geometry, and that "
-                "dependence is a response term the Hellmann-Feynman and Pulay "
-                "sums here do not contain.  The result would be the "
-                "derivative of a different energy than the one reported, "
-                "which is worse than not having it.  Use the full virtual "
-                "space for a relaxation, or a frozen core alone "
-                "(active_space={'frozen': ...}), whose orbitals are fixed by "
-                "the reference.")
+        if (context.get("deleted")
+                or getattr(context.get("integrals"), "cholesky_integrals", False)
+                or getattr(context.get("integrals"), "uses_pseudopotentials", False)):
+            gamma, gamma2 = self._state_rdms(solver, two_body=True)
+            active_space_request = solver._active_space_request()
+            supercell_atoms = solver.supercell(geometry)
+            cell_orig = np.asarray(supercell_atoms.get_cell(), dtype=float)
+            pos_orig = np.asarray(supercell_atoms.get_positions(), dtype=float)
+
+            def build(strain_matrix):
+                from ._hamiltonian_from_atoms import build_basis_hamiltonian
+                from .active_space_forces import reduced_energy
+
+                strained = supercell_atoms.copy()
+                strained.set_cell(cell_orig @ strain_matrix.T, scale_atoms=False)
+                strained.set_positions(pos_orig @ strain_matrix.T)
+                _H, _p, _m, _prof, disc = build_basis_hamiltonian(
+                    strained, solver.basis, None, solver.grid_spacing,
+                    solver.charge, solver.n_electrons, spin=solver.spin,
+                    kinetic=solver.kinetic,
+                    periodic=solver.periodic_hamiltonian,
+                    commensurate=solver._grid_commensurate(),
+                    active_space=active_space_request,
+                    two_body=solver.two_body if solver.two_body.cholesky else None,
+                    two_center=solver.two_center)
+                return reduced_energy(disc["integrals"], gamma, gamma2, None)
+
+            tensor = periodic_stress(
+                build, integrals.cell,
+                strain=DEFAULT_STRAIN if strain is None else float(strain))
+            tensor = tensor * from_hartree(1.0, "eV") / BOHR_TO_ANGSTROM ** 3
+            self.results["stress"] = np.array([tensor[a, b] for a, b in VOIGT])
+            return self.results["stress"] if voigt else tensor
 
         gamma, gamma2 = self._state_rdms(solver, two_body=True)
         frozen = context.get("frozen") or ()

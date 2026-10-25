@@ -42,6 +42,7 @@ it names the folder that holds the ``<Symbol>.parquet`` files itself.
 
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 
 #: Family -> the environment variable naming its repository checkout.
@@ -162,6 +163,7 @@ def repository_path(family: str) -> str:
     return path
 
 
+@lru_cache(maxsize=64)
 def paw_dataset_folder(family: str, xc: str = DEFAULT_XC, paw_dataset=None, *,
                       must_exist: bool = True,
                       relativity: str = "scalar") -> str:
@@ -175,7 +177,13 @@ def paw_dataset_folder(family: str, xc: str = DEFAULT_XC, paw_dataset=None, *,
     create.
     """
     if paw_dataset is not None:
-        return os.fspath(paw_dataset)
+        p = os.fspath(paw_dataset)
+        if not os.path.isdir(p):
+            try:
+                return library_folder(family, p)
+            except Exception:
+                pass
+        return p
     key = _family(family)
     name = library_folder_name(key, xc, relativity)
     root = repository_path(key)
@@ -195,6 +203,7 @@ def paw_dataset_folder(family: str, xc: str = DEFAULT_XC, paw_dataset=None, *,
 FOLDER_FAMILIES = ("paw-lcao",)
 
 
+@lru_cache(maxsize=64)
 def library_folder(family: str, folder: str = DEFAULT_XC) -> str:
     """``<checkout>/<folder>`` of ``family``'s library, which must exist.
 
@@ -243,7 +252,13 @@ def upaw_dataset_folder(xc: str = DEFAULT_XC, paw_dataset=None) -> str | None:
     set variable that names no folder still is.
     """
     if paw_dataset is not None:
-        return os.fspath(paw_dataset)
+        p = os.fspath(paw_dataset)
+        if not os.path.isdir(p):
+            try:
+                return library_folder(family, p)
+            except Exception:
+                pass
+        return p
     if not os.environ.get(FAMILY_VARIABLES["upaw-lcao"], "").strip():
         return None
     return os.path.join(repository_path("upaw-lcao"), _functional(xc))

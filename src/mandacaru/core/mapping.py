@@ -197,9 +197,17 @@ class PauliSum:
 
     def simplify(self, atol: float = 1e-12) -> "PauliSum":
         """Drop terms with negligible coefficient, keeping the register width."""
-        return PauliSum._from_valid_terms(
+        cache = getattr(self, "_simplify_cache", None)
+        if cache is not None and atol in cache:
+            return cache[atol]
+        res = PauliSum._from_valid_terms(
             {l: c for l, c in self.terms.items() if abs(c) > atol},
             num_qubits=self.num_qubits or None)
+        if cache is None:
+            self._simplify_cache = {atol: res}
+        else:
+            cache[atol] = res
+        return res
 
     def is_hermitian(self, atol: float = 1e-9) -> bool:
         return all(abs(c.imag) < atol for c in self.simplify().terms.values())
@@ -406,7 +414,7 @@ def _qubit_ladder_pauli_cached(base_method: str, n: int, j: int,
         n, j, dagger, update[j], parity[j] ^ remainder[j])
 
 
-@lru_cache(maxsize=8192)
+@lru_cache(maxsize=32768)
 def _qubit_excitation_terms(modes_out: tuple[int, ...],
                             modes_in: tuple[int, ...],
                             n: int, canonical: str,

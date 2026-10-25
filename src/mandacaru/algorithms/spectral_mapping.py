@@ -75,6 +75,7 @@ class SpectralRegister:
         self._fermion_hamiltonian = fermion_hamiltonian
         self._hamiltonians = {self.num_particles: hamiltonian}
         self._sectors: dict[tuple[int, int], ParticleSector] = {}
+        self._transition_cache: dict = {}
 
         sector = self.sector(self.num_particles)
         psi = np.asarray(state, dtype=complex).ravel()
@@ -154,6 +155,9 @@ class SpectralRegister:
         m = self.n_modes // 2
         if any(n < 0 or n > m for n in particles):
             return np.empty(0, dtype=complex)
+        cache_key = (tuple(creation.terms.items()), particles, addition)
+        if cache_key in self._transition_cache:
+            return self._transition_cache[cache_key]
         base = "parity" if self.reduced else self.mapping
         operator = creation.map_to_qubits(base, n_modes=self.n_modes)
         if not addition:
@@ -175,4 +179,5 @@ class SpectralRegister:
                 "the operator and Hamiltonian use inconsistent mappings")
         out = np.zeros(sector.dim, dtype=complex)
         np.add.at(out, positions[kept], amplitudes[kept])
+        self._transition_cache[cache_key] = out
         return out

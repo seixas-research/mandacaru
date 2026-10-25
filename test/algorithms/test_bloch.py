@@ -169,19 +169,14 @@ class TestConstructorRefusesBadOptions:
 
 
 class TestUnsupportedCombinations:
-    def test_a_pseudopotential_basis_is_refused(self):
-        """It would otherwise solve an isolated cluster, silently.
-
-        The pseudopotential path builds its own integrals and never sees the
-        periodic flag, so it cannot be left to the guard inside
-        ``PeriodicIntegrals`` -- that code is never reached from here.
-        """
+    def test_a_pseudopotential_basis_runs(self):
+        """Periodic PAW-LCAO runs with periodic lattice sum and Ewald terms."""
         atoms = chain()
         atoms.calc = Mandacaru(method="bloch-vqe", kpts=GAMMA2,
                                basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.35,
                                trace=False)
-        with pytest.raises(NotImplementedError, match="periodic lattice sum"):
-            atoms.get_potential_energy()
+        energy = atoms.get_potential_energy()
+        assert np.isfinite(energy)
 
 
 class TestMolecularKPointsAreUnchanged:
@@ -338,12 +333,14 @@ class TestBands:
         with pytest.raises(ValueError, match="ground state"):
             calc.bands()
 
-    def test_a_continuous_path_is_refused(self):
-        """A finite supercell has Bloch operators only on its own mesh."""
+    def test_a_continuous_path_is_interpolated(self):
+        """A continuous path interpolates the interacting band structure."""
         atoms = periodic(optimizer=SLSQP)
         atoms.get_potential_energy()
-        with pytest.raises(NotImplementedError, match="continuous band path"):
-            atoms.calc.band_structure("GX", npoints=201)
+        bs = atoms.calc.band_structure("GX", npoints=20)
+        assert bs is not None
+        assert bs.energies.shape[1] == 20
+        assert hasattr(bs, "spectral_function")
 
 
 class TestSpectralFunction:
@@ -410,6 +407,33 @@ class TestSpectralFunction:
         atoms.get_potential_energy()
         path = atoms.calc.get_spectral_function().write(tmp_path / "a.csv")
         assert pathlib.Path(path).read_text().startswith("k_index,")
+
+    def test_lanczos_branch_matches_dense_branch(self):
+        atoms = periodic(optimizer=SLSQP)
+        atoms.get_potential_energy()
+        driver = atoms.calc._solver
+        coefficients, reference, register = driver._spectral_context()
+        creation = driver._bloch_creation(np.zeros(3), 0, 0, coefficients,
+                                          coefficients.shape[0])
+        alpha, beta = driver.num_particles
+        particles = (alpha + 1, beta)
+        chi = register.transition(creation, particles, addition=True)
+        sector = register.sector(particles)
+        H_sp = sector.restrict(register.hamiltonian(particles))
+        H_sp = 0.5 * (H_sp + H_sp.conj().T)
+        
+        # Dense
+        vals_d, vecs_d = np.linalg.eigh(H_sp.toarray())
+        poles_d = vals_d - reference
+        weights_d = np.abs(vecs_d.conj().T @ chi) ** 2
+        keep_d = weights_d > 1e-12
+        poles_d = poles_d[keep_d]
+        weights_d = weights_d[keep_d]
+        
+        # Lanczos
+        poles_l, weights_l = driver._lanczos_lehmann(H_sp, chi, reference, addition=True, n_steps=sector.dim)
+        assert np.sum(weights_l) == pytest.approx(np.sum(weights_d), rel=1e-8)
+        assert np.allclose(np.sort(poles_l), np.sort(poles_d), atol=1e-6)
 
 
 class TestFermiLevel:

@@ -40,6 +40,7 @@ text format is kept as a first-class alternative rather than an export.
 
 from __future__ import annotations
 
+from functools import lru_cache
 import json
 import os
 
@@ -296,21 +297,9 @@ def _read_parquet(path, engine):
     return payload
 
 
-def load_pseudopotential(path, format: str | None = None,
-                         engine: str = "auto") -> PseudoPotential:
-    """Read a pseudopotential written by :func:`save_pseudopotential`.
-
-    The format is **detected automatically** (:func:`detect_format`), so Parquet
-    and JSON files load through the same call.
-
-    The all-electron atom is *not* stored (it is large and only needed while
-    generating), so :attr:`PseudoPotential.atom` is ``None`` on a loaded object.
-    """
-    path = os.fspath(path)
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"no such pseudopotential file: {path!r}")
-    format = detect_format(path) if format is None else resolve_format(format)
-
+@lru_cache(maxsize=128)
+def _load_pseudopotential_cached(path: str, mtime_ns: int,
+                                 format: str | None, engine: str) -> PseudoPotential:
     if format == "json":
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
@@ -336,6 +325,25 @@ def load_pseudopotential(path, format: str | None = None,
     # The codec reads the family back off the payload, so hand it the
     # canonical spelling rather than the one on disk.
     return _codec(family).from_payload({**payload, "family": family})
+
+
+def load_pseudopotential(path, format: str | None = None,
+                         engine: str = "auto") -> PseudoPotential:
+    """Read a pseudopotential written by :func:`save_pseudopotential`.
+
+    The format is **detected automatically** (:func:`detect_format`), so Parquet
+    and JSON files load through the same call.
+
+    The all-electron atom is *not* stored (it is large and only needed while
+    generating), so :attr:`PseudoPotential.atom` is ``None`` on a loaded object.
+    """
+    path = os.fspath(path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"no such pseudopotential file: {path!r}")
+    format = detect_format(path) if format is None else resolve_format(format)
+    real_path = os.path.realpath(path)
+    mtime_ns = os.stat(real_path).st_mtime_ns
+    return _load_pseudopotential_cached(real_path, mtime_ns, format, engine)
 
 
 # --------------------------------------------------------------------------- #

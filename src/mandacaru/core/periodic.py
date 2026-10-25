@@ -180,20 +180,19 @@ class PeriodicIntegrals(MolecularIntegrals):
         Zero-mean, like the Coulomb kernel that accompanies it.  The charges
         are ``-Z`` because this is what an *electron* feels.
         """
-        if self.uses_pseudopotentials:
-            raise NotImplementedError(
-                "a pseudopotential has not been given a periodic lattice sum "
-                "yet; use an all-electron basis for a periodic calculation.")
         sites = np.array([to_bohr(position, self.units)
                           for _charge, position in self.nuclei], dtype=float)
         charges = np.array([-float(charge) for charge, _p in self.nuclei])
+        softening = self._potentials.softening
+        if self.uses_pseudopotentials and getattr(self, "split_local_potential", False):
+            softening = self.local_split_width()
 
         def potential(x, y, z):
             points = np.stack([np.asarray(x, dtype=float).ravel(),
                                np.asarray(y, dtype=float).ravel(),
                                np.asarray(z, dtype=float).ravel()], axis=1)
             values = ewald_potential(sites, charges, self.cell, points,
-                                     softening=self._potentials.softening)
+                                     softening=softening)
             return values.reshape(np.asarray(x).shape)
 
         return potential

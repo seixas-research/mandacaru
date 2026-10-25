@@ -65,7 +65,7 @@ from .sector import flip_groups
 #: Default bound (bytes) on the CSR block a :class:`PauliOperator` keeps
 #: between products.  Groups past it are recomputed on every product: slower,
 #: never larger.
-MATRIX_FREE_CACHE_BYTES = 256 * 2 ** 20
+MATRIX_FREE_CACHE_BYTES = 1024 * 1024 * 1024
 #: Widest full register a 64-bit basis-state index addresses.
 MAX_MATRIX_FREE_QUBITS = 62
 #: The ``sparse=`` value that selects this module's operators.

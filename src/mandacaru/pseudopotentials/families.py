@@ -304,7 +304,9 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
                               integrals_class=None,
                               potentials_keyword: str = "pseudos",
                               ghosts=(), electric_field=None, two_body=None,
-                              one_center=None, two_center=None):
+                              one_center=None, two_center=None,
+                              periodic: bool = False, cell=None,
+                              commensurate=None):
     """The driver 5-tuple of a pseudopotential family -- the part every family
     shares.
 
@@ -334,6 +336,8 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
     (:class:`~mandacaru.core.MolecularIntegrals`).  The analytic route owns
     the kinetic operator, so ``kinetic`` must be left at ``None`` with it.
     """
+    import numpy as np
+
     from ..algorithms._hamiltonian_from_atoms import (
         DEFAULT_KINETIC, _num_particles, _warn_unresolved, coherent_positions,
         grid_from_cell, resolve_num_unpaired)
@@ -363,8 +367,16 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
     # *realized* spacing (the coarsest axis -- an anisotropic grid can only
     # represent what its worst direction can), which is known only once the
     # grid exists.  Nothing else about the grid depends on the basis.
-    g = (grid if grid is not None
-         else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0)))
+    cell = np.asarray(atoms.get_cell(), dtype=float) if cell is None else np.asarray(cell, dtype=float)
+    if periodic:
+        from ..integrals import Grid
+        g = (grid if grid is not None
+             else Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
+                       units="angstrom", cell=cell, periodic=True,
+                       commensurate=commensurate))
+    else:
+        g = (grid if grid is not None
+             else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0)))
     k_c = resolve_filter_cutoff(options.get("filter_cutoff"),
                                 max(g.dx, g.dy, g.dz))
 
@@ -393,6 +405,11 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
 
     n_unpaired = resolve_num_unpaired(atoms[real], spin, n_el)
     num_particles = _num_particles(n_el, n_unpaired, family.upper())
+    extra_integ = {}
+    if periodic:
+        extra_integ["periodic"] = True
+        extra_integ["cell"] = cell
+        extra_integ["n_electrons"] = n_el
     integrals = (integrals_class or MolecularIntegrals)(
         nuclei, basis_fns, g, softening=0.0,
         kb_projectors=kb, nonlocal_coupling=coupling_blocks,
@@ -403,6 +420,7 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
                  else kinetic or DEFAULT_KINETIC["pseudopotentials"]),
         **({} if two_center is None else {"two_center": two_center}),
         **({} if one_center is None else {"one_center": one_center}),
+        **extra_integ,
         **{potentials_keyword: [potentials[s] for s in real_symbols]})
     if electric_field is not None:
         integrals.apply_electric_field(electric_field)

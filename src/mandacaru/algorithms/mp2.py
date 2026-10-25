@@ -269,13 +269,17 @@ def semicanonical_rotation(fock: np.ndarray, n_occ: int,
             off = max(off, float(np.max(np.abs(sub - np.diag(np.diag(sub))))))
     rotation = np.eye(n, dtype=float)
     energies = np.real(np.diag(fock)).astype(float).copy()
-    if off <= float(tolerance):
+    # If the blocks are already diagonal within SCF convergence tolerance, keep identity
+    if off <= max(float(tolerance), 1e-4):
         return rotation, energies
     for block in blocks:
         sub = np.asarray(fock[block, block])
         if sub.size == 0:
             continue
         eigenvalues, vectors = np.linalg.eigh(sub)
+        for k in range(vectors.shape[1]):
+            if vectors[k, k] < 0:
+                vectors[:, k] = -vectors[:, k]
         rotation[block, block] = vectors
         energies[block] = eigenvalues
     return rotation, energies

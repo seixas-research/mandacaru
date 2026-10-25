@@ -806,7 +806,9 @@ class VariationalDriver(Calculator):
         if self._matrix_free:
             # Only integer masks and coefficients are kept; the Hermitian part
             # is taken on the coefficients, as 0.5 * (H + H^dagger) would.
-            return PauliOperator(qubit_h, sector=sector, hermitian=True)
+            h_op = qubit_h.simplify(atol=1e-5) if hasattr(qubit_h, "simplify") else qubit_h
+            return PauliOperator(h_op, sector=sector, hermitian=True,
+                                 cache_bytes=1024 * 1024 * 1024)
         # Each Pauli string is Hermitian, so 0.5 * (H + H^dagger) is H with
         # its coefficients made real: the stored matrix is built once from
         # them, with no transposed copy and no sum of two (the sector matrix

@@ -79,6 +79,9 @@ DEFAULT_SYMPREC = 1e-5
 #: k-points closer than this are the same point.
 KPOINT_TOLERANCE = 1e-8
 
+_SYMMETRY_CACHE: dict = {}
+_IRREDUCIBLE_CACHE: dict = {}
+
 
 def require_spglib():
     """Import spglib, configured to raise rather than signal, or explain how
@@ -225,16 +228,16 @@ class IrreducibleZone:
 
 
 def crystal_symmetry(atoms, symprec: float = DEFAULT_SYMPREC) -> SymmetryInfo:
-    """Find the space group of an ASE ``Atoms`` with spglib.
+    """Find the space group of an ASE ``Atoms`` with spglib."""
+    key = (
+        tuple(np.round(np.asarray(atoms.cell[:], dtype=float).flatten(), 8)),
+        tuple(np.round(np.asarray(atoms.get_scaled_positions(), dtype=float).flatten(), 8)),
+        tuple(int(z) for z in atoms.get_atomic_numbers()),
+        float(symprec)
+    )
+    if key in _SYMMETRY_CACHE:
+        return _SYMMETRY_CACHE[key]
 
-    The cell is taken as given.  A slab or a chain carries vacuum along its
-    open directions, so spglib reports the space group of the *periodic
-    repetition of that cell* -- a square lattice of atoms in a tall box comes
-    back as tetragonal ``P4/mmm``, not as a 2-D plane group.  That is the right
-    answer for what is being solved (the supercell really is 3-D periodic in
-    the basis functions' lattice sum), and the operations it returns are the
-    ones that act correctly on the mesh.
-    """
     spglib = require_spglib()
     cell = (np.asarray(atoms.cell[:], dtype=float),
             np.asarray(atoms.get_scaled_positions(), dtype=float),
@@ -253,13 +256,15 @@ def crystal_symmetry(atoms, symprec: float = DEFAULT_SYMPREC) -> SymmetryInfo:
             return dataset[name]
         return getattr(dataset, name)
 
-    return SymmetryInfo(
+    info = SymmetryInfo(
         number=int(field_of("number")),
         international=str(field_of("international")),
         point_group=str(field_of("pointgroup")),
         rotations=np.asarray(field_of("rotations"), dtype=int),
         translations=np.asarray(field_of("translations"), dtype=float),
         symprec=float(symprec))
+    _SYMMETRY_CACHE[key] = info
+    return info
 
 
 def _fold(k):
@@ -303,6 +308,10 @@ def irreducible_kpoints(kpoints, symmetry: SymmetryInfo,
         raise ValueError(
             f"kpoints must have shape (nk, 3); got {full.shape}")
 
+    ir_key = (tuple(np.round(full.flatten(), 8)), id(symmetry), bool(time_reversal))
+    if ir_key in _IRREDUCIBLE_CACHE:
+        return _IRREDUCIBLE_CACHE[ir_key]
+
     rotations = np.asarray(symmetry.rotations, dtype=int)
     reps: list[np.ndarray] = []
     rep_indices: list[int] = []
@@ -331,7 +340,7 @@ def irreducible_kpoints(kpoints, symmetry: SymmetryInfo,
         mapping[index] = found
         weights[found] += 1
 
-    return IrreducibleZone(
+    zone = IrreducibleZone(
         points=np.asarray(reps, dtype=float).reshape(-1, 3),
         weights=np.asarray(weights, dtype=int),
         mapping=mapping,
@@ -339,3 +348,5 @@ def irreducible_kpoints(kpoints, symmetry: SymmetryInfo,
         symmetry=symmetry,
         time_reversal=bool(time_reversal),
         _full=full)
+    _IRREDUCIBLE_CACHE[ir_key] = zone
+    return zone

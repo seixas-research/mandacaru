@@ -18,6 +18,7 @@ dropped in unchanged.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from ..utils.profiling import profile_stage
 
 from collections.abc import Callable, Sequence
@@ -53,9 +54,14 @@ def eri_memory_budget_mb() -> float:
 PotentialFn = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 
 
+@lru_cache(maxsize=16)
+def _reference_r(r_max: float = 40.0, points: int = 20001) -> np.ndarray:
+    return np.linspace(0.0, float(r_max), int(points))
+
+
 def _radial_table(radial, r_max: float = 40.0, points: int = 20001):
     """``(r, R)`` of a radial function on the fine reference grid."""
-    r = np.linspace(0.0, r_max, points)
+    r = _reference_r(r_max, points)
     return r, np.nan_to_num(np.asarray(radial(r), dtype=float))
 
 
@@ -250,8 +256,7 @@ class IntegralEngine:
                   else (lambda function: function.sample(grid)))
         #: Whether every function is real (a molecule's real harmonics): the
         #: samples, and every integral built from them, are then ``float64``.
-        self.real = (not self.periodic and bool(self.basis)
-                     and all(getattr(f, "real", False) for f in self.basis))
+        self.real = bool(self.basis) and all(getattr(f, "real", False) for f in self.basis)
         self._psi = np.empty((len(self.basis), grid.size),
                              dtype=np.float64 if self.real else np.complex128)
         for row, function in zip(self._psi, self.basis):
@@ -297,9 +302,10 @@ class IntegralEngine:
         cell = np.asarray(
             to_bohr(np.asarray(grid.cell, dtype=float).reshape(3, 3),
                     grid.units), dtype=float)
+        dtype = np.float64 if getattr(function, "real", False) else np.complex128
         total = np.array(
             np.broadcast_to(function.evaluate(grid.X, grid.Y, grid.Z),
-                            grid.shape), dtype=np.complex128)
+                            grid.shape), dtype=dtype)
         for shell in range(1, self.IMAGE_SHELLS + 1):
             added = np.zeros_like(total)
             span = range(-shell, shell + 1)

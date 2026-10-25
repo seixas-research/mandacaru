@@ -480,11 +480,17 @@ def short_range_matrices(basis, centers, datasets, sigma: float, *,
     """
     directions, w_angular = _angular_rule(polar, azimuthal)
     matrices, derivatives = ({} if values else None), ({} if gradients else None)
+    quad_cache = {}
     for atom, dataset in enumerate(datasets):
-        radius = short_range_radius(dataset, sigma)
-        radii, w_radial = _radial_rule(radius, local_cutoff(dataset), radial)
-        potential = short_range_potential(dataset, sigma, radii)
-        weight = (w_radial * potential)[:, None] * w_angular[None, :]
+        ds_key = (id(dataset), float(sigma), int(radial), int(polar), int(azimuthal))
+        if ds_key in quad_cache:
+            radii, weight = quad_cache[ds_key]
+        else:
+            radius = short_range_radius(dataset, sigma)
+            radii, w_radial = _radial_rule(radius, local_cutoff(dataset), radial)
+            potential = short_range_potential(dataset, sigma, radii)
+            weight = (w_radial * potential)[:, None] * w_angular[None, :]
+            quad_cache[ds_key] = (radii, weight)
         I, G = _atom_matrices(basis, centers[atom], weight, radii, directions,
                               gradients=gradients, delta=delta, block=block,
                               values=values)

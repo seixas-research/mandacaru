@@ -563,7 +563,8 @@ def _pseudopotential_hamiltonian(atoms, grid, grid_spacing, charge, spin, family
                                  options, kinetic=None, active_space=None,
                                  hamiltonian: bool = True, ghosts=(),
                                  electric_field=None, two_body=None,
-                                 one_center=None, two_center=None):
+                                 one_center=None, two_center=None,
+                                 periodic: bool = False, commensurate=None):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -599,6 +600,9 @@ def _pseudopotential_hamiltonian(atoms, grid, grid_spacing, charge, spin, family
         extra["one_center"] = one_center
     if two_center is not None:
         extra["two_center"] = two_center
+    if periodic:
+        extra["periodic"] = periodic
+        extra["commensurate"] = commensurate
     return family.build(atoms, grid, grid_spacing, charge, spin, dict(options), kinetic,
                         active_space=active_space, hamiltonian=hamiltonian,
                         **extra)
@@ -714,18 +718,6 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
     ghosts = validate_ghosts(ghosts, len(symbols))
     family, options = resolve_pseudo_basis(name, options, symbols)
     if family is not None:
-        if periodic:
-            # The pseudopotential path builds its own integrals and never sees
-            # the `periodic` flag, so without this it would return an isolated
-            # cluster energy for a periodic method -- silently, which is worse
-            # than failing.  `PeriodicIntegrals.external_potential` refuses the
-            # same combination, but is never reached from here.
-            raise NotImplementedError(
-                f"the {family.label} basis has no periodic lattice sum yet, so "
-                "a periodic method would solve an isolated cluster on the "
-                "supercell instead of a crystal.  Use an all-electron basis "
-                "(HAO, NAO, GTO, a named Gaussian family) for a periodic "
-                "calculation, or a molecular method for this basis.")
         if spec is not None and spec.frozen is not None:
             raise ValueError(
                 f"an active_space 'frozen' core is redundant with the "
@@ -743,7 +735,8 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
             atoms, grid, grid_spacing, charge, spin, family, options, kinetic=kinetic,
             active_space=spec, hamiltonian=hamiltonian, ghosts=ghosts,
             electric_field=electric_field, two_body=two_body,
-            one_center=one_center, two_center=two_center)
+            one_center=one_center, two_center=two_center,
+            periodic=periodic, commensurate=commensurate)
 
     if validate_two_center(two_center) == "analytic":
         raise NotImplementedError(
@@ -789,10 +782,11 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
         bset = BasisSet.build(name, **options)
     basis_fns, nuclei, atom_of_orbital = [], [], []
     for atom_index, (Z, sym, pos) in enumerate(zip(numbers, symbols, positions)):
-        # Real spherical harmonics for a molecule, complex ones for a
-        # crystal (its Bloch sums and periodic consumers index them by m).
+        # Real spherical harmonics for a molecule, or for a crystal when
+        # using Cholesky factorization (which factors real pair densities).
+        use_real = (not periodic) or (two_body is not None and getattr(two_body, "cholesky", False))
         functions = bset.atom(sym, center=pos, units="angstrom",
-                              real=not periodic)
+                              real=use_real)
         basis_fns += functions
         atom_of_orbital += [atom_index] * len(functions)
         if atom_index not in ghosts:          # a ghost lends its functions only

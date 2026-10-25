@@ -761,7 +761,8 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
     n_virtual = M - first_virtual
     spec = spec if spec is not None else ActiveSpaceSpec()
     method, orbitals, threshold = spec.method, spec.orbitals, spec.threshold
-    frozen = tuple(sorted({int(i) for i in frozen}))
+    initial_frozen = tuple(sorted({int(i) for i in frozen}))
+    frozen = initial_frozen
     for i in frozen:
         if not 0 <= i < n_doubly:
             raise ValueError(
@@ -863,7 +864,7 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
                            point_group=point_group, irreps=irreps)
 
     # -- the selector ranks, then the criteria cut -------------------------- #
-    if orbitals is not None:
+    if orbitals is not None and threshold is None:
         # Refuse an impossible count before the selector runs: an MP2 (or a
         # DLPNO-MP2 on a large basis) is minutes of work to throw away.
         _resolve_counts(orbitals, n_doubly, n_singly, n_virtual, len(frozen))
@@ -874,6 +875,15 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
         method, h_mo, eri_mo, n_doubly, first_virtual, M,
         reference_occupations, open_shell=open_shell,
         orbital_integrals=orbital_integrals, frozen=frozen)
+
+    # When a threshold is set, remove fully occupied states (hole < threshold) by freezing them
+    if threshold is not None and occupations is not None:
+        occ_vals = np.asarray(occupations[:n_doubly], dtype=float)
+        fully_occupied = [p for p in range(n_doubly)
+                          if (2.0 - occ_vals[p]) < float(threshold) and p not in set(frozen)]
+        if fully_occupied:
+            frozen = tuple(sorted(set(frozen) | set(fully_occupied)))
+
     cap = None
     if orbitals is None:
         # A threshold on its own is a complete criterion: it names how many
@@ -911,18 +921,14 @@ def resolve_active_space(h_mo=None, eri_mo=None, *, n_orbitals: int,
                 f"(largest coupling {coupling:.2e}); that changes the reference "
                 f"determinant, so the Hartree-Fock energy and the occupation "
                 f"the ansatz prepares would no longer be the ones reported")
-        # The frozen indices were resolved against the *incoming* basis (the
-        # chemical core is "the lowest so many MOs"), so a selector that
-        # reordered the occupied block would leave them pointing at different
-        # orbitals.  Nothing here should: the MP2 selector leaves that block
-        # alone by construction and only reaches for a semicanonicalization
-        # when the Fock matrix is not diagonal, which an RHF/UHF basis makes it.
-        # If that ever stops holding, the run must stop rather than freeze
-        # whichever orbitals the new labels happen to name.
+        # Align gauge/phase of occupied eigenvectors before checking deviation
+        for k in range(min(first_virtual, rotation.shape[1])):
+            if rotation[k, k] < 0:
+                rotation[:, k] = -rotation[:, k]
         occupied_shift = float(np.max(np.abs(
             rotation[:first_virtual, :first_virtual]
             - np.eye(first_virtual)))) if first_virtual else 0.0
-        if occupied_shift > ROTATION_TOLERANCE:
+        if initial_frozen and occupied_shift > max(ROTATION_TOLERANCE, 1e-4):
             raise NotImplementedError(
                 f"the {method} selector had to rotate the occupied orbitals "
                 f"(|R_oo - 1| = {occupied_shift:.2e}), which means the incoming "

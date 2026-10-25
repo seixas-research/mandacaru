@@ -76,6 +76,7 @@ complex transform is kept as it was.
 from __future__ import annotations
 
 from collections import OrderedDict
+from functools import lru_cache
 
 import numpy as np
 from scipy import fft as sfft
@@ -520,8 +521,9 @@ def fft_g_squared(shape, cell):
     :math:`(n/2)^2 Q_{aa}`.  **For an orthogonal cell this changes nothing**,
     which is why no existing energy moves.
     """
-    shape = tuple(int(n) for n in shape)
-    cell = np.asarray(cell, dtype=float)
+@lru_cache(maxsize=32)
+def _fft_g_squared_cached(shape: tuple[int, int, int], cell_tuple: tuple[float, ...]) -> np.ndarray:
+    cell = np.asarray(cell_tuple, dtype=float).reshape(3, 3)
     reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
     Q = reciprocal.T @ reciprocal
 
@@ -544,6 +546,12 @@ def fft_g_squared(shape, cell):
             keep = ~(nyquist[a] | nyquist[b])
             g_squared += Q[a, b] * np.where(keep, m[a] * m[b], 0.0)
     return g_squared
+
+
+def fft_g_squared(shape, cell) -> np.ndarray:
+    shape_tup = tuple(int(n) for n in shape)
+    cell_tup = tuple(float(x) for x in np.asarray(cell, dtype=float).ravel())
+    return _fft_g_squared_cached(shape_tup, cell_tup).copy()
 
 
 #: Recognized Coulomb truncations for :class:`PeriodicPoissonSolver`.
@@ -665,8 +673,11 @@ def slab_truncated_kernel(shape, cell, axis: int = 2) -> np.ndarray:
     sign choices -- so a hexagonal slab is treated as consistently as an
     orthogonal one.
     """
-    shape = tuple(int(n) for n in shape)
-    cell = np.asarray(cell, dtype=float)
+@lru_cache(maxsize=32)
+def _slab_truncated_kernel_cached(shape: tuple[int, int, int],
+                                  cell_tuple: tuple[float, ...],
+                                  axis: int = 2) -> np.ndarray:
+    cell = np.asarray(cell_tuple, dtype=float).reshape(3, 3)
     axis = int(axis)
     if axis not in (0, 1, 2):
         raise ValueError(f"axis must be 0, 1 or 2, got {axis}")
@@ -732,6 +743,12 @@ def slab_truncated_kernel(shape, cell, axis: int = 2) -> np.ndarray:
                           kernel)
     kernel[~np.isfinite(kernel)] = 0.0
     return kernel
+
+
+def slab_truncated_kernel(shape, cell, axis: int = 2) -> np.ndarray:
+    shape_tup = tuple(int(n) for n in shape)
+    cell_tup = tuple(float(x) for x in np.asarray(cell, dtype=float).ravel())
+    return _slab_truncated_kernel_cached(shape_tup, cell_tup, int(axis)).copy()
 
 
 def slab_occupancy(rho, shape, axis: int) -> float:
