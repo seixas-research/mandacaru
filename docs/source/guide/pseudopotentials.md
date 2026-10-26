@@ -1012,7 +1012,7 @@ uniform grid.
 ### Datasets
 
 No UPAW-LCAO library is shipped, and its repository, `mandacaru-upaw`, is the
-one optional one: `get_upaw(symbol)` looks in `$MANDACARU_UPAW_PATH/<xc>/`
+one optional one: `get_upaw(symbol)` looks in `$MANDACARU_UPAW_PATH/lda-sr/`
 and, finding nothing there (including when `MANDACARU_UPAW_PATH` is unset),
 **generates the dataset on the fly**, caches it in memory and warns once —
 generation is 0.4–2.2 s per element, so an interactive run pays a fraction of
@@ -1023,7 +1023,7 @@ missing element then raises with the `build_upaw_library` recipe:
 ```python
 from mandacaru.pseudopotentials.paw import build_upaw_library
 
-build_upaw_library(("H", "C", "N", "O"))          # into $MANDACARU_UPAW_PATH/lda/
+build_upaw_library(("H", "C", "N", "O"))          # into $MANDACARU_UPAW_PATH/lda-sr/
 build_upaw_library(("H", "O"), paw_dataset="/data/upaw")
 ```
 
@@ -1220,7 +1220,7 @@ UPAW-LCAO has its own repository, `mandacaru-upaw`, but it is the one
 optional library: without `MANDACARU_UPAW_PATH` a missing dataset is
 generated on demand (*Datasets* above) rather than raising
 `LibraryPathError`. A library built with `mandacaru-build --pp UPAW
---install` goes to `$MANDACARU_UPAW_PATH/<xc>/`, inside that checkout. The
+--install` goes to `$MANDACARU_UPAW_PATH/lda-sr/`, inside that checkout. The
 PAW-LCAO library is regenerated or extended the same way,
 with `mandacaru-build --pp PAW --all --install`
 (or `build_paw_library` from Python, above).

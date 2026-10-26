@@ -64,9 +64,9 @@ atoms = Atoms("LiH",
                          [0.0, 0.0, 1.6]],          # H
               cell=[10.0, 10.0, 10.0])
 
-atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "ghf", "dft", "vqe" (ansatz="uccsd"|"hva"), subspace methods
+atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "ghf", "dft", "vqe"
                        basis="HAO",                          # Basis set
-                       grid_spacing=0.10,                               # real-space grid spacing (Å)
+                       grid_spacing=0.10,                    # real-space grid spacing (Å)
                        pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
                        mapping="jordan_wigner",              # "jordan_wigner" | "parity" | "parity_reduced" | "bravyi_kitaev"
                        optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "CG" | "COBYLA" | "Nelder-Mead" | "SPSA"

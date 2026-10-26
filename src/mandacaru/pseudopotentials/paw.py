@@ -1563,6 +1563,7 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
                  extra_l: int = DEFAULT_EXTRA_L,
                  frozen_subshells=None,
                  semicore_subshells=None,
+                 reference_configuration: dict | None = None,
                  ghosts: str = "repair") -> PAWDataset:
     r"""Generate a PAW-LCAO dataset for ``symbol`` (see the module docstring).
 
@@ -1605,6 +1606,10 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         defaults to :data:`DEFAULT_FROZEN_SUBSHELLS` (the 4f of Tl-Rn).  A
         frozen shell above the remaining valence keeps an empty channel,
         scattering at :data:`FROZEN_SCATTERING_ENERGY`.
+    reference_configuration : dict, optional
+        ``{(n, l): occupancy}`` laid over the relaxed ground-state
+        configuration of the reference atom; defaults to
+        :data:`DEFAULT_REFERENCE_CONFIGURATIONS` for the element.
     semicore_subshells : sequence of tuple, optional
         Filled core subshells, as ``(n, l)`` pairs, to generate into the
         valence instead; defaults to :data:`DEFAULT_SEMICORE_SUBSHELLS` (the
@@ -1671,11 +1676,13 @@ def generate_paw(symbol: str, *, r_cut=None, rc_factor: float = DEFAULT_RC_FACTO
         n_points = (generation_points(atomic_number)
                     if points is None else int(points))
         configuration = None
-        if symbol in DEFAULT_REFERENCE_CONFIGURATIONS:
+        if reference_configuration is None:
+            reference_configuration = DEFAULT_REFERENCE_CONFIGURATIONS.get(symbol)
+        if reference_configuration:
             from ..basis.atomic_solver import relaxed_configuration
             configuration = {**relaxed_configuration(
                 atomic_number, xc=xc, relativity=relativity, r_max=r_max,
-                points=n_points), **DEFAULT_REFERENCE_CONFIGURATIONS[symbol]}
+                points=n_points), **reference_configuration}
             configuration = {k: v for k, v in configuration.items() if v > 0}
         atom = solve_atom(atomic_number, points=n_points,
                           r_max=r_max, tolerance=REFERENCE_TOLERANCE,
@@ -3277,6 +3284,68 @@ def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
     return written
 
 
+#: Per-dataset recipes of the UPAW-LCAO family only, ``{(symbol, xc): {option:
+#: value}}`` with the keyword arguments of :func:`generate_paw` (``extra_l``,
+#: ``semicore_subshells``, ``r_cut`` ...), laid under the caller's own options
+#: by :func:`generate_upaw`.  PAW-LCAO never reads it: a dataset at a nonzero
+#: norm deficit and the unitary one need different spheres, channels and
+#: reference configurations.
+DEFAULT_UPAW_OPTIONS: dict = {
+    # An empty channel above the valence one (``extra_l``): without projectors
+    # the d of Al-Ar and the f of Te, I and Xe scatter off the local potential
+    # alone, 0.10-0.21 rad off the atom (they pass at <= 0.01 with projectors).
+    # Aluminum's local potential is raised 5 Ha: with its d channel the
+    # (longer) local radius takes the s projectors' miss of an intruding
+    # hydrogen 1s from 0.5 to 1.19, and 5 Ha brings it to 0.08.  Argon's
+    # d resonance sits 0.47 rad off at the default 1 Ha second reference and
+    # 0.000 at 1.5 Ha.
+    **{(symbol, "lda"): {"extra_l": 1} for symbol in ("Si", "P", "S", "Cl", "Te", "I", "Xe")},
+    ("Al", "lda"): {"extra_l": 1, "local_shift": 5.0},
+    ("Ar", "lda"): {"extra_l": 1, "energy_offset": 1.5},
+    # Tantalum's empty f (4f frozen) is 0.133 rad off 0.75 Ha above its
+    # reference with the default 1 Ha second reference; 0.6 Ha gives 0.008.
+    # The 10 Ha raise is the one the ghost repair chose for the PAW-LCAO set.
+    ("Ta", "lda"): {"local_shift": 10.0, "energy_offset": 0.6},
+    # Radium's empty f channel has an overlap-operator minimum of 0.60 at the
+    # default second reference (huge projectors); at 2 Ha it is 0.97.
+    ("Ra", "lda"): {"energy_offset": 2.0},
+    # Cr, Ru, Rh, Pd the vanadium way: the (n-1)s (n-1)p semicore shell in
+    # valence gives the p channel projectors (PAW-LCAO carries it as the
+    # local potential alone, 0.10-0.21 rad off), without the 40-50 Ha raise
+    # and the 3.2-3.4 Bohr s sphere that repair needs.  Pd's s and p spheres
+    # are 2.2 Bohr: at the 1.7 Bohr of the generator's rule the local
+    # radius is so short that its polynomial continuation binds a state at
+    # -1000 Ha.
+    ("Cr", "lda"): dict(extra_l=1, semicore_subshells=((3, 0), (3, 1)), n_bessel=8, local_shift=0.0,
+                        energy_offset=2.0, r_cut={0: 1.819, 1: 1.819, 2: 1.062}),
+    ("Ru", "lda"): dict(extra_l=1, semicore_subshells=((4, 0), (4, 1)), n_bessel=8, local_shift=0.0,
+                        energy_offset=2.0, r_cut={0: 1.829, 1: 1.829, 2: 1.558}),
+    ("Rh", "lda"): dict(extra_l=1, semicore_subshells=((4, 0), (4, 1)), n_bessel=8, local_shift=0.0,
+                        energy_offset=2.0, r_cut={0: 1.768, 1: 1.768, 2: 1.473}),
+    ("Pd", "lda"): dict(extra_l=1, semicore_subshells=((4, 0), (4, 1)), n_bessel=8, local_shift=0.0,
+                        energy_offset=2.0, r_cut={0: 2.2, 1: 2.2, 2: 1.4}),
+    # Francium the radium way: the 6s 6p semicore shell in valence and empty
+    # d and f channels above it, 2.9 Bohr spheres, 2 Ha second reference.  At
+    # Ra's 16 Ha raise and the default reference its p overlap operator had an
+    # eigenvalue of -0.36.
+    ("Fr", "lda"): dict(extra_l=2, semicore_subshells=((6, 0), (6, 1)), n_bessel=10, local_shift=8.0,
+                        energy_offset=2.0, r_cut={0: 2.9, 1: 2.9}),
+    # The lanthanides with their 4f in valence: the trivalent reference
+    # configuration 4f(n) 5d 6s2 (a 5d to bind the d channel) and the 5s 5p
+    # semicore shell (a p channel; without it the p scattered off the local
+    # potential and every build bound a p ghost at -0.13 Ha).  The 4f sphere
+    # is the generator's rule (0.6-0.9 Bohr); no local raise.
+    # Dy and Ho need a 20 Ha local raise: at none their s channel scatters 1.55 rad off
+    # (Ho) or binds a ghost at -26 Ha (Dy).
+    **{(symbol, "lda"): dict(reference_configuration={(4, 3): number - 57, (5, 2): 1, (6, 0): 2},
+                             semicore_subshells=((5, 0), (5, 1)),
+                             **({"local_shift": 20.0} if symbol in ("Dy", "Ho", "Er") else {}))
+       for symbol, number in (("Ce", 58), ("Pr", 59), ("Nd", 60), ("Pm", 61), ("Sm", 62), ("Eu", 63),
+                              ("Gd", 64), ("Tb", 65), ("Dy", 66), ("Ho", 67), ("Er", 68), ("Tm", 69),
+                              ("Yb", 70))},
+}
+
+
 def generate_upaw(symbol: str, **options) -> PAWDataset:
     r"""Generate a **unitary** PAW-LCAO (UPAW-LCAO) dataset: the ``norm_deficit = 0`` PAW-LCAO.
 
@@ -3293,16 +3362,21 @@ def generate_upaw(symbol: str, **options) -> PAWDataset:
         raise TypeError(
             "generate_upaw does not take `norm_deficit`: UPAW-LCAO is defined by "
             "norm_deficit = 0 (use generate_paw for any other value)")
+    recipe = DEFAULT_UPAW_OPTIONS.get(
+        (symbol, str(options.get("xc", DEFAULT_XC)).strip().lower()), {})
+    options = {**recipe, **options}
     dataset = generate_paw(symbol, norm_deficit=0.0, **options)
     return replace(dataset, family=UPAW_FAMILY)
 
 
-def upaw_library_path(paw_dataset=None, xc: str = DEFAULT_XC) -> str | None:
+def upaw_library_path(paw_dataset=None, xc: str = DEFAULT_XC,
+                      relativity: str = "scalar") -> str | None:
     """The UPAW-LCAO library folder: ``paw_dataset`` when given, else
-    ``$MANDACARU_UPAW_PATH/<xc>``, or ``None`` when that variable is unset
-    (UPAW-LCAO is then generated on demand)."""
+    ``$MANDACARU_UPAW_PATH/lda-sr`` (``lda-fr`` for ``relativity="dirac"``), or
+    ``None`` when that variable is unset (UPAW-LCAO is then generated on
+    demand)."""
     from .environment import upaw_dataset_folder
-    return upaw_dataset_folder(xc, paw_dataset)
+    return upaw_dataset_folder(xc, paw_dataset, relativity)
 
 
 def get_upaw(symbol: str, paw_dataset=None, xc: str = DEFAULT_XC) -> PAWDataset:
@@ -3353,8 +3427,9 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
     """Generate and save UPAW-LCAO datasets for ``elements``; returns the paths."""
     from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
 
-    folder = upaw_library_path(paw_dataset,
-                               generation_options.get("xc", DEFAULT_XC))
+    folder = upaw_library_path(
+        paw_dataset, generation_options.get("xc", DEFAULT_XC),
+        generation_options.get("relativity", "scalar"))
     if folder is None:
         from .environment import repository_path
         repository_path(UPAW_FAMILY)     # raises the "not set" explanation

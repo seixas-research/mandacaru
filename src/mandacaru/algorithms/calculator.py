@@ -378,7 +378,10 @@ class Mandacaru(Calculator):
         are accepted as ``xc`` too), or ``vdw="d4"`` for the D4
         correction from the optional ``dftd4`` package, not for LDA;
         ``hartree="tensor"`` contracts a molecule's Hartree term from the
-        two-body tensor instead of the default Poisson solve),
+        two-body tensor instead of the default Poisson solve;
+        ``max_iter=`` raises the SCF iteration limit, and
+        ``stability=False`` skips the saddle-point check of a converged
+        spin-unrestricted molecule),
         ``"vqe"`` (a
         fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz

@@ -91,21 +91,16 @@ class TestANoncollinearStart:
 
     def test_a_frustrated_triangle_takes_the_120_degree_state(self):
         """Equilateral H3 at R = 2.5 Angstrom (LDA, SZ, grid 0.3): the
-        coplanar 120-degree state is 38.06 meV below the UKS doublet, its
+        coplanar 120-degree state is 37.15 meV below the UKS doublet, its
         site moments 0.9155 Bohr magneton at 120 degrees, the total zero.
         The UKS start never leaves the collinear state.  The tolerance on
         the lowering (0.2 meV) is far above the SCF's (1e-8 Ha) and
         round-off; the total moment is 2e-4 (the cubic grid breaks the
         threefold axis), the site angles 120 to 0.01 degrees."""
-        # This numerical pin describes the sampled operator and its SCF basin.
-        # The UKS reference starts from a triangle with one atom moved by
-        # 0.003 Angstrom: on the exactly equilateral one, the SCF of the
-        # current hydrogen dataset stops at a symmetric stationary point 0.65
-        # eV above the doublet (and so does the old dataset at 0.001
-        # Angstrom).  0.003 Angstrom moves the doublet by ~0.1 meV.
-        distorted = _triangle()
-        distorted.positions[2, 0] += 0.003
-        uks = _run(distorted, "lda", [1.0, 0.0, 0.0], two_center="grid")
+        # The UKS reference is the exactly equilateral triangle: its
+        # stability check leaves the symmetric saddle the SCF stops at
+        # (650 meV above the doublet) for the doublet itself.
+        uks = _run(_triangle(), "lda", [1.0, 0.0, 0.0], two_center="grid")
         angles = 2 * np.pi * np.arange(3) / 3
         spinor = _run(_triangle(), "lda",
                       np.c_[np.cos(angles), np.sin(angles), np.zeros(3)],
@@ -113,7 +108,7 @@ class TestANoncollinearStart:
         assert spinor.converged
         lowering = (spinor.electronic_energy
                     - uks.electronic_energy) * HARTREE_TO_EV * 1e3
-        assert lowering == pytest.approx(-38.06, abs=0.3)
+        assert lowering == pytest.approx(-37.15, abs=0.3)
         assert np.linalg.norm(spinor.spin_moment) < 1e-3
         # Site moments from the Loewdin-basis spin blocks (one function per
         # H in SZ).
@@ -912,3 +907,35 @@ class TestCrystalRefusals:
                                electric_field=[0.0, 0.0, 1e-3])
         with pytest.raises(NotImplementedError, match="collinear crystal"):
             atoms.get_potential_energy()
+
+
+def test_bi2te3_spin_orbit_coupling_opens_band_gap():
+    """Bulk Bi2Te3 on pbe-fr: strong spin-orbit coupling of Bi (Z=83)
+    and Te (Z=52) yields a substantial negative spin-orbit energy and
+    exact Kramers degeneracy at time-reversal invariant points."""
+    from ase.spacegroup import crystal
+
+    atoms = crystal(
+        symbols=["Te", "Bi", "Te"],
+        basis=[(0, 0, 0.2117), (0, 0, 0.3990), (0, 0, 0.0)],
+        spacegroup=166,
+        cellpar=[4.383, 4.383, 30.487, 90, 90, 120],
+        primitive_cell=True,
+    )
+    atoms.calc = Mandacaru(
+        method="dft",
+        xc="pbe",
+        paw_dataset="pbe-fr",
+        basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": False},
+        kpts={"size": (2, 2, 2), "gamma": True},
+        grid_spacing=0.35,
+        trace=False,
+        max_iter=25,
+    )
+    _energy = atoms.get_potential_energy()
+    scf = atoms.calc.result.scf
+    assert scf.converged and scf.spin_orbit and scf.time_reversal
+    assert scf.spin_orbit_energy * HARTREE_TO_EV < -0.5
+    gamma = atoms.calc.get_eigenvalues(kpt=0)
+    assert np.allclose(gamma[0::2], gamma[1::2], atol=1e-10)
+

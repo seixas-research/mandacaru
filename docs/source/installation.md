@@ -93,7 +93,7 @@ read as the wrong functional by being copied into the wrong folder.
 `basis="UPAW-LCAO"` needs nothing either: `MANDACARU_UPAW_PATH` is the one
 optional variable, and without it a missing dataset is generated on demand
 (0.4-2.2 s per element, measured) and cached for the session.
-`build_upaw_library()` writes them out into `$MANDACARU_UPAW_PATH/<xc>/` if
+`build_upaw_library()` writes them out into `$MANDACARU_UPAW_PATH/lda-sr/` if
 you would rather not pay that again.
 
 ## Numerical backend

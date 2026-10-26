@@ -248,6 +248,9 @@ zero contributions. Molecular summaries also report `electronic_energy`,
 `ion_ion_energy` and `one_center_energy` (each suffixed by its unit), plus
 `other_constant_energy` when present, so the total reads as their sum.
 Hartree and XC are already included in the electronic contribution.
+A spin-unrestricted molecule also reports `stability_check` in `[SCF SETUP]`
+and the verdict `stability` (plus `stability_energy_lowering_<unit>` when a
+lower state was found) in `[SCF SUMMARY]`.
 A hybrid (`xc="hse06"`) adds `exact_exchange` to `[SCF SETUP]` (the
 fraction and the range separation) and `exact_exchange_energy_<unit>` to
 `[SCF SUMMARY]`: the part of `xc_energy_<unit>` the exact exchange carries,

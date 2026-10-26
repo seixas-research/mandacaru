@@ -64,7 +64,11 @@ DEFAULT_XC = "lda"
 LIBRARY_FOLDERS = {("paw-lcao", "lda", "scalar"): "lda-sr",
                    ("paw-lcao", "lda", "dirac"): "lda-fr",
                    ("paw-lcao", "pbe", "scalar"): "pbe-sr",
-                   ("paw-lcao", "pbe", "dirac"): "pbe-fr"}
+                   ("paw-lcao", "pbe", "dirac"): "pbe-fr",
+                   ("upaw-lcao", "lda", "scalar"): "lda-sr",
+                   ("upaw-lcao", "lda", "dirac"): "lda-fr",
+                   ("upaw-lcao", "pbe", "scalar"): "pbe-sr",
+                   ("upaw-lcao", "pbe", "dirac"): "pbe-fr"}
 #: The folder a calculation without a functional (Hartree-Fock, the
 #: quantum solvers) or with LDA reads, the scalar-relativistic LDA set.
 DEFAULT_LIBRARY_FOLDER = "lda-sr"
@@ -259,8 +263,10 @@ def _library_folder(family, folder, variable_value) -> str:
     return path
 
 
-def upaw_dataset_folder(xc: str = DEFAULT_XC, paw_dataset=None) -> str | None:
-    """The UPAW-LCAO library folder, ``$MANDACARU_UPAW_PATH/<xc>``, or
+def upaw_dataset_folder(xc: str = DEFAULT_XC, paw_dataset=None,
+                        relativity: str = "scalar") -> str | None:
+    """The UPAW-LCAO library folder, ``$MANDACARU_UPAW_PATH/lda-sr`` (the
+    folder :func:`library_folder_name` names for ``xc`` and ``relativity``), or
     ``None`` when there is none to use.
 
     UPAW-LCAO is generated on demand, so an unset ``MANDACARU_UPAW_PATH`` is
@@ -277,7 +283,8 @@ def upaw_dataset_folder(xc: str = DEFAULT_XC, paw_dataset=None) -> str | None:
         return p
     if not os.environ.get(FAMILY_VARIABLES["upaw-lcao"], "").strip():
         return None
-    return os.path.join(repository_path("upaw-lcao"), _functional(xc))
+    return os.path.join(repository_path("upaw-lcao"),
+                        library_folder_name("upaw-lcao", xc, relativity))
 
 
 def dataset_count(folder: str) -> int:

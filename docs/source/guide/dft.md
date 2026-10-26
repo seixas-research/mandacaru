@@ -891,6 +891,45 @@ fe.calc.get_total_magnetic_moment()       # N_up - N_down per cell
   unrestricted run (moment 2.000, 1.000 per atom, pi* exchange splitting
   1.555 vs 1.558 eV).
 
+### SCF iterations, robustness and stability
+
+`max_iter=` sets the iteration limit of the Kohn-Sham loop (a positive
+integer; the default is each solver's own, 200 for a molecule and 300 for a
+crystal). Open-shell transition-metal and lanthanide oxides can need more
+than the default; the limit is validated when `Mandacaru` is built and
+`[SCF SETUP]` reports the value in use. A run that reaches it without
+converging raises `RuntimeError`.
+
+A converged SCF is a stationary point, not necessarily a minimum, so a
+converged spin-unrestricted molecule is checked for stability
+(`stability=True`, the default; `stability=False` skips it). The lowest
+eigenvalue of the real orbital-rotation Hessian (both spins, with the density
+response) is found by a Davidson iteration on finite-difference
+Hessian-vector products, one Fock build each, so no Hessian matrix is formed.
+A negative eigenvalue is followed: the orbitals are rotated along the mode and
+the SCF re-converged, up to four times. A state that stays unstable raises a
+`RuntimeWarning`. The exactly equilateral H3 doublet is the case: its SCF
+stopped at a symmetric saddle 650 meV above the doublet and reported
+convergence. A degenerate shell at a Fermi level that is filled equally (the OH
+radical's beta pi) is an ensemble by design and is reported as such, not
+tested.
+
+The same products drive a rescue for a stalled loop: an integer-occupation
+SCF that has not converged after 80 iterations continues with Newton-CG
+orbital steps (a conjugate-gradient solve of the Newton equations, the
+rotation limited to 0.5 rad and the energy never allowed to rise), which
+reaches the minimum of a flat energy surface in a few steps where DIIS crawls
+(TiO, PAW-LCAO DZP, LDA, triplet: 111 iterations instead of more than 300).
+The level shift of the loop is held for three calm iterations before it is
+dropped and switched on again only by a tenfold larger energy rise, so it no
+longer toggles every iteration.
+
+`[SCF SUMMARY]` carries the verdict as `stability` (with the lowest
+eigenvalue in Hartree per radian squared and the products spent) and, when the
+check lowered the energy, `stability_energy_lowering_<unit>`; `[SCF SETUP]`
+carries `stability_check`. Closed-shell, spin-orbit and crystal runs are not
+checked.
+
 ## Spin-orbit coupling: two-component Kohn-Sham
 
 A molecule or a crystal on a spin-orbit set -- `paw_dataset="lda-fr"` with

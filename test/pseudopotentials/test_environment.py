@@ -111,7 +111,7 @@ def test_upaw_is_generated_on_demand_without_the_variable(monkeypatch,
     monkeypatch.delenv("MANDACARU_UPAW_PATH", raising=False)
     assert upaw_dataset_folder() is None
     monkeypatch.setenv("MANDACARU_UPAW_PATH", str(checkout))
-    assert upaw_dataset_folder() == os.path.join(str(checkout), "lda")
+    assert upaw_dataset_folder() == os.path.join(str(checkout), "lda-sr")
     # UPAW-LCAO keeps one folder per functional; the scalar-relativistic
     # ``lda-sr/`` naming is for the shipped library.
     # Optional does not mean unchecked: a variable that names no folder

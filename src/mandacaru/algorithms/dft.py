@@ -123,6 +123,8 @@ from .hartree_fock import (DIIS, LEVEL_SHIFT, GHFResult, RHFResult,
 from ..utils.logging import scf_record
 from .pseudo_forces import AlgebraicEnergy
 from .mean_field import MeanFieldResult, _MeanFieldDriver
+from .scf_stability import (SECOND_ORDER_AFTER, SCFState, StabilityReport,
+                            second_order, stabilize)
 
 #: Default exchange-correlation functional of ``method="dft"``.
 DEFAULT_XC = "lda"
@@ -168,6 +170,45 @@ DOS_INTEGRATIONS = ("gaussian", "tetrahedron")
 #: for the zone-face pairs the nonsymmorphic ones stick together (silicon,
 #: grid spacing 0.34 Angstrom).
 TETRAHEDRON_DEGENERACY = 1e-3
+
+
+#: Consecutive iterations the energy must change by less than
+#: :data:`LEVEL_SHIFT_TRIGGER` before a level shift is dropped, and the factor
+#: by which an energy rise must exceed the trigger to switch it on again.
+#: Without them the shift toggled every iteration once the energy noise
+#: reached the trigger: TiO (PAW-LCAO DZP, LDA, triplet) alternated between
+#: shifted and unshifted Fock matrices, its HOMO-LUMO gap between 0.52 and
+#: 0.02 Hartree, and had not converged in 300 iterations.
+LEVEL_SHIFT_CALM = 3
+LEVEL_SHIFT_RELAPSE = 10.0
+
+
+class _LevelShiftControl:
+    """When the Kohn-Sham loops apply their level shift (with hysteresis)."""
+
+    def __init__(self) -> None:
+        self.shift = 0.0
+        self._calm = 0
+        self._used = False
+
+    def update(self, current: float, energy: float) -> float:
+        """The shift for this iteration, from the energy it starts at and
+        the previous one's."""
+        rise = current - energy
+        if self.shift == 0.0:
+            trigger = LEVEL_SHIFT_TRIGGER * (LEVEL_SHIFT_RELAPSE
+                                             if self._used else 1.0)
+            if rise > trigger:
+                self.shift, self._calm, self._used = LEVEL_SHIFT, 0, True
+        elif abs(rise) < LEVEL_SHIFT_TRIGGER:
+            self._calm += 1
+            if self._calm >= LEVEL_SHIFT_CALM:
+                # The oscillation is over; the shift would now only slow the
+                # last digits of the density down.
+                self.shift = 0.0
+        else:
+            self._calm = 0
+        return self.shift
 
 
 def _stalled(history) -> bool:
@@ -799,7 +840,7 @@ class KohnSham:
         energy = np.inf
         converged = False
         mixer = _IndependentDIIS() if diis else None
-        shift = 0.0
+        shifts = _LevelShiftControl()
         it = 0
         history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
@@ -807,12 +848,7 @@ class KohnSham:
             if mixer is not None and it % DIIS_RESTART == 0 \
                     and _stalled(history):
                 mixer = _IndependentDIIS()
-            if current > energy + LEVEL_SHIFT_TRIGGER and shift == 0.0:
-                shift = LEVEL_SHIFT
-            elif shift and abs(current - energy) < LEVEL_SHIFT_TRIGGER:
-                # The oscillation is over; the shift would now only slow the
-                # last digits of the density down.
-                shift = 0.0
+            shift = shifts.update(current, energy)
             F_iter = mixer.extrapolate(F, 0.5 * D) if mixer else F
             if shift:
                 F_iter = _level_shifted(F_iter, 0.5 * D, shift)
@@ -876,6 +912,10 @@ class KohnShamUResult(_DeferredTensor, UHFResult):
     #: Fractional occupations of each channel's canonical orbitals, or None.
     occupations_alpha: np.ndarray | None = None
     occupations_beta: np.ndarray | None = None
+    #: What the stability check found
+    #: (:class:`~mandacaru.algorithms.scf_stability.StabilityReport`), or
+    #: ``None`` when it did not run (``stability=False``, no convergence).
+    stability: StabilityReport | None = None
 
     @property
     def determinant_energy(self) -> float:
@@ -1077,18 +1117,20 @@ class UnrestrictedKohnSham(KohnSham):
         return (0.5 * (Fa + Fa.conj().T), 0.5 * (Fb + Fb.conj().T),
                 e_one + e_hartree + e_xc, e_hartree, e_xc)
 
-    def run(self, max_iter: int = 200, tol: float = 1e-8,
-            diis: bool = True) -> KohnShamUResult:
-        """Iterate to self-consistency from the core guess (both spins),
-        each channel filled as :meth:`KohnSham.run` fills its levels."""
+    def _iterate(self, Da, Db, fa, fb, *, max_iter: int, tol: float,
+                 diis: bool, offset: int = 0, fractional: bool = True,
+                 hand_over: int | None = None) -> SCFState:
+        """The SCF loop from the densities ``Da``, ``Db``.  ``fractional``
+        lets a degenerate shell at a Fermi level share its electrons
+        (:func:`shell_occupations`); without it each channel is filled by
+        aufbau.  ``offset`` numbers the records after an earlier run's.
+        ``hand_over`` stops an unconverged integer-occupation loop after
+        that many iterations so the caller can take second-order steps."""
         na, nb = self.n_alpha, self.n_beta
-        _eps, C = np.linalg.eigh(self.h)
-        fa, fb = shell_occupations(_eps, na), shell_occupations(_eps, nb)
-        Da, Db = self._spin_density(C, na, fa), self._spin_density(C, nb, fb)
         energy = np.inf
         converged = False
         mixers = (_IndependentDIIS(), _IndependentDIIS()) if diis else None
-        shift = 0.0
+        shifts = _LevelShiftControl()
         it = 0
 
         history, start = [], time.perf_counter()
@@ -1097,10 +1139,7 @@ class UnrestrictedKohnSham(KohnSham):
             if mixers is not None and it % DIIS_RESTART == 0 \
                     and _stalled(history):
                 mixers = (_IndependentDIIS(), _IndependentDIIS())
-            if current > energy + LEVEL_SHIFT_TRIGGER and shift == 0.0:
-                shift = LEVEL_SHIFT
-            elif shift and abs(current - energy) < LEVEL_SHIFT_TRIGGER:
-                shift = 0.0
+            shift = shifts.update(current, energy)
             if mixers is not None:
                 Fa, Fb = (mixers[0].extrapolate(Fa, Da),
                           mixers[1].extrapolate(Fb, Db))
@@ -1109,17 +1148,68 @@ class UnrestrictedKohnSham(KohnSham):
                           _level_shifted(Fb, Db, shift))
             _ea, Ca = np.linalg.eigh(Fa)
             _eb, Cb = np.linalg.eigh(Fb)
-            fa, fb = shell_occupations(_ea, na), shell_occupations(_eb, nb)
+            if fractional:
+                fa, fb = shell_occupations(_ea, na), shell_occupations(_eb, nb)
+            else:
+                fa = fb = None
             Da_new, Db_new = (self._spin_density(Ca, na, fa),
                               self._spin_density(Cb, nb, fb))
             change = max(np.max(np.abs(Da_new - Da)),
                          np.max(np.abs(Db_new - Db)))
-            history.append(scf_record(it, start, current, energy, change))
+            history.append(scf_record(offset + it, start, current, energy,
+                                      change))
             if abs(current - energy) < tol and change < tol:
                 Da, Db, energy = Da_new, Db_new, current
                 converged = True
                 break
             Da, Db, energy = Da_new, Db_new, current
+            if it == hand_over and fa is None and fb is None:
+                break
+        return SCFState(Da, Db, energy, converged, offset + it, history,
+                        fa, fb)
+
+    def run(self, max_iter: int = 200, tol: float = 1e-8,
+            diis: bool = True, stability: bool = True) -> KohnShamUResult:
+        """Iterate to self-consistency from the core guess (both spins),
+        each channel filled as :meth:`KohnSham.run` fills its levels.
+
+        A converged state is then checked for stability
+        (``stability=True``, :mod:`~mandacaru.algorithms.scf_stability`):
+        the orbital-rotation Hessian of an integer-occupation state is
+        tested for a negative eigenvalue, which is followed to a lower
+        state.  The outcome is the result's ``stability``.  An
+        integer-occupation loop that has not converged after
+        :data:`~mandacaru.algorithms.scf_stability.SECOND_ORDER_AFTER`
+        iterations continues with Newton-CG steps."""
+        na, nb = self.n_alpha, self.n_beta
+        _eps, C = np.linalg.eigh(self.h)
+        fa, fb = shell_occupations(_eps, na), shell_occupations(_eps, nb)
+        Da, Db = self._spin_density(C, na, fa), self._spin_density(C, nb, fb)
+        state = self._iterate(Da, Db, fa, fb, max_iter=max_iter, tol=tol,
+                              diis=diis, hand_over=SECOND_ORDER_AFTER)
+        if not state.converged and state.iterations < max_iter:
+            # A flat energy surface: the plain loop crawls, so an
+            # integer-occupation state takes Newton-CG steps instead.
+            prior = state.history
+            state = second_order(self, state, tol=tol,
+                                 offset=state.iterations,
+                                 max_iter=max_iter - state.iterations)
+            state.history = prior + state.history
+            rest = max_iter - state.iterations
+            if not state.converged and rest > 0:
+                more = self._iterate(state.Da, state.Db, None, None,
+                                     max_iter=rest, tol=tol, diis=diis,
+                                     offset=state.iterations,
+                                     fractional=False)
+                more.history = state.history + more.history
+                state = more
+        report = None
+        if stability and state.converged:
+            state, report = stabilize(self, state, max_iter=max_iter,
+                                      tol=tol, diis=diis)
+        Da, Db, converged, it, history = (state.Da, state.Db, state.converged,
+                                          state.iterations, state.history)
+        fa, fb = state.fa, state.fb
 
         Fa, Fb, energy, e_hartree, e_xc = self._fock_pair(Da, Db)
         epsa, Ca = np.linalg.eigh(Fa)               # canonical KS orbitals
@@ -1142,7 +1232,7 @@ class UnrestrictedKohnSham(KohnSham):
             functional=self.functional, hartree_energy=e_hartree,
             xc_energy=e_xc, history=history,
             exact_exchange_energy=self.exact_exchange_energy,
-            occupations_alpha=fa, occupations_beta=fb)
+            occupations_alpha=fa, occupations_beta=fb, stability=report)
 
 
 #: Why a two-component (spin-orbit) crystal has no forces or stress yet.
@@ -1212,6 +1302,26 @@ def _hybrid_setup(functional: str) -> dict:
     return {"exact_exchange": (
         f"{fraction:g} of the short-range exchange, erfc(omega r)/r with "
         f"omega = {omega:g} 1/Bohr (generalized Kohn-Sham)")}
+
+
+def resolve_max_iter(max_iter) -> int | None:
+    """Validate a ``max_iter=`` option: ``None`` (each solver's default) or a
+    positive integer."""
+    if max_iter is None:
+        return None
+    if isinstance(max_iter, bool) or not isinstance(
+            max_iter, (int, np.integer)) or max_iter < 1:
+        raise ValueError(f"max_iter must be a positive integer or None, "
+                         f"got {max_iter!r}")
+    return int(max_iter)
+
+
+def resolve_stability(stability) -> bool:
+    """Validate a ``stability=`` option (a bool)."""
+    if not isinstance(stability, (bool, np.bool_)):
+        raise ValueError(f"stability must be True or False, got "
+                         f"{stability!r}")
+    return bool(stability)
 
 
 def resolve_hartree(hartree) -> str:
@@ -1299,7 +1409,7 @@ def _centers(integrals):
 @profile_stage('SCF: diagonalization and mixing')
 def kohn_sham(integrals, n_electrons: int, functional: str = DEFAULT_XC,
               spins=None, screening=None, hartree: str = DEFAULT_HARTREE,
-              spin_directions=None, **run_options):
+              spin_directions=None, stability: bool = True, **run_options):
     """Solve the Kohn-Sham problem on ``integrals``: restricted, or
     unrestricted when ``spins = (n_alpha, n_beta)`` differ (``screening``
     and ``hartree`` as for :func:`kohn_sham_solver`).
@@ -1327,7 +1437,9 @@ def kohn_sham(integrals, n_electrons: int, functional: str = DEFAULT_XC,
         solver = kohn_sham_solver(integrals, n_electrons, functional,
                                   spins=spins, screening=screening,
                                   hartree=hartree)
-        collinear = solver.run(**run_options)
+        collinear = solver.run(**run_options, **(
+            {"stability": stability}
+            if isinstance(solver, UnrestrictedKohnSham) else {}))
         spinor = SpinorKohnSham.from_solver(
             solver, spin_orbit=(integrals.spin_orbit_matrix() if spin_orbit
                                 else None))
@@ -1337,9 +1449,12 @@ def kohn_sham(integrals, n_electrons: int, functional: str = DEFAULT_XC,
         result = spinor.run(guess, **run_options)
         result.scalar_energy = float(collinear.electronic_energy)
     else:
-        result = kohn_sham_solver(integrals, n_electrons, functional,
+        solver = kohn_sham_solver(integrals, n_electrons, functional,
                                   spins=spins, screening=screening,
-                                  hartree=hartree).run(**run_options)
+                                  hartree=hartree)
+        result = solver.run(**run_options, **(
+            {"stability": stability}
+            if isinstance(solver, UnrestrictedKohnSham) else {}))
     result.core_correction_energy = float(
         sum(xc_grid.core_correction_offset(d)
             for d in integrals.pseudopotentials or []))
@@ -2061,6 +2176,7 @@ class DFTDriver(_MeanFieldDriver):
 
     def __init__(self, xc: str = DEFAULT_XC, vdw: str | None = None,
                  smearing=None, hartree: str = DEFAULT_HARTREE,
+                 max_iter: int | None = None, stability: bool = True,
                  **driver_kwargs: object) -> None:
         from .periodic_dft import resolve_smearing
         self.xc, self.vdw = self._resolve_vdw(vdw, xc_grid.resolve_functional(xc))
@@ -2069,6 +2185,12 @@ class DFTDriver(_MeanFieldDriver):
         #: How a molecule's Hartree matrix is built (:data:`HARTREE_METHODS`);
         #: a crystal's is always a periodic Poisson solve.
         self.hartree = resolve_hartree(hartree)
+        #: SCF iteration limit; ``None`` keeps each solver's own default
+        #: (200 for a molecule, 300 for a crystal).
+        self.max_iter = resolve_max_iter(max_iter)
+        #: Whether a converged unrestricted molecule is checked for a saddle
+        #: point (:mod:`~mandacaru.algorithms.scf_stability`).
+        self.stability = resolve_stability(stability)
         self._periodic = False
         self._automatic_two_center = driver_kwargs.get("two_center") is None
         driver_kwargs.pop("device", None)
@@ -2367,7 +2489,9 @@ class DFTDriver(_MeanFieldDriver):
         # solution (turned atom by atom to the moment vectors).
         self._scf = kohn_sham(integrals, sum(full_particles), self.xc,
                               spins=full_particles, hartree=self.hartree,
-                              spin_directions=directions)
+                              spin_directions=directions,
+                              stability=self.stability,
+                              **self._iteration_options())
         # The exported Hamiltonian and every one-particle picture (density,
         # populations, cube files) are in the model orbitals: the Kohn-Sham
         # orbitals, the natural orbitals of an unrestricted run, or the
@@ -2394,6 +2518,10 @@ class DFTDriver(_MeanFieldDriver):
         self.n_spatial_orbitals = int(M)
         self.n_qubits = 2 * M - (2 if self.mapping == "parity_reduced" else 0)
         self._configured = True
+
+    def _iteration_options(self) -> dict:
+        """``max_iter`` for the solver's ``run``, when the option is set."""
+        return {} if self.max_iter is None else {"max_iter": self.max_iter}
 
     def _spin_directions(self, context):
         """``(M, 3)`` spin directions of the basis functions -- each its
@@ -2466,7 +2594,7 @@ class DFTDriver(_MeanFieldDriver):
                 field_size=(tuple(self.kpts)
                             if self.electric_field is not None else None))
         with self._dft_timings.exclusive("SCF: periodic iterations"):
-            self._scf = solver.run()
+            self._scf = solver.run(**self._iteration_options())
         # The D4 lattice sum: a constant of the electronic problem, added to
         # the reported energies (`_result`) and its derivatives to the
         # forces and the stress.
@@ -3613,7 +3741,8 @@ class DFTDriver(_MeanFieldDriver):
                 "k_points_irreducible": reduction,
                 "smearing": f"{method}, {width * HARTREE_TO_EV:g} eV",
                 "spin": spin,
-                "max_iterations": defaults["max_iter"].default,
+                "max_iterations": (self.max_iter if self.max_iter is not None
+                                   else defaults["max_iter"].default),
                 "convergence_Hartree": (
                     f"{defaults['tol'].default:g} (free energy change) and "
                     f"{defaults['density_tol'].default:g} electrons "
@@ -3651,14 +3780,27 @@ class DFTDriver(_MeanFieldDriver):
             "hartree": ("Poisson solve of the density per iteration (no "
                         "two-body tensor)" if self.hartree == "poisson"
                         else "contracted from the two-body tensor"),
-            "max_iterations": defaults["max_iter"].default,
+            "max_iterations": (self.max_iter if self.max_iter is not None
+                               else defaults["max_iter"].default),
             "convergence_Hartree": (f"{defaults['tol'].default:g} (energy "
                                     f"change and largest density change)"),
             "acceleration": (f"DIIS; level shift {LEVEL_SHIFT:g} Hartree "
                              f"while the energy rises by more than "
                              f"{LEVEL_SHIFT_TRIGGER:g} Hartree"),
+            **self._stability_setup(spinor),
             "energy_unit": self._energy_unit_label(),
         }
+
+    def _stability_setup(self, spinor: dict) -> dict:
+        """``[SCF SETUP]``'s ``stability_check``: what a converged
+        unrestricted state is tested for (the verdict is
+        ``[SCF SUMMARY]``'s)."""
+        if spinor or self.num_particles[0] == self.num_particles[1]:
+            return {}
+        return {"stability_check": (
+            "orbital-rotation Hessian (lowest eigenvalue, Davidson on "
+            "finite-difference products, followed to a lower state)"
+            if self.stability else "off")}
 
     def _scf_energy_name(self) -> str:
         """Crystals iterate the free energy; molecules the electronic energy."""
@@ -3712,6 +3854,12 @@ class DFTDriver(_MeanFieldDriver):
         fields[f"hartree_energy_{unit}"] = \
             f"{to_unit(scf.hartree_energy):.10f}"
         fields[f"xc_energy_{unit}"] = f"{to_unit(scf.xc_energy):.10f}"
+        report = getattr(scf, "stability", None)
+        if report is not None:
+            fields["stability"] = str(report)
+            if report.energy_lowering:
+                fields[f"stability_energy_lowering_{unit}"] = \
+                    f"{to_unit(report.energy_lowering):.10f}"
         if xc_grid.is_hybrid(self.xc):
             # Part of xc_energy, reported as its own fact: the share of the
             # exchange-correlation energy that the exact exchange carries.

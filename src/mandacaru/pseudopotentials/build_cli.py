@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", "-o", default=None, metavar="DIR",
                         help="folder to write into (default: ./<family>/)")
     parser.add_argument("--install", action="store_true",
-                        help="write into the family's library, <checkout>/<xc>/ "
+                        help="write into the family's library, <checkout>/lda-sr/ "
                              "of the checkout its MANDACARU_*_PATH variable "
                              "names, replacing the dataset calculations load")
     parser.add_argument("--format", default="parquet", choices=PSEUDO_FORMATS)
