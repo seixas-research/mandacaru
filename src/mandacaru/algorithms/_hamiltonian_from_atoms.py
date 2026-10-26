@@ -51,7 +51,7 @@ def coherent_positions(atoms) -> np.ndarray:
     return pos
 
 
-def grid_from_cell(atoms, grid_spacing: float, center=None):
+def grid_from_cell(atoms, grid_spacing: float, center=None, precision: str = "double"):
     """Build the real-space integration grid from the ASE ``atoms.cell``.
 
     The cell's lattice vectors fix the extent (and shape) of the box and ``grid_spacing``
@@ -71,7 +71,7 @@ def grid_from_cell(atoms, grid_spacing: float, center=None):
     if center is None:
         center = coherent_positions(atoms).mean(axis=0)   # center on the molecule
     return Grid(center=center, box_size=0.0, grid_spacing=grid_spacing,
-                units="angstrom", cell=cell)
+                units="angstrom", cell=cell, precision=precision)
 
 
 def missing_cell_message(grid_spacing=None) -> str:
@@ -564,7 +564,8 @@ def _pseudopotential_hamiltonian(atoms, grid, grid_spacing, charge, spin, family
                                  hamiltonian: bool = True, ghosts=(),
                                  electric_field=None, two_body=None,
                                  one_center=None, two_center=None,
-                                 periodic: bool = False, commensurate=None):
+                                 periodic: bool = False, commensurate=None,
+                                 precision: str = "double"):
     """Valence-only Hamiltonian from a pseudopotential **family**.
 
     A thin dispatcher: ``family`` is the
@@ -603,6 +604,7 @@ def _pseudopotential_hamiltonian(atoms, grid, grid_spacing, charge, spin, family
     if periodic:
         extra["periodic"] = periodic
         extra["commensurate"] = commensurate
+    extra["precision"] = precision
     return family.build(atoms, grid, grid_spacing, charge, spin, dict(options), kinetic,
                         active_space=active_space, hamiltonian=hamiltonian,
                         **extra)
@@ -634,7 +636,8 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
                             commensurate=None, active_space=None,
                             hamiltonian: bool = True, ghosts=(),
                             electric_field=None, two_body=None,
-                            one_center=None, two_center=None):
+                            one_center=None, two_center=None,
+                            precision: str = "double"):
     """Build the RHF MO Hamiltonian from ``atoms`` using ``basis``.
 
     ``hamiltonian=False`` stops after the integrals: the first element of the
@@ -736,7 +739,8 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
             active_space=spec, hamiltonian=hamiltonian, ghosts=ghosts,
             electric_field=electric_field, two_body=two_body,
             one_center=one_center, two_center=two_center,
-            periodic=periodic, commensurate=commensurate)
+            periodic=periodic, commensurate=commensurate,
+            precision=precision)
 
     if validate_two_center(two_center) == "analytic":
         raise NotImplementedError(
@@ -803,10 +807,11 @@ def build_basis_hamiltonian(atoms, basis, grid, grid_spacing: float, charge: int
         g = (grid if grid is not None
              else Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                        units="angstrom", cell=cell, periodic=True,
-                       commensurate=commensurate))
+                       commensurate=commensurate, precision=precision))
     else:
         g = (grid if grid is not None
-             else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0)))
+             else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0),
+                                 precision=precision))
 
     n_unpaired = resolve_num_unpaired(atoms[real], spin, n_el)
     n_alpha, n_beta = _num_particles(n_el, n_unpaired, name)

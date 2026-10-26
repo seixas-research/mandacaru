@@ -387,7 +387,7 @@ class IntegralEngine:
         """
         Vext = np.ascontiguousarray(
             np.real(potential(self.grid.X, self.grid.Y, self.grid.Z)).reshape(-1),
-            dtype=np.float64)
+            dtype=getattr(self.grid, "real_dtype", np.float64))
         with self.timings.time("one-body integrals"):
             if kinetic == "fd":
                 T, V = _backend.one_body_matrices(self._psi, Vext, self.grid)

@@ -306,7 +306,7 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
                               ghosts=(), electric_field=None, two_body=None,
                               one_center=None, two_center=None,
                               periodic: bool = False, cell=None,
-                              commensurate=None):
+                              commensurate=None, precision: str = "double"):
     """The driver 5-tuple of a pseudopotential family -- the part every family
     shares.
 
@@ -373,10 +373,11 @@ def build_valence_hamiltonian(atoms, grid, grid_spacing, charge, spin, options, 
         g = (grid if grid is not None
              else Grid(center=0.5 * cell.sum(axis=0), box_size=0.0, grid_spacing=grid_spacing,
                        units="angstrom", cell=cell, periodic=True,
-                       commensurate=commensurate))
+                       commensurate=commensurate, precision=precision))
     else:
         g = (grid if grid is not None
-             else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0)))
+             else grid_from_cell(atoms, grid_spacing, center=positions.mean(axis=0),
+                                 precision=precision))
     k_c = resolve_filter_cutoff(options.get("filter_cutoff"),
                                 max(g.dx, g.dy, g.dz))
 

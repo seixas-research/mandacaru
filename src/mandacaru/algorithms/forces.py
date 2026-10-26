@@ -164,7 +164,7 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
     delta = DEFAULT_ORBITAL_DELTA if delta is None else float(delta)
     M = len(basis)
     real = all(getattr(fn, "real", False) for fn in basis)
-    dtype = np.float64 if real else complex
+    dtype = (grid.real_dtype if real else grid.complex_dtype) if hasattr(grid, "real_dtype") else (np.float64 if real else complex)
     if atom is None:
         if M == 0:
             return np.zeros((3, 0, grid.size), dtype=dtype)
@@ -227,10 +227,13 @@ def orbital_gradients(basis, grid, delta=None):
 
     delta = DEFAULT_ORBITAL_DELTA if delta is None else float(delta)
     real = all(getattr(fn, "real", False) for fn in basis)
+    dtype = (grid.real_dtype if real else grid.complex_dtype) if hasattr(grid, "real_dtype") else (np.float64 if real else complex)
     if not basis:
-        return np.zeros((3, 0, grid.size), dtype=np.float64 if real else complex)
-    _, slopes = sample_functions(basis, (grid.X, grid.Y, grid.Z),
-                                 gradients=True, delta=delta, values=False)
+        return np.zeros((3, 0, grid.size), dtype=dtype)
+    slopes = np.empty((3, len(basis), grid.size), dtype=dtype)
+    sample_functions(basis, (grid.X, grid.Y, grid.Z),
+                     gradients=True, delta=delta, values=False,
+                     out_slopes=slopes)
     return np.ascontiguousarray(slopes.transpose(1, 0, 2))
 
 

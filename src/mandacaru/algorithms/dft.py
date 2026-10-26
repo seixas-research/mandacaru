@@ -2195,7 +2195,8 @@ class DFTDriver(_MeanFieldDriver):
             commensurate=self._grid_commensurate(),
             active_space=self.active_space, hamiltonian=False,
             ghosts=self.ghosts, electric_field=self.electric_field,
-            one_center="frozen", two_center=self.two_center)
+            one_center="frozen", two_center=self.two_center,
+            precision=getattr(self, "precision", "double"))
         self._integration_profile = profile
         self._gradient_context = context
         self._basis_symbols = list(atoms.get_chemical_symbols())

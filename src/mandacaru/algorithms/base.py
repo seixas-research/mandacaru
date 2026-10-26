@@ -2036,7 +2036,7 @@ class VariationalDriver(Calculator):
         from ..integrals import _backend
         from ..utils.profiling import Timings
         timings = Timings(n_cores=_backend.num_threads(),
-                          backend="C (OpenMP)" if _backend.HAS_C_BACKEND
+                          backend=_backend.check_backend().label if _backend.HAS_C_BACKEND
                           else "NumPy")
         # A new run starts with its budget verdict cleared.
         self.run_budget_exhausted = None

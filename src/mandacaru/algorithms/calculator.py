@@ -1372,7 +1372,8 @@ class Mandacaru(Calculator):
             return self._grid
         from ._hamiltonian_from_atoms import grid_from_cell
 
-        self._grid = grid_from_cell(atoms, self.grid_spacing)
+        self._grid = grid_from_cell(atoms, self.grid_spacing,
+                                    precision=self.precision)
         return self._grid
 
     @staticmethod
@@ -1467,15 +1468,16 @@ class Mandacaru(Calculator):
         if reused is not None:
             solver, energy_ev = reused, self.results["energy"]
         else:
-            solver = self._make_solver(grid=grid)
-            # A Markov-chain search with ``transfer=True`` starts from the
-            # ansatz the previous geometry reported.  Read through __dict__:
-            # see _make_solver on why ``self.solver`` must not be touched
-            # here.
             previous = self.__dict__.get("_solver")
+            solver = self._make_solver(grid=grid)
             inherit = getattr(solver, "inherit_ansatz", None)
             if inherit is not None and previous is not None:
                 inherit(previous)
+            self._solver = None
+            self._energy_state = None
+            previous = None
+            import gc
+            gc.collect()
             # This step's performance block is written here, once the
             # gradient and any measurement have been timed too (see
             # :meth:`_log_performance`).
@@ -1535,6 +1537,8 @@ class Mandacaru(Calculator):
                               solver_ran=reused is None)
         if want_forces and not solver.dry_run:
             self._record_step(atoms, energy_ev, step_seconds)
+            import gc
+            gc.collect()
         # The optimizer's line for the *previous* step is written after its
         # calculate returns, so this is what pushes it out on a stream that
         # could not be reconfigured.

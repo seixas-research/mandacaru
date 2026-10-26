@@ -679,7 +679,8 @@ def pseudo_nuclear_gradient(integrals, gamma, gamma2, *, atom_of_orbital,
     # -- the reference AO matrices, exactly as MolecularIntegrals._compute --
     external = integrals.external_potential()
     vext = np.ascontiguousarray(
-        np.real(external(grid.X, grid.Y, grid.Z)).reshape(-1), dtype=np.float64)
+        np.real(external(grid.X, grid.Y, grid.Z)).reshape(-1),
+        dtype=getattr(grid, "real_dtype", np.float64))
     kinetic = integrals.kinetic
     T, V_loc = integrals.kinetic_and_local()
     # With the analytic two-center tables the overlap and the kinetic energy
