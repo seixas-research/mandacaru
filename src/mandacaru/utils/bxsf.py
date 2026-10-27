@@ -54,7 +54,8 @@ class BandGrid:
 
 
 def write_bxsf(path, energies, reciprocal_cell, fermi_level: float,
-               comment: str = "Mandacaru band energies") -> str:
+               comment: str = "Mandacaru band energies", *, engine="python",
+               engine_options=None) -> str:
     """Write the band ``energies`` (eV, ``(n_bands, n1, n2, n3)`` on the
     periodic mesh ``k = (i1/n1, i2/n2, i3/n3)``) as a ``.bxsf`` file.
 
@@ -62,6 +63,15 @@ def write_bxsf(path, energies, reciprocal_cell, fermi_level: float,
     :math:`\\text{\\AA}^{-1}` (with the :math:`2\\pi`); ``fermi_level`` in
     eV.  Returns the path written.
     """
+    if engine == "rust":
+        from .._native import Context
+        Context(**dict(engine_options or {})).write_bands(
+            str(path), np.ascontiguousarray(energies, dtype=float),
+            np.asarray(reciprocal_cell, dtype=float).reshape(3, 3).tolist(),
+            float(fermi_level), comment=str(comment))
+        return str(path)
+    if engine != "python" or engine_options:
+        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
     energies = np.asarray(energies, dtype=float)
     cell = np.asarray(reciprocal_cell, dtype=float)
     if energies.ndim != 4 or min(energies.shape) < 1:

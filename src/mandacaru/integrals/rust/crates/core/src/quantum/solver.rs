@@ -3,17 +3,10 @@ use super::{
     evolution, optimizer, Basis, Encoding, Operator, C64,
 };
 use crate::{product, Buffer, Context, Error, Reservation, Result};
-use serde_json::Value;
-use std::{fs::File, io::Read, path::Path, time::Instant};
+use std::{path::Path, time::Instant};
 
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
-}
-fn integer(value: &Value, name: &str) -> Result<usize> {
-    value
-        .as_u64()
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or_else(|| invalid(&format!("{name} must be a nonnegative integer")))
 }
 
 pub struct CachedProblem {
@@ -34,88 +27,10 @@ impl CachedProblem {
         dense: bool,
         singles: bool,
     ) -> Result<Self> {
-        let file = File::open(path)
-            .map_err(|e| invalid(&format!("cannot open Hamiltonian cache: {e}")))?;
-        let bytes = usize::try_from(file.metadata().map_err(|e| invalid(&e.to_string()))?.len())
-            .map_err(|_| Error::Overflow)?;
-        if bytes > 64 * 1024 * 1024 {
-            return Err(invalid(
-                "JSON Hamiltonian cache exceeds the 64 MiB input limit",
-            ));
-        }
-        // Conservatively cover parsed JSON nodes, source bytes and term snapshots.
-        let _json = ctx.reserve(product(&[
-            bytes.checked_add(1).ok_or(Error::Overflow)?,
-            32,
-        ])?)?;
-        let mut text = Vec::new();
-        text.try_reserve_exact(bytes + 1)
-            .map_err(|_| Error::Allocation)?;
-        file.take(bytes as u64 + 1)
-            .read_to_end(&mut text)
-            .map_err(|e| invalid(&e.to_string()))?;
-        if text.len() > bytes {
-            return Err(invalid("Hamiltonian cache changed while reading"));
-        }
-        let payload: Value = serde_json::from_slice(&text)
-            .map_err(|e| invalid(&format!("invalid JSON Hamiltonian cache: {e}")))?;
-        if payload["format"].as_str() != Some("mandacaru-qubit-hamiltonian")
-            || payload["version"].as_u64() != Some(1)
-        {
-            return Err(invalid(
-                "expected a mandacaru-qubit-hamiltonian schema-v1 JSON cache",
-            ));
-        }
-        if let Some(unit) = payload.get("metadata").and_then(|m| m.get("energy_unit")) {
-            if unit.as_str() != Some("Ha") {
-                return Err(invalid("cached Hamiltonian coefficients must be in Ha"));
-            }
-        }
-        let n = integer(&payload["num_qubits"], "num_qubits")?;
-        let m = integer(&payload["n_spatial_orbitals"], "n_spatial_orbitals")?;
-        let particles = payload["num_particles"]
-            .as_array()
-            .filter(|a| a.len() == 2)
-            .ok_or_else(|| invalid("cache requires two spin-resolved particle counts"))?;
-        let encoding = Encoding::new(
-            payload["mapping"]
-                .as_str()
-                .ok_or_else(|| invalid("cache requires a mapping"))?,
-            product(&[m, 2])?,
-            [
-                integer(&particles[0], "n_alpha")?,
-                integer(&particles[1], "n_beta")?,
-            ],
-        )?;
-        if n != encoding.n_qubits() {
-            return Err(invalid(
-                "cache qubit count disagrees with its mapping and orbital count",
-            ));
-        }
-        let rows = payload["terms"]
-            .as_array()
-            .ok_or_else(|| invalid("cache requires Pauli terms"))?;
-        let mut terms = Vec::new();
-        for row in rows {
-            let row = row
-                .as_array()
-                .filter(|a| a.len() == 3)
-                .ok_or_else(|| invalid("cache terms must be [label, real, imaginary]"))?;
-            let label = row[0]
-                .as_str()
-                .ok_or_else(|| invalid("cache Pauli label must be a string"))?
-                .to_owned();
-            let re = row[1]
-                .as_f64()
-                .ok_or_else(|| invalid("cache coefficient must be numeric"))?;
-            let im = row[2]
-                .as_f64()
-                .ok_or_else(|| invalid("cache coefficient must be numeric"))?;
-            terms.push((label, C64::new(re, im)));
-        }
-        let hamiltonian = Operator::new(ctx, n, &terms)?;
-        Self::new(ctx, encoding, hamiltonian, sector, dense, singles)
+        crate::persistence::Document::read(ctx, path, crate::persistence::HAMILTONIAN)?
+            .problem(ctx, sector, dense, singles)
     }
+
     pub fn new(
         ctx: &Context,
         encoding: Encoding,
@@ -177,10 +92,34 @@ impl CachedProblem {
         )
     }
     pub fn solve(&self, options: &SolveOptions, initial: Option<&[f64]>) -> Result<SolveResult> {
-        self.context.run(|| self.solve_inner(options, initial))
+        self.solve_sequence(options, initial, None)
     }
-    fn solve_inner(&self, options: &SolveOptions, initial: Option<&[f64]>) -> Result<SolveResult> {
+    pub fn solve_sequence(
+        &self,
+        options: &SolveOptions,
+        initial: Option<&[f64]>,
+        sequence: Option<&[usize]>,
+    ) -> Result<SolveResult> {
+        self.context
+            .run(|| self.solve_inner(options, initial, sequence))
+    }
+    fn solve_inner(
+        &self,
+        options: &SolveOptions,
+        initial: Option<&[f64]>,
+        sequence: Option<&[usize]>,
+    ) -> Result<SolveResult> {
         options.validate()?;
+        if sequence.is_some_and(|s| {
+            !options.adapt
+                || s.len() > options.max_growth
+                || s.iter().any(|&i| i >= self.pool.len())
+                || initial.is_none_or(|p| p.len() != s.len())
+        }) {
+            return Err(invalid(
+                "resumed ADAPT sequence must fit the pool, parameters and total growth budget",
+            ));
+        }
         let start = Instant::now();
         let ctx = &self.context;
         let max_parameters = if options.adapt {
@@ -236,11 +175,15 @@ impl CachedProblem {
                 .iter()
                 .fold(0f64, |a, g| a.max(g.abs()));
         } else {
-            if initial.is_some_and(|p| !p.is_empty()) {
+            if sequence.is_none() && initial.is_some_and(|p| !p.is_empty()) {
                 return Err(invalid("basic ADAPT starts with an empty ansatz"));
             }
+            if let Some(sequence) = sequence {
+                indices = sequence.to_vec();
+                parameters = initial.unwrap().to_vec();
+            }
             let mut delta = None;
-            for growth in 0..=options.max_growth {
+            for growth in indices.len()..=options.max_growth {
                 let evaluation = self.evaluate(&indices, &parameters, true)?;
                 let energy = evaluation.energy;
                 let hpsi = self

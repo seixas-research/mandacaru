@@ -574,7 +574,8 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
                configuration=None, confinement=None,
                xc: str = "lda", relativity: str = "none",
                polish: int = 12,
-               grid: str = "uniform") -> AtomicResult:
+               grid: str = "uniform", engine: str = "python",
+               engine_options=None) -> AtomicResult:
     r"""Self-consistent spherical LDA atom.
 
     Parameters
@@ -638,6 +639,26 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
     AtomicResult
         Converged orbitals, eigenvalues, density and potentials.
     """
+    if engine == "rust":
+        if str(xc).lower() != "lda" or str(relativity).lower() not in ("none", "nonrelativistic", "non-relativistic", "nr") or grid != "uniform":
+            raise NotImplementedError("native spherical atoms currently support nonrelativistic uniform-grid LDA")
+        if callable(confinement):
+            raise TypeError("native atomic confinement must be a radial array, not a Python callback")
+        from .. import _native
+        context = _native.Context(**dict(engine_options or {}))
+        spec = None if configuration is None else [(n, l, float(q)) for (n, l), q in configuration.items() if q > 0]
+        raw = context.solve_atom(atomic_number, points=points, r_max=r_max,
+                                 max_iterations=max_iterations, tolerance=tolerance, mixing=mixing,
+                                 configuration=spec, confinement=None if confinement is None else np.ascontiguousarray(confinement, dtype=float))
+        return AtomicResult(**raw, details={"engine": "rust", "points": points, "r_max": r_max,
+                            "mixing": mixing, "confined": confinement is not None, "xc": "lda",
+                            "relativity": "none", "relativistic_exchange": False,
+                            "memory_peak_bytes": context.memory_peak_bytes})
+    if engine != "python":
+        raise ValueError("engine must be 'python' or 'rust'")
+    if engine_options is not None:
+        raise ValueError("engine_options requires engine='rust'")
+
     # Imported here, not at module scope: mandacaru.basis.xc builds the LDA
     # branch of its dispatcher out of `lda_xc` above, so a top-level import
     # would close a cycle.

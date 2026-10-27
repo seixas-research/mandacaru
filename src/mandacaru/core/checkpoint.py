@@ -118,7 +118,8 @@ PREPARATIONS = ("product", "sum")
 
 
 def prepare_state(n_qubits: int, reference_qubits, generators, parameters,
-                  preparation: str = "product") -> np.ndarray:
+                  preparation: str = "product", *, engine: str = "python",
+                  engine_options=None) -> np.ndarray:
     r"""The state a checkpoint *means*, as a full-register state vector.
 
     ``preparation="product"``: :math:`\prod_k e^{\theta_k A_k}|ref\rangle`,
@@ -129,6 +130,15 @@ def prepare_state(n_qubits: int, reference_qubits, generators, parameters,
     if preparation not in PREPARATIONS:
         raise ValueError(f"unknown preparation {preparation!r}; use one of "
                          f"{PREPARATIONS}")
+    if engine not in ("python", "rust"):
+        raise ValueError("engine must be 'python' or 'rust'")
+    if engine == "rust":
+        record = WavefunctionCheckpoint(n_qubits, list(reference_qubits),
+                                        list(generators), parameters,
+                                        preparation=preparation)
+        return record._native_snapshot(engine_options).state()
+    if engine_options:
+        raise ValueError("engine_options requires engine='rust'")
     parameters = np.asarray(parameters, dtype=float).ravel()
     generators = list(generators)
     if parameters.size != len(generators):
@@ -336,11 +346,17 @@ class WavefunctionCheckpoint:
         """
         return fingerprint(self.hamiltonian, atol)
 
-    def state_vector(self) -> np.ndarray:
+    def _native_snapshot(self, engine_options=None):
+        from .._native import Context
+        return Context(**dict(engine_options or {})).parse_snapshot(
+            json.dumps(self.to_payload(), allow_nan=False), FORMAT_TAG)
+
+    def state_vector(self, *, engine="python", engine_options=None) -> np.ndarray:
         """The prepared state, in the form :attr:`preparation` names."""
         return prepare_state(self.n_qubits, self.reference_qubits,
                              self.generators, self.parameters,
-                             self.preparation)
+                             self.preparation, engine=engine,
+                             engine_options=engine_options)
 
     def circuit(self, provider=None):
         """The state-preparation circuit on an SDK (default: Qiskit).
@@ -355,11 +371,20 @@ class WavefunctionCheckpoint:
         return provider.build(self.n_qubits, self.reference_qubits,
                               self.generators, self.parameters)
 
-    def expectation(self, hamiltonian: PauliSum | None = None) -> float:
+    def expectation(self, hamiltonian: PauliSum | None = None, *,
+                    engine="python", engine_options=None) -> float:
         """``<Psi|H|Psi>`` (Hartree) from the prepared state vector."""
         h = self.hamiltonian if hamiltonian is None else hamiltonian
         if h is None:
             raise ValueError("no Hamiltonian stored; pass one")
+        if engine == "rust":
+            from .._native import Context
+            payload = self.to_payload()
+            payload["hamiltonian"] = _pauli_to_payload(h)
+            return Context(**dict(engine_options or {})).parse_snapshot(
+                json.dumps(payload, allow_nan=False), FORMAT_TAG).expectation()
+        if engine != "python" or engine_options:
+            raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
         psi = self.state_vector()
         return float(np.real(np.vdot(psi, h.to_sparse_matrix() @ psi)))
 
@@ -425,7 +450,7 @@ class WavefunctionCheckpoint:
             status=dict(payload.get("status") or {}),
             metadata=dict(payload.get("metadata") or {}))
 
-    def save(self, path) -> str:
+    def save(self, path, *, engine="python", engine_options=None) -> str:
         """Write the checkpoint atomically; return the path written.
 
         The document is written to a temporary file in the same directory and
@@ -433,6 +458,11 @@ class WavefunctionCheckpoint:
         the property a checkpoint taken *during* a run depends on.
         """
         path = os.fspath(path)
+        if engine == "rust":
+            self._native_snapshot(engine_options).save(path)
+            return path
+        if engine != "python" or engine_options:
+            raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
         if self.n_qubits > MAX_FILE_QUBITS:
             raise ValueError(
                 f"refusing to write a {self.n_qubits}-qubit checkpoint: "
@@ -444,9 +474,17 @@ class WavefunctionCheckpoint:
         return path
 
     @classmethod
-    def load(cls, path) -> "WavefunctionCheckpoint":
+    def load(cls, path, *, engine="python", engine_options=None) -> "WavefunctionCheckpoint":
         """Read a checkpoint written by :meth:`save`."""
         path = os.fspath(path)
+        if engine == "rust":
+            from .._native import Context
+            if not os.path.exists(path):
+                raise FileNotFoundError(path)
+            snapshot = Context(**dict(engine_options or {})).read_snapshot(path, FORMAT_TAG)
+            return cls.from_payload(json.loads(snapshot.json))
+        if engine != "python" or engine_options:
+            raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
         with open(path, encoding="utf-8") as fh:
             payload = json.load(fh)
         try:

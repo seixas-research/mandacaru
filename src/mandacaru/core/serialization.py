@@ -328,7 +328,7 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
                      metadata: dict | None = None,
                      format: str | None = None,
                      compression: str = "zstd",
-                     engine: str = "auto") -> str:
+                     engine: str = "auto", engine_options=None) -> str:
     """Write ``hamiltonian`` as Pauli terms to ``path``; return the path.
 
     Terms are sorted by Pauli string so the file is reproducible (an identical
@@ -392,6 +392,18 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
     }
 
     path = os.fspath(path)
+    if engine == "rust":
+        from .._native import Context
+        payload = _json_payload(labels, reals, imags, key_value)
+        snapshot = Context(**dict(engine_options or {})).parse_snapshot(
+            json.dumps(payload, allow_nan=False), FORMAT_TAG)
+        if format == "json":
+            snapshot.save(path)
+            return path
+        # Explicit columnar-I/O adapter; schema validation remains native.
+        engine = "auto"
+    elif engine_options:
+        raise ValueError("engine_options requires engine='rust'")
     # A cache is a snapshot: written beside its destination and moved onto it,
     # so a failed write leaves the previous cache intact (see `core.atomic`).
     with atomic_path(path) as staging:
@@ -405,9 +417,8 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
     return path
 
 
-def _write_json(path, labels, reals, imags, key_value):
-    """Write the plain-text document; no third-party dependency."""
-    payload = {
+def _json_payload(labels, reals, imags, key_value):
+    return {
         "format": key_value["mandacaru.format"],
         "version": int(key_value["mandacaru.version"]),
         "num_qubits": int(key_value["mandacaru.num_qubits"]),
@@ -418,6 +429,9 @@ def _write_json(path, labels, reals, imags, key_value):
         "terms": [[label, real, imag]
                   for label, real, imag in zip(labels, reals, imags)],
     }
+def _write_json(path, labels, reals, imags, key_value):
+    """Write the plain-text document; no third-party dependency."""
+    payload = _json_payload(labels, reals, imags, key_value)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
         fh.write("\n")
@@ -451,7 +465,7 @@ def _write_pyarrow(path, labels, reals, imags, key_value, compression):
 # --------------------------------------------------------------------------- #
 
 def load_hamiltonian(path, engine: str = "auto",
-                     format: str | None = None) -> HamiltonianRecord:
+                     format: str | None = None, *, engine_options=None) -> HamiltonianRecord:
     """Read a Hamiltonian file written by :func:`save_hamiltonian`.
 
     The format is **detected automatically** (:func:`detect_format`) -- from the
@@ -479,19 +493,31 @@ def load_hamiltonian(path, engine: str = "auto",
         raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
     format = detect_format(path) if format is None else resolve_format(format)
 
-    if format == "json":
+    native = engine == "rust"
+    if engine_options and not native:
+        raise ValueError("engine_options requires engine='rust'")
+    if format == "json" and native:
+        from .._native import Context
+        snapshot = Context(**dict(engine_options or {})).read_snapshot(path, FORMAT_TAG)
+        columns, meta = _json_columns(json.loads(snapshot.json), path)
+    elif format == "json":
         columns, meta = _read_json(path)
-    elif resolve_engine(engine) == "fastparquet":
+    elif resolve_engine("auto" if native else engine) == "fastparquet":
         columns, meta = _read_fastparquet(path)
     else:
         columns, meta = _read_pyarrow(path)
     header = _header_from_meta(path, meta)
-
     for required in COLUMNS:
         if required not in columns:
             raise ValueError(
                 f"{path!r} is missing the {required!r} column "
                 f"(found {sorted(columns)})")
+
+    if native and format != "json":
+        from .._native import Context
+        Context(**dict(engine_options or {})).parse_snapshot(
+            json.dumps(_json_payload(columns["pauli"], columns["real"],
+                                     columns["imag"], meta), allow_nan=False), FORMAT_TAG)
 
     n_qubits = header.num_qubits
     terms: dict[str, complex] = {}
@@ -594,6 +620,10 @@ def _read_json(path):
     """Read the plain-text document into the shared ``(columns, meta)`` shape."""
     with open(path, encoding="utf-8") as fh:
         payload = json.load(fh)
+    return _json_columns(payload, path)
+
+
+def _json_columns(payload, path):
     if not isinstance(payload, dict):
         raise ValueError(f"{path!r} is not a Mandacaru qubit-Hamiltonian JSON file")
 

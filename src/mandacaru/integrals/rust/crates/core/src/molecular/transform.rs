@@ -164,9 +164,12 @@ impl Model {
             .map(|(s, c)| serde_json::json!([s, c.re, c.im]))
             .collect();
         let value = serde_json::json!({"format":"mandacaru-qubit-hamiltonian","version":1,"num_qubits":operator.n,"mapping":mapping,"num_particles":self.particles,"n_spatial_orbitals":self.m,"metadata":{"energy_unit":"Ha","source_engine":"rust"},"terms":terms});
-        let file = std::fs::File::create(path)
-            .map_err(|e| invalid(format!("cannot write Hamiltonian cache: {e}")))?;
-        serde_json::to_writer_pretty(file, &value).map_err(|e| invalid(e.to_string()))
+        crate::persistence::Document::parse(
+            ctx,
+            &value.to_string(),
+            crate::persistence::HAMILTONIAN,
+        )?
+        .save(path)
     }
     pub fn new(
         ctx: &Context,

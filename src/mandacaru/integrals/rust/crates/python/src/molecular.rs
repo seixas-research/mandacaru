@@ -211,6 +211,35 @@ impl PyIntegrals {
             integrals: self.inner.clone(),
         })
     }
+    #[pyo3(signature = (functional, num_particles, *, unrestricted=false, max_iterations=300, tolerance=1e-9, diis=true, guesses=3))]
+    fn kohn_sham(
+        &self,
+        py: Python<'_>,
+        functional: &str,
+        num_particles: [usize; 2],
+        unrestricted: bool,
+        max_iterations: usize,
+        tolerance: f64,
+        diis: bool,
+        guesses: usize,
+    ) -> PyResult<PyMeanField> {
+        let options = ScfOptions {
+            max_iterations,
+            tolerance,
+            diis,
+            guesses,
+        };
+        let inner = py
+            .detach(|| {
+                self.inner
+                    .kohn_sham(functional, num_particles, unrestricted, &options)
+            })
+            .map_err(error)?;
+        Ok(PyMeanField {
+            inner: Arc::new(inner),
+            integrals: self.inner.clone(),
+        })
+    }
 }
 #[pyclass(name = "MeanField", module = "mandacaru._native", frozen)]
 pub struct PyMeanField {
@@ -219,6 +248,26 @@ pub struct PyMeanField {
 }
 #[pymethods]
 impl PyMeanField {
+    fn gradient<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let gradient = py
+            .detach(|| self.integrals.gradient(&self.inner))
+            .map_err(error)?;
+        let shape = [self.integrals.geometry.numbers().len(), 3];
+        let out = PyDict::new(py);
+        out.set_item(
+            "gradient",
+            array(py, &shape, gradient.total.as_slice().to_vec())?,
+        )?;
+        out.set_item(
+            "hellmann_feynman",
+            array(py, &shape, gradient.hellmann_feynman.as_slice().to_vec())?,
+        )?;
+        out.set_item(
+            "pulay",
+            array(py, &shape, gradient.pulay.as_slice().to_vec())?,
+        )?;
+        Ok(out)
+    }
     #[getter]
     fn converged(&self) -> bool {
         self.inner.converged
@@ -328,6 +377,9 @@ impl PyMeanField {
         let n = value.model.one.as_slice().len().isqrt();
         let out = PyDict::new(py);
         out.set_item("method", &value.method)?;
+        out.set_item("functional", &value.functional)?;
+        out.set_item("hartree_energy", value.hartree_energy)?;
+        out.set_item("xc_energy", value.xc_energy)?;
         out.set_item("electronic_energy", value.electronic_energy)?;
         out.set_item("reference_energy", value.reference_energy)?;
         out.set_item("nuclear_repulsion", self.integrals.nuclear)?;
@@ -380,6 +432,26 @@ impl PyModel {
 }
 #[pymethods]
 impl PyModel {
+    fn mp2<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let model = self.inner();
+        if model.spinor || model.particles[0] != model.particles[1] {
+            return Err(PyValueError::new_err(
+                "native MP2 requires a closed-shell spatial model",
+            ));
+        }
+        let out = py
+            .detach(|| {
+                mandacaru_core::molecular::correlation::natural_orbitals(
+                    &self.context,
+                    model.m,
+                    model.one.as_slice(),
+                    model.two.as_slice(),
+                    model.particles[0],
+                )
+            })
+            .map_err(error)?;
+        super::advanced::mp2_result(py, out)
+    }
     #[getter]
     fn orbital_indices(&self) -> Vec<usize> {
         self.inner().orbital_indices.clone()

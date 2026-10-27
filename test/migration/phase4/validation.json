@@ -1,0 +1,786 @@
+{
+  "broader_python_regression": {
+    "errors": [
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_forces_are_the_derivative_of_the_energy[lda]",
+        "seconds": 0.754
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_energy_is_the_grids_to_the_grid_s_error[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_log_and_the_integrals_name_the_route[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_analytic_matrices_are_the_ones_the_energy_used[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_net_force_shrinks[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_forces_are_the_derivative_of_the_energy[pbe]",
+        "seconds": 0.864
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_energy_is_the_grids_to_the_grid_s_error[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_log_and_the_integrals_name_the_route[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_analytic_matrices_are_the_ones_the_energy_used[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_net_force_shrinks[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_forces_are_physical",
+        "seconds": 0.171
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_a_stretched_bond_pulls_back",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'details'\"",
+        "name": "test_the_paw_basis_is_clean_on_the_same_geometry",
+        "seconds": 2.759
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'details'\"",
+        "name": "test_no_warning_for_the_pseudopotential_basis",
+        "seconds": 0.0
+      }
+    ],
+    "executed": 312,
+    "failures": [
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_they_are_the_derivative_of_the_energy[lda]",
+        "seconds": 3.815
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'hellmann_feynman'",
+        "name": "test_the_breakdown_and_the_dispersion_add_up[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'gradient'",
+        "name": "test_it_is_the_gradient_through_the_tensor[pbe-0.25-DZP]",
+        "seconds": 3.006
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'gradient'",
+        "name": "test_it_is_the_gradient_through_the_tensor[r2scan-0.3-SZP]",
+        "seconds": 2.919
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_meta_gga_force_is_the_derivative_of_its_energy[spectral]",
+        "seconds": 2.116
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_meta_gga_force_is_the_derivative_of_its_energy[fd]",
+        "seconds": 2.225
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_the_force_on_water_s_oxygen_is_the_derivative_of_its_energy",
+        "seconds": 4.501
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForcesAfterTheEnergy",
+        "message": "AssertionError: assert <mandacaru.algorithms.dft.DFTDriver object at 0x10bd66e40> is <mandacaru.algorithms.dft.DFTDriver object at 0x131455940>\n +  where <mandacaru.algorithms.dft.DFTDriver object at 0x10bd66e40> = Mandacaru(method='dft', basis={'name': 'NAO', 'size': 'DZ'}, grid_spacing=0.35).solver\n +    where Mandacaru(method='dft', basis={'name': 'NAO', 'size': 'DZ'}, grid_spacing=0.35) = Atoms(symbols='H2', pbc=False, cell=[6.0, 6.0, 6.0], calculator=Mandacaru(...)).calc",
+        "name": "test_the_forces_do_not_repeat_the_scf",
+        "seconds": 0.166
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestUnrestricted",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_unrestricted_forces_are_the_derivative_of_the_energy[lda]",
+        "seconds": 0.577
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestUnrestricted",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_unrestricted_forces_are_the_derivative_of_the_energy[pbe]",
+        "seconds": 0.756
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestUnrestricted",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_unrestricted_forces_are_the_derivative_of_the_energy[r2scan]",
+        "seconds": 1.135
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestHybrid",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_forces_are_the_derivative_of_the_energy",
+        "seconds": 0.304
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[hse06/nao]",
+        "seconds": 0.336
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[lda/paw-lcao]",
+        "seconds": 0.683
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[lda/upaw-lcao]",
+        "seconds": 3.057
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[r2scan/paw-lcao]",
+        "seconds": 1.011
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[uks-lda/paw-lcao]",
+        "seconds": 0.593
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_the_unrestricted_forces_are_the_derivative_of_the_energy",
+        "seconds": 0.549
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestGradientIsExact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_h2[0]",
+        "seconds": 0.198
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestGradientIsExact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_h2[1]",
+        "seconds": 0.275
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestGradientIsExact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_lih",
+        "seconds": 0.278
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_compressed_bond_pushes_apart",
+        "seconds": 0.165
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_virtual_levels_keep_the_forces_clean",
+        "seconds": 0.22
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_the_net_force_is_enormous",
+        "seconds": 0.251
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_freezing_the_core_does_not_cure_it",
+        "seconds": 0.23
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestTranslationProjectionPolicy",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_auto_is_the_default_and_projects_a_free_molecule",
+        "seconds": 0.158
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestTranslationProjectionPolicy",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_false_reports_the_raw_gradient",
+        "seconds": 0.304
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestTranslationProjectionPolicy",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_auto_leaves_a_periodic_system_alone",
+        "seconds": 0.157
+      }
+    ],
+    "passed": 256,
+    "skips": [
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.3-lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.3-pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.3-r2scan]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.9-lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.9-pbe]",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.9-r2scan]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestTheVdwOption",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_d4_is_dispatched_to_the_energy_and_the_forces",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_they_are_the_derivative_of_the_energy[pbe+d4]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_the_breakdown_and_the_dispersion_add_up[pbe+d4]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_a_semilocal_gradient_never_forms_the_two_electron_tensor[pbe+d4]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_d4_adds_its_energy_to_the_total",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_periodic_d4_tends_to_the_molecular_one",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_periodic_d4_gradient_and_virial_are_its_derivatives",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_a_crystal_carries_d4_in_its_energy",
+        "seconds": 0.0
+      }
+    ]
+  },
+  "clippy": {
+    "bindings": "passed --no-deps -D warnings -A clippy::too_many_arguments",
+    "core": "passed --all-targets --no-deps -D warnings"
+  },
+  "created_utc": "2026-10-27T19:33:33.064471+00:00",
+  "focused_native_api_docs": {
+    "errors": [],
+    "executed": 335,
+    "failures": [],
+    "passed": 335,
+    "skips": []
+  },
+  "limitations": [
+    "The full scientific suite was not run. Broader Python regressions include 28 failures and 14 setup errors, exactly reproduced at the previous revision.",
+    "Packaging is validated on macOS arm64 CPython 3.14 only.",
+    "Kohn-Sham Hartree uses Poisson but many-body export still builds the packed pair matrix.",
+    "Native work is sequential except existing scoped kernels; Python-owned output copies are outside the native allocation budget."
+  ],
+  "nao_ae_python_regression": {
+    "errors": [],
+    "executed": 54,
+    "failures": [],
+    "passed": 54,
+    "skips": []
+  },
+  "new_phase4_cases": 70,
+  "phase4_status": "partially_migrated; supported milestone validated; remaining scope is explicit",
+  "previous_revision_regression": {
+    "errors": [
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_forces_are_the_derivative_of_the_energy[lda]",
+        "seconds": 0.831
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_energy_is_the_grids_to_the_grid_s_error[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_log_and_the_integrals_name_the_route[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_analytic_matrices_are_the_ones_the_energy_used[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_net_force_shrinks[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_forces_are_the_derivative_of_the_energy[pbe]",
+        "seconds": 0.883
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_energy_is_the_grids_to_the_grid_s_error[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_log_and_the_integrals_name_the_route[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_analytic_matrices_are_the_ones_the_energy_used[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_net_force_shrinks[pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_the_forces_are_physical",
+        "seconds": 0.168
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'unprojected'\"",
+        "name": "test_a_stretched_bond_pulls_back",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'details'\"",
+        "name": "test_the_paw_basis_is_clean_on_the_same_geometry",
+        "seconds": 2.79
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "failed on setup with \"AttributeError: 'NoneType' object has no attribute 'details'\"",
+        "name": "test_no_warning_for_the_pseudopotential_basis",
+        "seconds": 0.0
+      }
+    ],
+    "executed": 312,
+    "failures": [
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_they_are_the_derivative_of_the_energy[lda]",
+        "seconds": 4.22
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'hellmann_feynman'",
+        "name": "test_the_breakdown_and_the_dispersion_add_up[lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'gradient'",
+        "name": "test_it_is_the_gradient_through_the_tensor[pbe-0.25-DZP]",
+        "seconds": 3.371
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'gradient'",
+        "name": "test_it_is_the_gradient_through_the_tensor[r2scan-0.3-SZP]",
+        "seconds": 3.164
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_meta_gga_force_is_the_derivative_of_its_energy[spectral]",
+        "seconds": 2.111
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_meta_gga_force_is_the_derivative_of_its_energy[fd]",
+        "seconds": 2.257
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_the_force_on_water_s_oxygen_is_the_derivative_of_its_energy",
+        "seconds": 6.403
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForcesAfterTheEnergy",
+        "message": "AssertionError: assert <mandacaru.algorithms.dft.DFTDriver object at 0x139372270> is <mandacaru.algorithms.dft.DFTDriver object at 0x139a5fa10>\n +  where <mandacaru.algorithms.dft.DFTDriver object at 0x139372270> = Mandacaru(method='dft', basis={'name': 'NAO', 'size': 'DZ'}, grid_spacing=0.35).solver\n +    where Mandacaru(method='dft', basis={'name': 'NAO', 'size': 'DZ'}, grid_spacing=0.35) = Atoms(symbols='H2', pbc=False, cell=[6.0, 6.0, 6.0], calculator=Mandacaru(...)).calc",
+        "name": "test_the_forces_do_not_repeat_the_scf",
+        "seconds": 0.212
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestUnrestricted",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_unrestricted_forces_are_the_derivative_of_the_energy[lda]",
+        "seconds": 0.713
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestUnrestricted",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_unrestricted_forces_are_the_derivative_of_the_energy[pbe]",
+        "seconds": 1.013
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestUnrestricted",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_unrestricted_forces_are_the_derivative_of_the_energy[r2scan]",
+        "seconds": 1.514
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestHybrid",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_forces_are_the_derivative_of_the_energy",
+        "seconds": 0.336
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[hse06/nao]",
+        "seconds": 0.371
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[lda/paw-lcao]",
+        "seconds": 0.774
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[lda/upaw-lcao]",
+        "seconds": 3.44
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[r2scan/paw-lcao]",
+        "seconds": 1.142
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestSpectralKineticForces",
+        "message": "TypeError: 'NoneType' object is not subscriptable",
+        "name": "test_they_are_the_derivative_of_the_energy[uks-lda/paw-lcao]",
+        "seconds": 0.653
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestAnalyticTwoCenter",
+        "message": "AttributeError: 'NoneType' object has no attribute 'num_particles'",
+        "name": "test_the_unrestricted_forces_are_the_derivative_of_the_energy",
+        "seconds": 0.581
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestGradientIsExact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_h2[0]",
+        "seconds": 0.192
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestGradientIsExact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_h2[1]",
+        "seconds": 0.272
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestGradientIsExact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_lih",
+        "seconds": 0.286
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_compressed_bond_pushes_apart",
+        "seconds": 0.167
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestH2",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_virtual_levels_keep_the_forces_clean",
+        "seconds": 0.22
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_the_net_force_is_enormous",
+        "seconds": 0.261
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestLiHCoreArtifact",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_freezing_the_core_does_not_cure_it",
+        "seconds": 0.236
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestTranslationProjectionPolicy",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_auto_is_the_default_and_projects_a_free_molecule",
+        "seconds": 0.158
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestTranslationProjectionPolicy",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_false_reports_the_raw_gradient",
+        "seconds": 0.307
+      },
+      {
+        "classname": "test.algorithms.test_hao_forces.TestTranslationProjectionPolicy",
+        "message": "AttributeError: 'NoneType' object has no attribute 'details'",
+        "name": "test_auto_leaves_a_periodic_system_alone",
+        "seconds": 0.155
+      }
+    ],
+    "passed": 256,
+    "skips": [
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.3-lda]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.3-pbe]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.3-r2scan]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.9-lda]",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.9-pbe]",
+        "seconds": 0.003
+      },
+      {
+        "classname": "test.basis.test_xc_spin",
+        "message": "could not import 'pyscf.dft.libxc': No module named 'pyscf'",
+        "name": "test_a_polarized_density_matches_libxc[0.9-r2scan]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestTheVdwOption",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_d4_is_dispatched_to_the_energy_and_the_forces",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_they_are_the_derivative_of_the_energy[pbe+d4]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_the_breakdown_and_the_dispersion_add_up[pbe+d4]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestForces",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_a_semilocal_gradient_never_forms_the_two_electron_tensor[pbe+d4]",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_d4_adds_its_energy_to_the_total",
+        "seconds": 0.003
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_periodic_d4_tends_to_the_molecular_one",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_periodic_d4_gradient_and_virial_are_its_derivatives",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.algorithms.test_dft.TestDispersion",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_a_crystal_carries_d4_in_its_energy",
+        "seconds": 0.0
+      }
+    ]
+  },
+  "regression_comparison": {
+    "outcome_changes": [],
+    "previous_revision": "596763b3c7d5faeae4bbdad9bbdb710feb25fdc9",
+    "previous_source_sha256": "d35b8ec92fde50188c6b3e12cdfdfc7f7aff8e72e9eda7c9f119d04dfd84557a",
+    "same_outcomes_for_all_cases": true,
+    "shared_native_library_note": "Prior Python sources were isolated from git archive HEAD; unchanged legacy kernels were loaded from the current extension. New native molecular components are not entered by these Python-engine regressions."
+  },
+  "remaining_phase4": [
+    "PAW/UPAW datasets, generation, augmentation and library selection",
+    "radial PBE and relaxed f-block configurations; scalar/Dirac atoms",
+    "spinor KS, degenerate-shell ensembles, r2SCAN, HSE06, rVV10, D4 and Hubbard terms",
+    "electric response; correlated/active-projector orbital response; spinor, FD-kinetic and Cholesky HF gradients"
+  ],
+  "rust_tests": {
+    "failed": 0,
+    "groups": {
+      "foundation": 7,
+      "legacy_runtime": 2,
+      "molecular": 7,
+      "phase4": 6,
+      "quantum": 6
+    },
+    "passed": 28
+  },
+  "schema_version": 1,
+  "scope": "Phase 4 native NAO/NAO-AE, spherical LDA atoms, molecular LDA/PBE Kohn-Sham and full-space stationary collinear SCF gradients",
+  "sdist": {
+    "fresh_offline_build": true,
+    "native_binaries_in_source": false,
+    "sha256": "77e8274c8fb5136ff92ad2320c273daedf8b46690eefa62c34bce45a37896682"
+  },
+  "source_sha256": "0da19214e266f77893cf77c46717dad94b9318bd27635079957b8711f2fb6099",
+  "standalone": {
+    "command": "cargo run --offline --release --package mandacaru-core --example solve_dft",
+    "converged": true,
+    "no_python": true,
+    "pbe_energy_ha": -0.973666490345
+  },
+  "wheel": {
+    "passed": true,
+    "schema_version": 1,
+    "smoke": {
+      "abi_version": 1,
+      "cached_vqe_energy_ev": -25.871895455446612,
+      "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+      "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+      "qiskit_transpile_and_parquet_roundtrip": true,
+      "rhf_energy_ev": -25.5004433585557,
+      "runtime_compilation": false,
+      "rust_dft_energy_ev": -25.80496391071012,
+      "rust_engine_energies_ev": {
+        "adapt-vqe": -25.871895455446616,
+        "vqe": -25.871895455446616
+      },
+      "rust_geometry_energies_ev": {
+        "adapt-vqe": -25.871895455446595,
+        "rhf": -25.50044335855568,
+        "vqe": -25.871895455446595
+      },
+      "rust_stationary_forces_and_radial_atoms": true
+    },
+    "wheel": "mandacaru-26.10.36-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+    "wheel_sha256": "8a719c4c27643f7a222efb730e67fe628b5ebc5601288aed8c3cdad83c37f60a"
+  }
+}

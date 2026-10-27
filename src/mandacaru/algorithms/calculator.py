@@ -625,11 +625,12 @@ class Mandacaru(Calculator):
             raise ValueError("engine must be 'python' or 'rust'")
         self.engine = engine
         if engine == "rust":
-            from ._rust_quantum import RustVQE, RustADAPT
-            from ._rust_molecular import RustRHF, RustUHF, RustGHF
-            native = {"vqe": RustVQE, "adapt-vqe": RustADAPT, "rhf": RustRHF, "uhf": RustUHF, "ghf": RustGHF}
+            from ._rust_quantum import RustVQE, RustADAPT, RustSubspaceVQE, RustSubspaceADAPT
+            from ._rust_molecular import RustRHF, RustUHF, RustGHF, RustDFT
+            native = {"vqe": RustVQE, "adapt-vqe": RustADAPT, "rhf": RustRHF, "uhf": RustUHF, "ghf": RustGHF, "dft": RustDFT,
+                      "subspace-vqe": RustSubspaceVQE, "subspace-adapt-vqe": RustSubspaceADAPT}
             if self.method not in native:
-                raise NotImplementedError("engine='rust' supports molecular RHF/UHF/GHF and local VQE/ADAPT-VQE")
+                raise NotImplementedError("engine='rust' supports molecular RHF/UHF/GHF, LDA/PBE DFT and local VQE/ADAPT-VQE including shared-subspace searches")
             if population is not None:
                 raise NotImplementedError("native population reporting is not yet wired")
             if measurement_provider is not None or measurement_budget is not None:
@@ -642,7 +643,7 @@ class Mandacaru(Calculator):
             dump_buffers = disk_buffers
         if dump_buffers is None:
             # Buffer dump to disk (.bin) is default for all DFT simulations unless explicitly disabled
-            dump_buffers = (self.method == "dft")
+            dump_buffers = (self.method == "dft" and self.engine != "rust")
         self.dump_buffers = bool(dump_buffers)
         self.cache_dir = cache_dir
         from ..integrals.buffers import set_dump_buffers, set_buffer_dir
@@ -1470,8 +1471,8 @@ class Mandacaru(Calculator):
             _watchable_stdout()
 
         want_forces = "forces" in properties
-        if self.engine == "rust" and want_forces:
-            raise NotImplementedError("nuclear forces for the native molecular engine require the later gradient migration")
+        if self.engine == "rust" and want_forces and not getattr(self._solver_class, "classical_mean_field", False):
+            raise NotImplementedError("native quantum-state nuclear forces require orbital response, which is not implemented")
         # A previous step's breakdown must never survive a new geometry.
         self.force_result = None
         if want_forces and getattr(self._solver_class, "classical_mean_field",
@@ -1592,6 +1593,10 @@ class Mandacaru(Calculator):
         """Deallocate solver internal buffers, caches, and memory-mapped disk buffers."""
         if solver is None:
             return
+        if getattr(solver, "engine", None) == "rust":
+            # Native results own their immutable buffers; Python buffer cleanup
+            # would invalidate public result views and the force breakdown.
+            return
         try:
             ctx = getattr(solver, "_gradient_context", None)
             if ctx and "integrals" in ctx:
@@ -1683,6 +1688,16 @@ class Mandacaru(Calculator):
                 or getattr(solver, "result", None) is None):
             return None
         context = getattr(solver, "_gradient_context", None)
+        if getattr(solver, "engine", None) == "rust":
+            used = solver.integrals.grid
+            origin = (grid.origin_bohr if hasattr(grid, "origin_bohr") else
+                      [grid.X.flat[0], grid.Y.flat[0], grid.Z.flat[0]])
+            step = grid.step_bohr if hasattr(grid, "step_bohr") else grid.step
+            if (tuple(used.shape) == tuple(grid.shape)
+                    and np.allclose(used.step_bohr, step)
+                    and np.allclose(used.origin_bohr, origin)):
+                return solver
+            return None
         used = None if context is None else context["integrals"].grid
         if (used is None or tuple(used.shape) != tuple(grid.shape)
                 or not np.allclose(used.step, grid.step)
@@ -1724,6 +1739,9 @@ class Mandacaru(Calculator):
         The gradient differentiates *this* energy expression; a configuration
         it does not model must fail here rather than return a plausible number.
         """
+        if getattr(solver, "engine", None) == "rust":
+            solver.check_force_support()
+            return
         if getattr(solver, "classical_mean_field", False) \
                 and not getattr(solver, "analytic_gradient", False):
             raise NotImplementedError(
@@ -2339,6 +2357,12 @@ class Mandacaru(Calculator):
         Full-space AO derivatives are analytic.  A deleted virtual space adds
         the finite-difference response of the selected MO projector.
         """
+        if getattr(solver, "engine", None) == "rust":
+            result = solver.nuclear_gradient()
+            if self.project_translation and self._projection_applies(result):
+                self._project_translation(result)
+            return result
+
         from .forces import nuclear_gradient
 
         if getattr(solver, "ghosts", ()):

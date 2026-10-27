@@ -289,6 +289,6 @@ def test_failed_scf_invalid_inputs_and_budget_cleanup_are_explicit():
         with pytest.raises((ValueError, NotImplementedError)):
             Mandacaru(method="rhf", engine="rust", **options)
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", engine="rust", trace=False)
+    atoms.calc = Mandacaru(method="ghf", engine="rust", trace=False)
     with pytest.raises(NotImplementedError, match="forces"):
         atoms.get_forces()

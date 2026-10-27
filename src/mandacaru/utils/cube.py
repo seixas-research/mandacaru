@@ -137,7 +137,8 @@ def _data_lines(data) -> list[str]:
 
 
 def write_cube(path, data, origin, step, numbers, positions,
-               comment: str = "", charges=None) -> str:
+               comment: str = "", charges=None, *, engine="python",
+               engine_options=None) -> str:
     """Write a Gaussian ``.cube`` file and return the path written.
 
     Parameters
@@ -172,6 +173,14 @@ def write_cube(path, data, origin, step, numbers, positions,
                else np.asarray(charges, dtype=float).reshape(-1))
     if len(charges) != len(numbers):
         raise ValueError(f"{len(charges)} charges but {len(numbers)} atoms")
+    if engine == "rust":
+        from .._native import Context
+        Context(**dict(engine_options or {})).write_field(
+            str(path), data, origin.tolist(), step.tolist(), numbers.tolist(),
+            positions.tolist(), format="cube", charges=charges.tolist(), comment=str(comment))
+        return str(path)
+    if engine != "python" or engine_options:
+        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
 
     header = [str(comment).replace("\n", " ").strip() or "Mandacaru",
               CUBE_AXIS_COMMENT,
@@ -192,7 +201,7 @@ def write_cube(path, data, origin, step, numbers, positions,
 
 
 def write_xsf(path, data, origin, step, numbers, positions, cell=None,
-              periodic: bool = False) -> str:
+              periodic: bool = False, *, engine="python", engine_options=None) -> str:
     """Write an XCrySDen ``.xsf`` file (VESTA reads these too) via ASE.
 
     Same arguments as :func:`write_cube`, all in **Bohr**; XSF is an Angstrom
@@ -211,11 +220,19 @@ def write_xsf(path, data, origin, step, numbers, positions, cell=None,
     That is ample for a density in e/Bohr^3 and for an orbital amplitude, but
     :func:`write_cube` is the more precise of the two.
     """
-    from ase import Atoms
-    from ase.io.xsf import write_xsf as ase_write_xsf
-
     data, origin, step, numbers, positions = _checked_field(
         data, origin, step, numbers, positions)
+    if engine == "rust":
+        from .._native import Context
+        Context(**dict(engine_options or {})).write_field(
+            str(path), data, origin.tolist(), step.tolist(), numbers.tolist(),
+            positions.tolist(), format="xsf", periodic=periodic,
+            cell=None if cell is None else np.asarray(cell, dtype=float).reshape(3, 3).tolist())
+        return str(path)
+    if engine != "python" or engine_options:
+        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
+    from ase import Atoms
+    from ase.io.xsf import write_xsf as ase_write_xsf
     atoms = Atoms(numbers=numbers, positions=positions * BOHR_TO_ANGSTROM)
     if cell is not None:
         atoms.set_cell(np.asarray(cell, dtype=float) * BOHR_TO_ANGSTROM)
@@ -243,7 +260,8 @@ def write_xsf(path, data, origin, step, numbers, positions, cell=None,
 
 def write_volumetric(path, data, origin, step, numbers, positions,
                      comment: str = "", charges=None, cell=None,
-                     format=None, periodic: bool = False) -> str:
+                     format=None, periodic: bool = False, *,
+                     engine="python", engine_options=None) -> str:
     """Write ``data`` in the format named by ``format`` or the file extension.
 
     ``cell`` and ``periodic`` go to :func:`write_xsf`; a periodic field's
@@ -251,6 +269,7 @@ def write_volumetric(path, data, origin, step, numbers, positions,
     name = detect_format(path, format)
     if name == "cube":
         return write_cube(path, data, origin, step, numbers, positions,
-                          comment=comment, charges=charges)
+                          comment=comment, charges=charges, engine=engine,
+                          engine_options=engine_options)
     return write_xsf(path, data, origin, step, numbers, positions, cell=cell,
-                     periodic=periodic)
+                     periodic=periodic, engine=engine, engine_options=engine_options)

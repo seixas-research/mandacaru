@@ -28,8 +28,9 @@ result = calc.run()                   # approximately -25.871895455447 eV
 For an uninterrupted geometry-to-quantum calculation set `method="vqe"` or
 `"adapt-vqe"` on the ASE calculator itself. `run(geometry=atoms)` also works.
 `engine="python"` remains the default; native calculations never fall back to
-Python scientific implementations. Forces remain unavailable in the native
-engine and fail before an energy calculation starts.
+Python scientific implementations. This Phase 3 milestone left native forces
+unavailable. Phase 4 now adds stationary collinear SCF forces; see
+[rust_phase4.md](rust_phase4.md) for their supported scope.
 
 ## Native components
 

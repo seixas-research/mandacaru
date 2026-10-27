@@ -1,0 +1,187 @@
+{
+  "clippy": {
+    "core_all_targets": "passed with -D warnings",
+    "python": "passed with -D warnings -A clippy::too_many_arguments"
+  },
+  "contracts": {
+    "abi_version": 1,
+    "changes_committed": false,
+    "frozen_reference_artifacts_modified": false,
+    "native_numerical_callbacks": false,
+    "python_default_unchanged": true,
+    "thread_policy_version": 1
+  },
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "3.14.6",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)"
+  },
+  "focused_python": {
+    "errors": [],
+    "executed": 414,
+    "failures": [],
+    "passed": 414,
+    "skips": []
+  },
+  "frozen_h2_cache_sha256": "d222510c116ba17652a1ab1c10b218fb2064d1321b43700fd55a043d72bdb5d4",
+  "implemented": [
+    "shared-subspace UCCSD VQE and fermionic ADAPT",
+    "insertion-ordered Suzuki time propagation and exact discrete adjoints",
+    "dense and matrix-free finite-register QPE with native FFT",
+    "real closed-shell MP2 energy, unrelaxed density and frozen virtual natural orbitals"
+  ],
+  "legacy_property_learned_algorithm_regression": {
+    "errors": [],
+    "executed": 300,
+    "failures": [
+      {
+        "classname": "test.algorithms.test_dlpno_mp2.TestTheActiveSpaceMethod",
+        "message": "AttributeError: 'NoneType' object has no attribute 'hellmann_feynman'",
+        "name": "test_forces_match_the_mp2_active_space",
+        "seconds": 1.554
+      }
+    ],
+    "passed": 298,
+    "skips": [
+      {
+        "classname": "test.algorithms.test_interaction.TestCounterpoise",
+        "message": "could not import 'dftd4': No module named 'dftd4'",
+        "name": "test_d4_counts_the_real_atoms_only",
+        "seconds": 0.0
+      }
+    ]
+  },
+  "legacy_quantum_correlation_regression": {
+    "errors": [],
+    "executed": 225,
+    "failures": [],
+    "passed": 225,
+    "skips": []
+  },
+  "limitations": "The broad Phase 6 groups and earlier Phase 4/5 pending work remain explicit in docs/source/development/rust_phase6.md. The whole scientific suite is not asserted green.",
+  "new_phase6_python_cases": 46,
+  "pending": [
+    "variational deflation and spin-adapted/general subspace families",
+    "MCAS-VQE/VALQA, GP/ranker/GNN proposals, JAX training and expressivity",
+    "echo/nested-OTOC orchestration and sampled spectra",
+    "open-shell/DLPNO-MP2, packed/direct MP2 input and MP2 active-space selection",
+    "charges, magnetic/dipole/volumetric properties, interaction energies and general spectroscopy"
+  ],
+  "phase": 6,
+  "phase6_status": "partially_migrated; validated advanced quantum and closed-shell correlation milestone",
+  "prior_revision_failure_reproduction": {
+    "identical_failure": true,
+    "note": "Archived prior Python sources use the unchanged legacy kernels in the current extension. The failing Python-engine DLPNO force-result test does not enter new Phase 6 components.",
+    "results": {
+      "errors": [],
+      "executed": 1,
+      "failures": [
+        {
+          "classname": "test.algorithms.test_dlpno_mp2.TestTheActiveSpaceMethod",
+          "message": "AttributeError: 'NoneType' object has no attribute 'hellmann_feynman'",
+          "name": "test_forces_match_the_mp2_active_space",
+          "seconds": 4.944
+        }
+      ],
+      "passed": 0,
+      "skips": []
+    },
+    "revision": "596763b3c7d5faeae4bbdad9bbdb710feb25fdc9",
+    "source_sha256": "d35b8ec92fde50188c6b3e12cdfdfc7f7aff8e72e9eda7c9f119d04dfd84557a"
+  },
+  "revision": "596763b3c7d5faeae4bbdad9bbdb710feb25fdc9",
+  "rust_tests": {
+    "command": "cargo test --offline --manifest-path src/mandacaru/integrals/rust/Cargo.toml --package mandacaru-core --package mandacaru_integrals",
+    "failed": 0,
+    "new_phase6_cases": 4,
+    "passed": 37
+  },
+  "schema_version": 1,
+  "scientific_comparisons": {
+    "dense_qpe_ground_eigenspace_overlap_error": 4.052314039881821e-15,
+    "dense_qpe_max_probability_error": 8.271161533457416e-15,
+    "mp2_max_occupation_error": 1.3010426069826053e-18,
+    "mp2_particle_trace_error": 4.440892098500626e-16,
+    "propagation_max_amplitude_error_by_suzuki_order": {
+      "1": 5.551115123125783e-17,
+      "2": 5.551115123125783e-17,
+      "4": 6.206335383118183e-17,
+      "6": 2.7755575615628914e-17
+    },
+    "semicanonical_mp2_correlation_absolute_error_ha": 1.5178830414797062e-18,
+    "semicanonical_mp2_correlation_ha": -0.0017422181949602897
+  },
+  "sdist": {
+    "fresh_cargo_target": true,
+    "installed_smoke": {
+      "passed": true,
+      "schema_version": 1,
+      "smoke": {
+        "abi_version": 1,
+        "cached_vqe_energy_ev": -25.871895455446612,
+        "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+        "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+        "qiskit_transpile_and_parquet_roundtrip": true,
+        "rhf_energy_ev": -25.5004433585557,
+        "runtime_compilation": false,
+        "rust_dft_energy_ev": -25.80496391071012,
+        "rust_dynamics_qpe_mp2_subspace": true,
+        "rust_engine_energies_ev": {
+          "adapt-vqe": -25.871895455446616,
+          "vqe": -25.871895455446616
+        },
+        "rust_geometry_energies_ev": {
+          "adapt-vqe": -25.871895455446595,
+          "rhf": -25.50044335855568,
+          "vqe": -25.871895455446595
+        },
+        "rust_periodic_energy_ev": -211.60193975895788,
+        "rust_periodic_scf_and_ewald": true,
+        "rust_stationary_forces_and_radial_atoms": true
+      },
+      "wheel": "mandacaru-26.10.36-cp314-cp314-macosx_26_0_arm64.whl",
+      "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+      "wheel_sha256": "b534e70c749b16fbedcbaaac2ada1d2f68f173c4e067c2a987928d193365dd4e"
+    },
+    "native_binaries_in_source": false,
+    "offline_build": true,
+    "same_source_as_checkout": true,
+    "source_archive_sha256": "e3d75d80188340a137b7e19b75801e6cc459f817a8b62986bb411889ad4949b3",
+    "source_sha256": "9398a90a914764b6fb7069f6c9346e5bc3960e9d1a2905830e27de76c660ec62",
+    "target_in_source": false,
+    "wheel": ".mandacaru/migration/phase6/sdist-check-vr_r1fup/dist/mandacaru-26.10.36-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_sha256": "b534e70c749b16fbedcbaaac2ada1d2f68f173c4e067c2a987928d193365dd4e"
+  },
+  "source_files": 251,
+  "source_sha256": "9398a90a914764b6fb7069f6c9346e5bc3960e9d1a2905830e27de76c660ec62",
+  "wheel": {
+    "passed": true,
+    "schema_version": 1,
+    "smoke": {
+      "abi_version": 1,
+      "cached_vqe_energy_ev": -25.871895455446612,
+      "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+      "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+      "qiskit_transpile_and_parquet_roundtrip": true,
+      "rhf_energy_ev": -25.5004433585557,
+      "runtime_compilation": false,
+      "rust_dft_energy_ev": -25.80496391071012,
+      "rust_dynamics_qpe_mp2_subspace": true,
+      "rust_engine_energies_ev": {
+        "adapt-vqe": -25.871895455446616,
+        "vqe": -25.871895455446616
+      },
+      "rust_geometry_energies_ev": {
+        "adapt-vqe": -25.871895455446595,
+        "rhf": -25.50044335855568,
+        "vqe": -25.871895455446595
+      },
+      "rust_periodic_energy_ev": -211.60193975895788,
+      "rust_periodic_scf_and_ewald": true,
+      "rust_stationary_forces_and_radial_atoms": true
+    },
+    "wheel": "mandacaru-26.10.36-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+    "wheel_sha256": "dd1d794d4967c3506e717e65da3b0fc938af2cded27416877be6d00a5f38457d"
+  }
+}

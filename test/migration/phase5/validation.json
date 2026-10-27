@@ -1,0 +1,226 @@
+{
+  "broader_periodic_regression": {
+    "errors": [],
+    "executed": 356,
+    "failures": [
+      {
+        "classname": "test.algorithms.test_periodic_device.TestThreads",
+        "message": "assert ([set(), set(), set()] and False)\n +  where False = all(<generator object TestThreads.test_the_grid_products_use_the_physical_cores.<locals>.<genexpr> at 0x1100ee420>)",
+        "name": "test_the_grid_products_use_the_physical_cores",
+        "seconds": 0.003
+      },
+      {
+        "classname": "test.algorithms.test_periodic_dft.TestTheMoleculeInABox",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_polar_molecule_has_the_crystal_forces",
+        "seconds": 1.988
+      },
+      {
+        "classname": "test.algorithms.test_bloch.TestForcesAreImplemented",
+        "message": "AttributeError: 'NoneType' object has no attribute 'optimal_energy'",
+        "name": "test_the_force_is_the_gradient_of_the_reported_energy",
+        "seconds": 0.0
+      }
+    ],
+    "passed": 353,
+    "skips": []
+  },
+  "clippy": {
+    "bindings": "passed --no-deps -D warnings -A clippy::too_many_arguments",
+    "core": "passed --all-targets --no-deps -D warnings"
+  },
+  "created_utc": "2026-10-27T20:05:25.974957+00:00",
+  "crystal_fixture": {
+    "bytes": 2170835,
+    "provenance": {
+      "dataset_sources": [
+        {
+          "file": "Si.parquet",
+          "sha256": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db",
+          "symbol": "Si"
+        },
+        {
+          "file": "Si.parquet",
+          "sha256": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db",
+          "symbol": "Si"
+        }
+      ],
+      "energy_ev": -211.60193975895788,
+      "family": "paw-lcao",
+      "generator": "test/migration/export_crystal.py",
+      "geometry": {
+        "cell_angstrom": [
+          [
+            0.0,
+            2.715,
+            2.715
+          ],
+          [
+            2.715,
+            0.0,
+            2.715
+          ],
+          [
+            2.715,
+            2.715,
+            0.0
+          ]
+        ],
+        "numbers": [
+          14,
+          14
+        ],
+        "pbc": [
+          true,
+          true,
+          true
+        ],
+        "positions_angstrom": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            1.3575,
+            1.3575,
+            1.3575
+          ]
+        ]
+      },
+      "mesh_gamma": true,
+      "mesh_size": [
+        2,
+        2,
+        2
+      ],
+      "reference_case": "si_periodic_lda",
+      "setup_engine": "python-paw-adapter",
+      "source_sha256": "0a5cf416ee07cc9650c1bf30783743e9cdad89f380adb6d51bb1e1faf78a5ef1"
+    },
+    "sha256": "41590f02cce1f90f4da36098b6da44512a960f50f98df4cdfe59325cdef30598"
+  },
+  "focused_native_api_docs": {
+    "errors": [],
+    "executed": 368,
+    "failures": [],
+    "passed": 368,
+    "skips": []
+  },
+  "limitations": [
+    "Only macOS arm64 CPython 3.14 packaging was executed.",
+    "The full scientific suite was not run; broader periodic regression results are preserved.",
+    "Python PAW assembly and space-group setup are explicit adapters outside native allocation/thread limits.",
+    "Full periodic electronic PAW forces/stress, many-body drivers, SOC/spinors, advanced functionals and tetrahedron analysis remain pending.",
+    "Projectability/downfolded trial-space Hamiltonians and Wilson links are native primitives; physical Wannier/cRPA/polarization/response workflows remain pending."
+  ],
+  "magnetic_mesh_policy": "Nonzero collinear seed moments use the full mesh with spatial averaging disabled.",
+  "new_phase5_cases": 33,
+  "phase5_status": "partially_migrated; validated native milestone with explicit Python PAW setup adapter",
+  "previous_revision_regression": {
+    "errors": [],
+    "executed": 356,
+    "failures": [
+      {
+        "classname": "test.algorithms.test_periodic_device.TestThreads",
+        "message": "assert ([set(), set(), set()] and False)\n +  where False = all(<generator object TestThreads.test_the_grid_products_use_the_physical_cores.<locals>.<genexpr> at 0x11220b3e0>)",
+        "name": "test_the_grid_products_use_the_physical_cores",
+        "seconds": 0.006
+      },
+      {
+        "classname": "test.algorithms.test_periodic_dft.TestTheMoleculeInABox",
+        "message": "AttributeError: 'NoneType' object has no attribute 'unprojected'",
+        "name": "test_a_polar_molecule_has_the_crystal_forces",
+        "seconds": 3.185
+      },
+      {
+        "classname": "test.algorithms.test_bloch.TestForcesAreImplemented",
+        "message": "AttributeError: 'NoneType' object has no attribute 'optimal_energy'",
+        "name": "test_the_force_is_the_gradient_of_the_reported_energy",
+        "seconds": 0.0
+      }
+    ],
+    "passed": 353,
+    "skips": []
+  },
+  "regression_comparison": {
+    "cases": 356,
+    "note": "The archived prior Python sources use the unchanged legacy kernels from the current extension; none of the new periodic Rust SCF components are entered by these Python-engine tests.",
+    "outcome_changes": [],
+    "previous_revision": "596763b3c7d5faeae4bbdad9bbdb710feb25fdc9",
+    "previous_source_sha256": "d35b8ec92fde50188c6b3e12cdfdfc7f7aff8e72e9eda7c9f119d04dfd84557a",
+    "same_outcomes_for_all_cases": true
+  },
+  "rust_tests": {
+    "failed": 0,
+    "groups": {
+      "foundation": 7,
+      "legacy_runtime": 2,
+      "molecular": 7,
+      "periodic": 5,
+      "phase4": 6,
+      "quantum": 6
+    },
+    "passed": 33
+  },
+  "schema_version": 1,
+  "scope": "Phase 5 native periodic collinear LDA/PBE SCF, thermodynamics, spectrum and lattice/subspace analysis primitives",
+  "sdist": {
+    "fresh_offline_build": true,
+    "native_binaries_in_source": false,
+    "portable_crystal_included": true,
+    "sha256": "263165d73b83920a00566da75aa0e19ac562599a6ee80dd649e2e7380965e219"
+  },
+  "silicon_reference": {
+    "conduction_min_ev": 8.498298900915776,
+    "converged": true,
+    "electron_count": 7.999999999999999,
+    "energy_absolute_error_ev": 3.126388037344441e-13,
+    "energy_ev": -211.60193975895788,
+    "fermi_absolute_difference_ev": 3.396379331732646e-05,
+    "fermi_level_ev": 6.735265423875225,
+    "fermi_validation": "The insulating count is numerically saturated inside the gap. Both chemical potentials lie inside the same gap and give the same electron count; this nonunique field is not treated as a strict equality.",
+    "iterations": 9,
+    "memory_peak_bytes": 74964014,
+    "reference_fermi_level_ev": 6.735231460081907,
+    "spectrum_max_absolute_error_ev": 3.4283687000424834e-12,
+    "valence_max_ev": 6.39210109946503
+  },
+  "source_sha256": "a276cd14c6fd137a7f0fb616beeb040ef0d4cb416f7c0927e65155a82d1f7fc1",
+  "standalone": {
+    "command": "cargo run --offline --release --package mandacaru-core --example solve_crystal -- test/migration/phase5/si_crystal.json",
+    "converged": true,
+    "energy_ha": -7.776227857195482,
+    "iterations": 9,
+    "no_python": true
+  },
+  "wheel": {
+    "passed": true,
+    "schema_version": 1,
+    "smoke": {
+      "abi_version": 1,
+      "cached_vqe_energy_ev": -25.871895455446612,
+      "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+      "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+      "qiskit_transpile_and_parquet_roundtrip": true,
+      "rhf_energy_ev": -25.5004433585557,
+      "runtime_compilation": false,
+      "rust_dft_energy_ev": -25.80496391071012,
+      "rust_engine_energies_ev": {
+        "adapt-vqe": -25.871895455446616,
+        "vqe": -25.871895455446616
+      },
+      "rust_geometry_energies_ev": {
+        "adapt-vqe": -25.871895455446595,
+        "rhf": -25.50044335855568,
+        "vqe": -25.871895455446595
+      },
+      "rust_periodic_energy_ev": -211.60193975895788,
+      "rust_periodic_scf_and_ewald": true,
+      "rust_stationary_forces_and_radial_atoms": true
+    },
+    "wheel": "mandacaru-26.10.36-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+    "wheel_sha256": "52e3ca407de70ee785686a04a90a3eec50262a739868dd71d0d98b3db0d10d13"
+  }
+}

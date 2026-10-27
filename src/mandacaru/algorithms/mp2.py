@@ -382,7 +382,8 @@ def mp2_density(eri_mo: np.ndarray, energies: np.ndarray, n_occ: int):
 
 
 def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
-                         n_occ: int) -> MP2Result:
+                         n_occ: int, *, engine: str = "python",
+                         engine_options=None) -> MP2Result:
     r"""MP2 correlation energy and the **frozen** natural orbitals of its density.
 
     Semicanonicalizes the input basis, forms the second-order density and
@@ -404,6 +405,17 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
     is the classic frozen-natural-orbital scheme, and it is deliberately the
     conservative half of it.
     """
+    if engine not in ("python", "rust"):
+        raise ValueError("engine must be 'python' or 'rust'")
+    if engine == "rust":
+        from .._native import Context
+        if is_packed(eri_mo):
+            raise NotImplementedError("Rust MP2 takes dense spatial integrals or a precomputed oovv block")
+        return MP2Result(**Context(**dict(engine_options or {})).mp2(
+            np.ascontiguousarray(h_mo, dtype=complex),
+            np.ascontiguousarray(eri_mo, dtype=complex), n_occ))
+    if engine_options:
+        raise ValueError("engine_options requires engine='rust'")
     h_mo = np.asarray(h_mo)
     eri_mo = eri_mo if is_packed(eri_mo) else np.asarray(eri_mo)
     n_occ = int(n_occ)
@@ -432,7 +444,8 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray,
 
 def mp2_natural_orbitals_from_block(oovv: np.ndarray, energies: np.ndarray,
                                     n_occ: int,
-                                    canonical: np.ndarray) -> MP2Result:
+                                    canonical: np.ndarray, *, engine: str = "python",
+                                    engine_options=None) -> MP2Result:
     r""":func:`mp2_natural_orbitals` from the only integrals it reads.
 
     ``oovv`` is :math:`\langle ij|ab\rangle` (``(o, o, v, v)``, i.e. the
@@ -443,6 +456,16 @@ def mp2_natural_orbitals_from_block(oovv: np.ndarray, energies: np.ndarray,
     (:meth:`~mandacaru.algorithms.orbital_integrals.DirectOrbitalIntegrals.mp2_natural_orbitals`);
     the arithmetic is :func:`mp2_energy` and :func:`mp2_density` on it.
     """
+    if engine not in ("python", "rust"):
+        raise ValueError("engine must be 'python' or 'rust'")
+    if engine == "rust":
+        from .._native import Context
+        return MP2Result(**Context(**dict(engine_options or {})).mp2_from_block(
+            np.ascontiguousarray(_real(oovv, "MP2 block")),
+            np.ascontiguousarray(_real(energies, "orbital energies")), n_occ,
+            np.ascontiguousarray(_real(canonical, "canonical rotation"))))
+    if engine_options:
+        raise ValueError("engine_options requires engine='rust'")
     n_occ = int(n_occ)
     M = np.asarray(canonical).shape[0]
     integrals = np.real(np.asarray(oovv))

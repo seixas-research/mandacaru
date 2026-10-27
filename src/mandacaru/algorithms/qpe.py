@@ -244,10 +244,13 @@ class QPEResult:
 
     @property
     def ground_state_overlap(self) -> float | None:
-        """``|<E_0|Psi>|^2`` -- the success probability of reading ``E_0``."""
+        """Probability in the ground eigenspace, including degeneracy."""
         if self.overlaps is None:
             return None
-        return float(self.overlaps[int(np.argmin(self.exact_energies))])
+        energies = (np.asarray(self.exact_energies) if self.energy_unit == "Ha"
+                    else to_hartree(np.asarray(self.exact_energies), "eV"))
+        ground = np.isclose(energies, np.min(energies), rtol=0., atol=1e-10)
+        return float(np.sum(self.overlaps[ground]))
 
     def collapsed_state(self, index: int | None = None) -> np.ndarray:
         """System-register state after reading evaluation bin ``index``.
@@ -345,7 +348,18 @@ class QuantumPhaseEstimation:
                  energy_window=None, memory_policy: str = "abort",
                  memory_fraction: float = DEFAULT_MEMORY_FRACTION,
                  atomic_units: bool = False, keep_amplitudes: bool = True,
-                 verbose: bool = True):
+                 verbose: bool = True, engine: str = "python",
+                 engine_options=None):
+        if engine not in ("python", "rust"):
+            raise ValueError("engine must be 'python' or 'rust'")
+        if engine == "python" and engine_options:
+            raise ValueError("engine_options requires engine='rust'")
+        self.engine = engine
+        self.engine_options = dict(engine_options or {})
+        self._context = None
+        if engine == "rust":
+            from .._native import Context
+            self._context = Context(**dict(engine_options or {}))
         if hamiltonian is not None and not isinstance(hamiltonian, PauliSum):
             raise TypeError("hamiltonian must be a PauliSum (qubit operator)")
         self.hamiltonian = hamiltonian
@@ -380,7 +394,8 @@ class QuantumPhaseEstimation:
         """
         checkpoint = None
         if isinstance(initial_state, (str, os.PathLike)):
-            checkpoint = WavefunctionCheckpoint.load(initial_state)
+            checkpoint = WavefunctionCheckpoint.load(initial_state, engine=self.engine,
+                                                      engine_options=self.engine_options)
         elif isinstance(initial_state, WavefunctionCheckpoint):
             checkpoint = initial_state
         if checkpoint is not None:
@@ -392,7 +407,8 @@ class QuantumPhaseEstimation:
             if not checkpoint.is_product:
                 # The exact-UCC exponential of a sum: a state, but not a product
                 # of the stored generators, so there is no circuit description.
-                return (checkpoint.state_vector(), checkpoint.n_qubits,
+                return (checkpoint.state_vector(engine=self.engine,
+                                                engine_options=self.engine_options), checkpoint.n_qubits,
                         hamiltonian, None)
             n, ref, gens, theta, _ = checkpoint.problem()
             return None, n, hamiltonian, (n, ref, gens, theta)
@@ -461,13 +477,24 @@ class QuantumPhaseEstimation:
                      verbose=self.verbose)
 
         if psi is None:
-            psi = prepare_state(*problem)
+            psi = prepare_state(*problem, engine=self.engine,
+                                engine_options=self.engine_options)
         lo, hi = self._window(hamiltonian)
         width = hi - lo
         N = 2 ** t
 
         exact = overlaps = None
-        if dense:
+        if self.engine == "rust":
+            operator = self._context.pauli_operator(n, [
+                (label, float(complex(c).real), float(complex(c).imag))
+                for label, c in hamiltonian.terms.items()])
+            native = operator.qpe(np.ascontiguousarray(psi, dtype=complex), t,
+                                  (lo, hi), keep_amplitudes=self.keep_amplitudes)
+            exact = (None if native["exact_energies"] is None else
+                     np.asarray(native["exact_energies"]))
+            overlaps = (None if native["overlaps"] is None else
+                        np.asarray(native["overlaps"]))
+        elif dense:
             h = hamiltonian.to_matrix()
             h = 0.5 * (h + h.conj().T)
             w, V = np.linalg.eigh(h)
@@ -487,9 +514,13 @@ class QuantumPhaseEstimation:
             for k in range(1, N):
                 columns[k] = expm_multiply(generator, columns[k - 1])
         # The inverse QFT on the evaluation register is a DFT along k.
-        amplitudes = np.fft.fft(columns, axis=0) / N
-        del columns
-        probabilities = np.sum(np.abs(amplitudes) ** 2, axis=1)
+        if self.engine == "rust":
+            amplitudes = native["amplitudes"]
+            probabilities = native["probabilities"]
+        else:
+            amplitudes = np.fft.fft(columns, axis=0) / N
+            del columns
+            probabilities = np.sum(np.abs(amplitudes) ** 2, axis=1)
         phases = np.arange(N) / N
         energies_ha = lo + width * phases
         order = np.argsort(probabilities)[::-1]

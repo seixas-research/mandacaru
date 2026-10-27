@@ -40,7 +40,13 @@ class _RustDriver:
                  cache_dir=None, basis="HAO", grid=None, grid_spacing=0.20,
                  native_model=None, charge=0, spin=False, n_electrons=None,
                  kinetic="spectral", two_body=None, active_space=None,
-                 scf_options=None, save_hamiltonian=False, hamiltonian_format="json"):
+                 scf_options=None, save_hamiltonian=False, hamiltonian_format="json",
+                 checkpoint=None, resume=None):
+        if (checkpoint is not None or resume is not None) and not self.supports_checkpoints:
+            raise NotImplementedError("native checkpoints are supported for VQE and ADAPT-VQE")
+        self.checkpoint_path = None if checkpoint is None else str(checkpoint)
+        self.resume_path = None if resume is None else str(resume)
+        self.checkpoint = None
         if precision != "double":
             raise NotImplementedError("the Rust quantum engine uses complex128 precision")
         if dump_buffers or cache_dir is not None:
@@ -159,9 +165,27 @@ class _RustDriver:
                 dense=self._dense, sparse=self._sparse, include_singles=self.include_singles)
         else:
             self.context = _native.Context(**self.options)
-            self.problem = self.context.load_hamiltonian(
-                self.load_hamiltonian, sector=self._sector_option is not False,
-                dense=self._dense, sparse=self._sparse, include_singles=self.include_singles)
+            from ..core.serialization import detect_format, load_hamiltonian
+            if detect_format(self.load_hamiltonian) == "parquet":
+                import json
+                record = load_hamiltonian(self.load_hamiltonian, engine="rust",
+                                          engine_options=self.options)
+                payload = dict(format="mandacaru-qubit-hamiltonian", version=1,
+                               num_qubits=record.hamiltonian.num_qubits,
+                               mapping=record.mapping, num_particles=record.num_particles,
+                               n_spatial_orbitals=record.n_spatial_orbitals,
+                               metadata=record.metadata,
+                               terms=[(p, complex(c).real, complex(c).imag)
+                                      for p, c in record.hamiltonian.terms.items()])
+                self.problem = self.context.parse_snapshot(json.dumps(payload), payload["format"]).problem(
+                    sector=self._sector_option is not False, dense=self._dense,
+                    sparse=self._sparse, include_singles=self.include_singles)
+                self._cache_adapter = "python-parquet-adapter"
+            else:
+                self.problem = self.context.load_hamiltonian(
+                    self.load_hamiltonian, sector=self._sector_option is not False,
+                    dense=self._dense, sparse=self._sparse, include_singles=self.include_singles)
+                self._cache_adapter = "native-json"
         self.mapping = self.problem.mapping
         if self._requested_mapping is not None:
             from ..core.mapping import resolve_mapping
@@ -201,12 +225,16 @@ class _RustDriver:
             raise NotImplementedError("Rust cached solves do not yet provide dry-run estimates")
         if self.problem is None:
             raise ValueError("native run() needs a cache, native_model or geometry=Atoms")
+        resumed = (None if self.resume_path is None else
+                   self.context.read_snapshot(self.resume_path, "mandacaru-wavefunction-checkpoint"))
         raw = self.problem.solve(
             adapt=self.adapt, trotter=self.trotter, initial_parameters=initial_parameters,
-            **self._opt, **self._growth)
+            resume=resumed, **self._opt, **self._growth)
         timing = {"engine": "rust", "solve_seconds": raw["elapsed_seconds"],
                   "threads": self.context.threads, "memory_peak_bytes": self.context.memory_peak_bytes,
                   "dimension": self.problem.dimension, "termination": raw["message"]}
+        if hasattr(self, "_cache_adapter"):
+            timing["cache_engine"] = self._cache_adapter
         if hasattr(self, "_geometry_seconds"):
             timing["geometry_seconds"] = self._geometry_seconds
         common = dict(optimal_energy=raw["energy_ha"] * self._scale,
@@ -224,13 +252,27 @@ class _RustDriver:
             failures = [(k + 1, it[6]) for k, it in enumerate(raw["iterations"]) if not it[5]]
             self.result = ADAPTVQEResult(**common, converged=raw["success"],
                 final_max_gradient=raw["final_max_gradient"], operators=raw["operators"],
-                iterations=iterations, optimizer_failures=failures, start="empty ansatz")
+                iterations=iterations, optimizer_failures=failures,
+                start="empty ansatz" if self.resume_path is None else f"resumed from {self.resume_path}")
             self.ansatz = _State(self, raw["indices"])
         else:
             from .vqe import VQEResult
             self.result = VQEResult(**common, history=[e * self._scale for e in raw["history_ha"]],
                                     success=raw["success"])
         self.state = raw["state"]
+        import json
+        from ..core.checkpoint import WavefunctionCheckpoint
+        snapshot = self.problem.checkpoint(
+            raw["indices"], raw["parameters"].tolist(),
+            product_form=self.adapt or self.trotter, energy_ha=raw["energy_ha"],
+            method="adapt-vqe" if self.adapt else "vqe",
+            status_json=json.dumps({"complete": True, "converged": raw["success"],
+                                    "iteration": len(raw["indices"]) if self.adapt else raw["optimizer_steps"],
+                                    "num_evaluations": len(raw["history_ha"]),
+                                    "termination": raw["message"]}))
+        self.checkpoint = WavefunctionCheckpoint.from_payload(json.loads(snapshot.json))
+        if self.checkpoint_path is not None:
+            snapshot.save(self.checkpoint_path)
         report = (f"Rust {'ADAPT-VQE' if self.adapt else 'VQE'}: {self.result.optimal_energy:.12f} "
                   f"{self.energy_unit}; {raw['message']}; {len(raw['history_ha'])} evaluations\n")
         if self.verbose:
@@ -241,6 +283,7 @@ class _RustDriver:
 
 
 class RustVQE(_RustDriver):
+    supports_checkpoints = True
     def __init__(self, *, ansatz="uccsd", **kwargs):
         from .ansatz_spec import resolve_ansatz
         spec = resolve_ansatz(ansatz)
@@ -257,6 +300,7 @@ class RustVQE(_RustDriver):
 
 
 class RustADAPT(_RustDriver):
+    supports_checkpoints = True
     adapt = True
 
     def __init__(self, *, pool="fermionic", profile=False, gradient="analytic",
@@ -272,3 +316,69 @@ class RustADAPT(_RustDriver):
         super().__init__(**kwargs)
         if not self.dry_run and (self.load_hamiltonian is not None or self.native_model is not None):
             self._configure()
+
+
+class _RustSubspace:
+    supports_checkpoints = False
+    def __init__(self, *, num_states=2, weights=None, multiplicity=None, **kwargs):
+        self.num_states = _integer(num_states, "num_states", 1)
+        if multiplicity is not None:
+            raise NotImplementedError("native UCCSD subspace searches use determinants; spin-adapted HVA references are not yet implemented")
+        self.weights = (list(range(self.num_states, 0, -1))
+                        if weights is None else list(weights))
+        if len(self.weights) != self.num_states:
+            raise ValueError("weights must match num_states")
+        super().__init__(**kwargs)
+
+    def run(self, initial_parameters=None, geometry=None):
+        if geometry is not None:
+            from ._rust_molecular import configure_geometry
+            configure_geometry(self, geometry)
+        if self.dry_run:
+            raise NotImplementedError("native subspace dry-run estimates are not yet implemented")
+        if self.problem is None:
+            raise ValueError("native run() needs a cache, native_model or geometry=Atoms")
+        raw = self.problem.solve_subspace(
+            self.weights, adapt=self.adapt, trotter=self.trotter,
+            initial_parameters=initial_parameters, **self._opt, **self._growth)
+        from .subspace import SubspaceVQEResult, SubspaceADAPTVQEResult
+        timing = {"engine": "rust", "solve_seconds": raw["elapsed_seconds"],
+                  "threads": self.context.threads,
+                  "memory_peak_bytes": self.context.memory_peak_bytes,
+                  "dimension": self.problem.dimension, "termination": raw["message"]}
+        common = dict(energies=np.asarray(raw["energies_ha"]) * self._scale,
+                      optimal_parameters=raw["parameters"],
+                      weights=np.asarray(self.weights, dtype=float),
+                      states=list(raw["states"]),
+                      reference_energy=raw["reference_ha"] * self._scale,
+                      num_evaluations=len(raw["history_ha"]),
+                      timings=timing, energy_unit=self.energy_unit)
+        if self.adapt:
+            self.result = SubspaceADAPTVQEResult(
+                **common, converged=raw["success"],
+                final_max_gradient=raw["final_max_gradient"],
+                operators=raw["operators"])
+        else:
+            self.result = SubspaceVQEResult(**common, success=raw["success"])
+        self.state = self.result.states[0]
+        self.state_reference_indices = raw["reference_indices"]
+        report = (f"Rust subspace search: {self.result.optimal_energy:.12f} "
+                  f"{self.energy_unit}; {raw['message']}; "
+                  f"{len(raw['history_ha'])} evaluations\n")
+        if self.verbose:
+            print(report, end="")
+        if self.txt is not None:
+            Path(self.txt).write_text(report)
+        return self.result
+
+    def calculate(self, atoms, *args, **kwargs):
+        result = self.run(geometry=atoms)
+        self.results = {"energy": float(result.in_units("eV")[0])}
+
+
+class RustSubspaceVQE(_RustSubspace, RustVQE):
+    pass
+
+
+class RustSubspaceADAPT(_RustSubspace, RustADAPT):
+    pass

@@ -1,12 +1,16 @@
 //! Scientific engine foundation. This crate has no dependency on Python or NumPy.
 
 pub mod context;
+pub mod execution;
 pub mod geometry;
 pub mod grid;
 pub mod kernels;
 pub mod molecular;
+pub mod periodic;
+pub mod persistence;
 pub mod quantum;
 pub mod units;
+pub mod volumetric;
 
 pub use context::{Buffer, Context, Reservation};
 pub use geometry::Geometry;

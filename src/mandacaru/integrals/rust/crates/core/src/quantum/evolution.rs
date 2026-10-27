@@ -11,7 +11,7 @@ fn norm(a: &[C64]) -> f64 {
     a.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt()
 }
 
-fn exponential(
+pub(super) fn exponential(
     ctx: &Context,
     basis: &Basis,
     ops: &[&Operator],
@@ -100,6 +100,18 @@ pub fn state(
     trotter: bool,
     derivatives: bool,
 ) -> Result<Buffer<C64>> {
+    state_from(ctx, basis, ops, theta, trotter, derivatives, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub fn state_from(
+    ctx: &Context,
+    basis: &Basis,
+    ops: &[&Operator],
+    theta: &[f64],
+    trotter: bool,
+    derivatives: bool,
+    initial: Option<&[C64]>,
+) -> Result<Buffer<C64>> {
     if ops.len() != theta.len()
         || theta.iter().any(|t| !t.is_finite())
         || ops.iter().any(|g| g.n != basis.n || !g.is_antihermitian())
@@ -114,7 +126,12 @@ pub fn state(
         1
     };
     let mut data = ctx.allocate::<C64>(product(&[rows, basis.len()])?)?;
-    data.as_mut_slice()[basis.reference] = C64::new(1., 0.);
+    if let Some(initial) = initial {
+        super::dynamics::check_state(initial, basis.len(), true)?;
+        data.as_mut_slice()[..basis.len()].copy_from_slice(initial);
+    } else {
+        data.as_mut_slice()[basis.reference] = C64::new(1., 0.);
+    }
     if trotter {
         for (k, (g, t)) in ops.iter().zip(theta).enumerate() {
             let directions: Vec<_> = (0..rows - 1)
@@ -161,6 +178,20 @@ pub fn evaluate(
     theta: &[f64],
     trotter: bool,
 ) -> Result<Evaluation> {
+    evaluate_from(ctx, basis, h, dense, sparse, ops, theta, trotter, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_from(
+    ctx: &Context,
+    basis: &Basis,
+    h: &Operator,
+    dense: Option<&[C64]>,
+    sparse: Option<&super::sparse::SparseMatrix>,
+    ops: &[&Operator],
+    theta: &[f64],
+    trotter: bool,
+    initial: Option<&[C64]>,
+) -> Result<Evaluation> {
     if h.n != basis.n
         || dense.is_some_and(|matrix| basis.len().checked_mul(basis.len()) != Some(matrix.len()))
     {
@@ -168,7 +199,7 @@ pub fn evaluate(
             "Hamiltonian representation must match the basis".into(),
         ));
     }
-    let data = state(ctx, basis, ops, theta, trotter, true)?;
+    let data = state_from(ctx, basis, ops, theta, trotter, true, initial)?;
     let d = basis.len();
     let psi = &data.as_slice()[..d];
     let mut hpsi = ctx.allocate::<C64>(d)?;

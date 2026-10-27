@@ -26,7 +26,7 @@ const AUFBAU: [(usize, usize); 19] = [
     (6, 2),
     (7, 1),
 ];
-fn configuration(z: u8) -> Vec<(usize, usize, usize)> {
+pub(super) fn configuration(z: u8) -> Vec<(usize, usize, usize)> {
     let mut left = z as usize;
     let mut out = Vec::new();
     for (n, l) in AUFBAU {
@@ -40,7 +40,7 @@ fn configuration(z: u8) -> Vec<(usize, usize, usize)> {
     out.sort_unstable();
     out
 }
-fn slater(z: u8, n: usize, l: usize) -> Result<f64> {
+fn effective_charge(z: u8, n: usize, l: usize) -> Result<f64> {
     let mut groups = BTreeMap::new();
     for (nn, ll, occupied) in configuration(z) {
         *groups.entry((nn, ll.saturating_sub(1))).or_insert(0usize) += occupied;
@@ -64,6 +64,10 @@ fn slater(z: u8, n: usize, l: usize) -> Result<f64> {
                 };
         }
     }
+    Ok(z as f64 - screening)
+}
+fn slater(z: u8, n: usize, l: usize) -> Result<f64> {
+    let charge = effective_charge(z, n, l)?;
     let n_star = match n {
         1 => 1.,
         2 => 2.,
@@ -77,10 +81,11 @@ fn slater(z: u8, n: usize, l: usize) -> Result<f64> {
             ))
         }
     };
-    Ok((z as f64 - screening) / n_star)
+    Ok(charge / n_star)
 }
 #[derive(Clone, Debug)]
 pub enum Radial {
+    Numerical(std::sync::Arc<super::radial::Table>),
     Hydrogenic {
         n: usize,
         z: f64,
@@ -319,12 +324,12 @@ impl Basis {
             .ok_or_else(|| invalid("basis needs a name"))?;
         let mut orbitals = Vec::new();
         let data = include_str!("../../data/slater_fits.json");
-        let _fit_memory = ctx.reserve(if name == "HAO" {
+        let _fit_memory = ctx.reserve(if matches!(name, "HAO" | "NAO" | "NAO-AE") {
             0
         } else {
             product(&[data.len(), 24])?
         })?;
-        let fits: Value = if name == "HAO" {
+        let fits: Value = if matches!(name, "HAO" | "NAO" | "NAO-AE") {
             Value::Null
         } else {
             serde_json::from_str(data).map_err(|e| invalid(e.to_string()))?
@@ -390,6 +395,99 @@ impl Basis {
                         });
                     }
                 }
+            } else if name == "NAO-AE" {
+                for (l, table) in super::nao_ae::build(ctx, z, spec)? {
+                    for m in -(l as i32)..=l as i32 {
+                        guards.push(ctx.reserve(2048)?);
+                        orbitals.push(Orbital {
+                            atom,
+                            l,
+                            m,
+                            center,
+                            radial: Radial::Numerical(table.clone()),
+                        });
+                    }
+                }
+            } else if name == "NAO" {
+                let points = spec["n_grid"]
+                    .as_u64()
+                    .and_then(|v| usize::try_from(v).ok())
+                    .ok_or_else(|| invalid("NAO needs n_grid"))?;
+                let radius = spec["r_c"]
+                    .as_f64()
+                    .ok_or_else(|| invalid("NAO needs a radius in Bohr"))?;
+                let count = spec["n_zeta"]
+                    .as_u64()
+                    .filter(|v| *v >= 1 && *v <= 4)
+                    .ok_or_else(|| invalid("NAO zetas must be in 1..4"))?
+                    as usize;
+                let polarization = spec["n_polarization"]
+                    .as_u64()
+                    .filter(|v| *v <= 4)
+                    .ok_or_else(|| invalid("NAO polarization count must be in 0..4"))?
+                    as usize;
+                let tails = if spec["tail_norms"].is_null() {
+                    None
+                } else {
+                    Some(
+                        spec["tail_norms"]
+                            .as_array()
+                            .ok_or_else(|| invalid("NAO tail norms must be a list"))?
+                            .iter()
+                            .map(|v| {
+                                v.as_f64()
+                                    .ok_or_else(|| invalid("NAO tail norms must be real"))
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    )
+                };
+                let split_norm = spec["split_norm"].as_f64().unwrap_or(0.15);
+                let config = configuration(z);
+                let outer = config.iter().map(|s| s.0).max().unwrap();
+                let mut shells: Vec<_> = config
+                    .iter()
+                    .filter(|s| {
+                        s.0 == outer
+                            || (s.1 == 2 && s.0 + 1 == outer)
+                            || (s.1 == 3 && s.0 + 2 == outer)
+                    })
+                    .map(|s| (s.0, s.1, false))
+                    .collect();
+                let fallback = shells.last().unwrap();
+                let charge = effective_charge(z, fallback.0, fallback.1)?;
+                let max_l = shells.iter().map(|s| s.1).max().unwrap();
+                for offset in 0..polarization {
+                    let l = max_l + 1 + offset;
+                    shells.push((l + 1, l, true));
+                }
+                for (n, l, polar) in shells {
+                    let z_eff = if polar {
+                        effective_charge(z, n, l).unwrap_or(charge)
+                    } else {
+                        effective_charge(z, n, l)?
+                    };
+                    let first = super::radial::confined(ctx, n, l, z_eff, radius, points)?;
+                    let tables = super::radial::zetas(
+                        ctx,
+                        first,
+                        l,
+                        if polar { 1 } else { count },
+                        split_norm,
+                        tails.as_deref(),
+                    )?;
+                    for table in tables {
+                        for m in -(l as i32)..=l as i32 {
+                            guards.push(ctx.reserve(2048)?);
+                            orbitals.push(Orbital {
+                                atom,
+                                l,
+                                m,
+                                center,
+                                radial: Radial::Numerical(table.clone()),
+                            });
+                        }
+                    }
+                }
             } else if name == "gaussian" {
                 for (l, exponents, coefficients) in gaussian_shells(&fits, z, &spec["recipe"])? {
                     let radial = gaussian(l, exponents, coefficients)?;
@@ -427,8 +525,121 @@ impl Basis {
     }
 }
 impl Orbital {
+    /// Cartesian solid harmonics avoid angular-coordinate singularities at poles.
+    pub fn gradient(&self, point: [f64; 3]) -> [f64; 3] {
+        use crate::quantum::C64;
+        let [x, y, z] = std::array::from_fn(|i| point[i] - self.center[i]);
+        let r2 = x * x + y * y + z * z;
+        let r = r2.sqrt();
+        let order = self.m.unsigned_abs() as usize;
+        let xy = C64::new(x, y);
+        let mut norm = 1. / (4. * PI).sqrt();
+        for k in 1..=order {
+            norm *= -((2 * k + 1) as f64 / (2 * k) as f64).sqrt();
+        }
+        let mut value = norm * xy.powu(order as u32);
+        let factor = if order > 0 {
+            norm * order as f64 * xy.powu(order.saturating_sub(1) as u32)
+        } else {
+            C64::default()
+        };
+        let mut grad = [factor, factor * C64::i(), C64::default()];
+        if self.l > order {
+            let mut previous = value;
+            let mut gp = grad;
+            let scale = ((2 * order + 3) as f64).sqrt();
+            value *= scale * z;
+            grad = std::array::from_fn(|i| {
+                scale * (z * grad[i] + if i == 2 { previous } else { C64::default() })
+            });
+            for degree in order + 2..=self.l {
+                let d = degree as f64;
+                let o = order as f64;
+                let a = ((4. * d * d - 1.) / (d * d - o * o)).sqrt();
+                let b = (((d - 1.).powi(2) - o * o) / (4. * (d - 1.).powi(2) - 1.)).sqrt();
+                let next = a * (z * value - b * r2 * previous);
+                let next_grad = std::array::from_fn(|i| {
+                    a * ((if i == 2 { value } else { C64::default() }) + z * grad[i]
+                        - b * (2. * [x, y, z][i] * previous + r2 * gp[i]))
+                });
+                previous = value;
+                gp = grad;
+                value = next;
+                grad = next_grad;
+            }
+        }
+        let angular = |v: C64| {
+            if self.m == 0 {
+                v.re
+            } else {
+                2f64.sqrt()
+                    * if order % 2 == 0 { 1. } else { -1. }
+                    * if self.m > 0 { v.re } else { v.im }
+            }
+        };
+        let (radial, dr) = match &self.radial {
+            Radial::Numerical(table) => {
+                let safe = r.max(1e-15);
+                let (v, d) = table.value_slope(safe);
+                (
+                    v / safe.powi(self.l as i32),
+                    (d - self.l as f64 * v / safe) / safe.powi(self.l as i32),
+                )
+            }
+            Radial::Gaussian {
+                exponents,
+                weighted,
+            } => {
+                let radial = exponents
+                    .iter()
+                    .zip(weighted)
+                    .map(|(a, w)| w * (-a * r2).exp())
+                    .sum::<f64>();
+                let dr = exponents
+                    .iter()
+                    .zip(weighted)
+                    .map(|(a, w)| -2. * a * r * w * (-a * r2).exp())
+                    .sum::<f64>();
+                (radial, dr)
+            }
+            Radial::Hydrogenic { n, z, norm } => {
+                let alpha = 2. * z / (*n as f64);
+                let rho = alpha * r;
+                let degree = n - self.l - 1;
+                let laguerre = |order: usize, a: f64| {
+                    let mut prev = 1.;
+                    let mut value = if order == 0 { 1. } else { 1. + a - rho };
+                    for k in 2..=order {
+                        let next = ((2. * k as f64 - 1. + a - rho) * value
+                            - (k as f64 - 1. + a) * prev)
+                            / k as f64;
+                        prev = value;
+                        value = next;
+                    }
+                    value
+                };
+                let l = laguerre(degree, 2. * self.l as f64 + 1.);
+                let dl = if degree == 0 {
+                    0.
+                } else {
+                    -laguerre(degree - 1, 2. * self.l as f64 + 2.)
+                };
+                let scale = norm * alpha.powi(self.l as i32) * (-rho / 2.).exp();
+                (scale * l, scale * alpha * (dl - 0.5 * l))
+            }
+        };
+        std::array::from_fn(|i| {
+            radial * angular(grad[i])
+                + if r > 1e-15 {
+                    dr * [x, y, z][i] / r * angular(value)
+                } else {
+                    0.
+                }
+        })
+    }
     pub fn exact_kinetic(&self) -> f64 {
         match &self.radial {
+            Radial::Numerical(table) => table.kinetic,
             Radial::Hydrogenic { n, z, .. } => z * z / (2. * (*n as f64).powi(2)),
             Radial::Gaussian {
                 exponents,
@@ -460,6 +671,7 @@ impl Orbital {
             return 0.;
         }
         let radial = match &self.radial {
+            Radial::Numerical(table) => table.value_slope(r).0,
             Radial::Gaussian {
                 exponents,
                 weighted,

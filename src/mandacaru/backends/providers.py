@@ -231,6 +231,16 @@ class CircuitProvider(ABC):
         determinant preparation followed by one Pauli-rotation block per term of
         each generator, in append order.
         """
+        context = getattr(self, "_native_context", None)
+        if context is not None:
+            terms = [[(p, complex(c).real, complex(c).imag) for p, c in g.terms.items()]
+                     for g in generators]
+            for gate, first, second, angle in context.compile_circuit(
+                    n_qubits, list(occupied), terms,
+                    np.asarray(thetas, dtype=float).ravel().tolist()):
+                yield ((gate, first, second) if gate == "cx" else
+                       (gate, first, angle) if gate == "rz" else (gate, first))
+            return
         thetas = np.asarray(thetas, dtype=float).ravel()
         generators = list(generators)
         if len(thetas) != len(generators):
@@ -335,6 +345,13 @@ class CircuitProvider(ABC):
                                                      "handles": []}
         return ledger
 
+    def _core_options(self):
+        context = getattr(self, "_native_context", None)
+        return ({} if context is None else
+                {"engine": "rust", "engine_options": {
+                    "threads": context.threads,
+                    "memory_limit_bytes": context.memory_limit_bytes}})
+
     @property
     def run_jobs(self) -> list:
         """Every job handle this provider has submitted, oldest first (the
@@ -410,6 +427,8 @@ class CircuitProvider(ABC):
                 f"takes {sorted(options)}")
         fresh = type(self)(**{**options, **overrides})
         fresh.__dict__["_run_ledger"] = self._ledger()
+        if hasattr(self, "_native_context"):
+            fresh._native_context = self._native_context
         return fresh
 
     def energy(self, n_qubits: int, occupied, generators, thetas,
@@ -880,7 +899,7 @@ class QiskitProvider(CircuitProvider):
         identity = "I" * hamiltonian.num_qubits
         labels = [label for label in terms if label != identity]
         weights = [abs(complex(terms[label])) for label in labels]
-        chunks = chunk_labels_by_basis(labels, limit, weights) or [[]]
+        chunks = chunk_labels_by_basis(labels, limit, weights, **self._core_options()) or [[]]
         pieces = []
         for k, chunk in enumerate(chunks):
             piece = {label: terms[label] for label in chunk}
@@ -890,7 +909,7 @@ class QiskitProvider(CircuitProvider):
                 piece = {identity: 0.0}
             op = PauliSum(piece, num_qubits=hamiltonian.num_qubits)
             n_bases = len(qwc_partition(
-                chunk, [abs(complex(terms[l])) for l in chunk])) if chunk else 1
+                chunk, [abs(complex(terms[l])) for l in chunk], **self._core_options())) if chunk else 1
             pieces.append((op, n_bases))
         return pieces
 
@@ -989,7 +1008,7 @@ class QiskitProvider(CircuitProvider):
         key = self._submission_key(n_qubits, occupied, generators, thetas,
                                    labels, limit)
         done = self._completed_chunks.setdefault(key, {})
-        chunks = chunk_labels_by_basis(labels, limit)
+        chunks = chunk_labels_by_basis(labels, limit, **self._core_options())
         values: dict[str, float] = {}
         stds: dict[str, float] = {}
         self.jobs = []
@@ -1007,7 +1026,7 @@ class QiskitProvider(CircuitProvider):
                 observables = [o.apply_layout(layout) for o in observables]
             result = self._run_pubs(
                 [self._bound_pub(qc, params, observables, thetas)],
-                bases=len(qwc_partition(chunk)))
+                bases=len(qwc_partition(chunk, **self._core_options())))
             if self.last_job is not None and self.is_ibm_device:
                 self.jobs.append(self.last_job)
             chunk_values = dict(zip(chunk, np.asarray(
@@ -1162,7 +1181,7 @@ class BraketProvider(CircuitProvider):
         key = tuple(sorted((label, complex(c)) for label, c
                            in hamiltonian.terms.items()))
         if key not in self._groups:
-            self._groups[key] = qubit_wise_commuting_groups(hamiltonian)
+            self._groups[key] = qubit_wise_commuting_groups(hamiltonian, **self._core_options())
         return max(len(self._groups[key][0]), 1)
 
     def shots_per_energy(self, hamiltonian) -> int:
@@ -1261,7 +1280,7 @@ class BraketProvider(CircuitProvider):
         key = tuple(sorted((label, complex(c)) for label, c
                            in hamiltonian.terms.items()))
         if key not in self._groups:
-            self._groups[key] = qubit_wise_commuting_groups(hamiltonian)
+            self._groups[key] = qubit_wise_commuting_groups(hamiltonian, **self._core_options())
         groups, identity = self._groups[key]
         # Every group is queued before any is awaited: the waits overlap
         # instead of adding up, one per group.
@@ -1270,7 +1289,7 @@ class BraketProvider(CircuitProvider):
                               self.shots)
                  for basis, _payload in groups]
         counts_per_group = [self._counts(task.result()) for task in tasks]
-        return energy_from_group_counts(groups, identity, counts_per_group)
+        return energy_from_group_counts(groups, identity, counts_per_group, **self._core_options())
 
     capabilities = ("energy", "expectation_values")
 
@@ -1296,7 +1315,7 @@ class BraketProvider(CircuitProvider):
                 psi, PauliSum({label: 1.0}).to_sparse_matrix() @ psi)))
                 for label in labels}
             return values, dict.fromkeys(labels, 0.0)
-        partition = qwc_partition(labels)
+        partition = qwc_partition(labels, **self._core_options())
         tasks = [self._submit(self.build(n_qubits, occupied, generators,
                                          thetas, measure_basis=basis),
                               self.shots)
@@ -1305,7 +1324,7 @@ class BraketProvider(CircuitProvider):
         for (_basis, members), task in zip(partition, tasks):
             counts = self._counts(task.result())
             for i in members:
-                value = pauli_expectation_from_counts(labels[i], counts)
+                value = pauli_expectation_from_counts(labels[i], counts, **self._core_options())
                 values[labels[i]] = value
                 stds[labels[i]] = float(np.sqrt(max(1.0 - value ** 2, 0.0)
                                                 / self.shots))
@@ -1328,7 +1347,7 @@ class BraketProvider(CircuitProvider):
         quantum tasks a single energy evaluation costs on a QPU.
         """
         from .measurement import qubit_wise_commuting_groups
-        return qubit_wise_commuting_groups(hamiltonian)[0]
+        return qubit_wise_commuting_groups(hamiltonian, **self._core_options())[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1509,6 +1528,15 @@ def build_provider(name: str = "qiskit", **options) -> CircuitProvider:
         If ``options`` are given for a provider that takes none.
     """
     canon = normalize_provider(name)
+    engine = options.pop("engine", "python")
+    engine_options = options.pop("engine_options", None)
+    if engine not in ("python", "rust") or (engine == "python" and engine_options):
+        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
+    if engine == "rust":
+        from .._native import Context
+        provider = _PROVIDER_CLASSES[canon](**options)
+        provider._native_context = Context(**dict(engine_options or {}))
+        return provider
     if options:
         return _PROVIDER_CLASSES[canon](**options)
     provider = _CACHE.get(canon)

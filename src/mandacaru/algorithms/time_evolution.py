@@ -42,14 +42,16 @@ def _finite_real(value: float, name: str) -> float:
     return value
 
 
-def _state_vector(initial_state: PreparedState, n_qubits: int) -> NDArray[np.complex128]:
+def _state_vector(initial_state: PreparedState, n_qubits: int, *,
+                  engine="python", engine_options=None) -> NDArray[np.complex128]:
     """Copy and validate a normalized full-register state or checkpoint."""
     if isinstance(initial_state, (str, PathLike)):
-        initial_state = WavefunctionCheckpoint.load(initial_state)
+        initial_state = WavefunctionCheckpoint.load(initial_state, engine=engine,
+                                                     engine_options=engine_options)
     if isinstance(initial_state, WavefunctionCheckpoint):
         if initial_state.n_qubits != n_qubits:
             raise ValueError("checkpoint and operator qubit counts differ")
-        initial_state = initial_state.state_vector()
+        initial_state = initial_state.state_vector(engine=engine, engine_options=engine_options)
     state = np.array(initial_state, dtype=complex, copy=True)
     if state.ndim != 1 or state.size != 2**n_qubits:
         raise ValueError(f"initial_state must have shape ({2**n_qubits},)")
@@ -90,7 +92,8 @@ class SuzukiTrotter:
     the rotation schedule. This is still a full state-vector simulator.
     """
 
-    def __init__(self, hamiltonian: PauliSum, *, order: int = 2) -> None:
+    def __init__(self, hamiltonian: PauliSum, *, order: int = 2,
+                 engine: str = "python", engine_options=None) -> None:
         order = _positive_integer(order, "order")
         if order != 1 and order % 2:
             raise ValueError("order must be 1 or a positive even integer")
@@ -100,6 +103,13 @@ class SuzukiTrotter:
         if not 1 <= self.n_qubits <= 62:
             raise ValueError("hamiltonian must specify between 1 and 62 qubits")
         self.order = order
+        if engine not in ("python", "rust"):
+            raise ValueError("engine must be 'python' or 'rust'")
+        if engine == "python" and engine_options:
+            raise ValueError("engine_options requires engine='rust'")
+        self.engine = engine
+        self.engine_options = dict(engine_options or {})
+        self._native = None
         terms: list[tuple[str, float]] = []
         for label, coefficient in hamiltonian.terms.items():
             if len(label) != self.n_qubits or label.strip("IXYZ"):
@@ -113,6 +123,12 @@ class SuzukiTrotter:
         self.norm_bound = float(sum(abs(c) for _, c in terms))
         if not np.isfinite(self.norm_bound):
             raise ValueError("sum of absolute Pauli coefficients must be finite")
+        if engine == "rust":
+            from .._native import Context
+            self._context = Context(**dict(engine_options or {}))
+            self._native = self._context.propagator(
+                self.n_qubits, [(l, c, 0.0) for l, c in terms], order=order)
+            return
         # Identity commutes with everything; evolve its phase only once.
         identity = "I" * self.n_qubits
         self._constant = sum(c for label, c in terms if label == identity)
@@ -145,6 +161,8 @@ class SuzukiTrotter:
 
     def _apply_operator(self, state: NDArray[np.complex128]) -> NDArray[np.complex128]:
         """Apply the original Pauli sum to a vector without constructing H."""
+        if self._native is not None:
+            return self._native.apply(np.ascontiguousarray(state, dtype=complex))
         indices = np.arange(state.size, dtype=np.int64)
         out = np.zeros_like(state)
         for k, (_, coefficient) in enumerate(self._terms):
@@ -154,6 +172,10 @@ class SuzukiTrotter:
     def _evolve(self, state: NDArray[np.complex128], time: float,
                 steps: int, inverse: bool = False) -> NDArray[np.complex128]:
         """Propagate an owned vector, including unnormalized correlation states."""
+        if self._native is not None:
+            return self._native.evolve(np.ascontiguousarray(state, dtype=complex),
+                                       time, steps=steps, inverse=inverse,
+                                       normalized=False)
         if time == 0:
             return state
         dt = (-time if inverse else time) / steps
@@ -178,7 +200,8 @@ class SuzukiTrotter:
         """
         time = _finite_real(time, "time")
         steps = _positive_integer(steps, "steps")
-        return self._evolve(_state_vector(initial_state, self.n_qubits), time,
+        return self._evolve(_state_vector(initial_state, self.n_qubits,
+                                         engine=self.engine, engine_options=self.engine_options), time,
                             steps, inverse)
 
     def circuit(self, time: float, *, steps: int = 1,
@@ -191,6 +214,11 @@ class SuzukiTrotter:
         from qiskit import QuantumCircuit
         from qiskit.circuit.library import PauliEvolutionGate
         from qiskit.quantum_info import SparsePauliOp
+
+        if self._native is not None:
+            h = PauliSum(dict(self._terms), num_qubits=self.n_qubits)
+            return SuzukiTrotter(h, order=self.order).circuit(
+                time, steps=steps, inverse=inverse)
 
         time = _finite_real(time, "time")
         steps = _positive_integer(steps, "steps")
@@ -206,10 +234,12 @@ class SuzukiTrotter:
 
 def time_evolve(initial_state: PreparedState, hamiltonian: PauliSum,
                 time: float, *, steps: int = 1,
-                order: int = 2) -> NDArray[np.complex128]:
+                order: int = 2, engine: str = "python",
+                engine_options=None) -> NDArray[np.complex128]:
     """Propagate a prepared state with a Suzuki–Trotter formula (default order 2).
 
     Energies and time are in atomic units. Reuse :class:`SuzukiTrotter` for
     repeated calls with the same Hamiltonian to avoid recompiling its terms.
     """
-    return SuzukiTrotter(hamiltonian, order=order).evolve(initial_state, time, steps=steps)
+    return SuzukiTrotter(hamiltonian, order=order, engine=engine,
+                         engine_options=engine_options).evolve(initial_state, time, steps=steps)

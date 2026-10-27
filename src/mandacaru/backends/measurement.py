@@ -115,7 +115,8 @@ def merge_basis(labels) -> str:
 
 
 def qubit_wise_commuting_groups(hamiltonian: PauliSum,
-                                drop_identity: bool = True):
+                                drop_identity: bool = True, *,
+                                engine="python", engine_options=None):
     """Partition ``hamiltonian`` into QWC groups; return ``(groups, identity)``.
 
     ``groups`` is a list of ``(basis, [(pauli, coefficient), ...])`` -- one
@@ -147,11 +148,13 @@ def qubit_wise_commuting_groups(hamiltonian: PauliSum,
     coefficients = dict(terms)
     groups = [(basis, [(labels[i], coefficients[labels[i]]) for i in members])
               for basis, members in qwc_partition(
-                  labels, weights=[abs(c) for _l, c in terms])]
+                  labels, weights=[abs(c) for _l, c in terms],
+                  engine=engine, engine_options=engine_options)]
     return groups, identity
 
 
-def pauli_expectation_from_counts(label: str, counts: dict) -> float:
+def pauli_expectation_from_counts(label: str, counts: dict, *,
+                                  engine="python", engine_options=None) -> float:
     r"""``<P>`` for one Pauli string from bit-string counts of its own basis.
 
     ``counts`` maps a measured bit-string (character ``k`` is qubit ``k``, the
@@ -159,6 +162,12 @@ def pauli_expectation_from_counts(label: str, counts: dict) -> float:
     diagonalizes ``label``.  Each shot contributes :math:`(-1)^{\text{parity}}`
     over the qubits where ``label`` acts non-trivially.
     """
+    if engine == "rust":
+        from .._native import Context
+        return Context(**dict(engine_options or {})).count_expectations(
+            [label], [(str(k), float(v)) for k, v in counts.items()])[0]
+    if engine != "python" or engine_options:
+        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
     active = [k for k, letter in enumerate(label) if letter != "I"]
     if not active:
         return 1.0
@@ -172,7 +181,8 @@ def pauli_expectation_from_counts(label: str, counts: dict) -> float:
     return accumulated / total
 
 
-def energy_from_group_counts(groups, identity: float, counts_per_group) -> float:
+def energy_from_group_counts(groups, identity: float, counts_per_group, *,
+                             engine="python", engine_options=None) -> float:
     r"""Assemble :math:`\langle H\rangle` from one count dictionary per QWC group.
 
     ``groups`` is the output of :func:`qubit_wise_commuting_groups` and
@@ -180,8 +190,19 @@ def energy_from_group_counts(groups, identity: float, counts_per_group) -> float
     same order.  Coefficients are Hermitian (real) for a physical Hamiltonian, so
     only the real part contributes.
     """
+    if engine not in ("python", "rust") or (engine == "python" and engine_options):
+        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
+    groups, counts_per_group = list(groups), list(counts_per_group)
+    if engine == "rust" and len(groups) != len(counts_per_group):
+        raise ValueError("one counts dictionary is required per measurement group")
     energy = float(identity)
     for (_basis, payload), counts in zip(groups, counts_per_group):
+        if engine == "rust":
+            from .._native import Context
+            values = Context(**dict(engine_options or {})).count_expectations(
+                [p for p, c in payload], [(str(k), float(v)) for k, v in counts.items()])
+            energy += sum(float(np.real(c)) * v for (p, c), v in zip(payload, values))
+            continue
         for label, coeff in payload:
             energy += float(np.real(coeff)) * \
                 pauli_expectation_from_counts(label, counts)
@@ -649,7 +670,8 @@ def measurement_plan(provider, n_qubits: int, labels, hamiltonian=None,
                           else int(factorized_bases)))
 
 
-def qwc_partition(labels, weights=None) -> list[tuple[str, list[int]]]:
+def qwc_partition(labels, weights=None, *, engine="python",
+                  engine_options=None) -> list[tuple[str, list[int]]]:
     """The one qubit-wise-commuting partition every path uses.
 
     Returns ``[(basis, [index, ...]), ...]``: the measurement bases in the
@@ -668,6 +690,12 @@ def qwc_partition(labels, weights=None) -> list[tuple[str, list[int]]]:
     per-label test is one vectorized comparison against every open basis.
     """
     labels = [str(label) for label in labels]
+    if engine == "rust":
+        from .._native import Context
+        return Context(**dict(engine_options or {})).qwc_groups(
+            labels, None if weights is None else [float(w) for w in weights])
+    if engine != "python" or engine_options:
+        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
     if not labels:
         return []
     if weights is None:
@@ -755,7 +783,7 @@ def _greedy_bases(labels, weights=None) -> list[str]:
 
 
 def chunk_labels_by_basis(labels, max_bases: int,
-                          weights=None) -> list[list[str]]:
+                          weights=None, *, engine="python", engine_options=None) -> list[list[str]]:
     """Split ``labels`` into submissions of at most ``max_bases`` QWC bases.
 
     A chunk is a whole number of measurement bases of :func:`qwc_partition`,
@@ -769,7 +797,7 @@ def chunk_labels_by_basis(labels, max_bases: int,
     labels = [str(label) for label in labels]
     if max_bases is None or max_bases <= 0 or not labels:
         return [labels] if labels else []
-    partition = qwc_partition(labels, weights)
+    partition = qwc_partition(labels, weights, engine=engine, engine_options=engine_options)
     if len(partition) <= max_bases:
         return [labels]
     chunks = []
@@ -781,8 +809,10 @@ def chunk_labels_by_basis(labels, max_bases: int,
     return chunks
 
 
-def planned_jobs(labels, max_bases: int | None, weights=None) -> int:
+def planned_jobs(labels, max_bases: int | None, weights=None, *,
+                  engine="python", engine_options=None) -> int:
     """How many submissions :func:`chunk_labels_by_basis` would produce."""
     if max_bases is None or max_bases <= 0:
         return 1
-    return max(len(chunk_labels_by_basis(labels, max_bases, weights)), 1)
+    return max(len(chunk_labels_by_basis(labels, max_bases, weights,
+                                         engine=engine, engine_options=engine_options)), 1)

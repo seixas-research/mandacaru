@@ -47,6 +47,9 @@ pub struct MeanField {
     pub model_orbitals: Matrix,
     pub model: Model,
     pub kramers_pairing: f64,
+    pub functional: Option<String>,
+    pub hartree_energy: f64,
+    pub xc_energy: f64,
     _memory: Reservation,
 }
 pub fn eigen(matrix: Matrix) -> Result<(Vec<f64>, Matrix)> {
@@ -74,11 +77,11 @@ pub fn eigen(matrix: Matrix) -> Result<(Vec<f64>, Matrix)> {
     }
     Ok((energies, c))
 }
-fn density(c: &Matrix, n: usize) -> Matrix {
+pub(super) fn density(c: &Matrix, n: usize) -> Matrix {
     let occupied = c.columns(0, n);
     occupied * occupied.adjoint()
 }
-fn hermitian(m: Matrix) -> Matrix {
+pub(super) fn hermitian(m: Matrix) -> Matrix {
     (&m + m.adjoint()) * C64::new(0.5, 0.)
 }
 fn energy(d: &[Matrix], f: &[Matrix], h: &Matrix, method: &str) -> f64 {
@@ -161,18 +164,18 @@ fn fock(integrals: &MolecularIntegrals, h: &Matrix, d: &[Matrix], method: &str) 
     }
     vec![hermitian(f)]
 }
-struct Diis {
+pub(super) struct Diis {
     focks: Vec<Vec<Matrix>>,
     errors: Vec<Vec<Matrix>>,
 }
 impl Diis {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             focks: vec![],
             errors: vec![],
         }
     }
-    fn extrapolate(&mut self, f: &[Matrix], d: &[Matrix]) -> Vec<Matrix> {
+    pub(super) fn extrapolate(&mut self, f: &[Matrix], d: &[Matrix]) -> Vec<Matrix> {
         let errors: Vec<_> = f.iter().zip(d).map(|(f, d)| f * d - d * f).collect();
         self.errors.push(errors);
         self.focks.push(f.to_vec());
@@ -217,13 +220,13 @@ impl Diis {
             .collect()
     }
 }
-struct Candidate {
-    energy: f64,
-    converged: bool,
-    history: Vec<Iteration>,
-    coefficients: Vec<Matrix>,
-    densities: Vec<Matrix>,
-    energies: Vec<Vec<f64>>,
+pub(super) struct Candidate {
+    pub(super) energy: f64,
+    pub(super) converged: bool,
+    pub(super) history: Vec<Iteration>,
+    pub(super) coefficients: Vec<Matrix>,
+    pub(super) densities: Vec<Matrix>,
+    pub(super) energies: Vec<Vec<f64>>,
 }
 fn iterate(
     integrals: &MolecularIntegrals,
@@ -363,7 +366,7 @@ impl MolecularIntegrals {
                 "invalid SCF method, occupation, iteration budget or tolerance",
             ));
         }
-        let mut workspace = ctx.reserve(
+        let workspace = ctx.reserve(
             product(&[2 * m, 2 * m, 16, 160])?
                 .checked_add(product(&[options.max_iterations, 128, 4])?)
                 .ok_or(crate::Error::Overflow)?,
@@ -448,6 +451,31 @@ impl MolecularIntegrals {
             }
         }
         let best = best.unwrap();
+        self.finish(method, particles, options, best, workspace, None)
+    }
+    pub(super) fn finish(
+        &self,
+        method: &str,
+        particles: [usize; 2],
+        options: &ScfOptions,
+        best: Candidate,
+        mut workspace: Reservation,
+        xc: Option<(&str, f64, f64)>,
+    ) -> Result<MeanField> {
+        let ctx = &self.context;
+        let m = self.m();
+        let spatial = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
+        let h = if method == "ghf" {
+            Matrix::from_fn(2 * m, 2 * m, |i, j| {
+                if i / m == j / m {
+                    spatial[(i % m, j % m)]
+                } else {
+                    C64::default()
+                }
+            })
+        } else {
+            spatial
+        };
         let mut natural_occupations = vec![];
         let model_orbitals = if method == "uhf" {
             let (mut occupations, c) = eigen(&best.densities[0] + &best.densities[1])?;
@@ -485,11 +513,15 @@ impl MolecularIntegrals {
         } else {
             transform::four(ctx, &self.eri, [&model_orbitals; 4])?
         };
-        let reference_energy = if method == "uhf" {
-            let d = vec![
-                density(&model_orbitals, particles[0]),
-                density(&model_orbitals, particles[1]),
-            ];
+        let reference_energy = if method == "uhf" || xc.is_some() {
+            let d = if method == "rhf" {
+                vec![density(&model_orbitals, particles[0])]
+            } else {
+                vec![
+                    density(&model_orbitals, particles[0]),
+                    density(&model_orbitals, particles[1]),
+                ]
+            };
             energy(&d, &fock(self, &h, &d, method), &h, method)
         } else {
             best.energy
@@ -535,6 +567,9 @@ impl MolecularIntegrals {
             model_orbitals,
             model,
             kramers_pairing,
+            functional: xc.map(|v| v.0.to_string()),
+            hartree_energy: xc.map_or(0., |v| v.1),
+            xc_energy: xc.map_or(0., |v| v.2),
             _memory: workspace,
         })
     }

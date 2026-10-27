@@ -13,6 +13,17 @@ pub struct PyOperator {
 }
 #[pymethods]
 impl PyOperator {
+    #[pyo3(signature=(state,evaluation_qubits,window,*,keep_amplitudes=true))]
+    fn qpe<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, C64>,
+        evaluation_qubits: usize,
+        window: [f64; 2],
+        keep_amplitudes: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::advanced::qpe(py, self, state, evaluation_qubits, window, keep_amplitudes)
+    }
     #[getter]
     fn num_qubits(&self) -> usize {
         self.inner.n
@@ -109,6 +120,120 @@ pub struct PyProblem {
 }
 #[pymethods]
 impl PyProblem {
+    #[pyo3(signature=(indices,parameters,*,product_form=true,energy_ha,status_json="{}",method="adapt-vqe"))]
+    fn checkpoint(
+        &self,
+        py: Python<'_>,
+        indices: Vec<usize>,
+        parameters: Vec<f64>,
+        product_form: bool,
+        energy_ha: f64,
+        status_json: &str,
+        method: &str,
+    ) -> PyResult<super::persistence::PySnapshot> {
+        let inner = py
+            .detach(|| {
+                if status_json.len() > mandacaru_core::persistence::MAX_JSON_BYTES {
+                    return Err(mandacaru_core::Error::Invalid(
+                        "checkpoint status exceeds JSON limit".into(),
+                    ));
+                }
+                let _status = self
+                    .inner
+                    .context
+                    .reserve(mandacaru_core::product(&[status_json.len() + 1, 32])?)?;
+                let status = serde_json::from_str(status_json)
+                    .map_err(|e| mandacaru_core::Error::Invalid(e.to_string()))?;
+                let doc = mandacaru_core::persistence::checkpoint(
+                    &self.inner.context,
+                    &self.inner,
+                    &indices,
+                    &parameters,
+                    product_form,
+                    method,
+                    status,
+                    energy_ha,
+                )?;
+                Ok::<_, mandacaru_core::Error>(doc)
+            })
+            .map_err(error)?;
+        Ok(super::persistence::PySnapshot {
+            context: self.inner.context.clone(),
+            inner,
+        })
+    }
+    #[pyo3(signature=(weights,*,adapt=false,trotter=false,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=1e-9,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,initial_parameters=None))]
+    fn solve_subspace<'py>(
+        &self,
+        py: Python<'py>,
+        weights: Vec<f64>,
+        adapt: bool,
+        trotter: bool,
+        optimizer: &str,
+        max_iterations: usize,
+        max_evaluations: usize,
+        tolerance: f64,
+        max_growth: usize,
+        gradient_tolerance: Option<f64>,
+        energy_tolerance: Option<f64>,
+        initial_parameters: Option<Vec<f64>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if optimizer != "BFGS" && optimizer != "L-BFGS" {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "optimizer must be BFGS or L-BFGS",
+            ));
+        }
+        let options = SolveOptions {
+            adapt,
+            trotter,
+            max_growth,
+            gradient_tolerance,
+            energy_tolerance,
+            optimizer: optimizer::Options {
+                limited_memory: optimizer == "L-BFGS",
+                max_iterations,
+                max_evaluations,
+                tolerance,
+            },
+        };
+        let result = py
+            .detach(|| {
+                self.inner
+                    .solve_subspace(&options, &weights, initial_parameters.as_deref())
+            })
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        out.set_item("energies_ha", result.energies)?;
+        out.set_item(
+            "parameters",
+            array(py, &[result.parameters.len()], result.parameters)?,
+        )?;
+        out.set_item(
+            "states",
+            array(
+                py,
+                &[weights.len(), self.inner.basis.len()],
+                result.states.as_slice().to_vec(),
+            )?,
+        )?;
+        out.set_item("reference_ha", result.reference)?;
+        out.set_item(
+            "operators",
+            result
+                .indices
+                .iter()
+                .map(|&i| self.inner.pool[i].label.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        out.set_item("indices", result.indices)?;
+        out.set_item("reference_indices", result.reference_indices)?;
+        out.set_item("history_ha", result.history)?;
+        out.set_item("success", result.success)?;
+        out.set_item("message", result.message)?;
+        out.set_item("final_max_gradient", result.final_gradient)?;
+        out.set_item("elapsed_seconds", result.elapsed_seconds)?;
+        Ok(out)
+    }
     #[getter]
     fn num_qubits(&self) -> usize {
         self.inner.encoding.n_qubits()
@@ -219,7 +344,7 @@ impl PyProblem {
         )?;
         Ok(out)
     }
-    #[pyo3(signature=(*,adapt=false,trotter=false,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,max_iterations=300,max_evaluations=5000,tolerance=1e-9,initial_parameters=None,optimizer="BFGS"))]
+    #[pyo3(signature=(*,adapt=false,trotter=false,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,max_iterations=300,max_evaluations=5000,tolerance=1e-9,initial_parameters=None,optimizer="BFGS",resume=None))]
     #[allow(clippy::too_many_arguments)]
     fn solve<'py>(
         &self,
@@ -234,6 +359,7 @@ impl PyProblem {
         tolerance: f64,
         initial_parameters: Option<Vec<f64>>,
         optimizer: &str,
+        resume: Option<&super::persistence::PySnapshot>,
     ) -> PyResult<Bound<'py, PyDict>> {
         if optimizer != "BFGS" && optimizer != "L-BFGS" {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -253,8 +379,19 @@ impl PyProblem {
                 tolerance,
             },
         };
+        if resume.is_some() && initial_parameters.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "choose initial parameters or a resume checkpoint",
+            ));
+        }
         let result = py
-            .detach(|| self.inner.solve(&options, initial_parameters.as_deref()))
+            .detach(|| {
+                if let Some(resume) = resume {
+                    resume.inner.resume(&self.inner, &options)
+                } else {
+                    self.inner.solve(&options, initial_parameters.as_deref())
+                }
+            })
             .map_err(error)?;
         let out = PyDict::new(py);
         out.set_item("energy_ha", result.energy)?;
