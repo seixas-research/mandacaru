@@ -1,0 +1,112 @@
+{
+  "broader_regression": {
+    "errors": [],
+    "executed": 473,
+    "failures": [],
+    "passed": 473,
+    "skips": []
+  },
+  "clippy": {
+    "bindings": "passed --no-deps -D warnings -A clippy::too_many_arguments",
+    "core": "passed --all-targets --no-deps -D warnings"
+  },
+  "focused_native_api_docs": {
+    "errors": [],
+    "executed": 265,
+    "failures": [],
+    "passed": 265,
+    "skips": []
+  },
+  "limitations": [
+    "Packaging executed on macOS arm64 CPython 3.14 only.",
+    "The full scientific suite was not rerun; earlier unrelated failures remain documented.",
+    "Native loops are sequential; Python-owned output copies are outside the native allocation budget.",
+    "Integral-direct and localized/two-center assembly, grid-direct Cholesky construction, full crystal SCF, general stability Hessians and advanced active-space ranking remain outside this milestone."
+  ],
+  "native_fit_data": {
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "sha256": "f8d90cc214f9c36d284d1ab081bed558f0f0598c66140c271a5a90a1bba24fef",
+    "source_sha256": "a9c98178ce3c395d8e00e138c1039b04cf552bb0b08d4a8b6c5828f81506fe0c",
+    "unit_fits": 80
+  },
+  "rust_tests": {
+    "failed": 0,
+    "groups": {
+      "foundation": 7,
+      "legacy_runtime": 2,
+      "molecular": 7,
+      "quantum": 6
+    },
+    "passed": 22
+  },
+  "schema_version": 1,
+  "scope": "Phase 3 native molecular geometry-to-mean-field/quantum workflow; remaining capability coverage is explicit in rust_phase3.md",
+  "sdist": {
+    "fresh_offline_build": true,
+    "sha256": "b9d57ee5c808abde324cade7faa16e77cf3c08c1049b9faf3067b33b89b9bb0c"
+  },
+  "source_sha256": "0475d584b02279de68060753955d0a86b407a4b5859a52de05efa34730b84c89",
+  "standalone": {
+    "eri": [
+      0.7444365805154071,
+      -0.01372019362933599,
+      -0.01372019362933599,
+      0.0107845278770416,
+      -0.01372019362933599,
+      0.4414487276355795,
+      0.0107845278770416,
+      -0.013720193629336061,
+      -0.01372019362933599,
+      0.0107845278770416,
+      0.4414487276355795,
+      -0.013720193629336061,
+      0.0107845278770416,
+      -0.013720193629336061,
+      -0.013720193629336061,
+      0.7444365805154044
+    ],
+    "memory_peak_bytes": 1235496,
+    "one_body": [
+      -0.7110721122322556,
+      -0.4031854589465329,
+      -0.40318545894653296,
+      -0.711072112232253
+    ],
+    "overlap": [
+      1.0234862568141794,
+      0.759356165073975,
+      0.759356165073975,
+      1.0234862568141798
+    ],
+    "rhf_converged": true,
+    "rhf_ha": -0.9371240086056043,
+    "vqe_converged": true,
+    "vqe_ha": -0.9507746213870711
+  },
+  "wheel": {
+    "passed": true,
+    "schema_version": 1,
+    "smoke": {
+      "abi_version": 1,
+      "cached_vqe_energy_ev": -25.871895455446612,
+      "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+      "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+      "qiskit_transpile_and_parquet_roundtrip": true,
+      "rhf_energy_ev": -25.5004433585557,
+      "runtime_compilation": false,
+      "rust_engine_energies_ev": {
+        "adapt-vqe": -25.871895455446616,
+        "vqe": -25.871895455446616
+      },
+      "rust_geometry_energies_ev": {
+        "adapt-vqe": -25.871895455446595,
+        "rhf": -25.50044335855568,
+        "vqe": -25.871895455446595
+      }
+    },
+    "wheel": "mandacaru-26.10.35-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+    "wheel_sha256": "afc646d9d3c67f6270580d771212e795debffafab676b553b81a44a7213c2275"
+  }
+}

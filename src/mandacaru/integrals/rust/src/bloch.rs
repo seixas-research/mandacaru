@@ -411,9 +411,7 @@ pub unsafe fn real_shell(
         None
     };
 
-    let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(8);
+    let n_threads = crate::runtime::thread_count();
     let chunk_size = (npts_usize + n_threads - 1) / n_threads;
     let out_ptr = out as usize;
 
@@ -425,7 +423,7 @@ pub unsafe fn real_shell(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_raw = out_ptr as *mut f64;
                 for j in start..end {
                     let dx = x_slice[j] - center_slice[0];
@@ -569,9 +567,7 @@ pub unsafe fn real_shell_f32(
         None
     };
 
-    let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(8);
+    let n_threads = crate::runtime::thread_count();
     let chunk_size = (npts_usize + n_threads - 1) / n_threads;
     let out_ptr = out as usize;
 
@@ -583,7 +579,7 @@ pub unsafe fn real_shell_f32(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_raw = out_ptr as *mut f32;
                 for j in start..end {
                     let dx = x_slice[j] - center_slice[0];
@@ -732,7 +728,7 @@ pub unsafe fn bloch_shell(
     let rows_slice = std::slice::from_raw_parts(rows, nm_usize);
 
     let n_blocks = (npts_usize + BLOCK - 1) / BLOCK;
-    let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let n_threads = crate::runtime::thread_count();
     let blocks_per_thread = (n_blocks + n_threads - 1) / n_threads;
 
     let out_ptr = out as usize;
@@ -745,7 +741,7 @@ pub unsafe fn bloch_shell(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_raw = out_ptr as *mut Complex64;
                 let mut hits = vec![0usize; n_images_usize.max(1)];
                 let mut inside = [0usize; BLOCK];
@@ -842,7 +838,7 @@ pub unsafe fn bloch_project(
     }
 
     let n_blocks = (npts_usize + BLOCK - 1) / BLOCK;
-    let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let n_threads = crate::runtime::thread_count();
     let blocks_per_thread = (n_blocks + n_threads - 1) / n_threads;
 
     let sync_mutex = std::sync::Mutex::new(());
@@ -857,7 +853,7 @@ pub unsafe fn bloch_project(
             }
 
             let sync_ref = &sync_mutex;
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_raw = out_ptr as *mut Complex64;
                 let mut hits = vec![0usize; n_images_usize.max(1)];
                 let mut inside = [0usize; BLOCK];

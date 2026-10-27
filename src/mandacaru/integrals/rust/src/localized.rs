@@ -115,7 +115,7 @@ pub unsafe fn localized_density_real(
             let sub_boxes_ref = &sub_boxes;
             let psi_ref = &psi_ptrs_usize;
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let p_ao_base = p_ao_usize as *const f64;
                 let out_rho_base = out_rho_usize as *mut f64;
 
@@ -302,7 +302,7 @@ pub unsafe fn localized_potential_matrix_real(
             let sub_boxes_ref = &sub_boxes;
             let psi_ref = &psi_ptrs_usize;
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let v_grid_base = v_grid_usize as *const f64;
                 let out_v_ao_base = out_v_ao_usize as *mut f64;
 
@@ -456,7 +456,7 @@ pub unsafe fn localized_cross_real(
 
             let psi_ref = &psi_ptrs_usize;
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let dpsi_moving_base = dpsi_moving_usize as *const f64;
                 let v_grid_base = v_grid_usize as *const f64;
                 let out_cross_base = out_cross_usize as *mut f64;

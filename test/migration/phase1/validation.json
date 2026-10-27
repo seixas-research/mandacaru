@@ -1,0 +1,192 @@
+{
+  "broader_kernel_run": {
+    "errors": [],
+    "executed": 577,
+    "failures": [
+      {
+        "classname": "test.integrals.test_fft",
+        "message": "assert ([])",
+        "name": "test_the_pool_holds_blas_to_one_thread",
+        "seconds": 0.004
+      },
+      {
+        "classname": "test.integrals.test_fft",
+        "message": "ValueError: max() iterable argument is empty",
+        "name": "test_the_blocks_are_the_problems_not_the_threads",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.integrals.test_numerical_guards.TestStaleResultsAreCleared",
+        "message": "AssertionError: assert None is not None",
+        "name": "test_an_energy_only_step_clears_the_force_breakdown",
+        "seconds": 0.127
+      },
+      {
+        "classname": "test.integrals.test_packed.TestTheStore",
+        "message": "AssertionError: assert np.float64(1.3211653993039363e-14) < (1e-14 * np.float64(0.9193117986124067))",
+        "name": "test_the_engine_writes_the_tensor_packed",
+        "seconds": 0.086
+      }
+    ],
+    "passed": 568,
+    "skips": [
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_blas_runs_one_thread_inside",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_the_callers_setting_comes_back",
+        "seconds": 0.003
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_it_is_restored_when_the_function_raises",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_nesting_keeps_one_thread_and_restores_the_outer_setting",
+        "seconds": 0.003
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_it_keeps_the_name_and_docstring",
+        "seconds": 0.001
+      }
+    ]
+  },
+  "core_clippy": {
+    "passed": true,
+    "scope": "mandacaru-core --tests --no-deps -D warnings"
+  },
+  "final_bindings_api_docs": {
+    "errors": [],
+    "executed": 142,
+    "failures": [],
+    "passed": 142,
+    "skips": []
+  },
+  "limitations": [
+    "Only macOS arm64 CPython 3.14 packaging was executed.",
+    "Legacy raw-pointer ABI still requires validated caller inputs.",
+    "Rust byte budgets exclude NumPy-owned results, thread stacks, allocator overhead and unwrapped legacy calls.",
+    "Existing scientific-suite failures remain; the full suite was not rerun."
+  ],
+  "phase": 1,
+  "phase0_failure_reproduction": {
+    "all_source_files_verified_against_phase0_manifest": true,
+    "results": {
+      "errors": [],
+      "executed": 4,
+      "failures": [
+        {
+          "classname": "test.integrals.test_fft",
+          "message": "assert ([])",
+          "name": "test_the_pool_holds_blas_to_one_thread",
+          "seconds": 0.012
+        },
+        {
+          "classname": "test.integrals.test_fft",
+          "message": "ValueError: max() iterable argument is empty",
+          "name": "test_the_blocks_are_the_problems_not_the_threads",
+          "seconds": 0.001
+        },
+        {
+          "classname": "test.integrals.test_numerical_guards.TestStaleResultsAreCleared",
+          "message": "AssertionError: assert None is not None",
+          "name": "test_an_energy_only_step_clears_the_force_breakdown",
+          "seconds": 0.997
+        },
+        {
+          "classname": "test.integrals.test_packed.TestTheStore",
+          "message": "AssertionError: assert np.float64(1.3211653993039363e-14) < (1e-14 * np.float64(0.9193117986124067))",
+          "name": "test_the_engine_writes_the_tensor_packed",
+          "seconds": 0.101
+        }
+      ],
+      "passed": 0,
+      "skips": []
+    },
+    "source_revision": "b37d2af3f29a963c684e3b90a5522e194d5608a4"
+  },
+  "rust_tests": {
+    "passed": 8
+  },
+  "schema_version": 1,
+  "scientific_comparison": {
+    "candidate_report_sha256": "b6964973d5f443b46728d7dd78a90515c17eb7ea5f75c205e3b4925ff67af7c7",
+    "cases": 11,
+    "differences": [],
+    "passed": true,
+    "reference": "../reference/numpy.json"
+  },
+  "source_archive_rebuild": {
+    "fresh_cargo_target": true,
+    "fresh_source_tree": true,
+    "offline": true,
+    "passed": true,
+    "schema_version": 1
+  },
+  "source_sha256": "6a1b35954c556b0bf1a49d87941f51e7637d8610f38aa29d170e1643a8a60172",
+  "targeted_foundation": {
+    "errors": [],
+    "executed": 185,
+    "failures": [],
+    "passed": 180,
+    "skips": [
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_blas_runs_one_thread_inside",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_the_callers_setting_comes_back",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_it_is_restored_when_the_function_raises",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_nesting_keeps_one_thread_and_restores_the_outer_setting",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.integrals.test_backend.TestSingleThreadedBLAS",
+        "message": "No BLAS thread pool discovered by threadpoolctl on this system",
+        "name": "test_it_keeps_the_name_and_docstring",
+        "seconds": 0.001
+      }
+    ]
+  },
+  "wheel": {
+    "passed": true,
+    "schema_version": 1,
+    "smoke": {
+      "abi_version": 1,
+      "cached_vqe_energy_ev": -25.871895455446612,
+      "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+      "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+      "qiskit_transpile_and_parquet_roundtrip": true,
+      "rhf_energy_ev": -25.5004433585557,
+      "runtime_compilation": false
+    },
+    "wheel": "mandacaru-26.10.35-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+    "wheel_sha256": "cd3655f477b09716e1c6d8264f6d98269546049276dff828c10ba6ad96f8b63b"
+  }
+}

@@ -10,9 +10,17 @@ pub mod localized;
 pub mod two_center;
 pub mod onecenter;
 pub mod radial;
+pub mod runtime;
 
 use bloch::Complex64;
 use one_body::Complex32;
+
+/// Identifies the Rust implementation without guessing from optional kernels.
+#[no_mangle]
+pub extern "C" fn mandacaru_backend_abi_version() -> i32 { 1 }
+
+#[no_mangle]
+pub extern "C" fn mandacaru_thread_policy_version() -> i32 { 1 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mandacaru_num_threads() -> i32 {

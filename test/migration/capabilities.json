@@ -1,0 +1,589 @@
+{
+  "schema_version": 1,
+  "evidence_policy": "These groups index source declarations and existing tests. They do not certify arbitrary combinations. cases.json and captured reports identify executed reference coverage; pytest results identify actual test outcomes.",
+  "groups": [
+    {
+      "id": "public_interface",
+      "phase": 1,
+      "features": [
+        "Mandacaru method selection and aliases",
+        "explicit calculator properties",
+        "CLI",
+        "experimental method registration",
+        "dry runs"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/calculator.py",
+        "src/mandacaru/cli.py",
+        "src/mandacaru/algorithms/dry_run.py"
+      ],
+      "tests": [
+        "test/test_single_entry_point.py",
+        "test/test_cli.py",
+        "test/algorithms/test_dry_run.py"
+      ],
+      "reference_cases": []
+    },
+    {
+      "id": "ase_lifecycle",
+      "phase": 1,
+      "features": [
+        "energy and free energy",
+        "forces",
+        "conditional stress",
+        "charges and magnetic moments",
+        "geometry invalidation and frozen force grids",
+        "relaxation and molecular dynamics through ASE"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/calculator.py"
+      ],
+      "tests": [
+        "test/algorithms/test_calculator.py",
+        "test/algorithms/test_forces.py",
+        "test/algorithms/test_crystal_forces.py"
+      ],
+      "reference_cases": [
+        "h2_dft_lda_forces"
+      ]
+    },
+    {
+      "id": "units_and_conventions",
+      "phase": 1,
+      "features": [
+        "internal Hartree and Bohr",
+        "public eV and Angstrom unless atomic_units",
+        "physicists' integral notation",
+        "spin-blocked alpha then beta",
+        "Mandacaru qubit zero is most significant",
+        "Qiskit wire reversal"
+      ],
+      "sources": [
+        "src/mandacaru/units.py",
+        "src/mandacaru/core/mapping.py",
+        "src/mandacaru/backends/providers.py"
+      ],
+      "tests": [
+        "test/core/test_mapping.py",
+        "test/backends/test_providers.py",
+        "test/algorithms/test_calculator.py"
+      ],
+      "reference_cases": [
+        "operator_algebra",
+        "h2_rhf",
+        "h2_cached_vqe",
+        "h2_rhf_atomic_units"
+      ]
+    },
+    {
+      "id": "native_backend",
+      "phase": 1,
+      "features": [
+        "auto/rust/c/numpy policy",
+        "C ABI and ctypes",
+        "runtime compilation and library selection",
+        "radial and real-space kernels"
+      ],
+      "sources": [
+        "src/mandacaru/backend_policy.py",
+        "src/mandacaru/integrals/_backend.py",
+        "src/mandacaru/basis/radial_backend.py",
+        "src/mandacaru/integrals/rust/src/lib.rs"
+      ],
+      "tests": [
+        "test/integrals/test_backend.py",
+        "test/basis/test_radial_backend.py"
+      ],
+      "reference_cases": [
+        "h2_rhf"
+      ]
+    },
+    {
+      "id": "quantum_operators",
+      "phase": 2,
+      "features": [
+        "fermion and Pauli algebra",
+        "Jordan-Wigner/parity/reduced parity/Bravyi-Kitaev",
+        "particle and spin sectors",
+        "Z2 tapering and symmetry",
+        "dense/sparse/matrix-free application"
+      ],
+      "sources": [
+        "src/mandacaru/core/mapping.py",
+        "src/mandacaru/core/sector.py",
+        "src/mandacaru/core/matrix_free.py",
+        "src/mandacaru/core/tapering.py",
+        "src/mandacaru/core/symmetry.py"
+      ],
+      "tests": [
+        "test/core/test_mapping.py",
+        "test/core/test_pauli_algebra.py",
+        "test/core/test_sector.py",
+        "test/core/test_matrix_free.py",
+        "test/core/test_tapering.py"
+      ],
+      "reference_cases": [
+        "operator_algebra",
+        "h2_cached_adapt"
+      ]
+    },
+    {
+      "id": "ansatz_and_pools",
+      "phase": 2,
+      "features": [
+        "UCCSD exact and Trotter",
+        "HVA exact and product formulas",
+        "fermionic/qubit/QEB/CEO/CEO-OVP/spin-orbit pools",
+        "adjoint gradients",
+        "pool screening"
+      ],
+      "sources": [
+        "src/mandacaru/circuits/ansatz.py",
+        "src/mandacaru/circuits/adapt_ansatz.py",
+        "src/mandacaru/circuits/hva.py",
+        "src/mandacaru/circuits/pools.py",
+        "src/mandacaru/algorithms/ansatz_spec.py"
+      ],
+      "tests": [
+        "test/circuits/test_ansatz.py",
+        "test/circuits/test_adapt_ansatz.py",
+        "test/circuits/test_hva.py",
+        "test/circuits/test_pools.py",
+        "test/algorithms/test_adapt_gradient.py"
+      ],
+      "reference_cases": [
+        "h2_cached_vqe",
+        "h2_cached_adapt"
+      ]
+    },
+    {
+      "id": "local_quantum_solvers",
+      "phase": 2,
+      "features": [
+        "VQE",
+        "ADAPT-VQE",
+        "gradient/energy convergence",
+        "TETRIS growth and pruning",
+        "RDMs and state properties"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/vqe.py",
+        "src/mandacaru/algorithms/adapt_vqe.py",
+        "src/mandacaru/algorithms/rdm.py",
+        "src/mandacaru/algorithms/convergence.py"
+      ],
+      "tests": [
+        "test/algorithms/test_vqe.py",
+        "test/algorithms/test_adapt_vqe.py",
+        "test/algorithms/test_growth_strategies.py",
+        "test/algorithms/test_forces.py"
+      ],
+      "reference_cases": [
+        "h2_cached_vqe",
+        "h2_cached_adapt"
+      ]
+    },
+    {
+      "id": "optimization",
+      "phase": 2,
+      "features": [
+        "SLSQP/BFGS/L-BFGS/CG",
+        "COBYLA/Nelder-Mead",
+        "seeded SPSA",
+        "shot-noise restrictions",
+        "evaluation and convergence budgets"
+      ],
+      "sources": [
+        "src/mandacaru/optimizers/optim.py",
+        "src/mandacaru/backends/measurement.py"
+      ],
+      "tests": [
+        "test/optimizers/test_optim.py",
+        "test/optimizers/test_convergence_status.py",
+        "test/backends/test_measurement_cost.py"
+      ],
+      "reference_cases": [
+        "h2_cached_vqe",
+        "h2_cached_adapt"
+      ]
+    },
+    {
+      "id": "basis_and_grid",
+      "phase": 3,
+      "features": [
+        "HAO",
+        "Gaussian/STO-nG/Pople/native Gaussian families",
+        "orthogonalization",
+        "isolated and periodic cells",
+        "triclinic grids and finite differences"
+      ],
+      "sources": [
+        "src/mandacaru/basis/factory.py",
+        "src/mandacaru/basis/gaussian_families.py",
+        "src/mandacaru/integrals/grid.py",
+        "src/mandacaru/core/hamiltonian.py"
+      ],
+      "tests": [
+        "test/basis/test_factory.py",
+        "test/basis/test_gaussian_families.py",
+        "test/basis/test_sto_ng.py",
+        "test/integrals/test_grid.py",
+        "test/integrals/test_grid_numerics.py"
+      ],
+      "reference_cases": [
+        "h2_rhf",
+        "h2o_rhf_sto3g"
+      ]
+    },
+    {
+      "id": "integrals",
+      "phase": 3,
+      "features": [
+        "one-body and two-body integrals",
+        "FFT Poisson isolated/periodic/slab kernels",
+        "two-center and localized routes",
+        "packed/direct/Cholesky representations",
+        "active/frozen-core and MO transformations"
+      ],
+      "sources": [
+        "src/mandacaru/integrals/engine.py",
+        "src/mandacaru/integrals/poisson.py",
+        "src/mandacaru/integrals/direct.py",
+        "src/mandacaru/integrals/cholesky.py",
+        "src/mandacaru/core/hamiltonian.py",
+        "src/mandacaru/algorithms/active_space.py"
+      ],
+      "tests": [
+        "test/integrals/test_engine.py",
+        "test/integrals/test_poisson.py",
+        "test/integrals/test_direct.py",
+        "test/integrals/test_cholesky.py",
+        "test/algorithms/test_frozen_core.py"
+      ],
+      "reference_cases": [
+        "h2_rhf"
+      ]
+    },
+    {
+      "id": "classical_mean_field",
+      "phase": 3,
+      "features": [
+        "RHF/UHF/GHF",
+        "SCF DIIS and stability",
+        "natural-orbital and spinor quantum export",
+        "open-shell references"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/hartree_fock.py",
+        "src/mandacaru/algorithms/mean_field.py",
+        "src/mandacaru/algorithms/scf_stability.py"
+      ],
+      "tests": [
+        "test/algorithms/test_hartree_fock.py",
+        "test/algorithms/test_mean_field.py",
+        "test/algorithms/test_open_shell.py",
+        "test/algorithms/test_scf_stability.py"
+      ],
+      "reference_cases": [
+        "h2_rhf",
+        "h_uhf",
+        "h2_ghf"
+      ]
+    },
+    {
+      "id": "numerical_atoms",
+      "phase": 4,
+      "features": [
+        "NAO and NAO-AE",
+        "radial atomic solvers",
+        "multizeta/polarization/diffuse/confinement",
+        "scalar relativity and spin XC"
+      ],
+      "sources": [
+        "src/mandacaru/basis/atomic_solver.py",
+        "src/mandacaru/basis/nao.py",
+        "src/mandacaru/basis/nao_ae.py",
+        "src/mandacaru/pseudopotentials/partial_waves.py"
+      ],
+      "tests": [
+        "test/basis/test_atomic_solver.py",
+        "test/basis/test_nao.py",
+        "test/basis/test_nao_ae.py",
+        "test/pseudopotentials/test_partial_waves.py"
+      ],
+      "reference_cases": []
+    },
+    {
+      "id": "pseudopotentials",
+      "phase": 4,
+      "features": [
+        "PAW-LCAO/UPAW-LCAO",
+        "one-center augmentation",
+        "functional and relativistic dataset selection",
+        "external dataset libraries",
+        "dataset generation and serialization"
+      ],
+      "sources": [
+        "src/mandacaru/pseudopotentials/paw.py",
+        "src/mandacaru/pseudopotentials/onecenter.py",
+        "src/mandacaru/pseudopotentials/io.py",
+        "src/mandacaru/pseudopotentials/environment.py",
+        "src/mandacaru/pseudopotentials/build_cli.py"
+      ],
+      "tests": [
+        "test/pseudopotentials/test_paw.py",
+        "test/pseudopotentials/test_upaw.py",
+        "test/pseudopotentials/test_onecenter.py",
+        "test/pseudopotentials/test_io.py"
+      ],
+      "reference_cases": [
+        "h2_paw_pbe",
+        "si_periodic_lda"
+      ]
+    },
+    {
+      "id": "molecular_dft",
+      "phase": 4,
+      "features": [
+        "restricted/unrestricted/spinor Kohn-Sham",
+        "LDA/PBE/r2SCAN/HSE06",
+        "PBE+rVV10/r2SCAN+rVV10",
+        "optional D4",
+        "Hubbard U and onsite terms"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/dft.py",
+        "src/mandacaru/algorithms/spinor_dft.py",
+        "src/mandacaru/integrals/exchange_correlation.py",
+        "src/mandacaru/algorithms/hubbard.py"
+      ],
+      "tests": [
+        "test/algorithms/test_dft.py",
+        "test/algorithms/test_spinor_dft.py",
+        "test/algorithms/test_hubbard.py",
+        "test/integrals/test_exchange_correlation.py",
+        "test/integrals/test_vv10.py"
+      ],
+      "reference_cases": [
+        "h2_dft_lda_forces",
+        "h2_paw_pbe"
+      ]
+    },
+    {
+      "id": "forces_and_response",
+      "phase": 4,
+      "features": [
+        "Hellmann-Feynman/Pulay",
+        "RDM and differentiated-SCF force paths",
+        "active-projector response and orbital alignment",
+        "finite differences as validation",
+        "electric-field response"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/forces.py",
+        "src/mandacaru/algorithms/pseudo_forces.py",
+        "src/mandacaru/algorithms/_jax_energy.py",
+        "src/mandacaru/algorithms/active_space_forces.py",
+        "src/mandacaru/algorithms/polarizability.py"
+      ],
+      "tests": [
+        "test/algorithms/test_forces.py",
+        "test/algorithms/test_all_electron_forces.py",
+        "test/algorithms/test_active_space_forces.py",
+        "test/algorithms/test_polarizability.py"
+      ],
+      "reference_cases": [
+        "h2_dft_lda_forces"
+      ]
+    },
+    {
+      "id": "periodic_electronic_structure",
+      "phase": 5,
+      "features": [
+        "Bloch/k meshes/irreducible symmetry",
+        "periodic DFT and many-body drivers",
+        "metal smearing and entropy",
+        "spin/SOC",
+        "forces and free-energy stress",
+        "bands/DOS/PDOS/tetrahedra"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/bloch.py",
+        "src/mandacaru/algorithms/periodic_dft.py",
+        "src/mandacaru/algorithms/crystal_forces.py",
+        "src/mandacaru/core/periodic.py"
+      ],
+      "tests": [
+        "test/algorithms/test_bloch.py",
+        "test/algorithms/test_periodic_dft.py",
+        "test/algorithms/test_crystal_forces.py",
+        "test/algorithms/test_kpoints.py",
+        "test/algorithms/test_tetrahedron.py"
+      ],
+      "reference_cases": [
+        "si_periodic_lda"
+      ]
+    },
+    {
+      "id": "periodic_analysis",
+      "phase": 5,
+      "features": [
+        "Wannier and projectability",
+        "cRPA/downfolding",
+        "Berry phase/polarization/dielectric/Born/piezoelectric response",
+        "finite-size corrections and Ewald"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/wannier.py",
+        "src/mandacaru/algorithms/rpa_density.py",
+        "src/mandacaru/algorithms/berry_phase.py",
+        "src/mandacaru/core/ewald.py"
+      ],
+      "tests": [
+        "test/algorithms/test_wannier.py",
+        "test/algorithms/test_rpa_density.py",
+        "test/algorithms/test_berry_phase.py",
+        "test/core/test_ewald.py"
+      ],
+      "reference_cases": []
+    },
+    {
+      "id": "advanced_quantum",
+      "phase": 6,
+      "features": [
+        "subspace VQE/ADAPT and deflation",
+        "MCAS-VQE/VALQA",
+        "learned GP/ranker/GNN proposals and JAX training",
+        "time evolution/echoes/nested OTOC/QPE",
+        "expressivity"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/subspace.py",
+        "src/mandacaru/algorithms/mcas_vqe.py",
+        "src/mandacaru/algorithms/valqa.py",
+        "src/mandacaru/algorithms/proposal_model.py",
+        "src/mandacaru/algorithms/time_evolution.py",
+        "src/mandacaru/algorithms/qpe.py"
+      ],
+      "tests": [
+        "test/algorithms/test_subspace.py",
+        "test/algorithms/test_mcas_vqe.py",
+        "test/algorithms/test_valqa.py",
+        "test/algorithms/test_proposal_model.py",
+        "test/algorithms/test_time_evolution.py",
+        "test/algorithms/test_qpe.py"
+      ],
+      "reference_cases": []
+    },
+    {
+      "id": "correlation_and_properties",
+      "phase": 6,
+      "features": [
+        "MP2/DLPNO-MP2 and active-space selectors",
+        "charges and magnetic properties",
+        "dipoles/natural orbitals/volumetric fields",
+        "interaction energies and spectroscopy"
+      ],
+      "sources": [
+        "src/mandacaru/algorithms/mp2.py",
+        "src/mandacaru/algorithms/dlpno_mp2.py",
+        "src/mandacaru/algorithms/charges.py",
+        "src/mandacaru/algorithms/volumetric.py"
+      ],
+      "tests": [
+        "test/algorithms/test_mp2.py",
+        "test/algorithms/test_dlpno_mp2.py",
+        "test/algorithms/test_charges.py",
+        "test/algorithms/test_volumetric.py",
+        "test/algorithms/test_interaction.py"
+      ],
+      "reference_cases": []
+    },
+    {
+      "id": "persistence",
+      "phase": 7,
+      "features": [
+        "Hamiltonian JSON/Parquet schema v1",
+        "checkpoint JSON schema v2",
+        "dataset JSON/Parquet",
+        "proposal records/models",
+        "CUBE/XSF/BXSF",
+        "run logs and citations"
+      ],
+      "sources": [
+        "src/mandacaru/core/serialization.py",
+        "src/mandacaru/core/checkpoint.py",
+        "src/mandacaru/pseudopotentials/io.py",
+        "src/mandacaru/algorithms/proposal_data.py",
+        "src/mandacaru/utils/cube.py",
+        "src/mandacaru/utils/bxsf.py"
+      ],
+      "tests": [
+        "test/core/test_serialization.py",
+        "test/core/test_checkpoint.py",
+        "test/pseudopotentials/test_io.py",
+        "test/algorithms/test_proposal_data.py",
+        "test/utils/test_bxsf.py"
+      ],
+      "reference_cases": [
+        "h2_cached_vqe",
+        "h2_cached_adapt"
+      ]
+    },
+    {
+      "id": "execution_providers",
+      "phase": 7,
+      "features": [
+        "Qiskit/IBM Runtime",
+        "Braket",
+        "Cirq",
+        "local simulators",
+        "circuit profiling/transpilation",
+        "measurement grouping/factorization/gradients",
+        "shots/job budgets and failure accounting"
+      ],
+      "sources": [
+        "src/mandacaru/backends/providers.py",
+        "src/mandacaru/backends/hardware.py",
+        "src/mandacaru/backends/measurement.py",
+        "src/mandacaru/backends/factorization.py",
+        "src/mandacaru/circuits/profiling.py"
+      ],
+      "tests": [
+        "test/backends/test_providers.py",
+        "test/backends/test_ibm_quantum.py",
+        "test/backends/test_braket.py",
+        "test/backends/test_measurement_cost.py",
+        "test/backends/test_gradient_measurement.py"
+      ],
+      "reference_cases": []
+    },
+    {
+      "id": "precision_memory_parallelism",
+      "phase": 1,
+      "features": [
+        "real/complex double and mixed precision",
+        "FFT workspace reuse and batching",
+        "localized/direct memory bounds",
+        "memory-mapped disk buffers",
+        "thread policy and BLAS coordination",
+        "resource reporting"
+      ],
+      "sources": [
+        "src/mandacaru/integrals/fft.py",
+        "src/mandacaru/integrals/buffers.py",
+        "src/mandacaru/integrals/_backend.py",
+        "src/mandacaru/utils/profiling.py"
+      ],
+      "tests": [
+        "test/integrals/test_precision.py",
+        "test/integrals/test_fft.py",
+        "test/integrals/test_eri_blocking.py",
+        "test/utils/test_profiling.py"
+      ],
+      "reference_cases": [
+        "h2_rhf"
+      ]
+    }
+  ]
+}

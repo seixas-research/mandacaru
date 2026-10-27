@@ -30,23 +30,7 @@ impl Complex32 {
 }
 
 pub fn get_num_threads() -> usize {
-    if let Ok(val) = std::env::var("MANDACARU_NUM_THREADS") {
-        if let Ok(n) = val.parse::<usize>() {
-            if n > 0 {
-                return n;
-            }
-        }
-    }
-    if let Ok(val) = std::env::var("OMP_NUM_THREADS") {
-        if let Ok(n) = val.parse::<usize>() {
-            if n > 0 {
-                return n;
-            }
-        }
-    }
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(8)
+    crate::runtime::thread_count()
 }
 
 #[inline(always)]
@@ -278,7 +262,7 @@ pub unsafe fn laplacian_real(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let f_base = field_ptr as *const f64;
                 let l_base = lap_ptr as *mut f64;
 
@@ -420,7 +404,7 @@ pub unsafe fn laplacian_real_f32(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let f_base = field_ptr as *const f32;
                 let l_base = lap_ptr as *mut f32;
 
@@ -554,7 +538,7 @@ pub unsafe fn one_body(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_t_raw = out_t_ptr as *mut Complex64;
                 let out_v_raw = out_v_ptr as *mut Complex64;
 
@@ -623,7 +607,7 @@ pub unsafe fn one_body_general(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_t_raw = out_t_ptr as *mut Complex64;
                 let out_v_raw = out_v_ptr as *mut Complex64;
 
@@ -686,7 +670,7 @@ pub unsafe fn kb_project(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_p_raw = out_p_ptr as *mut Complex64;
 
                 for pair in pair_start..pair_end {
@@ -738,7 +722,7 @@ pub unsafe fn kb_project_f32(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let out_p_raw = out_p_ptr as *mut Complex64;
 
                 for pair in pair_start..pair_end {

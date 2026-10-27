@@ -603,7 +603,7 @@ class Mandacaru(Calculator):
         decides = getattr(self._solver_class, "_is_periodic", None)
         return decides is not None and bool(decides(atoms))
 
-    def __init__(self, method: str = DEFAULT_METHOD, *, basis="HAO",
+    def __init__(self, method: str = DEFAULT_METHOD, *, engine="python", engine_options=None, basis="HAO",
                  paw_dataset: str | None = None,
                  grid_spacing: float = DEFAULT_GRID_SPACING, grid=None,
                  precision: str = "double",
@@ -621,6 +621,23 @@ class Mandacaru(Calculator):
         Calculator.__init__(self)
         self._attached_atoms = None      # the geometry ASE attached (set_atoms)
         self.method, self._solver_class = resolve_method(method)
+        if engine not in ("python", "rust"):
+            raise ValueError("engine must be 'python' or 'rust'")
+        self.engine = engine
+        if engine == "rust":
+            from ._rust_quantum import RustVQE, RustADAPT
+            from ._rust_molecular import RustRHF, RustUHF, RustGHF
+            native = {"vqe": RustVQE, "adapt-vqe": RustADAPT, "rhf": RustRHF, "uhf": RustUHF, "ghf": RustGHF}
+            if self.method not in native:
+                raise NotImplementedError("engine='rust' supports molecular RHF/UHF/GHF and local VQE/ADAPT-VQE")
+            if population is not None:
+                raise NotImplementedError("native population reporting is not yet wired")
+            if measurement_provider is not None or measurement_budget is not None:
+                raise NotImplementedError("engine='rust' currently supports local noiseless solves")
+            self._solver_class = native[self.method]
+            solver_kwargs["engine_options"] = engine_options
+        elif engine_options is not None:
+            raise ValueError("engine_options requires engine='rust'")
         if dump_buffers is None and disk_buffers is not None:
             dump_buffers = disk_buffers
         if dump_buffers is None:
@@ -847,6 +864,8 @@ class Mandacaru(Calculator):
         return estimate
 
     def _require_solver(self):
+        if getattr(self.solver, "engine", None) == "rust" and (self.solver.result is not None or getattr(self.solver, "problem", None) is not None):
+            return self.solver
         if getattr(self.solver, "hamiltonian", None) is None:
             raise RuntimeError(
                 "the calculator has not been evaluated yet; attach it to an "
@@ -1451,6 +1470,8 @@ class Mandacaru(Calculator):
             _watchable_stdout()
 
         want_forces = "forces" in properties
+        if self.engine == "rust" and want_forces:
+            raise NotImplementedError("nuclear forces for the native molecular engine require the later gradient migration")
         # A previous step's breakdown must never survive a new geometry.
         self.force_result = None
         if want_forces and getattr(self._solver_class, "classical_mean_field",
@@ -1688,6 +1709,9 @@ class Mandacaru(Calculator):
 
     def _single_point(self, solver, atoms):
         """Attach the solver to a copy of ``atoms`` and get the energy in eV."""
+        if getattr(solver, "engine", None) == "rust":
+            solver.calculate(atoms)
+            return float(solver.results["energy"])
         work = atoms.copy()
         work.calc = solver
         return float(work.get_potential_energy())
@@ -2191,6 +2215,14 @@ class Mandacaru(Calculator):
         comes from its orbitals (``solver.mean_field_rdm()``), with no state
         vector built, and a two-body RDM is refused.
         """
+        if getattr(solver, "engine", None) == "rust":
+            if hasattr(solver, "mean_field_rdm"):
+                if two_body:
+                    raise NotImplementedError("a native mean-field density provides the one-body RDM; correlated two-body RDMs need a quantum solve")
+                return solver.mean_field_rdm(), None
+            if psi is None:
+                psi = self._converged_state(solver)
+            return solver.problem.rdms(np.ascontiguousarray(psi, dtype=complex), two_body=two_body)
         from .rdm import (one_rdm, pauli_expectations, rdm_qubit_operators,
                           rdms_from_expectations, two_rdm)
 
@@ -3167,6 +3199,8 @@ class Mandacaru(Calculator):
         result = getattr(solver, "result", None)
         if result is None:
             raise RuntimeError("the solver has not been run yet")
+        if getattr(solver, "engine", None) == "rust":
+            return solver.state.copy()
         if getattr(solver, "shots", 0):
             # Its memory must stay polynomial in the qubits: a shot-based run
             # builds no state vector, not even after it has converged.

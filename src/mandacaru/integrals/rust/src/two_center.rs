@@ -99,9 +99,7 @@ pub unsafe extern "C" fn mandacaru_fourier_bessel_transform(
 ) {
     let nr_u = nr as usize;
     let nk_u = nk as usize;
-    let num_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
+    let num_threads = crate::runtime::thread_count();
 
     let r_addr = r_ptr as usize;
     let fw_addr = f_weighted_ptr as usize;
@@ -117,7 +115,7 @@ pub unsafe extern "C" fn mandacaru_fourier_bessel_transform(
             }
             let j_end = (j_start + chunk_size).min(nk_u);
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let r_slice = std::slice::from_raw_parts(r_addr as *const f64, nr_u);
                 let fw_slice = std::slice::from_raw_parts(fw_addr as *const f64, nr_u);
                 let k_slice = std::slice::from_raw_parts(k_addr as *const f64, nk_u);
@@ -156,9 +154,7 @@ pub unsafe extern "C" fn mandacaru_two_center_s_table(
 ) {
     let nk_u = nk as usize;
     let nr_u = nr as usize;
-    let num_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
+    let num_threads = crate::runtime::thread_count();
 
     let pref = 8.0 * sign;
     let w_addr = weight_ptr as usize;
@@ -175,7 +171,7 @@ pub unsafe extern "C" fn mandacaru_two_center_s_table(
             }
             let r_end = (r_start + chunk_size).min(nr_u);
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let weight = std::slice::from_raw_parts(w_addr as *const f64, nk_u);
                 let k_slice = std::slice::from_raw_parts(k_addr as *const f64, nk_u);
                 let r_slice = std::slice::from_raw_parts(r_addr as *const f64, nr_u);

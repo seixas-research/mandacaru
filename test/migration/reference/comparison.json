@@ -1,0 +1,12 @@
+{
+  "differences": [],
+  "passed": true,
+  "reports_sha256": {
+    "numpy.json": "6c5ac06c471b1d1c598b8e058fe087a3381c4e4efd63a74fa8cfffabdccf1db5",
+    "rust.json": "66cec8a64ce0b6acf3aabcca8012653591b81f669477982b42dda68e47e88397"
+  },
+  "samples_per_backend": 33,
+  "schema_version": 1,
+  "scope": "Scientific equality at declared workload tolerances; no performance acceptance threshold.",
+  "workloads": 11
+}

@@ -192,7 +192,7 @@ pub unsafe fn bader_ascent(
                 continue;
             }
 
-            s.spawn(move || {
+            crate::runtime::spawn(s, move || {
                 let owner_raw = owner_ptr as *mut i32;
                 let final_raw = final_ptr as *mut f64;
 

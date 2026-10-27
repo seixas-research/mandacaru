@@ -13,9 +13,9 @@ Design
 * **Zero-copy pointer passing.** NumPy ``complex128`` is bit-identical to C99
   ``double _Complex`` and ``float64`` to ``double``; ``numpy.ctypeslib.ndpointer``
   passes the array's data pointer straight to C with no marshalling or copy.
-* **ABI-independent build.** We load a plain OpenMP shared library
-  (``libmandacaru_integrals``), *not* a CPython extension, so a single compiled
-  artifact serves every Python version/ABI.
+* **Compatible C ABI.** Wheels expose the existing C symbols from the packaged
+  Rust/PyO3 extension. Source checkouts can also load a standalone Rust or C
+  library (``libmandacaru_integrals``), independent of CPython's ABI.
 * **Graceful fallback.** If the library is not built, ``HAS_C_BACKEND`` is
   ``False`` and vectorized NumPy reference implementations are used instead, so
   the package is always importable and testable.
@@ -36,6 +36,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sysconfig
 import tempfile
 import time
 import warnings
@@ -75,7 +76,7 @@ def _native_lib_name() -> str:
 def _find_library() -> str | None:
     """Locate ``libmandacaru_integrals`` across the usual build locations.
 
-    Only this platform's file name is considered: a source tree synced between
+    Only this platform's file names are considered: a source tree synced between
     machines (Dropbox, a shared home) holds the macOS ``.dylib`` next to the
     Linux ``.so``, and picking the foreign one fails to load.
     """
@@ -84,12 +85,18 @@ def _find_library() -> str | None:
     env = os.environ.get("MANDACARU_INTEGRALS_LIB")
     if env:
         candidates.append(Path(env))
+    extension = sysconfig.get_config_var("EXT_SUFFIX")
+    preference = backend_policy.backend_preference()
+    if extension and preference != "c":
+        candidates.append(_PKG_DIR.parent / ("_native" + extension))
     search_dirs = [
         _PKG_DIR / "rust" / "target" / "release",
         _PKG_DIR,
         _PKG_DIR / "csrc",
         _PKG_DIR / "csrc" / "build",
     ]
+    if preference == "c":
+        search_dirs = [_PKG_DIR / "csrc", _PKG_DIR / "csrc" / "build", _PKG_DIR]
     candidates += [d / name for d in search_dirs]
     for c in candidates:
         if c.is_file():
@@ -109,6 +116,7 @@ def _load(fresh: bool = False):
     path = _find_library()
     if path is None:
         return None
+    origin = path
     if fresh:
         try:
             handle, copy = tempfile.mkstemp(prefix="mandacaru_integrals_",
@@ -129,7 +137,11 @@ def _load(fresh: bool = False):
             except OSError:
                 pass
     try:
-        return _bind(lib)
+        bound = _bind(lib)
+        bound._mandacaru_origin = origin
+        if backend_policy.backend_preference() == "c" and hasattr(bound, "mandacaru_real_shell_f32"):
+            return None
+        return bound
     except AttributeError:
         # A stale library missing a newer symbol (e.g. mandacaru_one_body_general):
         # fall back to the NumPy kernels rather than crashing on import.
@@ -137,6 +149,13 @@ def _load(fresh: bool = False):
 
 
 def _bind(lib):
+    # Rust uses fixed-width i64; the historical C interface uses C long.
+    index_type = ctypes.c_int64 if hasattr(lib, "mandacaru_backend_abi_version") else ctypes.c_long
+    if hasattr(lib, "mandacaru_backend_abi_version"):
+        lib.mandacaru_backend_abi_version.restype = ctypes.c_int
+        lib.mandacaru_backend_abi_version.argtypes = []
+        if lib.mandacaru_backend_abi_version() != 1:
+            raise AttributeError("unsupported Mandacaru native ABI version")
     lib.mandacaru_one_body.restype = None
     lib.mandacaru_one_body.argtypes = [
         _C128,                       # psi   (M * ngrid)
@@ -179,7 +198,7 @@ def _bind(lib):
         _C128,                       # chi (P * ngrid)
         ctypes.c_int,                # M
         ctypes.c_int,                # P
-        ctypes.c_long,               # ngrid
+        index_type,               # ngrid
         ctypes.c_double,             # dV
         _C128_W,                     # out_P (M * P)
     ]
@@ -187,7 +206,7 @@ def _bind(lib):
     lib.mandacaru_bloch_shell.restype = None
     lib.mandacaru_bloch_shell.argtypes = [
         _F64, _F64, _F64,            # x, y, z (npts)
-        ctypes.c_long,               # npts
+        index_type,               # npts
         _F64,                        # center (3)
         _F64,                        # translations (n_images * 3)
         ctypes.c_int,                # n_images
@@ -203,7 +222,7 @@ def _bind(lib):
         ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),   # ms (nm)
         ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"),   # rows (nm)
         ctypes.c_int,                # nm
-        ctypes.c_long,               # M
+        index_type,               # M
         _C128_W,                     # out (nk * M * npts)
     ]
 
@@ -211,7 +230,7 @@ def _bind(lib):
         lib.mandacaru_real_shell.restype = None
         lib.mandacaru_real_shell.argtypes = [
             _F64, _F64, _F64,            # x, y, z (npts)
-            ctypes.c_long,               # npts
+            index_type,               # npts
             _F64,                        # center (3)
             ctypes.c_double,             # support
             _F64,                        # breaks (nb)
@@ -223,7 +242,7 @@ def _bind(lib):
             ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),   # ms (nm)
             ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"),   # rows (nm)
             ctypes.c_int,                # nm
-            ctypes.c_long,               # M
+            index_type,               # M
             _F64_W,                      # out (M * npts)
         ]
 
@@ -231,7 +250,7 @@ def _bind(lib):
         lib.mandacaru_real_shell_f32.restype = None
         lib.mandacaru_real_shell_f32.argtypes = [
             _F64, _F64, _F64,            # x, y, z (npts)
-            ctypes.c_long,               # npts
+            index_type,               # npts
             _F64,                        # center (3)
             ctypes.c_double,             # support
             _F64,                        # breaks (nb)
@@ -243,7 +262,7 @@ def _bind(lib):
             ndpointer(dtype=np.int32, flags="C_CONTIGUOUS"),   # ms (nm)
             ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"),   # rows (nm)
             ctypes.c_int,                # nm
-            ctypes.c_long,               # M
+            index_type,               # M
             _F32_W,                      # out (M * npts)
         ]
 
@@ -266,17 +285,17 @@ def _bind(lib):
             _C64,                        # chi (P * ngrid)
             ctypes.c_int,                # M
             ctypes.c_int,                # P
-            ctypes.c_long,               # ngrid
+            index_type,               # ngrid
             ctypes.c_double,             # dV
             _C128_W,                     # out_P (M * P)
         ]
 
-    lib.mandacaru_bloch_block.restype = ctypes.c_long
+    lib.mandacaru_bloch_block.restype = index_type
     lib.mandacaru_bloch_block.argtypes = []
     lib.mandacaru_bloch_project.restype = None
     lib.mandacaru_bloch_project.argtypes = [
         _F64, _F64, _F64,            # x, y, z (npts)
-        ctypes.c_long,               # npts
+        index_type,               # npts
         _F64,                        # center (3)
         _F64,                        # translations (n_images * 3)
         ctypes.c_int,                # n_images
@@ -298,7 +317,7 @@ def _bind(lib):
     _I64 = ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
     lib.mandacaru_bader_ascent.restype = None
     lib.mandacaru_bader_ascent.argtypes = [
-        _F64, ctypes.c_long,         # starts (n * 3), n
+        _F64, index_type,         # starts (n * 3), n
         _F64, _F64, _F64,            # node gradient, index components
         ctypes.c_int, ctypes.c_int, ctypes.c_int,   # grid shape
         ctypes.c_int,                # periodic
@@ -708,7 +727,8 @@ def check_backend() -> BackendStatus:
     if HAS_C_BACKEND:
         is_rust = hasattr(_LIB, "mandacaru_real_shell_f32")
         desc = "Rust backend loaded" if is_rust else "C backend loaded"
-        return BackendStatus(True, _find_library(), num_threads(), False, desc)
+        path = getattr(_LIB, "_mandacaru_origin", _LIB._name)
+        return BackendStatus(True, path, num_threads(), False, desc)
     return BackendStatus(False, None, None, False,
                          "C backend not built; NumPy reference kernels in use")
 
@@ -768,6 +788,8 @@ def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatu
         return BackendStatus(False, None, None, False,
                              "MANDACARU_BACKEND=numpy: reference kernels forced")
     if preference == "rust":
+        if not HAS_C_BACKEND or not check_backend().is_rust:
+            _reload()
         if HAS_C_BACKEND and getattr(check_backend(), "is_rust", False):
             return check_backend()
         if build and not _build_attempted:
@@ -777,13 +799,15 @@ def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatu
                 return BackendStatus(True, _find_library(), num_threads(), True,
                                      f"Rust backend compiled into {path.parent}")
         raise RuntimeError("MANDACARU_BACKEND=rust requires the Rust backend, but it could not be loaded or built")
+    if preference == "c" and HAS_C_BACKEND and check_backend().is_rust:
+        _unload()
     if HAS_C_BACKEND or _reload():
         return check_backend()
     compiled = False
     message = "C backend not built"
     if build and not _build_attempted:
         _build_attempted = True
-        path = build_rust_backend(verbose=verbose)
+        path = build_rust_backend(verbose=verbose) if preference != "c" else None
         if path is not None and (HAS_C_BACKEND or _reload(fresh=True)):
             compiled = True
             return BackendStatus(True, _find_library(), num_threads(), True,

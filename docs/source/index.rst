@@ -139,5 +139,9 @@ the `MIT license <https://github.com/seixas-research/mandacaru/blob/main/LICENSE
 
    api
    contributing_docs
+   development/rust_migration
+   development/rust_phase1
+   development/rust_phase2
+   development/rust_phase3
    GitHub <https://github.com/seixas-research/mandacaru>
    PyPI <https://pypi.org/project/mandacaru/>

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "test/migration",
+    "test/test_single_entry_point.py",
+    "test/test_docs_links.py"
+  ],
+  "exit_code": 0,
+  "results": {
+    "errors": [],
+    "executed": 117,
+    "failures": [],
+    "passed": 117,
+    "skips": []
+  },
+  "schema_version": 1,
+  "suite_wall_s": 1.711
+}
