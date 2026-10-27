@@ -589,7 +589,7 @@ class UHF:
         energy = np.inf
         converged = False
         it = 0
-        mixer_a, mixer_b = DIIS(), DIIS()
+        mixer = DIIS()
         shift = 0.0
         history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
@@ -597,7 +597,11 @@ class UHF:
             new_energy = self._energy(Da, Db, Fa, Fb)
             if new_energy > energy + 1e-10 and shift == 0.0:
                 shift = LEVEL_SHIFT
-            Fa_it, Fb_it = mixer_a.extrapolate(Fa, Da), mixer_b.extrapolate(Fb, Db)
+            # One set of coefficients for both spins (the stacked matrices go
+            # through the batched commutator): the spins share the soft
+            # modes of a radical, and separate extrapolations fight over them.
+            Fa_it, Fb_it = mixer.extrapolate(np.stack([Fa, Fb]),
+                                             np.stack([Da, Db]))
             if shift:
                 Fa_it = _level_shifted(Fa_it, Da, shift)
                 Fb_it = _level_shifted(Fb_it, Db, shift)

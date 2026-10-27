@@ -123,6 +123,9 @@ from .hartree_fock import (DIIS, LEVEL_SHIFT, GHFResult, RHFResult,
 from ..utils.logging import scf_record
 from .pseudo_forces import AlgebraicEnergy
 from .mean_field import MeanFieldResult, _MeanFieldDriver
+from .hubbard import build_onsite, resolve_hubbard_u
+from .onsite import (CombinedOnsite, build_nonlinear_xc, build_quadratic,
+                     resolve_one_center_hartree, resolve_one_center_xc)
 from .scf_stability import (SECOND_ORDER_AFTER, SCFState, StabilityReport,
                             second_order, stabilize)
 
@@ -395,6 +398,15 @@ class KohnShamResult(_DeferredTensor, RHFResult):
     xc_energy: float = 0.0
     #: A hybrid's exact-exchange part of ``xc_energy`` (zero otherwise).
     exact_exchange_energy: float = 0.0
+    #: The on-site Hubbard correction (``hubbard_u=``), a term of the
+    #: electronic energy of its own and not of ``xc_energy`` (zero otherwise).
+    hubbard_energy: float = 0.0
+    #: The quadratic one-center Hartree term (``one_center_hartree=``), of the
+    #: electronic energy as well and not of ``xc_energy`` (zero otherwise).
+    one_center_hartree_energy: float = 0.0
+    #: The nonlinear one-center exchange-correlation (``one_center_xc=``), of
+    #: the electronic energy as well and not of ``xc_energy`` (zero otherwise).
+    one_center_xc_energy: float = 0.0
     core_correction_energy: float = 0.0
     dispersion_energy: float = 0.0
     #: One record per iteration (:func:`~mandacaru.utils.logging.scf_record`), for the
@@ -543,7 +555,7 @@ class KohnSham:
                  functional: str = DEFAULT_XC, core_density=None,
                  relativistic: bool = False, core_tau=None,
                  short_range_eri=None, screening=None, one_center=None,
-                 localized=None, X=None):
+                 localized=None, X=None, integrals=None, onsite=None):
         # Real matrices (a molecule's real harmonics) keep a real SCF and
         # real Kohn-Sham orbitals.
         self.h = np.asarray(h, dtype=np.result_type(np.asarray(h), float))
@@ -552,7 +564,8 @@ class KohnSham:
         self.eri = (None if self.poisson is not None
                     else np.asarray(eri, dtype=np.result_type(
                         np.asarray(eri), float)))
-        self.orbitals = np.asarray(orbitals)
+        self._orbitals = None if orbitals is None else np.asarray(orbitals)
+        self._integrals = integrals
         self.grid = grid
         self.localized = localized
         self.X = None if X is None else np.asarray(X)
@@ -577,6 +590,20 @@ class KohnSham:
             projections, terms = one_center
             self.one_center = (np.asarray(projections, dtype=np.result_type(
                 np.asarray(projections), float)), terms)
+        #: ``(C, correction)``: the Loewdin-basis projections and the on-site
+        #: correction (:mod:`~mandacaru.algorithms.onsite`: the Hubbard shells
+        #: ``hubbard_u=`` names and/or the quadratic one-center Hartree term),
+        #: or ``None``.
+        self.onsite = None
+        if onsite is not None:
+            projections, correction = onsite
+            self.onsite = (np.asarray(projections, dtype=np.result_type(
+                np.asarray(projections), float)), correction)
+        #: Each on-site correction's part of the last energy.
+        self.hubbard_energy = 0.0
+        self.one_center_hartree_energy = 0.0
+        self.one_center_xc_energy = 0.0
+        self.onsite_operators = None
         #: The exact-exchange part of the last exchange-correlation energy.
         self.exact_exchange_energy = 0.0
         self.core_density = (None if core_density is None
@@ -589,6 +616,19 @@ class KohnSham:
             self._orbital_gradients = xc_grid.gradient(grid, self.orbitals)
             if core_tau is not None:
                 self._core_tau = np.asarray(core_tau, dtype=float)
+
+    @property
+    def orbitals(self) -> np.ndarray:
+        if self._orbitals is None:
+            if self._integrals is not None and self.X is not None:
+                self._orbitals = self.X.T @ self._integrals._engine._psi
+            else:
+                raise ValueError("orbitals not provided and cannot be evaluated lazily")
+        return self._orbitals
+
+    @orbitals.setter
+    def orbitals(self, value):
+        self._orbitals = value
 
     def _set_electrons(self, n_electrons) -> None:
         if n_electrons % 2 != 0:
@@ -613,7 +653,7 @@ class KohnSham:
     @profile_stage('SCF: XC density')
     def density(self, D) -> np.ndarray:
         r"""Valence density :math:`\sum_{pq} D_{pq}\phi_p\phi_q^*` on the grid."""
-        if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not np.iscomplexobj(self.orbitals):
+        if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None:
             P = self.X @ D @ self.X.conj().T
             return self.localized.density(P)
         phi = self.orbitals
@@ -692,6 +732,27 @@ class KohnSham:
         return np.einsum("sr,prsq->pq", R, self.short_range_eri,
                          optimize=True)
 
+    def _onsite_terms(self, *densities):
+        """``(E, [C O C^dagger per spin channel])`` of the on-site
+        corrections at the density matrices (one with both spins summed, or
+        alpha and beta), or ``(0, None)`` without one."""
+        if self.onsite is None:
+            self.hubbard_energy = self.one_center_hartree_energy = 0.0
+            self.one_center_xc_energy = 0.0
+            return 0.0, None
+        C, onsite = self.onsite
+        energy, operators = onsite.evaluate(
+            tuple(C.conj().T @ D @ C for D in densities),
+            restricted=len(densities) == 1)
+        self.hubbard_energy = onsite.energies.get("hubbard", 0.0)
+        self.one_center_hartree_energy = onsite.energies.get(
+            "one_center_hartree", 0.0)
+        self.one_center_xc_energy = onsite.energies.get("one_center_xc", 0.0)
+        #: The projector-space operators of the last evaluation: what the
+        #: nuclear gradient differentiates through the projections.
+        self.onsite_operators = operators
+        return energy, [C @ O @ C.conj().T for O in operators]
+
     @profile_stage('SCF: XC matrix projection')
     def _xc(self, D):
         """``(E_xc, V_xc)``: the functional's energy and its matrix.
@@ -715,17 +776,21 @@ class KohnSham:
                                  screening=self.screening,
                                  exchange_density=valence,
                                  gradient_field=gradient_field)
-        phi = self.orbitals
         dV = self.grid.dV
-        V = (phi.conj() * terms.potential) @ phi.T * dV
-        if terms.gradient_potential is not None:
-            V = V + xc_grid.gradient_term_matrix(
-                phi, self._orbital_gradients, terms.gradient_potential, dV)
-        if terms.tau_potential is not None:
-            # dE/dD_qp through tau: (1/2) int df/dtau grad phi_p* . grad phi_q.
-            weight = 0.5 * terms.tau_potential
-            for dphi in self._orbital_gradients:
-                V = V + (dphi.conj() * weight) @ dphi.T * dV
+        if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta:
+            V_ao = self.localized.potential_matrix(terms.potential, dV)
+            V = self.X.conj().T @ V_ao @ self.X
+        else:
+            phi = self.orbitals
+            V = (phi.conj() * terms.potential) @ phi.T * dV
+            if terms.gradient_potential is not None:
+                V = V + xc_grid.gradient_term_matrix(
+                    phi, self._orbital_gradients, terms.gradient_potential, dV)
+            if terms.tau_potential is not None:
+                # dE/dD_qp through tau: (1/2) int df/dtau grad phi_p* . grad phi_q.
+                weight = 0.5 * terms.tau_potential
+                for dphi in self._orbital_gradients:
+                    V = V + (dphi.conj() * weight) @ dphi.T * dV
         energy = terms.energy
         if self.screening is not None:
             fraction = self.screening[1]
@@ -740,6 +805,10 @@ class KohnSham:
                 self.exact_exchange_energy += spheres.exact_exchange
                 energy = energy + spheres.energy
                 V = V + C @ spheres.operators[0] @ C.conj().T
+        e_onsite, V_onsite = self._onsite_terms(D)
+        if V_onsite is not None:
+            energy = energy + e_onsite
+            V = V + V_onsite[0]
         return energy, 0.5 * (V + V.conj().T)
 
     def _fock(self, D):
@@ -765,22 +834,22 @@ class KohnSham:
                                  screening=self.screening,
                                  exchange_density=valence,
                                  gradient_field=gradient_field)
-        phi = self.orbitals
         dV = self.grid.dV
         V_eff_grid = V_H + terms.potential
-        if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta and not np.iscomplexobj(self.orbitals):
+        if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta:
             V_ao = self.localized.potential_matrix(V_eff_grid, dV)
             V = self.X.conj().T @ V_ao @ self.X
         else:
+            phi = self.orbitals
             phi_weighted = phi.conj() * (V_eff_grid * dV)
             V = phi_weighted @ phi.T
-        if terms.gradient_potential is not None:
-            V = V + xc_grid.gradient_term_matrix(
-                phi, self._orbital_gradients, terms.gradient_potential, dV)
-        if terms.tau_potential is not None:
-            weight = 0.5 * terms.tau_potential
-            for dphi in self._orbital_gradients:
-                V = V + (dphi.conj() * weight) @ dphi.T * dV
+            if terms.gradient_potential is not None:
+                V = V + xc_grid.gradient_term_matrix(
+                    phi, self._orbital_gradients, terms.gradient_potential, dV)
+            if terms.tau_potential is not None:
+                weight = 0.5 * terms.tau_potential
+                for dphi in self._orbital_gradients:
+                    V = V + (dphi.conj() * weight) @ dphi.T * dV
         energy = terms.energy
         if self.screening is not None:
             fraction = self.screening[1]
@@ -795,6 +864,10 @@ class KohnSham:
                 self.exact_exchange_energy += spheres.exact_exchange
                 energy = energy + spheres.energy
                 V = V + C @ spheres.operators[0] @ C.conj().T
+        e_onsite, V_onsite = self._onsite_terms(D)
+        if V_onsite is not None:
+            energy = energy + e_onsite
+            V = V + V_onsite[0]
 
         aug = self.poisson.direct.augmentation()
         if aug is not None:
@@ -877,7 +950,13 @@ class KohnSham:
             reference_energy=determinant_energy(h_mo, g_occ, self.n_occ,
                                                 self.n_occ),
             n_iterations=it, functional=self.functional,
-            hartree_energy=e_hartree, xc_energy=e_xc, history=history,
+            hartree_energy=e_hartree, history=history,
+            xc_energy=(e_xc - self.hubbard_energy
+                       - self.one_center_hartree_energy
+                       - self.one_center_xc_energy),
+            hubbard_energy=self.hubbard_energy,
+            one_center_hartree_energy=self.one_center_hartree_energy,
+            one_center_xc_energy=self.one_center_xc_energy,
             exact_exchange_energy=self.exact_exchange_energy,
             occupations=(None if occupations is None
                          else 2.0 * occupations))
@@ -905,6 +984,15 @@ class KohnShamUResult(_DeferredTensor, UHFResult):
     xc_energy: float = 0.0
     #: A hybrid's exact-exchange part of ``xc_energy`` (zero otherwise).
     exact_exchange_energy: float = 0.0
+    #: The on-site Hubbard correction (``hubbard_u=``), a term of the
+    #: electronic energy of its own and not of ``xc_energy`` (zero otherwise).
+    hubbard_energy: float = 0.0
+    #: The quadratic one-center Hartree term (``one_center_hartree=``), of the
+    #: electronic energy as well and not of ``xc_energy`` (zero otherwise).
+    one_center_hartree_energy: float = 0.0
+    #: The nonlinear one-center exchange-correlation (``one_center_xc=``), of
+    #: the electronic energy as well and not of ``xc_energy`` (zero otherwise).
+    one_center_xc_energy: float = 0.0
     core_correction_energy: float = 0.0
     dispersion_energy: float = 0.0
     #: One record per iteration (:func:`~mandacaru.utils.logging.scf_record`).
@@ -931,7 +1019,7 @@ class UnrestrictedKohnSham(KohnSham):
     exchange-correlation potentials from the spin-polarized functional
     (:func:`~mandacaru.integrals.exchange_correlation.evaluate_spin`); the
     spin-unpolarized partial core is split evenly between the channels.  The
-    loop is :class:`KohnSham`'s -- DIIS per spin, restarted every
+    loop is :class:`KohnSham`'s -- one DIIS over both spins, restarted every
     :data:`DIIS_RESTART` iterations, and the level shift.
     """
 
@@ -981,7 +1069,8 @@ class UnrestrictedKohnSham(KohnSham):
             tau_dn=tau[1] if self.meta else None, screening=self.screening,
             exchange_densities=valence,
             gradient_fields=tuple(grad_fields) if self.meta else None)
-        phi, dV = self.orbitals, self.grid.dV
+        dV = self.grid.dV
+        phi = None
         energy = terms.energy
         exact = 0.0
         matrices = []
@@ -994,22 +1083,27 @@ class UnrestrictedKohnSham(KohnSham):
                                       C.conj().T @ Db @ C)
             exact += spheres.exact_exchange
             energy += spheres.semilocal
+        e_onsite, V_onsite = self._onsite_terms(Da, Db)
+        if V_onsite is not None:
+            energy += e_onsite
         for s, (D, v, v_tau, w) in enumerate((
                 (Da, terms.potential_up, terms.tau_potential_up,
                  terms.gradient_potential_up),
                 (Db, terms.potential_dn, terms.tau_potential_dn,
                  terms.gradient_potential_dn))):
-            if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta and not np.iscomplexobj(self.orbitals):
+            if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta:
                 V_ao = self.localized.potential_matrix(v, dV)
                 V = self.X.conj().T @ V_ao @ self.X
             else:
+                if phi is None:
+                    phi = self.orbitals
                 V = (phi.conj() * v) @ phi.T * dV
-            if w is not None:
-                V = V + xc_grid.gradient_term_matrix(
-                    phi, self._orbital_gradients, w, dV)
-            if v_tau is not None:
-                for dphi in self._orbital_gradients:
-                    V = V + (dphi.conj() * (0.5 * v_tau)) @ dphi.T * dV
+                if w is not None:
+                    V = V + xc_grid.gradient_term_matrix(
+                        phi, self._orbital_gradients, w, dV)
+                if v_tau is not None:
+                    for dphi in self._orbital_gradients:
+                        V = V + (dphi.conj() * (0.5 * v_tau)) @ dphi.T * dV
             if self.screening is not None:
                 # -(a/2) tr(D_s K[D_s]) per spin, and its derivative -a K.
                 fraction = self.screening[1]
@@ -1018,6 +1112,8 @@ class UnrestrictedKohnSham(KohnSham):
                 V = V - fraction * K
             if spheres is not None:
                 V = V + C @ spheres.operators[s] @ C.conj().T
+            if V_onsite is not None:
+                V = V + V_onsite[s]
             matrices.append(0.5 * (V + V.conj().T))
         self.exact_exchange_energy = exact
         return energy + exact, matrices[0], matrices[1]
@@ -1058,7 +1154,8 @@ class UnrestrictedKohnSham(KohnSham):
             exchange_densities=[val_a, val_b],
             gradient_fields=tuple(grad_fields) if self.meta else None)
 
-        phi, dV = self.orbitals, self.grid.dV
+        dV = self.grid.dV
+        phi = None
         energy = terms.energy
         exact = 0.0
         matrices = []
@@ -1069,6 +1166,9 @@ class UnrestrictedKohnSham(KohnSham):
                                       C.conj().T @ Db @ C)
             exact += spheres.exact_exchange
             energy += spheres.semilocal
+        e_onsite, V_onsite = self._onsite_terms(Da, Db)
+        if V_onsite is not None:
+            energy += e_onsite
 
         aug = self.poisson.direct.augmentation()
         if aug is not None:
@@ -1087,10 +1187,12 @@ class UnrestrictedKohnSham(KohnSham):
                 (Db, terms.potential_dn, terms.tau_potential_dn,
                  terms.gradient_potential_dn))):
             V_eff_s = V_H + v
-            if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta and not np.iscomplexobj(self.orbitals):
+            if getattr(self, "localized", None) is not None and getattr(self, "X", None) is not None and not self.meta:
                 V_ao = self.localized.potential_matrix(V_eff_s, dV)
                 V = self.X.conj().T @ V_ao @ self.X
             else:
+                if phi is None:
+                    phi = self.orbitals
                 V = (phi.conj() * (V_eff_s * dV)) @ phi.T
             if w is not None:
                 V = V + xc_grid.gradient_term_matrix(
@@ -1105,6 +1207,8 @@ class UnrestrictedKohnSham(KohnSham):
                 V = V - fraction * K
             if spheres is not None:
                 V = V + C @ spheres.operators[s] @ C.conj().T
+            if V_onsite is not None:
+                V = V + V_onsite[s]
             V = V + J_aug_lowdin
             matrices.append(0.5 * (V + V.conj().T))
 
@@ -1129,20 +1233,22 @@ class UnrestrictedKohnSham(KohnSham):
         na, nb = self.n_alpha, self.n_beta
         energy = np.inf
         converged = False
-        mixers = (_IndependentDIIS(), _IndependentDIIS()) if diis else None
+        mixer = _IndependentDIIS() if diis else None
         shifts = _LevelShiftControl()
         it = 0
 
         history, start = [], time.perf_counter()
         for it in range(1, max_iter + 1):
             Fa, Fb, current, _e_h, _e_xc = self._fock_pair(Da, Db)
-            if mixers is not None and it % DIIS_RESTART == 0 \
+            if mixer is not None and it % DIIS_RESTART == 0 \
                     and _stalled(history):
-                mixers = (_IndependentDIIS(), _IndependentDIIS())
+                mixer = _IndependentDIIS()
             shift = shifts.update(current, energy)
-            if mixers is not None:
-                Fa, Fb = (mixers[0].extrapolate(Fa, Da),
-                          mixers[1].extrapolate(Fb, Db))
+            if mixer is not None:
+                # One set of coefficients for both spins (the stacked matrices
+                # go through the batched commutator), as in the UHF.
+                Fa, Fb = mixer.extrapolate(np.stack([Fa, Fb]),
+                                           np.stack([Da, Db]))
             if shift:
                 Fa, Fb = (_level_shifted(Fa, Da, shift),
                           _level_shifted(Fb, Db, shift))
@@ -1230,7 +1336,12 @@ class UnrestrictedKohnSham(KohnSham):
                     else np.real_if_close(eri_mo)),
             converged=converged, n_iterations=it, reference_energy=reference,
             functional=self.functional, hartree_energy=e_hartree,
-            xc_energy=e_xc, history=history,
+            xc_energy=(e_xc - self.hubbard_energy
+                       - self.one_center_hartree_energy
+                       - self.one_center_xc_energy), history=history,
+            hubbard_energy=self.hubbard_energy,
+            one_center_hartree_energy=self.one_center_hartree_energy,
+            one_center_xc_energy=self.one_center_xc_energy,
             exact_exchange_energy=self.exact_exchange_energy,
             occupations_alpha=fa, occupations_beta=fb, stability=report)
 
@@ -1366,7 +1477,10 @@ def kohn_sham_solver(integrals, n_electrons: int,
     datasets = integrals.pseudopotentials or []
     _warn_functional_mismatch(datasets, functional)
     X = integrals._lowdin_x()
-    orbitals = X.T @ integrals._engine._psi
+    localized = getattr(integrals, "localized_basis", lambda: None)()
+    orbitals = None
+    if localized is None or xc_grid.is_meta_gga(functional):
+        orbitals = X.T @ integrals._engine._psi
     core = core_tau = None
     if datasets:
         core = xc_grid.core_density_on_grid(integrals.grid, datasets,
@@ -1390,15 +1504,71 @@ def kohn_sham_solver(integrals, n_electrons: int,
             X = integrals._lowdin_x()
             options.update(one_center=(X.conj().T @ integrals.projections(),
                                        spheres))
+    onsite = _onsite_corrections(integrals, functional)
+    if onsite is not None:
+        options.update(onsite=(X.conj().T @ integrals.projections(), onsite))
     coulomb = (PoissonHartree(integrals) if hartree == "poisson"
                else integrals.two_body())
-    localized = getattr(integrals, "localized_basis", lambda: None)()
     if spins is not None and int(spins[0]) != int(spins[1]):
         return UnrestrictedKohnSham(integrals.one_body(), coulomb, orbitals,
                                     integrals.grid, int(spins[0]),
-                                    int(spins[1]), localized=localized, X=X, **options)
+                                    int(spins[1]), localized=localized, X=X,
+                                    integrals=integrals, **options)
     return KohnSham(integrals.one_body(), coulomb, orbitals,
-                    integrals.grid, n_electrons, localized=localized, X=X, **options)
+                    integrals.grid, n_electrons, localized=localized, X=X,
+                    integrals=integrals, **options)
+
+
+def _onsite_corrections(integrals, functional):
+    """The :class:`~mandacaru.algorithms.onsite.CombinedOnsite` of the
+    corrections the driver asked for -- the Hubbard shells of
+    ``integrals.hubbard_u``, the quadratic one-center Hartree term and the
+    nonlinear one-center exchange-correlation -- or ``None``."""
+    resolved = getattr(integrals, "hubbard_u", None)
+    quadratic = getattr(integrals, "one_center_hartree",
+                        "linearized") == "quadratic"
+    nonlinear = getattr(integrals, "one_center_xc", "linearized") == "nonlinear"
+    if not resolved and not quadratic and not nonlinear:
+        return None
+    if xc_grid.is_hybrid(functional):
+        raise NotImplementedError(
+            "hubbard_u, one_center_hartree='quadratic' and "
+            "one_center_xc='nonlinear' with a hybrid functional are not "
+            "implemented: the hybrid's one-center terms and the on-site "
+            "corrections are not combined")
+    projectors = getattr(integrals, "kb_projectors", None)
+    datasets = integrals.pseudopotentials or []
+    if not projectors or not datasets:
+        raise ValueError("hubbard_u, one_center_hartree='quadratic' and "
+                         "one_center_xc='nonlinear' need a PAW-LCAO or "
+                         "UPAW-LCAO basis")
+    by_symbol = {d.symbol: d for d in datasets}
+    return combined_onsite(projectors, by_symbol, resolved, quadratic,
+                           nonlinear, functional)
+
+
+def combined_onsite(projectors, by_symbol, hubbard, quadratic,
+                    nonlinear=False, functional="lda"):
+    """The :class:`~mandacaru.algorithms.onsite.CombinedOnsite` of a
+    molecule's or a crystal's ``projectors``: the ``hubbard`` shells
+    (:func:`~mandacaru.algorithms.hubbard.resolve_hubbard_u`), the quadratic
+    one-center Hartree term when ``quadratic`` and the nonlinear one-center
+    exchange-correlation when ``nonlinear`` (local density approximation
+    only)."""
+    parts = {}
+    if hubbard:
+        parts["hubbard"] = build_onsite(projectors, by_symbol, hubbard)
+    if quadratic:
+        parts["one_center_hartree"] = build_quadratic(projectors, by_symbol)
+    if nonlinear:
+        if xc_grid.semilocal_part(xc_grid.resolve_functional(functional)) \
+                != "lda":
+            raise NotImplementedError(
+                "one_center_xc='nonlinear' is for the local density "
+                f"approximation, not {functional!r}")
+        parts["one_center_xc"] = build_nonlinear_xc(projectors, by_symbol)
+    parts = {name: part for name, part in parts.items() if part is not None}
+    return CombinedOnsite(**parts) if parts else None
 
 
 def _centers(integrals):
@@ -1580,7 +1750,7 @@ class KohnShamField:
         return self._pulay_with(self.v, self.v_tau, dpsi, self.w)
 
     def _matrix_of(self, v, v_tau, w=None) -> np.ndarray:
-        if getattr(self, "localized", None) is not None and v_tau is None and w is None and not np.iscomplexobj(self.psi):
+        if getattr(self, "localized", None) is not None and v_tau is None and w is None:
             return self.localized.potential_matrix(v, self.grid.dV)
         psi, dV = self.psi, self.grid.dV
         V = ((psi.conj() * v) @ psi.T) * dV
@@ -1788,7 +1958,7 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     X = integrals._lowdin_x()
     P0 = X @ D @ X.conj().T
     E_occ = X @ DE @ X.conj().T
-    if not np.iscomplexobj(integrals._engine._psi):
+    if getattr(integrals._engine, "real", True):
         P0 = np.real(P0)
         E_occ = np.real(E_occ)
     valence = rho = solver.density(D)
@@ -1833,14 +2003,19 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
     if solver.meta and solver._orbital_gradients is not None:
         inv_xt = np.linalg.inv(X.T)
         grad_psi = np.stack([inv_xt @ g for g in solver._orbital_gradients])
+    localized = getattr(integrals, "localized_basis", lambda: None)()
+    can_stream = (localized is not None and not solver.meta
+                  and solver.screening is None
+                  and integrals.kinetic == "analytic")
+    field_psi = None if can_stream else np.ascontiguousarray(integrals._engine._psi)
     field = KohnShamField(
-        integrals.grid, np.ascontiguousarray(integrals._engine._psi),
+        integrals.grid, field_psi,
         potential, terms.tau_potential,
         _core_functions(datasets) if datasets else nothing,
         _core_tau_functions(datasets) if datasets else nothing,
         _centers(integrals), delta, core_potential=core_potential,
         gradient_potential=terms.gradient_potential, grad_psi=grad_psi,
-        localized=getattr(integrals, "localized_basis", lambda: None)())
+        localized=localized)
     V_xc = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:
@@ -1849,13 +2024,23 @@ def kohn_sham_gradient(integrals, scf: KohnShamResult, *, atom_of_orbital,
         root = np.linalg.inv(X)                       # S^(1/2)
         V_xc = V_xc + root @ V_exact[0] @ root
         exchange = _screened_exchange(solver, [(-0.25, P0)], operators)
+    onsite = None
+    if solver.onsite is not None:
+        # The on-site correction: its energy and Fock operator join the
+        # fixed one-body matrix, its dependence on the projections is
+        # differentiated by `onsite`.
+        e_onsite, [V_onsite] = solver._onsite_terms(D)
+        e_xc += e_onsite
+        root = np.linalg.inv(X)                       # S^(1/2)
+        V_xc = V_xc + root @ V_onsite @ root
+        onsite = [(solver.onsite_operators[0], P0)]
     constant = e_xc - float(np.real(np.sum(P0 * V_xc.T)))
     energy = KohnShamEnergy(D, V_xc, constant, two_body=use_rdm, E_occ=E_occ)
     return pseudo_nuclear_gradient(
         integrals, None, None, atom_of_orbital=atom_of_orbital,
         orbital_delta=delta, include_pulay=include_pulay,
         orbital_gradient=False, energy=energy, field=field,
-        exchange=exchange)
+        exchange=exchange, onsite=onsite)
 
 
 def _hartree_linearization(integrals, density, P0):
@@ -1962,7 +2147,7 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
     D = Da + Db
     P0 = X @ D @ X.conj().T
     E_occ = X @ DE @ X.conj().T
-    if not np.iscomplexobj(integrals._engine._psi):
+    if getattr(integrals._engine, "real", True):
         P0 = np.real(P0)
         E_occ = np.real(E_occ)
     core_potential = None
@@ -2004,8 +2189,10 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
     if solver.meta and solver._orbital_gradients is not None:
         inv_xt = np.linalg.inv(X.T)
         grad_psi = np.stack([inv_xt @ g for g in solver._orbital_gradients])
+    localized = getattr(integrals, "localized_basis", lambda: None)()
+    field_psi = np.ascontiguousarray(integrals._engine._psi)
     field = UnrestrictedKohnShamField(
-        integrals.grid, np.ascontiguousarray(integrals._engine._psi),
+        integrals.grid, field_psi,
         v_mean,
         mean(terms.tau_potential_up, terms.tau_potential_dn) if meta else None,
         half(terms.potential_up, terms.potential_dn),
@@ -2017,7 +2204,7 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         w_mean=mean(terms.gradient_potential_up, terms.gradient_potential_dn),
         w_half=half(terms.gradient_potential_up, terms.gradient_potential_dn),
         grad_psi=grad_psi,
-        localized=getattr(integrals, "localized_basis", lambda: None)())
+        localized=localized)
     V_mean = field.matrix() + J_aug
     exchange = None
     if solver.screening is not None:
@@ -2031,6 +2218,16 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         exchange = _screened_exchange(
             solver, [(-0.5, X @ Da @ X.conj().T), (-0.5, X @ Db @ X.conj().T)],
             operators)
+    onsite = None
+    if solver.onsite is not None:
+        e_onsite, (Va_u, Vb_u) = solver._onsite_terms(Da, Db)
+        e_xc += e_onsite
+        root = np.linalg.inv(X)                       # S^(1/2)
+        V_mean = V_mean + root @ (0.5 * (Va_u + Vb_u)) @ root
+        field.delta_matrix = (field.delta_matrix
+                              + root @ (0.5 * (Va_u - Vb_u)) @ root)
+        onsite = [(O, X @ Dsigma @ X.conj().T) for O, Dsigma
+                  in zip(solver.onsite_operators, (Da, Db))]
     # The constant keeps the energy's value exact at the reference: the
     # magnetization part's value stays in it, its derivative comes from
     # `field.spin_term`.
@@ -2040,7 +2237,7 @@ def _unrestricted_gradient(integrals, scf, atom_of_orbital, delta,
         integrals, None, None, atom_of_orbital=atom_of_orbital,
         orbital_delta=delta, include_pulay=include_pulay,
         orbital_gradient=False, energy=energy, field=field,
-        exchange=exchange)
+        exchange=exchange, onsite=onsite)
 
 
 def d4_dispersion(atoms, functional: str, grad: bool = False) -> dict:
@@ -2177,6 +2374,9 @@ class DFTDriver(_MeanFieldDriver):
     def __init__(self, xc: str = DEFAULT_XC, vdw: str | None = None,
                  smearing=None, hartree: str = DEFAULT_HARTREE,
                  max_iter: int | None = None, stability: bool = True,
+                 hubbard_u: dict | None = None,
+                 one_center_hartree: str = "linearized",
+                 one_center_xc: str = "linearized",
                  **driver_kwargs: object) -> None:
         from .periodic_dft import resolve_smearing
         self.xc, self.vdw = self._resolve_vdw(vdw, xc_grid.resolve_functional(xc))
@@ -2191,10 +2391,27 @@ class DFTDriver(_MeanFieldDriver):
         #: Whether a converged unrestricted molecule is checked for a saddle
         #: point (:mod:`~mandacaru.algorithms.scf_stability`).
         self.stability = resolve_stability(stability)
+        #: ``{symbol: {l: U_eff in Hartree}}`` of the on-site Hubbard
+        #: correction (:mod:`~mandacaru.algorithms.hubbard`); the option as
+        #: given is kept for the run log.
+        self.hubbard_spec = hubbard_u
+        self.hubbard_u = resolve_hubbard_u(hubbard_u)
+        #: ``"linearized"`` (the datasets' own one-center Hartree term) or
+        #: ``"quadratic"`` (the exact one, :mod:`~mandacaru.algorithms.onsite`).
+        self.one_center_hartree = resolve_one_center_hartree(one_center_hartree)
+        #: ``"linearized"`` (the datasets' own one-center exchange-correlation)
+        #: or ``"nonlinear"`` (spin-polarized, local density only).
+        self.one_center_xc = resolve_one_center_xc(one_center_xc)
         self._periodic = False
         self._automatic_two_center = driver_kwargs.get("two_center") is None
         driver_kwargs.pop("device", None)
         super().__init__(**driver_kwargs)
+
+    def _onsite_requested(self) -> bool:
+        """Whether an on-site correction (the Hubbard shells or the quadratic
+        one-center Hartree term) is on."""
+        return (bool(self.hubbard_u) or self.one_center_hartree == "quadratic"
+                or self.one_center_xc == "nonlinear")
 
     # -- the periodic path -------------------------------------------------- #
 
@@ -2262,7 +2479,8 @@ class DFTDriver(_MeanFieldDriver):
             atoms, self.grid_spacing, options,
             kpts={"size": tuple(self.kpts), "gamma": self.kpts_gamma},
             family=family.name, grid=self.grid, ghosts=self.ghosts,
-            full_mesh=self.electric_field is not None or whole,
+            full_mesh=(self.electric_field is not None or whole
+                       or self._onsite_requested()),
             spin_orbit=spinor, filter_pin=self.filter_pin)
         context["integrals"] = crystal
         context["n_electrons"] = float(context["n_electrons"]) - float(
@@ -2417,8 +2635,13 @@ class DFTDriver(_MeanFieldDriver):
                                            or self._spinor_crystal()):
             # The exact exchange of every spin block of the spinors.
             spin += ("JimenezHoyos2011",)
+        hubbard = ("Dudarev1998",) if self.hubbard_u else ()
+        if (self.one_center_hartree == "quadratic"
+                or self.one_center_xc == "nonlinear"):
+            hubbard += ("Bloechl1994",)
         config["extras"] = (tuple(config.get("extras", ())) + functional
-                            + paw_exchange + dispersion + crystal + spin)
+                            + paw_exchange + dispersion + crystal + spin
+                            + hubbard)
         return config
 
     def _configure(self, hamiltonian: Fermion, num_particles: tuple[int, int],
@@ -2478,6 +2701,16 @@ class DFTDriver(_MeanFieldDriver):
         directions = self._spin_directions(context)
         spinor = (bool(getattr(integrals, "spin_orbit_coupling", None))
                   or directions is not None)
+        if self._onsite_requested():
+            if spinor:
+                raise NotImplementedError(
+                    "hubbard_u and one_center_hartree='quadratic' are for "
+                    "the collinear Kohn-Sham problem: the two-component "
+                    "(spin-orbit or noncollinear) run has no on-site "
+                    "corrections")
+            integrals.hubbard_u = self.hubbard_u
+            integrals.one_center_hartree = self.one_center_hartree
+            integrals.one_center_xc = self.one_center_xc
         if spinor and self.mapping == "parity_reduced":
             raise ValueError(
                 "the two-component Kohn-Sham Hamiltonian is written in "
@@ -2559,6 +2792,7 @@ class DFTDriver(_MeanFieldDriver):
         """Solve the crystal's Kohn-Sham problem."""
         from .periodic_dft import PeriodicKohnSham
 
+
         crystal = context["integrals"]
         datasets = crystal.datasets
         _warn_functional_mismatch(datasets, self.xc)
@@ -2570,6 +2804,22 @@ class DFTDriver(_MeanFieldDriver):
         moments = np.delete(
             np.asarray(self.atoms.get_initial_magnetic_moments(), float),
             list(self.ghosts), axis=0)
+        onsite = None
+        if self._onsite_requested():
+            if crystal.has_spin_orbit or moments.ndim == 2:
+                raise NotImplementedError(
+                    "hubbard_u and one_center_hartree='quadratic' are for "
+                    "the collinear Kohn-Sham problem: the two-component "
+                    "(spin-orbit or noncollinear) crystal has no on-site "
+                    "corrections")
+            if xc_grid.is_hybrid(self.xc):
+                raise NotImplementedError(
+                    "hubbard_u and one_center_hartree='quadratic' with a "
+                    "hybrid functional are not implemented")
+            onsite = combined_onsite(
+                crystal.projectors, {d.symbol: d for d in datasets},
+                self.hubbard_u, self.one_center_hartree == "quadratic",
+                self.one_center_xc == "nonlinear", self.xc)
         if crystal.has_spin_orbit or moments.ndim == 2:
             from .spinor_dft import SpinorPeriodicKohnSham
             directions = None
@@ -2592,7 +2842,8 @@ class DFTDriver(_MeanFieldDriver):
                 constant=constant, magnetic_moments=moments,
                 field=self.electric_field,
                 field_size=(tuple(self.kpts)
-                            if self.electric_field is not None else None))
+                            if self.electric_field is not None else None),
+                onsite=onsite)
         with self._dft_timings.exclusive("SCF: periodic iterations"):
             self._scf = solver.run(**self._iteration_options())
         # The D4 lattice sum: a constant of the electronic problem, added to
@@ -3741,6 +3992,7 @@ class DFTDriver(_MeanFieldDriver):
                 "k_points_irreducible": reduction,
                 "smearing": f"{method}, {width * HARTREE_TO_EV:g} eV",
                 "spin": spin,
+                **self._hubbard_setup(),
                 "max_iterations": (self.max_iter if self.max_iter is not None
                                    else defaults["max_iter"].default),
                 "convergence_Hartree": (
@@ -3776,6 +4028,7 @@ class DFTDriver(_MeanFieldDriver):
             **spinor,
             "xc_functional": self.xc.upper(),
             **hybrid,
+            **self._hubbard_setup(),
             "vdw": (self.vdw or "none").upper(),
             "hartree": ("Poisson solve of the density per iteration (no "
                         "two-body tensor)" if self.hartree == "poisson"
@@ -3790,6 +4043,23 @@ class DFTDriver(_MeanFieldDriver):
             **self._stability_setup(spinor),
             "energy_unit": self._energy_unit_label(),
         }
+
+    def _hubbard_setup(self) -> dict:
+        """``[SCF SETUP]``'s ``hubbard_u``: the shells corrected and their
+        U_eff (the energy is ``[SCF SUMMARY]``'s)."""
+        setup = {}
+        if self.hubbard_u:
+            from ..units import HARTREE_TO_EV
+            shell = {2: "d", 3: "f"}
+            setup["hubbard_u"] = "; ".join(
+                f"{symbol} {shell[l]} {u * HARTREE_TO_EV:g} eV"
+                for symbol, shells in self.hubbard_u.items()
+                for l, u in sorted(shells.items())) + " (Dudarev, simplified)"
+        if self.one_center_hartree == "quadratic":
+            setup["one_center_hartree"] = "quadratic"
+        if self.one_center_xc == "nonlinear":
+            setup["one_center_xc"] = "nonlinear"
+        return setup
 
     def _stability_setup(self, spinor: dict) -> dict:
         """``[SCF SETUP]``'s ``stability_check``: what a converged
@@ -3839,6 +4109,15 @@ class DFTDriver(_MeanFieldDriver):
                 # 2<S> per cell only: the orbital moment is not computed.
                 fields["spin_moment_bohr_magneton"] = "(" + ", ".join(
                     f"{float(v):.6f}" for v in scf.spin_moment) + ")"
+            if self.hubbard_u:
+                fields[f"hubbard_energy_{unit}"] = \
+                    f"{self._to_energy_units(scf.terms['hubbard']):.10f}"
+            if self.one_center_hartree == "quadratic":
+                energy = self._to_energy_units(scf.terms["one_center_hartree"])
+                fields[f"one_center_hartree_energy_{unit}"] = f"{energy:.10f}"
+            if self.one_center_xc == "nonlinear":
+                energy = self._to_energy_units(scf.terms["one_center_xc"])
+                fields[f"one_center_xc_energy_{unit}"] = f"{energy:.10f}"
             if self.vdw == "d4":
                 fields[f"dispersion_energy_{unit}"] = \
                     f"{self._to_energy_units(self._dispersion_energy):.10f}"
@@ -3854,6 +4133,15 @@ class DFTDriver(_MeanFieldDriver):
         fields[f"hartree_energy_{unit}"] = \
             f"{to_unit(scf.hartree_energy):.10f}"
         fields[f"xc_energy_{unit}"] = f"{to_unit(scf.xc_energy):.10f}"
+        if self.hubbard_u:
+            fields[f"hubbard_energy_{unit}"] = \
+                f"{to_unit(scf.hubbard_energy):.10f}"
+        if self.one_center_hartree == "quadratic":
+            fields[f"one_center_hartree_energy_{unit}"] = \
+                f"{to_unit(scf.one_center_hartree_energy):.10f}"
+        if self.one_center_xc == "nonlinear":
+            fields[f"one_center_xc_energy_{unit}"] = \
+                f"{to_unit(scf.one_center_xc_energy):.10f}"
         report = getattr(scf, "stability", None)
         if report is not None:
             fields["stability"] = str(report)

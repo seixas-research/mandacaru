@@ -1025,7 +1025,10 @@ class TestUnrestricted:
         atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
                       cell=[6, 6, 7])
         atoms.center()
+        # stability=False keeps the ensemble: under PBE and r2SCAN the
+        # stability check finds an integer-occupation state below it.
         atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.3, trace=False,
+                               stability=False,
                                basis={"name": "PAW-LCAO", "size": "SZ"})
         atoms.get_forces()
         result = atoms.calc.force_result
@@ -1046,6 +1049,23 @@ class TestUnrestricted:
             numerical = fine + (fine - coarse) / 3.0
             assert result.unprojected[atom, k] == pytest.approx(numerical,
                                                                 abs=1e-4)
+
+
+    def test_one_diis_for_both_spins_converges_the_hydroxyl_radical(self):
+        """K26 for the Kohn-Sham loop: OH (DZP, hydrogen 0.2 Angstrom off the
+        axis) did not converge in 300 plain iterations with one DIIS per spin;
+        one set of coefficients for both spins takes 54."""
+        atoms = Atoms("OH", positions=[[0, 0, 0], [0.2, 0, 1.02]],
+                      cell=[6, 6, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3,
+                               trace=False, stability=False, max_iter=100,
+                               basis={"name": "PAW-LCAO", "size": "DZP"})
+        atoms.get_potential_energy()
+        scf = atoms.calc.result.scf
+        assert scf.converged and scf.n_iterations < 100
+        assert atoms.get_potential_energy() == pytest.approx(-446.046312,
+                                                             abs=1e-4)
 
 
 @pytest.fixture(scope="module")

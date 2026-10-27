@@ -313,6 +313,118 @@ def _bind(lib):
 
     lib.mandacaru_num_threads.restype = ctypes.c_int
     lib.mandacaru_num_threads.argtypes = []
+
+    _I32 = ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
+
+    if hasattr(lib, "mandacaru_localized_density_real"):
+        lib.mandacaru_localized_density_real.restype = None
+        lib.mandacaru_localized_density_real.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int,
+            _I32, _I32, _I32,
+            ctypes.POINTER(ctypes.c_void_p),
+            _F64, ctypes.c_int,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_localized_potential_matrix_real"):
+        lib.mandacaru_localized_potential_matrix_real.restype = None
+        lib.mandacaru_localized_potential_matrix_real.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_double, ctypes.c_int,
+            _I32, _I32, _I32,
+            ctypes.POINTER(ctypes.c_void_p),
+            _F64, ctypes.c_int,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_localized_cross_real"):
+        lib.mandacaru_localized_cross_real.restype = None
+        lib.mandacaru_localized_cross_real.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_double, ctypes.c_int,
+            _I32, _I32, _I32,
+            _F64,
+            ctypes.POINTER(ctypes.c_void_p),
+            _F64, ctypes.c_int,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_spherical_bessel_matrix"):
+        lib.mandacaru_spherical_bessel_matrix.restype = None
+        lib.mandacaru_spherical_bessel_matrix.argtypes = [
+            ctypes.c_int,
+            _F64, ctypes.c_int,
+            _F64, ctypes.c_int,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_fourier_bessel_transform"):
+        lib.mandacaru_fourier_bessel_transform.restype = None
+        lib.mandacaru_fourier_bessel_transform.argtypes = [
+            ctypes.c_int,
+            _F64, _F64, ctypes.c_int,
+            _F64, ctypes.c_int,
+            ctypes.c_int,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_two_center_s_table"):
+        lib.mandacaru_two_center_s_table.restype = None
+        lib.mandacaru_two_center_s_table.argtypes = [
+            ctypes.c_int, ctypes.c_double,
+            _F64, _F64, ctypes.c_int,
+            _F64, ctypes.c_int,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_radial_coulomb"):
+        lib.mandacaru_radial_coulomb.restype = ctypes.c_double
+        lib.mandacaru_radial_coulomb.argtypes = [
+            ctypes.c_int, ctypes.c_int,
+            _F64, _F64, _F64,
+        ]
+
+    if hasattr(lib, "mandacaru_radial_poisson_solve"):
+        lib.mandacaru_radial_poisson_solve.restype = None
+        lib.mandacaru_radial_poisson_solve.argtypes = [
+            ctypes.c_int, ctypes.c_int,
+            _F64, _F64, _F64,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_radial_slater_tensor"):
+        lib.mandacaru_radial_slater_tensor.restype = None
+        lib.mandacaru_radial_slater_tensor.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            _F64, _F64, _F64,
+            _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_numerov_outward"):
+        lib.mandacaru_numerov_outward.restype = None
+        lib.mandacaru_numerov_outward.argtypes = [
+            ctypes.c_int, _F64, _F64, ctypes.c_double, ctypes.c_int, _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_numerov_inward"):
+        lib.mandacaru_numerov_inward.restype = None
+        lib.mandacaru_numerov_inward.argtypes = [
+            ctypes.c_int, _F64, ctypes.c_double, ctypes.c_int, _F64_W,
+        ]
+
+    if hasattr(lib, "mandacaru_radial_abi_version"):
+        lib.mandacaru_radial_abi_version.restype = ctypes.c_int
+        lib.mandacaru_radial_abi_version.argtypes = []
+
+    if hasattr(lib, "mandacaru_tridiagonal_eigenpair"):
+        lib.mandacaru_tridiagonal_eigenpair.restype = ctypes.c_int
+        lib.mandacaru_tridiagonal_eigenpair.argtypes = [
+            ctypes.c_int, _F64, _F64, ctypes.c_int, ctypes.c_double,
+            ctypes.POINTER(ctypes.c_double), _F64_W,
+        ]
+
     return lib
 
 

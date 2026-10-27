@@ -103,7 +103,20 @@ class LocalizedBasisCollection:
                 y_sub = Y3d[sx, sy, sz]
                 z_sub = Z3d[sx, sy, sz]
                 sub_psi = np.stack([self.basis[i].evaluate(x_sub, y_sub, z_sub) for i in indices])
-                self.atom_psis.append(np.ascontiguousarray(sub_psi, dtype=float))
+                self.atom_psis.append(np.ascontiguousarray(sub_psi, dtype=sub_psi.dtype))
+
+        boxes_list = []
+        for sx, sy, sz in self.atom_boxes:
+            boxes_list.extend([sx.start, sx.stop, sy.start, sy.stop, sz.start, sz.stop])
+        self._boxes_i32 = np.array(boxes_list, dtype=np.int32)
+        self._n_orbs_i32 = np.array([len(idx) for idx in self.atom_indices], dtype=np.int32)
+        self._orb_offsets_i32 = np.array([int(idx[0]) if len(idx) > 0 else 0 for idx in self.atom_indices], dtype=np.int32)
+        self._is_real = all(not np.iscomplexobj(p) for p in self.atom_psis) if self.atom_psis else True
+        if self._is_real and self.n_atoms > 0:
+            import ctypes
+            self._psi_ptrs = (ctypes.c_void_p * self.n_atoms)(*[p.ctypes.data for p in self.atom_psis])
+        else:
+            self._psi_ptrs = None
 
     def density(self, P_ao: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
         r"""Evaluate the real-space density :math:`\rho(\mathbf r)` on the grid from the AO 1-RDM.
@@ -120,6 +133,24 @@ class LocalizedBasisCollection:
         ndarray of shape ``(grid.size,)``
             Real-space valence density.
         """
+        from . import _backend
+        if (self._is_real and not np.iscomplexobj(P_ao)
+                and _backend.HAS_C_BACKEND
+                and hasattr(_backend._LIB, "mandacaru_localized_density_real")):
+            if out is None:
+                rho = np.zeros(self.shape, dtype=np.float64)
+            else:
+                rho = out.reshape(self.shape)
+                rho.fill(0.0)
+            P_ao_c = np.ascontiguousarray(P_ao, dtype=np.float64)
+            nx, ny, nz = self.shape
+            _backend._LIB.mandacaru_localized_density_real(
+                nx, ny, nz, self.n_atoms,
+                self._boxes_i32, self._n_orbs_i32, self._orb_offsets_i32,
+                self._psi_ptrs, P_ao_c, self.M, rho
+            )
+            return rho.ravel()
+
         if out is None:
             rho = np.zeros(self.shape, dtype=float)
         else:
@@ -163,7 +194,7 @@ class LocalizedBasisCollection:
                 p_a = psi_a[sub_a]
                 p_b = psi_b[sub_b]
 
-                term = np.sum(p_a * np.tensordot(P_ab, p_b, axes=(1, 0)), axis=0)
+                term = np.sum(p_a.conj() * np.tensordot(P_ab, p_b, axes=(1, 0)), axis=0)
                 rho[sx, sy, sz] += np.real(term)
 
         return rho.ravel()
@@ -183,8 +214,25 @@ class LocalizedBasisCollection:
         ndarray of shape (M, M)
             Potential matrix in the AO basis.
         """
+        from . import _backend
+        if (self._is_real and not np.iscomplexobj(V_grid)
+                and _backend.HAS_C_BACKEND
+                and hasattr(_backend._LIB, "mandacaru_localized_potential_matrix_real")):
+            dV = self.grid.dV if dV is None else float(dV)
+            V_ao = np.zeros((self.M, self.M), dtype=np.float64)
+            V_c = np.ascontiguousarray(V_grid, dtype=np.float64)
+            nx, ny, nz = self.shape
+            _backend._LIB.mandacaru_localized_potential_matrix_real(
+                nx, ny, nz, dV, self.n_atoms,
+                self._boxes_i32, self._n_orbs_i32, self._orb_offsets_i32,
+                self._psi_ptrs, V_c, self.M, V_ao
+            )
+            return V_ao
+
         dV = self.grid.dV if dV is None else float(dV)
-        V_ao = np.zeros((self.M, self.M), dtype=float)
+        is_complex = any(np.iscomplexobj(p) for p in self.atom_psis) if self.atom_psis else False
+        dtype = complex if is_complex else float
+        V_ao = np.zeros((self.M, self.M), dtype=dtype)
         V3d = V_grid.reshape(self.shape) * dV
 
         for a in range(self.n_atoms):
@@ -220,10 +268,100 @@ class LocalizedBasisCollection:
                 p_b = psi_b[sub_b]
                 v_sub = V3d[sx, sy, sz]
 
-                p_a_w = p_a * v_sub
+                p_a_w = p_a.conj() * v_sub
                 block = p_a_w.reshape(len(idx_a), -1) @ p_b.reshape(len(idx_b), -1).T
                 V_ao[np.ix_(idx_a, idx_b)] += block
                 if a != b:
-                    V_ao[np.ix_(idx_b, idx_a)] += block.T
+                    V_ao[np.ix_(idx_b, idx_a)] += block.conj().T
 
         return V_ao
+
+    def atom_derivatives(self, atom: int, delta: float = 0.001) -> np.ndarray:
+        r"""Compute (3, len(idx_a), *box_shape) orbital gradients on the atom's bounding box."""
+        from .sampling import sample_functions
+
+        sx_a, sy_a, sz_a = self.atom_boxes[atom]
+        idx_a = self.atom_indices[atom]
+        if len(idx_a) == 0 or sx_a.start >= sx_a.stop:
+            return np.zeros((3, 0, 0, 0, 0), dtype=float)
+
+        X3d = self.grid.X.reshape(self.shape)
+        Y3d = self.grid.Y.reshape(self.shape)
+        Z3d = self.grid.Z.reshape(self.shape)
+
+        x_sub = X3d[sx_a, sy_a, sz_a]
+        y_sub = Y3d[sx_a, sy_a, sz_a]
+        z_sub = Z3d[sx_a, sy_a, sz_a]
+
+        dtype = getattr(self.grid, "real_dtype", np.float64)
+        dpsi_flat = np.empty((3, len(idx_a), x_sub.size), dtype=dtype)
+        sample_functions(
+            [self.basis[i] for i in idx_a],
+            (x_sub.ravel(), y_sub.ravel(), z_sub.ravel()),
+            gradients=True, delta=delta, values=False,
+            out_slopes=dpsi_flat
+        )
+        dpsi_flat *= -1.0
+        return dpsi_flat.reshape(3, len(idx_a), *x_sub.shape)
+
+    def one_body_cross(self, atom: int, dpsi_a_k: np.ndarray, V_grid: np.ndarray,
+                       dV: float | None = None) -> np.ndarray:
+        r"""Compute cross block <dpsi_a_k | V | psi_all> using localized box intersections."""
+        from . import _backend
+        if (self._is_real and not np.iscomplexobj(dpsi_a_k) and not np.iscomplexobj(V_grid)
+                and _backend.HAS_C_BACKEND
+                and hasattr(_backend._LIB, "mandacaru_localized_cross_real")):
+            dV = self.grid.dV if dV is None else float(dV)
+            cross = np.zeros((self.M, self.M), dtype=np.float64)
+            dpsi_c = np.ascontiguousarray(dpsi_a_k, dtype=np.float64)
+            V_c = np.ascontiguousarray(V_grid, dtype=np.float64)
+            nx, ny, nz = self.shape
+            _backend._LIB.mandacaru_localized_cross_real(
+                int(atom), nx, ny, nz, dV, self.n_atoms,
+                self._boxes_i32, self._n_orbs_i32, self._orb_offsets_i32,
+                dpsi_c, self._psi_ptrs, V_c, self.M, cross
+            )
+            return cross
+
+        dV = self.grid.dV if dV is None else float(dV)
+        is_complex = any(np.iscomplexobj(p) for p in self.atom_psis) if self.atom_psis else False
+        dtype = complex if is_complex else float
+        cross = np.zeros((self.M, self.M), dtype=dtype)
+
+        sx_a, sy_a, sz_a = self.atom_boxes[atom]
+        if sx_a.start >= sx_a.stop:
+            return cross
+        idx_a = self.atom_indices[atom]
+        V3d = V_grid.reshape(self.shape) * dV
+
+        for b in range(self.n_atoms):
+            sx_b, sy_b, sz_b = self.atom_boxes[b]
+            if sx_b.start >= sx_b.stop:
+                continue
+            idx_b = self.atom_indices[b]
+            psi_b = self.atom_psis[b]
+
+            sx = slice(max(sx_a.start, sx_b.start), min(sx_a.stop, sx_b.stop))
+            sy = slice(max(sy_a.start, sy_b.start), min(sy_a.stop, sy_b.stop))
+            sz = slice(max(sz_a.start, sz_b.start), min(sz_a.stop, sz_b.stop))
+            if sx.start >= sx.stop or sy.start >= sy.stop or sz.start >= sz.stop:
+                continue
+
+            sub_a = (slice(None),
+                     slice(sx.start - sx_a.start, sx.stop - sx_a.start),
+                     slice(sy.start - sy_a.start, sy.stop - sy_a.start),
+                     slice(sz.start - sz_a.start, sz.stop - sz_a.start))
+            sub_b = (slice(None),
+                     slice(sx.start - sx_b.start, sx.stop - sx_b.start),
+                     slice(sy.start - sy_b.start, sy.stop - sy_b.start),
+                     slice(sz.start - sz_b.start, sz.stop - sz_b.start))
+
+            p_a = dpsi_a_k[sub_a]
+            p_b = psi_b[sub_b]
+            v_sub = V3d[sx, sy, sz]
+
+            p_a_w = p_a.conj() * v_sub
+            block = p_a_w.reshape(len(idx_a), -1) @ p_b.reshape(len(idx_b), -1).T
+            cross[np.ix_(idx_a, idx_b)] = block
+
+        return cross

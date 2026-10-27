@@ -11,6 +11,9 @@
 from . import _backend
 from ._backend import (BackendStatus, build_backend, check_backend,
                        ensure_backend)
+from .buffers import (cleanup_disk_buffers, clear_all_disk_buffers,
+                      create_disk_buffer, get_buffer_dir, is_dump_buffers_enabled,
+                      set_buffer_dir, set_dump_buffers)
 from .engine import IntegralEngine
 from .grid import Grid
 from .localized import LocalizedBasisCollection
@@ -19,6 +22,8 @@ from .potentials import Potentials
 
 __all__ = ["IntegralEngine", "Grid", "LocalizedBasisCollection",
            "PoissonFFTSolver", "Potentials",
+           "create_disk_buffer", "cleanup_disk_buffers", "clear_all_disk_buffers",
+           "get_buffer_dir", "set_buffer_dir", "is_dump_buffers_enabled", "set_dump_buffers",
            "HAS_C_BACKEND", "BackendStatus", "build_backend", "check_backend",
            "ensure_backend"]
 

@@ -224,6 +224,11 @@ def fermi_level(eigenvalues, weights, n_electrons: float, method: str,
 # Mixing.
 # --------------------------------------------------------------------------- #
 
+#: The DIIS-metric weight of the on-site operators' residuals (Hartree^-2 per
+#: element; the density residuals are weighted by the grid volume element).
+ONSITE_MIX_WEIGHT = 1.0
+
+
 class PulayMixer:
     """DIIS on ``(n~, q)`` -- or ``(n~, m, q)`` with a magnetization -- with a
     Kerker-preconditioned linear step.  A hybrid's nonlocal operators (its
@@ -243,8 +248,13 @@ class PulayMixer:
 
     def __init__(self, crystal, history: int = MIXING_HISTORY,
                  beta: float = MIXING_BETA, q0: float = KERKER_Q0,
-                 spin: bool = False):
+                 spin: bool = False, extra_weight: float = 0.0):
         self.crystal = crystal
+        #: The weight of the ``extra`` arrays' residuals in the DIIS metric:
+        #: zero for a hybrid's dense operators (see above), nonzero for the
+        #: sparse on-site operators, whose stiff modes the density alone
+        #: does not show.
+        self.extra_weight = float(extra_weight)
         self.spin = bool(spin)
         self.history = int(history)
         self.beta = float(beta)
@@ -329,7 +339,7 @@ class PulayMixer:
                                else 0)] = dV
         extra = sum(int(np.prod(shape)) for shape in self._extra_shapes)
         if extra:
-            metric[len(residual) - extra:] = 0.0
+            metric[len(residual) - extra:] = self.extra_weight
         B = np.empty((n + 1, n + 1))
         for i in range(n):
             for j in range(n):
@@ -427,7 +437,7 @@ class PeriodicKohnSham:
     def __init__(self, crystal, n_electrons: float, functional: str = "lda",
                  smearing=None, relativistic: bool = False,
                  constant: float = 0.0, magnetic_moments=None,
-                 screening=None, field=None, field_size=None):
+                 screening=None, field=None, field_size=None, onsite=None):
         if getattr(crystal, "has_spin_orbit", False) \
                 and not self.two_component:
             raise NotImplementedError(
@@ -468,6 +478,21 @@ class PeriodicKohnSham:
         # density matrices: what the forces hold fixed and `bands` takes the
         # exchange over (the mixed inputs equal them to HYBRID_TOL).
         self._hybrid_output = None
+        #: The on-site corrections (``hubbard_u=``, ``one_center_hartree=``;
+        #: :class:`~mandacaru.algorithms.onsite.CombinedOnsite`) or ``None``;
+        #: their ``(P, P)`` operators, one per spin channel, are SCF inputs
+        #: mixed with the density, and ``_onsite_operators`` keeps the ones
+        #: the last diagonalization used (the ones :meth:`bands` applies).
+        self.corrections = onsite
+        self._onsite_operators = None
+        #: The operators of the converged output density matrices, one per
+        #: spin channel: what the forces and the stress hold fixed.
+        self._onsite_output = None
+        if onsite is not None and (self.screening is not None
+                                    or field is not None):
+            raise NotImplementedError(
+                "hubbard_u and one_center_hartree='quadratic' with a hybrid "
+                "functional or a finite electric field are not implemented")
         #: A finite electric field (Hartree per e Bohr) coupled through the
         #: Berry phase of the occupied states, on the full ``field_size``
         #: mesh (:func:`~mandacaru.algorithms.berry_phase.field_terms`), or
@@ -649,6 +674,37 @@ class PeriodicKohnSham:
         return max(float(np.max(np.abs(a - b)))
                    for a, b in zip(inputs, outputs))
 
+    def onsite_terms(self, channels, terms=None):
+        r"""``(energy, [operator per channel])`` of the on-site corrections.
+
+        With ``terms`` (the energy-term dictionary of the iteration) the
+        function stores each correction's energy under its name
+        (``"hubbard"``, ``"one_center_hartree"``) and returns only the
+        operators.
+
+        ``channels`` holds one list of k-resolved density matrices for a
+        spin-restricted crystal (both spins summed) and two for a
+        spin-polarized one.  The projected density of a channel is
+        :math:`R = \sum_k w_k C_k^\dagger P_k C_k` over the whole mesh (the
+        crystal is built on the full mesh when the correction is on, so no
+        symmetrization is needed), and the operators enter the Hamiltonian
+        through the projector operator of
+        :meth:`~mandacaru.algorithms.periodic_device.CPUDevice.hamiltonians`."""
+        size = len(self.crystal.projectors)
+        projected = []
+        for matrices in channels:
+            R = np.zeros((size, size), dtype=complex)
+            for data, P in zip(self.crystal.kpoint_data, matrices):
+                C = data.projections
+                R += data.weight * (C.conj().T @ P @ C)
+            projected.append(R)
+        energy, operators = self.corrections.evaluate(
+            tuple(projected), restricted=len(channels) == 1)
+        if terms is None:
+            return energy, operators
+        terms.update(self.corrections.energies)
+        return operators
+
     def _exchange_scale(self) -> float:
         """The factor of ``K`` in the Kohn-Sham matrix: ``a/2`` when a state
         holds both spins, ``a`` in a spin channel (one electron per state);
@@ -724,7 +780,8 @@ class PeriodicKohnSham:
         c, device = self.crystal, self.device
         rho, q = c.initial_density()
         tau = np.zeros(c.grid.size) if self.meta else None
-        mixer = PulayMixer(c)
+        mixer = PulayMixer(c, extra_weight=ONSITE_MIX_WEIGHT
+                           if self.corrections is not None else 0.0)
         previous = np.inf
         converged = False
         it = 0
@@ -733,13 +790,19 @@ class PeriodicKohnSham:
         # density (none on the first diagonalization); `hybrid` holds the
         # output states' terms.
         hybrid, operators_in, change = None, None, 0.0
+        onsite_in = None
         field_in, n_occ = None, int(round(self.n_electrons / 2.0))
         for it in range(1, max_iter + 1):
             scf_input = {"rho": rho, "q": q, "m": None, "tau": tau,
                          "operators": operators_in}
             V, v_tau, w, _terms = self._potentials(rho, q, tau)
-            H = device.hamiltonians(V, v_tau, w, None if operators_in is None
-                                    else operators_in[1])
+            projector_operator = (None if operators_in is None
+                                  else operators_in[1])
+            if onsite_in is not None:
+                projector_operator = (onsite_in[0] if projector_operator
+                                      is None else projector_operator
+                                      + onsite_in[0])
+            H = device.hamiltonians(V, v_tau, w, projector_operator)
             if operators_in is not None:
                 H = H - self._exchange_scale() * operators_in[0]
             if field_in is not None:
@@ -761,6 +824,9 @@ class PeriodicKohnSham:
                 hybrid = (states, operators)
                 operators_out = [K[0], operators[0]]
                 change = self._operator_change(operators_in, operators_out)
+            if self.corrections is not None:
+                onsite_out = self.onsite_terms([matrices], terms)
+                change = self._operator_change(onsite_in, onsite_out)
             if self.field is not None:
                 from .berry_phase import field_terms
                 field_out, terms["electric_field"], phases = field_terms(
@@ -787,6 +853,12 @@ class PeriodicKohnSham:
                     extra_in=[field_in if field_in is not None
                               else np.zeros_like(field_out)],
                     extra_out=[field_out])
+            elif self.corrections is not None:
+                rho, q, onsite_in = mixer.mix(
+                    rho, q, rho_out, q_out,
+                    extra_in=(onsite_in if onsite_in is not None else
+                              [np.zeros_like(x) for x in onsite_out]),
+                    extra_out=onsite_out)
             elif self.screening is None:
                 rho, q = mixer.mix(rho, q, rho_out, q_out)
             else:
@@ -802,6 +874,8 @@ class PeriodicKohnSham:
         self.potentials = (V, v_tau, w)
         self.scf_input = scf_input
         self._hybrid_output = hybrid
+        self._onsite_operators = onsite_in
+        self._onsite_output = onsite_out if self.corrections is not None else None
         self.density_matrices = matrices
         self.output_density = (rho_out, q_out, tau_out)
         extrapolated = (free if self.method == "methfessel-paxton"
@@ -826,7 +900,8 @@ class PeriodicKohnSham:
         m = c.initial_magnetization(self.initial_moments)
         zero = np.zeros(c.grid.size)
         tau = (zero, zero) if self.meta else (None, None)
-        mixer = PulayMixer(c, spin=True)
+        mixer = PulayMixer(c, spin=True, extra_weight=ONSITE_MIX_WEIGHT
+                           if self.corrections is not None else 0.0)
         weights = list(c.weights)
         previous, converged, it = np.inf, False, 0
         history, start = [], time.perf_counter()
@@ -834,14 +909,23 @@ class PeriodicKohnSham:
         # O_up, O_dn] (one electron per state: the channel's -a K, energy
         # -a/2 tr(P K)); `hybrid` holds the output states' terms.
         hybrid, operators_in, change = None, None, 0.0
+        onsite_in = None
         for it in range(1, max_iter + 1):
             scf_input = {"rho": rho, "q": q, "m": m, "tau": tau,
                          "operators": operators_in}
             up, dn = 0.5 * (rho + m), 0.5 * (rho - m)
             V, v_tau, w, _terms = self._potentials_spin(up, dn, q, *tau)
+
+            def projector_operator(s_):
+                operator = (None if operators_in is None
+                            else operators_in[2 + s_])
+                if onsite_in is None:
+                    return operator
+                return (onsite_in[s_] if operator is None
+                        else operator + onsite_in[s_])
+
             H = np.stack([device.hamiltonians(
-                V[s_], v_tau[s_], w,
-                None if operators_in is None else operators_in[2 + s_])
+                V[s_], v_tau[s_], w, projector_operator(s_))
                 for s_ in (0, 1)])
             if operators_in is not None:
                 H = H - self._exchange_scale() * np.stack(operators_in[:2])
@@ -870,6 +954,9 @@ class PeriodicKohnSham:
                 hybrid = (states, operators)
                 operators_out = [K[0], K[1], operators[0], operators[1]]
                 change = self._operator_change(operators_in, operators_out)
+            if self.corrections is not None:
+                onsite_out = self.onsite_terms(matrices, terms)
+                change = self._operator_change(onsite_in, onsite_out)
             energy = sum(terms.values())
             entropy_term = -self.width * sum(
                 d.weight * float(np.sum(entropy((e - mu) / self.width,
@@ -892,7 +979,13 @@ class PeriodicKohnSham:
             previous = free
             step = (mixer.linear if it <= SPIN_WARMUP_ITERATIONS
                     else mixer.mix)
-            if self.screening is None:
+            if self.corrections is not None:
+                rho, q, m, onsite_in = step(
+                    rho, q, rho_out, q_out, m, m_out,
+                    extra_in=(onsite_in if onsite_in is not None else
+                              [np.zeros_like(x) for x in onsite_out]),
+                    extra_out=onsite_out)
+            elif self.screening is None:
                 rho, q, m = step(rho, q, rho_out, q_out, m, m_out)
             else:
                 rho, q, m, operators_in = step(
@@ -908,6 +1001,8 @@ class PeriodicKohnSham:
         self.potentials = (V, v_tau, w)
         self.scf_input = scf_input
         self._hybrid_output = hybrid
+        self._onsite_operators = onsite_in
+        self._onsite_output = onsite_out if self.corrections is not None else None
         self.density_matrices = (matrices[0], matrices[1])
         self.output_density = ((up_out, dn_out), q_out, tau_out)
         reference = self.eigenvalue_reference()
@@ -967,7 +1062,9 @@ class PeriodicKohnSham:
                          if self.meta else None)
             device = make_device(c, data, gradients)
             if self._hybrid_output is None:
-                H = device.hamiltonians(V, v_tau, w)
+                H = device.hamiltonians(
+                    V, v_tau, w, None if self._onsite_operators is None
+                    else self._onsite_operators[channel])
             else:
                 states, operators = self._hybrid_output
                 _states, K = self._exchange(device, None, None,

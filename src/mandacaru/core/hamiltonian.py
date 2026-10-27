@@ -516,9 +516,8 @@ class MolecularIntegrals(MeanFieldMixin):
         if getattr(self, "_localized", None) is None:
             from ..integrals.localized import LocalizedBasisCollection
             owners = getattr(self, "atom_of_orbital", None) if atom_of_orbital is None else atom_of_orbital
-            psi = getattr(self._engine, "_psi", None)
             self._localized = LocalizedBasisCollection(
-                self.basis, self.grid, atom_of_orbital=owners, psi_full=psi)
+                self.basis, self.grid, atom_of_orbital=owners, psi_full=None)
         return self._localized
 
     @property
@@ -672,7 +671,7 @@ class MolecularIntegrals(MeanFieldMixin):
         if self._C is None:
             M = len(self.basis)
             if not self.kb_projectors:
-                self._C = np.zeros((M, 0), dtype=self._engine._psi.dtype)
+                self._C = np.zeros((M, 0), dtype=self._engine.dtype)
                 return self._C
             if self.two_center == "analytic":
                 self._C = self.two_center_tables(True).matrix("overlap")
@@ -785,7 +784,7 @@ class MolecularIntegrals(MeanFieldMixin):
         """
         M = len(self.basis)
         if not self.kb_projectors:
-            return np.zeros((M, M), dtype=self._engine._psi.dtype)
+            return np.zeros((M, M), dtype=self._engine.dtype)
         C = self.projections()
         D = self.nonlocal_coupling_matrix()
         return C @ D @ C.conj().T
@@ -879,10 +878,23 @@ class MolecularIntegrals(MeanFieldMixin):
         T, V = self.kinetic_and_local()
         # The grid's kinetic energy is the resolution test, even when T is
         # analytic: the three-center terms stay on the grid.
-        self.resolution_ratios = (
-            self._engine.resolution(None, kinetic="spectral")
-            if self.two_center == "analytic"
-            else self._engine.resolution(T, kinetic=self.kinetic))
+        if self.two_center == "analytic":
+            from ..integrals.engine import radial_kinetic_energy
+            tables = self.two_center_tables()
+            S_diag = np.diag(tables.matrix("overlap"))
+            T_diag = np.diag(T)
+            ratios = np.full(len(self.basis), np.nan)
+            for a, fn in enumerate(self.basis):
+                radial = getattr(fn, "radial", None)
+                l = getattr(fn, "l", None)
+                if radial is not None and l is not None:
+                    exact = radial_kinetic_energy(radial, int(l))
+                    norm = S_diag[a]
+                    if exact and norm > 0:
+                        ratios[a] = float(T_diag[a]) / norm / exact
+            self.resolution_ratios = ratios
+        else:
+            self.resolution_ratios = self._engine.resolution(T, kinetic=self.kinetic)
         one = T + V + self.kb_nonlocal()
         short_range = self.short_range_local()
         if short_range is not None:
@@ -911,8 +923,11 @@ class MolecularIntegrals(MeanFieldMixin):
         the analytic two-center matrix and the grid supplies ``V`` alone.
         """
         if self.two_center == "analytic":
-            V = self._engine.one_body(self.external_potential(),
-                                      energy_units="Ha", kinetic=None)[1]
+            lbc = self.localized_basis()
+            Vext = np.ascontiguousarray(
+                np.real(self.external_potential()(self.grid.X, self.grid.Y, self.grid.Z)).reshape(-1),
+                dtype=getattr(self.grid, "real_dtype", np.float64))
+            V = lbc.potential_matrix(Vext, self.grid.dV)
             T = self.two_center_tables().matrix("kinetic")
             return 0.5 * (T + T.T), V
         return self._engine.one_body(self.external_potential(),

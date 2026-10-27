@@ -6,6 +6,10 @@
 pub mod bloch;
 pub mod one_body;
 pub mod bader;
+pub mod localized;
+pub mod two_center;
+pub mod onecenter;
+pub mod radial;
 
 use bloch::Complex64;
 use one_body::Complex32;
@@ -248,3 +252,69 @@ pub unsafe extern "C" fn mandacaru_bader_ascent(
         step_length, capture, max_steps, stall_window, stall_distance, owner, final_index,
     );
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn mandacaru_localized_density_real(
+    nx: i32,
+    ny: i32,
+    nz: i32,
+    n_atoms: i32,
+    boxes_ptr: *const i32,
+    n_orbs_ptr: *const i32,
+    orb_offsets_ptr: *const i32,
+    atom_psi_ptrs: *const *const f64,
+    p_ao: *const f64,
+    m_total: i32,
+    out_rho: *mut f64,
+) {
+    localized::localized_density_real(
+        nx, ny, nz, n_atoms, boxes_ptr, n_orbs_ptr, orb_offsets_ptr,
+        atom_psi_ptrs, p_ao, m_total, out_rho,
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mandacaru_localized_potential_matrix_real(
+    nx: i32,
+    ny: i32,
+    nz: i32,
+    d_v: f64,
+    n_atoms: i32,
+    boxes_ptr: *const i32,
+    n_orbs_ptr: *const i32,
+    orb_offsets_ptr: *const i32,
+    atom_psi_ptrs: *const *const f64,
+    v_grid: *const f64,
+    m_total: i32,
+    out_v_ao: *mut f64,
+) {
+    localized::localized_potential_matrix_real(
+        nx, ny, nz, d_v, n_atoms, boxes_ptr, n_orbs_ptr, orb_offsets_ptr,
+        atom_psi_ptrs, v_grid, m_total, out_v_ao,
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mandacaru_localized_cross_real(
+    moving_atom: i32,
+    nx: i32,
+    ny: i32,
+    nz: i32,
+    d_v: f64,
+    n_atoms: i32,
+    boxes_ptr: *const i32,
+    n_orbs_ptr: *const i32,
+    orb_offsets_ptr: *const i32,
+    dpsi_moving_ptr: *const f64,
+    atom_psi_ptrs: *const *const f64,
+    v_grid: *const f64,
+    m_total: i32,
+    out_cross: *mut f64,
+) {
+    localized::localized_cross_real(
+        moving_atom, nx, ny, nz, d_v, n_atoms, boxes_ptr, n_orbs_ptr,
+        orb_offsets_ptr, dpsi_moving_ptr, atom_psi_ptrs, v_grid,
+        m_total, out_cross,
+    );
+}
+

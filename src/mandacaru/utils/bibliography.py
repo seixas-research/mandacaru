@@ -806,6 +806,19 @@ _ALGORITHMS = [
   doi     = {10.1080/00268976900100941}
 }""", "the basis-function (Pulay) term of the nuclear gradient with "
          "atom-centered orbitals", topics=("forces",)),
+    _ref("Dudarev1998", """
+@article{Dudarev1998,
+  author  = {Dudarev, S. L. and Botton, G. A. and Savrasov, S. Y. and
+             Humphreys, C. J. and Sutton, A. P.},
+  title   = {Electron-energy-loss spectra and the structural stability of
+             nickel oxide: an {LSDA+U} study},
+  journal = {Phys. Rev. B},
+  volume  = {57},
+  pages   = {1505--1509},
+  year    = {1998},
+  doi     = {10.1103/PhysRevB.57.1505}
+}""", "the on-site Hubbard correction (hubbard_u) of a Kohn-Sham calculation",
+         verified=False, topics=("dft", "hubbard")),
 ]
 
 # --------------------------------------------------------------------------- #

@@ -388,8 +388,8 @@ def test_actual_uhf_circuit_preparation_matches_local_state():
 
 
 def test_uhf_reference_tapers_when_its_symmetry_sector_is_valid():
-    """A spin-broken determinant can still conserve the available Z2 sector."""
-    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
+    """A UHF determinant inside the Hamiltonian's Z2 sector tapers."""
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[8] * 3)
     atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
     energy = atoms.get_potential_energy()
     calc = Mandacaru(method="vqe",
@@ -409,6 +409,21 @@ def test_uhf_reference_tapers_when_its_symmetry_sector_is_valid():
     assert abs(np.vdot(prepared,
                        circuit.solver.ansatz.reference_state())) == \
         pytest.approx(1.0, abs=1e-9)
+
+
+def test_spin_broken_uhf_reference_outside_the_sector_refuses_tapering():
+    """Stretched H2: the broken-symmetry determinant (alpha and beta on
+    opposite atoms) is not an eigenstate of the gerade/ungerade parity the
+    Hamiltonian has to round-off.  A UHF that stops 1e-9 short of the
+    stationary point leaves integrals of 3e-10 that hid that symmetry (K26),
+    so the taper accepted a sector the reference did not occupy."""
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2.5]], cell=[8] * 3)
+    atoms.calc = Mandacaru(method="uhf", grid_spacing=0.35, trace=False)
+    atoms.get_potential_energy()
+    calc = Mandacaru(method="vqe", ansatz=hva(reference=atoms.calc.result),
+                     taper=True, trace=False)
+    with pytest.raises(ValueError, match="multiple Z2 symmetry sectors"):
+        calc.solver
 
 
 @pytest.mark.parametrize("evolution", ["exact", "trotter"])

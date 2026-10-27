@@ -143,10 +143,12 @@ class ForceResult:
 # Orbital derivatives on the grid.
 # --------------------------------------------------------------------------- #
 
-def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
+def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None,
+                        compact: bool = False):
     r"""``d phi_mu / d R_{A,k}`` sampled on the grid, for one atom.
 
-    Returns a ``(3, M, ngrid)`` array; row ``k`` is the derivative with respect to
+    Returns a ``(3, M, ngrid)`` array (or ``(3, len(own), ngrid)`` when
+    ``compact=True``); row ``k`` is the derivative with respect to
     Cartesian direction ``k``.  Rows for orbitals *not* centered on ``atom`` are
     zero, since only that atom's functions move.  ``atom=None`` moves every
     function with its own center: each row is the one its atom's array
@@ -174,8 +176,18 @@ def orbital_derivatives(basis, grid, atom_of_orbital, atom, delta=None):
                          out_slopes=out)
         out *= -1.0
         return out
-    out = np.zeros((3, M, grid.size), dtype=dtype)
     own = [mu for mu in range(M) if atom_of_orbital[mu] == atom]
+    if compact:
+        if not own:
+            return np.zeros((3, 0, grid.size), dtype=dtype)
+        own_out = np.empty((3, len(own), grid.size), dtype=dtype)
+        sample_functions([basis[mu] for mu in own],
+                         (grid.X, grid.Y, grid.Z),
+                         gradients=True, delta=delta, values=False,
+                         out_slopes=own_out)
+        own_out *= -1.0
+        return own_out
+    out = np.zeros((3, M, grid.size), dtype=dtype)
     if own:
         own_out = np.empty((3, len(own), grid.size), dtype=dtype)
         sample_functions([basis[mu] for mu in own],
@@ -234,7 +246,7 @@ def orbital_gradients(basis, grid, delta=None):
     sample_functions(basis, (grid.X, grid.Y, grid.Z),
                      gradients=True, delta=delta, values=False,
                      out_slopes=slopes)
-    return np.ascontiguousarray(slopes.transpose(1, 0, 2))
+    return slopes
 
 
 def density_gradient(density_ao, psi_grid, grad_psi):

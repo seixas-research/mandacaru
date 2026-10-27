@@ -358,6 +358,11 @@ def _angular_rule(polar: int, azimuthal: int):
 _SPHERE_OFFSET_CACHE: dict = {}
 
 
+def clear_sphere_cache() -> None:
+    """Clear the cached sorted sphere chunks."""
+    _SPHERE_OFFSET_CACHE.clear()
+
+
 def _sorted_sphere_chunks(radii: np.ndarray, directions: np.ndarray,
                           chunk_size: int):
     key = (float(radii[0]), float(radii[-1]), int(radii.size),

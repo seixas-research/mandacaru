@@ -57,6 +57,24 @@ class TestUHF:
         assert uhf == pytest.approx(rhf.electronic_energy, abs=1e-7)
 
 
+    def test_hydroxyl_radical_converges_with_the_default_limit(self):
+        """K26: OH (PAW-LCAO SZ, grid 0.3, exact spheres) has a soft pi-hole
+        mode; with one DIIS per spin it needed 503 iterations from the core
+        start and never reached the 300 default from the screened one.  One
+        set of coefficients for both spins converges in 10."""
+        from ase import Atoms
+        from mandacaru import Mandacaru
+
+        atoms = Atoms("OH", positions=[[0, 0, 0], [0, 0, 0.97]],
+                      cell=[8.0] * 3)
+        atoms.calc = Mandacaru(method="uhf", trace=False, grid_spacing=0.3,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        energy = atoms.get_potential_energy()
+        scf = atoms.calc.result.scf
+        assert scf.converged and scf.n_iterations < 60
+        assert energy == pytest.approx(-439.7214848, abs=1e-5)
+
+
 class TestTransform:
     def test_identity_transform_is_noop(self, h2_integrals):
         h, eri = h2_integrals.one_body(), h2_integrals.two_body()

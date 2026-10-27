@@ -262,10 +262,8 @@ class IntegralEngine:
             self.dtype = np.float32 if self.real else np.complex64
         else:
             self.dtype = np.float64 if self.real else np.complex128
-        self._psi = np.empty((len(self.basis), grid.size),
-                             dtype=self.dtype)
-        for row, function in zip(self._psi, self.basis):
-            row[:] = sample(function)
+        self._sample = sample
+        self._psi_cache = None
 
         # Profiling: wall-time per integral stage, plus the backend / core count
         # so the driver summary can report how the integration ran.
@@ -273,6 +271,26 @@ class IntegralEngine:
         self.timings = Timings(
             n_cores=self.backend_status.n_threads,
             backend=self.backend_status.label)
+
+    @property
+    def _psi(self) -> np.ndarray:
+        if self._psi_cache is None:
+            from .buffers import is_dump_buffers_enabled, create_disk_buffer
+            if is_dump_buffers_enabled():
+                self._psi_cache = create_disk_buffer(
+                    "psi", (len(self.basis), self.grid.size), dtype=self.dtype)
+            else:
+                self._psi_cache = np.empty((len(self.basis), self.grid.size),
+                                           dtype=self.dtype)
+            for row, function in zip(self._psi_cache, self.basis):
+                row[:] = self._sample(function)
+            if hasattr(self._psi_cache, "flush"):
+                self._psi_cache.flush()
+        return self._psi_cache
+
+    @_psi.setter
+    def _psi(self, value):
+        self._psi_cache = value
 
     #: Lattice-image shells tried when sampling a periodic basis function.
     IMAGE_SHELLS = 6

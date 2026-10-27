@@ -135,19 +135,36 @@ class FFTWorkspace:
 
     def _complex_buffer(self, count: int) -> np.ndarray:
         if self._complex is None or self._complex.shape[0] < count:
-            self._complex = np.empty((count,) + self.padded,
-                                     dtype=np.complex128)
+            from .buffers import is_dump_buffers_enabled, create_disk_buffer
+            if is_dump_buffers_enabled():
+                self._complex = create_disk_buffer(
+                    "fft_complex", (count,) + self.padded, dtype=np.complex128)
+            else:
+                self._complex = np.empty((count,) + self.padded,
+                                         dtype=np.complex128)
         return self._complex
 
     def _real_buffers(self, count: int):
         nx, ny, _nz = self.shape
+        from .buffers import is_dump_buffers_enabled, create_disk_buffer
+        dump = is_dump_buffers_enabled()
         if self._real_box is None or self._real_box.shape[0] < count:
             # Only [..., :nz] is ever written: the z-tail stays zero.
-            self._real_box = np.zeros((count, nx, ny, self.padded[2]))
+            if dump:
+                self._real_box = create_disk_buffer(
+                    "fft_real", (count, nx, ny, self.padded[2]), dtype=np.float64)
+                self._real_box[:] = 0.0
+            else:
+                self._real_box = np.zeros((count, nx, ny, self.padded[2]))
         if self._spectrum is None or self._spectrum.shape[0] < count:
-            self._spectrum = np.empty(
-                (count, self.padded[0], self.padded[1], self.half),
-                dtype=np.complex128)
+            if dump:
+                self._spectrum = create_disk_buffer(
+                    "fft_spectrum", (count, self.padded[0], self.padded[1], self.half),
+                    dtype=np.complex128)
+            else:
+                self._spectrum = np.empty(
+                    (count, self.padded[0], self.padded[1], self.half),
+                    dtype=np.complex128)
         return self._real_box, self._spectrum
 
     def stack(self, count: int) -> np.ndarray:

@@ -88,7 +88,10 @@ def _hydrogen_chain(displacement: float = 0.0, **options) -> Atoms:
 
 def test_equilateral_h3_doublet_leaves_the_symmetric_ensemble():
     """K36: the exact equilateral H3 doublet used to stop at a symmetric
-    ensemble 650 meV above the doublet and report it converged."""
+    stationary point (a half-filled degenerate pair, or its integer saddle
+    650 meV above the doublet) and report it converged; the ensemble is
+    probed for a lower integer state, which the stability check follows to
+    the doublet."""
     exact = _hydrogen_chain(0.0)
     energy = exact.get_potential_energy()
     scf = exact.calc._solver._scf
@@ -106,17 +109,47 @@ def test_equilateral_h3_doublet_leaves_the_symmetric_ensemble():
 def test_a_stalled_loop_continues_with_newton_steps(monkeypatch):
     """After ``SECOND_ORDER_AFTER`` plain iterations an integer-occupation
     loop takes Newton-CG steps and reaches the plain loop's energy."""
+    from ase.build import molecule
+
     from mandacaru.algorithms import dft
 
-    plain = _hydrogen_chain(0.003, stability=False)
+    def methyl():
+        atoms = molecule("CH3")
+        atoms.center(vacuum=3.5)
+        atoms.calc = Mandacaru(
+            method="dft", xc="lda", grid_spacing=0.3, trace=False,
+            stability=False, basis={"name": "PAW-LCAO", "size": "SZ"})
+        return atoms
+
+    plain = methyl()
     energy = plain.get_potential_energy()
-    monkeypatch.setattr(dft, "SECOND_ORDER_AFTER", 40)
-    rescued = _hydrogen_chain(0.003, stability=False)
+    monkeypatch.setattr(dft, "SECOND_ORDER_AFTER", 4)
+    rescued = methyl()
     assert rescued.get_potential_energy() == pytest.approx(energy, abs=1e-5)
     scf = rescued.calc._solver._scf
     assert scf.converged
-    assert scf.history[39]["iter"] == 40      # the plain iterations first
+    assert scf.history[3]["iter"] == 4        # the plain iterations first
     assert scf.n_iterations < plain.calc._solver._scf.n_iterations
+
+
+@pytest.mark.parametrize("xc, integer", [("lda", False), ("pbe", True)])
+def test_a_hydroxyl_ensemble_is_kept_only_without_a_lower_integer_state(
+        xc, integer):
+    """OH's beta pi hole: under LDA no integer-occupation state converges
+    below the half-and-half ensemble, which stays; under PBE one lies 142 meV
+    below it and the check takes it."""
+    atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
+                  cell=[6, 6, 7])
+    atoms.center()
+    atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.3, trace=False,
+                           basis={"name": "PAW-LCAO", "size": "SZ"})
+    atoms.get_potential_energy()
+    scf = atoms.calc.result.scf
+    assert (scf.occupations_beta is None) == integer
+    assert scf.stability.outcome == ("lowered" if integer else "ensemble")
+    if integer:
+        assert scf.stability.energy_lowering == pytest.approx(
+            0.142 / 27.2114, abs=2e-3 / 27.2114)
 
 
 def test_the_iteration_limit_is_the_option():

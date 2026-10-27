@@ -533,19 +533,26 @@ _S_CHANNEL_REPAIRS = {
     ("Sb", "lda"): (9, 0.0),
     ("Sn", "lda"): (9, 0.0), ("Sn", "pbe"): (9, 0.0),
     # With a shorter s sphere (DEFAULT_CUTOFFS_BY_DATASET).
-    ("Tl", "lda"): (10, 10.0),
+    ("Tl", "lda"): (10, 10.0), ("Tl", "pbe"): (8, 10.0),
     ("Bi", "lda"): (10, 10.0), ("Bi", "pbe"): (10, 10.0),
     ("Os", "lda"): (10, 10.0), ("Os", "pbe"): (10, 50.0),
     ("Re", "lda"): (10, 10.0), ("Re", "pbe"): (10, 10.0),
 }
 _D_CHANNEL_REPAIRS = {
     # (element, xc): (d cutoff in Bohr, second reference energy in Hartree).
+    # 2026-10-26: the compact semicore d of Ga (both functionals) and LDA As
+    # is grown to 2.6 and 2.2 Bohr (HISTORY.md, "PAW failure campaign"): with
+    # 1.6 Bohr (4 grid points across at 0.18 Angstrom) the isolated atom
+    # drifted 0.4-45 eV over the lattice scan, PBE Ga and PBE As had no energy
+    # minimum, and LDA Ga sat 6.6 % short; now PBE Ga -0.2 %, LDA Ga -3.8 %
+    # (fcc cell at the experimental atomic volume), LDA As +1.1 %.  PBE As
+    # (3.4 %, SUSPECT) keeps its sphere until a better one is found.
     # PBE Ga and Ge found no repair while the PBE local potential was matched
     # to noise (GGA_LOCAL_FIT_FRACTION); with it the LDA repair works for
     # both: 0.47 -> 0.088 and 1.27 -> 0.049 (HISTORY.md, 2026-10-11).
-    ("Ga", "lda"): (1.6703, 2.0), ("Ga", "pbe"): (1.6703, 2.0),
+    ("Ga", "lda"): (2.6, 2.0), ("Ga", "pbe"): (2.6, 2.0),
     ("Ge", "lda"): (1.696, 3.0), ("Ge", "pbe"): (1.696, 3.0),
-    ("As", "lda"): (1.606, 3.0), ("As", "pbe"): (1.612, 3.0),
+    ("As", "lda"): (2.2, 3.0), ("As", "pbe"): (1.612, 3.0),
     ("Se", "lda"): (2.0, 2.0), ("Se", "pbe"): (2.0, 2.0),
     ("Br", "lda"): (1.006, 3.0), ("Br", "pbe"): (1.009, 3.0),
     ("Kr", "lda"): (1.066, 1.0), ("Kr", "pbe"): (1.070, 2.0),
@@ -560,6 +567,11 @@ _D_CHANNEL_REPAIRS = {
 #: as the library carried them -- a channel left to the generic rule can come
 #: out elsewhere (Os-PBE's f at 0.53 Bohr, 1.2 rad off in phase).
 DEFAULT_CUTOFFS_BY_DATASET = {
+    # 2026-10-26: PBE Bi and Tl take a 2.2 Bohr d sphere (Bi 1.344, Tl 1.451
+    # before; Tl PBE with the local shift of LDA Tl, +10 Ha: its p channel was
+    # built at +5 Ha with an overlap minimum of 0.18 and a projector peak of
+    # 253, which the generator no longer reproduces).  At 0.18 Angstrom: Bi
+    # +4.0 % -> +0.5 %, Tl no energy minimum -> +2.8 % (all-electron +3.1 %).
     # WP-5b (see _S_CHANNEL_REPAIRS): every channel's sphere, as screened and scanned.
     ('Cs', 'lda'): {0: 3.0, 1: 3.0, 2: 3.0, 3: 3.0},
     ('Cs', 'pbe'): {0: 3.0, 1: 3.0, 2: 3.0, 3: 3.0},
@@ -585,16 +597,16 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Pa', 'pbe'): {0: 2.8, 1: 2.8, 2: 2.8, 3: 2.4},
     ('U', 'lda'): {0: 2.6, 1: 2.6, 2: 2.6, 3: 2.4},
     ('U', 'pbe'): {0: 2.6, 1: 2.6, 2: 2.6, 3: 2.4},
-    ('As', 'lda'): {0: 2.081, 1: 2.564, 2: 1.606},
+    ('As', 'lda'): {0: 2.081, 1: 2.564, 2: 2.2},
     ('As', 'pbe'): {0: 2.095, 1: 2.582, 2: 1.612},
     ('Bi', 'lda'): {0: 2.294, 1: 3.183, 2: 1.344, 3: 3.183},
-    ('Bi', 'pbe'): {0: 2.294, 1: 3.183, 2: 1.344, 3: 3.183},
+    ('Bi', 'pbe'): {0: 2.294, 1: 3.183, 2: 2.2, 3: 3.183},
     ('Br', 'lda'): {0: 1.829, 1: 2.159, 2: 1.006},
     ('Br', 'pbe'): {0: 1.839, 1: 2.171, 2: 1.009},
     ('Cr', 'lda'): {0: 3.376, 2: 1.062},
     ('Cr', 'pbe'): {0: 3.409, 2: 1.068},
-    ('Ga', 'lda'): {0: 2.4425, 1: 3.2799, 2: 1.6703},
-    ('Ga', 'pbe'): {0: 2.4574, 1: 3.3051, 2: 1.6703},
+    ('Ga', 'lda'): {0: 2.4425, 1: 3.2799, 2: 2.6},
+    ('Ga', 'pbe'): {0: 2.4574, 1: 3.3051, 2: 2.6},
     ('Ge', 'lda'): {0: 2.242, 1: 2.86, 2: 1.696},
     ('Ge', 'pbe'): {0: 2.261, 1: 2.882, 2: 1.696},
     ('I', 'lda'): {0: 2.194, 1: 2.628, 2: 1.113},
@@ -622,6 +634,7 @@ DEFAULT_CUTOFFS_BY_DATASET = {
     ('Sn', 'lda'): {0: 2.33, 1: 3.305, 2: 2.0},
     ('Sn', 'pbe'): {0: 2.33, 1: 3.305, 2: 2.0},
     ('Tl', 'lda'): {0: 2.678, 1: 3.773, 2: 1.451, 3: 3.773},
+    ('Tl', 'pbe'): {0: 2.689, 1: 3.801, 2: 2.2, 3: 3.801},
     ('Xe', 'lda'): {0: 2.093, 1: 2.476, 2: 1.07},
     ('Xe', 'pbe'): {0: 2.104, 1: 2.487, 2: 1.07},
 }
@@ -2738,7 +2751,7 @@ class PAWIntegrals(MolecularIntegrals):
         if self._Vsr is None:
             matrices, _ = self.short_range_local_matrices()
             total = np.zeros((self.n_orbitals, self.n_orbitals),
-                             dtype=self._engine._psi.dtype)
+                             dtype=self._engine.dtype)
             for matrix in matrices.values():
                 total = total + matrix
             self._Vsr = total
@@ -2790,8 +2803,9 @@ class PAWIntegrals(MolecularIntegrals):
         """
         if self._C is not None:
             return self._C
-        super().projections()               # grid values: resolution ratios
-        if self.two_center == "grid":
+        if self.two_center == "analytic":
+            self._C = self.two_center_tables(True).matrix("overlap")
+        else:
             self._C = atom_centered_projections(self.basis, self.kb_projectors)
         return self._C
 
@@ -3040,28 +3054,25 @@ class PAWIntegrals(MolecularIntegrals):
         for owner, (channels_a, offsets, weighted) in quadrature.items():
             c_owner = centers_arr[owner]
             for neighbor, others in by_dataset.values():
-                valid = [o for o in others if o != owner]
-                if not valid:
-                    continue
-                other_c = np.stack([centers_arr[o] for o in valid])
-                rel = (c_owner[None, :] - other_c)[:, None, :] + offsets[None, :, :]
-                r2 = np.sum(rel * rel, axis=2)[:, :, None]
-                shift = two_s * rel
-                d_plus = np.sqrt(np.maximum(r2 + shift + s2, 0.0))
-                v_plus = neighbor.local_potential(d_plus)
-                d_minus = np.sqrt(np.maximum(r2 - shift + s2, 0.0))
-                v_minus = neighbor.local_potential(d_minus)
-                dv = v_plus
-                dv -= v_minus
-                dv /= two_s          # (n_valid, N_quad, 3)
-                for idx_o, other in enumerate(valid):
-                    slopes = weighted @ dv[idx_o]
+                for other in others:
+                    if other == owner:
+                        continue
+                    rel = (c_owner - centers_arr[other])[None, :] + offsets
+                    r2 = np.sum(rel * rel, axis=1)[:, None]
+                    shift = two_s * rel
+                    d_plus = np.sqrt(np.maximum(r2 + shift + s2, 0.0))
+                    v_plus = neighbor.local_potential(d_plus)
+                    d_minus = np.sqrt(np.maximum(r2 - shift + s2, 0.0))
+                    v_minus = neighbor.local_potential(d_minus)
+                    dv = (v_plus - v_minus) / two_s
+                    slopes = weighted @ dv
                     for i, (L, M) in enumerate(channels_a):
                         ch = (owner, L, M)
                         for k in range(3):
                             val = slopes[i, k]
                             out[(owner, k)][ch] = out[(owner, k)][ch] + val
                             out[(other, k)][ch] = out[(other, k)][ch] - val
+        self._Vion_quadrature = None
         return out
 
     @profile_stage('integration: PAW ionic compensation')
@@ -3087,7 +3098,7 @@ class PAWIntegrals(MolecularIntegrals):
             return None
         potentials = self.compensation_ionic()
         out = np.zeros((self.n_orbitals, self.n_orbitals),
-                       dtype=self._engine._psi.dtype)
+                       dtype=self._engine.dtype)
         for channel, Q in moments.items():
             out = out + Q * potentials[channel]
         return out

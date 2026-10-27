@@ -204,7 +204,7 @@ class Timings:
         threads_key = "threads" if is_rust else "openmp_threads"
         mpi_desc = ("not used (single process, shared-memory scoped threads)"
                     if is_rust else "not used (single process, shared-memory OpenMP)")
-        return {
+        res = {
             "integration_backend": backend,
             threads_key: cores,
             "cpu_count": cpu_count(),
@@ -212,6 +212,13 @@ class Timings:
             "peak_memory_MiB": self.peak_memory_mb,
             "resident_memory_MiB": current_memory_mb(),
         }
+        try:
+            from ..integrals.buffers import is_dump_buffers_enabled, get_buffer_dir
+            if is_dump_buffers_enabled():
+                res["disk_buffer_dump"] = f"active (.bin files in {get_buffer_dir()})"
+        except Exception:
+            pass
+        return res
 
     def format_report(self, indent: str = "  ", width: int = 30) -> str:
         """Multi-line report of stage times, cores and peak memory."""

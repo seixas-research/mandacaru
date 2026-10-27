@@ -134,6 +134,15 @@ def _library(build: bool = True):
         return None
     if _LIB is not None:
         return _LIB
+    try:
+        from ..integrals._backend import _LIB as _INT_LIB
+        if _INT_LIB is not None and hasattr(_INT_LIB, "mandacaru_radial_abi_version"):
+            if _INT_LIB.mandacaru_radial_abi_version() == ABI_VERSION:
+                _LIB = _INT_LIB
+                _last_message = "Radial backend loaded from Rust integrals library"
+                return _LIB
+    except Exception:
+        pass
     target = _BUILD_DIR / _LIB_NAME
     stale = (target.is_file()
              and target.stat().st_mtime < max(_SOURCE.stat().st_mtime,

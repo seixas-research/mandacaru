@@ -1299,8 +1299,16 @@ class _BlochMixin:
         frozen = tuple(context.get("frozen") or ())
         active = tuple(context.get("active") or tuple(range(coefficients.shape[0])))
         deleted = tuple(context.get("deleted") or ())
+        if deleted:
+            raise NotImplementedError(
+                "the spectral function with a truncated virtual space "
+                "(active_space 'orbitals' or 'threshold') is not implemented: "
+                "its addition branch puts an extra electron into the virtual orbitals, "
+                "and the deleted ones are exactly where it would go -- the peaks would "
+                "be the truncated model's, presented as the material's."
+            )
         mo_energies = None
-        if frozen or deleted:
+        if frozen:
             integrals = context.get("integrals")
             n_tot = context.get("n_electrons") or (self.num_particles[0] + self.num_particles[1])
             alpha, beta = self.num_particles

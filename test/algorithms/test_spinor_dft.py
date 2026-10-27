@@ -926,11 +926,11 @@ def test_bi2te3_spin_orbit_coupling_opens_band_gap():
         method="dft",
         xc="pbe",
         paw_dataset="pbe-fr",
-        basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": False},
+        basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": True},
         kpts={"size": (2, 2, 2), "gamma": True},
-        grid_spacing=0.35,
+        grid_spacing=0.25,
         trace=False,
-        max_iter=25,
+        max_iter=30,
     )
     _energy = atoms.get_potential_energy()
     scf = atoms.calc.result.scf

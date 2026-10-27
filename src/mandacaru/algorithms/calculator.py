@@ -381,7 +381,10 @@ class Mandacaru(Calculator):
         two-body tensor instead of the default Poisson solve;
         ``max_iter=`` raises the SCF iteration limit, and
         ``stability=False`` skips the saddle-point check of a converged
-        spin-unrestricted molecule),
+        spin-unrestricted molecule; ``hubbard_u={"Gd": {"f": 6.0}}`` adds the
+        on-site Hubbard correction (U_eff in eV) to the d or f shell of a
+        PAW-LCAO atom, and ``one_center_hartree="quadratic"`` adds the
+        quadratic one-center Hartree term the datasets linearize away),
         ``"vqe"`` (a
         fixed ansatz, chosen by
         ``ansatz=``: ``"uccsd"`` or the Hamiltonian variational ansatz
@@ -611,10 +614,24 @@ class Mandacaru(Calculator):
                  measurement_provider=None, measurement_budget=None,
                  measurement_scheme: str = "qwc",
                  trace: bool | None = None,
-                 population=None, **solver_kwargs):
+                 population=None,
+                 dump_buffers: bool | None = None,
+                 disk_buffers: bool | None = None,
+                 cache_dir=None, **solver_kwargs):
         Calculator.__init__(self)
         self._attached_atoms = None      # the geometry ASE attached (set_atoms)
         self.method, self._solver_class = resolve_method(method)
+        if dump_buffers is None and disk_buffers is not None:
+            dump_buffers = disk_buffers
+        if dump_buffers is None:
+            # Buffer dump to disk (.bin) is default for all DFT simulations unless explicitly disabled
+            dump_buffers = (self.method == "dft")
+        self.dump_buffers = bool(dump_buffers)
+        self.cache_dir = cache_dir
+        from ..integrals.buffers import set_dump_buffers, set_buffer_dir
+        set_dump_buffers(self.dump_buffers)
+        if self.cache_dir is not None:
+            set_buffer_dir(self.cache_dir)
         if self.method in ("rhf", "uhf", "ghf", "dft") \
                 and measurement_provider is not None:
             raise ValueError("classical RHF/UHF/GHF/DFT has no quantum state to "
@@ -671,7 +688,7 @@ class Mandacaru(Calculator):
                     f"force_method must be one of {VALID_FORCE_METHODS}, "
                     f"got {force_method!r}")
             self.force_method = fm
-        SUPPORTED_EFFECTIVE_POTENTIAL_METHODS = ("dft", "vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe")
+        SUPPORTED_EFFECTIVE_POTENTIAL_METHODS = ("dft", "vqe", "adapt-vqe")
         if self.method not in SUPPORTED_EFFECTIVE_POTENTIAL_METHODS and self.force_method == "effective-potential":
             raise ValueError(
                 f"force_method='effective-potential' is supported for methods "
@@ -1212,6 +1229,9 @@ class Mandacaru(Calculator):
     def _make_solver(self, grid, **overrides):
         options = {**self.solver_kwargs, **overrides}
         options.setdefault("precision", self.precision)
+        options.setdefault("dump_buffers", self.dump_buffers)
+        if self.cache_dir is not None:
+            options.setdefault("cache_dir", self.cache_dir)
         solver = self._solver_class(basis=self.basis, grid=grid,
                                     grid_spacing=self.grid_spacing,
                                     verbose=self._show_trace(), **options)
@@ -1466,21 +1486,19 @@ class Mandacaru(Calculator):
         # calls `calculate` again for the missing property): the SCF is the
         # same, so the gradient reads it instead of repeating it.
         reused = (self._converged_solver(atoms, grid)
-                  if want_forces and not periodic and not system_changes
+                  if want_forces and not system_changes
                   else None)
         if reused is not None:
             solver, energy_ev = reused, self.results["energy"]
         else:
-            previous = self.__dict__.get("_solver")
+            previous = self._solver
             solver = self._make_solver(grid=grid)
             inherit = getattr(solver, "inherit_ansatz", None)
             if inherit is not None and previous is not None:
                 inherit(previous)
-            self._solver = None
-            self._energy_state = None
+            if previous is not None:
+                self._release_solver(previous)
             previous = None
-            import gc
-            gc.collect()
             # This step's performance block is written here, once the
             # gradient and any measurement have been timed too (see
             # :meth:`_log_performance`).
@@ -1540,8 +1558,7 @@ class Mandacaru(Calculator):
                               solver_ran=reused is None)
         if want_forces and not solver.dry_run:
             self._record_step(atoms, energy_ev, step_seconds)
-            import gc
-            gc.collect()
+            self._release_solver(solver)
         # The optimizer's line for the *previous* step is written after its
         # calculate returns, so this is what pushes it out on a stream that
         # could not be reconfigured.
@@ -1549,6 +1566,74 @@ class Mandacaru(Calculator):
             sys.stdout.flush()
         except Exception:
             pass
+
+    def _release_solver(self, solver) -> None:
+        """Deallocate solver internal buffers, caches, and memory-mapped disk buffers."""
+        if solver is None:
+            return
+        try:
+            ctx = getattr(solver, "_gradient_context", None)
+            if ctx and "integrals" in ctx:
+                integ = ctx["integrals"]
+                if hasattr(integ, "_engine"):
+                    integ._engine._psi_cache = None
+                    integ._engine._psi = None
+                integ._h1 = None
+                integ._s = None
+                integ._Vion = None
+                integ._Vion_quadrature = None
+                integ._Vsr = None
+                integ._Q = None
+                integ._W = None
+                integ._U = None
+                integ._two_center = None
+                integ._localized = None
+            if hasattr(solver, "integrals") and solver.integrals is not None:
+                integ = solver.integrals
+                if hasattr(integ, "_engine"):
+                    integ._engine._psi_cache = None
+                    integ._engine._psi = None
+                integ._h1 = None
+                integ._s = None
+                integ._Vion = None
+                integ._Vion_quadrature = None
+                integ._Vsr = None
+                integ._two_center = None
+                integ._localized = None
+            if hasattr(solver, "_scf"):
+                scf = solver._scf
+                if scf is not None:
+                    scf.orbitals = None
+                    scf._orbital_gradients = None
+                    scf.mo_coefficients = None
+                    scf.density_matrix = None
+                    scf.h = None
+                    scf.eri = None
+                    scf.poisson = None
+                solver._scf = None
+            if hasattr(solver, "atoms") and solver.atoms is not None:
+                solver.atoms.calc = None
+                solver.atoms = None
+            solver._gradient_context = None
+            solver.hamiltonian = None
+            solver.fermion_hamiltonian = None
+            solver.integrals = None
+            solver.result = None
+            solver.results = None
+        except Exception:
+            pass
+        finally:
+            self._solver = None
+            self._energy_state = None
+            self.force_result = None
+            from ..integrals.fft import clear_workspaces
+            clear_workspaces()
+            from ..pseudopotentials.local_split import clear_sphere_cache
+            clear_sphere_cache()
+            from ..integrals.buffers import cleanup_disk_buffers
+            cleanup_disk_buffers(remove_files=True)
+            import gc
+            gc.collect()
 
     def _converged_solver(self, atoms, grid):
         """The solver whose converged state is ``atoms``' own, or ``None``.
@@ -1561,10 +1646,13 @@ class Mandacaru(Calculator):
         cell.  A moved atom, a changed cell or a new solver never qualifies.
         """
         state = self.__dict__.get("_energy_state")
-        solver = self.__dict__.get("_solver")
+        solver = self._solver
         if state is None or solver is None or "energy" not in self.results:
             return None
         converged_atoms, converged_solver, signature = state
+        context = getattr(solver, "_gradient_context", None)
+        if grid is None and self._is_periodic_calculation(atoms) and context is not None:
+            grid = getattr(context.get("integrals"), "grid", None)
         if (grid is None or converged_solver is not solver
                 or signature != self._scf_signature()
                 or compare_atoms(converged_atoms, atoms)
@@ -2631,14 +2719,15 @@ class Mandacaru(Calculator):
         D_loewdin = mo @ D_spatial @ mo.conj().T
         X = integrals._lowdin_x()
         P0 = X @ D_loewdin @ X.conj().T
-        if not np.iscomplexobj(integrals._engine._psi):
+        is_real = getattr(integrals._engine, "real", True)
+        if is_real:
             P0 = np.real(P0)
-
-        psi = np.ascontiguousarray(integrals._engine._psi)
         lbc = getattr(integrals, "localized_basis", lambda: None)(context.get("atom_of_orbital"))
-        if lbc is not None and not np.iscomplexobj(psi):
+        if lbc is not None:
             valence = lbc.density(P0)
+            psi = None
         else:
+            psi = np.ascontiguousarray(integrals._engine._psi)
             valence = np.real(np.sum((P0.T @ psi) * psi.conj(), axis=0))
         rho = valence
         datasets = getattr(integrals, "pseudopotentials", None) or []
@@ -2672,7 +2761,7 @@ class Mandacaru(Calculator):
         eps, U_mo = np.linalg.eigh(F_low)
         DE_low = U_mo @ np.diag(eps) @ U_mo.conj().T @ D_loewdin
         E_occ = X @ DE_low @ X.conj().T
-        if not np.iscomplexobj(psi):
+        if is_real:
             E_occ = np.real(E_occ)
 
         constant = e_xc - float(np.real(np.sum(P0 * V_eff.T)))
@@ -2786,7 +2875,7 @@ class Mandacaru(Calculator):
     def _record_step(self, atoms, energy_ev: float, seconds: float) -> None:
         """Keep this geometry in :attr:`trajectory`, for the closing summary."""
         forces = np.asarray(self.force_result.forces, dtype=float)
-        self.trajectory.append({
+        rec = {
             "energy": float(energy_ev),
             "max_force": float(np.linalg.norm(forces, axis=1).max()),
             # The unprojected sum: the grid artifact, whether or not the
@@ -2794,11 +2883,19 @@ class Mandacaru(Calculator):
             "net_force": float(self.force_result.details.get(
                 "translational_residual",
                 np.abs(forces.sum(axis=0)).max())),
+            "forces": forces.copy(),
             "wall_time_s": float(seconds),
             "com": np.asarray(atoms.get_center_of_mass(), dtype=float),
             "positions": np.asarray(atoms.get_positions(), dtype=float),
             "symbols": list(atoms.get_chemical_symbols()),
-        })
+        }
+        if "stress" in self.results:
+            rec["stress"] = np.asarray(self.results["stress"], float).copy()
+        if "magmom" in self.results:
+            rec["magmom"] = float(self.results["magmom"])
+        if "magmoms" in self.results:
+            rec["magmoms"] = np.asarray(self.results["magmoms"], float).copy()
+        self.trajectory.append(rec)
         self._arm_exit_hook()
 
     def _arm_exit_hook(self) -> None:

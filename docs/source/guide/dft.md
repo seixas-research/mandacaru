@@ -911,8 +911,14 @@ the SCF re-converged, up to four times. A state that stays unstable raises a
 `RuntimeWarning`. The exactly equilateral H3 doublet is the case: its SCF
 stopped at a symmetric saddle 650 meV above the doublet and reported
 convergence. A degenerate shell at a Fermi level that is filled equally (the OH
-radical's beta pi) is an ensemble by design and is reported as such, not
-tested.
+radical's beta pi) is an ensemble, and the orbital Hessian does not apply to
+it. It is probed once instead: an integer-occupation SCF started from it is
+dropped if its energy is still above the ensemble's after 30 iterations, and
+taken, then checked as above, if it converges below (the equilateral H3
+doublet; OH under PBE, 142 meV, and r2SCAN, 490 meV). OH under LDA has no
+such state and stays an ensemble. `stability=False` keeps whatever the SCF
+reached. Both spins share one set of DIIS coefficients, as in the
+unrestricted Hartree-Fock.
 
 The same products drive a rescue for a stalled loop: an integer-occupation
 SCF that has not converged after 80 iterations continues with Newton-CG
@@ -929,6 +935,138 @@ eigenvalue in Hartree per radian squared and the products spent) and, when the
 check lowered the energy, `stability_energy_lowering_<unit>`; `[SCF SETUP]`
 carries `stability_check`. Closed-shell, spin-orbit and crystal runs are not
 checked.
+
+## The on-site Hubbard correction
+
+`hubbard_u={"Gd": {"f": 6.0}}` adds the simplified, rotationally invariant
+Hubbard correction of Dudarev *et al.* to the correlated shell of a PAW-LCAO
+or UPAW-LCAO atom: the energy
+
+$$E_U = \sum_{A\sigma} \frac{U}{2}\,\mathrm{Tr}\big[n^{A\sigma}(1-n^{A\sigma})\big]$$
+
+and, in the Hamiltonian, the potential $U(\tfrac12 - n^{A\sigma})$ acting in
+the shell's projector space. It vanishes for a full or empty shell and pushes
+the occupations of a partly filled one towards 0 and 1. The datasets
+linearize the one-center Hartree term about the isolated atom, so the
+quadratic, on-site part of the Coulomb repulsion of a compact open shell (the
+4f of a lanthanide) is not in the Kohn-Sham energy; this is the correction
+that puts a model of it back. (The exact quadratic term itself is
+`one_center_hartree="quadratic"`, the next section; the Dudarev model is not a
+substitute for it, because it penalizes fractional occupation only and not the
+charging of the sphere.) `U` is $U_\mathrm{eff} = U - J$ in electron volts,
+given per element and shell (`"d"` or `"f"`); a bare number is refused because
+the shell is never guessed, and `U = 0` is the same as not giving the option.
+
+The occupation matrix $n^{A\sigma}_{mm'}$ is not the diagonal of the projected
+density: the PAW projector basis is not orthonormal, even for a unitary
+dataset. It is built from the all-electron partial wave of the shell,
+normalized to one inside the sphere, as $n = W^T R W$, with $R_{ij} =
+\langle\tilde p_i|\psi\rangle\langle\psi|\tilde p_j\rangle$ the projected
+density matrix and $W$ the overlaps of that wave with the dataset's partial
+waves in the basis the projectors were built in. A shell that lies inside its
+sphere holds its electron count; a very small sphere under-counts, so a
+dataset for a correlated shell needs a sphere that holds it (the lanthanide
+f spheres of 1.4 to 1.7 Bohr do).
+
+```python
+from ase.build import bulk
+from mandacaru import Mandacaru
+
+gd = bulk("Gd", "hcp", a=3.636, c=5.783)
+gd.set_initial_magnetic_moments([7.5, 7.5])
+gd.calc = Mandacaru(method="dft", xc="lda", paw_dataset="lda-sr",
+                    kpts={"size": (6, 6, 4), "gamma": True},
+                    smearing={"method": "fermi-dirac", "width": 0.1},
+                    hubbard_u={"Gd": {"f": 6.0}})
+```
+
+What it works with, and what it refuses:
+
+- LDA and GGA functionals and meta-GGAs, restricted and spin-polarized,
+  molecules and crystals. A crystal with the option is solved on its full
+  k-mesh, without the symmetry reduction, because the projected density that
+  defines $n$ would otherwise have to be symmetrized across equivalent atoms
+  and completed under time reversal; it costs the extra k-points.
+- Hybrid functionals, the two-component (spin-orbit and noncollinear) runs and
+  a finite electric field raise `NotImplementedError`.
+- Forces and stress are analytic and include the dependence of $E_U$ on the
+  projections: for a molecule, the two places where the projections move
+  (the shell's own basis functions and its projectors) at the converged
+  density, with the on-site energy and operator folded into the effective
+  potential; for a crystal, the same two terms per spin channel in the
+  Pulay and Hellmann-Feynman sums, and a stress by the usual central
+  differences of the carried energy, which now includes $E_U$. They agree
+  with central differences of the energy (a molecule's to 1e-5 eV/Angstrom;
+  a crystal's to the few meV/Angstrom of the crystal force itself on a
+  0.3 Angstrom grid).
+
+Convergence: a partly filled, compact shell makes the Hamiltonian
+orbital-dependent, and a metal with a narrow smearing has many nearly
+degenerate ways to fill it. Gadolinium with the f shell corrected (U = 3 eV)
+stalls with a 0.1 eV Fermi-Dirac width, the energy steady to 1e-4 Hartree and
+the density residual stuck near 0.1 electrons, and converges in about 30
+iterations at 0.3 eV (U = 1 eV converges at 0.1 eV). Use a width of 0.2 to
+0.3 eV for a correlated metal, or converge at a wide smearing first.
+
+`[SCF SETUP]` names the shells and their $U_\mathrm{eff}$ (`hubbard_u`), and
+`[SCF SUMMARY]` reports the energy (`hubbard_energy_<unit>`), which is a term of
+the electronic energy of its own and not part of `xc_energy`. The paper is
+cited in the references file.
+
+## The quadratic one-center Hartree term
+
+`one_center_hartree="quadratic"` puts back what the PAW-LCAO datasets leave
+out of the Hartree energy of an augmentation sphere. A dataset linearizes that
+energy about the isolated atom, whose projected density matrix is $D^0$; the
+exact energy is quadratic in the sphere's density matrix $D$, and the omitted
+part is exactly
+
+$$E_2 = \tfrac12\sum_A (D_A - D^0)\,\Delta W_A\,(D_A - D^0),$$
+
+with $\Delta W_A$ the one-center Coulomb tensor of the sphere (all-electron
+minus smooth partial waves, the same tensor the wave-function Hamiltonians use).
+$E_2$ is zero for the atom itself and quadratic in how far the density of the
+sphere has moved from the atom's. For an sp atom this is a few hundredths of an
+electron volt (CuH: 0.4 eV after relaxation). For a compact open shell it is
+large: evaluated on the converged linearized density of gadolinium (4f in the
+valence), it is 15 to 20 eV per atom, 4 eV more at 0.88 of the lattice constant
+than at 1.12, against 0.07 eV for lanthanum, whose 4f is empty.
+
+It is not, however, a cure for the lanthanide over-contraction. Put into the
+self-consistent calculation on its own, the term takes gadolinium to a state
+with about 4 $\mu_B$ per atom instead of 7.7, a lattice scan that rises on
+expansion as before (1.65 eV from 1.00 to 1.12 of the lattice constant against
+1.33 eV linearized), and an SCF that does not converge at 0.88. The one-center
+exchange-correlation energy of the sphere is linearized in the same way, with
+the opposite sign, and for the 4f the two largely cancel; the Hartree term
+alone overshoots. Use the option for what it is, the exact one-center Hartree
+energy, and check it against a lattice scan.
+
+```python
+gd.calc = Mandacaru(method="dft", xc="lda", paw_dataset="lda-sr",
+                    kpts={"size": (6, 6, 4), "gamma": True},
+                    smearing={"method": "fermi-dirac", "width": 0.3},
+                    one_center_hartree="quadratic")
+```
+
+The default, `"linearized"`, is the datasets' own term and changes nothing.
+The option combines with `hubbard_u`, and with spin polarization, forces and
+stress: the term is one more on-site correction acting on the projected density
+matrix (`mandacaru.algorithms.onsite`), so its operator enters the Fock matrix
+through the projections and its geometry dependence is the projections' alone,
+exactly as for the Hubbard correction. Hybrid functionals, the
+two-component runs and a finite electric field raise `NotImplementedError`.
+
+Two properties to know. $\Delta W$ is not positive definite, so $E_2$ can be
+slightly negative, and a relaxed density can move a long way from the
+linearized one (CuH: $\|\Delta D\| = 0.5$ and 40 SCF iterations against 26;
+gadolinium: 141 iterations at the lattice constant of the cell, 357 at 1.12 and
+no convergence at 0.88). The sphere's operators enter the Pulay mixer's metric
+for this reason.
+
+`[SCF SETUP]` shows `one_center_hartree` when it is on, and `[SCF SUMMARY]`
+reports `one_center_hartree_energy_<unit>`, a term of the electronic energy of
+its own and not part of `xc_energy`.
 
 ## Spin-orbit coupling: two-component Kohn-Sham
 
@@ -2151,6 +2289,8 @@ The following are refused or unavailable:
   listed in *Spin-orbit coupling: two-component Kohn-Sham* (projectabilities,
   natural orbitals, volumetric fields, the downfolded problem of spinor
   Wannier functions, a finite field).
+- **The on-site Hubbard correction (`hubbard_u`) with a hybrid functional, a
+  two-component run or a finite electric field.**
 - **Crystals with an all-electron basis**: the periodic path is
   PAW-LCAO or UPAW-LCAO only.
 - **D4 with LDA or with r2SCAN+rVV10**, as above.

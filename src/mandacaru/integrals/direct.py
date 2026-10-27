@@ -192,7 +192,7 @@ class DirectCoulomb:
         from .poisson import PoissonFFTSolver
 
         self.integrals = integrals
-        self.psi = integrals._engine._psi                     # (M, G)
+        self._psi = None
         self.grid = integrals.grid
         self.dV = float(self.grid.dV)
         self.solver = PoissonFFTSolver(self.grid.shape, step=self.grid.step)
@@ -205,8 +205,14 @@ class DirectCoulomb:
         self.box_threshold = box_threshold
 
     @property
+    def psi(self) -> np.ndarray:
+        if self._psi is None:
+            self._psi = self.integrals._engine._psi
+        return self._psi
+
+    @property
     def n_basis(self) -> int:
-        return int(self.psi.shape[0])
+        return len(self.integrals.basis)
 
     # -- the family augmentation ------------------------------------------- #
 
@@ -273,7 +279,8 @@ class DirectCoulomb:
         real transforms."""
         D = np.asarray(D)
         localized = getattr(self.integrals, "localized_basis", lambda: None)()
-        if localized is not None and not np.iscomplexobj(self.psi):
+        is_real = getattr(self.integrals._engine, "real", True)
+        if localized is not None and is_real:
             density = localized.density(D)
             V = self.potential(density[None, :])[0]
             J = localized.potential_matrix(V, self.dV)

@@ -152,6 +152,11 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.integrate import cumulative_trapezoid, simpson
 
+try:
+    from ..integrals._backend import _LIB
+except Exception:
+    _LIB = None
+
 from .multipoles import gaunt, multipole_range, partial_waves, shape_function
 
 #: Radial points of the one-center quadrature (uniform, inside the sphere).
@@ -180,6 +185,12 @@ def radial_coulomb(r: np.ndarray, rho_1: np.ndarray, rho_2: np.ndarray,
     """
     L = int(L)
     r = np.asarray(r, dtype=float)
+    if _LIB is not None and hasattr(_LIB, "mandacaru_radial_coulomb"):
+        r_c = np.ascontiguousarray(r, dtype=np.float64)
+        r1_c = np.ascontiguousarray(rho_1, dtype=np.float64)
+        r2_c = np.ascontiguousarray(rho_2, dtype=np.float64)
+        return float(_LIB.mandacaru_radial_coulomb(L, int(r_c.size), r_c, r1_c, r2_c))
+
     weight_in = rho_2 * r ** (L + 2)
     with np.errstate(divide="ignore", invalid="ignore"):
         weight_out = np.where(r > 0.0, rho_2 * r ** (1 - L), 0.0)

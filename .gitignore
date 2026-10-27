@@ -210,3 +210,5 @@ examples/*/data/*
 !examples/ibm_quantum/data/h2_relax_ibm*
 !examples/ibm_quantum/data/h2_1.8A_*
 !examples/visualization/data/h2_cube_slice.png
+
+.mandacaru

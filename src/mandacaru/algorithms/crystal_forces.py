@@ -239,7 +239,11 @@ def kpoint_state(solver):
     data = c.kpoint_data
     device = solver.device
     for s, (V_s, v_tau_s) in enumerate(potentials):
-        H = device.hamiltonians(V_s, v_tau_s, w)
+        # The on-site correction's operator of the output density matrices
+        # (held fixed, as the hybrid's), joined to the projector operator.
+        H = device.hamiltonians(
+            V_s, v_tau_s, w, None if solver.corrections is None
+            else solver._onsite_output[s])
         if solver.screening is not None:
             H = H + _hybrid_hamiltonian_terms(solver, s, device=device)
         eps, C = device.eigensolve(H)
@@ -285,7 +289,9 @@ def kpoint_state(solver):
             "overlaps": overlaps, "fermi_level": mu,
             "entropy_term": entropy_term,
             "potentials": (V, v_tau, w, terms), "density": density,
-            "channel_densities": rho if spin else None}
+            "channel_densities": rho if spin else None,
+            "onsite": solver._onsite_output if solver.corrections is not None
+            else None}
 
 
 def _trace(A, B) -> float:
@@ -426,6 +432,11 @@ def _matrix_block_cross(solver, state, derivatives, start, outer, block,
         for s, channel in enumerate(channels):
             V_s, v_tau_s = channel["V"], channel["v_tau"]
             H_cross = fixed_cross + ((psi_grad.conj() * V_s) @ psi_base.T) * dV
+            if state["onsite"] is not None:
+                # the on-site operator of this channel, between the moved
+                # functions' projections and the base functions'
+                H_cross = H_cross + C_grad @ (state["onsite"][s]
+                                              @ C0.conj().T)
             if v_tau_s is not None:
                 for dg, db in zip(grad_psi_grad, grad_psi_base):
                     H_cross = H_cross + 0.5 * ((dg.conj() * v_tau_s) @ db.T) * dV
@@ -467,6 +478,11 @@ def _matrix_block_cross(solver, state, derivatives, start, outer, block,
                         dH = dH + w[ch] * (dCa @ blk @ Ca.conj().T
                                            + Ca @ blk @ dCa.conj().T)
                 hf[atom, d] += wk * (_trace(P, dH) - _trace(W, dS))
+                if state["onsite"] is not None:
+                    hf[atom, d] += wk * sum(
+                        _trace(P_s, dC @ O_s @ C0.conj().T
+                               + C0 @ O_s @ dC.conj().T)
+                        for P_s, O_s in zip(P_channels, state["onsite"]))
 
 
 def _matrix_block(solver, state, ext, derivatives, start, outer, block, base,
@@ -834,7 +850,8 @@ def carried_energy(solver, state, atoms, options, family, kpts,
                                    * HARTREE_TO_EV)
     crystal, context = build_crystal(strained, 0.0, pinned, kpts=kpts,
                                      family=family, grid=grid,
-                                     symmetry=symmetry)
+                                     symmetry=symmetry,
+                                     full_mesh=solver.corrections is not None)
     if not np.allclose(context["kpoints_fractional"], state["fractional"]):
         raise RuntimeError("the strained crystal's k-points are not the "
                            "state's: the carried states would be paired with "
@@ -843,7 +860,8 @@ def carried_energy(solver, state, atoms, options, family, kpts,
         crystal, solver.n_electrons, solver.functional,
         smearing=None, relativistic=solver.relativistic,
         constant=solver.constant, screening=solver.screening,
-        magnetic_moments=solver.initial_moments if state["spin"] else None)
+        magnetic_moments=solver.initial_moments if state["spin"] else None,
+        onsite=solver.corrections)
     overlaps_half = state.get("overlaps_half")
     if overlaps_half is None:
         overlaps_half = [_matrix_power(S0, 0.5) for S0 in state["overlaps"]]
@@ -871,6 +889,9 @@ def carried_energy(solver, state, atoms, options, family, kpts,
         tau = strained_solver._tau(matrices) if strained_solver.meta else None
         energy = float(sum(strained_solver.energy_terms(matrices, rho, q,
                                                         tau).values()))
+    if strained_solver.corrections is not None:
+        energy += strained_solver.onsite_terms(
+            [matrices for _v, matrices in carried])[0]
     if strained_solver.screening is not None:
         # One call over the channels: the spheres' frozen terms enter once.
         energy += strained_solver.hybrid_terms(

@@ -37,11 +37,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.special import spherical_jn
 
+from ._backend import _LIB
 from ..basis._angular import spherical_harmonic, spherical_harmonic_gradient
 
 #: How the two-center matrices (overlap, kinetic energy, projections) are
@@ -74,6 +76,38 @@ TABLE_STEP = 0.02
 SAME_CENTER = 1e-8
 
 _CACHE_LIMIT = 4096
+
+_GLOBAL_MATH_CACHE = Path.home() / ".cache" / "mandacaru" / "math"
+_GAUNT_FILE = _GLOBAL_MATH_CACHE / "gaunt_coefficients.npz"
+_GAUNT_LOADED = False
+
+
+def _ensure_gaunt_loaded():
+    global _GAUNT_LOADED, _GAUNT
+    if not _GAUNT_LOADED:
+        _GAUNT_LOADED = True
+        if _GAUNT_FILE.is_file():
+            try:
+                with np.load(_GAUNT_FILE) as data:
+                    for k in data.files:
+                        parts = tuple(map(int, k.split("_")))
+                        _GAUNT[parts] = data[k]
+            except Exception:
+                pass
+
+
+def _save_gaunt_to_cache():
+    try:
+        _GLOBAL_MATH_CACHE.mkdir(parents=True, exist_ok=True)
+        arrays = {f"{k[0]}_{k[1]}_{k[2]}": v for k, v in _GAUNT.items()}
+        np.savez_compressed(_GAUNT_FILE, **arrays)
+    except Exception:
+        pass
+
+
+def _local_pair_table_cache_path(digest1: str, digest2: str, kind: str) -> Path:
+    cache_dir = Path.cwd() / ".mandacaru" / "basis_tables" / "pair_tables"
+    return cache_dir / f"{digest1[:16]}_{digest2[:16]}_{kind}.npz"
 
 #: Why a crystal cannot use the analytic route (one message, three entries).
 PERIODIC_REFUSAL = (
@@ -112,6 +146,7 @@ def real_gaunt(l1: int, l2: int, L: int) -> np.ndarray:
     in :math:`\cos\theta`, uniform in :math:`\varphi`); zero unless the
     triangle rule and the parity of :math:`l_1 + l_2 + L` allow it.
     """
+    _ensure_gaunt_loaded()
     key = (int(l1), int(l2), int(L))
     cached = _GAUNT.get(key)
     if cached is not None:
@@ -134,6 +169,7 @@ def real_gaunt(l1: int, l2: int, L: int) -> np.ndarray:
                       table(L), optimize=True)
         G[np.abs(G) < 1e-13] = 0.0
     _GAUNT[key] = G
+    _save_gaunt_to_cache()
     return G
 
 
@@ -258,15 +294,29 @@ class RadialFunction:
             n_panels = -(-n_rows // R_NODES)
             edges = self.panel * np.arange(n_panels + 1)
             r = _panel_nodes(edges[:-1], edges[1:])[0][:n_rows]
-            F = np.zeros(_K.size)
-            for start in range(0, n_rows, 256):
-                stop = min(start + 256, n_rows)
-                block_r = r[start:stop]
-                block_jn = spherical_jn(self.l, block_r[:, None] * _K[None, :])
-                F += block_jn.T @ self.values[start:stop]
-            if self.tail is not None:
-                r_tail, wf = self.tail
-                F = F + spherical_jn(self.l, _K[:, None] * r_tail[None, :]) @ wf
+            F = np.zeros(_K.size, dtype=np.float64)
+            if _LIB is not None and hasattr(_LIB, "mandacaru_fourier_bessel_transform"):
+                r_c = np.ascontiguousarray(r, dtype=np.float64)
+                v_c = np.ascontiguousarray(self.values, dtype=np.float64)
+                _LIB.mandacaru_fourier_bessel_transform(
+                    int(self.l), r_c, v_c, int(n_rows), _K, int(_K.size), 0, F
+                )
+                if self.tail is not None:
+                    r_tail, wf = self.tail
+                    r_t = np.ascontiguousarray(r_tail, dtype=np.float64)
+                    w_t = np.ascontiguousarray(wf, dtype=np.float64)
+                    _LIB.mandacaru_fourier_bessel_transform(
+                        int(self.l), r_t, w_t, int(r_t.size), _K, int(_K.size), 1, F
+                    )
+            else:
+                for start in range(0, n_rows, 256):
+                    stop = min(start + 256, n_rows)
+                    block_r = r[start:stop]
+                    block_jn = spherical_jn(self.l, block_r[:, None] * _K[None, :])
+                    F += block_jn.T @ self.values[start:stop]
+                if self.tail is not None:
+                    r_tail, wf = self.tail
+                    F = F + spherical_jn(self.l, _K[:, None] * r_tail[None, :]) @ wf
             if len(_TRANSFORMS) >= _CACHE_LIMIT:
                 _TRANSFORMS.clear()
             cached = _TRANSFORMS[self.digest] = F
@@ -299,29 +349,68 @@ def pair_table(f1: RadialFunction, f2: RadialFunction, kind: str) -> PairTable:
     table = _TABLES.get(key)
     if table is not None:
         return table
+
+    local_path = _local_pair_table_cache_path(f1.digest, f2.digest, kind)
+    if local_path.is_file():
+        try:
+            with np.load(local_path) as data:
+                R = data["R"]
+                multipole = tuple(int(x) for x in data["L"])
+                splines = []
+                slopes = []
+                for L in multipole:
+                    s = data[f"s_{L}"]
+                    sp = CubicSpline(R, s)
+                    splines.append(sp)
+                    slopes.append(sp.derivative())
+                table = PairTable(f1.l, f2.l, float(R[-1]), multipole,
+                                  tuple(splines), tuple(slopes))
+                if len(_TABLES) >= _CACHE_LIMIT:
+                    _TABLES.clear()
+                _TABLES[key] = table
+                return table
+        except Exception:
+            pass
+
     n = int(np.ceil((f1.cut + f2.cut) / TABLE_STEP)) + 1
-    weight = _KW * _K ** 2 * f1.transform() * f2.transform()
+    weight = np.ascontiguousarray(_KW * _K ** 2 * f1.transform() * f2.transform(), dtype=np.float64)
     if kind == "kinetic":
-        weight = 0.5 * weight * _K ** 2
-    R = TABLE_STEP * np.arange(n)
+        weight = np.ascontiguousarray(0.5 * weight * _K ** 2, dtype=np.float64)
+    R = np.ascontiguousarray(TABLE_STEP * np.arange(n), dtype=np.float64)
     multipole, splines, slopes = [], [], []
+    s_dict = {}
+    use_rust = _LIB is not None and hasattr(_LIB, "mandacaru_two_center_s_table")
     for L in multipoles(f1.l, f2.l):
-        sign = (-1) ** ((f1.l - f2.l - L) // 2)
-        s = np.zeros(n)
-        for start in range(0, n, 256):
-            stop = min(start + 256, n)
-            block_r = R[start:stop]
-            block_jn = spherical_jn(L, block_r[:, None] * _K[None, :])
-            s[start:stop] = 8.0 * sign * (block_jn @ weight)
+        sign = float((-1) ** ((f1.l - f2.l - L) // 2))
+        s = np.zeros(n, dtype=np.float64)
+        if use_rust:
+            _LIB.mandacaru_two_center_s_table(
+                int(L), sign, weight, _K, int(_K.size), R, int(n), s
+            )
+        else:
+            for start in range(0, n, 256):
+                stop = min(start + 256, n)
+                block_r = R[start:stop]
+                block_jn = spherical_jn(L, block_r[:, None] * _K[None, :])
+                s[start:stop] = 8.0 * sign * (block_jn @ weight)
         spline = CubicSpline(R, s)
         multipole.append(L)
         splines.append(spline)
         slopes.append(spline.derivative())
+        s_dict[f"s_{L}"] = s
+
     table = PairTable(f1.l, f2.l, float(R[-1]), tuple(multipole),
                       tuple(splines), tuple(slopes))
     if len(_TABLES) >= _CACHE_LIMIT:
         _TABLES.clear()
     _TABLES[key] = table
+
+    try:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(local_path, R=R, L=np.array(multipole, dtype=int), **s_dict)
+    except Exception:
+        pass
+
     return table
 
 

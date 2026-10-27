@@ -897,9 +897,18 @@ class PeriodicPAW:
                 psi_all = bloch_values(self.basis, self.lattice, kpoints,
                                        self._grid_points(), center, radius)
                 shift = start - outer
+                from ..integrals.buffers import is_dump_buffers_enabled, create_disk_buffer
+                dump = is_dump_buffers_enabled()
                 for i, k in enumerate(kpoints):
                     weight = all_weights[start + i]
-                    psi, C = psi_all[i], C_wide[shift + i]
+                    psi_raw, C = psi_all[i], C_wide[shift + i]
+                    if dump:
+                        psi = create_disk_buffer(f"kpoint_psi_k{start+i}", psi_raw.shape, dtype=psi_raw.dtype)
+                        psi[:] = psi_raw
+                        if hasattr(psi, "flush"):
+                            psi.flush()
+                    else:
+                        psi = psi_raw
                     S = (psi.conj() @ psi.T) * dV + C @ self.q_overlap \
                         @ C.conj().T
                     fixed = (self._kinetic(psi, k) + V_wide[shift + i]
@@ -1414,6 +1423,15 @@ class PeriodicPAW:
         return bloch_values(self.basis, self.lattice,
                             np.atleast_2d(np.asarray(kpoints, dtype=float)),
                             self._grid_points(), center, radius)
+
+    def localized_basis(self, atom_of_orbital=None):
+        r"""Atom-centered localized representation of basis functions on the cell grid."""
+        if getattr(self, "_localized", None) is None:
+            from ..integrals.localized import LocalizedBasisCollection
+            owners = self.atom_of_orbital if atom_of_orbital is None else atom_of_orbital
+            self._localized = LocalizedBasisCollection(
+                self.basis, self.grid, atom_of_orbital=owners)
+        return self._localized
 
     def projections(self, kpoints) -> np.ndarray:
         r"""``(nk, M, P)``: :math:`\langle\chi_{\mu\mathbf k}|\tilde

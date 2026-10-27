@@ -58,6 +58,15 @@ DESCENT_ANGLES = (0.15, -0.15, 0.4, -0.4)
 #: replace it.
 LOWERING = 1e-7
 
+#: Iterations after which an integer-occupation probe from an ensemble is
+#: dropped if its energy is still above the ensemble's: a shell with no
+#: integer solution (OH's pi hole under LDA) sits above it for good.
+ENSEMBLE_PROBE_ITERATIONS = 30
+
+#: Iterations a probe that went below the ensemble may spend converging.  The
+#: equilateral H3 doublet takes 28, a triangle bent by 0.003 Angstrom 83.
+ENSEMBLE_PROBE_MAX = 150
+
 
 @dataclass
 class SCFState:
@@ -258,9 +267,32 @@ def stabilize(solver, state: SCFState, *, max_iter: int, tol: float,
     total = state.iterations
     report_detail = ""
     if not state.integer:
-        return state, StabilityReport(
-            "ensemble", detail="a partly filled degenerate shell is an "
-            "ensemble by design; the orbital Hessian is not applied")
+        # A partly filled degenerate shell is an ensemble unless a converged
+        # integer-occupation state lies below it (the equilateral H3 doublet):
+        # the SCF reaches either, by the path it takes, so the ensemble is
+        # probed once.  OH's pi hole under LDA has no integer solution.
+        probe = solver._iterate(
+            state.Da, state.Db, None, None,
+            max_iter=min(max_iter, ENSEMBLE_PROBE_ITERATIONS), tol=tol,
+            diis=diis, offset=total, fractional=False)
+        history += probe.history
+        if not probe.converged and probe.energy < state.energy - LOWERING:
+            more = solver._iterate(
+                probe.Da, probe.Db, None, None,
+                max_iter=min(max_iter, ENSEMBLE_PROBE_MAX) - probe.iterations
+                + total, tol=tol, diis=diis, offset=probe.iterations,
+                fractional=False)
+            history += more.history
+            probe = more
+        if not (probe.converged
+                and probe.energy < state.energy - LOWERING):
+            state.history, state.iterations = history, probe.iterations
+            return state, StabilityReport(
+                "ensemble", detail="a partly filled degenerate shell is an "
+                "ensemble; the orbital Hessian is not applied, and no lower "
+                "integer-occupation state was found")
+        state, total = probe, probe.iterations
+        report_detail = "an integer-occupation state lies below the ensemble"
     rounds, products, eigenvalue = 0, 0, None
     while True:
         rotations = _Rotations(solver, state)
