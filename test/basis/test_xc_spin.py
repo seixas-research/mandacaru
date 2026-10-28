@@ -9,7 +9,7 @@
 import numpy as np
 import pytest
 
-from mandacaru.basis import r2scan
+from mandacaru.basis.xc_spin import unpolarized_partials
 from mandacaru.basis.xc import xc_partials
 from mandacaru.basis.xc_spin import spin_partials
 
@@ -35,7 +35,7 @@ def test_an_unpolarized_density_gives_the_unpolarized_functional(
         functional, relativistic):
     """At zeta = 0 the energy, the potential (each channel) and the gradient
     and tau derivatives equal :mod:`mandacaru.basis.xc` /
-    :mod:`mandacaru.basis.r2scan` to round-off: every pinned closed-shell
+    :mod:`mandacaru.basis.xc_spin` to round-off: every pinned closed-shell
     number in the suite rests on this."""
     rng, rho, gradient, _ = _points()
     half = 0.5 * rho
@@ -48,7 +48,7 @@ def test_an_unpolarized_density_gives_the_unpolarized_functional(
     # f(rho, sigma) = f_spin(rho/2, rho/2, sigma/4, sigma/4, sigma/4).
     d_sigma = (s_uu + s_ud + s_dd) / 4.0
     if functional == "r2scan":
-        f0, v0, s0, t0 = r2scan.partials(rho, sigma, 2.0 * tau_half)
+        f0, v0, s0, t0 = unpolarized_partials("r2scan", rho, sigma, 2.0 * tau_half)
         assert np.allclose(t_up, t0, rtol=1e-12, atol=1e-14)
     else:
         f0, v0, dg = xc_partials(rho, np.sqrt(sigma), functional, relativistic)

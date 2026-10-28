@@ -519,7 +519,7 @@ class KohnSham:
     functional : str
         ``"lda"``, ``"pbe"``, ``"r2scan"`` or ``"hse06"``.  HSE06's hole
         model bends its reduced gradient continuously from s = 1
-        (:data:`~mandacaru.basis.hse.S_BEND_OFFSET`), so its forces are the
+        (a continuous reduced-gradient cap), so its forces are the
         energy's derivative.
     core_density : (ngrid,) array, optional
         Partial core density added to the valence density inside the

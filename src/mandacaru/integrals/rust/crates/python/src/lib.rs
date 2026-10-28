@@ -243,6 +243,122 @@ struct PyContext {
 }
 #[pymethods]
 impl PyContext {
+    #[pyo3(signature=(variables,*,omega=0.11))]
+    fn exchange_hole<'py>(
+        &self,
+        py: Python<'py>,
+        variables: PyReadonlyArray2<'py, f64>,
+        omega: f64,
+    ) -> PyResult<Array<'py, f64>> {
+        if variables.shape()[1] != 2 {
+            return Err(PyValueError::new_err("exchange hole requires shape (n,2)"));
+        }
+        let rows = variables.shape()[0];
+        let (values, _memory) = copy(&self.inner, &variables)?;
+        let out = py
+            .detach(|| {
+                mandacaru_core::molecular::xc::exchange_hole_batch(&self.inner, &values, omega)
+            })
+            .map_err(error)?;
+        array(py, &[rows, 3], out.as_slice().to_vec())
+    }
+    #[pyo3(signature=(variables,*,omega=0.11,exact_fraction=0.25))]
+    fn hybrid_points<'py>(
+        &self,
+        py: Python<'py>,
+        variables: PyReadonlyArray2<'py, f64>,
+        omega: f64,
+        exact_fraction: f64,
+    ) -> PyResult<Array<'py, f64>> {
+        if variables.shape()[1] != 7 {
+            return Err(PyValueError::new_err("hybrid points require shape (n,7)"));
+        }
+        let rows = variables.shape()[0];
+        let (values, _memory) = copy(&self.inner, &variables)?;
+        let out = py
+            .detach(|| {
+                mandacaru_core::molecular::xc::hybrid_batch(
+                    &self.inner,
+                    &values,
+                    omega,
+                    exact_fraction,
+                )
+            })
+            .map_err(error)?;
+        array(py, &[rows, 8], out.as_slice().to_vec())
+    }
+    #[pyo3(signature=(grid,density,sigma,*,b=11.95,c=0.0093,q_min=1e-4,q_cut=0.5,nodes=16,padding=2))]
+    fn nonlocal_correlation<'py>(
+        &self,
+        py: Python<'py>,
+        grid: &molecular::PySpatialGrid,
+        density: PyReadonlyArray1<'py, f64>,
+        sigma: PyReadonlyArray1<'py, f64>,
+        b: f64,
+        c: f64,
+        q_min: f64,
+        q_cut: f64,
+        nodes: usize,
+        padding: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (rho, _rho_memory) = copy(&self.inner, &density)?;
+        let (sigma, _sigma_memory) = copy(&self.inner, &sigma)?;
+        let options = mandacaru_core::molecular::nonlocal::Options {
+            b,
+            c,
+            q_min,
+            q_cut,
+            nodes,
+            padding,
+        };
+        let terms = py
+            .detach(|| {
+                mandacaru_core::molecular::nonlocal::calculate(
+                    &self.inner,
+                    &grid.inner,
+                    &rho,
+                    &sigma,
+                    options,
+                )
+            })
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        out.set_item("energy", terms.energy)?;
+        out.set_item(
+            "d_density",
+            array(py, &[rho.len()], terms.density.as_slice().to_vec())?,
+        )?;
+        out.set_item(
+            "d_sigma",
+            array(py, &[rho.len()], terms.sigma.as_slice().to_vec())?,
+        )?;
+        Ok(out)
+    }
+    #[pyo3(signature=(functional,variables,*,relativistic=false))]
+    fn xc_points<'py>(
+        &self,
+        py: Python<'py>,
+        functional: &str,
+        variables: PyReadonlyArray2<'py, f64>,
+        relativistic: bool,
+    ) -> PyResult<Array<'py, f64>> {
+        if variables.shape()[1] != 7 {
+            return Err(PyValueError::new_err("point XC requires shape (n,7)"));
+        }
+        let rows = variables.shape()[0];
+        let (variables, _memory) = copy(&self.inner, &variables)?;
+        let out = py
+            .detach(|| {
+                mandacaru_core::molecular::xc::point_batch(
+                    &self.inner,
+                    functional,
+                    &variables,
+                    relativistic,
+                )
+            })
+            .map_err(error)?;
+        array(py, &[rows, 8], out.as_slice().to_vec())
+    }
     #[pyo3(signature=(path,data,origin,step,numbers,positions,*,format="cube",charges=None,cell=None,periodic=false,comment=""))]
     fn write_field(
         &self,
@@ -727,25 +843,50 @@ impl PyContext {
         out.set_item("energy", table.energy)?;
         Ok(out)
     }
-    #[pyo3(signature=(grid,densities,*,functional="lda"))]
+    #[pyo3(signature=(grid,densities,*,functional="lda",kinetic_densities=None))]
     fn exchange_correlation<'py>(
         &self,
         py: Python<'py>,
         grid: &molecular::PySpatialGrid,
         densities: PyReadonlyArray2<'py, f64>,
         functional: &str,
+        kinetic_densities: Option<PyReadonlyArray2<'py, f64>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         if densities.shape() != [2, grid.inner.index.points()] {
             return Err(PyValueError::new_err("densities must have shape (2,ngrid)"));
         }
         let (rho, _memory) = copy(&self.inner, &densities)?;
+        if kinetic_densities
+            .as_ref()
+            .is_some_and(|v| v.shape() != densities.shape())
+        {
+            return Err(PyValueError::new_err(
+                "kinetic densities must match spin densities",
+            ));
+        }
+        let kinetic = kinetic_densities
+            .as_ref()
+            .map(|v| copy(&self.inner, v))
+            .transpose()?;
         let value = py
             .detach(|| {
-                mandacaru_core::molecular::xc::evaluate(&self.inner, &grid.inner, &rho, functional)
+                mandacaru_core::molecular::xc::evaluate_fields(
+                    &self.inner,
+                    &grid.inner,
+                    &rho,
+                    kinetic.as_ref().map(|v| v.0.as_slice()),
+                    functional,
+                )
             })
             .map_err(error)?;
         let out = PyDict::new(py);
         out.set_item("energy", value.energy)?;
+        if let Some(tau) = value.tau_potentials {
+            out.set_item(
+                "tau_potentials",
+                array(py, &[2, grid.inner.index.points()], tau.as_slice().to_vec())?,
+            )?;
+        }
         out.set_item(
             "potentials",
             array(

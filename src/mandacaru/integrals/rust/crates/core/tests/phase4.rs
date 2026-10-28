@@ -29,7 +29,7 @@ fn standalone_kohn_sham_and_stationary_hf_gradients_follow_the_energy() {
         .unwrap()
     };
     let integrals = make(0.);
-    for name in ["rhf", "lda", "pbe"] {
+    for name in ["rhf", "lda", "pbe", "r2scan", "hse06"] {
         let options = ScfOptions {
             tolerance: 1e-12,
             ..Default::default()
@@ -51,7 +51,11 @@ fn standalone_kohn_sham_and_stationary_hf_gradients_follow_the_energy() {
             solve(&mol).electronic_energy + mol.nuclear
         };
         let fd = (energy(eps) - energy(-eps)) / (2. * eps) * 0.529177210903;
-        assert!((fd - gradient.total.as_slice()[5]).abs() < 1e-7);
+        assert!(
+            (fd - gradient.total.as_slice()[5]).abs() < 1e-7,
+            "{name}: finite difference {fd}, analytic {}",
+            gradient.total.as_slice()[5]
+        );
         if name == "lda" {
             assert!(
                 (state.electronic_energy

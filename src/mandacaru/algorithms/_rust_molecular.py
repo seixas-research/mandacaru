@@ -265,7 +265,7 @@ class _RustMeanField(_RustDriver):
         if getattr(self, "_periodic", False):
             raise NotImplementedError("native periodic SCF forces/stress need PAW setup derivatives; only the Ewald contribution is native in this milestone")
         if self.kind == "ghf" or self._kinetic != "spectral" or self._active_spec is not None:
-            raise NotImplementedError("native stationary forces require full-space RHF/UHF or LDA/PBE DFT and spectral kinetic energy")
+            raise NotImplementedError("native stationary forces require full-space RHF/UHF or collinear molecular DFT and spectral kinetic energy")
         if self._cholesky_tolerance is not None and not getattr(self, "_dft", False):
             raise NotImplementedError("native HF forces require packed integrals; Cholesky derivative forces are not implemented")
 
@@ -315,8 +315,8 @@ class RustDFT(_RustMeanField):
         from ._hamiltonian_from_atoms import resolve_basis, pseudopotential_family
         self._explicit_xc = xc is not None
         self.xc = resolve_functional("lda" if xc is None else xc)
-        if self.xc not in ("lda", "pbe"):
-            raise NotImplementedError("native DFT currently supports LDA and PBE")
+        if self.xc not in ("lda", "pbe", "r2scan", "hse06", "pbe+rvv10", "r2scan+rvv10"):
+            raise NotImplementedError("unknown canonical molecular XC functional")
         if type(spin) is not bool or type(unrestricted) is not bool or type(symmetry) is not bool:
             raise ValueError("native spin, unrestricted and symmetry must be booleans")
         self._unrestricted = spin or unrestricted

@@ -36,12 +36,60 @@ struct Evaluation {
     hartree: f64,
     xc: f64,
 }
+pub(super) fn orbital_gradients(integrals: &MolecularIntegrals) -> Result<Buffer<f64>> {
+    let m = integrals.m();
+    let n = integrals.grid.index.points();
+    let mut gradients = integrals.context.allocate::<f64>(product(&[3, m, n])?)?;
+    for axis in 0..3 {
+        for a in 0..m {
+            xc::derivative(
+                &integrals.grid,
+                &integrals.orthonormal_samples.as_slice()[a * n..(a + 1) * n],
+                axis,
+                &mut gradients.as_mut_slice()[(axis * m + a) * n..(axis * m + a + 1) * n],
+            )?;
+        }
+    }
+    Ok(gradients)
+}
+pub(super) fn grid_kinetic(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    gradients: &[f64],
+) -> Result<Buffer<f64>> {
+    let m = integrals.m();
+    let n = integrals.grid.index.points();
+    if gradients.len() != product(&[3, m, n])? {
+        return Err(invalid("orbital gradients have inconsistent dimensions"));
+    }
+    let mut tau = integrals.context.allocate::<f64>(2 * n)?;
+    for spin in 0..2 {
+        let density = &d[if d.len() == 1 { 0 } else { spin }];
+        for k in 0..n {
+            let mut value = 0.;
+            for axis in 0..3 {
+                for a in 0..m {
+                    for b in 0..m {
+                        value += 0.5
+                            * density[(a, b)].re
+                            * gradients[(axis * m + a) * n + k]
+                            * gradients[(axis * m + b) * n + k];
+                    }
+                }
+            }
+            tau.as_mut_slice()[spin * n + k] = value.max(0.);
+        }
+    }
+    Ok(tau)
+}
 fn evaluate(
     integrals: &MolecularIntegrals,
     h: &Matrix,
     d: &[Matrix],
     name: &str,
     poisson: &mut Poisson,
+    orbital_gradients: Option<&[f64]>,
+    screened: Option<&super::integrals::Eri>,
 ) -> Result<Evaluation> {
     let ctx = &integrals.context;
     let m = integrals.m();
@@ -54,7 +102,16 @@ fn evaluate(
     }
     let mut hartree = ctx.allocate::<C64>(n)?;
     poisson.solve_into(total.as_slice(), hartree.as_mut_slice())?;
-    let terms = xc::evaluate(ctx, &integrals.grid, rho.as_slice(), name)?;
+    let kinetic = orbital_gradients
+        .map(|gradient| grid_kinetic(integrals, d, gradient))
+        .transpose()?;
+    let terms = xc::evaluate_fields(
+        ctx,
+        &integrals.grid,
+        rho.as_slice(),
+        kinetic.as_ref().map(|v| v.as_slice()),
+        name,
+    )?;
     let eh = 0.5
         * total
             .as_slice()
@@ -64,30 +121,57 @@ fn evaluate(
             .sum::<f64>()
         * dv;
     let mut f = vec![];
+    let mut exact_energy = 0.;
     let phi = integrals.orthonormal_samples.as_slice();
     for s in 0..d.len() {
         let v = Matrix::from_fn(m, m, |a, b| {
             C64::new(
                 (0..n)
                     .map(|k| {
-                        phi[a * n + k]
+                        let local = phi[a * n + k]
                             * phi[b * n + k]
-                            * (hartree.as_slice()[k].re + terms.potentials.as_slice()[s * n + k])
+                            * (hartree.as_slice()[k].re + terms.potentials.as_slice()[s * n + k]);
+                        let meta = if let (Some(gradient), Some(tau)) =
+                            (orbital_gradients, terms.tau_potentials.as_ref())
+                        {
+                            0.5 * tau.as_slice()[s * n + k]
+                                * (0..3)
+                                    .map(|axis| {
+                                        gradient[(axis * m + a) * n + k]
+                                            * gradient[(axis * m + b) * n + k]
+                                    })
+                                    .sum::<f64>()
+                        } else {
+                            0.
+                        };
+                        local + meta
                     })
                     .sum::<f64>()
                     * dv,
                 0.,
             )
         });
-        f.push(scf::hermitian(h + v));
+        let mut fock = h + v;
+        if let Some(eri) = screened {
+            let exchange = Matrix::from_fn(m, m, |p, q| {
+                (0..m)
+                    .flat_map(|r| (0..m).map(move |t| (r, t)))
+                    .map(|(r, t)| d[s][(r, t)] * eri.value(p, t, r, q))
+                    .sum::<C64>()
+            });
+            exact_energy -=
+                0.125 * (d[s].clone() * &exchange).trace().re * if d.len() == 1 { 2. } else { 1. };
+            fock -= exchange * C64::new(0.25, 0.);
+        }
+        f.push(scf::hermitian(fock));
     }
     let eone =
         d.iter().map(|d| (d * h).trace().re).sum::<f64>() * if d.len() == 1 { 2. } else { 1. };
     Ok(Evaluation {
         f,
-        energy: eone + eh + terms.energy,
+        energy: eone + eh + terms.energy + exact_energy,
         hartree: eh,
-        xc: terms.energy,
+        xc: terms.energy + exact_energy,
     })
 }
 impl MolecularIntegrals {
@@ -98,10 +182,29 @@ impl MolecularIntegrals {
         unrestricted: bool,
         options: &ScfOptions,
     ) -> Result<MeanField> {
-        let functional = xc::functional(functional)?;
+        if !["lda", "pbe", "r2scan", "hse06", "pbe+rvv10", "r2scan+rvv10"].contains(&functional) {
+            return Err(invalid("unknown canonical molecular XC functional"));
+        }
         self.context.run(|| {
             let m = self.m();
             let ctx = &self.context;
+            let screened = if functional == "hse06" {
+                let mut solver = Poisson::screened(ctx, &self.grid, 0.11)?;
+                Some(super::integrals::pair_integrals_with_solver(
+                    ctx,
+                    &self.grid,
+                    self.orthonormal_samples.as_slice(),
+                    m,
+                    &mut solver,
+                )?)
+            } else {
+                None
+            };
+            let orbital_gradients = if matches!(functional, "r2scan" | "r2scan+rvv10") {
+                Some(orbital_gradients(self)?)
+            } else {
+                None
+            };
             if particles.iter().any(|&v| v > m)
                 || (!unrestricted && particles[0] != particles[1])
                 || options.max_iterations == 0
@@ -137,7 +240,16 @@ impl MolecularIntegrals {
                     .zip(&occupations)
                     .map(|(c, &n)| scf::density(c, n))
                     .collect::<Vec<_>>();
-                let f = evaluate(self, &h, &d, functional, &mut poisson)?.f;
+                let f = evaluate(
+                    self,
+                    &h,
+                    &d,
+                    functional,
+                    &mut poisson,
+                    orbital_gradients.as_ref().map(|v| v.as_slice()),
+                    screened.as_ref(),
+                )?
+                .f;
                 starts.push(
                     f.into_iter()
                         .map(|f| scf::eigen((&h + f) * C64::new(0.5, 0.)).map(|(_, c)| c))
@@ -174,7 +286,15 @@ impl MolecularIntegrals {
                 let mut mixer = Diis::new();
                 let mut converged = false;
                 for iteration in 1..=options.max_iterations {
-                    let value = evaluate(self, &h, &d, functional, &mut poisson)?;
+                    let value = evaluate(
+                        self,
+                        &h,
+                        &d,
+                        functional,
+                        &mut poisson,
+                        orbital_gradients.as_ref().map(|v| v.as_slice()),
+                        screened.as_ref(),
+                    )?;
                     let effective = if options.diis {
                         mixer.extrapolate(&value.f, &d)
                     } else {
@@ -210,7 +330,15 @@ impl MolecularIntegrals {
                         break;
                     }
                 }
-                let value = evaluate(self, &h, &d, functional, &mut poisson)?;
+                let value = evaluate(
+                    self,
+                    &h,
+                    &d,
+                    functional,
+                    &mut poisson,
+                    orbital_gradients.as_ref().map(|v| v.as_slice()),
+                    screened.as_ref(),
+                )?;
                 let energies = value
                     .f
                     .into_iter()
@@ -242,5 +370,84 @@ impl MolecularIntegrals {
                 Some((functional, eh, exc)),
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Context, Geometry, LengthUnit};
+    #[test]
+    fn meta_gga_fock_is_the_derivative_of_its_discrete_density_energy() {
+        let ctx = Context::new(Some(1), 64 << 20).unwrap();
+        let geometry = Geometry::new(
+            vec![1, 1],
+            vec![[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]],
+            [[5., 0., 0.], [0., 5., 0.], [0., 0., 5.]],
+            [false; 3],
+            LengthUnit::Angstrom,
+        )
+        .unwrap();
+        let grid = super::super::SpatialGrid::from_geometry(
+            &geometry,
+            [0.5 / 0.529177210903; 3],
+            false,
+            false,
+        )
+        .unwrap();
+        let integrals =
+            MolecularIntegrals::new(&ctx, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None)
+                .unwrap();
+        let m = integrals.m();
+        let n = integrals.grid.index.points();
+        let mut gradients = ctx.allocate::<f64>(3 * m * n).unwrap();
+        for axis in 0..3 {
+            for a in 0..m {
+                xc::derivative(
+                    &integrals.grid,
+                    &integrals.orthonormal_samples.as_slice()[a * n..(a + 1) * n],
+                    axis,
+                    &mut gradients.as_mut_slice()[(axis * m + a) * n..(axis * m + a + 1) * n],
+                )
+                .unwrap();
+            }
+        }
+        let h = Matrix::from_fn(m, m, |a, b| {
+            C64::new(integrals.one.as_slice()[a * m + b], 0.)
+        });
+        let density = Matrix::from_diagonal(&nalgebra::DVector::from_vec(vec![
+            C64::new(0.45, 0.),
+            C64::new(0.55, 0.),
+        ]));
+        let direction = Matrix::from_row_slice(
+            2,
+            2,
+            &[
+                C64::new(0.3, 0.),
+                C64::new(0.2, 0.),
+                C64::new(0.2, 0.),
+                C64::new(-0.3, 0.),
+            ],
+        );
+        let mut poisson = Poisson::isolated(&ctx, &integrals.grid).unwrap();
+        let evaluate_density = |d: Matrix, p: &mut Poisson| {
+            evaluate(
+                &integrals,
+                &h,
+                &[d],
+                "r2scan",
+                p,
+                Some(gradients.as_slice()),
+                None,
+            )
+            .unwrap()
+        };
+        let base = evaluate_density(density.clone(), &mut poisson);
+        let step = 1e-5;
+        let plus = evaluate_density(&density + &direction * C64::new(step, 0.), &mut poisson);
+        let minus = evaluate_density(&density - &direction * C64::new(step, 0.), &mut poisson);
+        let finite = (plus.energy - minus.energy) / (2. * step);
+        let analytic = 2. * (&direction * &base.f[0]).trace().re;
+        assert!((finite - analytic).abs() < 2e-7, "{finite} vs {analytic}");
     }
 }

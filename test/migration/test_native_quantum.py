@@ -258,8 +258,7 @@ def test_nonconserving_hamiltonian_and_unsupported_options_fail_explicitly(tmp_p
     for options in ({"optimizer": "SLSQP"}, {"ansatz": "hva"}):
         with pytest.raises(NotImplementedError):
             Mandacaru(method="vqe", engine="rust", load_hamiltonian=FIXTURE, **options)
-    with pytest.raises(NotImplementedError):
-        Mandacaru(method="dft", engine="rust", xc="r2scan")
+    Mandacaru(method="dft", engine="rust", xc="r2scan")
     with pytest.raises(TypeError, match="tetris"):
         Mandacaru(method="adapt-vqe", engine="rust", load_hamiltonian=FIXTURE, tetris=True)
 

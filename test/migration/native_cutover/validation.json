@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "scope": "Native molecular XC cutover, independent dispersion building blocks and Sphinx restructuring; repository-wide cutover remains incomplete",
+  "python_focused": {
+    "tests": 619,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 6,
+    "seconds": 215.14
+  },
+  "xc_after_half_spectrum_change": {
+    "tests": 109,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 183.717
+  },
+  "rust_release": {
+    "passed": 49,
+    "failed": 0,
+    "python_required": false
+  },
+  "sphinx_warnings_as_errors": "passed",
+  "tutorial_smoke": {
+    "native_lih_vqe": true,
+    "native_lih_adapt": true
+  },
+  "molecular_functionals": [
+    "lda",
+    "pbe",
+    "r2scan",
+    "hse06",
+    "pbe+rvv10",
+    "r2scan+rvv10"
+  ],
+  "removed_python_module": "src/mandacaru/basis/r2scan.py",
+  "native_array_adapters": [
+    "src/mandacaru/basis/xc_spin.py",
+    "src/mandacaru/basis/hse.py",
+    "src/mandacaru/integrals/vv10.py"
+  ],
+  "xc_aliases": "rejected",
+  "implementation_provenance": "Independent Rust from published equations and project-owned reference cases; no third-party implementation source or parameter tables incorporated",
+  "incomplete": [
+    "D4 reference dataset, coordination/polarizability model, full response and periodic sums",
+    "Additional nonlocal functional families",
+    "Remaining numerical Python, legacy execution route and non-XC aliases"
+  ],
+  "source_sha256": {
+    "src/mandacaru/_native.pyi": "2969343aad86bd029982a493d7959912039a16461d55ff7b32beceb81d94acc1",
+    "src/mandacaru/algorithms/_rust_molecular.py": "a675b111c002976fc211b9a19cb3cbc696a010ec7cc1e69df7d4b1d66185d2ac",
+    "src/mandacaru/basis/hse.py": "0d017ef5dc3973b71d0972b5c8a58e1c003969c05e4bfe63abb261a042fdf0e6",
+    "src/mandacaru/basis/xc_spin.py": "2be85d846fd4184f4799027c619a1a815a44e08f73b181cce1a58dabd07a6a7c",
+    "src/mandacaru/integrals/exchange_correlation.py": "359ae797866fe60bac000629c2cecb80ade0ea35ba048ef2d855006d79e6f5c8",
+    "src/mandacaru/integrals/rust/crates/core/src/context.rs": "b4c8640a09c8b76eb31df62b168f539ee848f66e8ec42933ae39d8f9f90f4453",
+    "src/mandacaru/integrals/rust/crates/core/src/dispersion.rs": "5cec25551887a8678f1295b6f5d942d10d43b4b3dcd139b95bddb8e5f521cdcf",
+    "src/mandacaru/integrals/rust/crates/core/src/execution.rs": "839d475a1039970e39a38cb99008305ce08d42604465fb3a12286efc1058034a",
+    "src/mandacaru/integrals/rust/crates/core/src/geometry.rs": "46443846e6b8f084854385c4a13a43d3f1bda4a50efd5dc4bfa69e0d82f97dd3",
+    "src/mandacaru/integrals/rust/crates/core/src/grid.rs": "e4df4069162953f017fa469b5728366bd9d1da30fa4d30de02b02a3ad2c35871",
+    "src/mandacaru/integrals/rust/crates/core/src/kernels.rs": "188456e1ed41e3edba100bae8e337f4f2639e9b8d876f545fcfe949a9079f83d",
+    "src/mandacaru/integrals/rust/crates/core/src/lib.rs": "c697db6b2d1b12329c5fe2fb875501849f823f00ac4c0142771d0c56af2c4093",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/atom.rs": "cc5fb1fc5b140290eca2f1f29a6a530045bf96a6b137efc2e259ed6939d579bd",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/basis.rs": "1cd2d5dae3354b6f5519aa79be03125665c98db4b438efe986e478574e78b7bc",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/correlation.rs": "03d74673dd1fc5d4ad7b847a4d631c53f57325e052a580f3aad09867d47ca2a8",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/dft.rs": "9cf2b7a6716464e2db65a70314a596aed26ea0fc59024811d9d3d2593cf7cdf7",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/fft.rs": "fca7812cb0b8c696b48d54a69cbebc31ed9dcaf9b3d93455e73e07339ae6ed08",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/forces.rs": "bee2a7bef34309712a852718dee20311835e996f0ca0632111a4b7cf097fbf84",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/grid.rs": "2476f942fb1fd9fc20b6748fa0d7268b39d82ac4b3119fabd82b7c0801fbb5cc",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/integrals.rs": "7887d9e6205cbd21c234924e874a0933815193fdf381a9cfc25ce937191aed09",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/nao_ae.rs": "939903c4fff570cc0995c219d5718d70a6f245d61d03a8113fdfe7c7979b0149",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/nonlocal.rs": "b0a26e05787de9fc649746d33f6df013ec56c6b5e480b1a375d57bba96587f7f",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/radial.rs": "4f76c8245f9434fd8a20826fe572de12e16f4849e20e54911cac6559538eca62",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/reciprocal.rs": "431e624447266c28f9f93c201b7e00dbe5821fbd8d8a0e98e4196e2dd36204a8",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/scf.rs": "0a5e449e65874b13fffb9f311bcc2289ff43852c53d977ef97139cd922db8030",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/transform.rs": "64502ce34c8683e82e6a137b4adbb746f762b7b9823845904fe3d8c94540481c",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular/xc.rs": "17464cbd6c8e0f7e77bdd0f2268543d48daac91962037e274b3f000fb6419d46",
+    "src/mandacaru/integrals/rust/crates/core/src/molecular.rs": "ec37658391d91a7e98e1a37a727341ff505eaa57a7c3d7ea533781e77b0ddd16",
+    "src/mandacaru/integrals/rust/crates/core/src/periodic/analysis.rs": "393af0a7d5bc32bb55647b7dabc5bfb88731a34527c67fb9b17050c3be81c4f7",
+    "src/mandacaru/integrals/rust/crates/core/src/periodic/ewald.rs": "3f6a36a4627baef8396ea40357ed4c59f44095332c7919369a9ccf9add27665e",
+    "src/mandacaru/integrals/rust/crates/core/src/periodic/input.rs": "e033d5733cd55208e3ea38da797d5eaef753360b83fbbe312fe0a08368ba241a",
+    "src/mandacaru/integrals/rust/crates/core/src/periodic/mod.rs": "8497b9fd69ca7b8c18bd9f39b50d7ef045c6b13971d241c7d297d0528995f080",
+    "src/mandacaru/integrals/rust/crates/core/src/periodic/solver.rs": "fba90a0ad74fe938d11a3890a41b0fab673135e141a72f9f1b182a59496f7223",
+    "src/mandacaru/integrals/rust/crates/core/src/periodic/spectrum.rs": "900337ee3f5372ecd9eb8692117664bc2972605c0f7b354fba1150bbd3a7696d",
+    "src/mandacaru/integrals/rust/crates/core/src/persistence.rs": "e82ec18be944928370130543d3973dc6d8f7f8ec54b0c6a9ab0735368a23fcf0",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/algebra.rs": "976a4426899d18b3002f5265de720d5f2c86c0d6b2d81577c975ad3cd3cdc89c",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/dynamics.rs": "e09e255997819a362ccb660da7360b52184f2a21480e66df531752e788f337d5",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/evolution.rs": "a1ff0b3246da015f363f87a8bb3d3507ee7e4375e8482745d285b339be8440a7",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/optimizer.rs": "56755f2c1612b8e604d167c28d409f5df37da97ca6424d38e945f725840aa8c7",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/properties.rs": "7609716bc80997c1a1fcb40e477c3f4d80cd3f73abbf46197e6543b9006ab88c",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/solver.rs": "df6a9e4ca382683b035436c9d99def95b8553dd04df5c8edf2c7e8f336839c12",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/sparse.rs": "38e9cb5146f65b0bec827d1a92c8163c90a5c61b836d502aa4584e63c5ca3dcd",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum/subspace.rs": "cf876b2a873eb144bd9e8391ab41736d582d356877455074c643f012f5be361a",
+    "src/mandacaru/integrals/rust/crates/core/src/quantum.rs": "4f018b0a656a7d8846e3c16f5e5fca8f904a5ee384cb75af7b6be22e0f7c3f1e",
+    "src/mandacaru/integrals/rust/crates/core/src/units.rs": "d3657d4fa5819687b11e656455c76571454289b437e8a5a5e2311e7b0a788f56",
+    "src/mandacaru/integrals/rust/crates/core/src/volumetric.rs": "b407fd22b0247def190a63bdd2a45cadbbf94e7ebbd2345d5eabc9220a4ea748",
+    "src/mandacaru/integrals/rust/crates/python/src/advanced.rs": "7b4e5cc6ca6e51668e48bff1d380632fea7962ac13c065969eae5551933cb6e9",
+    "src/mandacaru/integrals/rust/crates/python/src/lib.rs": "feb066ea1d5b2fa4b4b10dd5292316c0a50b4139a44d727388773df1eb98b37b",
+    "src/mandacaru/integrals/rust/crates/python/src/molecular.rs": "d57c663fee32bc40e85eb3e2fee3b70337a4bdbffec84ac65660780511387bf3",
+    "src/mandacaru/integrals/rust/crates/python/src/periodic.rs": "b21e9bca0bc2d18e7a395f77c4e3ff4310ce43a8c2a31bce6136197d31127638",
+    "src/mandacaru/integrals/rust/crates/python/src/persistence.rs": "a32f6aa31366c9da61ddb3e65c230670b664c7b607710a1238e5a92437bb1baa",
+    "src/mandacaru/integrals/rust/crates/python/src/quantum.rs": "8c01653ea1bd481c644d413451888c7daea45402215a59015197e80254f953a1",
+    "src/mandacaru/integrals/vv10.py": "d59b48dfe6f2d632b122576de401cb0ef0f0114807619a37d629a30930d039e6"
+  },
+  "reference_sha256": {
+    "test/migration/native_cutover/nonlocal_reference.json": "9e53de15bbdb6588b76b57912459041fa1687eef231182e530a935abd2482c67",
+    "test/migration/native_cutover/xc_reference.json": "876ada934b8edb6e3918fe568b321252f9922f666db52b656b3a19fd4433534a"
+  },
+  "validation_logs": ".mandacaru/native-cutover",
+  "installed_wheel": {
+    "passed": true,
+    "runtime_compilation": false,
+    "sha256": "373acca95bf6be77a33e960e0244f48db07a0bead056231c100df72c1779e0a0",
+    "file": "mandacaru-26.10.37-cp314-cp314-macosx_26_0_arm64.whl"
+  },
+  "documentation_sha256": {
+    "docs/source/index.rst": "bd2de58eadfe7e42e409b34762ceb857039ab4457d017f693684753136b07103",
+    "docs/source/api.rst": "5d6ac28c177b8c97b094bd73e3ff162bee39928e6a6cbc3dc22a97dd33f74725",
+    "docs/source/guide/dft.md": "5458db81ed87d09f33128deca43b00efb2dfe64f7efe483d687eed1e406a3121",
+    "docs/source/guide/native_engine.md": "b1318c14b53058a843338812f87118285a2900db7f8916a8ab72b323dcc3c895",
+    "docs/source/development/native_cutover.md": "f33ba0c2b52177e62a823abc9ea1863ecf01302aa6de7b82b633ca23170fd8b1"
+  }
+}

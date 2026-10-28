@@ -63,11 +63,35 @@ impl MolecularIntegrals {
                 source.as_mut_slice()[k] = C64::new(rho.as_slice()[k] + rho.as_slice()[n + k], 0.);
             }
             let mut poisson = Poisson::isolated(ctx, &self.grid)?;
+            let mut screened = if state.functional.as_deref() == Some("hse06") {
+                Some(Poisson::screened(ctx, &self.grid, 0.11)?)
+            } else {
+                None
+            };
             poisson.solve_into(source.as_slice(), potential.as_mut_slice())?;
+            let kinetic = if matches!(state.functional.as_deref(), Some("r2scan" | "r2scan+rvv10"))
+            {
+                let gradients = dft::orbital_gradients(self)?;
+                Some(dft::grid_kinetic(
+                    self,
+                    &state.densities,
+                    gradients.as_slice(),
+                )?)
+            } else {
+                None
+            };
             let xc = state
                 .functional
                 .as_ref()
-                .map(|name| xc::evaluate(ctx, &self.grid, rho.as_slice(), name))
+                .map(|name| {
+                    xc::evaluate_fields(
+                        ctx,
+                        &self.grid,
+                        rho.as_slice(),
+                        kinetic.as_ref().map(|v| v.as_slice()),
+                        name,
+                    )
+                })
                 .transpose()?;
             let mut external = ctx.allocate::<f64>(n)?;
             let softening = 0.5
@@ -145,16 +169,38 @@ impl MolecularIntegrals {
                                     .map_or(0., |v| v.potentials.as_slice()[spin * n + k]))
                                 * psi;
                     }
-                    if xc.is_none() {
+                    if let Some(tau) = xc.as_ref().and_then(|v| v.tau_potentials.as_ref()) {
+                        let mut flux = ctx.allocate::<f64>(n)?;
+                        let mut derivative = ctx.allocate::<f64>(n)?;
+                        for axis in 0..3 {
+                            xc::derivative(&self.grid, psi, axis, flux.as_mut_slice())?;
+                            for k in 0..n {
+                                flux.as_mut_slice()[k] *= tau.as_slice()[spin * n + k];
+                            }
+                            xc::derivative(
+                                &self.grid,
+                                flux.as_slice(),
+                                axis,
+                                derivative.as_mut_slice(),
+                            )?;
+                            for k in 0..n {
+                                action.as_mut_slice()[k] -= 0.5 * derivative.as_slice()[k];
+                            }
+                        }
+                    }
+                    if xc.is_none() || screened.is_some() {
+                        let fraction = if screened.is_some() { 0.25 } else { 1. };
+                        let solver = screened.as_mut().unwrap_or(&mut poisson);
                         for j in 0..occupied {
                             for (k, psi) in psi.iter().enumerate() {
                                 source.as_mut_slice()[k] =
                                     C64::new(psi * orbitals.as_slice()[j * n + k], 0.);
                             }
-                            poisson.solve_into(source.as_slice(), exchange.as_mut_slice())?;
+                            solver.solve_into(source.as_slice(), exchange.as_mut_slice())?;
                             for k in 0..n {
-                                action.as_mut_slice()[k] -=
-                                    orbitals.as_slice()[j * n + k] * exchange.as_slice()[k].re;
+                                action.as_mut_slice()[k] -= fraction
+                                    * orbitals.as_slice()[j * n + k]
+                                    * exchange.as_slice()[k].re;
                             }
                         }
                     }

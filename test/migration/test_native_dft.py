@@ -241,7 +241,7 @@ def test_dft_force_failures_and_budget_lifetimes_are_explicit():
     with pytest.raises(ValueError, match="occupation"):
         integrals.kohn_sham("pbe", [1, 0])
     with pytest.raises(ValueError, match="XC"):
-        integrals.kohn_sham("r2scan", [1, 1])
+        integrals.kohn_sham("unsupported-xc", [1, 1])
     assert ctx.memory_used_bytes == live
     failed = integrals.kohn_sham("lda", [1, 1], max_iterations=1)
     with pytest.raises(ValueError, match="converged"):

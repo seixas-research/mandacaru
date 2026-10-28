@@ -11,140 +11,68 @@
    :width: 640
    :align: center
 
-**Mandacaru** is a Python framework for simulating fermionic systems with variational
-quantum algorithms. Starting from an atomic geometry, it builds a molecular
-Hamiltonian, maps it to qubits and optimizes a quantum circuit to estimate its
-energy. The Atomic Simulation Environment (ASE) provides the geometry and
-calculator interface.
+**Mandacaru** provides a Rust scientific engine with a Python interface for ASE,
+interactive calculations and external execution services. The native engine
+owns molecular integrals, mean-field and Kohn–Sham iterations, quantum state
+operations, selected variational solvers and persistence.
 
-Start with lithium hydride (LiH)
---------------------------------
+Start with a native calculation
+-------------------------------
 
-The introductory tutorials follow one molecule from a single energy calculation
-to a potential-energy curve:
+.. code-block:: python
 
-1. :doc:`Install Mandacaru <installation>` and check your Python environment.
-2. :doc:`Run VQE for LiH <tutorial/vqe_lih>` and understand the basis, electron
-   count, integration grid and energy units.
-3. :doc:`Build an adaptive circuit <tutorial/adapt_vqe_lih>` and compare operator
-   pools on the same molecular problem.
-4. :doc:`Scan the Li–H distance <tutorial/pes_scan>` and compare basis sets and
-   operator pools in a reproducible PNG figure.
+   from ase import Atoms
+   from mandacaru import Mandacaru
 
-How a calculation works
------------------------
+   atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[5, 5, 5])
+   atoms.center()
+   atoms.calc = Mandacaru(method="dft", engine="rust", xc="pbe",
+                          grid_spacing=0.35, trace=False)
+   print(atoms.get_potential_energy())  # eV
+   print(atoms.get_forces())            # eV / angstrom
 
-.. raw:: html
+Read :doc:`installation` for the source build and packaged extension,
+:doc:`guide/native_engine` for supported methods and execution controls, and
+:doc:`guide/dft` for native exchange and correlation.
 
-   <ol class="workflow" aria-label="Molecular simulation workflow">
-     <li><strong>Atomic geometry</strong><span>ASE Atoms: elements and positions in ångströms</span></li>
-     <li><strong>Basis and integration grid</strong><span>Spatial orbitals sampled on a real-space grid</span></li>
-     <li><strong>Molecular Hamiltonian</strong><span>Integrals, Hartree–Fock orbitals and optional frozen core</span></li>
-     <li><strong>Qubit Hamiltonian</strong><span>Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev mapping; optional cache</span></li>
-     <li><strong>Variational calculation</strong><span>VQE or ADAPT-VQE; circuit evaluation and classical optimization</span></li>
-     <li><strong>Results</strong><span>Energy, convergence information and circuit parameters</span></li>
-   </ol>
+The cutover is in progress. The :doc:`coverage audit <development/native_cutover>`
+distinguishes native calculations from features whose numerical Python code
+still needs to move. Selecting ``engine="rust"`` raises an error for unsupported
+work; it does not fall back to a different solver.
 
-A cached Hamiltonian lets you restart at the variational stage when comparing
-solvers. Rebuild it whenever the geometry, basis, integration grid or electronic
-problem changes. See :doc:`guide/hamiltonian_cache`.
+Scientific conventions
+----------------------
 
-Choose the right controls
--------------------------
+ASE geometries use ångströms and the calculator returns electronvolts and
+electronvolts per ångström. The Rust core uses Bohr and Hartree. The Python
+boundary converts units and copies inputs into native ownership. Returned
+arrays have independent storage.
 
-.. list-table::
-   :header-rows: 1
-   :widths: 22 44 34
-
-   * - Control
-     - What it changes
-     - Learn more
-   * - Basis set
-     - The spatial functions used to represent the electrons
-     - :doc:`guide/basis_sets`
-   * - Integration grid
-     - The numerical accuracy of the molecular integrals
-     - :doc:`tutorial/pes_scan`
-   * - Frozen core
-     - Which occupied orbitals remain fixed during the correlated calculation
-     - :doc:`tutorial/vqe_lih`
-   * - Operator pool
-     - The circuit generators available to ADAPT-VQE
-     - :doc:`theory/adapt_vqe`
-   * - Backend
-     - How circuits are constructed and evaluated
-     - :doc:`guide/backends`
-
-Changing a basis changes the approximate Hamiltonian. Changing a pool changes
-the variational search within that Hamiltonian. These are separate sources of
-error, so the LiH tutorial compares them separately.
-
-Units and interpretation
-------------------------
-
-The introductory examples use **ångströms (Å)** for distances and
-**electronvolts (eV)** for reported energies. The integral, mapping and
-Hamiltonian-cache layers use atomic units internally. A result's
-``in_units("Ha")`` method gives a Hartree view; ``atomic_units=True`` changes
-the driver output convention. Keep the default convention when following the
-ASE examples.
-
-The molecular total energy includes nuclear repulsion. It is different from a
-binding energy, which requires a separately defined fragment reference.
-Converging a variational optimizer does not establish convergence with respect
-to the basis or integration grid.
-
-Mandacaru generates its Gaussian basis functions internally. Named families
-reproduce the intended shell structure, but do not use the published exponent
-tables. Consult :doc:`guide/basis_sets` before comparing with literature values.
-
-Explore further
----------------
-
-The :doc:`guide/index` covers open shells, pseudopotentials, Hamiltonian caches
-and execution backends. The :doc:`theory/index` explains the equations behind
-the tutorials, and the :doc:`api` documents the Python interfaces.
-
-Source code and issue reports are hosted on
-`GitHub <https://github.com/seixas-research/mandacaru>`_. Releases are available
-from `PyPI <https://pypi.org/project/mandacaru/>`_. Mandacaru is distributed under
-the `MIT license <https://github.com/seixas-research/mandacaru/blob/main/LICENSE>`_.
+Molecular total energies include nuclear repulsion. A binding energy requires
+separate fragment calculations. Convergence of an optimizer or SCF loop does
+not establish basis or grid convergence. Generated Gaussian families use
+Mandacaru's exponent construction; their names do not promise published
+exponent tables.
 
 .. toctree::
    :maxdepth: 2
-   :hidden:
-   :caption: Getting started
+   :caption: Calculations
 
    installation
+   guide/native_engine
+   guide/dft
    tutorial/index
-
-.. toctree::
-   :maxdepth: 2
-   :hidden:
-   :caption: How-to guides
-
    guide/index
 
 .. toctree::
    :maxdepth: 2
-   :hidden:
-   :caption: Theory
+   :caption: Methods and reference
 
    theory/index
-
-.. toctree::
-   :maxdepth: 2
-   :hidden:
-   :caption: Reference
-
    api
+   development/native_cutover
+   development/index
    contributing_docs
-   development/rust_migration
-   development/rust_phase1
-   development/rust_phase2
-   development/rust_phase3
-   development/rust_phase4
-   development/rust_phase5
-   development/rust_phase6
-   GitHub <https://github.com/seixas-research/mandacaru>
-   PyPI <https://pypi.org/project/mandacaru/>
+
+Source and releases: `GitHub <https://github.com/seixas-research/mandacaru>`_
+and `PyPI <https://pypi.org/project/mandacaru/>`_.

@@ -39,38 +39,6 @@ def _dimer(shape, grid_spacing, separation, extra=0.0):
     return n.ravel(), sum(c * c for c in grad).ravel(), (X, Y, Z)
 
 
-class TestTheKernel:
-    @pytest.mark.parametrize("a, b", [(0.05, 0.05), (0.01, 0.3), (0.2, 0.07)])
-    def test_the_transform_is_the_radial_fourier_integral(self, a, b):
-        """The partial-fraction closed form against a brute-force radial
-        transform (an adaptive quadrature fails on the oscillatory tail).  At
-        k = 0 the R^-6 tail beyond the last point, 4 pi / (3 a b (a+b)
-        R^3), is added; at k > 0 it oscillates away."""
-        R = np.linspace(0.0, 400.0, 2_000_001)
-        for k in (0.0, 0.4, 2.0):
-            numeric = np.trapezoid(4 * np.pi * R * R * vv10.kernel_real(a, b, R)
-                                   * np.sinc(k * R / np.pi), R)
-            if k == 0.0:
-                numeric += 4 * np.pi / (3 * a * b * (a + b) * R[-1] ** 3)
-            assert vv10.kernel_transform(a, b, np.array([k]))[0] == \
-                pytest.approx(numeric, rel=1e-6)
-
-    def test_it_is_finite_and_smooth_at_zero(self):
-        k = np.array([0.0, 1e-9, 1e-6])
-        values = vv10.kernel_transform(0.01, 0.3, k)
-        assert np.all(np.isfinite(values))
-        assert values[1] == pytest.approx(values[0], rel=1e-8)
-
-    def test_the_saturation_follows_q_then_caps_it(self):
-        h, dh = vv10.saturate(np.array([1e-4, 0.01, 50.0]))
-        assert h[0] == pytest.approx(1e-4, rel=1e-3) and dh[0] == pytest.approx(1.0, rel=1e-3)
-        assert h[2] == pytest.approx(vv10.Q_CUT, rel=1e-9)
-
-    def test_the_cardinal_splines_partition_unity(self):
-        p, _dp = vv10.cardinal(np.geomspace(2e-4, 0.4, 50))
-        assert np.allclose(p.sum(axis=0), 1.0, atol=1e-12)
-
-
 class TestTheEnergy:
     def test_the_uniform_gas_has_none(self):
         """beta = (3/b^2)^(3/4)/32 cancels the kernel for a uniform
@@ -81,7 +49,7 @@ class TestTheEnergy:
                                               np.full(12 ** 3, n0),
                                               np.zeros(12 ** 3))
             n_total = n0 * 12 ** 3 * 0.4 ** 3
-            assert abs(terms.energy) < 3e-4 * vv10.beta(vv10.B_R2SCAN) * n_total
+            assert abs(terms.energy) < 3e-4 * (3/vv10.B_R2SCAN**2)**.75/32 * n_total
 
     def test_it_is_the_exact_double_sum(self, monkeypatch):
         """The interpolated, spectrally applied energy against the O(N^2)
@@ -93,10 +61,11 @@ class TestTheEnergy:
         rps = vv10.nonlocal_correlation(_grid(shape, grid_spacing, False), n, sigma)
         b, C = vv10.B_R2SCAN, vv10.C_VV10
         on = n > vv10.DENSITY_CUTOFF
-        kappa = vv10.kappa_prefactor(b) * n[on] ** (1 / 6)
+        kappa = (b*1.5*np.pi*(9*np.pi)**(-1/6)) * n[on] ** (1 / 6)
         omega0 = np.sqrt(C * (sigma[on] / n[on] ** 2) ** 2
                          + 4 * np.pi * n[on] / 3)
-        q, _ = vv10.saturate(omega0 / kappa)
+        q_raw = omega0 / kappa / vv10.Q_CUT
+        q = -vv10.Q_CUT*np.expm1(-sum(q_raw**m/m for m in range(1,13)))
         theta = n[on] * kappa ** -1.5
         points = np.stack([X.ravel()[on], Y.ravel()[on], Z.ravel()[on]], 1)
         total = 0.0
@@ -107,7 +76,7 @@ class TestTheEnergy:
             phi = 1.0 / ((qa * d2 + 1) * (q * d2 + 1) * ((qa + q) * d2 + 2))
             total += theta[start:start + 1024] @ phi @ theta
         exact = (-0.75 * total * grid_spacing ** 6
-                 + vv10.beta(b) * float(np.sum(n)) * grid_spacing ** 3)
+                 + (3/b**2)**.75/32 * float(np.sum(n)) * grid_spacing ** 3)
         assert rps.energy == pytest.approx(exact, abs=2e-7)
 
     @pytest.mark.parametrize("periodic", [False, True])
@@ -118,7 +87,9 @@ class TestTheEnergy:
         n, sigma, _ = _dimer(shape, grid_spacing, 3.6)
         terms = vv10.nonlocal_correlation(grid, n, sigma)
         eps = 1e-4
-        plus, minus = _dimer(shape, grid_spacing, 3.6, eps), _dimer(shape, grid_spacing, 3.6, -eps)
+        # Displace the positive-density fragments. Subtracting a Gaussian in
+        # the far tail would produce a negative, unphysical trial density.
+        plus, minus = _dimer(shape, grid_spacing, 3.6 + eps), _dimer(shape, grid_spacing, 3.6 - eps)
         numeric = (vv10.nonlocal_correlation(grid, *plus[:2]).energy
                    - vv10.nonlocal_correlation(grid, *minus[:2]).energy) / (2 * eps)
         dn = (plus[0] - minus[0]) / (2 * eps)

@@ -172,14 +172,14 @@ class TestCoreDensities:
 
 
 class TestOptions:
-    @pytest.mark.parametrize("spelling, canonical",
-                             [("LDA", "lda"), ("pz81", "lda"), ("PBE", "pbe"),
-                              ("gga-pbe", "pbe"), ("r2SCAN", "r2scan"),
-                              ("r²SCAN", "r2scan"),
-                              ("r2SCAN+rVV10", "r2scan+rvv10"),
-                              ("PBE+rVV10", "pbe+rvv10")])
-    def test_spellings_resolve(self, spelling, canonical):
-        assert xc_grid.resolve_functional(spelling) == canonical
+    @pytest.mark.parametrize("name", xc_grid.GRID_FUNCTIONALS)
+    def test_canonical_names_are_accepted(self, name):
+        assert xc_grid.resolve_functional(name) == name
+
+    @pytest.mark.parametrize("spelling", ["LDA", "pz81", "PBE", "gga-pbe", "r2SCAN", "r²SCAN", "r2SCAN+rVV10", "PBE+rVV10"])
+    def test_aliases_are_rejected(self, spelling):
+        with pytest.raises(ValueError):
+            xc_grid.resolve_functional(spelling)
 
     @pytest.mark.parametrize("spelling", ["r2scan-rvv10", "r2scan_rvv10",
                                           "pbe-rvv10", "r2scanrvv10"])
@@ -478,9 +478,11 @@ class TestHybrid:
             / (2 * eps) == pytest.approx(
                 np.sum(potential * delta) * grid.dV, rel=1e-5)
 
-    def test_hse_spellings_resolve(self):
-        assert xc_grid.resolve_functional("HSE06") == "hse06"
-        assert xc_grid.resolve_functional("hse") == "hse06"
+    def test_only_canonical_hybrid_name_is_accepted(self):
+        assert xc_grid.resolve_functional("hse06") == "hse06"
+        for alias in ("HSE06", "hse"):
+            with pytest.raises(ValueError):
+                xc_grid.resolve_functional(alias)
         assert xc_grid.is_hybrid("hse06") and not xc_grid.is_hybrid("pbe")
         assert not xc_grid.takes_relativistic_exchange("hse06")
 

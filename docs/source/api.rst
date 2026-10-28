@@ -3,6 +3,43 @@ API Reference
 
 This page documents the public modules, classes, and functions of the **Mandacaru** package.
 
+Native engine boundary
+----------------------
+
+The ASE entry point is ``Mandacaru(..., engine="rust")``. Read
+:doc:`guide/native_engine` for supported combinations. The module reference
+below also includes features awaiting migration; their presence here does not
+establish native coverage.
+
+``mandacaru._native.Context`` owns execution threads and checked allocations.
+Its low-level scientific interfaces use atomic units and copied, contiguous
+arrays:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Entry point
+     - Role
+   * - ``molecular_integrals``
+     - Build a geometry-owned basis, grid and molecular integrals.
+   * - ``MolecularIntegrals.kohn_sham``
+     - Solve a supported molecular functional, retaining the native state.
+   * - ``MeanField.gradient``
+     - Evaluate a converged state's stationary molecular gradient.
+   * - ``xc_points``
+     - Energy density and seven spin/gradient/kinetic-density partials.
+   * - ``exchange_correlation``
+     - Grid energy, spin potentials and optional kinetic-density potentials.
+   * - ``exchange_hole``
+     - Full or short-range exchange-hole energy and its two partials.
+   * - ``nonlocal_correlation``
+     - Nonlocal energy and density/gradient-contraction partials.
+
+See :doc:`guide/dft` for functional definitions and the distinction between a
+hybrid's semilocal point contribution and its complete SCF operator. Returned
+arrays own independent storage. Mutating an input or a returned snapshot does
+not alter an existing native calculation.
+
 
 Algorithms & Drivers
 --------------------

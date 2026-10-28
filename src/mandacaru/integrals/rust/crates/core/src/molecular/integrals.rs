@@ -154,13 +154,21 @@ pub fn eigen(matrix: DMatrix<f64>) -> Result<(Vec<f64>, DMatrix<f64>)> {
     Ok((values, vectors))
 }
 pub fn pair_integrals(ctx: &Context, grid: &SpatialGrid, samples: &[f64], m: usize) -> Result<Eri> {
+    pair_integrals_with_solver(ctx, grid, samples, m, &mut Poisson::isolated(ctx, grid)?)
+}
+pub(super) fn pair_integrals_with_solver(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    samples: &[f64],
+    m: usize,
+    poisson: &mut Poisson,
+) -> Result<Eri> {
     let g = grid.index.points();
     if samples.len() != product(&[m, g])? || m == 0 {
         return Err(invalid("orbital samples must match the molecular grid"));
     }
     let n = packed_len(m)?;
     let mut values = ctx.allocate(packed_len(n)?)?;
-    let mut poisson = Poisson::isolated(ctx, grid)?;
     let mut density = ctx.allocate::<C64>(g)?;
     let mut potential = ctx.allocate::<C64>(g)?;
     for b in 0..m {

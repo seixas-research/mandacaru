@@ -134,6 +134,14 @@ def test_native_public_checkpoint_export_and_warm_restart(tmp_path, method):
     # Existing Python consumers can read and prepare the native file.
     legacy = WavefunctionCheckpoint.load(path)
     assert np.allclose(legacy.state_vector(), checkpoint.state_vector(engine="rust"), atol=1e-12)
+    legacy_options = {**options, "engine": "python", "resume": path}
+    if method == "adapt-vqe":
+        legacy_options["pool"] = "fermionic"
+    legacy_result = Mandacaru(**legacy_options).run()
+    assert legacy_result.optimal_energy == pytest.approx(result.optimal_energy, abs=1e-8)
+    # A Python-written copy is also a valid native warm start.
+    legacy.save(path)
+    assert Mandacaru(**options, resume=path).run().optimal_energy == pytest.approx(result.optimal_energy, abs=1e-10)
 
 
 @pytest.mark.parametrize("mutation", ["hamiltonian", "mapping", "preparation", "reference_qubits"])
@@ -157,11 +165,15 @@ def test_native_restart_refuses_other_problem_or_state(tmp_path, mutation):
 
 
 @pytest.mark.parametrize("width", [1, 4, 65, 137])
-def test_native_qwc_matches_greedy_policy_at_arbitrary_width(width):
+def test_native_qwc_matches_greedy_policy_at_arbitrary_width(width, monkeypatch):
     rng = np.random.default_rng(width)
     labels = ["".join(row) for row in rng.choice(list("IXYZ"), size=(70, width))]
     weights = rng.integers(0, 5, size=len(labels)).astype(float)
     expected = qwc_partition(labels, weights)
+    import mandacaru.core.pauli_algebra as algebra
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Python grouping was used")
+    monkeypatch.setattr(algebra, "pack_labels", forbidden)
     actual = qwc_partition(labels, weights, engine="rust")
     assert actual == expected
     assert sorted(i for basis, members in actual for i in members) == list(range(len(labels)))
@@ -175,10 +187,13 @@ def test_counts_and_sdk_gate_streams_use_native_core(monkeypatch):
     actual = energy_from_group_counts(groups, identity, counts, engine="rust")
     assert actual == pytest.approx(expected, abs=1e-14)
     generators = [PauliSum({"XY": .5j, "YX": -.5j}, num_qubits=2)]
+    expected = list(build_provider("qiskit")._emit(2, [0], generators, [.37]))
+    import mandacaru.backends.providers as providers
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Python generator compilation was used")
+    monkeypatch.setattr(providers, "pauli_rotations", forbidden)
     for name in ["qiskit", "braket", "cirq"]:
-        legacy = build_provider(name)
         native = build_provider(name, engine="rust", engine_options={"threads": 1})
-        expected = list(legacy._emit(2, [0], generators, [.37]))
         assert list(native._emit(2, [0], generators, [.37])) == expected
         state = native.statevector(2, [0], generators, [.37])
         exact = prepare_state(2, [0], generators, [.37], engine="rust")
@@ -187,6 +202,7 @@ def test_counts_and_sdk_gate_streams_use_native_core(monkeypatch):
 
 def test_invalid_circuit_and_counts_rejected():
     ctx = _native.Context()
+    assert ctx.qwc_groups(["XX", "ZZ"], [-0.0, 0.0]) == qwc_partition(["XX", "ZZ"], [-0.0, 0.0])
     for generator in [[("X", 0., .3), ("Z", 0., .2)], [("Y", .3, 0.)]]:
         with pytest.raises(ValueError):
             ctx.compile_circuit(1, [], [generator], [.3])

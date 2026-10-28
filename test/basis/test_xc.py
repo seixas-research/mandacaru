@@ -164,14 +164,14 @@ class TestTheDispatcher:
         assert np.array_equal(e_xc, e_ref)
         assert np.array_equal(v_xc, v_ref)
 
-    @pytest.mark.parametrize("name", ["lda", "LDA", "pz", "pbe", "PBE", "gga"])
+    @pytest.mark.parametrize("name", ["lda", "pbe"])
     def test_the_accepted_spellings(self, name):
         r = radial_grid(1000)
         assert xc_potential(r, two_shell_density(r), name)[1].shape == r.shape
 
     def test_an_unknown_functional_is_named_with_the_alternatives(self):
         r = radial_grid(100)
-        with pytest.raises(ValueError, match="unknown exchange-correlation"):
+        with pytest.raises(ValueError, match="canonical XC"):
             xc_potential(r, two_shell_density(r), "b3lyp")
 
     def test_the_two_functionals_disagree_where_the_gradient_is_large(self):

@@ -32,7 +32,7 @@ pub fn qwc(ctx: &Context, labels: &[String], weights: Option<&[f64]>) -> Result<
     let mut order: Vec<_> = (0..labels.len()).collect();
     order.sort_by(|&i, &j| {
         weights
-            .map(|w| w[j].total_cmp(&w[i]))
+            .map(|w| w[j].partial_cmp(&w[i]).unwrap())
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| labels[i].cmp(&labels[j]))
     });

@@ -27,6 +27,8 @@ def kpoint_payload(crystal, data, fractional=None):
 def crystal_payload(crystal, electrons, functional, *, constant=0., relativistic=False,
                     magnetic_moments=None, provenance=None):
     """Snapshot the density-independent PAW setup; this performs no SCF steps."""
+    if functional not in ("lda", "pbe"):
+        raise NotImplementedError("native periodic SCF supports lda and pbe")
     from ..integrals import reciprocal as rc, exchange_correlation as xc
     c = crystal
     if c.has_spin_orbit:

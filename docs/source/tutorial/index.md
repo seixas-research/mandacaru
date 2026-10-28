@@ -1,8 +1,8 @@
 # Tutorials
 
-Follow the first three tutorials in order. They use neutral lithium hydride
-(LiH) to introduce the geometry, electron count, basis, grid, variational
-algorithm and interpretation of a potential-energy curve.
+Follow the first three tutorials for native VQE and ADAPT on LiH, followed by
+a short molecular DFT geometry scan. Each example selects the Rust engine
+explicitly.
 
 ```{toctree}
 :maxdepth: 1
@@ -12,9 +12,9 @@ adapt_vqe_lih
 pes_scan
 ```
 
-The additional tutorials cover smaller hydrogen examples, excited states, the
-Markov-chain ansatz search and periodic systems. They assume familiarity with
-the LiH workflow.
+The additional tutorials describe specialized workflows. Some still depend on
+features awaiting migration; consult the [native coverage](../guide/native_engine.md)
+before using them. They are retained as method references during the cutover.
 
 ```{toctree}
 :maxdepth: 1

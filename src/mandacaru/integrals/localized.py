@@ -277,7 +277,7 @@ class LocalizedBasisCollection:
         return V_ao
 
     def atom_derivatives(self, atom: int, delta: float = 0.001) -> np.ndarray:
-        r"""Compute (3, len(idx_a), *box_shape) orbital gradients on the atom's bounding box."""
+        r"""Compute ``(3, len(idx_a), *box_shape)`` orbital gradients on the atom's bounding box."""
         from .sampling import sample_functions
 
         sx_a, sy_a, sz_a = self.atom_boxes[atom]

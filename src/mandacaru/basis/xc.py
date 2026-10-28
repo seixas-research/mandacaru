@@ -349,14 +349,9 @@ def xc_energy_density(rho, gradient, functional: str = "pbe",
 
 
 def _resolve(functional: str) -> str:
-    key = str(functional).strip().lower().replace("-", "").replace("_", "")
-    aliases = {"lda": "lda", "pz": "lda", "pz81": "lda", "ldapz": "lda",
-               "pbe": "pbe", "gga": "pbe", "ggapbe": "pbe"}
-    if key not in aliases:
-        raise ValueError(
-            f"unknown exchange-correlation functional {functional!r}; "
-            f"available: {', '.join(FUNCTIONALS)}")
-    return aliases[key]
+    if functional not in FUNCTIONALS:
+        raise ValueError(f"expected canonical XC name in {FUNCTIONALS}")
+    return functional
 
 
 def xc_potential(r, rho, functional: str = "lda", gradient=None,

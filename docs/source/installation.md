@@ -15,17 +15,15 @@ python -c "import mandacaru; print(mandacaru.__version__)"
 
 On Windows, activate the environment with `.venv\Scripts\activate` instead.
 
-The package installs NumPy, SciPy, JAX (the r²SCAN functional of
-`method="dft"` is written in it), ASE, Matplotlib, spglib (crystal symmetry for
-the periodic methods), threadpoolctl (keeps BLAS single-threaded beside the
-OpenMP kernels), Hamiltonian-cache dependencies, quantum SDKs and the
-supporting numerical packages listed in `pyproject.toml`.
-Installing a provider's SDK does not require an account on its service. The
-introductory LiH examples run locally without credentials.
+The Python package provides ASE integration, arrays, visualization and service
+adapters. Native calculations use the packaged Rust extension. A compiler is
+needed to build the extension from source, not to execute an installed native
+calculation. The introductory examples run locally without credentials.
 
 ## Install a source checkout
 
-Use this route to run the repository's examples or edit the documentation:
+Install Rust with Cargo before building a source checkout. The crates declare
+a minimum Rust version of 1.85. Use this route to edit the code or documentation:
 
 ```bash
 git clone https://github.com/seixas-research/mandacaru.git
@@ -96,91 +94,36 @@ optional variable, and without it a missing dataset is generated on demand
 `build_upaw_library()` writes them out into `$MANDACARU_UPAW_PATH/lda-sr/` if
 you would rather not pay that again.
 
-## Numerical backend
+## Native engine
 
-Mandacaru's high-performance integral kernels are implemented in **Rust** (with a
-C fallback). Nothing has to be built by hand: the first integral engine of a
-session looks for the compiled shared library, compiles it on demand when it is
-missing or stale, and loads it. Only if the native compilation fails does
-Mandacaru warn and fall back to the NumPy reference kernels, which give the same
-numbers more slowly.
-
-The **Rust backend** (`src/mandacaru/integrals/rust/`) offers several key advantages:
-- **Zero external runtime dependencies**: Uses Rust's standard library scoped
-  multithreading (`std::thread::scope`), completely eliminating the need for
-  external OpenMP runtimes (such as `libomp` on macOS).
-- **Native mixed precision**: Provides hardware-accelerated single-precision
-  kernels (`mandacaru_real_shell_f32`, `mandacaru_laplacian_real_f32`,
-  `mandacaru_kb_project_f32`) powering the `precision="single"` calculator option,
-  which reduces real-space grid RAM by ~50% with zero loss of secular matrix accuracy.
-- **Memory safety and portability**: Fast C ABI exports linkable into standard
-  Python processes via `ctypes`.
-
-To build it ahead of time — in a container image, in CI, or to verify the toolchain —
-run the command:
+Use `engine="rust"` on the ASE calculator. `engine_options` configures its owned
+thread pool and memory limit; see [native execution](guide/native_engine.md).
+The extension is built by the package build hook. It must be rebuilt after a
+change to Rust source, even with an editable Python installation:
 
 ```bash
-mandacaru --build-backend
+python -m pip install --no-deps -e .
+python -c "from mandacaru import _native; print(_native.Context(threads=1))"
 ```
 
-It prints the library path and the thread count on success, and on failure prints
-the build log and exits with status 1. The equivalent call from Python:
-
-```python
-from mandacaru.integrals import check_backend, ensure_backend
-
-print(check_backend())   # Inspect the backend without compiling it.
-print(ensure_backend())  # Build if necessary, then load the library.
-```
-
-The Rust backend is built using `cargo`. If Cargo is not installed on the system,
-Mandacaru automatically falls back to compiling the C backend (`src/mandacaru/integrals/csrc/`)
-using CMake or the bare C compiler with OpenMP.
-
-`MANDACARU_BACKEND=auto` selects the default policy (prefers Rust, then C, then NumPy).
-Use `MANDACARU_BACKEND=rust` to require the Rust backend, `MANDACARU_BACKEND=c` to
-require the compiled C backend, or `MANDACARU_BACKEND=numpy` to force the pure Python/NumPy
-reference kernels. Any other value raises a `ValueError`.
-
-The same variable also selects the backend for a second, separate compiled
-library: the radial kernels (tridiagonal eigenpairs and Numerov recursions)
-behind atom and pseudopotential generation
-(`mandacaru.basis.radial_backend`). `mandacaru-build --build-backend` builds
-and reports on that one; `mandacaru-build --backend {auto,c,python}` selects
-it for one generation run (`python` there maps to `MANDACARU_BACKEND=numpy`).
-The [pseudopotentials guide](guide/pseudopotentials.md) shows `mandacaru-build`
-in use.
-
-The shared library is located in `src/mandacaru/integrals/` (or `rust/target/release/`
-and `csrc/build/`) and detected automatically; set `MANDACARU_INTEGRALS_LIB` to point
-at one built elsewhere. The equivalent manual invocation to build the Rust backend is:
+Standalone core checks do not import Python:
 
 ```bash
-cargo build --release --manifest-path src/mandacaru/integrals/rust/Cargo.toml
+cargo test --offline --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
+  --package mandacaru-core --package mandacaru_integrals
 ```
 
-Or for the C backend:
-
-```bash
-cmake -S src/mandacaru/integrals/csrc -B src/mandacaru/integrals/csrc/build -DCMAKE_BUILD_TYPE=Release
-cmake --build src/mandacaru/integrals/csrc/build
-```
-
-The FFT integral stage processes orbital pairs in blocks. Set
-`MANDACARU_ERI_MEMORY_MB` to change its working memory budget (256 MB by default).
-This budget controls integral workspace, not the total memory used by grids,
-Hamiltonians or state vectors.
+Remove `--offline` if the Cargo dependencies have not yet been downloaded.
+The native extension reports missing components and invalid input explicitly;
+there is no runtime compiler or numerical fallback on this path.
 
 ## Optional dependencies
 
 | Extra | Purpose |
 | :--- | :--- |
 | `docs` | Sphinx, MyST and Furo for building this manual. |
-| `pyarrow` | An alternative Parquet engine for Hamiltonian caches. |
-| `memory` | `psutil`, for the resident-memory line of the `[PERFORMANCE]` block (it falls back to the standard library). |
-| `dispersion` | `dftd4`, for the D4 correction of `Mandacaru(method="dft", vdw="d4")`. |
 | `coverage` | Test coverage reporting with pytest-cov. |
-| `dev` | Everything above. |
+| `dev` | Documentation and additional validation dependencies. |
 
 For example:
 

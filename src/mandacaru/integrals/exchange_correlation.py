@@ -11,7 +11,7 @@ r"""Exchange-correlation energy and potential on the three-dimensional grid.
 The functionals are written once, as energies per unit volume: LDA and PBE in
 :mod:`mandacaru.basis.xc` (:func:`~mandacaru.basis.xc.xc_partials`, shared
 with the radial atom), the r\ :sup:`2`\ SCAN meta-GGA in
-:mod:`mandacaru.basis.r2scan`.  This module evaluates them on the real-space
+:mod:`mandacaru.basis.xc_spin`.  This module evaluates them on the real-space
 grid the integrals already use, for the Kohn-Sham solver behind
 ``Mandacaru(method="dft")``:
 
@@ -81,13 +81,6 @@ from ..basis.xc import DENSITY_FLOOR, xc_partials, xc_potential
 GRID_FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06", "pbe+rvv10",
                     "r2scan+rvv10")
 
-#: Spellings accepted for each functional.
-_ALIASES = {"lda": "lda", "pz": "lda", "pz81": "lda", "ldapz": "lda",
-            "pbe": "pbe", "gga": "pbe", "ggapbe": "pbe",
-            "r2scan": "r2scan", "r²scan": "r2scan", "mggar2scan": "r2scan",
-            "hse06": "hse06", "hse": "hse06",
-            "pbe+rvv10": "pbe+rvv10", "r2scan+rvv10": "r2scan+rvv10"}
-
 #: Screened hybrids: ``(omega, fraction)`` -- the range separation (1/Bohr)
 #: and the fraction of short-range exchange that is exact.  The grid
 #: evaluates their semilocal part only; the Kohn-Sham solver adds
@@ -117,12 +110,11 @@ GRADIENT_DENSITY_FLOOR = 1e-10
 def resolve_functional(name: str) -> str:
     """Canonical name (``"lda"``, ``"pbe"``, ``"r2scan"``, ``"hse06"``,
     ``"pbe+rvv10"`` or ``"r2scan+rvv10"``) of a spec."""
-    key = str(name).strip().lower().replace("-", "").replace("_", "")
-    if key not in _ALIASES:
+    if name not in GRID_FUNCTIONALS:
         raise ValueError(
             f"unknown exchange-correlation functional {name!r}; "
             f"available: {', '.join(GRID_FUNCTIONALS)}")
-    return _ALIASES[key]
+    return name
 
 
 def semilocal_part(name: str) -> str:
@@ -483,8 +475,8 @@ def evaluate(grid, density: np.ndarray, functional: str = "lda", *,
     else:
         if tau is None:
             raise ValueError("a meta-GGA needs the kinetic-energy density tau")
-        from ..basis import r2scan
-        f, df_drho, df_dsigma, df_dtau = r2scan.partials(
+        from ..basis.xc_spin import unpolarized_partials
+        f, df_drho, df_dsigma, df_dtau = unpolarized_partials("r2scan",
             np.where(weighted, rho, 0.0), sigma, np.asarray(tau, dtype=float))
     if given:
         # rVV10 differentiates the density on the grid, as it always did.

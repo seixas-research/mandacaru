@@ -94,7 +94,8 @@ engines (absolute degeneracy tolerance `1e-10 Ha`).
 
 Rust QPE takes a prepared full-register state. Checkpoint decoding remains a
 Python input adapter; tuple-based circuit preparation is explicitly refused
-for native simulation. Circuit export still uses the Python Qiskit integration.
+for native simulation in this milestone. Phase 7 adds native checkpoint and
+tuple preparation, superseding this restriction. Circuit export still uses the Python Qiskit integration.
 Echo/OTOC orchestration and sampled spectroscopy have not migrated with this
 propagation primitive.
 

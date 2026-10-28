@@ -1,0 +1,239 @@
+{
+  "clippy": {
+    "core_all_targets": "passed with -D warnings",
+    "python": "passed with -D warnings -A clippy::too_many_arguments"
+  },
+  "contracts": {
+    "abi_version": 1,
+    "frozen_reference_artifacts_modified": false,
+    "git_history_written_by_agent": false,
+    "native_loops_call_python": false,
+    "python_default_unchanged": true,
+    "remote_jobs_submitted_by_agent": false,
+    "thread_policy_version": 1
+  },
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "3.14.6",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)"
+  },
+  "focused_python": {
+    "errors": [],
+    "executed": 448,
+    "failures": [],
+    "passed": 448,
+    "skips": []
+  },
+  "frozen_h2_cache_sha256": "d222510c116ba17652a1ab1c10b218fb2064d1321b43700fd55a043d72bdb5d4",
+  "implemented": [
+    "bounded schema-v1 Hamiltonian JSON and schema-v1/v2 checkpoints",
+    "atomic JSON replacement and native model cache export",
+    "native checkpoint product/sum preparation and expectations",
+    "public VQE/ADAPT checkpoint export and compatible warm restarts",
+    "explicit Parquet I/O adapter with native schema validation and native solves",
+    "native QWC grouping, count reductions and SDK-neutral circuit compilation",
+    "checked job/shot tickets with terminal failure accounting",
+    "streamed atomic CUBE/XSF/BXSF output without padded tensors"
+  ],
+  "limitations": "Broad Phase 7 capability groups remain partial. Parquet columnar I/O and SDK service/simulator integration remain explicit Python adapters. Full scientific-suite success is not asserted; four selected failures and two optional pyarrow skips are retained. See docs/source/development/rust_phase7.md.",
+  "new_phase7_python_cases": 34,
+  "pending": [
+    "native Parquet/compression and pseudopotential family codecs",
+    "proposal/training/model persistence and volumetric readers",
+    "in-flight optimizer checkpoints and full optimizer-state restoration",
+    "native measurement-gradient/factorization planning and SDK job-lifecycle integration"
+  ],
+  "phase": 7,
+  "phase7_status": "partially_migrated; validated persistence and provider-independent execution milestone",
+  "prior_phase6_failure_reproduction": {
+    "note": "Runs use the installed Phase 6 wheel and matching source-distribution tests. No Phase 7 native engine components are present in this baseline.",
+    "package": {
+      "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+      "python": "3.14.6",
+      "version": "26.10.36"
+    },
+    "results": {
+      "errors": [],
+      "executed": 4,
+      "failures": [
+        {
+          "classname": "test.backends.test_measurement_cost.TestARetryRunsOnTheOptionsItAsksFor",
+          "message": "RuntimeError: nothing has been optimized yet: ask for an energy (atoms.get_potential_energy()) before remeasuring",
+          "name": "test_remeasure_rebuilds_and_drops_stale_forces",
+          "seconds": 1.005
+        },
+        {
+          "classname": "test.utils.test_logging.TestBasisBlock",
+          "message": "AssertionError: assert False\n +  where False = <built-in method startswith of str object at 0x116860420>('first_zeta: tail norms 0.16, 0.3, 0.6 (norm')\n +    where <built-in method startswith of str object at 0x116860420> = 'first_zeta: tail norms 0.15, 0.31, 0.54 (norm of the tail, every zeta split from the first)'.startswith",
+          "name": "test_defaults_the_user_never_typed_are_recorded",
+          "seconds": 4.794
+        },
+        {
+          "classname": "test.utils.test_logging.TestPerformanceBlock",
+          "message": "AssertionError: assert 'Rust (8 threads)' in ('C (OpenMP)', 'NumPy')",
+          "name": "test_resources_are_recorded",
+          "seconds": 0.34
+        },
+        {
+          "classname": "test.utils.test_logging.TestRelaxationLog",
+          "message": "AttributeError: 'NoneType' object has no attribute 'hellmann_feynman'",
+          "name": "test_the_logged_force_is_the_reported_force",
+          "seconds": 0.279
+        }
+      ],
+      "passed": 0,
+      "skips": []
+    },
+    "same_failure_cases_and_normalized_messages": true,
+    "source_sha256": "9398a90a914764b6fb7069f6c9346e5bc3960e9d1a2905830e27de76c660ec62",
+    "wheel_sha256": "b534e70c749b16fbedcbaaac2ada1d2f68f173c4e067c2a987928d193365dd4e"
+  },
+  "revision": "d770d96f29465ef58dab53613d47842eb273d1aa",
+  "rust_tests": {
+    "failed": 0,
+    "new_phase7_cases": 6,
+    "passed": 43,
+    "python_and_sdks_required": false
+  },
+  "schema_version": 1,
+  "scientific_comparisons": {
+    "product": {
+      "expectation_error_ha": 2.220446049250313e-16,
+      "max_amplitude_error": 1.2412670766236366e-16,
+      "normalization_error": 0.0
+    },
+    "sum": {
+      "expectation_error_ha": 0.0,
+      "max_amplitude_error": 1.1102230246251565e-16,
+      "normalization_error": 1.1102230246251565e-16
+    }
+  },
+  "sdist": {
+    "fresh_cargo_target": true,
+    "installed_smoke": {
+      "passed": true,
+      "schema_version": 1,
+      "smoke": {
+        "abi_version": 1,
+        "cached_vqe_energy_ev": -25.871895455446612,
+        "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+        "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+        "qiskit_transpile_and_parquet_roundtrip": true,
+        "rhf_energy_ev": -25.5004433585557,
+        "runtime_compilation": false,
+        "rust_dft_energy_ev": -25.80496391071012,
+        "rust_dynamics_qpe_mp2_subspace": true,
+        "rust_engine_energies_ev": {
+          "adapt-vqe": -25.871895455446616,
+          "vqe": -25.871895455446616
+        },
+        "rust_geometry_energies_ev": {
+          "adapt-vqe": -25.871895455446595,
+          "rhf": -25.50044335855568,
+          "vqe": -25.871895455446595
+        },
+        "rust_periodic_energy_ev": -211.60193975895788,
+        "rust_periodic_scf_and_ewald": true,
+        "rust_snapshot_restart_measurement_and_streaming": true,
+        "rust_stationary_forces_and_radial_atoms": true
+      },
+      "wheel": "mandacaru-26.10.37-cp314-cp314-macosx_26_0_arm64.whl",
+      "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+      "wheel_sha256": "0379924c5d69b63c90564fcacc806159204bb4bd3e1c27151ed7fb5c211477a3"
+    },
+    "native_binaries_in_source": false,
+    "offline_build": true,
+    "same_source_as_checkout": true,
+    "source": ".mandacaru/migration/phase7/sdist-check-final-swzbvd9j/mandacaru-26.10.37",
+    "source_archive_sha256": "0e691463a3f2ab76660889325a31f2d5100c98c79bbb7a4c74fec621d8c72638",
+    "source_sha256": "4a3933520466b5574c4c2c0e7a6bbbfc53f9fde01856019a78f8f4918bad1bfd",
+    "target_in_source": false,
+    "wheel": ".mandacaru/migration/phase7/sdist-check-final-swzbvd9j/dist/mandacaru-26.10.37-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_sha256": "0379924c5d69b63c90564fcacc806159204bb4bd3e1c27151ed7fb5c211477a3"
+  },
+  "selected_output_logging_regression": {
+    "errors": [],
+    "executed": 258,
+    "failures": [
+      {
+        "classname": "test.utils.test_logging.TestBasisBlock",
+        "message": "AssertionError: assert False\n +  where False = <built-in method startswith of str object at 0x11ac2f7e0>('first_zeta: tail norms 0.16, 0.3, 0.6 (norm')\n +    where <built-in method startswith of str object at 0x11ac2f7e0> = 'first_zeta: tail norms 0.15, 0.31, 0.54 (norm of the tail, every zeta split from the first)'.startswith",
+        "name": "test_defaults_the_user_never_typed_are_recorded",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.utils.test_logging.TestPerformanceBlock",
+        "message": "AssertionError: assert 'Rust (8 threads)' in ('C (OpenMP)', 'NumPy')",
+        "name": "test_resources_are_recorded",
+        "seconds": 0.001
+      },
+      {
+        "classname": "test.utils.test_logging.TestRelaxationLog",
+        "message": "AttributeError: 'NoneType' object has no attribute 'hellmann_feynman'",
+        "name": "test_the_logged_force_is_the_reported_force",
+        "seconds": 0.001
+      }
+    ],
+    "passed": 255,
+    "skips": []
+  },
+  "selected_persistence_provider_regression": {
+    "errors": [],
+    "executed": 392,
+    "failures": [
+      {
+        "classname": "test.backends.test_measurement_cost.TestARetryRunsOnTheOptionsItAsksFor",
+        "message": "RuntimeError: nothing has been optimized yet: ask for an energy (atoms.get_potential_energy()) before remeasuring",
+        "name": "test_remeasure_rebuilds_and_drops_stale_forces",
+        "seconds": 0.317
+      }
+    ],
+    "passed": 389,
+    "skips": [
+      {
+        "classname": "test.core.test_serialization.TestPyarrowEngineIsolated",
+        "message": "pyarrow not installed",
+        "name": "test_round_trip",
+        "seconds": 0.0
+      },
+      {
+        "classname": "test.core.test_serialization.TestPyarrowEngineIsolated",
+        "message": "pyarrow not installed",
+        "name": "test_engines_are_interchangeable",
+        "seconds": 0.0
+      }
+    ]
+  },
+  "source_sha256": "4a3933520466b5574c4c2c0e7a6bbbfc53f9fde01856019a78f8f4918bad1bfd",
+  "wheel": {
+    "passed": true,
+    "schema_version": 1,
+    "smoke": {
+      "abi_version": 1,
+      "cached_vqe_energy_ev": -25.871895455446612,
+      "extension": "lib/python3.14/site-packages/mandacaru/_native.cpython-314-darwin.so",
+      "package": "lib/python3.14/site-packages/mandacaru/__init__.py",
+      "qiskit_transpile_and_parquet_roundtrip": true,
+      "rhf_energy_ev": -25.5004433585557,
+      "runtime_compilation": false,
+      "rust_dft_energy_ev": -25.80496391071012,
+      "rust_dynamics_qpe_mp2_subspace": true,
+      "rust_engine_energies_ev": {
+        "adapt-vqe": -25.871895455446616,
+        "vqe": -25.871895455446616
+      },
+      "rust_geometry_energies_ev": {
+        "adapt-vqe": -25.871895455446595,
+        "rhf": -25.50044335855568,
+        "vqe": -25.871895455446595
+      },
+      "rust_periodic_energy_ev": -211.60193975895788,
+      "rust_periodic_scf_and_ewald": true,
+      "rust_snapshot_restart_measurement_and_streaming": true,
+      "rust_stationary_forces_and_radial_atoms": true
+    },
+    "wheel": "mandacaru-26.10.37-cp314-cp314-macosx_26_0_arm64.whl",
+    "wheel_metadata": "Wheel-Version: 1.0\nGenerator: hatchling 1.32.4\nRoot-Is-Purelib: false\nTag: cp314-cp314-macosx_26_0_arm64\n",
+    "wheel_sha256": "d3c60bee470215765487ccb1699d0ee798e00f8c9055bd331b9aac3dee2caf43"
+  }
+}

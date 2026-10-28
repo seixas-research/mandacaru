@@ -48,6 +48,12 @@ original_which=shutil.which
 shutil.which=lambda name, *a, **kw: None if pathlib.Path(name).name in compilers else original_which(name,*a,**kw)
 spec=json.loads(sys.argv[1])
 ctx=_native.Context(threads=1, memory_limit_bytes=1048576)
+xc_values=np.array([[.12,.08,.004,-.001,.003,.08,.06]])
+for functional in ('lda','pbe','r2scan','hse06'):
+    terms=ctx.xc_points(functional,xc_values)
+    assert terms.shape==(1,8) and np.isfinite(terms).all()
+assert ctx.exchange_hole(np.array([[.2,.01]])).shape==(1,3)
+assert ctx.memory_used_bytes==0
 grid=_native.Grid.orthogonal([2]*3,[1.0]*3)
 assert np.all(np.isfinite(ctx.laplacian(grid,np.ones((1,2,2,2)))))
 case=spec['geometry']
@@ -133,6 +139,31 @@ save_hamiltonian('cached.parquet',record.hamiltonian,mapping=record.mapping,
                  num_particles=record.num_particles,n_spatial_orbitals=record.n_spatial_orbitals)
 restored=load_hamiltonian('cached.parquet')
 assert restored.hamiltonian.terms==record.hamiltonian.terms
+checkpoint_calc=Mandacaru(method='vqe',engine='rust',load_hamiltonian='cached.parquet',
+                         checkpoint='native-state.json',trace=False,references=False)
+checkpoint_result=checkpoint_calc.run()
+assert checkpoint_result.timings['cache_engine']=='python-parquet-adapter'
+assert abs(checkpoint_result.optimal_energy-spec['vqe_energy_ev'])<1e-7
+restarted=Mandacaru(method='vqe',engine='rust',load_hamiltonian=sys.argv[2],
+                    resume='native-state.json',trace=False,references=False).run()
+assert abs(restarted.optimal_energy-checkpoint_result.optimal_energy)<1e-8
+snapshot=ctx.read_snapshot('native-state.json','mandacaru-wavefunction-checkpoint')
+assert abs(snapshot.expectation()*27.211386245988-checkpoint_result.optimal_energy)<1e-8
+assert abs(np.linalg.norm(snapshot.state())-1)<1e-12
+groups=ctx.qwc_groups(['IX','ZX','YI'],[.3,.4,.2])
+assert groups==[('ZX',[1,0]),('YI',[2])]
+gates=ctx.compile_circuit(2,[0],[[('XY',0.,.5),('YX',0.,-.5)]],[.2])
+assert sum(g[0]=='cx' for g in gates)==4
+ledger=ctx.run_ledger(jobs=2,total_shots=100)
+tickets=ledger.reserve(2,100)
+ledger.finish(tickets[0],True);ledger.finish(tickets[1],False)
+assert ledger.usage==dict(attempted_jobs=2,completed_jobs=1,failed_jobs=1,total_shots=100)
+from mandacaru.utils.cube import write_volumetric
+from mandacaru.utils.bxsf import write_bxsf,read_bxsf
+field=np.arange(8,dtype=float).reshape(2,2,2)
+write_volumetric('field.cube',field,np.zeros(3),np.eye(3)*.3,[1],[[0.,0.,0.]],engine='rust')
+write_bxsf('bands.bxsf',field[None],np.eye(3),.5,engine='rust')
+assert np.allclose(read_bxsf('bands.bxsf').energies,field[None])
 print(json.dumps({'package':str(pathlib.Path(mandacaru.__file__).relative_to(prefix)),
                   'extension':str(pathlib.Path(_native.__file__).relative_to(prefix)),
                   'abi_version':_native.ABI_VERSION,'rhf_energy_ev':energy,
@@ -144,6 +175,8 @@ print(json.dumps({'package':str(pathlib.Path(mandacaru.__file__).relative_to(pre
                   'rust_periodic_energy_ev':periodic.optimal_energy,
                   'rust_periodic_scf_and_ewald':True,
                   'rust_dynamics_qpe_mp2_subspace':True,
+                  'rust_advanced_xc':True,
+                  'rust_snapshot_restart_measurement_and_streaming':True,
                   'qiskit_transpile_and_parquet_roundtrip':True}))
 '''
 
@@ -166,6 +199,7 @@ def main() -> None:
         assert "mandacaru-build = mandacaru.pseudopotentials.build_cli:main" in entry_points
         assert "mandacaru = mandacaru.cli:main" in entry_points
         assert not any("/target/" in n or "/__pycache__/" in n for n in names)
+        assert "mandacaru/basis/r2scan.py" not in names
     reference = json.loads((HERE / "reference/numpy.json").read_text())
     spec = {"geometry": reference["cases"]["h2_rhf"]["definition"],
             "dft_geometry": reference["cases"]["h2_dft_lda_forces"]["definition"],

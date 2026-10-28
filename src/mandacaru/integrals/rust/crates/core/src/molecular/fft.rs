@@ -120,7 +120,7 @@ pub fn wave_squared(
     }
     value.max(0.)
 }
-fn fast_len(mut n: usize) -> Result<usize> {
+pub(super) fn fast_len(mut n: usize) -> Result<usize> {
     loop {
         // scipy.next_fast_len's complex transforms permit radices 2,3,5,7,11.
         let mut rest = n;
@@ -144,6 +144,50 @@ pub struct Poisson {
     dv: f64,
 }
 impl Poisson {
+    /// Isolated erfc(omega R)/R. Subtract the smooth long-range kernel from
+    /// the isolated Coulomb discretization on the same non-wrapping box.
+    pub fn screened(ctx: &Context, grid: &SpatialGrid, omega: f64) -> Result<Self> {
+        if !omega.is_finite() || omega < 0. || grid.periodic {
+            return Err(invalid(
+                "screened molecular Coulomb requires an isolated grid and nonnegative screening",
+            ));
+        }
+        let mut solver = Self::isolated(ctx, grid)?;
+        if omega == 0. {
+            return Ok(solver);
+        }
+        let shape = solver.shape;
+        let padded = solver.padded;
+        let mut long = ctx.allocate::<C64>(product(&padded)?)?;
+        for i in 0..padded[0] {
+            for j in 0..padded[1] {
+                for k in 0..padded[2] {
+                    let index = [i, j, k];
+                    let delta = Vector3::from_fn(|a, _| {
+                        if index[a] < shape[a] {
+                            index[a] as f64
+                        } else {
+                            index[a] as f64 - padded[a] as f64
+                        }
+                    });
+                    let r = (grid.step * delta).norm();
+                    long.as_mut_slice()[(i * padded[1] + j) * padded[2] + k] = C64::new(
+                        if r > 0. {
+                            libm::erf(omega * r) / r
+                        } else {
+                            2. * omega / PI.sqrt()
+                        },
+                        0.,
+                    );
+                }
+            }
+        }
+        solver.fft.transform(long.as_mut_slice(), false)?;
+        for (kernel, long) in solver.kernel.as_mut_slice().iter_mut().zip(long.as_slice()) {
+            *kernel -= long;
+        }
+        Ok(solver)
+    }
     pub fn slab(ctx: &Context, grid: &SpatialGrid, axis: usize) -> Result<Self> {
         if axis > 2 {
             return Err(invalid("slab axis must be 0, 1 or 2"));

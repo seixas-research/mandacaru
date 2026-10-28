@@ -1,6 +1,7 @@
 //! Scientific engine foundation. This crate has no dependency on Python or NumPy.
 
 pub mod context;
+pub mod dispersion;
 pub mod execution;
 pub mod geometry;
 pub mod grid;
