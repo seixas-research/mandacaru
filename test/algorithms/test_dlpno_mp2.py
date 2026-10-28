@@ -13,7 +13,7 @@ import pytest
 from ase.build import molecule
 
 from mandacaru.algorithms.dlpno_mp2 import dlpno_mp2
-from mandacaru.algorithms.mp2 import mp2_natural_orbitals
+from mandacaru.analysis.correlation import mp2_natural_orbitals
 from mandacaru.algorithms.orbital_integrals import (DirectOrbitalIntegrals,
                                                     TensorOrbitalIntegrals)
 from mandacaru.core.hamiltonian import molecular_orbital_integrals

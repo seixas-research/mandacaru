@@ -53,9 +53,7 @@ class BandGrid:
     fermi_level: float
 
 
-def write_bxsf(path, energies, reciprocal_cell, fermi_level: float,
-               comment: str = "Mandacaru band energies", *, engine="python",
-               engine_options=None) -> str:
+def write_bxsf(path, energies, reciprocal_cell, fermi_level: float, comment: str='Mandacaru band energies', *, resources=None) -> str:
     """Write the band ``energies`` (eV, ``(n_bands, n1, n2, n3)`` on the
     periodic mesh ``k = (i1/n1, i2/n2, i3/n3)``) as a ``.bxsf`` file.
 
@@ -63,49 +61,8 @@ def write_bxsf(path, energies, reciprocal_cell, fermi_level: float,
     :math:`\\text{\\AA}^{-1}` (with the :math:`2\\pi`); ``fermi_level`` in
     eV.  Returns the path written.
     """
-    if engine == "rust":
-        from .._native import Context
-        Context(**dict(engine_options or {})).write_bands(
-            str(path), np.ascontiguousarray(energies, dtype=float),
-            np.asarray(reciprocal_cell, dtype=float).reshape(3, 3).tolist(),
-            float(fermi_level), comment=str(comment))
-        return str(path)
-    if engine != "python" or engine_options:
-        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
-    energies = np.asarray(energies, dtype=float)
-    cell = np.asarray(reciprocal_cell, dtype=float)
-    if energies.ndim != 4 or min(energies.shape) < 1:
-        raise ValueError("energies must be (n_bands, n1, n2, n3); got shape "
-                         f"{energies.shape}")
-    if cell.shape != (3, 3) or abs(np.linalg.det(cell)) < 1e-12:
-        raise ValueError("reciprocal_cell must be three independent vectors "
-                         "(rows)")
-    if not np.all(np.isfinite(energies)) or not np.isfinite(fermi_level):
-        raise ValueError("energies and fermi_level must be finite")
-    # The general grid closes each direction with a copy of its first plane.
-    closed = np.pad(energies, ((0, 0), (0, 1), (0, 1), (0, 1)), mode="wrap")
-    n_bands = closed.shape[0]
-    lines = ["BEGIN_INFO",
-             f"  # {' '.join(str(comment).split())}",
-             f"  Fermi Energy: {float(fermi_level):.8f}",
-             "END_INFO",
-             "BEGIN_BLOCK_BANDGRID_3D",
-             "  band_energies",
-             "  BEGIN_BANDGRID_3D_bands",
-             f"  {n_bands}",
-             "  " + " ".join(str(n) for n in closed.shape[1:]),
-             "  0.0 0.0 0.0"]
-    lines += ["  " + " ".join(f"{x:.10f}" for x in row) for row in cell]
-    for band in range(n_bands):
-        lines.append(f"  BAND: {band + 1}")
-        values = closed[band].reshape(-1)
-        for start in range(0, len(values), BXSF_VALUES_PER_LINE):
-            chunk = values[start:start + BXSF_VALUES_PER_LINE]
-            lines.append("  " + " ".join(f"{x:.6f}" for x in chunk))
-    lines += ["  END_BANDGRID_3D", "END_BLOCK_BANDGRID_3D"]
-    with atomic_path(path) as tmp:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
+    from .._native import Context
+    Context(**dict(resources or {})).write_bands(str(path), np.ascontiguousarray(energies, dtype=float), np.asarray(reciprocal_cell, dtype=float).reshape(3, 3).tolist(), float(fermi_level), comment=str(comment))
     return str(path)
 
 

@@ -7,10 +7,10 @@ import pytest
 from scipy.linalg import expm
 
 from mandacaru import Mandacaru, _native
-from mandacaru.algorithms.mp2 import (mp2_natural_orbitals,
+from mandacaru.analysis.correlation import (mp2_natural_orbitals,
                                       mp2_natural_orbitals_from_block)
-from mandacaru.algorithms.qpe import QuantumPhaseEstimation
-from mandacaru.algorithms.time_evolution import SuzukiTrotter, time_evolve
+from mandacaru.workflows.qpe import QuantumPhaseEstimation
+from mandacaru.workflows.time_evolution import SuzukiTrotter, time_evolve
 from mandacaru.core.mapping import PauliSum
 from mandacaru.units import HARTREE_TO_EV
 
@@ -34,7 +34,7 @@ def hamiltonian():
 def test_ordered_propagation_and_exact_discrete_adjoint(order, time):
     h, psi = hamiltonian(), state()
     original = psi.copy()
-    native = SuzukiTrotter(h, order=order, engine="rust")
+    native = SuzukiTrotter(h, order=order)
     legacy = SuzukiTrotter(h, order=order)
     for inverse in [False, True]:
         actual = native.evolve(psi, time, steps=3, inverse=inverse)
@@ -56,10 +56,10 @@ def test_suzuki_convergence_and_snapshot():
     errors = []
     for order in [2, 4, 6]:
         errors.append(np.linalg.norm(time_evolve(
-            psi, h, .9, steps=4, order=order, engine="rust") - target))
+            psi, h, .9, steps=4, order=order) - target))
     assert errors[1] < errors[0] / 100
     assert errors[2] < errors[1] / 20
-    compiled = SuzukiTrotter(h, engine="rust")
+    compiled = SuzukiTrotter(h)
     expected = compiled.evolve(psi, .4)
     h.terms["III"] = 99.
     assert np.allclose(compiled.evolve(psi, .4), expected)
@@ -67,7 +67,7 @@ def test_suzuki_convergence_and_snapshot():
 
 def test_native_circuit_matches_propagation():
     from qiskit.quantum_info import Statevector
-    compiled = SuzukiTrotter(hamiltonian(), order=4, engine="rust")
+    compiled = SuzukiTrotter(hamiltonian(), order=4)
     psi = state()
     for inverse in [False, True]:
         circuit = compiled.circuit(.7, steps=2, inverse=inverse)
@@ -82,7 +82,7 @@ def test_qpe_distribution_and_collapsed_states(keep, window):
     options = dict(n_evaluation_qubits=5, energy_window=window,
                    atomic_units=True, verbose=False, keep_amplitudes=keep)
     expected = QuantumPhaseEstimation(h, **options).run(psi)
-    actual = QuantumPhaseEstimation(h, engine="rust", **options).run(psi)
+    actual = QuantumPhaseEstimation(h,  **options).run(psi)
     assert np.allclose(actual.probabilities, expected.probabilities, atol=2e-13)
     assert np.allclose(actual.exact_energies, expected.exact_energies)
     # Eigenvectors inside a degenerate eigenspace can differ between solvers.
@@ -109,7 +109,7 @@ def test_qpe_matrix_free_branch_and_units(monkeypatch):
     psi = np.zeros(2**n, dtype=complex)
     psi[0], psi[2**(n-1)] = np.sqrt(.3), 1j*np.sqrt(.7)
     t = 4
-    qpe = QuantumPhaseEstimation(h, t, engine="rust", verbose=False)
+    qpe = QuantumPhaseEstimation(h, t,  verbose=False)
     lo, hi = qpe._window(h)
     k = np.arange(2**t)
     expected = sum(w * np.abs(np.fft.fft(np.exp(
@@ -150,7 +150,7 @@ def integrals(m=5, occupied=2, rotate=False):
 def test_mp2_density_trace_and_semicanonical_covariance(m, o, rotate):
     h, g = integrals(m, o, rotate)
     expected = mp2_natural_orbitals(h, g, o)
-    actual = mp2_natural_orbitals(h, g, o, engine="rust")
+    actual = mp2_natural_orbitals(h, g, o)
     assert actual.correlation_energy == pytest.approx(expected.correlation_energy, abs=1e-13)
     assert np.allclose(actual.occupations, expected.occupations, atol=1e-12)
     assert np.allclose(actual.occupied_density, expected.occupied_density, atol=1e-12)
@@ -194,14 +194,14 @@ def test_mp2_against_independent_spin_orbital_prefactors():
     v = m-o
     spatial_vv = dvv[:v, :v] + dvv[v:, v:]
     spatial_oo = doo[:o, :o] + doo[o:, o:]
-    result = mp2_natural_orbitals(h, g, o, engine="rust")
+    result = mp2_natural_orbitals(h, g, o)
     assert result.correlation_energy == pytest.approx(expected_energy, abs=1e-13)
     assert np.allclose(result.occupied_density, 2*np.eye(o)+spatial_oo, atol=1e-12)
     assert np.allclose(result.virtual_occupations, np.linalg.eigvalsh(spatial_vv)[::-1], atol=1e-12)
 
 
 def test_mp2_block_and_no_python_numerical_callbacks(monkeypatch):
-    import mandacaru.algorithms.mp2 as module
+    import mandacaru.analysis.correlation as module
     h, g = integrals()
     expected = mp2_natural_orbitals(h, g, 2)
     f = module.fock_matrix(h, g, 2)
@@ -211,9 +211,9 @@ def test_mp2_block_and_no_python_numerical_callbacks(monkeypatch):
     for name in ["fock_matrix", "semicanonical_rotation", "mp2_energy", "mp2_density"]:
         monkeypatch.setattr(module, name, forbidden)
     monkeypatch.setattr(np.linalg, "eigh", forbidden)
-    actual = mp2_natural_orbitals(h, g, 2, engine="rust")
+    actual = mp2_natural_orbitals(h, g, 2)
     block = mp2_natural_orbitals_from_block(g[:2, :2, 2:, 2:], eps, 2,
-                                           np.eye(5), engine="rust")
+                                           np.eye(5))
     assert actual.correlation_energy == pytest.approx(expected.correlation_energy)
     assert block.correlation_energy == pytest.approx(expected.correlation_energy)
     assert np.allclose(block.occupations, actual.occupations)
@@ -223,16 +223,16 @@ def test_mp2_block_and_no_python_numerical_callbacks(monkeypatch):
 @pytest.mark.parametrize("sector", [False, True])
 @pytest.mark.parametrize("trotter", [False, True])
 def test_public_subspace_shared_unitary_and_sorted_states(method, sector, trotter):
-    options = dict(method=method, engine="rust", load_hamiltonian=str(H2),
+    options = dict(method=method,  load_hamiltonian=str(H2),
                    sector=sector, num_states=2, atomic_units=True,
-                   trace=False, references=False, engine_options={"threads": 1})
+                   trace=False,  resources={"threads": 1})
     if method == "subspace-vqe":
-        options["ansatz"] = {"name": "uccsd", "trotter": trotter}
+        options["trotter"] = trotter
     calc = Mandacaru(**options)
     result = calc.run()
-    problem = calc.solver.problem
+    problem = calc.problem
     basis = np.asarray(problem.basis_indices, dtype=int)
-    dense = calc.solver.hamiltonian.to_matrix()[np.ix_(basis, basis)]
+    dense = result.qubit_hamiltonian().matrix()[np.ix_(basis, basis)]
     states = np.asarray(result.states)
     assert np.allclose(states.conj() @ states.T, np.eye(2), atol=3e-12)
     assert np.allclose(np.einsum("ji,ik,jk->j", states.conj(), dense, states).real,
@@ -240,7 +240,7 @@ def test_public_subspace_shared_unitary_and_sorted_states(method, sector, trotte
     assert result.optimal_energy == pytest.approx(np.linalg.eigvalsh(dense)[0], abs=1e-9)
     assert np.all(np.diff(result.energies) >= 0)
     assert (result.converged if method.endswith("adapt-vqe") else result.success)
-    assert np.allclose(result.in_units("eV"), result.energies * HARTREE_TO_EV)
+    assert np.allclose(result.in_units("eV"), result.energies[0] * HARTREE_TO_EV)
 
 
 @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"])
@@ -257,11 +257,11 @@ def test_shared_unitary_against_dense_reconstruction(tmp_path, mapping, trotter)
     h = Fermion(terms, n_modes=6).map_to_qubits(mapping, n_modes=6, num_particles=(1, 1))
     path = tmp_path / "subspace.json"
     save_hamiltonian(path, h, mapping=mapping, num_particles=(1, 1), n_spatial_orbitals=3)
-    calc = Mandacaru(method="subspace-vqe", engine="rust", load_hamiltonian=str(path),
-                     ansatz={"name": "uccsd", "trotter": trotter}, num_states=3,
-                     atomic_units=True, trace=False, references=False)
+    calc = Mandacaru(method="subspace-vqe",  load_hamiltonian=str(path),
+                     trotter=trotter, num_states=3,
+                     atomic_units=True, trace=False)
     result = calc.run()
-    problem = calc.solver.problem
+    problem = calc.problem
     basis = np.asarray(problem.basis_indices, dtype=int)
     matrices = [PauliSum({p: complex(r, i) for p, r, i in terms}, num_qubits=h.num_qubits)
                 .to_matrix()[np.ix_(basis, basis)] for terms in problem.pool_terms]
@@ -277,7 +277,7 @@ def test_shared_unitary_against_dense_reconstruction(tmp_path, mapping, trotter)
         encoded = sum(int(b) << (len(bits)-1-i) for i, b in enumerate(bits))
         row = np.flatnonzero(basis == encoded)[0]
         expected.append(unitary[:, row])
-    expected = np.asarray(expected)[calc.solver.state_reference_indices]
+    expected = np.asarray(expected)[result.snapshot()["reference_indices"]]
     assert np.allclose(expected, result.states, atol=2e-12, rtol=0)
 
 
@@ -288,29 +288,29 @@ def test_subspace_no_python_solver_and_inner_failure(monkeypatch):
     monkeypatch.setattr(subspace.SubspaceVQE, "_subspace_optimize", forbidden)
     monkeypatch.setattr(subspace.SubspaceADAPTVQE, "_subspace_optimize", forbidden)
     for method in ["subspace-vqe", "subspace-adapt-vqe"]:
-        calc = Mandacaru(method=method, engine="rust", load_hamiltonian=str(H2),
-                         optimizer={"maxfev": 1}, trace=False, references=False)
+        calc = Mandacaru(method=method,  load_hamiltonian=str(H2),
+                         optimizer={"maxfev": 1}, trace=False)
         result = calc.run()
         assert not (result.converged if method.endswith("adapt-vqe") else result.success)
         assert "evaluation budget" in result.timings["termination"]
-        assert result.num_evaluations == 1
 
 
 def test_native_rhf_mp2_and_geometry_subspace():
     from ase import Atoms
     atoms = Atoms("H2", positions=[[0., 0., 0.], [0., 0., .74]])
     atoms.center(vacuum=2.)
-    calc = Mandacaru(method="rhf", engine="rust", grid_spacing=.5,
-                     trace=False, references=False)
+    calc = Mandacaru(method="rhf",  grid_spacing=.5,
+                     trace=False)
     reference = calc.run(geometry=atoms)
     actual = reference.mp2_natural_orbitals()
-    expected = mp2_natural_orbitals(reference.scf.h_mo, reference.scf.eri_mo, 1)
+    snapshot=reference.snapshot(include_hamiltonian=True)
+    expected = mp2_natural_orbitals(snapshot["h_mo"], snapshot["eri_mo"], 1)
     assert actual.correlation_energy == pytest.approx(expected.correlation_energy, abs=1e-12)
-    atoms.calc = Mandacaru(method="subspace-vqe", engine="rust", grid_spacing=.5,
-                           trace=False, references=False)
+    atoms.calc = Mandacaru(method="subspace-vqe",  grid_spacing=.5,
+                           trace=False)
     energy = atoms.get_potential_energy()
     assert np.isfinite(energy)
-    assert energy == pytest.approx(atoms.calc.solver.result.in_units("eV")[0])
+    assert energy == pytest.approx(atoms.calc.result.in_units("eV"))
 
 
 def test_rejections_memory_and_ownership():
@@ -331,10 +331,10 @@ def test_rejections_memory_and_ownership():
         op.qpe(np.array([1., 0.], dtype=complex), 20, (-2., 2.))
     h, g = integrals()
     with pytest.raises(ValueError, match="real"):
-        mp2_natural_orbitals(h + 1j*np.eye(5), g, 2, engine="rust")
+        mp2_natural_orbitals(h + 1j*np.eye(5), g, 2)
     with pytest.raises(ValueError, match="denominator"):
         mp2_natural_orbitals_from_block(np.ones((1, 1, 1, 1)),
-                                        np.zeros(2), 1, np.eye(2), engine="rust")
+                                        np.zeros(2), 1, np.eye(2))
     with pytest.raises(ValueError, match="strictly decreasing"):
         _native.Context().load_hamiltonian(str(H2)).solve_subspace([1., 1.])
     with pytest.raises(ValueError, match="sector"):

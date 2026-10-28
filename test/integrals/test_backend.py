@@ -65,8 +65,8 @@ class TestStatus:
         assert status.compiled is False
         if status.available:
             assert status.path and status.path.endswith(
-                ("libmandacaru_integrals.dylib", "libmandacaru_integrals.so",
-                 "mandacaru_integrals.dll", "_native" + sysconfig.get_config_var("EXT_SUFFIX")))
+                ("libmandacaru-kernels.dylib", "libmandacaru-kernels.so",
+                 "mandacaru-kernels.dll", "_native" + sysconfig.get_config_var("EXT_SUFFIX")))
             assert status.n_threads >= 1
             assert status.label.startswith(("C (", "Rust ("))
         else:
@@ -219,8 +219,8 @@ class TestSyncedTree:
         build = tmp_path / "csrc" / "build"
         build.mkdir(parents=True)
         native = _backend._native_lib_name()
-        for name in ("libmandacaru_integrals.dylib", "libmandacaru_integrals.so",
-                     "mandacaru_integrals.dll"):
+        for name in ("libmandacaru-kernels.dylib", "libmandacaru-kernels.so",
+                     "mandacaru-kernels.dll"):
             if name != native:
                 (build / name).write_bytes(b"foreign")
         monkeypatch.setattr(_backend, "find_library", lambda name: None)
@@ -314,11 +314,11 @@ class TestARebuiltLibraryReplacesAStaleOne:
         real = check_backend()
         if not real.available:
             pytest.skip("needs a compiled library")
-        before = set(Path(tempfile.gettempdir()).glob("mandacaru_integrals_*"))
+        before = set(Path(tempfile.gettempdir()).glob("mandacaru-kernels_*"))
         lib = _backend._load(fresh=True)
         assert lib is not None and lib is not _backend._LIB
         assert hasattr(lib, "mandacaru_laplacian_real")
-        after = set(Path(tempfile.gettempdir()).glob("mandacaru_integrals_*"))
+        after = set(Path(tempfile.gettempdir()).glob("mandacaru-kernels_*"))
         assert after <= before
 
 

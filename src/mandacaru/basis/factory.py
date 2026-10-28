@@ -29,7 +29,7 @@ Not every name ``Mandacaru(basis=...)`` accepts is built here.  The
 pseudopotential families (``"PAW-LCAO"``, ``"UPAW-LCAO"``) need their
 datasets and build their valence basis from them, and plane waves (``"PW"``)
 are not atom-centered; the calculator's resolver
-(:func:`mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis` with the
+(:func:`mandacaru.models.setup.resolve_basis` with the
 family registry of :mod:`mandacaru.pseudopotentials.families`) routes those
 names, and every other name comes here.
 """
@@ -174,7 +174,7 @@ class PerElementBasisSet(BasisSet):
     method = "per-element"
 
     def __init__(self, mapping: dict):
-        from ..algorithms._hamiltonian_from_atoms import (
+        from ..models.setup import (
             DEFAULT_ELEMENT_KEY, is_per_element_basis, resolve_basis)
         if not is_per_element_basis(mapping):
             raise ValueError(

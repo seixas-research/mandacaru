@@ -10,7 +10,7 @@ from mandacaru import Mandacaru
 
 atoms = Atoms("LiH", positions=[[3., 3., 2.2], [3., 3., 3.8]], cell=[6.]*3)
 atoms.calc = Mandacaru(
-    method="vqe", engine="rust", basis="STO-3G", grid_spacing=.4,
+    method="vqe", basis="STO-3G", grid_spacing=.4,
     active_space={"frozen": "auto"}, mapping="jordan_wigner",
     optimizer={"method": "L-BFGS", "maxiter": 500, "tol": 1e-9},
     trace=False,
@@ -40,7 +40,7 @@ See [native execution](../guide/native_engine.md) for memory and method limits.
 
 ```python
 calculator = Mandacaru(
-    method="vqe", engine="rust", load_hamiltonian="lih.json",
+    method="vqe", load_hamiltonian="lih.json",
     optimizer={"method": "L-BFGS", "maxiter": 500}, trace=False,
 )
 result = calculator.run()

@@ -10,7 +10,7 @@ The `backend_provider` argument chooses which quantum SDK **constructs** those
 circuits — and, with `execute_circuits=True`, which SDK **runs** them.
 
 ```python
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 Mandacaru(method="adapt-vqe",
           basis="HAO",

@@ -33,13 +33,12 @@ def record(preparation="product"):
 
 
 @pytest.mark.parametrize("preparation", ["sum", "product"])
-@pytest.mark.parametrize("writer", ["python", "rust"])
-def test_checkpoint_interoperability_and_exact_state(tmp_path, preparation, writer):
+def test_checkpoint_interoperability_and_exact_state(tmp_path, preparation):
     original = record(preparation)
     path = tmp_path / "checkpoints/state.json"
-    original.save(path, engine=writer)
-    for reader in ["python", "rust"]:
-        loaded = WavefunctionCheckpoint.load(path, engine=reader)
+    original.save(path)
+    for reader in ["native"]:
+        loaded = WavefunctionCheckpoint.load(path)
         assert loaded.metadata == original.metadata
         assert loaded.status == original.status
         assert loaded.preparation == preparation
@@ -51,9 +50,9 @@ def test_checkpoint_interoperability_and_exact_state(tmp_path, preparation, writ
             expected = seed
             for t, g in zip(original.parameters, matrices):
                 expected = expm(t*g) @ expected
-        actual = loaded.state_vector(engine="rust")
+        actual = loaded.state_vector()
         assert np.allclose(actual, expected, atol=2e-13, rtol=0)
-        assert loaded.expectation(engine="rust") == pytest.approx(
+        assert loaded.expectation() == pytest.approx(
             np.vdot(expected, loaded.hamiltonian.to_matrix() @ expected).real, abs=1e-13)
 
 
@@ -63,16 +62,16 @@ def test_old_checkpoint_version_and_native_qpe_preparation(tmp_path, monkeypatch
     payload.pop("preparation")
     path = tmp_path / "old.json"
     path.write_text(json.dumps(payload))
-    loaded = WavefunctionCheckpoint.load(path, engine="rust")
+    loaded = WavefunctionCheckpoint.load(path)
     assert loaded.preparation == "product"
     expected = loaded.state_vector()
     def forbidden(*args, **kwargs):
         raise AssertionError("Python sparse preparation was used")
     monkeypatch.setattr(PauliSum, "to_sparse_matrix", forbidden)
-    actual = loaded.state_vector(engine="rust")
+    actual = loaded.state_vector()
     assert np.allclose(actual, expected)
-    from mandacaru.algorithms.qpe import QuantumPhaseEstimation
-    qpe = QuantumPhaseEstimation(loaded.hamiltonian, 4, engine="rust", verbose=False)
+    from mandacaru.workflows.qpe import QuantumPhaseEstimation
+    qpe = QuantumPhaseEstimation(loaded.hamiltonian, 4,  verbose=False)
     result = qpe.run((loaded.n_qubits, loaded.reference_qubits,
                       loaded.generators, loaded.parameters))
     assert result.probabilities.sum() == pytest.approx(1.)
@@ -96,49 +95,42 @@ def test_schema_rejections_preserve_previous_snapshot(tmp_path, field, value):
 
 
 @pytest.mark.parametrize("format", ["json", "parquet"])
-@pytest.mark.parametrize("writer", ["python", "rust"])
-def test_hamiltonian_cross_readers_and_native_solver(tmp_path, format, writer):
+def test_hamiltonian_cross_readers_and_native_solver(tmp_path, format):
     original = load_hamiltonian(H2)
     path = tmp_path / f"h2.{format}"
     metadata = {"note": "migrated 🌵", "extra": {"values": [1, 2]}}
     save_hamiltonian(path, original.hamiltonian, mapping=original.mapping,
                      num_particles=original.num_particles,
                      n_spatial_orbitals=original.n_spatial_orbitals,
-                     metadata=metadata, engine="rust" if writer == "rust" else "auto")
-    for reader in ["auto", "rust"]:
-        loaded = load_hamiltonian(path, engine=reader)
+                     metadata=metadata)
+    for reader in ["native"]:
+        loaded = load_hamiltonian(path)
         assert loaded.hamiltonian.terms == original.hamiltonian.terms
         assert loaded.metadata == {"energy_unit": "Ha", **metadata}
-    result = Mandacaru(method="vqe", engine="rust", load_hamiltonian=str(path),
-                       sparse=True, trace=False, references=False).run()
+    result = Mandacaru(method="vqe",  load_hamiltonian=str(path),
+                       sparse=True, trace=False).run()
     assert result.success
     assert result.optimal_energy == pytest.approx(-25.8718954554466, abs=1e-8)
-    assert result.timings["cache_engine"] == (
-        "native-json" if format == "json" else "python-parquet-adapter")
+
 
 
 @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
 def test_native_public_checkpoint_export_and_warm_restart(tmp_path, method):
     path = tmp_path / "saved.json"
-    options = dict(method=method, engine="rust", load_hamiltonian=str(H2),
-                   trace=False, references=False)
+    options = dict(method=method,  load_hamiltonian=str(H2),
+                   trace=False)
     calc = Mandacaru(**options, checkpoint=path)
     result = calc.run()
     assert path.exists()
-    checkpoint = calc.solver.checkpoint
-    assert checkpoint.method == method
-    assert checkpoint.expectation(engine="rust") * 27.211386245988 == pytest.approx(result.optimal_energy)
+    checkpoint = calc.checkpoint
+    assert json.loads(checkpoint.json)["method"] == method
+    assert checkpoint.expectation() * 27.211386245988 == pytest.approx(result.optimal_energy)
     resumed = Mandacaru(**options, resume=path).run()
     assert resumed.optimal_energy == pytest.approx(result.optimal_energy, abs=1e-10)
     assert resumed.converged if method == "adapt-vqe" else resumed.success
     # Existing Python consumers can read and prepare the native file.
     legacy = WavefunctionCheckpoint.load(path)
-    assert np.allclose(legacy.state_vector(), checkpoint.state_vector(engine="rust"), atol=1e-12)
-    legacy_options = {**options, "engine": "python", "resume": path}
-    if method == "adapt-vqe":
-        legacy_options["pool"] = "fermionic"
-    legacy_result = Mandacaru(**legacy_options).run()
-    assert legacy_result.optimal_energy == pytest.approx(result.optimal_energy, abs=1e-8)
+    assert np.allclose(legacy.state_vector(), checkpoint.state(), atol=1e-12)
     # A Python-written copy is also a valid native warm start.
     legacy.save(path)
     assert Mandacaru(**options, resume=path).run().optimal_energy == pytest.approx(result.optimal_energy, abs=1e-10)
@@ -147,8 +139,8 @@ def test_native_public_checkpoint_export_and_warm_restart(tmp_path, method):
 @pytest.mark.parametrize("mutation", ["hamiltonian", "mapping", "preparation", "reference_qubits"])
 def test_native_restart_refuses_other_problem_or_state(tmp_path, mutation):
     path = tmp_path / "checkpoint.json"
-    options = dict(method="vqe", engine="rust", load_hamiltonian=str(H2),
-                   trace=False, references=False)
+    options = dict(method="vqe",  load_hamiltonian=str(H2),
+                   trace=False)
     Mandacaru(**options, checkpoint=path).run()
     p = json.loads(path.read_text())
     if mutation == "hamiltonian":
@@ -174,17 +166,17 @@ def test_native_qwc_matches_greedy_policy_at_arbitrary_width(width, monkeypatch)
     def forbidden(*args, **kwargs):
         raise AssertionError("Python grouping was used")
     monkeypatch.setattr(algebra, "pack_labels", forbidden)
-    actual = qwc_partition(labels, weights, engine="rust")
+    actual = qwc_partition(labels, weights)
     assert actual == expected
     assert sorted(i for basis, members in actual for i in members) == list(range(len(labels)))
 
 
 def test_counts_and_sdk_gate_streams_use_native_core(monkeypatch):
     h = PauliSum({"IX": .3, "ZX": -.4, "II": -.7, "YI": .2}, num_qubits=2)
-    groups, identity = qubit_wise_commuting_groups(h, engine="rust")
+    groups, identity = qubit_wise_commuting_groups(h)
     counts = [{"00": 27, "01": 13, "10": 7, "11": 3} for _ in groups]
     expected = energy_from_group_counts(groups, identity, counts)
-    actual = energy_from_group_counts(groups, identity, counts, engine="rust")
+    actual = energy_from_group_counts(groups, identity, counts)
     assert actual == pytest.approx(expected, abs=1e-14)
     generators = [PauliSum({"XY": .5j, "YX": -.5j}, num_qubits=2)]
     expected = list(build_provider("qiskit")._emit(2, [0], generators, [.37]))
@@ -193,10 +185,10 @@ def test_counts_and_sdk_gate_streams_use_native_core(monkeypatch):
         raise AssertionError("Python generator compilation was used")
     monkeypatch.setattr(providers, "pauli_rotations", forbidden)
     for name in ["qiskit", "braket", "cirq"]:
-        native = build_provider(name, engine="rust", engine_options={"threads": 1})
+        native = build_provider(name, context=_native.Context(threads=1))
         assert list(native._emit(2, [0], generators, [.37])) == expected
         state = native.statevector(2, [0], generators, [.37])
-        exact = prepare_state(2, [0], generators, [.37], engine="rust")
+        exact = prepare_state(2, [0], generators, [.37])
         assert np.allclose(state, exact, atol=1e-12)
 
 
@@ -242,7 +234,7 @@ def test_streamed_scalar_field_with_independent_ase_reader(tmp_path, format, per
     cell = (step @ np.diag(data.shape)).T
     path = tmp_path / f"field.{format}"
     write_volumetric(path, data, origin, step, [1], [[.2, .3, .4]],
-                     cell=cell if periodic else None, periodic=periodic, engine="rust")
+                     cell=cell if periodic else None, periodic=periodic)
     if format == "cube":
         from ase.io.cube import read_cube
         with path.open() as handle:
@@ -261,14 +253,14 @@ def test_band_stream_closing_planes_and_small_memory(tmp_path):
     bands = np.arange(48, dtype=float).reshape(2, 2, 3, 4) / 11
     cell = np.array([[1., .2, .1], [0., 1.1, .3], [0., 0., .9]])
     path = tmp_path / "bands.bxsf"
-    write_bxsf(path, bands, cell, .73, engine="rust", engine_options={"memory_limit_bytes": 16384})
+    write_bxsf(path, bands, cell, .73,  resources={"memory_limit_bytes": 16384})
     loaded = read_bxsf(path)
     assert np.allclose(loaded.energies, bands, atol=6e-7)
     assert np.allclose(loaded.reciprocal_cell, cell)
     assert loaded.fermi_level == pytest.approx(.73)
     previous = path.read_bytes()
     with pytest.raises(ValueError):
-        write_bxsf(path, bands * np.nan, cell, .73, engine="rust")
+        write_bxsf(path, bands * np.nan, cell, .73)
     assert path.read_bytes() == previous
 
 

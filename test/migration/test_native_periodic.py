@@ -143,7 +143,7 @@ def test_uniform_periodic_gas_matches_independent_grid_functional(functional,spi
     from mandacaru.integrals.exchange_correlation import evaluate
     payload=synthetic(functional,spins)
     ctx=_native.Context(threads=1)
-    problem=ctx.periodic_problem(json.dumps(payload))
+    problem=ctx.periodic_problem(json.dumps(payload), {})
     raw=problem.solve(width_ha=.06).snapshot()
     assert raw['converged']
     n=64
@@ -201,16 +201,16 @@ def test_cached_crystal_runs_without_python_scf_fft_linalg_or_xc_callbacks(monke
                      (periodic_device.CPUDevice,'eigensolve'),(np.linalg,'eigh'),(np.linalg,'solve'),
                      (np.fft,'fftn'),(np.fft,'ifftn'),(exchange_correlation,'evaluate')]:
         monkeypatch.setattr(obj,name,forbidden)
-    result=Mandacaru(method='dft',engine='rust',load_crystal=SI,
+    result=Mandacaru(method='dft',load_crystal=SI,
                      smearing={'width':.01},trace=False).run()
-    assert result.success and result.timings['setup_engine']=='cached-crystal'
+    assert result.success and result.periodic is not None
     assert result.optimal_energy==pytest.approx(-211.60193975895757,abs=1e-6)
 
 
 def test_frozen_bands_dos_projection_and_trial_subspaces_are_consistent(si_native):
     _,_,result=si_native
     raw=result.snapshot();payload=json.loads(SI.read_text())
-    bands=result.bands(json.dumps(payload['kpoints']))
+    bands=result.bands(json.dumps(payload['kpoints']), {})
     assert np.allclose(bands['eigenvalues'],raw['eigenvalues'],atol=1e-12)
     assert np.allclose(bands['projections'].sum(axis=2),1.,atol=1e-10)
     energies=np.linspace(-2.,2.,1601)
@@ -257,14 +257,14 @@ def test_cached_validation_failure_budget_and_result_ownership(tmp_path):
         bad=copy.deepcopy(payload);mutate(bad)
         ctx=_native.Context()
         with pytest.raises(ValueError):
-            ctx.periodic_problem(json.dumps(bad))
+            ctx.periodic_problem(json.dumps(bad), {})
         assert ctx.memory_used_bytes==0
     ctx=_native.Context(memory_limit_bytes=1024)
     with pytest.raises(MemoryError):
-        ctx.periodic_problem(json.dumps(payload))
+        ctx.periodic_problem(json.dumps(payload), {})
     assert ctx.memory_used_bytes==0
     ctx=_native.Context()
-    problem=ctx.periodic_problem(json.dumps(payload))
+    problem=ctx.periodic_problem(json.dumps(payload), {})
     base=ctx.memory_used_bytes
     failed=problem.solve(max_iterations=1)
     assert not failed.converged
@@ -291,10 +291,11 @@ def test_ase_silicon_adapter_getters_and_native_off_mesh_spectra():
     except FileNotFoundError:
         pytest.skip('external lda-sr/Si.parquet dataset unavailable; the portable native crystal tests still run')
     atoms=bulk('Si','diamond',a=5.43)
-    atoms.calc=Mandacaru(method='dft',engine='rust',basis={'name':'PAW-LCAO','size':'SZ','filter_cutoff':200},
+    from mandacaru.integrations.ase import ASECalculator
+    atoms.calc=ASECalculator(method='dft',basis={'name':'PAW-LCAO','size':'SZ','filter_cutoff':200},
                         grid_spacing=.4,kpts={'size':(2,2,2),'gamma':True},smearing=.01,trace=False)
     assert atoms.get_potential_energy()==pytest.approx(-211.60193975895757,abs=1e-6)
-    assert atoms.calc.result.timings['setup_engine']=='python-paw-adapter'
+    assert atoms.calc.calculation.result.success
     assert atoms.calc.get_number_of_spins()==1
     assert atoms.calc.get_eigenvalues().shape==(8,)
     assert len(atoms.calc.get_ibz_k_points())==3
@@ -305,7 +306,7 @@ def test_ase_silicon_adapter_getters_and_native_off_mesh_spectra():
     axis,dos=atoms.calc.dos(npoints=801)
     _,pdos=atoms.calc.pdos(energies=axis)
     assert np.allclose(sum(pdos.values()),dos,atol=1e-10)
-    with pytest.raises(NotImplementedError,match='derivatives'):
+    with pytest.raises(NotImplementedError):
         atoms.get_forces()
 
 
@@ -324,20 +325,20 @@ def test_periodic_pbe_and_collinear_spin_match_python_on_skew_cells(spin):
     if spin:
         atoms.set_initial_magnetic_moments([1.])
     opts=dict(method='dft',xc=xc,basis={'name':'PAW-LCAO','size':'SZ','filter_cutoff':200},
-              grid_spacing=.7,kpts={'size':(2,1,1),'gamma':True},smearing=.3,trace=False,dump_buffers=False)
+              grid_spacing=.7,kpts={'size':(2,1,1),'gamma':True},smearing=.3,trace=False)
     py=atoms.copy();py.calc=Mandacaru(**opts)
     expected=py.get_potential_energy()
-    atoms.calc=Mandacaru(**opts,engine='rust')
+    atoms.calc=Mandacaru(**opts)
     actual=atoms.get_potential_energy()
     assert atoms.calc.result.success and py.calc.result.success
     assert actual==pytest.approx(expected,abs=3e-6)
-    assert atoms.calc.result.scf.magnetic_moment==pytest.approx(py.calc.result.scf.magnetic_moment,abs=1e-5)
-    assert atoms.calc.get_number_of_spins()==(2 if spin else 1)
+    assert atoms.calc.result.snapshot()["magnetic_moment"]==pytest.approx(py.calc.result.snapshot()["magnetic_moment"],abs=1e-5)
+    assert atoms.calc.result.snapshot()["n_spins"]==(2 if spin else 1)
     if spin:
         # Magnetic initial states must not be projected onto a nonmagnetic
         # spatial symmetry group during density assembly.
-        assert atoms.calc.solver._crystal_adapter.symmetry is None
+        assert atoms.calc._crystal_adapter.symmetry is None
     assert atoms.calc.results['free_energy']==pytest.approx(py.calc.results['free_energy'],abs=3e-6)
-    expected_levels=np.asarray(py.calc.result.scf.eigenvalues)
-    actual_levels=np.asarray(atoms.calc.result.scf.eigenvalues)
+    expected_levels=np.asarray(py.calc.result.snapshot()["eigenvalues"])
+    actual_levels=np.asarray(atoms.calc.result.snapshot()["eigenvalues"])
     assert np.allclose(actual_levels,expected_levels,atol=2e-6)

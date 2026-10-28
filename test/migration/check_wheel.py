@@ -87,8 +87,8 @@ ewald=_native.Context().ewald(np.zeros((1,3)),np.ones(1),np.eye(3)*5)
 assert abs(2*ewald['energy']*5+2.83729747948062)<1e-10
 from mandacaru.basis.atomic_solver import solve_atom
 assert solve_atom(2,engine='rust',points=300).converged
-from mandacaru.algorithms._rust_molecular import basis_specification
-from mandacaru._native_adapter import geometry_from_atoms
+from mandacaru.specifications import basis_specification
+from mandacaru.integrations.ase import geometry_from_atoms
 samples=_native.Context().sample_basis(geometry_from_atoms(work),np.zeros((2,3)),
     basis_spec=json.dumps(basis_specification({'name':'NAO','size':'DZP','n_grid':200})))
 assert samples.shape==(10,2) and np.all(np.isfinite(samples))
@@ -109,9 +109,9 @@ for method in ('vqe','adapt-vqe'):
     assert abs(native_result.optimal_energy-spec['vqe_energy_ev'])<1e-7
     native_results[method]=native_result.optimal_energy
 from qiskit import QuantumCircuit, transpile
-from mandacaru.algorithms.time_evolution import SuzukiTrotter
-from mandacaru.algorithms.qpe import QuantumPhaseEstimation
-from mandacaru.algorithms.mp2 import mp2_natural_orbitals
+from mandacaru.workflows.time_evolution import SuzukiTrotter
+from mandacaru.workflows.qpe import QuantumPhaseEstimation
+from mandacaru.analysis.correlation import mp2_natural_orbitals
 from mandacaru.core.mapping import PauliSum
 simple=PauliSum({'X':.4,'Z':.3,'I':-.7},num_qubits=1)
 psi=np.array([1.,0.],dtype=complex)

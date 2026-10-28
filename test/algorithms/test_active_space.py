@@ -299,8 +299,8 @@ class TestTheActiveOccupiedNaturalOrbitals:
     orbitals too, so every active row is an eigenvalue."""
 
     def test_the_active_occupations_are_eigenvalues(self, h2_pair_mo):
-        from mandacaru.algorithms.mp2 import mp2_natural_orbitals
-        from mandacaru.algorithms.mp2 import rotate_integrals
+        from mandacaru.analysis.correlation import mp2_natural_orbitals
+        from mandacaru.analysis.correlation import rotate_integrals
 
         h_mo, eri_mo = h2_pair_mo
         space = resolve_active_space(h_mo, eri_mo, n_orbitals=8,
@@ -461,7 +461,7 @@ class TestTheSelectors:
         # occupied orbital, four true virtuals.  The threshold alone sets the
         # width, and the occupied orbitals -- including the singly occupied
         # one -- are left exactly where they are.
-        from mandacaru.algorithms.mp2 import open_shell_mp2_natural_orbitals
+        from mandacaru.analysis.correlation import open_shell_mp2_natural_orbitals
 
         integrals = _integrals("H3", [(0, 0, 0), (0, 0, 0.9), (0, 0, 1.8)],
                                "6-31G")

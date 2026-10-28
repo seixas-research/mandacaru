@@ -52,7 +52,7 @@ tables; their numerical interpretation has not changed.
 
 The 80 scale-invariant Gaussian fits for occupied `(n,l)` shells through krypton
 and contraction lengths 1–10 live in
-`src/mandacaru/integrals/rust/crates/core/data/slater_fits.json`. They were
+`crates/mandacaru-core/data/slater_fits.json`. They were
 generated once by the existing deterministic unit-Slater fitter. The data records
 its source hash and NumPy/SciPy versions. Rust selects and partitions
 contractions, applies Slater scaling and polarization/diffuse rules, normalizes
@@ -154,11 +154,11 @@ The standalone example exercises geometry → RHF → VQE without an interpreter
 
 ```bash
 cargo run --offline --release \
-  --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
+  --manifest-path Cargo.toml \
   --package mandacaru-core --example solve_molecule
 
-cargo test --offline --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
-  --package mandacaru-core --package mandacaru_integrals
+cargo test --offline --manifest-path Cargo.toml \
+  --package mandacaru-core --package mandacaru-kernels
 
 .venv/bin/python -m pytest test/migration/test_native_molecular.py
 ```

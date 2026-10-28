@@ -17,7 +17,7 @@ zooms and travels along a keyframed path.
 What is drawn is a **one-particle reduction** of the variational state, never
 "the wavefunction": the many-electron state is a function of :math:`3N`
 coordinates and has no picture in three dimensions.  The field comes from
-:meth:`~mandacaru.algorithms.calculator.Mandacaru.volumetric_field`, which
+:meth:`~mandacaru.calculation.Mandacaru.volumetric_field`, which
 contracts the converged ansatz (its operators and optimized parameters) into
 the one-particle reduced density matrix and expands the result in the
 calculation's own basis functions; see :mod:`mandacaru.algorithms.volumetric`.
@@ -254,7 +254,7 @@ class Viewer3D:
         converged state -- or a field already in hand.
     quantity, index, state, component :
         Passed to
-        :meth:`~mandacaru.algorithms.calculator.Mandacaru.volumetric_field`;
+        :meth:`~mandacaru.calculation.Mandacaru.volumetric_field`;
         see :mod:`mandacaru.algorithms.volumetric` for what each quantity is.
         Ignored when ``source`` is a field.
     grid_spacing : float, optional

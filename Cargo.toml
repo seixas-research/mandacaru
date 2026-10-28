@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/mandacaru-core", "crates/mandacaru-kernels", "crates/mandacaru-python"]
+default-members = ["crates/mandacaru-core", "crates/mandacaru-kernels"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+mandacaru-kernels = { path = "crates/mandacaru-kernels" }
+mandacaru-core = { path = "crates/mandacaru-core" }
+num-complex = "0.4.6"
+serde_json = "1.0"
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }
+rustfft = "6.4"
+libm = "0.2"
+pyo3 = { version = "0.30", features = ["extension-module"] }
+numpy = "0.30"
+pyo3-build-config = "0.30"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "unwind"

@@ -8,7 +8,7 @@
 
 """Second-order Moller-Plesset theory and the natural orbitals it defines.
 
-The spin-summed closed-shell formulas in :mod:`mandacaru.algorithms.mp2` carry
+The spin-summed closed-shell formulas in :mod:`mandacaru.analysis.correlation` carry
 prefactors that a *selection* would never expose -- ranking the virtuals uses
 only the ordering of the eigenvalues, which any positive multiple of the density
 reproduces -- but that a reported occupation number would be wrong by.  So the
@@ -34,7 +34,7 @@ from mandacaru.core import MolecularIntegrals
 from mandacaru.core.hamiltonian import molecular_orbital_integrals
 from mandacaru.integrals import Grid
 from mandacaru.integrals.packed import PackedERI, dense_tensor
-from mandacaru.algorithms.mp2 import (MIN_DENOMINATOR, fock_matrix,
+from mandacaru.analysis.correlation import (MIN_DENOMINATOR, fock_matrix,
                                       mp2_amplitudes, mp2_density, mp2_energy,
                                       mp2_natural_orbitals,
                                       open_shell_mp2_natural_orbitals,
@@ -655,7 +655,7 @@ class TestOpenShellPrefactorsAgainstExactPerturbationTheory:
 
     @staticmethod
     def _scaled(h_mo, eri_mo, num_particles, mu):
-        from mandacaru.algorithms.mp2 import spin_fock_matrices
+        from mandacaru.analysis.correlation import spin_fock_matrices
         from mandacaru.algorithms.rdm import one_rdm
         from mandacaru.core.hamiltonian import spin_block_integrals
         from mandacaru.core.mapping import Fermion

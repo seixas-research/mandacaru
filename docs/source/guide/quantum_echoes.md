@@ -44,7 +44,7 @@ splitting for every free-evolution leg. These insertions are Pauli operations,
 not weak dipole pulses, and have no `tau_p` parameter.
 
 ```python
-from mandacaru.algorithms import NestedOTOC
+from mandacaru.workflows.nested_otoc import NestedOTOC
 from mandacaru.core import PauliSum
 
 # After the H2 ADAPT-VQE calculation (four Jordan-Wigner qubits):
@@ -149,7 +149,8 @@ error mitigation.
 After running an existing `Mandacaru(method="adapt-vqe", ...)` calculator:
 
 ```python
-from mandacaru.algorithms import QuantumEchoes, time_evolve
+from mandacaru.workflows.quantum_echoes import QuantumEchoes
+from mandacaru.workflows.time_evolution import time_evolve
 from mandacaru.core import electric_dipole_potential
 
 ground_result = calc.run()

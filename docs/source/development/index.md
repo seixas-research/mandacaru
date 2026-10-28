@@ -7,6 +7,7 @@ coverage statements describe the implementation at the time of each phase.
 ```{toctree}
 :maxdepth: 1
 
+architecture
 rust_migration
 rust_phase1
 rust_phase2

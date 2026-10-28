@@ -75,7 +75,7 @@ def test_canonical_names_validation_and_budget():
 @pytest.mark.parametrize("functional", ["r2scan", "hse06", "pbe+rvv10", "r2scan+rvv10"])
 def test_native_molecular_stationary_force_follows_total_energy(functional):
     from ase import Atoms
-    from mandacaru._native_adapter import geometry_from_atoms
+    from mandacaru.integrations.ase import geometry_from_atoms
     from mandacaru.units import ANGSTROM_TO_BOHR
     ctx = _native.Context(threads=1)
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]], cell=[5.]*3)

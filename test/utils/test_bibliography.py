@@ -166,7 +166,7 @@ class TestEveryRegisteredChoiceIsCitable:
         assert citation_keys(two_center="grid") == citation_keys()
 
     def test_every_stable_method(self):
-        from mandacaru.algorithms.calculator import STABLE_METHODS
+        from mandacaru.calculation import STABLE_METHODS
         for method in STABLE_METHODS:
             assert _METHOD_KEYS.get(method), method
 

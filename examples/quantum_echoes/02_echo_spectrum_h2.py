@@ -2,7 +2,7 @@
 import numpy as np
 from ase.build import molecule
 from mandacaru import Mandacaru
-from mandacaru.algorithms import QuantumEchoes
+from mandacaru.workflows.quantum_echoes import QuantumEchoes
 from mandacaru.core import PauliSum
 
 atoms = molecule("H2")

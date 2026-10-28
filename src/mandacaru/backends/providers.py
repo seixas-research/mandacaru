@@ -1424,7 +1424,7 @@ _PROVIDER_CLASSES = {
     "cirq": CirqProvider,
 }
 
-_CACHE: dict[str, CircuitProvider] = {}
+
 
 
 def require_capability(provider, capability: str, why: str) -> None:
@@ -1510,7 +1510,7 @@ def qpu_usage(provider, wall_time_s: float | None = None,
     return usage
 
 
-def build_provider(name: str = "qiskit", **options) -> CircuitProvider:
+def build_provider(name: str = "qiskit", *, context=None, **options) -> CircuitProvider:
     """Return the :class:`CircuitProvider` for ``name``.
 
     Default-configured providers are cached and shared; passing ``**options``
@@ -1528,22 +1528,12 @@ def build_provider(name: str = "qiskit", **options) -> CircuitProvider:
         If ``options`` are given for a provider that takes none.
     """
     canon = normalize_provider(name)
-    engine = options.pop("engine", "python")
-    engine_options = options.pop("engine_options", None)
-    if engine not in ("python", "rust") or (engine == "python" and engine_options):
-        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
-    if engine == "rust":
-        from .._native import Context
-        provider = _PROVIDER_CLASSES[canon](**options)
-        provider._native_context = Context(**dict(engine_options or {}))
-        return provider
-    if options:
-        return _PROVIDER_CLASSES[canon](**options)
-    provider = _CACHE.get(canon)
-    if provider is None:
-        provider = _CACHE[canon] = _PROVIDER_CLASSES[canon]()
+    if {"engine","engine_options"} & options.keys():
+        raise TypeError("execution engine selection was removed; pass context= to share calculation resources")
+    from .._native import Context
+    provider = _PROVIDER_CLASSES[canon](**options)
+    provider._native_context = Context() if context is None else context
     return provider
-
 
 def provider_available(name: str) -> bool:
     """True when the SDK backing ``name`` can be imported in this environment."""

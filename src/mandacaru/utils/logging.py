@@ -9,7 +9,7 @@
 """Structured runtime logging for every method (the ``output.txt`` protocol).
 
 :class:`Logger` writes a human-readable, machine-parseable trace of a
-:class:`~mandacaru.algorithms.calculator.Mandacaru` run to a plain text file
+:class:`~mandacaru.calculation.Mandacaru` run to a plain text file
 (``output.txt`` by convention) *as the run goes* -- every block is flushed
 immediately, so a reader can follow the optimization live.  Every method
 writes the same opening and closing blocks; what happens in between is the
@@ -84,9 +84,9 @@ import numpy as np
 from ..units import HARTREE_TO_EV
 
 if TYPE_CHECKING:
-    from ..algorithms.hartree_fock import RHFResult
-    from ..algorithms.quantum_echoes import EchoSpectrum, QuantumEchoesResult
-    from ..algorithms.nested_otoc import NestedOTOCResult, OTOCSpectrum
+    from .._native import MeanField
+    from ..workflows.quantum_echoes import EchoSpectrum, QuantumEchoesResult
+    from ..workflows.nested_otoc import NestedOTOCResult, OTOCSpectrum
 
 _BANNER = "=" * 72
 #: One level of indentation inside a block.  The section markers, the rules and
@@ -523,7 +523,7 @@ class Logger:
 
         This is the configuration the standard-output trace prints in its header;
         with the trace routed to a log file
-        (:class:`~mandacaru.algorithms.calculator.Mandacaru`'s ``trace``), the file is
+        (:class:`~mandacaru.calculation.Mandacaru`'s ``trace``), the file is
         where it has to be.
         """
         self._emit("[ELECTRONS]")
@@ -1382,7 +1382,7 @@ def append_quantum_echoes(
     spectrum_steps_per_sample: int | None = None,
     spectrum_path: str | os.PathLike[str] | None = None,
     field_direction: Sequence[float] | None = None,
-    orbital_reference: RHFResult | None = None,
+    orbital_reference: MeanField | None = None,
 ) -> None:
     """Append a ``[QUANTUM ECHOES]`` block in the standard report format.
 

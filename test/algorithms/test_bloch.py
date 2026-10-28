@@ -107,7 +107,7 @@ def periodic(method="bloch-vqe", mesh=GAMMA2, **kwargs):
 class TestMethodResolution:
     @pytest.mark.parametrize("method", METHODS)
     def test_the_method_is_stable_and_resolves(self, method):
-        from mandacaru.algorithms.calculator import STABLE_METHODS
+        from mandacaru.calculation import STABLE_METHODS
 
         assert method in STABLE_METHODS
         assert periodic(method).calc.method == method
@@ -119,7 +119,7 @@ class TestMethodResolution:
         assert periodic(spelling).calc.method == "bloch-adapt-vqe"
 
     def test_the_default_method_is_unchanged(self):
-        from mandacaru.algorithms.calculator import DEFAULT_METHOD
+        from mandacaru.calculation import DEFAULT_METHOD
 
         assert DEFAULT_METHOD == "adapt-vqe"
 

@@ -26,7 +26,7 @@ Start with a native calculation
 
    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[5, 5, 5])
    atoms.center()
-   atoms.calc = Mandacaru(method="dft", engine="rust", xc="pbe",
+   atoms.calc = Mandacaru(method="dft", xc="pbe",
                           grid_spacing=0.35, trace=False)
    print(atoms.get_potential_energy())  # eV
    print(atoms.get_forces())            # eV / angstrom
@@ -37,8 +37,8 @@ Read :doc:`installation` for the source build and packaged extension,
 
 The cutover is in progress. The :doc:`coverage audit <development/native_cutover>`
 distinguishes native calculations from features whose numerical Python code
-still needs to move. Selecting ``engine="rust"`` raises an error for unsupported
-work; it does not fall back to a different solver.
+still needs to move. Unsupported calculation options raise an error. Rust is
+the only calculation implementation; there is no execution selector.
 
 Scientific conventions
 ----------------------

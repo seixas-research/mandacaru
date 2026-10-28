@@ -10,6 +10,9 @@ analytic limits and derivative checks. Removing an old implementation requires
 identifying every caller and moving its numerical work first; an unsupported
 feature must never silently select an unrelated calculation.
 
+See [the implemented ownership and dependency boundaries](architecture.md) for
+the current calculator, lazy Hamiltonian and array-transfer contracts.
+
 ## Coverage audit
 
 `test/migration/audit_native.py` inventories Python numerical call sites.
@@ -74,8 +77,9 @@ remain unchanged.
 This change does not complete the repository-wide Rust-only cutover. In
 particular, radial LDA/PBE helpers, PAW/noncollinear grid composition,
 PAW construction, advanced ansatz families,
-response and the Python execution route still exist. Their numerical work must
-move before deletion. JAX also remains a dependency of other unported features.
+response and legacy standalone numerical modules still exist. Their numerical
+work must move before deletion. The public calculator has one Rust execution
+route and no execution selector. JAX is no longer a package dependency.
 
 Native D4 needs a complete, provenance-checked reference dataset and all model
 responses; it is not enabled. No external implementation source or parameter

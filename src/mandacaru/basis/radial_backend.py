@@ -1,256 +1,47 @@
-r"""C backend of the radial kernels behind atom and pseudopotential generation.
-
-Profiling an iron PAW-LCAO generation (84 s) puts 67 % of it in
-:func:`scipy.linalg.eigh_tridiagonal` -- the k-th eigenpair of the
-uniform-grid radial equation, solved thousands of times inside the
-relativistic :math:`M(\varepsilon)` loop -- and 19 % in the two Numerov
-recursions, which were Python loops.  ``csrc/mandacaru_radial.c`` implements
-those three kernels; this module compiles it on first use (the system C
-compiler, no dependencies), loads it with :mod:`ctypes`, and routes
-
-* :func:`tridiagonal_eigenpair` -- the k-th eigenvalue and unit eigenvector of
-  a symmetric tridiagonal matrix (Sturm bisection to full precision, then
-  inverse iteration);
-* :func:`numerov_outward_kernel` / :func:`numerov_inward_kernel` -- the
-  recursions of :func:`mandacaru.pseudopotentials.partial_waves.numerov_outward` and
-  ``_numerov_inward``, same arithmetic in the same order.
-
-Every kernel keeps its Python reference implementation, used when the library
-cannot be built and selectable with ``MANDACARU_BACKEND=numpy`` (the switch
-the integral backend reads, parsed by the same
-:func:`~mandacaru.backend_policy.backend_preference`, so an invalid value is
-refused here as it is there).  ``mandacaru-build --build-backend``
-builds the library and reports which one is in use.
-"""
+"""Typed adapters to the packaged Rust radial kernels."""
 
 from __future__ import annotations
-
-import ctypes
-import os
-import platform
-import shutil
-import subprocess
-from pathlib import Path
-
 import numpy as np
-from numpy.ctypeslib import ndpointer
-
-from ..backend_policy import backend_preference
-
-#: Must match ``MANDACARU_RADIAL_ABI`` in ``csrc/mandacaru_radial.h``.
-ABI_VERSION = 2
-
-_SRC_DIR = Path(__file__).resolve().parent / "csrc"
-_BUILD_DIR = _SRC_DIR / "build"
-_SOURCE = _SRC_DIR / "mandacaru_radial.c"
-_HEADER = _SRC_DIR / "mandacaru_radial.h"
-_LIB_NAME = {"Darwin": "libmandacaru_radial.dylib",
-             "Windows": "mandacaru_radial.dll"}.get(platform.system(),
-                                                    "libmandacaru_radial.so")
-_F64 = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
-_F64_W = ndpointer(dtype=np.float64, flags="C_CONTIGUOUS,WRITEABLE")
-
-_LIB = None
-_attempted = False             # one build attempt per process
-_last_message = "not loaded yet"
+from .. import _native
 
 
-def _bind(lib):
-    lib.mandacaru_radial_abi_version.restype = ctypes.c_int
-    lib.mandacaru_radial_abi_version.argtypes = []
-    if lib.mandacaru_radial_abi_version() != ABI_VERSION:
-        raise AttributeError("stale radial library")
-    lib.mandacaru_numerov_outward.restype = None
-    lib.mandacaru_numerov_outward.argtypes = [
-        ctypes.c_int, _F64, _F64, ctypes.c_double, ctypes.c_int, _F64_W]
-    lib.mandacaru_numerov_inward.restype = None
-    lib.mandacaru_numerov_inward.argtypes = [
-        ctypes.c_int, _F64, ctypes.c_double, ctypes.c_int, _F64_W]
-    lib.mandacaru_tridiagonal_eigenpair.restype = ctypes.c_int
-    lib.mandacaru_tridiagonal_eigenpair.argtypes = [
-        ctypes.c_int, _F64, _F64, ctypes.c_int, ctypes.c_double,
-        ctypes.POINTER(ctypes.c_double), _F64_W]
-    return lib
+def radial_backend_status():
+    return True, "packaged Rust radial kernels"
 
 
-def _load(path: Path):
-    try:
-        return _bind(ctypes.CDLL(str(path)))
-    except (OSError, AttributeError):
-        return None
+def tridiagonal_eigenpair(diag, off, k, guess=None, *, context=None):
+    """Return the ordered eigenpair; the native solver chooses its own bracket."""
+    ctx = _native.Context(threads=1) if context is None else context
+    return ctx.eigenpair(
+        np.ascontiguousarray(diag, dtype=float),
+        np.ascontiguousarray(off, dtype=float),
+        k,
+    )
 
 
-def build_radial_backend(*, verbose: bool = False) -> Path | None:
-    """Compile ``libmandacaru_radial`` into ``csrc/build``; ``None`` on failure.
-
-    Plain C11 and ``libm``: the system compiler is all it takes.  The log of
-    the attempt is ``csrc/build/radial_build.log``.
-    """
-    global _last_message
-    system = platform.system()
-    shared = "-dynamiclib" if system == "Darwin" else "-shared"
-    try:
-        _BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        _last_message = f"cannot create {_BUILD_DIR}: {exc}"
-        return None
-    target = _BUILD_DIR / _LIB_NAME
-    # Compile to a private name and rename into place, so a process loading
-    # the library never sees a half-written file from a concurrent build.
-    partial = _BUILD_DIR / f".{_LIB_NAME}.{os.getpid()}"
-    log = _BUILD_DIR / "radial_build.log"
-    with open(log, "w") as out:
-        for name in (os.environ.get("CC"), "cc", "clang", "gcc"):
-            compiler = shutil.which(name) if name else None
-            if compiler is None:
-                continue
-            cmd = [compiler, "-std=c11", "-O2", "-fPIC", shared,
-                   f"-I{_SRC_DIR}", str(_SOURCE), "-o", str(partial), "-lm"]
-            out.write("$ " + " ".join(cmd) + "\n")
-            if verbose:
-                print("[mandacaru] " + " ".join(cmd))
-            try:
-                run = subprocess.run(cmd, capture_output=True, text=True,
-                                     timeout=300, check=False)
-            except (OSError, subprocess.SubprocessError) as exc:
-                out.write(f"failed to run: {exc}\n")
-                continue
-            out.write(run.stdout + run.stderr)
-            if run.returncode == 0 and partial.is_file():
-                os.replace(partial, target)
-                _last_message = f"compiled with {compiler}"
-                return target
-            partial.unlink(missing_ok=True)
-            out.write(f"exit status {run.returncode}\n")
-    _last_message = f"no C compiler could build it; see {log}"
-    return None
-
-
-def _library(build: bool = True):
-    """The loaded library, building it once per process when it is missing."""
-    global _LIB, _attempted, _last_message
-    if backend_preference() == "numpy":
-        _last_message = "MANDACARU_BACKEND=numpy: Python reference kernels"
-        return None
-    if _LIB is not None:
-        return _LIB
-    try:
-        from ..integrals._backend import _LIB as _INT_LIB
-        if _INT_LIB is not None and hasattr(_INT_LIB, "mandacaru_radial_abi_version"):
-            if _INT_LIB.mandacaru_radial_abi_version() == ABI_VERSION:
-                _LIB = _INT_LIB
-                _last_message = "Radial backend loaded from Rust integrals library"
-                return _LIB
-    except Exception:
-        pass
-    target = _BUILD_DIR / _LIB_NAME
-    stale = (target.is_file()
-             and target.stat().st_mtime < max(_SOURCE.stat().st_mtime,
-                                              _HEADER.stat().st_mtime))
-    if target.is_file() and not stale:
-        _LIB = _load(target)
-    if _LIB is None and build and not _attempted:
-        _attempted = True
-        built = build_radial_backend()
-        if built is not None:
-            _LIB = _load(built)
-    if _LIB is None:
-        if backend_preference() == "c":
-            raise RuntimeError(f"MANDACARU_BACKEND=c but the radial C backend "
-                               f"is unavailable: {_last_message}")
-        if _last_message == "not loaded yet":
-            _last_message = "C library unavailable: Python reference kernels"
-    else:
-        _last_message = f"C backend loaded from {target}"
-    return _LIB
-
-
-def reload_radial_backend() -> None:
-    """Forget the loaded library, so the next kernel call loads (and if
-    needed builds) it afresh.  The last status message is kept."""
-    global _LIB, _attempted
-    _LIB, _attempted = None, False
-
-
-def radial_backend_status(build: bool = True) -> tuple[bool, str]:
-    """``(uses_c, message)`` -- which radial kernels are in use, and why."""
-    lib = _library(build=build)
-    return lib is not None, _last_message
-
-
-# --------------------------------------------------------------------------- #
-# The kernels.
-# --------------------------------------------------------------------------- #
-
-def tridiagonal_eigenpair(diag, off, k: int, guess: float | None = None):
-    """``(value, vector)``: the ``k``-th smallest eigenvalue (0-based) of the
-    symmetric tridiagonal matrix ``(diag, off)`` and its unit eigenvector.
-
-    ``guess`` -- the previous eigenvalue of a self-consistent loop -- only
-    says where to start looking; the answer does not depend on it.  The sign
-    of the vector is arbitrary, as it is for
-    :func:`scipy.linalg.eigh_tridiagonal`; every caller fixes it.
-    """
-    diag = np.ascontiguousarray(diag, dtype=np.float64)
-    off = np.ascontiguousarray(off, dtype=np.float64)
-    if diag.ndim != 1 or off.shape != (max(diag.size - 1, 0),):
-        raise ValueError(f"a tridiagonal matrix of order {diag.size} needs "
-                         f"{max(diag.size - 1, 0)} off-diagonal elements, "
-                         f"not {off.shape}")
-    lib = _library()
-    if lib is None:
-        from scipy.linalg import eigh_tridiagonal
-        values, vectors = eigh_tridiagonal(diag, off, select="i",
-                                           select_range=(int(k), int(k)))
-        return float(values[0]), vectors[:, 0]
-    vector = np.empty_like(diag)
-    value = ctypes.c_double(0.0)
-    status = lib.mandacaru_tridiagonal_eigenpair(
-        int(diag.size), diag, off, int(k),
-        float("nan") if guess is None else float(guess),
-        ctypes.byref(value), vector)
-    if status != 0:
-        raise RuntimeError(f"mandacaru_tridiagonal_eigenpair failed ({status})")
-    if not np.isfinite(value.value):
-        raise RuntimeError("mandacaru_tridiagonal_eigenpair returned a "
-                           "non-finite eigenvalue")
-    return float(value.value), vector
-
-
-def numerov_outward_kernel(f, s, h2: float, start: int, u) -> np.ndarray:
-    """Run the outward recursion in place on ``u`` (seeded at ``start`` and
-    ``start + 1``) and return it."""
-    if np.shape(f) != u.shape or np.shape(s) != u.shape:
-        raise ValueError(f"f {np.shape(f)} and s {np.shape(s)} must match "
-                         f"u {u.shape}")
-    lib = _library()
-    if lib is None or not u.flags.c_contiguous or u.dtype != np.float64:
-        a = 1.0 - h2 * f / 12.0
-        b = 2.0 * (1.0 + 5.0 * h2 * f / 12.0)
-        c = h2 / 12.0
-        for i in range(start + 1, u.size - 1):
-            u[i + 1] = (b[i] * u[i] - a[i - 1] * u[i - 1]
-                        + c * (s[i + 1] + 10.0 * s[i] + s[i - 1])) / a[i + 1]
-        return u
-    lib.mandacaru_numerov_outward(
-        int(u.size), np.ascontiguousarray(f, dtype=np.float64),
-        np.ascontiguousarray(s, dtype=np.float64), float(h2), int(start), u)
+def numerov_outward_kernel(f, s, h2, start, u, *, context=None):
+    """Evaluate in Rust, copy the result into the caller's solution array."""
+    ctx = _native.Context(threads=1) if context is None else context
+    result = ctx.numerov(
+        np.ascontiguousarray(f, dtype=float),
+        np.ascontiguousarray(s, dtype=float),
+        np.ascontiguousarray(u, dtype=float),
+        h2,
+        start,
+    )
+    np.copyto(u, result, casting="same_kind")
     return u
 
 
-def numerov_inward_kernel(f, h2: float, stop: int, u) -> np.ndarray:
-    """Run the homogeneous inward recursion in place on ``u`` (seeded at its
-    last two points) down to ``stop`` and return it."""
-    if np.shape(f) != u.shape:
-        raise ValueError(f"f {np.shape(f)} must match u {u.shape}")
-    lib = _library()
-    if lib is None or not u.flags.c_contiguous or u.dtype != np.float64:
-        a = 1.0 - h2 * f / 12.0
-        b = 2.0 * (1.0 + 5.0 * h2 * f / 12.0)
-        for i in range(u.size - 2, stop, -1):
-            u[i - 1] = (b[i] * u[i] - a[i + 1] * u[i + 1]) / a[i - 1]
-        return u
-    lib.mandacaru_numerov_inward(
-        int(u.size), np.ascontiguousarray(f, dtype=np.float64), float(h2),
-        int(stop), u)
+def numerov_inward_kernel(f, h2, stop, u, *, context=None):
+    ctx = _native.Context(threads=1) if context is None else context
+    result = ctx.numerov(
+        np.ascontiguousarray(f, dtype=float),
+        np.zeros_like(f, dtype=float),
+        np.ascontiguousarray(u, dtype=float),
+        h2,
+        stop,
+        inward=True,
+    )
+    np.copyto(u, result, casting="same_kind")
     return u

@@ -21,7 +21,7 @@ do.  On LiH the Li 1s is far too sharp for any affordable grid spacing and the
 net force reaches hundreds of eV/Angstrom -- larger than every real force in the
 problem -- while the energy, the RDMs and the orbital-response residual all look
 healthy.  ``Mandacaru`` warns about exactly that
-(:data:`~mandacaru.algorithms.calculator.TRANSLATIONAL_RESIDUAL_TOLERANCE`), and
+(:data:`~mandacaru.calculation.TRANSLATIONAL_RESIDUAL_TOLERANCE`), and
 the same geometry in the PAW-LCAO basis, which removes the core instead of sampling
 it, gives a net force of ~0.03 eV/Angstrom and a bond force that matches a
 plane-wave PBE reference.
@@ -213,7 +213,7 @@ class TestLiHCoreArtifact:
 class TestTranslationalCheck:
     def test_a_single_atom_is_exempt(self):
         """The grid re-centers on it, so the residual carries no information."""
-        from mandacaru.algorithms.calculator import Mandacaru as C
+        from mandacaru.calculation import Mandacaru as C
         from mandacaru.algorithms.forces import ForceResult
 
         one = ForceResult(forces=np.array([[3.0, 0.0, 0.0]]),
@@ -224,7 +224,7 @@ class TestTranslationalCheck:
             assert C._check_translational_invariance(one) == 0.0
 
     def test_a_small_residual_is_tolerated(self):
-        from mandacaru.algorithms.calculator import Mandacaru as C
+        from mandacaru.calculation import Mandacaru as C
         from mandacaru.algorithms.forces import ForceResult
 
         forces = np.array([[0.0, 0.0, 5.0], [0.0, 0.0, -4.99]])

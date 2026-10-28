@@ -3,14 +3,14 @@
 import numpy as np
 import pytest
 
-from mandacaru.algorithms import QuantumEchoes
+from mandacaru.workflows.quantum_echoes import QuantumEchoes
 from mandacaru.core import PauliSum
 from mandacaru.utils import append_performance, append_quantum_echoes, parse_output
 from mandacaru.utils.logging import STDOUT
 
 
 def test_nested_otoc_report_is_separate_and_csv_units_are_explicit(tmp_path, capsys):
-    from mandacaru.algorithms import NestedOTOC
+    from mandacaru.workflows.nested_otoc import NestedOTOC
     from mandacaru.utils import append_nested_otoc
 
     echo = NestedOTOC(PauliSum({"XX": 0.5}), PauliSum({"IZ": 1}), PauliSum({"ZI": 1}))

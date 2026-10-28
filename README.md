@@ -16,150 +16,71 @@
 
 # Mandacaru
 
-**Mandacaru** is a Python framework for fermionic quantum simulation with variational quantum algorithms. From an ASE geometry it builds a real-space Hamiltonian, maps it to qubits, and solves it with VQE or ADAPT-VQE on a state-vector simulator or on quantum hardware (IBM Quantum, Amazon Braket).
+Mandacaru provides a Rust scientific core with a Python interface for electronic
+structure and fermionic quantum simulation. Rust owns molecular HF/DFT,
+variational optimization, scientific buffers and numerical kernels. Python
+provides input values, result views, ASE integration and external service adapters.
+There is no Python calculation engine or execution-engine selector.
 
-## Installation
+## Install and run
 
-```bash
-pip install mandacaru
-```
-
-No pseudopotential data ships with the package. PAW-LCAO and UPAW-LCAO
-each live in their own repository, and an environment variable names the
-checkout Mandacaru reads from:
-
-| basis | variable | repository |
-| :--- | :--- | :--- |
-| `PAW-LCAO` | `MANDACARU_PAW_PATH` | `mandacaru-paw` |
-| `UPAW-LCAO` | `MANDACARU_UPAW_PATH` | `mandacaru-upaw` |
+The base package requires Python 3.14 and NumPy. Platform wheels include the
+native extension. Building from source also requires Rust/Cargo.
 
 ```bash
-git clone https://github.com/seixas-research/mandacaru-paw.git
-mandacaru --set-paw mandacaru-paw     # writes ~/.zshrc or ~/.bashrc, asking before replacing
-mandacaru --pseudo-status             # each variable, where it points, and how many datasets it serves
+python -m pip install mandacaru
 ```
-
-Datasets sit one folder per set inside the checkout
-(`<checkout>/lda-sr/<Symbol>.parquet` — the scalar-relativistic LDA set);
-PAW-LCAO also has `lda-fr/` (spin-orbit), `pbe-sr/` (PBE) and `pbe-fr/`
-(PBE with spin-orbit). A
-calculation reads the set of its functional — `pbe-sr/` for PBE, HSE06 and
-r2SCAN, `lda-sr/` for LDA and every other method — and another folder with
-`Mandacaru(..., paw_dataset="lda-fr")`; a dataset whose
-own functional disagrees with the folder it is loaded from is refused. The
-all-electron bases (`HAO`, `NAO`, `NAO-AE`, the Gaussian families) need none
-of this. See the
-[pseudopotentials guide](https://mandacaru.readthedocs.io/en/latest/guide/pseudopotentials.html)
-for the full setup and the [installation guide](https://mandacaru.readthedocs.io/en/latest/installation.html)
-for the numerical backend and the optional dependencies.
-
-## LiH with ASE
-
-```python
-from ase import Atoms
-from mandacaru import Mandacaru
-
-atoms = Atoms("LiH",
-              positions=[[0.0, 0.0, 0.0],           # Li
-                         [0.0, 0.0, 1.6]],          # H
-              cell=[10.0, 10.0, 10.0])
-
-atoms.calc = Mandacaru(method="adapt-vqe",                   # also "rhf", "uhf", "ghf", "dft", "vqe"
-                       basis="HAO",                          # Basis set
-                       grid_spacing=0.10,                    # real-space grid spacing (Å)
-                       pool="fermionic",                     # "fermionic" | "qubit" | "qeb" | "ceo" | "ceo-ovp"
-                       mapping="jordan_wigner",              # "jordan_wigner" | "parity" | "parity_reduced" | "bravyi_kitaev"
-                       optimizer={"method": "SLSQP",         # "SLSQP" | "BFGS" | "L-BFGS" | "CG" | "COBYLA" | "Nelder-Mead" | "SPSA"
-                                  "maxiter": 2000,
-                                  "tol": 1e-12},
-                       max_iterations=200,                   # at most 200 operators
-                       convergence={"gradient": 1e-3},       # stop when every pool gradient is smaller
-                       device="AER_simulator",               # or an IBM Quantum / Amazon Braket device
-                       txt="output.txt")                     # the run log; without it the same blocks are printed
-
-energy = atoms.get_potential_energy()                        # Energy (eV)
-print(f"Energy = {energy:.4f} eV")
-```
-
-## Potential energy surface
 
 ```python
 import numpy as np
-import pandas as pd
-from ase import Atoms
-from mandacaru import Mandacaru
+from mandacaru import Geometry, Mandacaru
 
-distances = np.arange(1.2, 3.101, 0.1)
-energies = []
-for d in distances:
-    atoms = Atoms("LiH",
-                  positions=[[0.0, 0.0, 0.0],
-                             [0.0, 0.0, d]],
-                  cell=[10.0, 10.0, 10.0],
-                  magmoms=[1.0, -1.0])
-
-    atoms.calc = Mandacaru(method="adapt-vqe",
-                           basis={"name": "PAW-LCAO",
-                                  "size": "DZP",
-                                  "energy_shift": 0.1},
-                           grid_spacing=0.10,
-                           pool="fermionic",
-                           mapping="jordan_wigner",
-                           optimizer={"method": "SLSQP",
-                                      "maxiter": 2000,
-                                      "tol": 1e-12},
-                           max_iterations=200,
-                           convergence={"gradient": 1e-3},
-                           txt=f"output_{d:.2f}.txt")
-    energies.append(atoms.get_potential_energy())
-
-df = pd.DataFrame({"distance": distances, "energy": energies})
-df.to_csv("lih_dissociation.csv", index=False)
+geometry = Geometry((1, 1), np.array([[2.5,2.5,2.13], [2.5,2.5,2.87]]), np.eye(3)*5)
+with Mandacaru(method="dft", xc="pbe", grid_spacing=.35,
+               resources={"threads": 2}) as calculation:
+    result = calculation.run(geometry)
+    print(result.optimal_energy)  # eV
+    print(result.forces())       # eV/angstrom
 ```
 
-## Kohn-Sham DFT
+Install `mandacaru[ase]` for the optional
+`mandacaru.integrations.ase.ASECalculator` adapter. Molecular calculations
+accept standalone geometry values and do not require ASE.
 
-```python
-from ase.build import molecule
-from mandacaru import Mandacaru
+Four-index Hamiltonians are built only when explicitly requested through
+`result.hamiltonian`, Hamiltonian export or a quantum calculation. HF and
+screened hybrid exchange use native Cholesky factors.
 
-atoms = molecule("H2O")
-atoms.center(vacuum=3.0)
-atoms.calc = Mandacaru(method="dft",
-                       xc="pbe",                              # "lda" (default) | "pbe" | "r2scan" | "hse06" | "pbe+rvv10" | "r2scan+rvv10"
-                       vdw="d4",                              # None | "rvv10" (PBE, r2SCAN) | "d4" (pip install 'mandacaru[dispersion]')
-                       basis={"name": "PAW-LCAO",
-                              "size": "DZP"},
-                       grid_spacing=0.2)
-energy = atoms.get_potential_energy()                         # Energy (eV)
-gap = atoms.calc.result.scf.homo_lumo_gap                     # Kohn-Sham HOMO-LUMO gap (Hartree)
+## Source layout
+
+| Location | Responsibility |
+| --- | --- |
+| `Cargo.toml`, `Cargo.lock` | Native workspace and locked dependencies |
+| `crates/mandacaru-core` | Basis, models, molecular/periodic solvers, PAW and quantum algorithms |
+| `crates/mandacaru-kernels` | Low-level numerical kernels |
+| `crates/mandacaru-python` | PyO3 bindings and checked NumPy transfers |
+| `src/mandacaru` | Python interface, workflows, result views and integrations |
+| `build_hooks/native.py` | Native extension build hook |
+| `scripts` | Local architectural and installation checks |
+| `docs` | Sphinx manual |
+
+There are no Rust sources inside the Python package. No GitHub workflows are used.
+
+## Local checks
+
+```bash
+python scripts/check_architecture.py
+cargo test --release --workspace
+python -m pytest test/architecture
+python -m sphinx -W --keep-going -b html docs/source /tmp/mandacaru-docs
 ```
 
-## Theory
+Rebuild the editable extension after changing Rust:
 
-**Classical mean field.** `method="rhf"`, `method="uhf"` and `method="ghf"` run restricted, unrestricted or generalized (spinor) Hartree–Fock without building a circuit. GHF is the one that puts spin-orbit coupling into its Fock operator. Their results export the molecular-orbital Hamiltonian and reference occupation through `result.as_quantum_problem()`, ready for a direct `Mandacaru(method="adapt-vqe", **options)` run. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html).
+```bash
+python -m pip install --no-deps -e .
+```
 
-**Kohn-Sham DFT.** `method="dft"` solves the closed-shell Kohn-Sham problem in the same basis, on the same grid and with the same pseudopotentials, with the LDA, PBE or r²SCAN functional and an optional D4 dispersion correction. Molecules are closed-shell, with analytic forces for relaxations; a periodic geometry is solved as a crystal, with Bloch states on a k-point mesh and smearing for metals (PAW-LCAO), and `atoms.calc.band_structure()`, `fat_bands()`, `dos()` and `pdos()` give non-self-consistent bands along a path and total and atom-projected densities of states. Its result exports the many-body Hamiltonian in the Kohn-Sham orbitals through `result.as_quantum_problem()`, like the Hartree-Fock methods. See the [Kohn-Sham DFT guide](https://mandacaru.readthedocs.io/en/latest/guide/dft.html).
-
-**VQE.** The variational quantum eigensolver prepares a parameterized state |ψ(θ)⟩ = U(θ)|Φ<sub>HF</sub>⟩ on a quantum processor, measures the energy ⟨ψ(θ)|H|ψ(θ)⟩, and lets a classical optimizer update θ to minimize it. By the variational principle the minimum is an upper bound to the ground-state energy, reached exactly when the ansatz can represent the ground state. Mandacaru starts from the Hartree–Fock determinant in the molecular-orbital basis; the circuit is chosen with `ansatz=`, spelled like `basis=`. The default, `ansatz="uccsd"`, is UCCSD.
-
-**HVA.** `ansatz="hva"` selects the Hamiltonian variational ansatz under `method="vqe"`, with fixed, ordered Hamiltonian-group layers: `Mandacaru(method="vqe", ansatz="hva")` or `ansatz={"name": "hva", "layers": 3, "evolution": "trotter", ...}`. It supports exact local evolution and explicit first- or second-order product-formula circuits (`"evolution": "trotter"`), checkpoint/resume, Z₂ tapering, spin-resolved grouping, and actual UHF Slater references. See the [mean-field and HVA guide](https://mandacaru.readthedocs.io/en/latest/guide/mean_field_hva.html) for the distinct exact and finite-step states.
-
-
-**ADAPT-VQE.** ADAPT-VQE builds the ansatz during the calculation instead of fixing it in advance. At each iteration it evaluates the energy gradient ⟨ψ|[H, A<sub>k</sub>]|ψ⟩ of every generator A<sub>k</sub> in an operator pool, appends exp(θ<sub>k</sub>A<sub>k</sub>) for the largest one, and re-optimizes all parameters. It stops on `convergence`, `{"gradient": 1e-3, "energy": 1e-3}` by default (Hartree and eV): when every gradient is below the first threshold and the last growth step changed the energy by less than the second — producing compact circuits tailored to the molecule.
-
-**Operator pools.** The pool is the set of anti-Hermitian generators ADAPT-VQE chooses from, and it sets the trade-off between circuit depth and the number of iterations. `fermionic` holds spin-adapted single and double excitations; `qubit` splits them into individual Pauli strings (the shallowest gates, more iterations); `qeb` uses qubit excitations — the same occupation moves without the fermionic sign; `ceo` couples the qubit excitations that act on the same spin-orbitals, and `ceo-ovp` keeps that coupling to one parameter per step, roughly halving the two-qubit gate count of `qeb`. Every pool is built in the encoding you ask for (Jordan–Wigner, parity, reduced parity or Bravyi–Kitaev) and reaches the same ground state. The fermionic and qubit-excitation pools conserve the particle number; the individual Pauli strings of `qubit` do not, by design.
-
-**Classical optimization.** The parameters are updated by the optimizer in `optimizer=` — a method name, a dict `{"method": ..., "maxiter": ..., "tol": ...}`. Leaving it out follows the objective: SLSQP on an exact (state-vector) energy, SPSA once `shots > 0`. SLSQP, BFGS, L-BFGS and CG use gradients and stop in one to two orders of magnitude fewer steps on exact simulators, but are refused with `shots > 0` — differencing the energy at a tiny step turns shot noise into gradient noise; Nelder–Mead and COBYLA are gradient-free and more robust on a small, nearly-converged problem; SPSA (two energy evaluations per step, whatever the number of parameters) tolerates the statistical noise of shot-based hardware and is the default there.
-
-## Beyond the ground state
-
-Once a state is prepared — by VQE, ADAPT-VQE or a checkpoint loaded back in — Mandacaru can do more with it than report its energy. `time_evolve` propagates a Pauli Hamiltonian with a matrix-free Suzuki–Trotter product formula; `QuantumEchoes` applies a weak dipole kick between forward and backward evolution for a spectroscopy-style response; `NestedOTOC` evaluates the nested out-of-time-order correlator ⟨[B(t)M]<sup>2k</sup>⟩ of repeated echoes with Pauli insertions B and M; and `QuantumPhaseEstimation` reads the energy of a prepared state off a phase-estimation register. See the [quantum echoes](https://mandacaru.readthedocs.io/en/latest/guide/quantum_echoes.html) and [checkpoints and QPE](https://mandacaru.readthedocs.io/en/latest/guide/checkpoints_qpe.html) guides.
-
-## License
-
-Mandacaru is released under the [MIT License](LICENSE).
-
-Developer: **Leandro Seixas Rocha** (<leandro.rocha@ilum.cnpem.br>).
-
-Documentation: [mandacaru.readthedocs.io](https://mandacaru.readthedocs.io/).
+The [manual](https://mandacaru.readthedocs.io/en/latest/) describes native
+coverage, scientific conventions and remaining migration work. Unsupported
+models raise errors and do not select a Python numerical fallback.

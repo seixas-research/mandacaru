@@ -19,7 +19,7 @@ energies = []
 for distance in distances:
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.5-distance/2],
                                   [2.5, 2.5, 2.5+distance/2]], cell=[5.]*3)
-    atoms.calc = Mandacaru(method="dft", engine="rust", xc="pbe", basis="HAO",
+    atoms.calc = Mandacaru(method="dft", xc="pbe", basis="HAO",
                            grid=grid, trace=False)
     energies.append(atoms.get_potential_energy())
 

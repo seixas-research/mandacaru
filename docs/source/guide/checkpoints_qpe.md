@@ -185,7 +185,7 @@ turns the *variational* energy into a reading of the *exact* eigenvalue with a
 known resolution.
 
 ```python
-from mandacaru.algorithms import QuantumPhaseEstimation
+from mandacaru.workflows.qpe import QuantumPhaseEstimation
 
 qpe = QuantumPhaseEstimation(n_evaluation_qubits=10)
 result = qpe.run("examples/qpe/data/h2_wavefunction.json")
@@ -213,7 +213,7 @@ per amplitude, about three of them in flight.  Before anything is allocated
 the run sizes it and compares with the memory actually available:
 
 ```python
-from mandacaru.algorithms import qpe_memory_estimate
+from mandacaru.workflows.qpe import qpe_memory_estimate
 
 print(qpe_memory_estimate(n_system=24, n_evaluation=16).summary())
 # QPE statevector: 24 system + 16 evaluation qubits -> 2^40 amplitudes

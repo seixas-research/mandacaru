@@ -322,13 +322,7 @@ def resolve_save_path(spec, fmt: str = DEFAULT_FORMAT,
 # Write.
 # --------------------------------------------------------------------------- #
 
-def save_hamiltonian(path, hamiltonian: PauliSum, *,
-                     mapping: str = "jordan_wigner",
-                     num_particles=None, n_spatial_orbitals=None,
-                     metadata: dict | None = None,
-                     format: str | None = None,
-                     compression: str = "zstd",
-                     engine: str = "auto", engine_options=None) -> str:
+def save_hamiltonian(path, hamiltonian: PauliSum, *, mapping: str='jordan_wigner', num_particles=None, n_spatial_orbitals=None, metadata: dict | None=None, format: str | None=None, compression: str='zstd', resources=None, codec='auto') -> str:
     """Write ``hamiltonian`` as Pauli terms to ``path``; return the path.
 
     Terms are sorted by Pauli string so the file is reproducible (an identical
@@ -349,69 +343,33 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *,
     """
     from .mapping import _canonical_method
     mapping = _canonical_method(mapping)
-
     extension = os.path.splitext(os.fspath(path))[1].lower()
     named = _EXTENSION_FORMATS.get(extension)
     if format is None:
         format = named if named is not None else DEFAULT_FORMAT
     format = resolve_format(format)
     if named is not None and named != format:
-        # An explicit format still wins -- the caller said what they meant --
-        # but the file's name will lie about its content, so say so once.
-        # (`load_hamiltonian` reads it by its bytes, not its name.)
-        warnings.warn(
-            f"writing {format} content to {os.fspath(path)!r}, whose extension "
-            f"{extension!r} says {named}; the file's name will not match what "
-            "is in it", RuntimeWarning, stacklevel=2)
-
+        warnings.warn(f"writing {format} content to {os.fspath(path)!r}, whose extension {extension!r} says {named}; the file's name will not match what is in it", RuntimeWarning, stacklevel=2)
     if hamiltonian.num_qubits > MAX_FILE_QUBITS:
-        raise ValueError(
-            f"refusing to write a {hamiltonian.num_qubits}-qubit Hamiltonian: "
-            f"Pauli-string files are limited to MAX_FILE_QUBITS = "
-            f"{MAX_FILE_QUBITS} qubits")
+        raise ValueError(f'refusing to write a {hamiltonian.num_qubits}-qubit Hamiltonian: Pauli-string files are limited to MAX_FILE_QUBITS = {MAX_FILE_QUBITS} qubits')
     simplified = hamiltonian.simplify()
     items = sorted(simplified.terms.items())
     labels = [label for label, _ in items]
     reals = [complex(coeff).real for _, coeff in items]
     imags = [complex(coeff).imag for _, coeff in items]
-
-    key_value = {
-        "mandacaru.format": FORMAT_TAG,
-        "mandacaru.version": str(FORMAT_VERSION),
-        "mandacaru.num_qubits": str(int(simplified.num_qubits)),
-        "mandacaru.mapping": str(mapping),
-        "mandacaru.num_particles": json.dumps(
-            None if num_particles is None
-            else [int(num_particles[0]), int(num_particles[1])]),
-        "mandacaru.n_spatial_orbitals": json.dumps(
-            None if n_spatial_orbitals is None else int(n_spatial_orbitals)),
-        # The Pauli coefficients are the internal Hartree ones; say so in the
-        # file so a reader never has to guess.
-        "mandacaru.metadata": json.dumps(
-            {"energy_unit": "Ha", **dict(metadata or {})}, default=str),
-    }
-
+    key_value = {'mandacaru.format': FORMAT_TAG, 'mandacaru.version': str(FORMAT_VERSION), 'mandacaru.num_qubits': str(int(simplified.num_qubits)), 'mandacaru.mapping': str(mapping), 'mandacaru.num_particles': json.dumps(None if num_particles is None else [int(num_particles[0]), int(num_particles[1])]), 'mandacaru.n_spatial_orbitals': json.dumps(None if n_spatial_orbitals is None else int(n_spatial_orbitals)), 'mandacaru.metadata': json.dumps({'energy_unit': 'Ha', **dict(metadata or {})}, default=str)}
     path = os.fspath(path)
-    if engine == "rust":
-        from .._native import Context
-        payload = _json_payload(labels, reals, imags, key_value)
-        snapshot = Context(**dict(engine_options or {})).parse_snapshot(
-            json.dumps(payload, allow_nan=False), FORMAT_TAG)
-        if format == "json":
-            snapshot.save(path)
-            return path
-        # Explicit columnar-I/O adapter; schema validation remains native.
-        engine = "auto"
-    elif engine_options:
-        raise ValueError("engine_options requires engine='rust'")
-    # A cache is a snapshot: written beside its destination and moved onto it,
-    # so a failed write leaves the previous cache intact (see `core.atomic`).
+    from .._native import Context
+    payload = _json_payload(labels, reals, imags, key_value)
+    snapshot = Context(**dict(resources or {})).parse_snapshot(json.dumps(payload, allow_nan=False), FORMAT_TAG)
+    if format == 'json':
+        snapshot.save(path)
+        return path
     with atomic_path(path) as staging:
-        if format == "json":
+        if format == 'json':
             _write_json(staging, labels, reals, imags, key_value)
-        elif resolve_engine(engine) == "fastparquet":
-            _write_fastparquet(staging, labels, reals, imags, key_value,
-                               compression)
+        elif resolve_engine(codec) == 'fastparquet':
+            _write_fastparquet(staging, labels, reals, imags, key_value, compression)
         else:
             _write_pyarrow(staging, labels, reals, imags, key_value, compression)
     return path
@@ -464,8 +422,7 @@ def _write_pyarrow(path, labels, reals, imags, key_value, compression):
 # Read.
 # --------------------------------------------------------------------------- #
 
-def load_hamiltonian(path, engine: str = "auto",
-                     format: str | None = None, *, engine_options=None) -> HamiltonianRecord:
+def load_hamiltonian(path, format: str | None=None, *, resources=None, codec='auto') -> HamiltonianRecord:
     """Read a Hamiltonian file written by :func:`save_hamiltonian`.
 
     The format is **detected automatically** (:func:`detect_format`) -- from the
@@ -490,54 +447,31 @@ def load_hamiltonian(path, engine: str = "auto",
     """
     path = os.fspath(path)
     if not os.path.exists(path):
-        raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
+        raise FileNotFoundError(f'no such Hamiltonian file: {path!r}')
     format = detect_format(path) if format is None else resolve_format(format)
-
-    native = engine == "rust"
-    if engine_options and not native:
-        raise ValueError("engine_options requires engine='rust'")
-    if format == "json" and native:
+    if format == 'json':
         from .._native import Context
-        snapshot = Context(**dict(engine_options or {})).read_snapshot(path, FORMAT_TAG)
+        snapshot = Context(**dict(resources or {})).read_snapshot(path, FORMAT_TAG)
         columns, meta = _json_columns(json.loads(snapshot.json), path)
-    elif format == "json":
-        columns, meta = _read_json(path)
-    elif resolve_engine("auto" if native else engine) == "fastparquet":
+    elif resolve_engine(codec) == 'fastparquet':
         columns, meta = _read_fastparquet(path)
     else:
         columns, meta = _read_pyarrow(path)
     header = _header_from_meta(path, meta)
     for required in COLUMNS:
         if required not in columns:
-            raise ValueError(
-                f"{path!r} is missing the {required!r} column "
-                f"(found {sorted(columns)})")
-
-    if native and format != "json":
+            raise ValueError(f'{path!r} is missing the {required!r} column (found {sorted(columns)})')
+    if format != 'json':
         from .._native import Context
-        Context(**dict(engine_options or {})).parse_snapshot(
-            json.dumps(_json_payload(columns["pauli"], columns["real"],
-                                     columns["imag"], meta), allow_nan=False), FORMAT_TAG)
-
+        Context(**dict(resources or {})).parse_snapshot(json.dumps(_json_payload(columns['pauli'], columns['real'], columns['imag'], meta), allow_nan=False), FORMAT_TAG)
     n_qubits = header.num_qubits
     terms: dict[str, complex] = {}
-    for label, real, imag in zip(columns["pauli"], columns["real"],
-                                 columns["imag"]):
+    for label, real, imag in zip(columns['pauli'], columns['real'], columns['imag']):
         label = str(label)
         if len(label) != n_qubits:
-            raise ValueError(
-                f"{path!r}: Pauli string {label!r} has length {len(label)}, "
-                f"expected {n_qubits}")
+            raise ValueError(f'{path!r}: Pauli string {label!r} has length {len(label)}, expected {n_qubits}')
         terms[label] = terms.get(label, 0j) + complex(float(real), float(imag))
-
-    return HamiltonianRecord(
-        # The width comes from the metadata, not from the labels: a zero
-        # operator (or one whose terms canceled) has no labels to infer it
-        # from and would load as a 0-qubit register.
-        hamiltonian=PauliSum(terms, num_qubits=n_qubits),
-        mapping=header.mapping, num_particles=header.num_particles,
-        n_spatial_orbitals=header.n_spatial_orbitals,
-        metadata=header.metadata)
+    return HamiltonianRecord(hamiltonian=PauliSum(terms, num_qubits=n_qubits), mapping=header.mapping, num_particles=header.num_particles, n_spatial_orbitals=header.n_spatial_orbitals, metadata=header.metadata)
 
 
 @dataclass

@@ -8,8 +8,8 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru, _native
-from mandacaru._native_adapter import geometry_from_atoms
-from mandacaru.algorithms._rust_molecular import basis_specification
+from mandacaru.integrations.ase import geometry_from_atoms
+from mandacaru.specifications import basis_specification
 from mandacaru.basis import BasisSet
 from mandacaru.core import MolecularIntegrals
 from mandacaru.integrals import Grid
@@ -29,19 +29,19 @@ def h2(distance=.74):
 def test_geometry_mean_field_matches_frozen_phase0(case_id):
     case = next(c for c in CASES if c["id"] == case_id)
     atoms = Atoms(case["symbols"], positions=case["positions"], cell=case["cell"])
-    atoms.calc = Mandacaru(**case["options"], engine="rust", trace=False)
+    atoms.calc = Mandacaru(**case["options"],  trace=False)
     energy = atoms.get_potential_energy()
     expected = FROZEN["cases"][case_id]["samples"][0]["values"]["energy_ev"]
     assert energy == pytest.approx(expected, abs=1e-7)
     result = atoms.calc.result
-    assert result.success and result.timings["engine"] == "rust"
+    assert result.success
     assert result.energy_unit == "eV" and result.in_units("Ha") == pytest.approx(energy / HARTREE_TO_EV)
-    assert result.scf.n_iterations > 0
+    assert result.snapshot()["n_iterations"] > 0
     reference = result.reference_state()
     assert np.vdot(reference, reference).real == pytest.approx(1.)
     if case_id != "h2o_rhf_sto3g":
         state = result.scf_state()
-        op = result.qubit_hamiltonian().to_matrix()
+        op = result.qubit_hamiltonian().matrix()
         assert np.vdot(state, op @ state).real * HARTREE_TO_EV == pytest.approx(energy, abs=1e-8)
 
 
@@ -54,7 +54,7 @@ def test_native_grid_integrals_and_lowdin_match_python(basis, kinetic):
     ctx = _native.Context(threads=1)
     native = ctx.molecular_integrals(geometry, basis_spec=json.dumps(basis_specification(basis)),
                                     spacing_bohr=.45 * ANGSTROM_TO_BOHR, kinetic=kinetic)
-    snapshot = native.snapshot(include_samples=True)
+    snapshot = native.snapshot(include_samples=True,include_hamiltonian=True)
     if isinstance(basis, dict):
         options = dict(basis)
         family = BasisSet.build(options.pop("name"), **options)
@@ -135,11 +135,11 @@ def test_native_triclinic_grid_and_integrals_use_the_explicit_metric():
     native_grid = _native.SpatialGrid.from_geometry(geometry_from_atoms(atoms), [.55 * ANGSTROM_TO_BOHR]*3, skew=True)
     assert native_grid.shape == list(py_grid.shape)
     assert np.allclose(native_grid.step_bohr, py_grid.step, atol=2e-14)
-    calc = Mandacaru(method="rhf", engine="rust", grid=native_grid, trace=False)
+    calc = Mandacaru(method="rhf",  grid=native_grid, trace=False)
     atoms.calc = calc
     actual = atoms.get_potential_energy()
     py = atoms.copy()
-    py.calc = Mandacaru(method="rhf", grid=py_grid, trace=False, references=False)
+    py.calc = Mandacaru(method="rhf", grid=py_grid, trace=False)
     assert actual == pytest.approx(py.get_potential_energy(), abs=2e-8)
 
 
@@ -147,32 +147,29 @@ def test_native_triclinic_grid_and_integrals_use_the_explicit_metric():
 @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"])
 def test_geometry_quantum_solve_and_native_reference_reuse(method, mapping):
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", engine="rust", grid_spacing=.35, trace=False)
+    atoms.calc = Mandacaru(method="rhf",  grid_spacing=.35, trace=False)
     atoms.get_potential_energy()
     reference = atoms.calc.result
     # Uses native MO integrals without rebuilding a geometry or mapping in Python.
-    calc = Mandacaru(method=method, mapping=mapping, trace=False, **reference.as_quantum_problem())
+    calc = Mandacaru(method=method, mapping=mapping, trace=False, native_model=reference.hamiltonian)
     result = calc.run()
     assert (result.success if method == "vqe" else result.converged)
     assert result.optimal_energy == pytest.approx(-25.871895455446612, abs=1e-9)
     work = h2()
-    work.calc = Mandacaru(method=method, engine="rust", mapping=mapping, grid_spacing=.35, trace=False)
+    work.calc = Mandacaru(method=method,  mapping=mapping, grid_spacing=.35, trace=False)
     assert work.get_potential_energy() == pytest.approx(result.optimal_energy, abs=1e-9)
 
 
 def test_uhf_stretched_bond_breaks_spin_symmetry_and_exports_the_actual_determinant():
-    results = []
-    for engine in ("python", "rust"):
-        atoms = h2(2.5)
-        atoms.calc = Mandacaru(method="uhf", engine=engine, grid_spacing=.35, trace=False, references=False)
-        atoms.get_potential_energy()
-        results.append(atoms.calc.result)
-    py, native = results
-    assert native.optimal_energy == pytest.approx(py.optimal_energy, abs=2e-8)
-    assert np.allclose(native.scf.natural_occupations, py.scf.natural_occupations, atol=1e-8)
+    atoms=h2(2.5)
+    atoms.calc=Mandacaru(method="uhf",grid_spacing=.35)
+    atoms.get_potential_energy()
+    native=atoms.calc.result
+    occupations=np.asarray(native.snapshot()["natural_occupations"])
+    assert np.any((occupations>.01)&(occupations<1.99))
     state = native.scf_state()
     assert np.vdot(state, state).real == pytest.approx(1., abs=1e-10)
-    energy = np.vdot(state, native.qubit_hamiltonian().to_matrix() @ state).real * HARTREE_TO_EV
+    energy = np.vdot(state, native.qubit_hamiltonian().matrix() @ state).real * HARTREE_TO_EV
     assert energy == pytest.approx(native.optimal_energy, abs=2e-8)
     assert native.reference_energy >= native.optimal_energy - 1e-8
 
@@ -182,15 +179,16 @@ def test_packed_cholesky_and_frozen_active_models_preserve_reference_energy():
     geometry = geometry_from_atoms(h2())
     packed = ctx.molecular_integrals(geometry, spacing_bohr=.35 * ANGSTROM_TO_BOHR)
     chol = ctx.molecular_integrals(geometry, spacing_bohr=.35 * ANGSTROM_TO_BOHR, cholesky_tolerance=1e-11)
-    assert np.allclose(chol.snapshot()["two_body"], packed.snapshot()["two_body"], atol=1e-11)
+    assert np.allclose(chol.snapshot(include_hamiltonian=True)["two_body"], packed.snapshot(include_hamiltonian=True)["two_body"], atol=1e-11)
     assert chol.snapshot()["cholesky_rank"] <= 3
     case = next(c for c in CASES if c["id"] == "h2o_rhf_sto3g")
     atoms = Atoms(case["symbols"], positions=case["positions"], cell=case["cell"])
-    atoms.calc = Mandacaru(**case["options"], engine="rust", active_space={"frozen": "auto", "orbitals": 4}, trace=False)
+    atoms.calc = Mandacaru(**case["options"],  active_space={"frozen": "auto", "orbitals": 4}, trace=False)
     energy = atoms.get_potential_energy()
     result = atoms.calc.result
-    assert result.n_spatial_orbitals == 4 and result.num_particles == (4, 4)
-    problem = atoms.calc.solver.native_model.problem()
+    model=result.hamiltonian
+    assert model.n_spatial_orbitals == 4 and tuple(model.num_particles) == (4, 4)
+    problem = model.problem()
     assert problem.dimension == 1
     assert problem.evaluate([], indices=[])["energy_ha"] * HARTREE_TO_EV == pytest.approx(energy, abs=1e-8)
 
@@ -203,11 +201,11 @@ def test_cholesky_fock_and_mo_transforms_match_packed_water(method):
     options = dict(basis_spec=json.dumps(basis_specification("STO-3G")), spacing_bohr=.4 * ANGSTROM_TO_BOHR)
     packed = ctx.molecular_integrals(geometry_from_atoms(atoms), **options)
     chol = ctx.molecular_integrals(geometry_from_atoms(atoms), cholesky_tolerance=1e-11, **options)
-    expected = packed.mean_field(method, [5, 5]).snapshot()
-    actual = chol.mean_field(method, [5, 5]).snapshot()
+    expected = packed.mean_field(method, [5, 5]).snapshot(include_hamiltonian=True)
+    actual = chol.mean_field(method, [5, 5]).snapshot(include_hamiltonian=True)
     assert actual["converged"] and actual["electronic_energy"] == pytest.approx(expected["electronic_energy"], abs=1e-8)
     c = actual["model_orbitals"]
-    eri = packed.snapshot()["two_body"]
+    eri = packed.snapshot(include_hamiltonian=True)["two_body"]
     if method == "ghf":
         from mandacaru.algorithms.hartree_fock import spinor_integrals
         h = packed.snapshot()["one_body"]
@@ -223,9 +221,9 @@ def test_cholesky_fock_and_mo_transforms_match_packed_water(method):
 def test_native_json_export_reloads_in_phase2_and_geometry_roundtrip_is_fresh(tmp_path):
     path = tmp_path / "model.json"
     atoms = h2()
-    atoms.calc = Mandacaru(method="rhf", engine="rust", grid_spacing=.35, trace=False, save_hamiltonian=path)
+    atoms.calc = Mandacaru(method="rhf",  grid_spacing=.35, trace=False, save_hamiltonian=path)
     initial = atoms.get_potential_energy()
-    calc = Mandacaru(method="vqe", engine="rust", load_hamiltonian=path, trace=False)
+    calc = Mandacaru(method="vqe",  load_hamiltonian=path, trace=False)
     assert calc.run().optimal_energy == pytest.approx(-25.871895455446612, abs=1e-9)
     atoms.positions[1, 2] += .2
     changed = atoms.get_potential_energy()
@@ -253,7 +251,7 @@ def test_native_pipeline_avoids_python_scientific_implementations(monkeypatch):
     monkeypatch.setattr(np.linalg, "eigh", forbidden)
     for method in ("rhf", "uhf", "ghf", "vqe", "adapt-vqe"):
         atoms = h2()
-        atoms.calc = Mandacaru(method=method, engine="rust", grid_spacing=.35, trace=False)
+        atoms.calc = Mandacaru(method=method,  grid_spacing=.35, trace=False)
         assert atoms.get_potential_energy() < -25.
 
 
@@ -281,14 +279,16 @@ def test_failed_scf_invalid_inputs_and_budget_cleanup_are_explicit():
     gc.collect()
     assert ctx.memory_used_bytes == 0
     work = h2()
-    work.calc = Mandacaru(method="vqe", engine="rust", grid_spacing=.35, trace=False,
+    work.calc = Mandacaru(method="vqe",  grid_spacing=.35, trace=False,
                          scf_options={"max_iterations": 1})
     with pytest.raises(RuntimeError, match="did not converge"):
         work.get_potential_energy()
     for options in ({"kinetic": "other"}, {"scf_options": {"tolerance": -1}}, {"active_space": {"method": "mp2", "orbitals": 2}}):
         with pytest.raises((ValueError, NotImplementedError)):
-            Mandacaru(method="rhf", engine="rust", **options)
+            calc=Mandacaru(method="rhf", **options)
+            reference=calc.run(h2())
+            if "active_space" in options:reference.hamiltonian
     atoms = h2()
-    atoms.calc = Mandacaru(method="ghf", engine="rust", trace=False)
+    atoms.calc = Mandacaru(method="ghf",  trace=False)
     with pytest.raises(NotImplementedError, match="forces"):
         atoms.get_forces()

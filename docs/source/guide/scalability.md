@@ -29,7 +29,7 @@ ADAPT-VQE, from 10 for `method="vqe"`), all three forms act on the
 particle-number sector's `C(M, n_alpha) C(M, n_beta)` states instead of `2^n`.
 
 ```python
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 calc = Mandacaru(method="adapt-vqe", basis="HAO", pool="fermionic",
                  sparse="matrix-free")
@@ -231,7 +231,7 @@ MP2 selection goes integral-direct when the tensor route would not fit
 is wanted, the **Cholesky option** factors them instead:
 
 ```python
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 calc = Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZP"},
                  active_space={"orbitals": 8},

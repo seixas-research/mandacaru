@@ -22,7 +22,7 @@ circuit provider already prepares states from exactly this description.  A
 register, the reference, the generators as Pauli sums, the angles -- plus the
 solver's progress, so a run can be **resumed** where it stopped, and the
 optional qubit Hamiltonian, so the state can be **handed to another algorithm**
-(quantum phase estimation, :mod:`mandacaru.algorithms.qpe`) with nothing but the
+(quantum phase estimation, :mod:`mandacaru.workflows.qpe`) with nothing but the
 file.
 
 The file is JSON: no dependency, diffable, and a generator is a few dozen Pauli
@@ -117,43 +117,18 @@ def apply_exponential(generator: PauliSum, angle: float, vector) -> np.ndarray:
 PREPARATIONS = ("product", "sum")
 
 
-def prepare_state(n_qubits: int, reference_qubits, generators, parameters,
-                  preparation: str = "product", *, engine: str = "python",
-                  engine_options=None) -> np.ndarray:
-    r"""The state a checkpoint *means*, as a full-register state vector.
+def prepare_state(n_qubits: int, reference_qubits, generators, parameters, preparation: str='product', *, resources=None) -> np.ndarray:
+    """The state a checkpoint *means*, as a full-register state vector.
 
-    ``preparation="product"``: :math:`\prod_k e^{\theta_k A_k}|ref\rangle`,
+    ``preparation="product"``: :math:`\\prod_k e^{\\theta_k A_k}|ref\\rangle`,
     which is also what a circuit provider prepares on hardware;
-    ``"sum"``: :math:`e^{\sum_k \theta_k A_k}|ref\rangle` (see
+    ``"sum"``: :math:`e^{\\sum_k \\theta_k A_k}|ref\\rangle` (see
     :data:`PREPARATIONS`).  Independent of every driver and ansatz class.
     """
     if preparation not in PREPARATIONS:
-        raise ValueError(f"unknown preparation {preparation!r}; use one of "
-                         f"{PREPARATIONS}")
-    if engine not in ("python", "rust"):
-        raise ValueError("engine must be 'python' or 'rust'")
-    if engine == "rust":
-        record = WavefunctionCheckpoint(n_qubits, list(reference_qubits),
-                                        list(generators), parameters,
-                                        preparation=preparation)
-        return record._native_snapshot(engine_options).state()
-    if engine_options:
-        raise ValueError("engine_options requires engine='rust'")
-    parameters = np.asarray(parameters, dtype=float).ravel()
-    generators = list(generators)
-    if parameters.size != len(generators):
-        raise ValueError(f"{len(generators)} generators but {parameters.size} "
-                         "parameters")
-    psi = reference_vector(n_qubits, reference_qubits)
-    if preparation == "sum" and len(generators) > 1:
-        from scipy.sparse.linalg import expm_multiply
-
-        total = sum(float(angle) * generator.to_sparse_matrix()
-                    for generator, angle in zip(generators, parameters))
-        return expm_multiply(total.tocsc(), psi)
-    for generator, angle in zip(generators, parameters):
-        psi = apply_exponential(generator, angle, psi)
-    return psi
+        raise ValueError(f'unknown preparation {preparation!r}; use one of {PREPARATIONS}')
+    record = WavefunctionCheckpoint(n_qubits, list(reference_qubits), list(generators), parameters, preparation=preparation)
+    return record._native_snapshot(resources).state()
 
 
 # --------------------------------------------------------------------------- #
@@ -305,7 +280,7 @@ class WavefunctionCheckpoint:
         """``(n_qubits, reference_qubits, generators, parameters, hamiltonian)``.
 
         The tuple every :class:`~mandacaru.backends.providers.CircuitProvider`
-        ``energy`` / ``build`` takes and :class:`~mandacaru.algorithms.qpe.QuantumPhaseEstimation`
+        ``energy`` / ``build`` takes and :class:`~mandacaru.workflows.qpe.QuantumPhaseEstimation`
         starts from.  ``hamiltonian`` overrides the stored one.
         """
         self._require_product("a circuit problem")
@@ -346,17 +321,14 @@ class WavefunctionCheckpoint:
         """
         return fingerprint(self.hamiltonian, atol)
 
-    def _native_snapshot(self, engine_options=None):
+    def _native_snapshot(self, resources=None):
         from .._native import Context
-        return Context(**dict(engine_options or {})).parse_snapshot(
+        return Context(**dict(resources or {})).parse_snapshot(
             json.dumps(self.to_payload(), allow_nan=False), FORMAT_TAG)
 
-    def state_vector(self, *, engine="python", engine_options=None) -> np.ndarray:
+    def state_vector(self, *, resources=None) -> np.ndarray:
         """The prepared state, in the form :attr:`preparation` names."""
-        return prepare_state(self.n_qubits, self.reference_qubits,
-                             self.generators, self.parameters,
-                             self.preparation, engine=engine,
-                             engine_options=engine_options)
+        return prepare_state(self.n_qubits, self.reference_qubits, self.generators, self.parameters, self.preparation, resources=resources)
 
     def circuit(self, provider=None):
         """The state-preparation circuit on an SDK (default: Qiskit).
@@ -371,22 +343,15 @@ class WavefunctionCheckpoint:
         return provider.build(self.n_qubits, self.reference_qubits,
                               self.generators, self.parameters)
 
-    def expectation(self, hamiltonian: PauliSum | None = None, *,
-                    engine="python", engine_options=None) -> float:
+    def expectation(self, hamiltonian: PauliSum | None=None, *, resources=None) -> float:
         """``<Psi|H|Psi>`` (Hartree) from the prepared state vector."""
         h = self.hamiltonian if hamiltonian is None else hamiltonian
         if h is None:
-            raise ValueError("no Hamiltonian stored; pass one")
-        if engine == "rust":
-            from .._native import Context
-            payload = self.to_payload()
-            payload["hamiltonian"] = _pauli_to_payload(h)
-            return Context(**dict(engine_options or {})).parse_snapshot(
-                json.dumps(payload, allow_nan=False), FORMAT_TAG).expectation()
-        if engine != "python" or engine_options:
-            raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
-        psi = self.state_vector()
-        return float(np.real(np.vdot(psi, h.to_sparse_matrix() @ psi)))
+            raise ValueError('no Hamiltonian stored; pass one')
+        from .._native import Context
+        payload = self.to_payload()
+        payload['hamiltonian'] = _pauli_to_payload(h)
+        return Context(**dict(resources or {})).parse_snapshot(json.dumps(payload, allow_nan=False), FORMAT_TAG).expectation()
 
     # -- serialization --------------------------------------------------- #
 
@@ -450,47 +415,26 @@ class WavefunctionCheckpoint:
             status=dict(payload.get("status") or {}),
             metadata=dict(payload.get("metadata") or {}))
 
-    def save(self, path, *, engine="python", engine_options=None) -> str:
+    def save(self, path, *, resources=None) -> str:
         """Write the checkpoint atomically; return the path written.
 
-        The document is written to a temporary file in the same directory and
-        renamed over ``path``, so a reader never sees a half-written file --
-        the property a checkpoint taken *during* a run depends on.
-        """
+            The document is written to a temporary file in the same directory and
+            renamed over ``path``, so a reader never sees a half-written file --
+            the property a checkpoint taken *during* a run depends on.
+            """
         path = os.fspath(path)
-        if engine == "rust":
-            self._native_snapshot(engine_options).save(path)
-            return path
-        if engine != "python" or engine_options:
-            raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
-        if self.n_qubits > MAX_FILE_QUBITS:
-            raise ValueError(
-                f"refusing to write a {self.n_qubits}-qubit checkpoint: "
-                f"Pauli-string files are limited to {MAX_FILE_QUBITS} qubits")
-        with atomic_path(path) as staging:
-            with open(staging, "w", encoding="utf-8") as fh:
-                json.dump(self.to_payload(), fh, indent=1)
-                fh.write("\n")
+        self._native_snapshot(resources).save(path)
         return path
 
     @classmethod
-    def load(cls, path, *, engine="python", engine_options=None) -> "WavefunctionCheckpoint":
+    def load(cls, path, *, resources=None) -> 'WavefunctionCheckpoint':
         """Read a checkpoint written by :meth:`save`."""
         path = os.fspath(path)
-        if engine == "rust":
-            from .._native import Context
-            if not os.path.exists(path):
-                raise FileNotFoundError(path)
-            snapshot = Context(**dict(engine_options or {})).read_snapshot(path, FORMAT_TAG)
-            return cls.from_payload(json.loads(snapshot.json))
-        if engine != "python" or engine_options:
-            raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
-        with open(path, encoding="utf-8") as fh:
-            payload = json.load(fh)
-        try:
-            return cls.from_payload(payload)
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError(f"{path!r}: {error}") from error
+        from .._native import Context
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        snapshot = Context(**dict(resources or {})).read_snapshot(path, FORMAT_TAG)
+        return cls.from_payload(json.loads(snapshot.json))
 
     # -- presentation ---------------------------------------------------- #
 

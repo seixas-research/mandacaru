@@ -3,7 +3,7 @@
 The {doc}`energy_levels` tutorial found excited states **one at a time** with
 deflation. **Subspace-search VQE** (SSVQE) instead finds the ground state and the
 first few excited states **all at once**, in a single optimization — select it on
-{class}`~mandacaru.algorithms.Mandacaru` with `method="subspace-vqe"`
+{class}`~mandacaru.calculation.Mandacaru` with `method="subspace-vqe"`
 (fixed ansatz) or `method="subspace-adapt-vqe"` (adaptively grown ansatz).
 
 ## The idea
@@ -39,7 +39,7 @@ spectrum off `result`:
 ```python
 import numpy as np
 from ase import Atoms
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)

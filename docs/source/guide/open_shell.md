@@ -6,7 +6,7 @@ high-spin state, runs through the same calculator as a closed-shell molecule:
 
 ```python
 from ase.build import molecule
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 oh = molecule("OH"); oh.center(vacuum=3.0)          # 9 electrons: a doublet
 oh.calc = Mandacaru(method="adapt-vqe",

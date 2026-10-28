@@ -321,7 +321,7 @@ class TestOrbitalResponseResidual:
         assert errors[2] / errors[0] == pytest.approx(16.0, rel=0.35)
 
     def test_a_converged_run_stays_under_the_tolerance(self, problem):
-        from mandacaru.algorithms.calculator import ORBITAL_RESPONSE_TOLERANCE
+        from mandacaru.calculation import ORBITAL_RESPONSE_TOLERANCE
 
         calc, _solver, _exact, _hf, _e, _forces = problem
         # H2 in this basis *is* reachable, so the run warns about nothing.

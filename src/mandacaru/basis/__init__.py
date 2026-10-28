@@ -1,114 +1,75 @@
-# -*- coding: utf-8 -*-
-# file: basis/__init__.py
+"""Public interfaces loaded on demand; optional integrations stay optional."""
 
-# This code is part of Mandacaru.
-# MIT License
-#
-# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
+from importlib import import_module
 
-"""Localized single-particle basis functions.
+_EXPORTS = {
+    "AtomicResult": (".atomic_solver", "AtomicResult"),
+    "solve_atom": (".atomic_solver", "solve_atom"),
+    "solve_radial": (".atomic_solver", "solve_radial"),
+    "BasisFunction": (".base", "BasisFunction"),
+    "FILTER_METHODS": (".filtering", "FILTER_METHODS"),
+    "FILTER_NYQUIST_FRACTION": (".filtering", "FILTER_NYQUIST_FRACTION"),
+    "cutoff_energy_ev": (".filtering", "cutoff_energy_ev"),
+    "cutoff_window": (".filtering", "cutoff_window"),
+    "filter_label": (".filtering", "filter_label"),
+    "filter_radial": (".filtering", "filter_radial"),
+    "filter_table": (".filtering", "filter_table"),
+    "inverse_spherical_bessel_transform": (
+        ".filtering",
+        "inverse_spherical_bessel_transform",
+    ),
+    "residual_weight": (".filtering", "residual_weight"),
+    "resolve_filter_cutoff": (".filtering", "resolve_filter_cutoff"),
+    "spherical_bessel_transform": (".filtering", "spherical_bessel_transform"),
+    "validate_filter_cutoff": (".filtering", "validate_filter_cutoff"),
+    "BasisSet": (".factory", "BasisSet"),
+    "HAOBasisSet": (".factory", "HAOBasisSet"),
+    "GaussianBasisSet": (".factory", "GaussianBasisSet"),
+    "GTOBasisSet": (".factory", "GTOBasisSet"),
+    "NAOAEBasisSet": (".factory", "NAOAEBasisSet"),
+    "NAOBasisSet": (".factory", "NAOBasisSet"),
+    "PerElementBasisSet": (".factory", "PerElementBasisSet"),
+    "Pople631GBasisSet": (".factory", "Pople631GBasisSet"),
+    "NAMED_BASIS_SETS": (".gaussian_families", "NAMED_BASIS_SETS"),
+    "GaussianRecipe": (".gaussian_families", "GaussianRecipe"),
+    "available_basis_names": (".gaussian_families", "available_basis_names"),
+    "count_functions": (".gaussian_families", "count_functions"),
+    "gaussian_shells": (".gaussian_families", "gaussian_shells"),
+    "parse_basis_name": (".gaussian_families", "parse_basis_name"),
+    "shell_notation": (".gaussian_families", "shell_notation"),
+    "GaussianOrbital": (".gaussian", "GaussianOrbital"),
+    "HydrogenicAtomicOrbital": (".hao", "HydrogenicAtomicOrbital"),
+    "DEFAULT_ENERGY_SHIFT": (".nao", "DEFAULT_ENERGY_SHIFT"),
+    "NumericalAtomicOrbital": (".nao", "NumericalAtomicOrbital"),
+    "energy_shift_to_rc": (".nao", "energy_shift_to_rc"),
+    "RadialFunction": (".nao_ae", "RadialFunction"),
+    "build_species": (".nao_ae", "build_species"),
+    "confinement_potential": (".nao_ae", "confinement_potential"),
+    "effective_charge_for_radius": (".nao_ae", "effective_charge_for_radius"),
+    "hydrogenic_function": (".nao_ae", "hydrogenic_function"),
+    "tier_specification": (".nao_ae", "tier_specification"),
+    "pople_631g_shells": (".pople", "pople_631g_shells"),
+    "occupied_subshells": (".sto_ng", "occupied_subshells"),
+    "slater_exponent": (".sto_ng", "slater_exponent"),
+    "sto_ng_contraction": (".sto_ng", "sto_ng_contraction"),
+    "sto_ng_shells": (".sto_ng", "sto_ng_shells"),
+}
+__all__ = list(_EXPORTS)
 
-Every basis function implements the :class:`BasisFunction` contract (sample on a
-grid), so any of them drops straight into the integral engine.  Built-ins:
 
-* :class:`HydrogenicAtomicOrbital` -- analytic hydrogen-like orbitals (with Slater
-  effective charges);
-* :class:`NumericalAtomicOrbital` -- confined Sankey-type numerical
-  orbitals on a radial grid;
-* the **NAO-AE** family (:mod:`mandacaru.basis.nao_ae`) -- all-electron
-  numerical atomic orbitals: the LDA atom's own shells under a smooth wall,
-  plus hydrogen-like polarization / diffuse tiers sized from the atom;
-* :class:`GaussianOrbital` -- contracted Gaussian-type orbitals, used by the
-  native STO-nG basis (:mod:`mandacaru.basis.sto_ng`) and by every **named
-  Gaussian family** -- Pople (``6-31+G*``, ``6-311+G(2df,2p)``, ...), Dunning
-  (``cc-pVDZ`` ... ``aug-cc-pVDZ``, ``cc-pCVDZ``) and Karlsruhe (``def2-SVP``,
-  ``def2-TZVP``, ...) -- whose structure is parsed from the name and whose
-  numbers are generated natively (:mod:`mandacaru.basis.gaussian_families`).
+def __getattr__(name):
+    try:
+        module, attribute = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = (
+        import_module("." + attribute, __name__)
+        if module == "."
+        else getattr(import_module(module, __name__), attribute)
+    )
+    globals()[name] = value
+    return value
 
-Use the :class:`BasisSet` factory to build NAO or (STO-nG) GTO bases.  All
-families are generated from scratch -- no tabulated basis-set data.
 
-:mod:`mandacaru.basis.atomic_solver` is the self-consistent spherical LDA atom
-behind the NAO-AE minimal basis (and behind the pseudopotential families
-in :mod:`mandacaru.pseudopotentials`), and
-:mod:`mandacaru.basis.filtering` is the radial **Fourier filter** that removes
-from a tabulated radial function the wave-vectors a real-space grid of spacing
-``grid_spacing`` cannot represent -- the cure for the egg-box, opt-in through
-``basis={..., "filter_cutoff": ...}`` on the pseudopotential families.
-"""
-
-from .atomic_solver import AtomicResult, solve_atom, solve_radial
-from .base import BasisFunction
-from .filtering import (FILTER_METHODS, FILTER_NYQUIST_FRACTION,
-                        cutoff_energy_ev, cutoff_window, filter_label,
-                        filter_radial, filter_table,
-                        inverse_spherical_bessel_transform,
-                        residual_weight, resolve_filter_cutoff,
-                        spherical_bessel_transform, validate_filter_cutoff)
-from .factory import (BasisSet, HAOBasisSet, GaussianBasisSet, GTOBasisSet,
-                      NAOAEBasisSet, NAOBasisSet, PerElementBasisSet,
-                      Pople631GBasisSet)
-from .gaussian_families import (NAMED_BASIS_SETS, GaussianRecipe,
-                                available_basis_names, count_functions,
-                                gaussian_shells, parse_basis_name,
-                                shell_notation)
-from .gaussian import GaussianOrbital
-from .hao import HydrogenicAtomicOrbital
-from .nao import (DEFAULT_ENERGY_SHIFT, NumericalAtomicOrbital,
-                  energy_shift_to_rc)
-from .nao_ae import (RadialFunction, build_species, confinement_potential,
-                     effective_charge_for_radius, hydrogenic_function,
-                     tier_specification)
-from .pople import pople_631g_shells
-from .sto_ng import (occupied_subshells, slater_exponent, sto_ng_contraction,
-                     sto_ng_shells)
-
-__all__ = [
-    "BasisFunction",
-    "FILTER_METHODS",
-    "FILTER_NYQUIST_FRACTION",
-    "cutoff_energy_ev",
-    "cutoff_window",
-    "filter_label",
-    "filter_radial",
-    "filter_table",
-    "inverse_spherical_bessel_transform",
-    "residual_weight",
-    "resolve_filter_cutoff",
-    "spherical_bessel_transform",
-    "validate_filter_cutoff",
-    "HydrogenicAtomicOrbital",
-    "NumericalAtomicOrbital",
-    "GaussianOrbital",
-    "BasisSet",
-    "HAOBasisSet",
-    "NAOBasisSet",
-    "NAOAEBasisSet",
-    "GTOBasisSet",
-    "RadialFunction",
-    "build_species",
-    "confinement_potential",
-    "effective_charge_for_radius",
-    "hydrogenic_function",
-    "tier_specification",
-    "Pople631GBasisSet",
-    "GaussianBasisSet",
-    "PerElementBasisSet",
-    "GaussianRecipe",
-    "NAMED_BASIS_SETS",
-    "available_basis_names",
-    "parse_basis_name",
-    "gaussian_shells",
-    "count_functions",
-    "shell_notation",
-    "energy_shift_to_rc",
-    "DEFAULT_ENERGY_SHIFT",
-    "sto_ng_contraction",
-    "sto_ng_shells",
-    "pople_631g_shells",
-    "slater_exponent",
-    "occupied_subshells",
-    "solve_atom",
-    "solve_radial",
-    "AtomicResult",
-]
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

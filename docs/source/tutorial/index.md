@@ -1,8 +1,7 @@
 # Tutorials
 
 Follow the first three tutorials for native VQE and ADAPT on LiH, followed by
-a short molecular DFT geometry scan. Each example selects the Rust engine
-explicitly.
+a short molecular DFT geometry scan. All calculations run in Rust; there is no engine selector.
 
 ```{toctree}
 :maxdepth: 1

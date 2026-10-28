@@ -1,65 +1,24 @@
-# -*- coding: utf-8 -*-
-# file: core/__init__.py
+"""Public interfaces loaded on demand; optional integrations stay optional."""
 
-# This code is part of Mandacaru.
-# MIT License
-#
-# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
+from importlib import import_module
 
-"""Electronic Hamiltonians and fermion-to-qubit mappings.
+_EXPORTS = {'Fermion': ('.mapping', 'Fermion'), 'PauliSum': ('.mapping', 'PauliSum'), 'bravyi_kitaev': ('.mapping', 'bravyi_kitaev'), 'jordan_wigner': ('.mapping', 'jordan_wigner'), 'parity': ('.mapping', 'parity'), 'parity_reduced': ('.mapping', 'parity_reduced'), 'HAMILTONIAN_FORMATS': ('.serialization', 'HAMILTONIAN_FORMATS'), 'HamiltonianRecord': ('.serialization', 'HamiltonianRecord'), 'HamiltonianHeader': ('.serialization', 'HamiltonianHeader'), 'detect_format': ('.serialization', 'detect_format'), 'load_hamiltonian': ('.serialization', 'load_hamiltonian'), 'read_hamiltonian_header': ('.serialization', 'read_hamiltonian_header'), 'save_hamiltonian': ('.serialization', 'save_hamiltonian'), 'WavefunctionCheckpoint': ('.checkpoint', 'WavefunctionCheckpoint'), 'load_checkpoint': ('.checkpoint', 'load_checkpoint'), 'prepare_state': ('.checkpoint', 'prepare_state'), 'electric_dipole_potential': ('.dipole', 'electric_dipole_potential'), 'electric_field_vector': ('.dipole', 'electric_field_vector'), 'SymmetryLeakError': ('.tapering', 'SymmetryLeakError'), 'reduce_generators': ('.tapering', 'reduce_generators'), 'sector_signs': ('.tapering', 'sector_signs'), 'symmetry_generators': ('.tapering', 'symmetry_generators'), 'taper': ('.tapering', 'taper')}
+__all__ = list(_EXPORTS)
 
-* :class:`MolecularIntegrals` -- one-/two-body integrals and the molecular
-  Hamiltonian over a localized basis;
-* :class:`Fermion` -- second-quantized fermionic operators and the four
-  fermion-to-qubit mappings (Jordan-Wigner, parity, reduced parity,
-  Bravyi-Kitaev);
-* :class:`PauliSum` -- the qubit-operator output type;
-* :func:`save_hamiltonian` / :func:`load_hamiltonian` -- the on-disk Pauli-string
-  cache (Apache Parquet or JSON) that lets a run skip the integrals and the
-  mapping entirely; the format is auto-detected on load.
-"""
 
-from .hamiltonian import MolecularIntegrals, minimal_hao_basis
-from .mapping import (Fermion, PauliSum, bravyi_kitaev, jordan_wigner, parity,
-                      parity_reduced)
-from .planewave import PlaneWaveIntegrals, plane_wave_vectors
-from .serialization import (HAMILTONIAN_FORMATS, HamiltonianRecord,
-                            HamiltonianHeader, detect_format,
-                            load_hamiltonian, read_hamiltonian_header,
-                            save_hamiltonian)
-from .checkpoint import (WavefunctionCheckpoint, load_checkpoint,
-                         prepare_state)
-from .dipole import electric_dipole_potential, electric_field_vector
+def __getattr__(name):
+    try:
+        module, attribute = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = (
+        import_module("." + attribute, __name__)
+        if module == "."
+        else getattr(import_module(module, __name__), attribute)
+    )
+    globals()[name] = value
+    return value
 
-__all__ = [
-    "electric_dipole_potential",
-    "electric_field_vector",
-    "reduce_generators",
-    "sector_signs",
-    "taper",
-    "SymmetryLeakError",
-    "symmetry_generators",
-    "MolecularIntegrals",
-    "minimal_hao_basis",
-    "PlaneWaveIntegrals",
-    "plane_wave_vectors",
-    "Fermion",
-    "PauliSum",
-    "jordan_wigner",
-    "parity",
-    "parity_reduced",
-    "bravyi_kitaev",
-    "HamiltonianRecord",
-    "HAMILTONIAN_FORMATS",
-    "save_hamiltonian",
-    "load_hamiltonian",
-    "read_hamiltonian_header",
-    "HamiltonianHeader",
-    "detect_format",
-    "WavefunctionCheckpoint",
-    "load_checkpoint",
-    "prepare_state",
-]
 
-from .tapering import (SymmetryLeakError, reduce_generators, sector_signs,
-                       symmetry_generators, taper)
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

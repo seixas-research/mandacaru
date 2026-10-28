@@ -85,16 +85,16 @@ The public adapter returns energies/histories in eV, or Ha with
 No Python interpreter is required for either solver:
 
 ```bash
-cargo run --offline --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
+cargo run --offline --manifest-path Cargo.toml \
   --package mandacaru-core --example solve_cached -- \
   test/migration/reference/h2_hamiltonian.json
 
-cargo run --offline --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
+cargo run --offline --manifest-path Cargo.toml \
   --package mandacaru-core --example solve_cached -- \
   test/migration/reference/h2_hamiltonian.json adapt
 
-cargo test --offline --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
-  --package mandacaru-core --package mandacaru_integrals
+cargo test --offline --manifest-path Cargo.toml \
+  --package mandacaru-core --package mandacaru-kernels
 
 .venv/bin/python -m pytest test/migration/test_native_quantum.py
 ```

@@ -161,7 +161,7 @@ class TestDirectHamiltonian:
         """The open-shell MP2 natural orbitals from the direct spin Fock
         matrices and ``<ij|ab>`` blocks equal the tensor route's in the same
         orbitals, to round-off."""
-        from mandacaru.algorithms.mp2 import open_shell_mp2_natural_orbitals
+        from mandacaru.analysis.correlation import open_shell_mp2_natural_orbitals
         from mandacaru.algorithms.orbital_integrals import \
             DirectOrbitalIntegrals
         from mandacaru.core.hamiltonian import molecular_orbital_integrals

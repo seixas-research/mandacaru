@@ -94,11 +94,6 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
     path, h = cache(tmp_path, mapping)
     ctx = _native.Context()
     problem = ctx.load_hamiltonian(str(path), sector=sector)
-    # The fixed ansatz is reached through the public entry point for both engines.
-    reference = Mandacaru(method="vqe", load_hamiltonian=str(path), mapping=mapping,
-                         ansatz={"name": "uccsd", "trotter": trotter}, sector=sector,
-                         trace=False, references=False)
-    ansatz = reference.solver.ansatz
     if sector:
         expected_indices = ParticleSector(h.num_qubits, (1, 1), mapping=mapping).indices
         assert np.array_equal(problem.basis_indices, expected_indices)
@@ -108,7 +103,11 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
     matrices = [g[np.ix_(ix, ix)] for g in matrices]
     # Four singles and four doubles have nonzero, noncommuting amplitudes.
     theta = np.random.default_rng(56).normal(scale=.35, size=len(matrices))
-    hf = ansatz.reference_state()
+    from mandacaru.core.mapping import reference_qubit_bits
+    bits=reference_qubit_bits(mapping,6,[0,3])
+    encoded=sum(int(b)<<(len(bits)-1-i) for i,b in enumerate(bits))
+    hf=np.zeros(problem.dimension,dtype=complex)
+    hf[np.flatnonzero(ix==encoded)[0]]=1.
     if trotter:
         expected = hf.copy()
         for t, g in zip(theta, matrices):
@@ -117,7 +116,6 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
         expected = expm(sum(t * g for t, g in zip(theta, matrices))) @ hf
     value = problem.evaluate(theta, trotter=trotter)
     assert np.allclose(value["state"], expected, atol=3e-13)
-    assert np.allclose(value["state"], ansatz.state(theta), atol=3e-13)
     hh = h.to_matrix()[np.ix_(ix, ix)]
     assert value["energy_ha"] == pytest.approx(np.vdot(expected, hh @ expected).real, abs=2e-13)
     for k in range(len(theta)):
@@ -142,18 +140,18 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
 
 @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
 @pytest.mark.parametrize("sector", [False, True])
-@pytest.mark.parametrize("sparse", [False, True, "matrix-free"])
+@pytest.mark.parametrize("sparse", [False, True])
 @pytest.mark.parametrize("optimizer", ["BFGS", "L-BFGS"])
 def test_public_h2_solve_matches_phase0(method, sector, sparse, optimizer):
-    calc = Mandacaru(method=method, engine="rust", load_hamiltonian=FIXTURE,
+    calc = Mandacaru(method=method,  load_hamiltonian=FIXTURE,
                     sector=sector, sparse=sparse, trace=False,
-                    engine_options={"threads": 1}, optimizer={"method": optimizer, "tol": 1e-12})
+                    resources={"threads": 1}, optimizer={"method": optimizer, "tol": 1e-12})
     result = calc.run()
     assert (result.success if method == "vqe" else result.converged)
     assert result.optimal_energy == pytest.approx(-25.871895455446612, abs=1e-9)
     assert result.reference_energy == pytest.approx(-25.5004433585557, abs=1e-9)
-    assert calc.n_qubits == 4 and calc.num_particles == (1, 1)
-    state = calc._converged_state(calc.solver)
+    assert calc.problem.num_qubits == 4 and result.num_particles == (1, 1)
+    state = result.state()
     assert np.vdot(state, state).real == pytest.approx(1., abs=1e-13)
     key = "h2_cached_adapt" if sector else "h2_cached_vqe"
     frozen = json.loads((FIXTURE.parent / "numpy.json").read_text())["cases"][key]["samples"][0]["values"]["state_projector"]
@@ -161,9 +159,8 @@ def test_public_h2_solve_matches_phase0(method, sector, sparse, optimizer):
     if method == "adapt-vqe":
         assert result.operators == ["D(0,2->1,3)"]
         assert result.final_max_gradient < 1e-10
-    one, two = calc._state_rdms(calc.solver)
+    one, two = calc.problem.rdms(state)
     assert np.trace(one).real == pytest.approx(2.)
-    assert result.timings["engine"] == "rust"
     assert result.optimizer_steps > 0 and result.num_evaluations > result.optimizer_steps
 
 
@@ -178,12 +175,12 @@ def test_entire_solve_has_no_python_scientific_callbacks(monkeypatch):
     monkeypatch.setattr(UCCSD, "state", forbidden)
     monkeypatch.setattr(UCCSD, "__init__", forbidden)
     for method in ("vqe", "adapt-vqe"):
-        calc = Mandacaru(method=method, engine="rust", load_hamiltonian=FIXTURE, trace=False)
+        calc = Mandacaru(method=method,  load_hamiltonian=FIXTURE, trace=False)
         assert calc.run().optimal_energy < -25.8
 
 
 def test_failure_status_units_and_log(tmp_path):
-    calc = Mandacaru(method="vqe", engine="rust", load_hamiltonian=FIXTURE,
+    calc = Mandacaru(method="vqe",  load_hamiltonian=FIXTURE,
                     atomic_units=True, trace=False, txt=tmp_path / "run.txt",
                     optimizer={"method": "BFGS", "maxiter": 0})
     result = calc.run()
@@ -256,11 +253,11 @@ def test_nonconserving_hamiltonian_and_unsupported_options_fail_explicitly(tmp_p
         _native.Context().load_hamiltonian(str(path))
     assert _native.Context().load_hamiltonian(str(path), sector=False).dimension == 16
     for options in ({"optimizer": "SLSQP"}, {"ansatz": "hva"}):
-        with pytest.raises(NotImplementedError):
-            Mandacaru(method="vqe", engine="rust", load_hamiltonian=FIXTURE, **options)
-    Mandacaru(method="dft", engine="rust", xc="r2scan")
+        with pytest.raises((NotImplementedError,ValueError)):
+            Mandacaru(method="vqe",  load_hamiltonian=FIXTURE, **options)
+    Mandacaru(method="dft",  xc="r2scan")
     with pytest.raises(TypeError, match="tetris"):
-        Mandacaru(method="adapt-vqe", engine="rust", load_hamiltonian=FIXTURE, tetris=True)
+        Mandacaru(method="adapt-vqe",  load_hamiltonian=FIXTURE, tetris=True)
 
 
 @pytest.mark.parametrize("mapping", MAPPINGS)

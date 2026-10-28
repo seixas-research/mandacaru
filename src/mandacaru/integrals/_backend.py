@@ -6,48 +6,25 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Binding to the high-performance C integral backend (``ctypes``, zero-copy).
+"""Array adapters to the Rust extension's exported native ABI.
 
-Design
-------
-* **Zero-copy pointer passing.** NumPy ``complex128`` is bit-identical to C99
-  ``double _Complex`` and ``float64`` to ``double``; ``numpy.ctypeslib.ndpointer``
-  passes the array's data pointer straight to C with no marshalling or copy.
-* **Compatible C ABI.** Wheels expose the existing C symbols from the packaged
-  Rust/PyO3 extension. Source checkouts can also load a standalone Rust or C
-  library (``libmandacaru_integrals``), independent of CPython's ABI.
-* **Graceful fallback.** If the library is not built, ``HAS_C_BACKEND`` is
-  ``False`` and vectorized NumPy reference implementations are used instead, so
-  the package is always importable and testable.
-
-The integral kernels are *basis-agnostic*: they consume **sampled values**
-``psi[i, :]`` on the grid, never analytic orbital forms, so injecting Wannier
-(or any other) functions requires no change to them.  Two kernels are not:
-the crystal Bloch sums (``mandacaru_bloch.c``) evaluate a shell's radial
-cubic spline and complex spherical harmonics themselves, and the Bader ascent
-(``mandacaru_bader.c``) climbs a density's gradient field; each has the NumPy
-path it replaces as its fallback and reference.
+The packaged extension supplies these kernels for optional PAW setup. It must
+be installed before use; compilation belongs to the package build.
 """
 
 from __future__ import annotations
 
 import ctypes
 import os
-import platform
 import shutil
-import subprocess
-import sysconfig
 import tempfile
-import time
 import warnings
-from ctypes.util import find_library
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 
 import numpy as np
 from numpy.ctypeslib import ndpointer
-from threadpoolctl import threadpool_limits
 
 from .. import backend_policy
 
@@ -64,45 +41,11 @@ _F32 = ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
 _F32_W = ndpointer(dtype=np.float32, flags="C_CONTIGUOUS,WRITEABLE")
 
 
-_LIB_NAMES = {"Darwin": "libmandacaru_integrals.dylib",
-              "Windows": "mandacaru_integrals.dll"}
-
-
-def _native_lib_name() -> str:
-    """The library file name this platform's loader can open."""
-    return _LIB_NAMES.get(platform.system(), "libmandacaru_integrals.so")
-
-
-def _find_library() -> str | None:
-    """Locate ``libmandacaru_integrals`` across the usual build locations.
-
-    Only this platform's file names are considered: a source tree synced between
-    machines (Dropbox, a shared home) holds the macOS ``.dylib`` next to the
-    Linux ``.so``, and picking the foreign one fails to load.
-    """
-    name = _native_lib_name()
-    candidates = []
-    env = os.environ.get("MANDACARU_INTEGRALS_LIB")
-    if env:
-        candidates.append(Path(env))
-    extension = sysconfig.get_config_var("EXT_SUFFIX")
-    preference = backend_policy.backend_preference()
-    if extension and preference != "c":
-        candidates.append(_PKG_DIR.parent / ("_native" + extension))
-    search_dirs = [
-        _PKG_DIR / "rust" / "target" / "release",
-        _PKG_DIR,
-        _PKG_DIR / "csrc",
-        _PKG_DIR / "csrc" / "build",
-    ]
-    if preference == "c":
-        search_dirs = [_PKG_DIR / "csrc", _PKG_DIR / "csrc" / "build", _PKG_DIR]
-    candidates += [d / name for d in search_dirs]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    found = find_library("mandacaru_integrals")
-    return found
+def _find_library():
+    """Use the packaged Rust extension, with no system-library discovery."""
+    backend_policy.backend_preference()
+    from .. import _native
+    return _native.__file__
 
 
 def _load(fresh: bool = False):
@@ -448,21 +391,14 @@ def _bind(lib):
 
 
 _LIB = _load()
-HAS_C_BACKEND = _LIB is not None
+if _LIB is None:
+    raise ImportError("the packaged Rust ABI could not be loaded; reinstall Mandacaru")
+HAS_NATIVE_BACKEND = _LIB is not None
 
 
 # --------------------------------------------------------------------------- #
 # Backend check and on-demand compilation.
 # --------------------------------------------------------------------------- #
-
-_SRC_DIR = _PKG_DIR / "csrc"
-#: The library's translation units (CMakeLists.txt lists the same).
-_SOURCES = ("mandacaru_integrals.c", "mandacaru_bloch.c", "mandacaru_bader.c")
-_BUILD_DIR = _SRC_DIR / "build"
-_BUILD_TIMEOUT = 600.0        # seconds; a compile that runs longer is abandoned
-_build_attempted = False       # one compile attempt per process
-_fallback_warned = False       # one NumPy-fallback warning per process
-
 
 @dataclass(frozen=True)
 class BackendStatus:
@@ -508,223 +444,15 @@ class BackendStatus:
 def _reload(fresh: bool = False) -> bool:
     """Re-run the library search and rebind the module globals (``fresh``:
     from a private copy of the file, :func:`_load`)."""
-    global _LIB, HAS_C_BACKEND
+    global _LIB, HAS_NATIVE_BACKEND
     _LIB = _load(fresh)
-    HAS_C_BACKEND = _LIB is not None
-    return HAS_C_BACKEND
-
-
-def _c_compiler() -> str | None:
-    """The first C compiler on this machine that can build a shared library.
-
-    Presence on ``PATH`` is not enough: a compiler can be installed, be named
-    in ``CC``, and still fail to link -- a Homebrew LLVM whose linker cannot
-    read the current macOS SDK, for instance.  Each candidate therefore builds
-    a one-line shared library before it is accepted.  Only a build attempt
-    calls this, so the extra compile costs nothing in normal use.
-    """
-    system = platform.system()
-    shared = "-dynamiclib" if system == "Darwin" else "-shared"
-    suffix = _native_lib_name().rsplit(".", 1)[-1]
-    for name in (os.environ.get("CC"), "cc", "clang", "gcc"):
-        path = shutil.which(name) if name else None
-        if path is None:
-            continue
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                source = Path(tmp) / "probe.c"
-                source.write_text("int mandacaru_probe(void){return 0;}\n")
-                probe = subprocess.run(
-                    [path, "-O0", "-fPIC", shared, str(source),
-                     "-o", str(Path(tmp) / f"probe.{suffix}")],
-                    capture_output=True, text=True, timeout=120, check=False)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if probe.returncode == 0:
-            return path
-    return None
-
-
-def _homebrew_libomp() -> Path | None:
-    """Homebrew's ``libomp`` prefix on macOS, or ``None``."""
-    brew = shutil.which("brew")
-    if brew is None:
-        return None
-    try:
-        out = subprocess.run([brew, "--prefix", "libomp"], capture_output=True,
-                             text=True, timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    prefix = Path(out.stdout.strip())
-    if out.returncode == 0 and (prefix / "lib").is_dir():
-        return prefix
-    return None
-
-
-def _compile_attempts(system: str, build_dir: Path) -> list[list[list[str]]]:
-    """The ways to build the library on this system, best first.
-
-    Each attempt is a list of commands run in order; :func:`build_backend`
-    moves to the next attempt when one fails.  CMake is preferred (it carries
-    the OpenMP discovery for every platform).  Without CMake the bare
-    compiler is used: first with its native ``-fopenmp`` (GCC, LLVM clang),
-    then -- on macOS, where Apple's clang ships no OpenMP runtime -- through
-    Homebrew's ``libomp``, and finally serial.  Returns an empty list when no
-    tool chain is found.
-    """
-    attempts: list[list[list[str]]] = []
-    cc = _c_compiler()
-    cmake = shutil.which("cmake")
-    if cmake is not None:
-        configure = [cmake, "-S", str(_SRC_DIR), "-B", str(build_dir),
-                     "-DCMAKE_BUILD_TYPE=Release"]
-        if cc is not None:
-            # Pin the compiler we verified: CMake's own search (and ``CC``)
-            # can name one whose linker cannot produce a library here.
-            configure.append(f"-DCMAKE_C_COMPILER={cc}")
-        if system == "Darwin":
-            libomp = _homebrew_libomp()
-            if libomp is not None:
-                configure.append(f"-DOpenMP_ROOT={libomp}")
-        attempts.append([configure,
-                         [cmake, "--build", str(build_dir), "--config",
-                          "Release"]])
-
-    # The bare compiler is kept as a fallback *after* CMake, so a broken CMake
-    # tool chain no longer means no library at all.
-    if cc is None or system == "Windows":
-        return attempts
-    sources = [str(_SRC_DIR / name) for name in _SOURCES]
-    common = [cc, "-std=c11", "-O3", "-ffast-math", "-funroll-loops", "-fPIC",
-              f"-I{_SRC_DIR}", *sources]
-    if system == "Darwin":
-        link = ["-dynamiclib", "-o", str(build_dir / _LIB_NAMES["Darwin"])]
-        attempts.append([common + ["-fopenmp"] + link])
-        libomp = _homebrew_libomp()
-        if libomp is not None:
-            attempts.append([common + [
-                "-Xpreprocessor", "-fopenmp", f"-I{libomp / 'include'}",
-                f"-L{libomp / 'lib'}", "-lomp",
-                "-Wl,-rpath," + str(libomp / "lib")] + link])
-        attempts.append([common + link])                      # serial
-        return attempts
-    link = ["-shared", "-o", str(build_dir / "libmandacaru_integrals.so"), "-lm"]
-    attempts.append([common + ["-fopenmp"] + link])
-    attempts.append([common + link])
-    return attempts
-
-
-def _discard_foreign_cmake_cache(build_dir: Path, log) -> None:
-    """Remove a CMake cache that was configured for another path.
-
-    CMake refuses to reuse a ``CMakeCache.txt`` written for a different source
-    or build directory -- the same synced tree mounted at ``/Users/...`` on
-    macOS and ``/home/...`` on Linux, for instance.  Such a cache is dropped
-    (with ``CMakeFiles/``) so the configure step starts clean.
-    """
-    cache = build_dir / "CMakeCache.txt"
-    if not cache.is_file():
-        return
-    recorded = {}
-    try:
-        for line in cache.read_text(errors="replace").splitlines():
-            for key in ("CMAKE_CACHEFILE_DIR", "CMAKE_HOME_DIRECTORY"):
-                if line.startswith(key + ":"):
-                    recorded[key] = line.split("=", 1)[-1].strip()
-    except OSError:
-        return
-    expected = {"CMAKE_CACHEFILE_DIR": build_dir, "CMAKE_HOME_DIRECTORY": _SRC_DIR}
-    if all(key in recorded and Path(recorded[key]).resolve() == path.resolve()
-           for key, path in expected.items()):
-        return
-    log.write(f"# discarding a CMake cache configured for "
-              f"{recorded.get('CMAKE_HOME_DIRECTORY', 'another tree')}\n")
-    cache.unlink(missing_ok=True)
-    shutil.rmtree(build_dir / "CMakeFiles", ignore_errors=True)
-
-
-def _run_attempt(commands, log, timeout, verbose) -> bool:
-    for cmd in commands:
-        log.write("$ " + " ".join(cmd) + "\n")
-        if verbose:
-            print("[mandacaru] " + " ".join(cmd))
-        try:
-            run = subprocess.run(cmd, cwd=str(_SRC_DIR), capture_output=True,
-                                 text=True, timeout=timeout, check=False)
-        except (OSError, subprocess.SubprocessError) as exc:
-            log.write(f"failed to run: {exc}\n")
-            return False
-        log.write(run.stdout)
-        log.write(run.stderr)
-        if run.returncode != 0:
-            log.write(f"exit status {run.returncode}\n")
-            return False
-    return True
-
-
-def build_backend(build_dir: str | os.PathLike | None = None, *,
-                  verbose: bool = False,
-                  timeout: float = _BUILD_TIMEOUT) -> Path | None:
-    """Compile ``libmandacaru_integrals`` for this machine.
-
-    Detects the platform and tool chain (CMake when installed, otherwise the
-    system C compiler; OpenMP through Homebrew's ``libomp`` on macOS, natively
-    elsewhere) and builds the shared library into ``build_dir`` (default:
-    ``csrc/build``, where the loader looks).  A full log is written to
-    ``<build_dir>/build.log``.
-
-    A library built into the default directory is **loaded on the spot**, so
-    ``build_backend()`` leaves :func:`check_backend` reporting the C backend
-    rather than "not built" -- the trap this used to set for callers (and for
-    CI scripts) that built and then asked.  A build into some other directory
-    only returns the path; nothing is loaded, because that is not where the
-    loader looks.
-
-    Returns
-    -------
-    Path or None
-        The compiled library, or ``None`` when no tool chain was found or the
-        compile failed (the log says why).  Never raises for a build failure.
-    """
-    system = platform.system()
-    build_dir = Path(build_dir) if build_dir is not None else _BUILD_DIR
-    try:
-        build_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        if verbose:
-            print(f"[mandacaru] cannot create {build_dir}: {exc}")
-        return None
-    attempts = _compile_attempts(system, build_dir)
-    log_path = build_dir / "build.log"
-    with open(log_path, "w") as log:
-        log.write(f"# mandacaru C backend build on {system} "
-                  f"{platform.machine()}, {time.ctime()}\n")
-        if not attempts:
-            log.write("no tool chain found: install cmake or a C compiler\n")
-            if verbose:
-                print("[mandacaru] no C tool chain found (cmake / cc)")
-            return None
-        _discard_foreign_cmake_cache(build_dir, log)
-        for n, commands in enumerate(attempts, 1):
-            log.write(f"# attempt {n}/{len(attempts)}\n")
-            if _run_attempt(commands, log, timeout, verbose):
-                break
-        else:
-            if verbose:
-                print(f"[mandacaru] build failed, see {log_path}")
-            return None
-    candidate = build_dir / _LIB_NAMES.get(system, "libmandacaru_integrals.so")
-    if candidate.is_file():
-        if build_dir == _BUILD_DIR and not HAS_C_BACKEND:
-            # A fresh copy: a stale build at this path may already be loaded.
-            _reload(fresh=True)
-        return candidate
-    return None
+    HAS_NATIVE_BACKEND = _LIB is not None
+    return HAS_NATIVE_BACKEND
 
 
 def check_backend() -> BackendStatus:
     """Report which integral backend is in use, without trying to build."""
-    if HAS_C_BACKEND:
+    if HAS_NATIVE_BACKEND:
         is_rust = hasattr(_LIB, "mandacaru_real_shell_f32")
         desc = "Rust backend loaded" if is_rust else "C backend loaded"
         path = getattr(_LIB, "_mandacaru_origin", _LIB._name)
@@ -733,105 +461,17 @@ def check_backend() -> BackendStatus:
                          "C backend not built; NumPy reference kernels in use")
 
 
-def build_rust_backend(verbose: bool = False,
-                       timeout: float = _BUILD_TIMEOUT) -> Path | None:
-    """Compile the Rust integral backend crate using cargo."""
-    cargo = shutil.which("cargo")
-    if cargo is None:
-        return None
-    manifest = _PKG_DIR / "rust" / "Cargo.toml"
-    if not manifest.is_file():
-        return None
-    cmd = [cargo, "build", "--release", "--manifest-path", str(manifest)]
-    if verbose:
-        print("[mandacaru] " + " ".join(cmd))
-    try:
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
-        if run.returncode != 0:
-            if verbose:
-                print(run.stderr)
-            return None
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-    target_lib = _PKG_DIR / "rust" / "target" / "release" / _native_lib_name()
-    if target_lib.is_file():
-        dest = _PKG_DIR / _native_lib_name()
-        try:
-            shutil.copyfile(target_lib, dest)
-        except OSError:
-            pass
-        _reload(fresh=True)
-        return target_lib
-    return None
-
-
-def ensure_backend(*, build: bool = True, verbose: bool = False) -> BackendStatus:
-    """Make sure the C/Rust integral backend is available, compiling it if needed.
-
-    Call this before integrating.  The policy is ``MANDACARU_BACKEND``
-    (:func:`mandacaru.backend_policy.backend_preference`): under ``"auto"`` (default),
-    ``"rust"`` and ``"c"`` a missing or stale library is compiled once per process with
-    :func:`build_rust_backend` / :func:`build_backend` and loaded on the spot;
-    the NumPy reference kernels are used only when that compile fails (``"rust"``
-    or ``"c"`` raises instead).  ``"numpy"`` skips the native library altogether.
-
-    Returns
-    -------
-    BackendStatus
-    """
-    global _build_attempted
-    preference = backend_policy.backend_preference()
-    if preference == "numpy":
-        if HAS_C_BACKEND:
-            _unload()
-        return BackendStatus(False, None, None, False,
-                             "MANDACARU_BACKEND=numpy: reference kernels forced")
-    if preference == "rust":
-        if not HAS_C_BACKEND or not check_backend().is_rust:
-            _reload()
-        if HAS_C_BACKEND and getattr(check_backend(), "is_rust", False):
-            return check_backend()
-        if build and not _build_attempted:
-            _build_attempted = True
-            path = build_rust_backend(verbose=verbose)
-            if path is not None and HAS_C_BACKEND and getattr(check_backend(), "is_rust", False):
-                return BackendStatus(True, _find_library(), num_threads(), True,
-                                     f"Rust backend compiled into {path.parent}")
-        raise RuntimeError("MANDACARU_BACKEND=rust requires the Rust backend, but it could not be loaded or built")
-    if preference == "c" and HAS_C_BACKEND and check_backend().is_rust:
-        _unload()
-    if HAS_C_BACKEND or _reload():
-        return check_backend()
-    compiled = False
-    message = "C backend not built"
-    if build and not _build_attempted:
-        _build_attempted = True
-        path = build_rust_backend(verbose=verbose) if preference != "c" else None
-        if path is not None and (HAS_C_BACKEND or _reload(fresh=True)):
-            compiled = True
-            return BackendStatus(True, _find_library(), num_threads(), True,
-                                 f"Rust backend compiled into {path.parent}")
-        path = build_backend(verbose=verbose)
-        if path is not None and (HAS_C_BACKEND or _reload(fresh=True)):
-            compiled = True
-            return BackendStatus(True, _find_library(), num_threads(), True,
-                                 f"C backend compiled into {path.parent}")
-        message = ("C backend compile failed" if path is None
-                   else f"compiled library at {path} could not be loaded")
-        message += f" (see {_BUILD_DIR / 'build.log'})"
-    elif build:
-        message = f"C backend compile already failed (see {_BUILD_DIR / 'build.log'})"
-    if preference == "c":
-        raise RuntimeError(f"{message}; MANDACARU_BACKEND=c refuses the NumPy fallback")
-    return BackendStatus(False, None, None, compiled,
-                         message + "; NumPy reference kernels in use")
-
+def ensure_backend(*, verbose=False):
+    """Require the installed Rust ABI. Building belongs to package installation."""
+    backend_policy.backend_preference()
+    if not HAS_NATIVE_BACKEND or not check_backend().is_rust:
+        raise RuntimeError("the packaged Rust extension is unavailable; reinstall Mandacaru")
+    return check_backend()
 
 def _unload() -> None:
-    global _LIB, HAS_C_BACKEND
+    global _LIB, HAS_NATIVE_BACKEND
     _LIB = None
-    HAS_C_BACKEND = False
+    HAS_NATIVE_BACKEND = False
 
 
 def warn_fallback(status: BackendStatus) -> None:
@@ -873,8 +513,7 @@ def single_threaded_blas(function):
 
     @wraps(function)
     def wrapper(*args, **kwargs):
-        with threadpool_limits(limits=1, user_api="blas"):
-            return function(*args, **kwargs)
+        return function(*args, **kwargs)
 
     return wrapper
 
@@ -904,7 +543,7 @@ def num_threads() -> int | None:
     parallelism managed here); a positive integer is the number of cores the C
     integral kernels run on.
     """
-    if HAS_C_BACKEND and hasattr(_LIB, "mandacaru_num_threads"):
+    if HAS_NATIVE_BACKEND and hasattr(_LIB, "mandacaru_num_threads"):
         return int(_LIB.mandacaru_num_threads())
     return None
 
@@ -949,53 +588,6 @@ def _check_filled(array, psi_stack, what: str):
     return array
 
 
-def one_body_matrices(psi_stack, Vext, grid):
-    """Kinetic ``T`` and potential ``V`` matrices for ``M`` sampled functions.
-
-    ``T[a, b] = <psi_a | -1/2 nabla^2 | psi_b>`` (finite-difference Laplacian),
-    ``V[a, b] = <psi_a | Vext | psi_b>``.
-
-    Parameters
-    ----------
-    psi_stack : (M, ngrid) complex128
-        Row ``a`` holds ``psi_a`` sampled on the flattened grid.
-    Vext : (ngrid,) float64
-        External (e.g. electron-nuclear) potential sampled on the grid.
-    grid : Grid
-        The integration grid.  Its geometry -- ``shape``, ``dx``, the inverse
-        metric ``metric_inverse()`` and the voxel volume ``dV`` -- selects the
-        kernel: a cubic grid uses the fast ``mandacaru_one_body`` C path; any
-        anisotropic (per-axis spacing) or non-orthogonal grid uses the general
-        ``mandacaru_one_body_general`` C path.  Without the C library the
-        vectorized NumPy kernel (which mirrors both C kernels) is used instead.
-    """
-    Vext = np.ascontiguousarray(Vext, dtype=np.float64)
-    if not np.iscomplexobj(psi_stack):
-        return _one_body_real(np.ascontiguousarray(psi_stack,
-                                                   dtype=np.float64),
-                              Vext, grid)
-    psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex128)
-    nx, ny, nz = grid.shape
-    M = psi_stack.shape[0]
-    T = np.zeros((M, M), dtype=np.complex128)
-    V = np.zeros((M, M), dtype=np.complex128)
-    ginv = np.ascontiguousarray(grid.metric_inverse(), dtype=np.float64)
-    dV = float(grid.dV)
-
-    _check_samples(psi_stack, nx * ny * nz, "one_body_matrices")
-    if Vext.size != nx * ny * nz:
-        raise ValueError(f"one_body_matrices: the external potential has "
-                         f"{Vext.size} values for a {nx * ny * nz}-node grid")
-    if HAS_C_BACKEND and grid.is_cubic:
-        _LIB.mandacaru_one_body(psi_stack.reshape(-1), Vext, M, int(nx),
-                                float(grid.dx), T.reshape(-1), V.reshape(-1))
-        return _check_filled(T, psi_stack, "kinetic matrix"), V
-    if HAS_C_BACKEND:
-        _LIB.mandacaru_one_body_general(
-            psi_stack.reshape(-1), Vext, M, int(nx), int(ny), int(nz),
-            ginv.reshape(-1), dV, T.reshape(-1), V.reshape(-1))
-        return _check_filled(T, psi_stack, "kinetic matrix"), V
-    return _one_body_numpy(psi_stack, Vext, ginv, dV, (nx, ny, nz))
 
 
 def kb_projections(psi_stack, chi_stack, dV):
@@ -1025,7 +617,7 @@ def kb_projections(psi_stack, chi_stack, dV):
                 f"the basis on {psi_stack.shape[1]}")
         return (psi_stack @ chi_stack.T) * float(dV)
     is_c64 = (psi_stack.dtype == np.complex64 or chi_stack.dtype == np.complex64)
-    if is_c64 and HAS_C_BACKEND and hasattr(_LIB, "mandacaru_kb_project_f32"):
+    if is_c64 and HAS_NATIVE_BACKEND and hasattr(_LIB, "mandacaru_kb_project_f32"):
         psi_stack = np.ascontiguousarray(psi_stack, dtype=np.complex64)
         chi_stack = np.ascontiguousarray(chi_stack, dtype=np.complex64)
         M, ngrid = psi_stack.shape
@@ -1051,7 +643,7 @@ def kb_projections(psi_stack, chi_stack, dV):
     if P == 0:
         return np.zeros((M, 0), dtype=np.complex128)
 
-    if HAS_C_BACKEND:
+    if HAS_NATIVE_BACKEND:
         out = np.empty((M, P), dtype=np.complex128)
         _LIB.mandacaru_kb_project(psi_stack, chi_stack, M, P, ngrid,
                                   float(dV), out)
@@ -1070,7 +662,7 @@ def bloch_shell(points, center, translations, phases, support, spline, l,
     ``False`` -- having done nothing -- without the C backend; the caller
     then evaluates the shell itself.
     """
-    if not HAS_C_BACKEND or not hasattr(_LIB, "mandacaru_bloch_shell"):
+    if not HAS_NATIVE_BACKEND or not hasattr(_LIB, "mandacaru_bloch_shell"):
         return False
     x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
     breaks, coeffs, rc = spline
@@ -1091,7 +683,7 @@ def bloch_shell(points, center, translations, phases, support, spline, l,
 def real_shell(points, center, support, spline, l, ms, rows, out,
                derivative: int = -1) -> bool:
     """Evaluate real-valued spherical harmonics or Cartesian derivatives directly into float64 or float32 out array."""
-    if not HAS_C_BACKEND:
+    if not HAS_NATIVE_BACKEND:
         return False
     if out.dtype == np.float32 and hasattr(_LIB, "mandacaru_real_shell_f32"):
         x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
@@ -1128,7 +720,7 @@ def bloch_project(points, center, translations, support, spline, l, ms,
     lattice image (``translations``); zero for an image that misses the
     block.  The caller adds the blocks and applies the k-point phases.
     ``None`` without the C backend."""
-    if not HAS_C_BACKEND or not hasattr(_LIB, "mandacaru_bloch_project"):
+    if not HAS_NATIVE_BACKEND or not hasattr(_LIB, "mandacaru_bloch_project"):
         return None
     x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
     breaks, coeffs, rc = spline
@@ -1160,7 +752,7 @@ def bader_ascent(starts, node_gradient, periodic, A, A_inv, origin, lattice,
     ``(r, slope, support)``.  Returns ``(owner, final_index)`` -- the atom
     each trajectory was captured by, or -1 with where it stopped -- or
     ``None`` without the C backend."""
-    if not HAS_C_BACKEND or not hasattr(_LIB, "mandacaru_bader_ascent"):
+    if not HAS_NATIVE_BACKEND or not hasattr(_LIB, "mandacaru_bader_ascent"):
         return None
     f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
     starts = f64(starts).reshape(-1, 3)
@@ -1202,121 +794,10 @@ def bader_ascent(starts, node_gradient, periodic, A, A_inv, origin, lattice,
 # NumPy reference fallbacks (mirror the C kernels exactly).
 # --------------------------------------------------------------------------- #
 
-def _shifted(field3d, axis, direction):
-    """``field`` shifted by one node along ``axis``, zero-filled at the boundary.
-
-    ``direction=+1`` fetches the ``+e_axis`` neighbor (so index 0 loses its lower
-    neighbor); this mirrors the C kernel's "out-of-range neighbor is 0" rule.
-    """
-    out = np.roll(field3d, -direction, axis)
-    sl = [slice(None)] * 3
-    sl[axis] = -1 if direction > 0 else 0     # the wrapped face -> 0
-    out[tuple(sl)] = 0.0
-    return out
 
 
-def _laplacian_general(field3d, ginv):
-    """General FD Laplacian ``sum_{a,b} ginv[a,b] d_a d_b f`` (mirrors the C kernel).
-
-    ``ginv`` is the 3x3 inverse metric ``(step^T step)^{-1}``; for an orthorhombic
-    grid it is ``diag(1/dx^2, 1/dy^2, 1/dz^2)`` and only the diagonal (7-point)
-    terms survive.  Out-of-range neighbors are treated as zero.
-    """
-    diag = -2.0 * (ginv[0, 0] + ginv[1, 1] + ginv[2, 2])
-    lap = diag * field3d
-    for a in range(3):                                   # diagonal 2nd derivatives
-        g = ginv[a, a]
-        if g != 0.0:
-            lap += g * (_shifted(field3d, a, +1) + _shifted(field3d, a, -1))
-    for a, b in ((0, 1), (0, 2), (1, 2)):                # mixed (cross) terms
-        g = ginv[a, b]
-        if g != 0.0:
-            c = 0.5 * g                                  # 2*g_ab * 1/4
-            pp = _shifted(_shifted(field3d, a, +1), b, +1)
-            pm = _shifted(_shifted(field3d, a, +1), b, -1)
-            mp = _shifted(_shifted(field3d, a, -1), b, +1)
-            mm = _shifted(_shifted(field3d, a, -1), b, -1)
-            lap += c * (pp - pm - mp + mm)
-    return lap
 
 
 #: Functions whose finite-difference Laplacians are formed together by the
 #: real one-body path (bounds its working set to this many grids).
 REAL_LAPLACIAN_BLOCK = 32
-
-
-def _one_body_real(psi_stack, Vext, grid):
-    r"""``(T, V)`` of real samples (a molecule's real harmonics): the
-    finite-difference Laplacian of the C kernels (:func:`laplacian_real`,
-    the same stencil and boundary, in C when the library is loaded), then
-    two real matrix products.  Both matrices are real symmetric to
-    round-off."""
-    nx, ny, nz = grid.shape
-    M, ngrid = psi_stack.shape
-    _check_samples(psi_stack, nx * ny * nz, "one_body_matrices")
-    if Vext.size != ngrid:
-        raise ValueError(f"one_body_matrices: the external potential has "
-                         f"{Vext.size} values for a {ngrid}-node grid")
-    ginv = np.asarray(grid.metric_inverse(), dtype=np.float64)
-    dV = float(grid.dV)
-    T = np.empty((M, M))
-    lap = np.empty((min(REAL_LAPLACIAN_BLOCK, max(M, 1)), ngrid))
-    for b0 in range(0, M, REAL_LAPLACIAN_BLOCK):
-        block = psi_stack[b0:b0 + REAL_LAPLACIAN_BLOCK]
-        out = laplacian_real(block, grid.shape, ginv, lap[:block.shape[0]])
-        T[:, b0:b0 + REAL_LAPLACIAN_BLOCK] = (psi_stack @ out.T) * (-0.5 * dV)
-    V = ((psi_stack * Vext) @ psi_stack.T) * dV
-    return T, V
-
-
-def laplacian_real(samples, shape, ginv, out=None) -> np.ndarray:
-    r"""The finite-difference Laplacian of real samples ``(n, G)`` on a grid
-    of node counts ``shape`` and inverse metric ``ginv``, the stencil and
-    boundary of the one-body kernels, into ``out`` (``(n, G)``, allocated
-    when omitted).  The backend kernel ``mandacaru_laplacian_real`` when the
-    library is loaded, else :func:`_laplacian_general` row by row; the two
-    agree to round-off, and the backend result does not depend on its thread
-    count (each node is one thread's)."""
-    nx, ny, nz = _as_shape(shape)
-    is_f32 = samples.dtype == np.float32
-    target_dtype = np.float32 if is_f32 else np.float64
-    samples = np.ascontiguousarray(samples, dtype=target_dtype)
-    n = samples.shape[0]
-    if out is None:
-        out = np.empty((n, nx * ny * nz), dtype=target_dtype)
-    if samples.shape != (n, nx * ny * nz) or out.shape != samples.shape \
-            or not out.flags.c_contiguous or out.dtype != target_dtype:
-        raise ValueError(f"laplacian_real: samples and out must be (n, "
-                         f"{nx * ny * nz}) {target_dtype}, got {samples.shape} and "
-                         f"{out.shape}")
-    ginv = np.ascontiguousarray(ginv, dtype=np.float64)
-    if HAS_C_BACKEND and n:
-        if is_f32 and hasattr(_LIB, "mandacaru_laplacian_real_f32"):
-            _LIB.mandacaru_laplacian_real_f32(samples.reshape(-1), out.reshape(-1),
-                                              n, nx, ny, nz, ginv.reshape(-1))
-            return out
-        if not is_f32 and hasattr(_LIB, "mandacaru_laplacian_real"):
-            _LIB.mandacaru_laplacian_real(samples.reshape(-1), out.reshape(-1),
-                                          n, nx, ny, nz, ginv.reshape(-1))
-            return out
-    for row, target in zip(samples, out):
-        target[:] = _laplacian_general(row.reshape(nx, ny, nz),
-                                       ginv).reshape(-1)
-    return out
-
-
-def _one_body_numpy(psi_stack, Vext, ginv, dV, shape):
-    M = psi_stack.shape[0]
-    ginv = np.asarray(ginv, dtype=float)
-    T = np.zeros((M, M), dtype=np.complex128)
-    V = np.zeros((M, M), dtype=np.complex128)
-    shape = _as_shape(shape)
-    lap = [_laplacian_general(psi_stack[b].reshape(shape), ginv).reshape(-1)
-           for b in range(M)]
-    for a in range(M):
-        conj_a = np.conj(psi_stack[a])
-        for b in range(M):
-            T[a, b] = np.sum(conj_a * (-0.5 * lap[b])) * dV
-            V[a, b] = np.sum(conj_a * Vext * psi_stack[b]) * dV
-    return T, V
-

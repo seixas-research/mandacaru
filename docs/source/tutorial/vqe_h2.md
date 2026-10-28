@@ -11,7 +11,7 @@ spatial orbitals give four spin orbitals and four Jordan–Wigner qubits.
 
 ```python
 from ase import Atoms
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 from mandacaru.integrals import Grid
 
 bond_length = 0.74  # Å

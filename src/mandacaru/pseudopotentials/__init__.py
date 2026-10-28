@@ -1,71 +1,23 @@
-# -*- coding: utf-8 -*-
-# file: pseudopotentials/__init__.py
+"""Optional pseudopotential setup; modules are imported only when requested."""
 
-# This code is part of Mandacaru.
-# MIT License
-#
-# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
+from importlib import import_module
 
-"""Pseudopotentials: valence-only Hamiltonians for the real-space engine.
+_EXPORTS = {'COMMON_OPTIONS': ('.families', 'COMMON_OPTIONS'), 'DEFAULT_FAMILY': ('.families', 'DEFAULT_FAMILY'), 'PSEUDO_FAMILIES': ('.families', 'PSEUDO_FAMILIES'), 'FamilySpec': ('.families', 'FamilySpec'), 'canonical_family_name': ('.families', 'canonical_family_name'), 'family_listing': ('.families', 'family_listing'), 'family_names': ('.families', 'family_names'), 'lookup_family': ('.families', 'lookup_family'), 'register_family': ('.families', 'register_family'), 'resolve_family': ('.families', 'resolve_family'), 'unregister_family': ('.families', 'unregister_family'), 'FAMILY_VARIABLES': ('.environment', 'FAMILY_VARIABLES'), 'LibraryPathError': ('.environment', 'LibraryPathError'), 'paw_dataset_folder': ('.environment', 'paw_dataset_folder'), 'Channel': ('.dataset', 'Channel'), 'PseudoPotential': ('.dataset', 'PseudoPotential'), 'FORMAT_VERSION': ('.io', 'FORMAT_VERSION'), 'LIBRARY_ELEMENTS': ('.io', 'LIBRARY_ELEMENTS'), 'LIBRARY_Z_MAX': ('.io', 'LIBRARY_Z_MAX'), 'available_elements': ('.io', 'available_elements'), 'library_file': ('.io', 'library_file'), 'load_pseudopotential': ('.io', 'load_pseudopotential'), 'save_pseudopotential': ('.io', 'save_pseudopotential'), 'KBProjector': ('.orbitals', 'KBProjector'), 'PseudoAtomicOrbital': ('.orbitals', 'PseudoAtomicOrbital'), 'pseudo_basis': ('.orbitals', 'pseudo_basis'), 'valence_electrons': ('.orbitals', 'valence_electrons'), 'log_derivative_ae': ('.partial_waves', 'log_derivative_ae'), 'PAW_FAMILY': ('.paw', 'PAW_FAMILY'), 'PAWChannel': ('.paw', 'PAWChannel'), 'PAWDataset': ('.paw', 'PAWDataset'), 'build_paw_library': ('.paw', 'build_paw_library'), 'check_paw_channel': ('.paw', 'check_paw_channel'), 'compensation_coulomb': ('.paw', 'compensation_coulomb'), 'compensation_potential': ('.paw', 'compensation_potential'), 'compensation_shape': ('.paw', 'compensation_shape'), 'generate_paw': ('.paw', 'generate_paw'), 'get_paw': ('.paw', 'get_paw'), 'log_derivative_paw': ('.paw', 'log_derivative_paw'), 'paw_coupling_blocks': ('.paw', 'paw_coupling_blocks'), 'paw_eigenstate': ('.paw', 'paw_eigenstate'), 'paw_library_path': ('.paw', 'paw_library_path'), 'paw_overlap_blocks': ('.paw', 'paw_overlap_blocks'), 'paw_projectors': ('.paw', 'paw_projectors'), 'paw_spectrum': ('.paw', 'paw_spectrum'), 'reconstruct_ae': ('.paw', 'reconstruct_ae'), 'report_paw': ('.paw', 'report_paw'), 'smooth_partial_waves': ('.paw', 'smooth_partial_waves'), 'UPAW_FAMILY': ('.paw', 'UPAW_FAMILY'), 'build_upaw_library': ('.paw', 'build_upaw_library'), 'generate_upaw': ('.paw', 'generate_upaw'), 'get_upaw': ('.paw', 'get_upaw'), 'upaw_library_path': ('.paw', 'upaw_library_path')}
+__all__ = list(_EXPORTS)
 
-Organized in **families** (:mod:`.families`, registry :data:`PSEUDO_FAMILIES`).
-Two are shipped, both generated from Mandacaru's own self-consistent atom
-(:mod:`mandacaru.basis.atomic_solver`) on the shared dataset layout
-(:mod:`.dataset`) with the radial machinery of :mod:`.partial_waves`:
-``"paw-lcao"``, Bloechl's projector augmented-wave datasets with an overlap
-correction and frozen one-center terms (:mod:`.paw`); and ``"upaw-lcao"``
-(alias ``"unitary-paw-lcao"``), the PAW construction with a vanishing norm
-deficit, generated on demand.  The datasets are not part of the package: the
-library is a repository checkout that ``MANDACARU_PAW_PATH`` names, set with
-``mandacaru --set-paw DIR``, holding one folder per set (``lda-sr/`` by
-default) (:mod:`.environment`).  The valence pseudo-atomic orbitals and
-projectors are sampled on the real-space grid by :mod:`.orbitals`.  A family
-is selected **as a basis**: ``basis="PAW-LCAO"``, ``basis={"name": "PAW-LCAO", "size": "DZP"}`` on any driver
-(the family name is a basis name, with the multiple-zeta size hierarchy as
-its options); see the *Pseudopotentials* guide of the manual.
-"""
 
-from .families import (COMMON_OPTIONS, DEFAULT_FAMILY, PSEUDO_FAMILIES,
-                       FamilySpec, canonical_family_name, family_listing,
-                       family_names, lookup_family, register_family,
-                       resolve_family, unregister_family)
-from .environment import (FAMILY_VARIABLES, LibraryPathError,
-                          paw_dataset_folder)
-from .dataset import Channel, PseudoPotential
-from .io import (FORMAT_VERSION, LIBRARY_ELEMENTS, LIBRARY_Z_MAX,
-                 available_elements, library_file, load_pseudopotential,
-                 save_pseudopotential)
-from .orbitals import (KBProjector, PseudoAtomicOrbital, pseudo_basis,
-                       valence_electrons)
-from .partial_waves import log_derivative_ae
-from .paw import (PAW_FAMILY, PAWChannel, PAWDataset, PAWIntegrals,
-                  build_paw_library, check_paw_channel, compensation_coulomb,
-                  compensation_potential, compensation_shape, generate_paw,
-                  get_paw, log_derivative_paw, paw_coupling_blocks,
-                  paw_eigenstate, paw_library_path, paw_overlap_blocks,
-                  paw_projectors, paw_spectrum, reconstruct_ae, report_paw,
-                  smooth_partial_waves)
-from .paw import (UPAW_FAMILY, build_upaw_library, generate_upaw, get_upaw,
-                  upaw_library_path)
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    module, attribute = _EXPORTS[name]
+    value = (
+        import_module("." + attribute, __name__)
+        if module == "."
+        else getattr(import_module(module, __name__), attribute)
+    )
+    globals()[name] = value
+    return value
 
-__all__ = [
-    "COMMON_OPTIONS", "DEFAULT_FAMILY", "PSEUDO_FAMILIES", "FamilySpec",
-    "canonical_family_name", "family_listing", "family_names",
-    "lookup_family", "register_family", "resolve_family",
-    "unregister_family",
-    "FAMILY_VARIABLES", "LibraryPathError", "paw_dataset_folder",
-    "Channel", "PseudoPotential",
-    "FORMAT_VERSION", "LIBRARY_ELEMENTS", "LIBRARY_Z_MAX",
-    "available_elements", "library_file", "load_pseudopotential",
-    "save_pseudopotential",
-    "KBProjector", "PseudoAtomicOrbital", "pseudo_basis", "valence_electrons",
-    "log_derivative_ae",
-    "PAW_FAMILY", "PAWChannel", "PAWDataset", "PAWIntegrals",
-    "build_paw_library", "check_paw_channel", "compensation_coulomb",
-    "compensation_potential", "compensation_shape", "generate_paw", "get_paw",
-    "log_derivative_paw", "paw_coupling_blocks", "paw_eigenstate",
-    "paw_library_path", "paw_overlap_blocks", "paw_projectors", "paw_spectrum",
-    "reconstruct_ae", "report_paw", "smooth_partial_waves",
-    "UPAW_FAMILY", "build_upaw_library", "generate_upaw", "get_upaw",
-    "upaw_library_path",
-]
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

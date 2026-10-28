@@ -11,28 +11,7 @@ authors = [
 description = "Everything you need for fermionic quantum simulation."
 license = {file = "LICENSE"} 
 requires-python = ">=3.14"
-dependencies = [
-    # -- numerical core -------------------------------------------------- #
-    'numpy>=2.0.0',
-    'jax',
-    'scipy',
-    'threadpoolctl',      # one BLAS thread beside the OpenMP kernels
-    'ase',
-    'spglib',
-    'matplotlib',
-    # -- Hamiltonian cache (Apache Parquet) ------------------------------ #
-    'fastparquet',
-    'pandas',
-    # -- quantum SDKs (backend_provider / device registry) ---------------- #
-    'qiskit',             # IBM Qiskit -- default circuit provider + profiling
-    'qiskit-ibm-runtime', # IBM Qiskit Runtime -- the reserved 'ibm-quantum' device
-    'amazon-braket-sdk',  # Amazon Braket SDK -- local simulator + AWS devices/QPUs
-    'cirq',               # Google Cirq
-    # -- test suite -------------------------------------------------------- #
-    'pytest',             # `python -m pytest test/` ships with the package
-    # -- for PERFORMANCE block --------------------------------------------- #
-    'psutil'
-]
+dependencies = ['numpy>=2.0.0']
 
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -44,15 +23,20 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+ase = ['ase']
+periodic = ['ase', 'scipy', 'spglib', 'pandas', 'fastparquet']
+visualization = ['matplotlib']
+columnar = ['pandas', 'fastparquet']
+qiskit = ['qiskit', 'qiskit-ibm-runtime']
+braket = ['amazon-braket-sdk']
+cirq = ['cirq']
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
-dispersion = ['dftd4']
-dev = ['pyarrow', 'psutil', 'sphinx>=8,<10', 'myst-parser>=4,<6',
-       'furo>=2024.8.6', 'pytest-cov', 'dftd4']
+dev = ['pytest', 'pytest-cov', 'ase', 'scipy', 'spglib', 'pandas', 'fastparquet',
+       'pyarrow', 'psutil', 'matplotlib', 'sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 
 [tool.pytest.ini_options]
-# `python -m pytest` with no arguments runs the whole suite (there is no CI:
-# it is run locally).
+# The full scientific suite and the independent architecture checks live in test/.
 testpaths = ["test"]
 # `-m "not slow"` is what keeps a bare run inside the session budget that
 # `test/conftest.py` enforces.  The slow mark is for tests that *generate* a
@@ -66,7 +50,6 @@ markers = [
     "slow: generates a pseudopotential or PAW-LCAO dataset from scratch, or computes crystal forces or stress",
 ]
 filterwarnings = [
-    # A fallback to the NumPy kernels is announced once; it is not a failure.
     "default::RuntimeWarning",
 ]
 
@@ -83,7 +66,6 @@ exclude_also = [
 
 [project.scripts]
 mandacaru = "mandacaru.cli:main"
-mandacaru-build = "mandacaru.pseudopotentials.build_cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/mandacaru"
@@ -118,13 +100,17 @@ replacement = '](https://github.com/seixas-research/mandacaru/blob/main/LICENSE)
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]
 exclude = ["**/target/**", "**/build/**", "**/__pycache__/**",
-           "**/*.dylib", "**/*.dll", "**/*.so"]
+           "**/*.dylib", "**/*.dll", "**/*.so", "**/csrc/**"]
 # No pseudopotential data ships in the wheel: the PAW-LCAO library lives in
 # the mandacaru-paw repository, found through MANDACARU_PAW_PATH.
 
 [tool.hatch.build.targets.wheel.hooks.custom]
-path = "src/mandacaru/integrals/rust/hatch_build.py"
+path = "build_hooks/native.py"
 
 [tool.hatch.build.targets.sdist]
+# Traverse only source inputs; local Cargo caches and scratch trees can be large.
+only-include = ["src/mandacaru", "crates", "build_hooks", "Cargo.toml", "Cargo.lock",
+                "pyproject.toml", "README.md", "LICENSE",
+                "test/migration/reference/h2_hamiltonian.json", "test/migration/phase5/si_crystal.json"]
 exclude = ["**/target/**", "**/build/**", "**/__pycache__/**",
-           "**/*.dylib", "**/*.dll", "**/*.so", ".mandacaru/**"]
+           "**/*.dylib", "**/*.dll", "**/*.so", "**/csrc/**"]

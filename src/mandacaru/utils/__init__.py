@@ -1,59 +1,45 @@
-# -*- coding: utf-8 -*-
-# file: utils/__init__.py
-
-# This code is part of Mandacaru.
-# MIT License
-#
-# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
-
-"""Utilities (structured logging, run dumps, bibliography, profiling, 3D viewer, ...)."""
+"""Public interfaces loaded on demand; optional integrations stay optional."""
 
 from importlib import import_module
 
-from .bibliography import REFERENCES, bibtex
-from .logging import (Logger, append_block, append_forces,
-                      append_optimization_summary, append_performance,
-                      append_quantum_echoes, append_nested_otoc,
-                      log_steps, parse_output, reset_log)
-from .profiling import (Timings, backend_cores, cpu_count, current_memory_mb,
-                         peak_memory_mb)
-from .viewer import Camera, Viewer3D
-
-_LAZY_EXPORTS = {
-    "citation_keys": "citations",
-    "write_references": "citations",
-    "write_cube": "cube",
-    "write_volumetric": "cube",
-    "write_xsf": "cube",
-    "dump_hamiltonian": "dumps",
-    "dump_pool": "dumps",
-    "resolve_dump_path": "dumps",
+_EXPORTS = {
+    "import_module": ("importlib", "import_module"),
+    "REFERENCES": (".bibliography", "REFERENCES"),
+    "bibtex": (".bibliography", "bibtex"),
+    "Logger": (".logging", "Logger"),
+    "append_block": (".logging", "append_block"),
+    "append_forces": (".logging", "append_forces"),
+    "append_optimization_summary": (".logging", "append_optimization_summary"),
+    "append_performance": (".logging", "append_performance"),
+    "append_quantum_echoes": (".logging", "append_quantum_echoes"),
+    "append_nested_otoc": (".logging", "append_nested_otoc"),
+    "log_steps": (".logging", "log_steps"),
+    "parse_output": (".logging", "parse_output"),
+    "reset_log": (".logging", "reset_log"),
+    "Timings": (".profiling", "Timings"),
+    "backend_cores": (".profiling", "backend_cores"),
+    "cpu_count": (".profiling", "cpu_count"),
+    "current_memory_mb": (".profiling", "current_memory_mb"),
+    "peak_memory_mb": (".profiling", "peak_memory_mb"),
+    "Camera": (".viewer", "Camera"),
+    "Viewer3D": (".viewer", "Viewer3D"),
 }
+__all__ = list(_EXPORTS)
 
 
 def __getattr__(name):
-    """Defer utilities that depend on core until their exports are requested.
-
-    Integral kernels import profiling while core is still being initialized.
-    Loading serializers or file writers here would re-enter core too early.
-    """
-    module = _LAZY_EXPORTS.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(f".{module}", __name__), name)
+    try:
+        module, attribute = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = (
+        import_module("." + attribute, __name__)
+        if module == "."
+        else getattr(import_module(module, __name__), attribute)
+    )
     globals()[name] = value
     return value
 
 
-__all__ = ["Logger", "parse_output", "append_block",
-           "append_quantum_echoes", "append_nested_otoc",
-           "append_forces",
-           "append_optimization_summary", "append_performance",
-           "log_steps", "reset_log",
-           "dump_hamiltonian", "dump_pool", "resolve_dump_path",
-           "Timings", "backend_cores", "cpu_count", "current_memory_mb",
-           "peak_memory_mb",
-           "write_cube", "write_xsf", "write_volumetric",
-           "Viewer3D", "Camera",
-           "REFERENCES", "bibtex", "citation_keys",
-           "write_references"]
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

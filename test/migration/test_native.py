@@ -10,7 +10,7 @@ from scipy.linalg import eigh_tridiagonal
 from scipy.special import spherical_jn
 
 from mandacaru import _native
-from mandacaru._native_adapter import geometry_from_atoms
+from mandacaru.integrations.ase import geometry_from_atoms
 from mandacaru.integrals import _backend
 from mandacaru.units import ANGSTROM_TO_BOHR
 

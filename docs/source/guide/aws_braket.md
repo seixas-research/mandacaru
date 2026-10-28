@@ -31,7 +31,7 @@ amplitudes to measurements automatically.
 
 ```python
 from ase import Atoms
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
               cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)

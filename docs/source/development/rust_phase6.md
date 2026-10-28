@@ -58,8 +58,8 @@ total spin. Spin-adapted HVA references are refused.
 ```python
 import numpy as np
 from mandacaru.core.mapping import PauliSum
-from mandacaru.algorithms.time_evolution import SuzukiTrotter
-from mandacaru.algorithms.qpe import QuantumPhaseEstimation
+from mandacaru.workflows.time_evolution import SuzukiTrotter
+from mandacaru.workflows.qpe import QuantumPhaseEstimation
 
 h = PauliSum({"X": 0.4, "Z": 0.3, "I": -0.7}, num_qubits=1)
 psi = np.array([1., 0.], dtype=complex)

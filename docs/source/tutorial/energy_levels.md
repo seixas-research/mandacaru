@@ -2,7 +2,7 @@
 
 Ground-state VQE finds the lowest eigenvalue of the molecular Hamiltonian. To get
 the **energy levels** — the ground state *and* excited states —
-{class}`~mandacaru.algorithms.Mandacaru` exposes an `energy_levels` method
+{class}`~mandacaru.calculation.Mandacaru` exposes an `energy_levels` method
 built on **variational quantum deflation** (VQD), available for every `method=`
 (in particular `"vqe"` and `"adapt-vqe"`).
 
@@ -30,7 +30,7 @@ Attach the calculator with `method="vqe"`, evaluate the ground-state energy once
 ```python
 import numpy as np
 from ase import Atoms
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
               cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)

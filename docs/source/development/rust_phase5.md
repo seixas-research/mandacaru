@@ -102,7 +102,7 @@ The standalone Rust engine needs neither Python nor a dataset library:
 
 ```bash
 cargo run --offline --release \
-  --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
+  --manifest-path Cargo.toml \
   --package mandacaru-core --example solve_crystal -- \
   test/migration/phase5/si_crystal.json
 ```

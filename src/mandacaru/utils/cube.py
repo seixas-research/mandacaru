@@ -136,9 +136,7 @@ def _data_lines(data) -> list[str]:
     return lines
 
 
-def write_cube(path, data, origin, step, numbers, positions,
-               comment: str = "", charges=None, *, engine="python",
-               engine_options=None) -> str:
+def write_cube(path, data, origin, step, numbers, positions, comment: str='', charges=None, *, resources=None) -> str:
     """Write a Gaussian ``.cube`` file and return the path written.
 
     Parameters
@@ -167,41 +165,16 @@ def write_cube(path, data, origin, step, numbers, positions,
         pseudopotential run passes the *valence* charge, which is what the
         density in the file actually integrates to.
     """
-    data, origin, step, numbers, positions = _checked_field(
-        data, origin, step, numbers, positions)
-    charges = (np.asarray(numbers, dtype=float) if charges is None
-               else np.asarray(charges, dtype=float).reshape(-1))
+    data, origin, step, numbers, positions = _checked_field(data, origin, step, numbers, positions)
+    charges = np.asarray(numbers, dtype=float) if charges is None else np.asarray(charges, dtype=float).reshape(-1)
     if len(charges) != len(numbers):
-        raise ValueError(f"{len(charges)} charges but {len(numbers)} atoms")
-    if engine == "rust":
-        from .._native import Context
-        Context(**dict(engine_options or {})).write_field(
-            str(path), data, origin.tolist(), step.tolist(), numbers.tolist(),
-            positions.tolist(), format="cube", charges=charges.tolist(), comment=str(comment))
-        return str(path)
-    if engine != "python" or engine_options:
-        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
-
-    header = [str(comment).replace("\n", " ").strip() or "Mandacaru",
-              CUBE_AXIS_COMMENT,
-              "%5d%12.6f%12.6f%12.6f" % (len(numbers), *origin)]
-    for axis in range(3):
-        # A *positive* node count declares Bohr; the vector is the step of that
-        # axis, which for a skewed grid is not along a Cartesian direction.
-        header.append("%5d%12.6f%12.6f%12.6f"
-                      % (data.shape[axis], *step[:, axis]))
-    for Z, q, r in zip(numbers, charges, positions):
-        header.append("%5d%12.6f%12.6f%12.6f%12.6f" % (Z, q, *r))
-
-    with atomic_path(path) as tmp:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(header) + "\n")
-            handle.write("\n".join(_data_lines(data)) + "\n")
+        raise ValueError(f'{len(charges)} charges but {len(numbers)} atoms')
+    from .._native import Context
+    Context(**dict(resources or {})).write_field(str(path), data, origin.tolist(), step.tolist(), numbers.tolist(), positions.tolist(), format='cube', charges=charges.tolist(), comment=str(comment))
     return str(path)
 
 
-def write_xsf(path, data, origin, step, numbers, positions, cell=None,
-              periodic: bool = False, *, engine="python", engine_options=None) -> str:
+def write_xsf(path, data, origin, step, numbers, positions, cell=None, periodic: bool=False, *, resources=None) -> str:
     """Write an XCrySDen ``.xsf`` file (VESTA reads these too) via ASE.
 
     Same arguments as :func:`write_cube`, all in **Bohr**; XSF is an Angstrom
@@ -220,56 +193,18 @@ def write_xsf(path, data, origin, step, numbers, positions, cell=None,
     That is ample for a density in e/Bohr^3 and for an orbital amplitude, but
     :func:`write_cube` is the more precise of the two.
     """
-    data, origin, step, numbers, positions = _checked_field(
-        data, origin, step, numbers, positions)
-    if engine == "rust":
-        from .._native import Context
-        Context(**dict(engine_options or {})).write_field(
-            str(path), data, origin.tolist(), step.tolist(), numbers.tolist(),
-            positions.tolist(), format="xsf", periodic=periodic,
-            cell=None if cell is None else np.asarray(cell, dtype=float).reshape(3, 3).tolist())
-        return str(path)
-    if engine != "python" or engine_options:
-        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
-    from ase import Atoms
-    from ase.io.xsf import write_xsf as ase_write_xsf
-    atoms = Atoms(numbers=numbers, positions=positions * BOHR_TO_ANGSTROM)
-    if cell is not None:
-        atoms.set_cell(np.asarray(cell, dtype=float) * BOHR_TO_ANGSTROM)
-        atoms.set_pbc(True)
-    if periodic:
-        if cell is None:
-            raise ValueError("a periodic datagrid needs the cell it repeats")
-        box = np.asarray(cell, dtype=float).reshape(3, 3)
-        if not np.allclose(box.T, step @ np.diag(data.shape), atol=1e-8):
-            raise ValueError("a periodic datagrid must span its cell: the "
-                             "step vectors times the node counts are not "
-                             "the cell's vectors")
-        data = np.pad(data, ((0, 1), (0, 1), (0, 1)), mode="wrap")
-        spans = list(box * BOHR_TO_ANGSTROM)
-    else:
-        # XSF's datagrid is a *general* grid: its first and last nodes both
-        # lie on the spanning vectors, so the span is (n - 1) steps, not n.
-        spans = [(data.shape[axis] - 1) * step[:, axis] * BOHR_TO_ANGSTROM
-                 for axis in range(3)]
-    with atomic_path(path) as tmp:
-        ase_write_xsf(str(tmp), [atoms], data=data,
-                      origin=origin * BOHR_TO_ANGSTROM, span_vectors=spans)
+    data, origin, step, numbers, positions = _checked_field(data, origin, step, numbers, positions)
+    from .._native import Context
+    Context(**dict(resources or {})).write_field(str(path), data, origin.tolist(), step.tolist(), numbers.tolist(), positions.tolist(), format='xsf', periodic=periodic, cell=None if cell is None else np.asarray(cell, dtype=float).reshape(3, 3).tolist())
     return str(path)
 
 
-def write_volumetric(path, data, origin, step, numbers, positions,
-                     comment: str = "", charges=None, cell=None,
-                     format=None, periodic: bool = False, *,
-                     engine="python", engine_options=None) -> str:
+def write_volumetric(path, data, origin, step, numbers, positions, comment: str='', charges=None, cell=None, format=None, periodic: bool=False, *, resources=None) -> str:
     """Write ``data`` in the format named by ``format`` or the file extension.
 
     ``cell`` and ``periodic`` go to :func:`write_xsf`; a periodic field's
     cube file holds each node once (the cell is ``n`` steps)."""
     name = detect_format(path, format)
-    if name == "cube":
-        return write_cube(path, data, origin, step, numbers, positions,
-                          comment=comment, charges=charges, engine=engine,
-                          engine_options=engine_options)
-    return write_xsf(path, data, origin, step, numbers, positions, cell=cell,
-                     periodic=periodic, engine=engine, engine_options=engine_options)
+    if name == 'cube':
+        return write_cube(path, data, origin, step, numbers, positions, comment=comment, charges=charges, resources=resources)
+    return write_xsf(path, data, origin, step, numbers, positions, cell=cell, periodic=periodic, resources=resources)

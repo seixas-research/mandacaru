@@ -9,7 +9,7 @@ this comparison.
 from mandacaru import Mandacaru
 
 calculator = Mandacaru(
-    method="adapt-vqe", engine="rust", load_hamiltonian="lih.json",
+    method="adapt-vqe", load_hamiltonian="lih.json",
     pool="fermionic", gradient="analytic", profile=False,
     optimizer={"method": "L-BFGS", "maxiter": 500},
     convergence={"gradient": 1e-5}, max_iterations=30, trace=False,

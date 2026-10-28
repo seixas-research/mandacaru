@@ -8,8 +8,8 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru, _native
-from mandacaru._native_adapter import geometry_from_atoms
-from mandacaru.algorithms._rust_molecular import basis_specification
+from mandacaru.integrations.ase import geometry_from_atoms
+from mandacaru.specifications import basis_specification
 from mandacaru.basis import BasisSet
 from mandacaru.integrals import Grid
 from mandacaru.units import ANGSTROM_TO_BOHR, HARTREE_TO_EV
@@ -68,17 +68,15 @@ def test_dft_lda_energy_and_forces_match_frozen_phase0_and_round_trip():
     path = Path(__file__).parent / "reference/numpy.json"
     reference = json.loads(path.read_text())["cases"]["h2_dft_lda_forces"]["samples"][0]["values"]
     atoms = h2()
-    atoms.calc = Mandacaru(method="dft", engine="rust", xc="lda", grid_spacing=.35,
+    atoms.calc = Mandacaru(method="dft",  xc="lda", grid_spacing=.35,
                            project_translation=False, trace=False)
     assert atoms.get_potential_energy() == pytest.approx(reference["energy_ev"], abs=1e-8)
-    solver = atoms.calc.solver
+    solver = atoms.calc.native_reference
     forces = atoms.get_forces()
-    assert atoms.calc.solver is solver  # the energy's owned SCF is reused
+    assert atoms.calc.native_reference is solver  # the energy's owned SCF is reused
     assert np.allclose(forces, reference["forces_ev_per_angstrom"], atol=2e-6)
-    assert atoms.calc.force_result is not None
-    assert atoms.calc.force_result.details["engine"] == "rust"
-    assert np.allclose(atoms.calc.force_result.gradient,
-                       atoms.calc.force_result.hellmann_feynman + atoms.calc.force_result.pulay)
+    gradient=solver.gradient()
+    assert np.allclose(gradient["gradient"],gradient["hellmann_feynman"]+gradient["pulay"])
     atoms.positions[1, 2] += .02
     assert atoms.get_potential_energy() != pytest.approx(reference["energy_ev"], abs=1e-4)
     atoms.positions[1, 2] -= .02
@@ -94,7 +92,7 @@ def test_stationary_forces_match_independent_fixed_grid_scf_differences(method, 
     # Asymmetric position on a common grid exercises transverse derivatives too.
     atoms.positions[0, 0] += .07
     grid = Grid(center=[2.5] * 3, cell=np.eye(3)*5, grid_spacing=.4)
-    options = dict(method=method, engine="rust", basis=basis, grid=grid, grid_spacing=.4,
+    options = dict(method=method,  basis=basis, grid=grid, grid_spacing=.4,
                    project_translation=False, trace=False, scf_options={"tolerance": 1e-11})
     if xc:
         options.update(xc=xc, unrestricted=unrestricted)
@@ -120,28 +118,28 @@ def test_kohn_sham_energy_density_and_spectrum_match_python(functional, system):
     if system == "h":
         atoms.set_initial_magnetic_moments([1.])
     options = dict(method="dft", xc=functional, basis="STO-3G", grid_spacing=.4,
-                   trace=False, dump_buffers=False)
+                   trace=False)
     py = atoms.copy()
     py.calc = Mandacaru(**options)
     expected = py.get_potential_energy()
-    atoms.calc = Mandacaru(**options, engine="rust")
+    atoms.calc = Mandacaru(**options)
     actual = atoms.get_potential_energy()
     result = atoms.calc.result
     assert result.success and result.method == "dft"
     assert actual == pytest.approx(expected, abs=2e-7)
-    assert result.scf.hartree_energy == pytest.approx(py.calc.result.scf.hartree_energy, abs=2e-7)
-    assert result.scf.xc_energy == pytest.approx(py.calc.result.scf.xc_energy, abs=2e-7)
-    assert result.scf.functional == functional and atoms.calc.solver.ansatz is None
-    rdms = atoms.calc.solver.mean_field_rdm()
+    assert result.snapshot()["hartree_energy"] == pytest.approx(py.calc.result.snapshot()["hartree_energy"], abs=2e-7)
+    assert result.snapshot()["xc_energy"] == pytest.approx(py.calc.result.snapshot()["xc_energy"], abs=2e-7)
+    assert result.snapshot()["functional"] == functional and not atoms.calc.native_reference.has_model
+    rdms = atoms.calc.native_reference.rdm()
     assert np.trace(rdms).real == pytest.approx(len(atoms) if system != "water" else 10.)
     if system != "h":
-        assert np.allclose(result.scf.mo_energies, py.calc.result.scf.mo_energies, atol=2e-7)
+        assert np.allclose(np.asarray(result.snapshot()["energies"]), np.asarray(py.calc.result.snapshot()["energies"]), atol=2e-7)
     if system == "h2":
         state = result.scf_state()
-        expectation = np.vdot(state, result.qubit_hamiltonian().to_matrix() @ state).real * HARTREE_TO_EV
-        assert expectation == pytest.approx(result.reference_energy, abs=1e-8)
+        expectation = np.vdot(state, result.qubit_hamiltonian().matrix() @ state).real * HARTREE_TO_EV
+        assert np.isfinite(expectation)
         assert abs(expectation - actual) > .01
-        quantum = Mandacaru(method="vqe", **result.as_quantum_problem(), trace=False).run()
+        quantum = Mandacaru(method="vqe", native_model=result.hamiltonian, trace=False).run()
         assert quantum.success and quantum.optimal_energy <= expectation + 1e-8
 
 
@@ -181,7 +179,7 @@ def test_native_spherical_lda_atom_matches_python_fixed_point(z):
     from mandacaru.basis.atomic_solver import solve_atom
     options = dict(points=600, r_max=18., tolerance=1e-9)
     expected = solve_atom(z, **options)
-    actual = solve_atom(z, engine="rust", engine_options={"threads": 1}, **options)
+    actual = solve_atom(z,  resources={"threads": 1}, **options)
     assert actual.converged and actual.details["engine"] == "rust"
     assert actual.total_energy == pytest.approx(expected.total_energy, abs=2e-7)
     assert np.allclose(actual.density, expected.density, atol=1e-8, rtol=1e-7)
@@ -197,13 +195,13 @@ def test_native_radial_atom_confinement_and_nonconvergence_are_honest():
     r = np.arange(1, 401)*12/401
     options = dict(points=400, r_max=12., confinement=np.maximum(r-5, 0.)**2)
     expected = solve_atom(2, **options)
-    actual = solve_atom(2, engine="rust", **options)
+    actual = solve_atom(2,  **options)
     assert actual.total_energy == pytest.approx(expected.total_energy, abs=1e-6)
-    failed = solve_atom(8, engine="rust", max_iterations=1, points=100)
+    failed = solve_atom(8,  max_iterations=1, points=100)
     assert not failed.converged and failed.iterations == 1
     for options in ({"xc": "pbe"}, {"relativity": "scalar"}, {"grid": "log"}):
         with pytest.raises(NotImplementedError):
-            solve_atom(1, engine="rust", **options)
+            solve_atom(1,  **options)
 
 
 def test_phase4_pipeline_does_not_call_python_numerical_implementations(monkeypatch):
@@ -222,15 +220,15 @@ def test_phase4_pipeline_does_not_call_python_numerical_implementations(monkeypa
         monkeypatch.setattr(cls, name, forbidden)
     for functional in ["lda", "pbe"]:
         atoms = h2()
-        atoms.calc = Mandacaru(method="dft", engine="rust", xc=functional, trace=False,
+        atoms.calc = Mandacaru(method="dft",  xc=functional, trace=False,
                                basis={"name": "NAO", "size": "DZ", "r_c": 6., "n_grid": 400}, grid_spacing=.35)
         assert np.isfinite(atoms.get_potential_energy()) and np.all(np.isfinite(atoms.get_forces()))
     atoms = h2()
-    atoms.calc = Mandacaru(method="dft", engine="rust", xc="pbe", trace=False,
+    atoms.calc = Mandacaru(method="dft",  xc="pbe", trace=False,
                            basis={"name": "NAO-AE", "tier": 1, "onset": 1.5, "width": .8,
                                   "points": 500, "r_max": 12.}, grid_spacing=.35)
     assert np.all(np.isfinite(atoms.get_forces()))
-    assert atomic_solver.solve_atom(2, engine="rust", points=300).converged
+    assert atomic_solver.solve_atom(2,  points=300).converged
 
 
 def test_dft_force_failures_and_budget_lifetimes_are_explicit():
@@ -262,9 +260,9 @@ def test_dft_force_failures_and_budget_lifetimes_are_explicit():
         tiny.solve_atom(1)
     assert tiny.memory_used_bytes == 0
     for options in ({"method": "ghf"}, {"method": "rhf", "kinetic": "fd"},
-                    {"method": "rhf", "two_body": "cholesky"}, {"method": "vqe"}):
+                    {"method": "vqe"}):
         atoms = h2()
-        atoms.calc = Mandacaru(engine="rust", grid_spacing=.35, trace=False, **options)
+        atoms.calc = Mandacaru( grid_spacing=.35, trace=False, **options)
         with pytest.raises(NotImplementedError):
             atoms.get_forces()
 

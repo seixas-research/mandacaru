@@ -2,7 +2,7 @@
 import os
 from ase.build import molecule
 from mandacaru import Mandacaru
-from mandacaru.algorithms import QuantumPhaseEstimation
+from mandacaru.workflows.qpe import QuantumPhaseEstimation
 from mandacaru.core import load_checkpoint
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")

@@ -51,7 +51,7 @@ primitive cell.
 ```python
 import numpy as np
 from ase import Atoms
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 # One H per cell; periodic along x, vacuum in y and z.
 atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],

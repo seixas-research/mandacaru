@@ -1,7 +1,7 @@
 """Out-of-time-order correlator of the H2 ground state prepared by ADAPT-VQE."""
 from ase.build import molecule
 from mandacaru import Mandacaru
-from mandacaru.algorithms import NestedOTOC
+from mandacaru.workflows.nested_otoc import NestedOTOC
 from mandacaru.core import PauliSum
 
 atoms = molecule("H2")

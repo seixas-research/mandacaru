@@ -6,17 +6,11 @@ r"""``mandacaru-build``: generate pseudopotential datasets from the command line
     mandacaru-build --pp PAW --dirac --element Fe Cu Ga --workers 3
     mandacaru-build --pp UPAW --element O
     mandacaru-build --pp PAW --all --workers 7 --output staging/
-    mandacaru-build --build-backend
 
-Every dataset is generated natively (the reference atom, the partial waves,
-the projectors), through the same functions a calculation uses:
-:func:`~mandacaru.pseudopotentials.paw.generate_paw` (PAW-LCAO) and
-:func:`~mandacaru.pseudopotentials.paw.generate_upaw` (UPAW-LCAO).  The radial
-kernels of that generation -- the tridiagonal eigenpair of
-the uniform-grid radial equation and the Numerov recursions -- run in C
-(:mod:`mandacaru.basis.radial_backend`, compiled on first use); ``--backend
-python`` selects the reference kernels instead, which give the same numbers
-more slowly.
+Dataset assembly still uses the Python PAW generators. The nonrelativistic
+LDA atom and radial eigenpair/Numerov kernels execute in the packaged Rust
+extension. Unsupported atomic models raise explicitly. This development module
+is not an installed console entry point.
 
 A dataset is written to ``--output`` (default: the current folder, one
 subfolder per family) at the library stride.  ``--install`` writes into
@@ -91,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
                "  mandacaru-build --pp PAW --dirac --element Fe Cu --workers 2\n"
                "  mandacaru-build --pp UPAW --element O\n"
                "  mandacaru-build --pp PAW --all --workers 7 --output staging/\n"
-               "  mandacaru-build --build-backend\n",
+               "",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pp", default="PAW", metavar="FAMILY",
                         help="PAW (PAW-LCAO, default) or UPAW")
@@ -132,37 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true",
                         help="also compare every channel's scattering phase "
                              "with the all-electron atom")
-    parser.add_argument("--backend", default="auto",
-                        choices=["auto", "c", "python"],
-                        help="radial kernels: C when available (auto), C or "
-                             "fail (c), or the Python reference (python)")
-    parser.add_argument("--build-backend", action="store_true",
-                        help="compile the C radial backend, report, and exit")
     return parser
-
-
-def _environment(backend: str) -> None:
-    """Set the kernel policy before anything is generated (inherited by the
-    worker processes)."""
-    os.environ["MANDACARU_BACKEND"] = {"auto": "auto", "c": "c",
-                                       "python": "numpy"}[backend]
-
-
-def build_backend_command() -> int:
-    """``mandacaru-build --build-backend``: compile and load the radial kernels."""
-    from ..basis import radial_backend
-
-    os.environ["MANDACARU_BACKEND"] = "auto"
-    radial_backend.build_radial_backend(verbose=True)
-    radial_backend.reload_radial_backend()
-    uses_c, message = radial_backend.radial_backend_status(build=False)
-    if uses_c:
-        print(f"C radial backend: {message}")
-        return 0
-    print(f"C radial backend unavailable: {message}\n"
-          "Generation will use the Python reference kernels, which give the "
-          "same numbers more slowly.")
-    return 1
 
 
 def _paw_dataset(family: str, output, install: bool, xc: str = "lda",
@@ -286,7 +250,7 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
                        f"{time.perf_counter() - started:.1f} s  "
                        f"{type(error).__name__}: {error}")
     elapsed = time.perf_counter() - started
-    uses_c, _message = radial_backend_status(build=False)
+    uses_c, _message = radial_backend_status()
     lines = [f"{symbol:>2}  {pp!r}"]
     if getattr(pp, "defects", None):
         from .partial_waves import defect_message
@@ -317,9 +281,6 @@ def main(argv=None) -> int:
     """``mandacaru-build`` entry point; returns the process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
-    _environment(args.backend)
-    if args.build_backend:
-        return build_backend_command()
 
     family = FAMILIES.get(args.pp.strip().lower())
     if family is None:
@@ -349,10 +310,6 @@ def main(argv=None) -> int:
 
     from ..basis.radial_backend import radial_backend_status
     uses_c, message = radial_backend_status()
-    if args.backend == "c" and not uses_c:
-        print(f"mandacaru-build: the C radial backend is unavailable: {message}",
-              file=sys.stderr)
-        return 2
     print(f"mandacaru-build: {family}, {args.xc.upper()}, "
           f"relativity={relativity}, ghosts={ghosts}, "
           f"{len(symbols)} element(s), {args.workers} worker(s)")

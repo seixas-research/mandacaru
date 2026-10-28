@@ -355,7 +355,7 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
         gradient = isinstance(first, BasisGradient)
         shared = _shell_key(first) is not None and not gradient
         spline = _radial_spline(first) if (shared or gradient) else None
-        if spline is not None and backend.HAS_C_BACKEND:
+        if spline is not None and backend.HAS_NATIVE_BACKEND:
             # The C kernel tests every candidate image against every point
             # itself, and evaluates and phases what lies inside its support.
             candidates = [R for R in rc.lattice_translations(
@@ -464,7 +464,7 @@ def bloch_projections(functions, lattice, kpoints, points, columns,
         gradient = isinstance(first, BasisGradient)
         shared = _shell_key(first) is not None and not gradient
         spline = _radial_spline(first) if (shared or gradient) else None
-        if spline is None or not backend.HAS_C_BACKEND:
+        if spline is None or not backend.HAS_NATIVE_BACKEND:
             rest.extend(members)
             continue
         candidates = [R for R in rc.lattice_translations(lattice,
@@ -786,7 +786,7 @@ class PeriodicPAW:
                  grid, kpoints, weights, coupling, overlap_blocks,
                  multipole_blocks, filter_wavevector=None, symmetry=None,
                  spin_orbit_projectors=None, spin_orbit_blocks=None):
-        from ..core.hamiltonian import assemble_block_matrix
+        from ..models.paw_channels import assemble_block_matrix
         from .local_split import split_width
 
         self.basis = list(basis)
@@ -2069,7 +2069,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     ``context["filter_held"]`` says which happened.  Without one, ``"auto"``
     is resolved from this grid alone.
     """
-    from ..algorithms._hamiltonian_from_atoms import monkhorst_pack_kpts
+    from ..models.setup import monkhorst_pack_kpts
     from ..basis.filtering import resolve_filter_cutoff
     from ..integrals import Grid
     from ..units import to_bohr
@@ -2135,7 +2135,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
     polarization: dict = {}
     # Ghosts lend their basis functions; everything physical is the real
     # atoms'.
-    from ..algorithms._hamiltonian_from_atoms import validate_ghosts
+    from ..models.setup import validate_ghosts
     ghosts = validate_ghosts(ghosts, len(symbols))
     real = [i for i in range(len(symbols)) if i not in ghosts]
     real_symbols = [symbols[i] for i in real]

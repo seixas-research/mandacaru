@@ -11,7 +11,7 @@ optimizers, ansätze, mappings or temperature schedules essentially for free.
 
 ```python
 from ase import Atoms
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
               cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
@@ -169,7 +169,7 @@ dependency and cannot be affected.
 Caching turns a pool comparison into a few seconds of work:
 
 ```python
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 
 # Build once ...
 atoms.calc = Mandacaru(method="adapt-vqe",

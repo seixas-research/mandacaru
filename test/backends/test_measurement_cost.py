@@ -32,7 +32,7 @@ from ase import Atoms
 
 from mandacaru import Mandacaru
 from mandacaru.algorithms import calculator as calculator_module
-from mandacaru.algorithms.calculator import (MeasurementFailed,
+from mandacaru.calculation import (MeasurementFailed,
                                              _is_real_operator, _real_problem)
 from mandacaru.backends.factorization import (double_factorization,
                                               spatial_double_factorization)

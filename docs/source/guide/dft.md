@@ -2,7 +2,7 @@
 
 The Rust molecular solver computes spin densities, Hartree convolution,
 exchange-correlation energy and potentials, and the generalized Kohn–Sham
-matrix. Python supplies the ASE interface and converts units.
+matrix. Python supplies geometry values, an optional ASE adapter and unit conversion.
 
 ## Molecular calculation
 
@@ -12,10 +12,12 @@ from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, .74]], cell=[5, 5, 5])
 atoms.center()
-atoms.calc = Mandacaru(
-    method="dft", engine="rust", xc="r2scan", basis="HAO",
+from mandacaru.integrations.ase import ASECalculator
+
+atoms.calc = ASECalculator(
+    method="dft", xc="r2scan", basis="HAO",
     grid_spacing=.35, project_translation=False, trace=False,
-    engine_options={"threads": 2, "memory_limit_bytes": 512 * 1024**2},
+    resources={"threads": 2, "memory_limit_bytes": 512 * 1024**2},
 )
 energy = atoms.get_potential_energy()  # eV, including nuclear repulsion
 forces = atoms.get_forces()            # eV / angstrom
@@ -76,7 +78,7 @@ threshold are excluded from the meta-GGA contribution.
 HSE06 needs two matching pieces: semilocal short-range exchange subtraction
 and the screened exact-exchange operator. The Rust implementation integrates
 the exchange hole with erfc screening and differentiates that quadrature.
-The molecular solver contracts separate screened Coulomb integrals into the
+The molecular solver builds screened Cholesky factors and contracts them into the
 exchange matrix and includes the same operator in stationary gradients.
 Evaluating a semilocal point alone is not a full hybrid SCF calculation.
 

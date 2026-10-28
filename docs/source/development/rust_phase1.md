@@ -7,52 +7,11 @@ the cached-Hamiltonian solver itself belongs to Phase 2.
 
 ## Layout and build
 
-The workspace stays under `src/mandacaru/integrals/rust/` so existing developer
-commands and the standalone integral-library path remain valid:
-
-| Member | Responsibility |
-| --- | --- |
-| `mandacaru_integrals` | Existing native kernels, C ABI, shared thread policy and ABI-version queries. |
-| `crates/core` (`mandacaru-core`) | Python-independent geometry, grids, units, allocation budgets, workspaces and checked kernel calls. |
-| `crates/python` (`mandacaru-python`) | PyO3/NumPy binding exposed internally as `mandacaru._native`. |
-
-Hatch remains the package backend, preserving version discovery, transformed
-PyPI README, scripts and optional dependencies. Its native build hook invokes
-Cargo with the checked lockfile and marks wheels for the interpreter/platform
-ABI. A wheel contains one extension, exporting both `PyInit__native` and the
-existing C symbols. The `ctypes` loader prefers that packaged extension; a source
-checkout can still build standalone Rust or C libraries. Explicit `numpy`,
-`rust` and `c` policies retain their selection/failure semantics.
-These policies select the existing calculator's integral backend. Calling
-`_native.Context` explicitly always invokes the checked Rust implementation.
-
-Source builds require Rust/Cargo (declared minimum Rust 1.85; validated here with
-Rust 1.95) and Python 3.14. Normal platform-wheel installation requires neither
-Cargo nor a runtime compilation step. Editable builds place an ignored native
-extension beside the source package; built artifacts remain outside versioned
-source. The ephemeral editable wheel contains only the source-path descriptor
-and metadata; it does not mislabel an embedded native binary as universal.
-Cross-target wheel builds are refused by the hook; host builds are supported.
-Source distributions include the workspace, lockfile and build hook and
-exclude generated libraries/build trees.
-
-```bash
-uv pip install --python .venv/bin/python -e .
-
-cargo test --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
-  --package mandacaru-core --package mandacaru_integrals
-
-cargo clippy --no-deps \
-  --manifest-path src/mandacaru/integrals/rust/Cargo.toml \
-  --package mandacaru-core --tests -- -D warnings
-
-.venv/bin/python -m pytest test/migration test/integrals/test_backend.py \
-  test/basis/test_radial_backend.py test/test_single_entry_point.py
-```
-
-The `--no-deps` Clippy scope keeps the new core check separate from existing
-style/documentation lint debt in the raw kernel crate. It does not suppress
-compiler checks or the kernel tests.
+The current workspace uses the repository-root `Cargo.toml` and separate crates
+in `crates/mandacaru-core`, `crates/mandacaru-kernels` and
+`crates/mandacaru-python`. The original nested integral workspace was removed;
+see [the current architecture](architecture.md). This page records the earlier
+milestone and does not define the current public interface.
 
 ## Engine contracts
 

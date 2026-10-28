@@ -1,0 +1,11 @@
+[package]
+name = "mandacaru-kernels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Numerical sampling, radial and grid kernels for Mandacaru"
+
+[lib]
+crate-type = ["rlib"]

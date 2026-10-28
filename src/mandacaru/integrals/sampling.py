@@ -91,7 +91,7 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
     groups, fallback = {}, []
     for row, function in enumerate(functions):
         spline = radial_spline(function)
-        if spline is None or not _backend.HAS_C_BACKEND or not all(
+        if spline is None or not _backend.HAS_NATIVE_BACKEND or not all(
                 hasattr(function, name) for name in ("center", "l", "m", "real")):
             fallback.append(row)
             continue
@@ -107,7 +107,7 @@ def sample_functions(functions, points, *, gradients=False, delta=1e-3,
             else ([0, 1, 2] if gradients else [-1]))
     sqrt2 = np.sqrt(2.0)
     center_nodes: dict = {}
-    has_real_shell = _backend.HAS_C_BACKEND and hasattr(_backend._LIB, "mandacaru_real_shell")
+    has_real_shell = _backend.HAS_NATIVE_BACKEND and hasattr(_backend._LIB, "mandacaru_real_shell")
 
     for (_, center, l, is_real, _rc), members in groups.items():
         first = functions[members[0]]

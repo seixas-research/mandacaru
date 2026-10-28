@@ -876,7 +876,7 @@ into the density matrices; the residual is the solve's), or `central difference
 of the reduced Hamiltonian` for a selector or reference the z-vector does not
 cover (see the active-space guide). Only when neither applies does the gradient
 hold the orbitals fixed, and then
-{data}`~mandacaru.algorithms.calculator.ORBITAL_RESPONSE_TOLERANCE` is where it
+{data}`~mandacaru.calculation.ORBITAL_RESPONSE_TOLERANCE` is where it
 starts warning. `net_force` is the grid's egg-box
 -- a free molecule feels no net force, so whatever appears there is
 discretization artifact.
