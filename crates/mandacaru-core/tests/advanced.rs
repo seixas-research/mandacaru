@@ -78,6 +78,74 @@ fn arbitrary_reference_exact_derivatives() {
 }
 
 #[test]
+fn product_adjoint_gradients_match_forward_derivatives_for_noncommuting_generators() {
+    let ctx = context();
+    {
+        let basis = Basis::register(&ctx, 2).unwrap();
+        let h = operator(
+            &ctx,
+            2,
+            &[("II", 19., 0.), ("ZX", 0.7, 0.), ("YY", -0.4, 0.)],
+        );
+        let a = operator(&ctx, 2, &[("XI", 0., 0.7), ("YZ", 0., 0.3)]);
+        let b = operator(&ctx, 2, &[("ZY", 0., 0.4), ("IZ", 0., -0.6)]);
+        let initial = [
+            C64::new(0.5, 0.),
+            C64::new(0., 0.5),
+            C64::new(-0.5, 0.),
+            C64::new(0., -0.5),
+        ];
+        for n in [0, 1, 7, 30] {
+            let ops: Vec<_> = (0..n).map(|i| if i % 2 == 0 { &a } else { &b }).collect();
+            let theta: Vec<_> = (0..n).map(|i| 0.31 * (i as f64 + 0.2).cos()).collect();
+            let eval = |t: &[f64]| {
+                evolution::evaluate_from(
+                    &ctx,
+                    &basis,
+                    &h,
+                    None,
+                    None,
+                    &ops,
+                    t,
+                    true,
+                    Some(&initial),
+                )
+                .unwrap()
+            };
+            let result = eval(&theta);
+            let forward =
+                evolution::state_from(&ctx, &basis, &ops, &theta, true, true, Some(&initial))
+                    .unwrap();
+            let hpsi = h.apply(&ctx, &basis, &forward.as_slice()[..4]).unwrap();
+            for k in 0..n {
+                let direct = 2.
+                    * evolution::inner(
+                        &forward.as_slice()[(k + 1) * 4..(k + 2) * 4],
+                        hpsi.as_slice(),
+                    )
+                    .re;
+                assert!((result.gradient[k] - direct).abs() < 2e-12);
+                if n == 7 {
+                    let mut t = theta.clone();
+                    t[k] += 1e-5;
+                    let high = eval(&t).energy;
+                    t[k] -= 2e-5;
+                    let low = eval(&t).energy;
+                    assert!((result.gradient[k] - (high - low) / 2e-5).abs() < 2e-9);
+                }
+            }
+            assert!(result
+                .state
+                .as_slice()
+                .iter()
+                .zip(&forward.as_slice()[..4])
+                .all(|(a, b)| (a - b).norm() < 1e-14));
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
 fn subspace_weights_sorting_and_one_state_limit() {
     let ctx = context();
     {
@@ -113,6 +181,49 @@ fn subspace_weights_sorting_and_one_state_limit() {
             let states = result.states.as_slice();
             assert!(evolution::inner(&states[..2], &states[2..]).norm() < 1e-12);
         }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn adaptive_growth_continues_after_an_inner_budget_failure_without_false_convergence() {
+    let ctx = context();
+    {
+        let h = operator(
+            &ctx,
+            4,
+            &[("ZIII", 0.3, 0.), ("XXII", 0.2, 0.), ("YYII", 0.2, 0.)],
+        );
+        let p = CachedProblem::new(
+            &ctx,
+            Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
+            h,
+            true,
+            false,
+            true,
+        )
+        .unwrap();
+        let options = SolveOptions {
+            adapt: true,
+            max_growth: 3,
+            optimizer: optimizer::Options {
+                max_iterations: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = p.solve(&options, None).unwrap();
+        assert!(!result.success);
+        assert!(result.final_gradient > 0.1);
+        assert_eq!(result.iterations.len(), 3);
+        assert!(result.iterations.iter().all(|it| !it.success));
+        assert_eq!(result.message, "growth budget exhausted");
+        let shared = p.solve_subspace(&options, &[2., 1.], None).unwrap();
+        assert!(!shared.success);
+        assert!(shared.final_gradient > 0.1);
+        assert_eq!(shared.optimizer_failures.len(), 3);
+        assert_eq!(shared.indices.len(), 3);
+        assert_eq!(shared.message, "growth budget exhausted");
     }
     assert_eq!(ctx.memory_used(), 0);
 }

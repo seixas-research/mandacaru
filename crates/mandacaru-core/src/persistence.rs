@@ -254,14 +254,13 @@ impl Document {
                 integer(&parts[1], "beta count")?,
             ],
         )?;
-        CachedProblem::new(
-            ctx,
-            encoding,
-            pauli(ctx, integer(&p["num_qubits"], "qubits")?, &p["terms"])?,
-            sector,
-            dense,
-            singles,
-        )
+        let mut h = pauli(ctx, integer(&p["num_qubits"], "qubits")?, &p["terms"])?;
+        if let Some(groups) = p["metadata"]["groups"].as_array() {
+            for group in groups {
+                h.decomposition.push(Self::embedded(ctx, group, h.n)?);
+            }
+        }
+        CachedProblem::new(ctx, encoding, h, sector, dense, singles)
     }
     pub fn state(&self, ctx: &Context) -> Result<Buffer<C64>> {
         ctx.run(|| {
@@ -314,6 +313,14 @@ impl Document {
         })
     }
     pub fn resume(&self, problem: &CachedProblem, options: &SolveOptions) -> Result<SolveResult> {
+        self.resume_observed(problem, options, None)
+    }
+    pub fn resume_observed(
+        &self,
+        problem: &CachedProblem,
+        options: &SolveOptions,
+        observer: Option<&mut crate::quantum::solver::GrowthObserver<'_>>,
+    ) -> Result<SolveResult> {
         let p = &self.payload;
         if p["format"] != CHECKPOINT
             || p["mapping"] != problem.encoding.mapping
@@ -348,6 +355,41 @@ impl Document {
             ));
         }
         let operators = p["operators"].as_array().unwrap();
+        if let Some(hva) = &problem.hva {
+            let indices: Vec<usize> =
+                serde_json::from_value(p["metadata"]["hva"]["indices"].clone())
+                    .map_err(|_| invalid("HVA checkpoint lacks its logical group indices"))?;
+            let parameters: Vec<f64> =
+                serde_json::from_value(p["metadata"]["hva"]["parameters"].clone())
+                    .map_err(|_| invalid("HVA checkpoint lacks its logical parameters"))?;
+            if indices != (0..problem.pool.len()).collect::<Vec<_>>()
+                || p["preparation"] != "product"
+                || options.adapt
+            {
+                return Err(invalid(
+                    "HVA checkpoint logical sequence differs from fixed ansatz",
+                ));
+            }
+            let expanded = hva.expand(&problem.pool, &indices, &parameters)?;
+            if operators.len() != expanded.operators.len() {
+                return Err(invalid("HVA checkpoint evolution differs from the ansatz"));
+            }
+            for ((entry, operator), &parameter) in operators
+                .iter()
+                .zip(expanded.operators)
+                .zip(&expanded.parameters)
+            {
+                let actual = Self::embedded(ctx, &entry["generator"], n)?;
+                if !same_operator(&actual, operator)
+                    || (number(&entry["parameter"], "parameter")? - parameter).abs() > 1e-12
+                {
+                    return Err(invalid(
+                        "HVA checkpoint stages differ from its logical parameters",
+                    ));
+                }
+            }
+            return problem.solve(options, Some(&parameters));
+        }
         if operators.len() > 1 && (p["preparation"] == "sum") == (options.adapt || options.trotter)
         {
             return Err(invalid(
@@ -372,6 +414,14 @@ impl Document {
             return Err(invalid(
                 "checkpoint generator sequence differs from fixed UCCSD ansatz",
             ));
+        }
+        if let Some(observer) = observer {
+            return problem.solve_observed(
+                options,
+                Some(&parameters),
+                if options.adapt { Some(&indices) } else { None },
+                observer,
+            );
         }
         problem.solve_sequence(
             options,
@@ -402,8 +452,8 @@ pub fn checkpoint(
         || indices.iter().any(|&i| i >= problem.pool.len())
         || parameters.iter().any(|x| !x.is_finite())
         || !energy.is_finite()
-        || !["vqe", "adapt-vqe"].contains(&method)
-        || (method == "adapt-vqe" && !product_form)
+        || !["vqe", "adapt-vqe", "mcas-vqe", "valqa"].contains(&method)
+        || (method != "vqe" && !product_form)
     {
         return Err(invalid("invalid checkpoint ansatz parameters or energy"));
     }
@@ -421,7 +471,17 @@ pub fn checkpoint(
         entries.checked_add(32).ok_or(Error::Overflow)?,
         n.checked_add(512).ok_or(Error::Overflow)?,
     ])?)?;
-    let payload = json!({"format":CHECKPOINT,"version":2,"energy_unit":"Ha","n_qubits":n,"mapping":problem.encoding.mapping,"num_particles":problem.encoding.particles,"n_spatial_orbitals":problem.encoding.modes/2,"reference_qubits":(0..n).filter(|q| reference & (1<<(n-1-q))!=0).collect::<Vec<_>>(),"preparation":if product_form {"product"} else {"sum"},"method":method,"energy":energy,"operators":indices.iter().zip(parameters).map(|(&i,&t)| json!({"label":problem.pool[i].label,"kind":"fermionic","parameter":t,"generator":pauli_payload(&problem.pool[i].operator)})).collect::<Vec<_>>(),"hamiltonian":pauli_payload(&problem.hamiltonian),"status":status,"metadata":{"engine":"rust"}});
+    let (operators, metadata) = if let Some(hva) = &problem.hva {
+        let expanded = hva.expand(&problem.pool, indices, parameters)?;
+        let operators=expanded.operators.iter().zip(&expanded.parameters).enumerate().map(|(i,(op,t))|json!({"label":format!("HVA-stage({i})"),"kind":"hamiltonian-group","parameter":t,"generator":pauli_payload(op)})).collect::<Vec<_>>();
+        (
+            operators,
+            json!({"engine":"rust","hva":{"indices":indices,"parameters":parameters,"trotter":hva.trotter}}),
+        )
+    } else {
+        (indices.iter().zip(parameters).map(|(&i,&t)|json!({"label":problem.pool[i].label,"kind":"fermionic","parameter":t,"generator":pauli_payload(&problem.pool[i].operator)})).collect::<Vec<_>>(),json!({"engine":"rust"}))
+    };
+    let payload = json!({"format":CHECKPOINT,"version":2,"energy_unit":"Ha","n_qubits":n,"mapping":problem.encoding.mapping,"num_particles":problem.encoding.particles,"n_spatial_orbitals":problem.encoding.modes/2,"reference_qubits":(0..n).filter(|q| reference & (1<<(n-1-q))!=0).collect::<Vec<_>>(),"preparation":if problem.hva.is_some() || product_form {"product"} else {"sum"},"method":method,"energy":energy,"operators":operators,"hamiltonian":pauli_payload(&problem.hamiltonian),"status":status,"metadata":metadata});
     Document::parse(ctx, &payload.to_string(), CHECKPOINT)
 }
 /// Same-directory create-new staging, flush/sync before atomic replacement.

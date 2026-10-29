@@ -226,6 +226,11 @@ def lookup_family(name) -> FamilySpec | None:
         return name
     if not isinstance(name, str):
         return None
+    if _key(name) in ("paw-lcao", "upaw-lcao", "unitary-paw-lcao") and _key(name) not in _ALIASES:
+        # Built-in registration must not depend on which public module a user
+        # happened to import first.
+        from importlib import import_module
+        import_module(".paw", __package__)
     canonical = _ALIASES.get(_key(name))
     return None if canonical is None else PSEUDO_FAMILIES[canonical]
 

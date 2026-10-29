@@ -1,6 +1,6 @@
-//! Matrix-free exponential actions and exact forward derivatives. The summed
-//! UCC exponential uses a differentiated Taylor recurrence (Frechet action),
-//! rather than treating noncommuting generators as a product.
+//! Matrix-free exponential actions and analytic derivatives. Product ansatz
+//! energies use an adjoint sweep; the summed UCC exponential uses a
+//! differentiated Taylor recurrence (Frechet action).
 use super::{Basis, Operator, C64};
 use crate::{product, Buffer, Context, Error, Result};
 
@@ -21,6 +21,76 @@ pub(super) fn exponential(
     directions: &[Option<usize>],
 ) -> Result<()> {
     let d = basis.len();
+    if let [generator] = ops {
+        if generator.terms.len() > 1 {
+            if let Some(frequency) = generator.rotation_frequency {
+                let angle = theta[0] * frequency;
+                if !angle.is_finite() {
+                    return Err(Error::Invalid("excitation rotation angle overflow".into()));
+                }
+                let linear = angle.sin() / frequency;
+                let quadratic = 2. * (0.5 * angle).sin().powi(2) / frequency.powi(2);
+                let mut first = ctx.allocate::<C64>(d)?;
+                let mut second = ctx.allocate::<C64>(d)?;
+                for row in data.chunks_exact_mut(d).take(rows) {
+                    generator.apply_into(basis, row, first.as_mut_slice());
+                    generator.apply_into(basis, first.as_slice(), second.as_mut_slice());
+                    for ((value, &a), &b) in
+                        row.iter_mut().zip(first.as_slice()).zip(second.as_slice())
+                    {
+                        *value += linear * a + quadratic * b;
+                    }
+                }
+                if directions.iter().any(Option::is_some) {
+                    generator.apply_into(basis, &data[..d], first.as_mut_slice());
+                    for (j, direction) in directions.iter().enumerate() {
+                        if direction == &Some(0) {
+                            for (value, &derivative) in data[(j + 1) * d..(j + 2) * d]
+                                .iter_mut()
+                                .zip(first.as_slice())
+                            {
+                                *value += derivative;
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+    }
+    if ops.len() == 1
+        && ops[0].terms.len() == 1
+        && ops[0].terms[0].coefficient.re == 0.
+        && ops[0].terms[0].coefficient.im != 0.
+    {
+        let coefficient = ops[0].terms[0].coefficient.im;
+        let angle = theta[0] * coefficient;
+        if !angle.is_finite() {
+            return Err(Error::Invalid("Pauli rotation angle overflow".into()));
+        }
+        let mut action = ctx.allocate::<C64>(d)?;
+        let (sin, cos) = angle.sin_cos();
+        for row in data.chunks_exact_mut(d).take(rows) {
+            ops[0].apply_into(basis, row, action.as_mut_slice());
+            for (out, &applied) in row.iter_mut().zip(action.as_slice()) {
+                *out = *out * cos + applied * (sin / coefficient);
+            }
+        }
+        if directions.iter().any(Option::is_some) {
+            ops[0].apply_into(basis, &data[..d], action.as_mut_slice());
+            for (j, direction) in directions.iter().enumerate() {
+                if direction == &Some(0) {
+                    for (out, &applied) in data[(j + 1) * d..(j + 2) * d]
+                        .iter_mut()
+                        .zip(action.as_slice())
+                    {
+                        *out += applied;
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
     let bound: f64 = ops
         .iter()
         .zip(theta)
@@ -199,37 +269,91 @@ pub fn evaluate_from(
             "Hamiltonian representation must match the basis".into(),
         ));
     }
-    let data = state_from(ctx, basis, ops, theta, trotter, true, initial)?;
+    let data = state_from(ctx, basis, ops, theta, trotter, !trotter, initial)?;
     let d = basis.len();
     let psi = &data.as_slice()[..d];
+    let normalization = inner(psi, psi).re;
+    let identity = h.identity();
     let mut hpsi = ctx.allocate::<C64>(d)?;
     if let Some(matrix) = dense {
         for (row, out) in hpsi.as_mut_slice().iter_mut().enumerate() {
             *out = matrix[row * d..(row + 1) * d]
                 .iter()
                 .zip(psi)
-                .map(|(a, b)| a * b)
-                .sum();
+                .enumerate()
+                .filter(|(column, _)| *column != row)
+                .map(|(_, (a, b))| a * b)
+                .sum::<C64>()
+                + h.centered_diagonal(basis.indices.as_slice()[row]) * psi[row];
         }
     } else if let Some(sparse) = sparse {
-        sparse.apply_into(psi, hpsi.as_mut_slice());
+        sparse.apply_centered_into(psi, hpsi.as_mut_slice());
     } else {
-        h.apply_into(basis, psi, hpsi.as_mut_slice());
+        h.apply_centered_into(basis, psi, hpsi.as_mut_slice());
     }
-    let energy = inner(psi, hpsi.as_slice());
-    if !energy.re.is_finite() || energy.im.abs() > 1e-10 {
+    let energy = inner(psi, hpsi.as_slice()) / normalization;
+    if !energy.re.is_finite() || (energy.im + identity.im).abs() > 1e-10 {
         return Err(Error::Kernel("invalid Hermitian expectation value".into()));
     }
-    let gradient: Vec<f64> = (0..theta.len())
-        .map(|k| 2. * inner(&data.as_slice()[(k + 1) * d..(k + 2) * d], hpsi.as_slice()).re)
-        .collect();
+    let gradient: Vec<f64> = if trotter {
+        // At step k the two rows are psi_k and its energy adjoint lambda_k.
+        // Unitary inversion recovers both preceding rows without retaining
+        // every intermediate state or propagating all parameter derivatives.
+        let mut work = ctx.allocate::<C64>(product(&[2, d])?)?;
+        work.as_mut_slice()[..d].copy_from_slice(psi);
+        for (out, (&h, &p)) in work.as_mut_slice()[d..]
+            .iter_mut()
+            .zip(hpsi.as_slice().iter().zip(psi))
+        {
+            // Removing E|psi> leaves the real gradient unchanged and avoids
+            // cancellation from large constant shifts in the Hamiltonian.
+            *out = h - energy.re * p;
+        }
+        let mut action = ctx.allocate::<C64>(d)?;
+        let mut gradient = vec![0.; theta.len()];
+        for k in (0..theta.len()).rev() {
+            ops[k].apply_into(basis, &work.as_slice()[..d], action.as_mut_slice());
+            gradient[k] = 2. * inner(&work.as_slice()[d..], action.as_slice()).re / normalization;
+            if k > 0 {
+                exponential(
+                    ctx,
+                    basis,
+                    &[ops[k]],
+                    &[-theta[k]],
+                    work.as_mut_slice(),
+                    2,
+                    &[None],
+                )?;
+            }
+        }
+        gradient
+    } else {
+        let mut residual = ctx.allocate::<C64>(d)?;
+        for ((out, &h), &p) in residual
+            .as_mut_slice()
+            .iter_mut()
+            .zip(hpsi.as_slice())
+            .zip(psi)
+        {
+            *out = h - energy.re * p;
+        }
+        (0..theta.len())
+            .map(|k| {
+                2. * inner(
+                    &data.as_slice()[(k + 1) * d..(k + 2) * d],
+                    residual.as_slice(),
+                )
+                .re / normalization
+            })
+            .collect()
+    };
     if gradient.iter().any(|g| !g.is_finite()) {
         return Err(Error::Kernel("nonfinite energy derivative".into()));
     }
     let mut state = ctx.allocate(d)?;
     state.as_mut_slice().copy_from_slice(psi);
     Ok(Evaluation {
-        energy: energy.re,
+        energy: energy.re + identity.re,
         gradient,
         state,
     })

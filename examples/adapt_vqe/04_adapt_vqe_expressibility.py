@@ -2,7 +2,7 @@
 import numpy as np
 from ase.build import molecule
 from mandacaru import Mandacaru
-from mandacaru.algorithms.expressivity import (active_space_dimension,
+from mandacaru.analysis.expressibility import (active_space_dimension,
                                                calculate_kl_divergence,
                                                sample_pqc_fidelities)
 

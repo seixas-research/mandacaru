@@ -348,9 +348,7 @@ class CircuitProvider(ABC):
     def _core_options(self):
         context = getattr(self, "_native_context", None)
         return ({} if context is None else
-                {"engine": "rust", "engine_options": {
-                    "threads": context.threads,
-                    "memory_limit_bytes": context.memory_limit_bytes}})
+                {"context": context})
 
     @property
     def run_jobs(self) -> list:
@@ -676,8 +674,10 @@ class QiskitProvider(CircuitProvider):
                     default_precision=self.precision, seed=self.seed)
             elif self.is_fake_device:
                 from qiskit.primitives import BackendEstimatorV2
+                from qiskit_aer import AerSimulator
+
                 self._estimator = BackendEstimatorV2(
-                    backend=self.backend(),
+                    backend=AerSimulator.from_backend(self.backend()),
                     options={"default_precision": self.precision})
             else:
                 from qiskit_ibm_runtime import Estimator
@@ -815,17 +815,16 @@ class QiskitProvider(CircuitProvider):
         for q in occupied:
             qc.x(wire(q))
         for k, generator in enumerate(generators):
-            for label, coeff in pauli_rotations(generator):
-                # `_pauli_rotation(label, 1)` emits rz(-2): scale it by the
-                # term's coefficient and the generator's symbolic angle.
-                for op in self._pauli_rotation(label, 1.0):
-                    gate = op[0]
-                    if gate == "cx":
-                        qc.cx(wire(op[1]), wire(op[2]))
-                    elif gate == "rz":
-                        qc.rz(op[2] * float(coeff) * params[k], wire(op[1]))
-                    else:
-                        getattr(qc, gate)(wire(op[1]))
+            terms = [(label, complex(c).real, complex(c).imag)
+                     for label, c in generator.terms.items()]
+            for gate, first, second, angle in self._native_context.compile_circuit(
+                    n_qubits, [], [terms], [1.0]):
+                if gate == "cx":
+                    qc.cx(wire(first), wire(second))
+                elif gate == "rz":
+                    qc.rz(angle * params[k], wire(first))
+                else:
+                    getattr(qc, gate)(wire(first))
         return qc, params
 
     def compiled(self, n_qubits: int, occupied, generators):

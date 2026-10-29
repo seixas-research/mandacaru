@@ -1,9 +1,9 @@
 API reference
 =============
 
-``Mandacaru`` is the Rust-only calculation interface. ``run`` accepts
-``Geometry`` without ASE. The optional ``mandacaru.integrations.ase.ASECalculator``
-adapter implements the ASE Calculator protocol. There is no ``engine`` or
+``Mandacaru`` is an ASE Calculator whose numerical implementation runs in Rust.
+Attach it directly with ``atoms.calc = Mandacaru(...)``. ``run`` also accepts
+standalone ``Geometry`` values. There is no ``engine`` or
 ``engine_options`` argument.
 
 .. autoclass:: mandacaru.calculation.Mandacaru
@@ -21,6 +21,24 @@ adapter implements the ASE Calculator protocol. There is no ``engine`` or
 The result's ``hamiltonian`` property explicitly requests dense transformed
 integrals. Reading energies, forces or ordinary snapshots leaves that Hamiltonian
 unconstructed. Mean-field exchange uses Coulomb Cholesky factors.
+
+``active_space={"method": "mp2", "orbitals": 6}`` selects closed-shell HF
+frozen natural orbitals in Rust. ``threshold`` selects by occupation;
+``frozen`` and occupied/virtual counts control the frozen core and register.
+Selection constructs only the reduced Hamiltonian. Its native model exposes
+``orbital_rotation``, ``selection_occupations`` and ``mp2_correlation_energy``.
+Density views retain the selected rotation. Open-shell MP2 selection, DLPNO,
+symmetry expansion and correlating-pair constraints remain unavailable.
+
+For molecular calculations, ``natural_orbitals`` returns occupations
+and orbital coefficients computed in Rust. ``volumetric_field`` samples the
+density, reference density, correlation difference density or a natural orbital.
+``write_cube`` and ``Viewer3D`` consume these native fields. Fields include frozen
+occupied orbitals and exclude deleted virtual orbitals in an active-space run.
+Ordinary mean-field fields do not construct four-index integrals.
+PAW fields contain smooth valence values; ``augmentation_charge`` reports the
+on-site charge absent from the sampled density. Cube comments identify this
+separation, and nuclear element labels remain distinct from valence charges.
 
 Native boundary
 ---------------

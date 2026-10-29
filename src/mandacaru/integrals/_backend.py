@@ -8,7 +8,7 @@
 
 """Array adapters to the Rust extension's exported native ABI.
 
-The packaged extension supplies these kernels for optional PAW setup. It must
+The packaged extension supplies these kernels for PAW setup. It must
 be installed before use; compilation belongs to the package build.
 """
 
@@ -86,8 +86,7 @@ def _load(fresh: bool = False):
             return None
         return bound
     except AttributeError:
-        # A stale library missing a newer symbol (e.g. mandacaru_one_body_general):
-        # fall back to the NumPy kernels rather than crashing on import.
+        # A stale library missing a required symbol cannot serve this adapter.
         return None
 
 
@@ -791,7 +790,7 @@ def bader_ascent(starts, node_gradient, periodic, A, A_inv, origin, lattice,
 
 
 # --------------------------------------------------------------------------- #
-# NumPy reference fallbacks (mirror the C kernels exactly).
+# Real-space batch sizing.
 # --------------------------------------------------------------------------- #
 
 

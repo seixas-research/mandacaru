@@ -66,7 +66,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..integrals._backend import single_threaded_blas
+from .. import _native
 from ..units import EV_TO_HARTREE, HARTREE_TO_EV
 
 #: Amplitude ``A`` (Hartree) of the confining potential.
@@ -269,100 +269,37 @@ def _grid(r_c: float, doubling: int) -> np.ndarray:
     return (r_c / n) * np.arange(1, n)
 
 
+def _radial_state(r, v, p_u, D, q, state=0, *, vectors=True, context=None):
+    """Typed adapter to the native generalized radial PAW eigensolver."""
+    context = context if context is not None else _native.Context(threads=1)
+    rank = len(p_u)
+    return context.paw_eigenpair(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(v, dtype=float),
+        np.ascontiguousarray(p_u, dtype=float).reshape(rank, len(r)),
+        np.ascontiguousarray(D, dtype=float).reshape(rank, rank),
+        np.ascontiguousarray(q, dtype=float).reshape(rank, rank),
+        state=state, vectors=vectors,
+    )
+
+
 def _eigenvalue(r, v, p_u, D, q, state: int = 0) -> float:
-    r"""The ``state``-th eigenvalue (0 the lowest) of the pencil of
-    :func:`~.paw._generalized_matrices`, without forming it.
-
-    ``H = T + U D U^T`` and ``S = I + U q U^T``, with ``T`` tridiagonal and
-    ``U = \sqrt h\,X^T`` one column per projector.  The number of
-    eigenvalues below :math:`\sigma` is the inertia of
-    :math:`H - \sigma S` (``S`` is positive definite), which Haynsworth's
-    formula splits into that of :math:`T - \sigma` -- from ``T``'s own
-    eigenvalues -- and of a matrix the size of the projector count; the
-    count is bisected to the eigenvalue.  A dense generalized solve of the
-    free level (the wall at the table's end, 2849 nodes) cost 1.4 s per
-    channel and was most of a crystal's setup; this costs milliseconds and
-    agrees to round-off.
-    """
-    from scipy.linalg import eigh, eigvalsh_tridiagonal, solve_banded
-
-    h = float(r[1] - r[0])
-    n = r.size
-    diagonal = 1.0 / h ** 2 + np.asarray(v, dtype=float)
-    off = np.full(n - 1, -0.5 / h ** 2)
-    levels = eigvalsh_tridiagonal(diagonal, off)
-    state = int(state)
-    if not p_u:
-        return float(levels[state])
-    U = np.sqrt(h) * np.array(p_u).T
-    D = np.asarray(D, dtype=float)
-    q = np.asarray(q, dtype=float)
-    band = np.zeros((3, n))
-    band[0, 1:] = off
-    band[2, :-1] = off
-
-    def below(sigma):
-        """How many eigenvalues of the pencil lie below ``sigma``."""
-        beta, V = eigh(D - sigma * q)
-        keep = np.abs(beta) > 1e-14 * max(1.0, float(np.max(np.abs(beta))))
-        count = int(np.searchsorted(levels, sigma))
-        if not np.any(keep):
-            return count
-        W = U @ V[:, keep]
-        band[1] = diagonal - sigma
-        solved = solve_banded((1, 1), band, W)
-        inner = -np.diag(1.0 / beta[keep]) - W.T @ solved
-        count += int(np.sum(np.linalg.eigvalsh(inner) < 0.0))
-        count -= int(np.sum(beta[keep] > 0.0))        # -1/beta < 0
-        return count
-
-    scale = max(1.0, abs(float(levels[0])))
-    lo = float(levels[0]) - scale
-    while below(lo) > state:
-        lo -= 2.0 * (abs(lo) + 1.0)
-    hi = float(levels[min(state, levels.size - 1)])
-    while below(hi) < state + 1:
-        hi += 2.0 * (abs(hi) + 1.0)
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        if mid in (lo, hi):
-            break
-        if below(mid) >= state + 1:
-            hi = mid
-        else:
-            lo = mid
-    return 0.5 * (lo + hi)
+    """Selected PAW channel level, evaluated entirely in Rust."""
+    return _radial_state(r, v, p_u, D, q, state, vectors=False)[0]
 
 
-@single_threaded_blas
 def _solve(pp, l: int, r_c: float, amplitude: float, inner_fraction: float,
            vectors: bool, state: int = 0):
-    """The ``state``-th generalized eigenpair on the fine and the coarse
-    grid.
-
-    On one BLAS thread: a threaded BLAS splits the dense eigensolver's
-    reductions by the thread count, which moved every confined orbital --
-    and so the sampled basis and every integral -- by about 1e-13 between
-    two runs on different thread counts (2 against 24 threads moved a
-    benzene Cholesky rank from 1066 to 1074).  On one thread the basis is
-    the same bit for bit whatever the thread count; these pencils (a few
-    hundred to a few thousand radial nodes, cached per channel) are small
-    for a thread team anyway."""
-    from scipy.linalg import eigh
-
-    from .paw import _generalized_matrices
-
+    """Native generalized eigenpairs on the fine and coarse radial grids."""
+    context = _native.Context(threads=1)
     out = []
     for doubling in (0, 1):
         r = _grid(r_c, doubling)
         r, v, p_u, D, q = pp.channel_operator_on(l, r)
         v = v + confinement_potential(r, r_c, amplitude, inner_fraction)
-        if not vectors:
-            out.append((r, None, None, _eigenvalue(r, v, p_u, D, q, state)))
-            continue
-        H, S = _generalized_matrices(r, v, p_u, D, q)
-        values, states = eigh(H, S, subset_by_index=[state, state])
-        out.append((r, states[:, 0], S, float(values[0])))
+        energy, u = _radial_state(r, v, p_u, D, q, state,
+                                  vectors=vectors, context=context)
+        out.append((r, u, energy))
     return out
 
 
@@ -373,7 +310,7 @@ def confined_energy(pp, l: int, r_c: float, *,
     """The ``state``-th eigenvalue (Hartree; 0 the lowest, 1 a semicore
     channel's valence state) of channel ``l`` confined at ``r_c``,
     Richardson-extrapolated from the two grids."""
-    (_r, _u, _S, fine), (_r2, _u2, _S2, coarse) = _solve(
+    (_r, _u, fine), (_r2, _u2, coarse) = _solve(
         pp, int(l), float(r_c), amplitude, inner_fraction, vectors=False,
         state=state)
     return (4.0 * fine - coarse) / 3.0
@@ -392,10 +329,9 @@ def confined_eigenstate(pp, l: int, r_c: float, *,
     l = int(l)
     bound = CubicSpline(pp.r, pp.channels[l].pseudo_waves[int(state)])
     solved = []
-    for r, u, S, energy in _solve(pp, l, float(r_c), amplitude,
+    for r, u, energy in _solve(pp, l, float(r_c), amplitude,
                                   inner_fraction, vectors=True, state=state):
         h = r[1] - r[0]
-        u = u / np.sqrt(h * u @ S @ u)
         if np.trapezoid(u * bound(r) * r, dx=h) < 0:
             u = -u
         solved.append((r, u, energy))

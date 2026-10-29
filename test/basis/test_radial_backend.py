@@ -1,17 +1,12 @@
-"""The C radial kernels against their reference implementations
-(:mod:`mandacaru.basis.radial_backend`)."""
+"""Required Rust radial kernels against independent numerical references."""
 import numpy as np
 import pytest
 from scipy.linalg import eigh_tridiagonal
 
-from mandacaru.basis import radial_backend
 from mandacaru.basis.radial_backend import (numerov_inward_kernel,
                                             numerov_outward_kernel,
                                             radial_backend_status,
                                             tridiagonal_eigenpair)
-
-pytestmark = pytest.mark.skipif(not radial_backend_status()[0],
-                                reason="the C radial backend could not be built")
 
 
 def _radial_matrix(n=6000, l=0, r_max=30.0):
@@ -67,7 +62,7 @@ class TestTridiagonalEigenpair:
 
     def test_a_short_off_diagonal_is_refused(self):
         diag, off = _radial_matrix(n=100)
-        with pytest.raises(ValueError, match="off-diagonal"):
+        with pytest.raises(ValueError, match="98 entries; expected 99"):
             tridiagonal_eigenpair(diag, off[:-1], 0)
 
 
@@ -104,27 +99,12 @@ class TestNumerov:
         assert np.max(np.abs(c - ref)) <= 1e-12 * np.max(np.abs(ref))
 
 
-def test_the_python_policy_uses_the_reference_kernels(monkeypatch):
-    monkeypatch.setenv("MANDACARU_BACKEND", "numpy")
-    uses_c, message = radial_backend.radial_backend_status()
-    assert not uses_c and "numpy" in message
+@pytest.mark.parametrize("value", ["numpy", "python", "rust", "fortran"])
+def test_obsolete_backend_environment_cannot_select_a_python_engine(monkeypatch, value):
+    monkeypatch.setenv("MANDACARU_BACKEND", value)
+    uses_native, message = radial_backend_status()
+    assert uses_native and "Rust" in message
     diag, off = _radial_matrix(n=800)
     value, _v = tridiagonal_eigenpair(diag, off, 0)
     values, _vs = eigh_tridiagonal(diag, off, select="i", select_range=(0, 0))
-    assert value == values[0]
-
-
-@pytest.mark.parametrize("value", ["fortran", "python"])
-def test_an_invalid_policy_is_refused_as_the_integrals_refuse_it(monkeypatch,
-                                                                 value):
-    """One parser for both libraries: a value the integral backend refuses is
-    not read as ``auto`` by the radial one (``python`` is the spelling of
-    ``mandacaru-build --backend``, not of the variable)."""
-    from mandacaru.integrals import ensure_backend
-
-    monkeypatch.setenv("MANDACARU_BACKEND", value)
-    with pytest.raises(ValueError, match="MANDACARU_BACKEND") as radial:
-        radial_backend_status()
-    with pytest.raises(ValueError, match="MANDACARU_BACKEND") as integrals:
-        ensure_backend()
-    assert str(radial.value) == str(integrals.value)
+    assert value == pytest.approx(values[0], abs=1e-10)

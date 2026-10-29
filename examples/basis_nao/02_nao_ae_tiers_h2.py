@@ -1,7 +1,7 @@
 """H2 in all-electron numerical atomic orbitals (NAO-AE): each tier adds functions."""
 from ase.build import molecule
 from mandacaru import Mandacaru
-from mandacaru.algorithms import estimate_qubits
+from mandacaru import estimate_qubits
 
 atoms = molecule("H2")
 atoms.center(vacuum=3.0)

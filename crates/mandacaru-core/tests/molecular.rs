@@ -115,6 +115,55 @@ fn frozen_core_and_cholesky_keep_the_reference_energy() {
     assert!((result.electronic_energy - reference.electronic_energy).abs() < 1e-11);
 }
 #[test]
+fn selected_models_keep_their_rotation_and_release_budget_after_the_reference_is_dropped() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    {
+        let geometry = geometry();
+        let grid = SpatialGrid::from_geometry(&geometry, [0.95; 3], false, false).unwrap();
+        let integrals = MolecularIntegrals::new(
+            &ctx,
+            geometry,
+            grid,
+            r#"{"name":"HAO","virtual_orbitals":1}"#,
+            "spectral",
+            Some(1e-10),
+        )
+        .unwrap();
+        let reference = integrals
+            .mean_field("rhf", [1, 1], &Default::default())
+            .unwrap();
+        let used = ctx.memory_used();
+        {
+            let reservation = ctx.reserve(ctx.memory_limit() - used - 1).unwrap();
+            let held = ctx.memory_used();
+            assert!(matches!(
+                reference.active_model(&integrals, r#"{"method":"mp2","orbitals":3}"#),
+                Err(Error::Budget { .. })
+            ));
+            assert_eq!(ctx.memory_used(), held);
+            assert!(!reference.has_model());
+            drop(reservation);
+        }
+        assert_eq!(ctx.memory_used(), used);
+        let selected = reference
+            .active_model(&integrals, r#"{"method":"mp2","orbitals":3}"#)
+            .unwrap();
+        assert!(!reference.has_model());
+        assert_eq!(selected.m, 3);
+        let reduced = selected.reduce(&ctx, &[0], &[1, 2]).unwrap();
+        drop(selected);
+        drop(reference);
+        drop(integrals);
+        let rotation = reduced.orbital_rotation.as_ref().unwrap();
+        assert_eq!(rotation.matrix.shape(), (4, 4));
+        assert_eq!(reduced.orbital_indices, [1, 2]);
+        assert_eq!(reduced.frozen_indices, [0]);
+        assert!(ctx.memory_used() > 0);
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
 fn open_shell_and_spinor_mean_fields_have_consistent_energies() {
     let ctx = Context::new(Some(1), 64 * 1024 * 1024).unwrap();
     let integrals = integrals(&ctx);
@@ -180,6 +229,9 @@ fn factor_mo_transform_matches_full_contraction_for_complex_orbitals() {
         ],
     ) * C64::new(1. / 2f64.sqrt(), 0.);
     let expected = transform::four(&ctx, &packed, [&c; 4]).unwrap();
+    let occupied = c.columns(0, 1).into_owned();
+    let virtuals = c.columns(1, 1).into_owned();
+    let rectangular = transform::four(&ctx, &packed, [&occupied, &c, &virtuals, &c]).unwrap();
     let factors = packed.cholesky(&ctx, 1e-13).unwrap();
     let actual = transform::four(&ctx, &factors, [&c; 4]).unwrap();
     assert!(expected
@@ -187,6 +239,23 @@ fn factor_mo_transform_matches_full_contraction_for_complex_orbitals() {
         .iter()
         .zip(actual.as_slice())
         .all(|(a, b)| (a - b).norm() < 1e-12));
+    for eri in [&factors] {
+        let block = transform::four(&ctx, eri, [&occupied, &c, &virtuals, &c]).unwrap();
+        assert_eq!(block.as_slice().len(), 4);
+        assert!(block
+            .as_slice()
+            .iter()
+            .zip(rectangular.as_slice())
+            .all(|(a, b)| (a - b).norm() < 1e-12));
+        for q in 0..2 {
+            for s in 0..2 {
+                assert!(
+                    (block.as_slice()[q * 2 + s] - expected.as_slice()[(q * 2 + 1) * 2 + s]).norm()
+                        < 1e-12
+                );
+            }
+        }
+    }
 }
 #[test]
 fn errors_and_budget_exhaustion_release_molecular_storage() {

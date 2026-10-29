@@ -16,10 +16,12 @@ METHODS = {
     "uhf": Capability(False, True),
     "ghf": Capability(False, False),
     "dft": Capability(False, True, True),
-    "vqe": Capability(True, False),
-    "adapt-vqe": Capability(True, False),
+    "vqe": Capability(True, True),
+    "adapt-vqe": Capability(True, True),
     "subspace-vqe": Capability(True, False),
     "subspace-adapt-vqe": Capability(True, False),
+    "mcas-vqe": Capability(True, True),
+    "valqa": Capability(True, True),
 }
 from ._native import FUNCTIONALS as _FUNCTIONALS
 
@@ -108,3 +110,28 @@ def basis_specification(value):
 
 def available_methods():
     return tuple(METHODS)
+
+
+@dataclass(frozen=True)
+class QubitEstimate:
+    n_qubits: int
+    n_spatial_orbitals: int
+    mapping: str
+
+
+def estimate_qubits(atoms, *, basis="HAO", mapping="jordan_wigner", resources=None):
+    """Count the native basis without constructing molecular integrals."""
+    import json
+    from . import _native
+    from .structure import geometry_value
+
+    if mapping not in MAPPINGS:
+        raise ValueError(f"expected a canonical mapping in {MAPPINGS}")
+    context = _native.Context(**dict(resources or {}))
+    count = context.basis_size(
+        geometry_value(atoms).native(),
+        basis_spec=json.dumps(basis_specification(basis)),
+    )
+    return QubitEstimate(
+        2 * count - (2 if mapping == "parity_reduced" else 0), count, mapping
+    )

@@ -407,7 +407,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
             raise FileNotFoundError(
                 f"the {label} library at {folder!r} holds no datasets.  Update "
                 "the repository checkout the library variable names "
-                "(`mandacaru --pseudo-status` shows it), or generate the "
+                "(`mandacaru-paw --status` shows it), or generate the "
                 f"datasets there: mandacaru-build --pp {family} --all "
                 "--install")
         raise FileNotFoundError(

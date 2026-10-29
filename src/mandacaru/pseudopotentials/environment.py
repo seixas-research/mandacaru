@@ -15,9 +15,12 @@ family lives in a repository of its own (``mandacaru-paw``,
 ====================  ==========================  ==========================
 family                variable                    set it with
 ====================  ==========================  ==========================
-``paw-lcao``          ``MANDACARU_PAW_PATH``      ``mandacaru --set-paw DIR``
-``upaw-lcao``         ``MANDACARU_UPAW_PATH``     ``mandacaru --set-upaw DIR``
+``paw-lcao``          ``MANDACARU_PAW_PATH``      ``mandacaru-paw --set DIR``
+``upaw-lcao``         ``MANDACARU_UPAW_PATH``     ``mandacaru-paw --set-upaw DIR``
 ====================  ==========================  ==========================
+
+``mandacaru-paw --status`` reports where each variable points
+(:mod:`mandacaru.pseudopotentials.library_cli`).
 
 Inside a checkout the datasets sit one folder per set, named for its
 functional and relativistic treatment (:data:`LIBRARY_FOLDERS`): PAW-LCAO
@@ -42,14 +45,16 @@ it names the folder that holds the ``<Symbol>.parquet`` files itself.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 import os
 
 #: Family -> the environment variable naming its repository checkout.
 FAMILY_VARIABLES = {"paw-lcao": "MANDACARU_PAW_PATH",
                     "upaw-lcao": "MANDACARU_UPAW_PATH"}
-#: Family -> the ``mandacaru`` flag that sets its variable.
-SET_FLAGS = {"paw-lcao": "--set-paw", "upaw-lcao": "--set-upaw"}
+#: Family -> the command that sets its variable (``DIR`` is the checkout).
+SET_COMMANDS = {"paw-lcao": "mandacaru-paw --set DIR",
+                "upaw-lcao": "mandacaru-paw --set-upaw DIR"}
 #: Family -> the repository that holds its datasets.
 REPOSITORIES = {"paw-lcao": "mandacaru-paw", "upaw-lcao": "mandacaru-upaw"}
 #: Families that work without their variable: UPAW-LCAO is generated on
@@ -132,11 +137,16 @@ def _folders(root: str) -> list[str]:
                   and os.path.isdir(os.path.join(root, entry)))
 
 
+def _set_command(key: str, directory: str = "DIR") -> str:
+    """The shell command that sets ``key``'s variable to ``directory``."""
+    return SET_COMMANDS[key].replace("DIR", directory)
+
+
 def _how_to_set(key: str) -> str:
     return (f"Clone {REPOSITORIES[key]} and point Mandacaru at it:\n"
             f"    git clone https://github.com/seixas-research/"
             f"{REPOSITORIES[key]}\n"
-            f"    mandacaru {SET_FLAGS[key]} /path/to/{REPOSITORIES[key]}\n"
+            f"    {_set_command(key, f'/path/to/{REPOSITORIES[key]}')}\n"
             "then open a new terminal (or `source` your shell configuration) "
             "so the variable is defined.")
 
@@ -163,7 +173,7 @@ def repository_path(family: str) -> str:
             f"{variable}={value!r} is not a folder, so Mandacaru cannot "
             f"find the {key} pseudopotential library.  Point it at a checkout "
             f"of {REPOSITORIES[key]}:\n"
-            f"    mandacaru {SET_FLAGS[key]} /path/to/{REPOSITORIES[key]}")
+            f"    {_set_command(key, f'/path/to/{REPOSITORIES[key]}')}")
     return path
 
 
@@ -295,26 +305,66 @@ def dataset_count(folder: str) -> int:
                if os.path.splitext(name)[1].lower() in _DATA_EXTENSIONS)
 
 
-def status_lines() -> list[str]:
-    """One line per family: its variable, where it points, what it holds."""
-    lines = []
+@dataclass(frozen=True)
+class LibrarySet:
+    """One dataset folder of a checkout: ``lda-sr/``, ``pbe-fr/``, ..."""
+
+    name: str
+    functional: str
+    relativity: str
+    count: int
+
+
+@dataclass(frozen=True)
+class LibraryStatus:
+    """Where one family's variable points and what the checkout holds.
+
+    ``state`` is ``"ok"`` (a folder), ``"unset"`` (no value) or ``"invalid"``
+    (a value that names no folder); ``path`` is the checkout when ``ok``.
+    """
+
+    family: str
+    variable: str
+    value: str
+    state: str
+    path: str | None
+    sets: tuple[LibrarySet, ...]
+
+    @property
+    def optional(self) -> bool:
+        return self.family in OPTIONAL_FAMILIES
+
+    @property
+    def ok(self) -> bool:
+        """Whether nothing needs fixing: a folder that holds datasets, or an
+        optional family left unset (it is generated on demand)."""
+        return (self.state == "ok" and bool(self.sets)) or (
+            self.state == "unset" and self.optional)
+
+
+def _set_of(family: str, name: str, count: int) -> LibrarySet:
+    for (key, functional, relativity), folder in LIBRARY_FOLDERS.items():
+        if key == family and folder == name:
+            return LibrarySet(name, functional, relativity, count)
+    return LibrarySet(name, name, "", count)
+
+
+def library_status() -> list[LibraryStatus]:
+    """One :class:`LibraryStatus` per family, read from the environment now."""
+    report = []
     for key, variable in FAMILY_VARIABLES.items():
         value = os.environ.get(variable, "").strip()
         if not value:
-            optional = ("; optional, generated on demand"
-                        if key in OPTIONAL_FAMILIES else "")
-            lines.append(f"{key:<9} {variable} is not set  "
-                         f"(mandacaru {SET_FLAGS[key]} DIR{optional})")
+            report.append(LibraryStatus(key, variable, "", "unset", None, ()))
             continue
         try:
             root = repository_path(key)
         except LibraryPathError:
-            lines.append(f"{key:<9} {variable}={value}  NOT A DIRECTORY  "
-                         f"(mandacaru {SET_FLAGS[key]} DIR)")
+            report.append(LibraryStatus(key, variable, value, "invalid", None,
+                                        ()))
             continue
-        held = [f"{name}/: {dataset_count(os.path.join(root, name))} datasets"
-                for name in _folders(root)
-                if dataset_count(os.path.join(root, name))]
-        lines.append(f"{key:<9} {variable}={root}  "
-                     + ("; ".join(held) if held else "no dataset folder"))
-    return lines
+        sets = tuple(_set_of(key, name, dataset_count(os.path.join(root, name)))
+                     for name in _folders(root)
+                     if dataset_count(os.path.join(root, name)))
+        report.append(LibraryStatus(key, variable, value, "ok", root, sets))
+    return report

@@ -1,7 +1,18 @@
 use crate::{product, Error, Result, WorkerStats};
+use std::cell::RefCell;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+thread_local! {static ACTIVE_CONTEXTS: RefCell<Vec<usize>>=const {RefCell::new(Vec::new())};}
+struct ActiveContext(usize);
+impl Drop for ActiveContext {
+    fn drop(&mut self) {
+        ACTIVE_CONTEXTS.with(|active| {
+            let id = active.borrow_mut().pop();
+            debug_assert_eq!(id, Some(self.0));
+        });
+    }
+}
 
 #[derive(Debug)]
 struct Memory {
@@ -102,7 +113,13 @@ impl Context {
         self.workers.total()
     }
     pub(crate) fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+        let id = Arc::as_ptr(&self.execution) as usize;
+        if ACTIVE_CONTEXTS.with(|active| active.borrow().contains(&id)) {
+            return mandacaru_kernels::runtime::with_policy(self.threads, self.workers.clone(), f);
+        }
         let _execution = self.execution.lock().unwrap_or_else(|e| e.into_inner());
+        ACTIVE_CONTEXTS.with(|active| active.borrow_mut().push(id));
+        let _active = ActiveContext(id);
         mandacaru_kernels::runtime::with_policy(self.threads, self.workers.clone(), f)
     }
     pub fn reserve(&self, bytes: usize) -> Result<Reservation> {

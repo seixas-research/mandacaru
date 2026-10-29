@@ -11,7 +11,23 @@ authors = [
 description = "Everything you need for fermionic quantum simulation."
 license = {file = "LICENSE"} 
 requires-python = ">=3.14"
-dependencies = ['numpy>=2.0.0']
+dependencies = [
+    'numpy>=2.0.0',
+    'scipy',
+    'threadpoolctl',
+    'ase',
+    'spglib',
+    'matplotlib',
+    'fastparquet',
+    'pandas',
+    'qiskit',
+    'qiskit-aer',
+    'qiskit-ibm-runtime',
+    'amazon-braket-sdk',
+    'cirq',
+    'pytest',
+    'psutil',
+]
 
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -23,17 +39,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-ase = ['ase']
-periodic = ['ase', 'scipy', 'spglib', 'pandas', 'fastparquet']
-visualization = ['matplotlib']
-columnar = ['pandas', 'fastparquet']
-qiskit = ['qiskit', 'qiskit-ibm-runtime']
-braket = ['amazon-braket-sdk']
-cirq = ['cirq']
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
-dev = ['pytest', 'pytest-cov', 'ase', 'scipy', 'spglib', 'pandas', 'fastparquet',
-       'pyarrow', 'psutil', 'matplotlib', 'sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
+dev = ['pytest-cov', 'pyarrow', 'sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 
 [tool.pytest.ini_options]
 # The full scientific suite and the independent architecture checks live in test/.
@@ -66,6 +74,7 @@ exclude_also = [
 
 [project.scripts]
 mandacaru = "mandacaru.cli:main"
+mandacaru-paw = "mandacaru.pseudopotentials.library_cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/seixas-research/mandacaru"

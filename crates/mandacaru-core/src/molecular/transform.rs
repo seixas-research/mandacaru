@@ -5,16 +5,38 @@ use nalgebra::DMatrix;
 
 pub fn four(ctx: &Context, eri: &Eri, coefficients: [&DMatrix<C64>; 4]) -> Result<Buffer<C64>> {
     let m = eri.m();
-    let n = coefficients[0].ncols();
-    if coefficients
-        .iter()
-        .any(|c| c.nrows() != m || c.ncols() != n)
-    {
+    let sizes = coefficients.map(DMatrix::ncols);
+    let [np, nq, nr, ns] = sizes;
+    let n = *sizes.iter().max().unwrap();
+    if coefficients.iter().any(|c| c.nrows() != m) {
         return Err(invalid("MO transformation dimensions disagree"));
+    }
+    if let Eri::Augmented {
+        base, correction, ..
+    } = eri
+    {
+        let mut out = four(ctx, base, coefficients)?;
+        let _work = ctx.reserve(product(&[n.max(m), n.max(m), 16, 8])?)?;
+        for (factor, &weight) in correction.factors.iter().zip(&correction.weights) {
+            let b = factor.map(|v| C64::new(v, 0.));
+            let left = coefficients[0].adjoint() * &b * coefficients[2];
+            let right = coefficients[1].adjoint() * b * coefficients[3];
+            for p in 0..np {
+                for q in 0..nq {
+                    for r in 0..nr {
+                        for s in 0..ns {
+                            out.as_mut_slice()[((p * nq + q) * nr + r) * ns + s] +=
+                                weight * left[(p, r)] * right[(q, s)];
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(out);
     }
     if let Eri::Cholesky { rank, factors, .. } = eri {
         let _work = ctx.reserve(product(&[n.max(m), n.max(m), 16, 8])?)?;
-        let mut out = ctx.allocate::<C64>(product(&[n, n, n, n])?)?;
+        let mut out = ctx.allocate::<C64>(product(&sizes)?)?;
         for column in 0..*rank {
             let b = DMatrix::from_fn(m, m, |p, q| {
                 C64::new(
@@ -24,11 +46,11 @@ pub fn four(ctx: &Context, eri: &Eri, coefficients: [&DMatrix<C64>; 4]) -> Resul
             });
             let left = coefficients[0].adjoint() * &b * coefficients[2];
             let right = coefficients[1].adjoint() * b * coefficients[3];
-            for p in 0..n {
-                for q in 0..n {
-                    for r in 0..n {
-                        for s in 0..n {
-                            out.as_mut_slice()[((p * n + q) * n + r) * n + s] +=
+            for p in 0..np {
+                for q in 0..nq {
+                    for r in 0..nr {
+                        for s in 0..ns {
+                            out.as_mut_slice()[((p * nq + q) * nr + r) * ns + s] +=
                                 left[(p, r)] * right[(q, s)];
                         }
                     }
@@ -37,8 +59,8 @@ pub fn four(ctx: &Context, eri: &Eri, coefficients: [&DMatrix<C64>; 4]) -> Resul
         }
         return Ok(out);
     }
-    let mut current = ctx.allocate::<C64>(product(&[n, m, m, m])?)?;
-    for p in 0..n {
+    let mut current = ctx.allocate::<C64>(product(&[np, m, m, m])?)?;
+    for p in 0..np {
         for b in 0..m {
             for c in 0..m {
                 for d in 0..m {
@@ -49,7 +71,7 @@ pub fn four(ctx: &Context, eri: &Eri, coefficients: [&DMatrix<C64>; 4]) -> Resul
             }
         }
     }
-    let shapes = [[n, m, m, m], [n, n, m, m], [n, n, n, m], [n, n, n, n]];
+    let shapes = [[np, m, m, m], [np, nq, m, m], [np, nq, nr, m], sizes];
     for axis in 1..4 {
         let old = shapes[axis - 1];
         let new = shapes[axis];
@@ -85,77 +107,18 @@ pub struct Model {
     pub spinor: bool,
     pub orbital_indices: Vec<usize>,
     pub frozen_indices: Vec<usize>,
+    /// Full source-MO rotation, shared by reduced models and density views.
+    pub orbital_rotation: Option<std::sync::Arc<OrbitalRotation>>,
+    pub orbital_symmetry_sets: Vec<Vec<usize>>,
     _memory: Reservation,
 }
+pub struct OrbitalRotation {
+    pub matrix: DMatrix<C64>,
+    pub occupations: Vec<f64>,
+    pub correlation_energy: f64,
+    pub(crate) _memory: Reservation,
+}
 impl Model {
-    pub fn select(&self, ctx: &Context, numbers: &[u8], spec: &str) -> Result<Self> {
-        let spec: serde_json::Value =
-            serde_json::from_str(spec).map_err(|e| invalid(e.to_string()))?;
-        if spec
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("energy")
-            != "energy"
-            || spec.get("threshold").is_some_and(|v| !v.is_null())
-            || spec["symmetry"].as_bool() == Some(true)
-            || spec["correlating_pairs"].as_bool() == Some(true)
-        {
-            return Err(invalid("native active spaces currently use explicit indices or energy-ordered counts without occupation thresholds or symmetry expansion"));
-        }
-        let indices = |v: &serde_json::Value| -> Result<Vec<usize>> {
-            if let Some(count) = v.as_u64() {
-                if count > self.m as u64 {
-                    return Err(invalid("active/frozen count exceeds orbital count"));
-                }
-                return Ok((0..count as usize).collect());
-            }
-            let mut out: Vec<_> = v
-                .as_array()
-                .ok_or_else(|| invalid("active/frozen orbitals must be counts or index lists"))?
-                .iter()
-                .map(|i| {
-                    i.as_u64()
-                        .map(|i| i as usize)
-                        .ok_or_else(|| invalid("orbital indices must be nonnegative integers"))
-                })
-                .collect::<Result<_>>()?;
-            out.sort_unstable();
-            out.dedup();
-            Ok(out)
-        };
-        let frozen = match &spec["frozen"] {
-            serde_json::Value::Null => vec![],
-            serde_json::Value::String(s) if s == "auto" => {
-                let count: usize = numbers
-                    .iter()
-                    .map(|z| match z {
-                        0..=2 => 0,
-                        3..=10 => 2,
-                        11..=18 => 10,
-                        19..=36 => 18,
-                        37..=54 => 36,
-                        55..=86 => 54,
-                        _ => 86,
-                    })
-                    .sum::<usize>()
-                    / 2;
-                (0..count).collect()
-            }
-            v => indices(v)?,
-        };
-        let candidates: Vec<_> = (0..self.m).filter(|i| !frozen.contains(i)).collect();
-        let active = if spec["orbitals"].is_null() {
-            candidates
-        } else if let Some(count) = spec["orbitals"].as_u64() {
-            if count > candidates.len() as u64 {
-                return Err(invalid("active count exceeds remaining orbital count"));
-            }
-            candidates[..count as usize].to_vec()
-        } else {
-            indices(&spec["orbitals"])?
-        };
-        self.reduce(ctx, &frozen, &active)
-    }
     pub fn save(&self, ctx: &Context, path: &std::path::Path, mapping: &str) -> Result<()> {
         let operator = self.operator(ctx, mapping)?;
         let terms: Vec<_> = operator
@@ -163,7 +126,8 @@ impl Model {
             .into_iter()
             .map(|(s, c)| serde_json::json!([s, c.re, c.im]))
             .collect();
-        let value = serde_json::json!({"format":"mandacaru-qubit-hamiltonian","version":1,"num_qubits":operator.n,"mapping":mapping,"num_particles":self.particles,"n_spatial_orbitals":self.m,"metadata":{"energy_unit":"Ha","source_engine":"rust"},"terms":terms});
+        let groups:Vec<_>=operator.decomposition.iter().map(|g|serde_json::json!({"num_qubits":g.n,"terms":g.labels().into_iter().map(|(s,c)|serde_json::json!([s,c.re,c.im])).collect::<Vec<_>>()})).collect();
+        let value = serde_json::json!({"format":"mandacaru-qubit-hamiltonian","version":1,"num_qubits":operator.n,"mapping":mapping,"num_particles":self.particles,"n_spatial_orbitals":self.m,"metadata":{"energy_unit":"Ha","source_engine":"rust","groups":groups},"terms":terms});
         crate::persistence::Document::parse(
             ctx,
             &value.to_string(),
@@ -197,6 +161,8 @@ impl Model {
             spinor,
             orbital_indices: (0..n).collect(),
             frozen_indices: vec![],
+            orbital_rotation: None,
+            orbital_symmetry_sets: Vec::new(),
             _memory: ctx.reserve(product(&[n, n, 64])?)?,
         })
     }
@@ -278,6 +244,8 @@ impl Model {
             .copied()
             .chain(frozen.iter().map(|&i| self.orbital_indices[i]))
             .collect();
+        result.orbital_rotation = self.orbital_rotation.clone();
+        result.orbital_symmetry_sets = self.orbital_symmetry_sets.clone();
         Ok(result)
     }
     pub fn fermion_terms(&self) -> Vec<(Vec<(usize, bool)>, C64)> {
@@ -326,17 +294,33 @@ impl Model {
             2 * self.m,
             2 * self.m,
             2 * self.m,
-            192,
+            384,
         ])?)?;
         let mut terms = Vec::new();
+        let mut groups = [Vec::new(), Vec::new()];
         for (ladders, coefficient) in self.fermion_terms() {
             let mapped = encoding.monomial(ctx, &ladders)?;
-            terms.extend(mapped.terms.iter().map(|t| Term {
-                coefficient: t.coefficient * coefficient,
-                ..*t
-            }));
+            let entries: Vec<_> = mapped
+                .terms
+                .iter()
+                .map(|t| Term {
+                    coefficient: t.coefficient * coefficient,
+                    ..*t
+                })
+                .collect();
+            if !ladders.is_empty() {
+                groups[usize::from(ladders.len() == 4)].extend_from_slice(&entries);
+            }
+            terms.extend(entries);
         }
-        Operator::from_terms(ctx, encoding.n_qubits(), terms)
+        let mut operator = Operator::from_terms(ctx, encoding.n_qubits(), terms)?;
+        for terms in groups {
+            let group = Operator::from_terms(ctx, encoding.n_qubits(), terms)?;
+            if !group.terms.is_empty() {
+                operator.decomposition.push(group);
+            }
+        }
+        Ok(operator)
     }
     pub fn problem(
         &self,

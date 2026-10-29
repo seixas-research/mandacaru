@@ -7,6 +7,79 @@ fn context() -> Context {
     Context::new(Some(1), 64 * 1024 * 1024).unwrap()
 }
 #[test]
+fn energy_gradients_are_invariant_under_large_identity_shifts_in_every_storage() {
+    use mandacaru_core::quantum::sparse::SparseMatrix;
+    let ctx = context();
+    let mut expected: Option<(f64, f64)> = None;
+    for storage in 0..3 {
+        for constant in [0., 1e8, -1e8] {
+            let h = Operator::new(
+                &ctx,
+                4,
+                &[
+                    ("IIII".into(), C64::new(constant, 0.)),
+                    ("ZIII".into(), C64::new(0.3, 0.)),
+                    ("XXII".into(), C64::new(0.2, 0.)),
+                    ("YYII".into(), C64::new(0.2, 0.)),
+                ],
+            )
+            .unwrap();
+            let mut problem = CachedProblem::new(
+                &ctx,
+                Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
+                h,
+                true,
+                storage == 1,
+                true,
+            )
+            .unwrap();
+            if storage == 2 {
+                problem.sparse =
+                    Some(SparseMatrix::new(&ctx, &problem.basis, &problem.hamiltonian).unwrap());
+            }
+            let value = problem.evaluate(&[0], &[0.21], true).unwrap();
+            if let Some((energy, gradient)) = expected {
+                assert!((value.energy - constant - energy).abs() < 4e-8);
+                assert!((value.gradient[0] - gradient).abs() < 1e-12);
+            } else {
+                expected = Some((value.energy, value.gradient[0]));
+            }
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+#[test]
+fn bounded_sector_lookup_matches_sorted_indices_and_preserves_cancellation_checks() {
+    let ctx = context();
+    for mapping in ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"] {
+        let encoding = Encoding::new(mapping, 16, [4, 4]).unwrap();
+        {
+            let basis = Basis::new(&ctx, &encoding, true).unwrap();
+            for ket in 0..(1u64 << encoding.n_qubits()) {
+                assert_eq!(
+                    basis.index(ket),
+                    basis.indices.as_slice().binary_search(&ket).ok()
+                );
+            }
+            assert!(basis.index(u64::MAX).is_none());
+            let jw = Encoding::new("jordan_wigner", 16, [4, 4]).unwrap();
+            let first = jw.monomial(&ctx, &[(0, true), (1, false)]).unwrap();
+            let hopping = first
+                .add(&ctx, &first.dagger(&ctx).unwrap(), C64::new(1., 0.))
+                .unwrap();
+            let hopping = encoding.map_operator(&ctx, &hopping).unwrap();
+            basis.check_invariant(&hopping).unwrap();
+            let leaking = jw.monomial(&ctx, &[(0, true), (1, true)]).unwrap();
+            // Single creation pairs change tapered parity, so mapping itself
+            // may reject them before the sector check.
+            if let Ok(leaking) = encoding.map_operator(&ctx, &leaking) {
+                assert!(basis.check_invariant(&leaking).is_err());
+            }
+        }
+        assert_eq!(ctx.memory_used(), 0);
+    }
+}
+#[test]
 fn bfgs_and_lbfgs_solve_rosenbrock_and_report_budgets() {
     let ctx = context();
     let objective = |x: &[f64]| {
@@ -20,7 +93,11 @@ fn bfgs_and_lbfgs_solve_rosenbrock_and_report_budgets() {
     };
     for limited_memory in [false, true] {
         let options = optimizer::Options {
-            limited_memory,
+            method: if limited_memory {
+                optimizer::Method::Lbfgs
+            } else {
+                optimizer::Method::Bfgs
+            },
             tolerance: 1e-8,
             ..Default::default()
         };
@@ -62,7 +139,7 @@ fn lbfgs_respects_a_budget_that_cannot_hold_a_dense_hessian() {
         &ctx,
         &initial,
         &optimizer::Options {
-            limited_memory: true,
+            method: optimizer::Method::Lbfgs,
             ..Default::default()
         },
         objective,
@@ -126,7 +203,11 @@ fn cached_h2_vqe_and_adapt_are_python_independent() {
                     let options = SolveOptions {
                         adapt,
                         optimizer: optimizer::Options {
-                            limited_memory,
+                            method: if limited_memory {
+                                optimizer::Method::Lbfgs
+                            } else {
+                                optimizer::Method::Bfgs
+                            },
                             ..Default::default()
                         },
                         ..Default::default()

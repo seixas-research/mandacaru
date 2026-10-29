@@ -33,19 +33,18 @@ options use atomic units. Result forces and the ASE protocol always use eV/Å.
 
 ```python
 from ase import Atoms
-from mandacaru.integrations.ase import ASECalculator
+from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[2.5,2.5,2.13], [2.5,2.5,2.87]], cell=[5]*3)
-atoms.calc = ASECalculator(method="dft", xc="pbe", grid_spacing=.35)
+atoms.calc = Mandacaru(method="dft", xc="pbe", grid_spacing=.35)
 energy = atoms.get_potential_energy()
 forces = atoms.get_forces()
 atoms.calc.close()
 ```
 
-`ASECalculator(calculation)` wraps an existing calculation. The adapter imports
-ASE; the standalone calculator, geometry and result layers do not. Periodic PAW
-setup still requires the `periodic` extra. Loading a saved native crystal does
-not require ASE or Python PAW assembly.
+`Mandacaru` is an ASE calculator, and ASE is a required dependency. A standalone
+`Geometry` can also be passed to `run`. Periodic PAW setup uses a Python table
+adapter; a saved crystal already contains the data needed by its Rust solver.
 
 ## Hamiltonians are explicit
 
@@ -54,6 +53,8 @@ four-index Hamiltonian. Semilocal DFT uses density fields directly. HF exchange
 uses pivoted Coulomb Cholesky factors built from selected Poisson columns;
 HSE06 uses screened factors. `cholesky_tolerance` defaults to 1e-10 and controls
 the maximum residual Coulomb diagonal in atomic units.
+For molecular PAW, signed one-center and compensation factors remain separate
+from the smooth Cholesky factors. Their negative contributions are preserved.
 
 `result.hamiltonian`, `result.save_hamiltonian(path)` and quantum solvers request
 the transformed Hamiltonian explicitly. It is cached in its originating native
@@ -82,11 +83,12 @@ model retains its original context, so configure that context at its origin.
 | Calculation | Native support | Limits |
 | --- | --- | --- |
 | Molecular mean field | RHF, UHF, GHF | Gradients require real collinear orbitals and spectral kinetic energy |
+| Molecular PAW | HF and variational methods, exact valence one-center terms, smooth fields and augmentation-charge accounting | Empty or single closed-1s cores; no PAW DFT, spin-orbit projectors or forces |
 | Molecular DFT | `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10`, `r2scan+rvv10` | All-electron geometry interface |
 | Periodic DFT | LDA/PBE SCF, occupations, spectra | Python PAW geometry assembly; no high-level periodic force/stress interface |
-| Quantum methods | UCCSD VQE, fermionic ADAPT, shared subspace searches | Other ansätze and learned proposals remain unported |
-| Correlation | Closed-shell MP2/FNO | Open-shell and local variants remain unported |
-| Persistence | Native JSON Hamiltonians, crystals, completed checkpoints | Optional columnar codecs remain Python |
+| Quantum methods | UCCSD VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspace searches | Other ansätze, GHF quantum handoff and learned proposals remain unported |
+| Correlation | Closed-shell MP2/FNO active spaces, thresholds and frozen cores | Open-shell/local variants and symmetry constraints remain unported |
+| Persistence | Native JSON Hamiltonians, crystals, completed checkpoints; Python columnar codecs | Provider job lifecycle integration remains incomplete |
 
 Unsupported combinations raise errors. The [audit](../development/native_cutover.md)
 records remaining scientific Python modules. D4 and a complete XC catalog are

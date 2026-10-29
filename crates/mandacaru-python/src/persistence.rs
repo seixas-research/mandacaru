@@ -28,7 +28,7 @@ impl PySnapshot {
         py.detach(|| self.inner.expectation(&self.context))
             .map_err(error)
     }
-    #[pyo3(signature=(*,sector=true,dense=false,include_singles=true,sparse=false))]
+    #[pyo3(signature=(*,sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic"))]
     fn problem(
         &self,
         py: Python<'_>,
@@ -36,6 +36,7 @@ impl PySnapshot {
         dense: bool,
         include_singles: bool,
         sparse: bool,
+        pool: &str,
     ) -> PyResult<super::quantum::PyProblem> {
         let mut inner = py
             .detach(|| {
@@ -43,6 +44,10 @@ impl PySnapshot {
                     .problem(&self.context, sector, dense, include_singles)
             })
             .map_err(error)?;
+        if pool != "fermionic" {
+            py.detach(|| inner.use_pool(pool, include_singles))
+                .map_err(error)?;
+        }
         if sparse {
             inner.sparse = Some(
                 py.detach(|| {

@@ -177,4 +177,4 @@ def pytest_sessionstart(session):
         reporter.write_line(
             f"pseudopotential libraries: {', '.join(missing)} unset or not a "
             "folder -- tests that load those datasets will fail "
-            "(mandacaru --pseudo-status)", yellow=True)
+            "(mandacaru-paw --status)", yellow=True)

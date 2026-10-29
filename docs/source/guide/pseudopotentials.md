@@ -1110,20 +1110,20 @@ environment variable names the checkout Mandacaru reads from:
 
 | family | variable | set it with |
 |---|---|---|
-| `paw-lcao` | `MANDACARU_PAW_PATH` | `mandacaru --set-paw DIR` |
-| `upaw-lcao` | `MANDACARU_UPAW_PATH` | `mandacaru --set-upaw DIR` (optional) |
+| `paw-lcao` | `MANDACARU_PAW_PATH` | `mandacaru-paw --set DIR` |
+| `upaw-lcao` | `MANDACARU_UPAW_PATH` | `mandacaru-paw --set-upaw DIR` (optional) |
 
 ```bash
 git clone https://github.com/seixas-research/mandacaru-paw.git
-mandacaru --set-paw mandacaru-paw
+mandacaru-paw --set mandacaru-paw
 
-mandacaru --pseudo-status        # each variable, where it points, and how many datasets it serves
+mandacaru-paw --status           # a table: one row per dataset set each variable reaches
 ```
 
-`--set-paw` / `--set-upaw` write `export
-MANDACARU_..._PATH=DIR` into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL`
-reads), asking `[Y/n]` before replacing a different value; open a new
-terminal, or `source` the file, for the variable to take effect in your
+`--set` and `--set-upaw` write `export MANDACARU_..._PATH=DIR` (as an absolute
+path) into `~/.zshrc` or `~/.bashrc` (whichever `$SHELL` reads), asking
+`[Y/n]` before replacing a different value; open a new terminal, or `source`
+the file, for the variable to take effect in your
 shell. Inside a checkout the datasets sit one folder per set:
 
 | folder | set | elements |
@@ -1132,6 +1132,14 @@ shell. Inside a checkout the datasets sit one folder per set:
 | `lda-fr/` | LDA with the spin-orbit term | H–U (92) |
 | `pbe-sr/` | scalar-relativistic PBE, the default for PBE, HSE06 and r2SCAN | H–U (92) |
 | `pbe-fr/` | PBE with the spin-orbit term | H–U (92) |
+
+`mandacaru-paw --status` lists each of those sets as a row, with its functional,
+relativistic treatment, number of datasets, which calculations read it by
+default, and a state: green `complete` (all 92 elements), yellow `partial` or
+an unset optional library, red for a required library that is unset, names no
+folder or holds no dataset folder. It exits 1 in the red cases, so a script can
+test it. Color is on when stdout is a terminal; `--color never|always` or the
+`NO_COLOR` / `FORCE_COLOR` environment variables override that.
 
 `pbe-fr/` is the PBE counterpart of `lda-fr/` (`mandacaru-paw/FR.md`): the
 reference atom is the radial Dirac atom in PBE. It is read like `lda-fr/`,

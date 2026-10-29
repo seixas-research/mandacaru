@@ -24,28 +24,32 @@ There is no Python calculation engine or execution-engine selector.
 
 ## Install and run
 
-The base package requires Python 3.14 and NumPy. Platform wheels include the
-native extension. Building from source also requires Rust/Cargo.
+Mandacaru requires Python 3.14 and installs its scientific Python stack and
+quantum SDK integrations, including ASE, SciPy, Matplotlib, Parquet support,
+Qiskit, Braket and Cirq. Platform wheels include the native extension. Building
+from source also requires Rust/Cargo.
 
 ```bash
 python -m pip install mandacaru
 ```
 
 ```python
-import numpy as np
-from mandacaru import Geometry, Mandacaru
+from ase import Atoms
+from mandacaru import Mandacaru
 
-geometry = Geometry((1, 1), np.array([[2.5,2.5,2.13], [2.5,2.5,2.87]]), np.eye(3)*5)
-with Mandacaru(method="dft", xc="pbe", grid_spacing=.35,
+atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[5, 5, 5])
+atoms.center()
+with Mandacaru(method="dft", xc="pbe", basis="HAO", grid_spacing=.35,
                resources={"threads": 2}) as calculation:
-    result = calculation.run(geometry)
-    print(result.optimal_energy)  # eV
-    print(result.forces())       # eV/angstrom
+    atoms.calc = calculation
+    print(atoms.get_potential_energy())  # eV
+    print(atoms.get_forces())            # eV/angstrom
 ```
 
-Install `mandacaru[ase]` for the optional
-`mandacaru.integrations.ase.ASECalculator` adapter. Molecular calculations
-accept standalone geometry values and do not require ASE.
+
+Attach the calculator directly with `atoms.calc = Mandacaru(...)` for ASE
+calculations. Standalone geometry values are also accepted. Required integration
+packages are imported only by the Python features that use them.
 
 Four-index Hamiltonians are built only when explicitly requested through
 `result.hamiltonian`, Hamiltonian export or a quantum calculation. HF and

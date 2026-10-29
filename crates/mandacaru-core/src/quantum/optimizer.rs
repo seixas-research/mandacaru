@@ -1,20 +1,60 @@
-//! Deterministic BFGS/L-BFGS with a bounded strong-Wolfe line search.
+//! Native optimizers for unconstrained variational parameters.
+mod conjugate;
+mod derivative_free;
+mod sequential;
+mod stochastic;
 use crate::{product, Context, Error, Result};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    Bfgs,
+    Lbfgs,
+    Slsqp,
+    Cg,
+    Cobyla,
+    NelderMead,
+    Spsa,
+}
+impl Method {
+    pub const NAMES: [&'static str; 7] = [
+        "SLSQP",
+        "BFGS",
+        "L-BFGS",
+        "CG",
+        "COBYLA",
+        "Nelder-Mead",
+        "SPSA",
+    ];
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "BFGS" => Ok(Self::Bfgs),
+            "L-BFGS" => Ok(Self::Lbfgs),
+            "SLSQP" => Ok(Self::Slsqp),
+            "CG" => Ok(Self::Cg),
+            "COBYLA" => Ok(Self::Cobyla),
+            "Nelder-Mead" => Ok(Self::NelderMead),
+            "SPSA" => Ok(Self::Spsa),
+            _ => Err(Error::Invalid(format!("unknown optimizer {name:?}"))),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    pub limited_memory: bool,
+    pub method: Method,
     pub max_iterations: usize,
     pub max_evaluations: usize,
     pub tolerance: f64,
+    pub seed: u64,
 }
 impl Default for Options {
     fn default() -> Self {
         Self {
-            limited_memory: false,
+            method: Method::Bfgs,
             max_iterations: 300,
             max_evaluations: 5000,
             tolerance: 1e-9,
+            seed: 0,
         }
     }
 }
@@ -58,21 +98,27 @@ pub fn minimize(
     if initial.iter().any(|t| !t.is_finite()) {
         return Err(Error::Invalid("initial parameters must be finite".into()));
     }
+    match options.method {
+        Method::Slsqp => return sequential::minimize(ctx, initial, options, objective),
+        Method::Cg => return conjugate::minimize(ctx, initial, options, objective),
+        Method::NelderMead | Method::Cobyla => {
+            return derivative_free::minimize(ctx, initial, options, objective)
+        }
+        Method::Spsa => return stochastic::minimize(ctx, initial, options, objective),
+        Method::Bfgs | Method::Lbfgs => {}
+    }
+    let limited_memory = options.method == Method::Lbfgs;
     let n = initial.len();
     let _workspace = ctx.reserve(product(&[n, 8, 12])?)?;
     let _history = ctx.reserve(product(&[options.max_evaluations, 8])?)?;
-    let _corrections = ctx.reserve(if options.limited_memory {
+    let _corrections = ctx.reserve(if limited_memory {
         product(&[n, 20, 8])?
     } else {
         0
     })?;
     let mut corrections: Vec<(Vec<f64>, Vec<f64>, f64)> = Vec::new();
-    let mut inverse = ctx.allocate::<f64>(if options.limited_memory {
-        0
-    } else {
-        product(&[n, n])?
-    })?;
-    for k in 0..if options.limited_memory { 0 } else { n } {
+    let mut inverse = ctx.allocate::<f64>(if limited_memory { 0 } else { product(&[n, n])? })?;
+    for k in 0..if limited_memory { 0 } else { n } {
         inverse.as_mut_slice()[k * n + k] = 1.;
     }
     let mut x = initial.to_vec();
@@ -80,6 +126,7 @@ pub fn minimize(
     validate(energy, &gradient, n)?;
     let mut history = vec![energy];
     let mut steps = 0;
+    let mut reset_after_failure = false;
     let mut message = "iteration budget exhausted".to_owned();
     loop {
         let max_gradient = gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
@@ -100,7 +147,7 @@ pub fn minimize(
             message = "evaluation budget exhausted".into();
             break;
         }
-        let mut direction: Vec<_> = if options.limited_memory {
+        let mut direction: Vec<_> = if limited_memory {
             let mut q = gradient.clone();
             let mut alphas = Vec::new();
             for (s, y, sy) in corrections.iter().rev() {
@@ -132,7 +179,7 @@ pub fn minimize(
             direction = gradient.iter().map(|g| -g).collect();
             inverse.as_mut_slice().fill(0.);
             corrections.clear();
-            for k in 0..if options.limited_memory { 0 } else { n } {
+            for k in 0..if limited_memory { 0 } else { n } {
                 inverse.as_mut_slice()[k * n + k] = 1.;
             }
         }
@@ -155,12 +202,24 @@ pub fn minimize(
             validate(value, &g, n)?;
             history.push(value);
             let noise = 4. * f64::EPSILON * energy.abs().max(1.);
+            let derivative = dot(&g, &direction);
+            // Approximate Wolfe (Hager–Zhang, 2006, eqs. 23/27): near
+            // stationarity, energy subtraction loses digits before the
+            // analytic directional derivatives do. This accepts a step,
+            // never a convergence certificate; the requested gradient
+            // tolerance remains the sole successful stopping test.
+            if value <= energy + 1e-12 * energy.abs().max(1.)
+                && derivative >= 0.9 * slope
+                && derivative <= (2e-4 - 1.) * slope
+            {
+                accepted = Some((trial, value, g));
+                break;
+            }
             if value > energy + 1e-4 * alpha * slope + noise
                 || (lower > 0. && value >= lower_value + noise)
             {
                 upper = Some(alpha);
             } else {
-                let derivative = dot(&g, &direction);
                 if derivative.abs() <= -0.9 * slope {
                     accepted = Some((trial, value, g));
                     break;
@@ -179,19 +238,30 @@ pub fn minimize(
             alpha = next_alpha;
         }
         let Some((next, value, g)) = accepted else {
-            message = if history.len() >= options.max_evaluations {
-                "evaluation budget exhausted"
-            } else {
-                "line search failed"
+            if !reset_after_failure && history.len() < options.max_evaluations {
+                inverse.as_mut_slice().fill(0.);
+                for k in 0..if limited_memory { 0 } else { n } {
+                    inverse.as_mut_slice()[k * n + k] = 1.;
+                }
+                corrections.clear();
+                reset_after_failure = true;
+                continue;
             }
-            .into();
+            message = if history.len() >= options.max_evaluations {
+                "evaluation budget exhausted".into()
+            } else {
+                format!(
+                    "line search failed (max gradient {:.3e})",
+                    gradient.iter().map(|g| g.abs()).fold(0., f64::max)
+                )
+            };
             break;
         };
         let s: Vec<_> = next.iter().zip(&x).map(|(a, b)| a - b).collect();
         let y: Vec<_> = g.iter().zip(&gradient).map(|(a, b)| a - b).collect();
         let sy = dot(&s, &y);
         if sy > 1e-12 * dot(&s, &s).sqrt() * dot(&y, &y).sqrt() {
-            if options.limited_memory {
+            if limited_memory {
                 if corrections.len() == 10 {
                     corrections.remove(0);
                 }
@@ -213,6 +283,7 @@ pub fn minimize(
         energy = value;
         gradient = g;
         steps += 1;
+        reset_after_failure = false;
     }
     Ok(Outcome {
         parameters: x,

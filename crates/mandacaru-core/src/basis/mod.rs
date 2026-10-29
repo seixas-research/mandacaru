@@ -56,6 +56,7 @@ fn slater(z: u8, n: usize, l: usize) -> Result<f64> {
 }
 #[derive(Clone, Debug)]
 pub enum Radial {
+    Tabulated(std::sync::Arc<crate::math::spline::Cubic>),
     Numerical(std::sync::Arc<self::radial::Table>),
     Hydrogenic {
         n: usize,
@@ -283,6 +284,25 @@ fn gaussian_shells(fits: &Value, z: u8, recipe: &Value) -> Result<Vec<Shell>> {
     Ok(shells)
 }
 impl Basis {
+    pub fn from_orbitals(ctx: &Context, orbitals: Vec<Orbital>) -> Result<Self> {
+        if orbitals.is_empty()
+            || orbitals.iter().any(|o| {
+                o.l > 8
+                    || o.m.unsigned_abs() as usize > o.l
+                    || o.center.iter().any(|v| !v.is_finite())
+            })
+        {
+            return Err(invalid("invalid tabulated basis orbitals"));
+        }
+        let guard = ctx.reserve(product(&[
+            orbitals.len(),
+            std::mem::size_of::<Orbital>() + 64,
+        ])?)?;
+        Ok(Self {
+            orbitals,
+            _memory: vec![guard],
+        })
+    }
     pub fn build(ctx: &Context, geometry: &Geometry, spec: &str) -> Result<Self> {
         if spec.len() > 1024 * 1024 {
             return Err(invalid("basis specification exceeds the 1 MiB input limit"));
@@ -549,6 +569,14 @@ impl Orbital {
             }
         };
         let (radial, dr) = match &self.radial {
+            Radial::Tabulated(table) => {
+                let (v, d) = tabulated(table, self.l, r);
+                let safe = r.max(1e-15);
+                (
+                    v / safe.powi(self.l as i32),
+                    (d - self.l as f64 * v / safe) / safe.powi(self.l as i32),
+                )
+            }
             Radial::Numerical(table) => {
                 let safe = r.max(1e-15);
                 let (v, d) = table.value_slope(safe);
@@ -610,6 +638,28 @@ impl Orbital {
     }
     pub fn exact_kinetic(&self) -> f64 {
         match &self.radial {
+            Radial::Tabulated(table) => {
+                let knots = table.knots.as_slice();
+                let mut kinetic =
+                    0.5 * table.values.as_slice()[0].powi(2) * knots[0] * (self.l + 1) as f64;
+                for nodes in knots.windows(2) {
+                    let half = 0.5 * (nodes[1] - nodes[0]);
+                    for (x, w) in [
+                        (-0.8611363115940526, 0.3478548451374538),
+                        (-0.3399810435848563, 0.6521451548625461),
+                        (0.3399810435848563, 0.6521451548625461),
+                        (0.8611363115940526, 0.3478548451374538),
+                    ] {
+                        let r = nodes[0] + half * (x + 1.);
+                        let (v, d) = table.value_slope(r);
+                        kinetic += 0.5
+                            * half
+                            * w
+                            * ((v + r * d).powi(2) + (self.l * (self.l + 1)) as f64 * v * v);
+                    }
+                }
+                kinetic
+            }
             Radial::Numerical(table) => table.kinetic,
             Radial::Hydrogenic { n, z, .. } => z * z / (2. * (*n as f64).powi(2)),
             Radial::Gaussian {
@@ -642,6 +692,7 @@ impl Orbital {
             return 0.;
         }
         let radial = match &self.radial {
+            Radial::Tabulated(table) => tabulated(table, self.l, r).0,
             Radial::Numerical(table) => table.value_slope(r).0,
             Radial::Gaussian {
                 exponents,
@@ -672,6 +723,24 @@ impl Orbital {
         };
         radial * real_harmonic(self.l, self.m, (z / r).clamp(-1., 1.).acos(), y.atan2(x))
     }
+}
+fn tabulated(table: &crate::math::spline::Cubic, l: usize, r: f64) -> (f64, f64) {
+    let knots = table.knots.as_slice();
+    if r > knots[knots.len() - 1] {
+        return (0., 0.);
+    }
+    if r < knots[0] && knots[0] > 0. {
+        let value = table.values.as_slice()[0] * (r / knots[0]).powi(l as i32);
+        return (
+            value,
+            if l == 0 || r == 0. {
+                0.
+            } else {
+                l as f64 * value / r
+            },
+        );
+    }
+    table.value_slope(r)
 }
 pub fn real_harmonic(l: usize, m: i32, theta: f64, phi: f64) -> f64 {
     let order = m.unsigned_abs() as usize;

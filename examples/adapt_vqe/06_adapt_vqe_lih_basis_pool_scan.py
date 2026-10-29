@@ -39,7 +39,7 @@ def calculate(output: Path, spacing: float, half_width: float,
     import mandacaru
     import scipy
     from ase import Atoms
-    from mandacaru.algorithms import Mandacaru
+    from mandacaru import Mandacaru
     from mandacaru.core.sector import ParticleSector
     from mandacaru.integrals import Grid
     from mandacaru.units import BOHR_TO_ANGSTROM

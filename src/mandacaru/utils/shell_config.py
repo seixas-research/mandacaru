@@ -8,7 +8,7 @@
 
 """Persist an environment variable in the user's shell configuration.
 
-``mandacaru --set-paw DIR`` and its siblings end here: the variable goes into
+``mandacaru-paw --set DIR`` and its siblings end here: the variable goes into
 ``~/.zshrc`` or ``~/.bashrc`` -- whichever the login shell (``$SHELL``) reads
 -- as one ``export NAME=value`` line.  A variable the file already sets is
 replaced where it stands, after a ``[Y/n]`` confirmation when the value

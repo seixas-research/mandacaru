@@ -114,7 +114,7 @@ def merge_basis(labels) -> str:
     return "".join(basis)
 
 
-def qubit_wise_commuting_groups(hamiltonian: PauliSum, drop_identity: bool=True, *, resources=None):
+def qubit_wise_commuting_groups(hamiltonian: PauliSum, drop_identity: bool=True, *, resources=None, context=None):
     """Partition ``hamiltonian`` into QWC groups; return ``(groups, identity)``.
 
     ``groups`` is a list of ``(basis, [(pauli, coefficient), ...])`` -- one
@@ -143,11 +143,11 @@ def qubit_wise_commuting_groups(hamiltonian: PauliSum, drop_identity: bool=True,
         identity = 0.0
     labels = [label for label, _c in terms]
     coefficients = dict(terms)
-    groups = [(basis, [(labels[i], coefficients[labels[i]]) for i in members]) for basis, members in qwc_partition(labels, weights=[abs(c) for _l, c in terms], resources=resources)]
+    groups = [(basis, [(labels[i], coefficients[labels[i]]) for i in members]) for basis, members in qwc_partition(labels, weights=[abs(c) for _l, c in terms], resources=resources, context=context)]
     return (groups, identity)
 
 
-def pauli_expectation_from_counts(label: str, counts: dict, *, resources=None) -> float:
+def pauli_expectation_from_counts(label: str, counts: dict, *, resources=None, context=None) -> float:
     """``<P>`` for one Pauli string from bit-string counts of its own basis.
 
     ``counts`` maps a measured bit-string (character ``k`` is qubit ``k``, the
@@ -156,10 +156,11 @@ def pauli_expectation_from_counts(label: str, counts: dict, *, resources=None) -
     over the qubits where ``label`` acts non-trivially.
     """
     from .._native import Context
-    return Context(**dict(resources or {})).count_expectations([label], [(str(k), float(v)) for k, v in counts.items()])[0]
+    native = Context(**dict(resources or {})) if context is None else context
+    return native.count_expectations([label], [(str(k), float(v)) for k, v in counts.items()])[0]
 
 
-def energy_from_group_counts(groups, identity: float, counts_per_group, *, resources=None) -> float:
+def energy_from_group_counts(groups, identity: float, counts_per_group, *, resources=None, context=None) -> float:
     """Assemble :math:`\\langle H\\rangle` from one count dictionary per QWC group.
 
     ``groups`` is the output of :func:`qubit_wise_commuting_groups` and
@@ -167,19 +168,15 @@ def energy_from_group_counts(groups, identity: float, counts_per_group, *, resou
     same order.  Coefficients are Hermitian (real) for a physical Hamiltonian, so
     only the real part contributes.
     """
-    if 'rust' not in ('python', 'rust') or ('rust' == 'python' and resources):
-        raise ValueError("use engine='python' or engine='rust'; engine_options requires Rust")
     groups, counts_per_group = (list(groups), list(counts_per_group))
-    if 'rust' == 'rust' and len(groups) != len(counts_per_group):
+    if len(groups) != len(counts_per_group):
         raise ValueError('one counts dictionary is required per measurement group')
     energy = float(identity)
     for (_basis, payload), counts in zip(groups, counts_per_group):
         from .._native import Context
-        values = Context(**dict(resources or {})).count_expectations([p for p, c in payload], [(str(k), float(v)) for k, v in counts.items()])
+        native = Context(**dict(resources or {})) if context is None else context
+        values = native.count_expectations([p for p, c in payload], [(str(k), float(v)) for k, v in counts.items()])
         energy += sum((float(np.real(c)) * v for (p, c), v in zip(payload, values)))
-        continue
-        for label, coeff in payload:
-            energy += float(np.real(coeff)) * pauli_expectation_from_counts(label, counts)
     return energy
 
 
@@ -644,7 +641,7 @@ def measurement_plan(provider, n_qubits: int, labels, hamiltonian=None,
                           else int(factorized_bases)))
 
 
-def qwc_partition(labels, weights=None, *, resources=None) -> list[tuple[str, list[int]]]:
+def qwc_partition(labels, weights=None, *, resources=None, context=None) -> list[tuple[str, list[int]]]:
     """The one qubit-wise-commuting partition every path uses.
 
     Returns ``[(basis, [index, ...]), ...]``: the measurement bases in the
@@ -664,7 +661,8 @@ def qwc_partition(labels, weights=None, *, resources=None) -> list[tuple[str, li
     """
     labels = [str(label) for label in labels]
     from .._native import Context
-    return Context(**dict(resources or {})).qwc_groups(labels, None if weights is None else [float(w) for w in weights])
+    native = Context(**dict(resources or {})) if context is None else context
+    return native.qwc_groups(labels, None if weights is None else [float(w) for w in weights])
 
 
 def qwc_groups(x: np.ndarray, z: np.ndarray, order) -> tuple:
@@ -737,7 +735,7 @@ def _greedy_bases(labels, weights=None) -> list[str]:
     return [basis for basis, _members in qwc_partition(labels, weights)]
 
 
-def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=None) -> list[list[str]]:
+def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=None, context=None) -> list[list[str]]:
     """Split ``labels`` into submissions of at most ``max_bases`` QWC bases.
 
     A chunk is a whole number of measurement bases of :func:`qwc_partition`,
@@ -751,7 +749,7 @@ def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=Non
     labels = [str(label) for label in labels]
     if max_bases is None or max_bases <= 0 or (not labels):
         return [labels] if labels else []
-    partition = qwc_partition(labels, weights, resources=resources)
+    partition = qwc_partition(labels, weights, resources=resources, context=context)
     if len(partition) <= max_bases:
         return [labels]
     chunks = []
@@ -762,8 +760,8 @@ def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=Non
     return chunks
 
 
-def planned_jobs(labels, max_bases: int | None, weights=None, *, resources=None) -> int:
+def planned_jobs(labels, max_bases: int | None, weights=None, *, resources=None, context=None) -> int:
     """How many submissions :func:`chunk_labels_by_basis` would produce."""
     if max_bases is None or max_bases <= 0:
         return 1
-    return max(len(chunk_labels_by_basis(labels, max_bases, weights, resources=resources)), 1)
+    return max(len(chunk_labels_by_basis(labels, max_bases, weights, resources=resources, context=context)), 1)

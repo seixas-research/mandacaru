@@ -47,9 +47,21 @@ impl Term {
 pub struct Operator {
     pub n: usize,
     pub terms: Vec<Term>,
+    /// Optional physical decomposition retained across calculation ownership.
+    pub decomposition: Vec<Operator>,
+    pub(super) rotation_frequency: Option<f64>,
     _memory: Reservation,
 }
 impl Operator {
+    /// Copy an operator into another calculation's checked allocation budget.
+    pub fn copy_into(&self, ctx: &Context) -> Result<Self> {
+        let _temporary = ctx.reserve(product(&[self.terms.len(), 128])?)?;
+        let mut out = Self::from_terms(ctx, self.n, self.terms.clone())?;
+        for group in &self.decomposition {
+            out.decomposition.push(group.copy_into(ctx)?);
+        }
+        Ok(out)
+    }
     pub(crate) fn from_terms(ctx: &Context, n: usize, terms: Vec<Term>) -> Result<Self> {
         Self::from_masks(ctx, n, terms)
     }
@@ -113,9 +125,12 @@ impl Operator {
         {
             return Err(invalid("nonfinite operator coefficient"));
         }
+        let rotation_frequency = rotation_frequency(ctx, &terms);
         Ok(Self {
             n,
             terms,
+            decomposition: Vec::new(),
+            rotation_frequency,
             _memory: memory,
         })
     }
@@ -211,10 +226,73 @@ impl Operator {
     /// Apply without constructing a matrix. Projection is allowed only after
     /// `Basis::check_invariant` has validated a solver's Hamiltonian/generators.
     pub fn apply_into(&self, basis: &Basis, input: &[C64], output: &mut [C64]) {
+        Self::apply_terms(&self.terms, basis, input, output)
+    }
+    pub(super) fn identity(&self) -> C64 {
+        self.terms
+            .first()
+            .filter(|term| term.x == 0 && term.z == 0)
+            .map_or(C64::default(), |term| term.coefficient)
+    }
+    pub(super) fn centered_diagonal(&self, ket: u64) -> C64 {
+        self.terms
+            .iter()
+            .take_while(|t| t.x == 0)
+            .filter(|t| t.z != 0)
+            .map(|t| t.amplitude(ket))
+            .sum()
+    }
+    pub(super) fn apply_centered_into(&self, basis: &Basis, input: &[C64], output: &mut [C64]) {
+        let terms = if self
+            .terms
+            .first()
+            .is_some_and(|term| term.x == 0 && term.z == 0)
+        {
+            &self.terms[1..]
+        } else {
+            &self.terms
+        };
+        Self::apply_terms(terms, basis, input, output)
+    }
+    fn apply_terms(terms: &[Term], basis: &Basis, input: &[C64], output: &mut [C64]) {
         output.fill(C64::default());
+        if let Some(first) = terms.first() {
+            if terms.iter().all(|term| term.x == first.x) {
+                // Excitation strings share their flip mask. Sum their exact
+                // Pauli coefficient before multiplying a state amplitude:
+                // forbidden occupations cancel without roundoff leakage.
+                for (column, (&ket, &amplitude)) in
+                    basis.indices.as_slice().iter().zip(input).enumerate()
+                {
+                    if amplitude == C64::default() {
+                        continue;
+                    }
+                    if let Some(row) = basis.index(ket ^ first.x) {
+                        let coefficient: C64 = terms.iter().map(|term| term.amplitude(ket)).sum();
+                        output[row] += coefficient * input[column];
+                    }
+                }
+                return;
+            }
+        }
+        if basis.full_register {
+            for (ket, &amplitude) in input.iter().enumerate() {
+                if amplitude == C64::default() {
+                    continue;
+                }
+                for term in terms {
+                    output[(ket as u64 ^ term.x) as usize] +=
+                        term.amplitude(ket as u64) * amplitude;
+                }
+            }
+            return;
+        }
         for (col, &ket) in basis.indices.as_slice().iter().enumerate() {
-            for t in &self.terms {
-                if let Ok(row) = basis.indices.as_slice().binary_search(&(ket ^ t.x)) {
+            if input[col] == C64::default() {
+                continue;
+            }
+            for t in terms {
+                if let Some(row) = basis.index(ket ^ t.x) {
                     output[row] += t.amplitude(ket) * input[col];
                 }
             }
@@ -231,6 +309,22 @@ impl Operator {
         self.apply_into(basis, input, out.as_mut_slice());
         Ok(out)
     }
+    pub(super) fn apply_centered(
+        &self,
+        ctx: &Context,
+        basis: &Basis,
+        input: &[C64],
+    ) -> Result<Buffer<C64>> {
+        if self.n != basis.n
+            || input.len() != basis.len()
+            || input.iter().any(|c| !c.re.is_finite() || !c.im.is_finite())
+        {
+            return Err(invalid("state must be finite and match the operator basis"));
+        }
+        let mut out = ctx.allocate(basis.len())?;
+        self.apply_centered_into(basis, input, out.as_mut_slice());
+        Ok(out)
+    }
     pub fn dense(&self, ctx: &Context, basis: &Basis) -> Result<Buffer<C64>> {
         if self.n != basis.n {
             return Err(invalid("operator register mismatch"));
@@ -239,13 +333,55 @@ impl Operator {
         let mut out = ctx.allocate(product(&[d, d])?)?;
         for (col, &ket) in basis.indices.as_slice().iter().enumerate() {
             for t in &self.terms {
-                if let Ok(row) = basis.indices.as_slice().binary_search(&(ket ^ t.x)) {
+                if let Some(row) = basis.index(ket ^ t.x) {
                     out.as_mut_slice()[row * d + col] += t.amplitude(ket);
                 }
             }
         }
         Ok(out)
     }
+}
+
+/// Certify A³ = -omega² A in the complete Pauli algebra before using the
+/// exact excitation-rotation polynomial. Other generators keep the general
+/// exponential action; no spectral assumption is made from a pool's name.
+fn rotation_frequency(ctx: &Context, terms: &[Term]) -> Option<f64> {
+    if terms.is_empty() || terms.len() > 16 || terms.iter().any(|t| t.coefficient.re != 0.) {
+        return None;
+    }
+    let _memory = ctx.reserve(terms.len().pow(3) * 128).ok()?;
+    let multiply = |a: &Term, b: &Term| {
+        let (x, z) = (a.x ^ b.x, a.z ^ b.z);
+        let power = (a.x & a.z).count_ones() as i32 + (b.x & b.z).count_ones() as i32
+            - (x & z).count_ones() as i32
+            + 2 * (a.z & b.x).count_ones() as i32;
+        ((x, z), a.coefficient * b.coefficient * phase(power))
+    };
+    let mut square = BTreeMap::<(u64, u64), C64>::new();
+    for a in terms {
+        for b in terms {
+            let (key, value) = multiply(a, b);
+            *square.entry(key).or_default() += value;
+        }
+    }
+    let norm = terms.iter().map(|t| t.coefficient.norm_sqr()).sum::<f64>();
+    let frequency_squared = square.values().map(C64::norm_sqr).sum::<f64>() / norm;
+    if !frequency_squared.is_finite() || frequency_squared <= 0. {
+        return None;
+    }
+    let mut residual: BTreeMap<_, _> = terms
+        .iter()
+        .map(|t| ((t.x, t.z), t.coefficient * frequency_squared))
+        .collect();
+    for ((x, z), coefficient) in square {
+        let a = Term { x, z, coefficient };
+        for b in terms {
+            let (key, value) = multiply(&a, b);
+            *residual.entry(key).or_default() += value;
+        }
+    }
+    let error = residual.values().map(C64::norm_sqr).sum::<f64>().sqrt();
+    (error <= 1e-13 * frequency_squared * norm.sqrt()).then(|| frequency_squared.sqrt())
 }
 
 /// Invertible binary occupation encoding; parity reduction fixes two symmetries.
@@ -442,11 +578,14 @@ impl Encoding {
 
 #[derive(Debug)]
 pub struct Basis {
+    context: Context,
     pub n: usize,
     pub indices: Buffer<u64>,
     pub reference: usize,
+    full_register: bool,
+    lookup: Option<Buffer<u32>>,
 }
-fn choose(n: usize, k: usize) -> Result<usize> {
+pub(crate) fn choose(n: usize, k: usize) -> Result<usize> {
     let k = k.min(n - k);
     let mut count = 1u128;
     for i in 0..k {
@@ -469,6 +608,44 @@ fn combinations(n: usize, k: usize) -> Vec<u64> {
     out
 }
 impl Basis {
+    /// Embed a compact sector state into the user-visible qubit register.
+    pub fn expand_state(&self, ctx: &Context, state: &[C64]) -> Result<Buffer<C64>> {
+        if state.len() != self.len() || state.iter().any(|z| !z.re.is_finite() || !z.im.is_finite())
+        {
+            return Err(invalid(
+                "state must be finite and match the simulation basis",
+            ));
+        }
+        let size = 1usize.checked_shl(self.n as u32).ok_or(Error::Overflow)?;
+        let mut out = ctx.allocate::<C64>(size)?;
+        for (&index, &value) in self.indices.as_slice().iter().zip(state) {
+            out.as_mut_slice()[index as usize] = value;
+        }
+        Ok(out)
+    }
+    /// A register state may enter a sector calculation only without leakage.
+    pub fn compress_state(&self, ctx: &Context, state: &[C64]) -> Result<Buffer<C64>> {
+        let size = 1usize.checked_shl(self.n as u32).ok_or(Error::Overflow)?;
+        if state.len() != size || state.iter().any(|z| !z.re.is_finite() || !z.im.is_finite()) {
+            return Err(invalid("state must be finite and match the qubit register"));
+        }
+        let mut out = ctx.allocate::<C64>(self.len())?;
+        let mut position = 0;
+        let mut leakage = 0.;
+        for (i, &value) in state.iter().enumerate() {
+            if self.indices.as_slice().get(position) == Some(&(i as u64)) {
+                out.as_mut_slice()[position] = value;
+                position += 1;
+            } else {
+                leakage += value.norm_sqr();
+            }
+        }
+        let norm = state.iter().map(|z| z.norm_sqr()).sum::<f64>();
+        if !norm.is_finite() || leakage > 1e-12 * norm.max(1.) {
+            return Err(invalid("state leaves the configured particle sector"));
+        }
+        Ok(out)
+    }
     pub fn register(ctx: &Context, n: usize) -> Result<Self> {
         width(n)?;
         let d = 1usize.checked_shl(n as u32).ok_or(Error::Overflow)?;
@@ -477,9 +654,12 @@ impl Basis {
             *v = k as u64;
         }
         Ok(Self {
+            context: ctx.clone(),
             n,
             indices,
             reference: 0,
+            full_register: true,
+            lookup: None,
         })
     }
     pub fn new(ctx: &Context, encoding: &Encoding, sector: bool) -> Result<Self> {
@@ -520,11 +700,46 @@ impl Basis {
             .as_slice()
             .binary_search(&encoding.reference())
             .map_err(|_| invalid("reference absent from basis"))?;
+        let register = 1usize.checked_shl(n as u32).unwrap_or(usize::MAX);
+        let lookup = if sector
+            && d >= 256
+            && register <= d.saturating_mul(32)
+            && register <= (ctx.memory_limit() / 32).saturating_div(4)
+            && register <= (ctx.memory_limit() - ctx.memory_used()).saturating_div(16)
+            && d < u32::MAX as usize
+        {
+            let mut lookup = ctx.allocate::<u32>(register)?;
+            lookup.as_mut_slice().fill(u32::MAX);
+            for (row, &ket) in indices.as_slice().iter().enumerate() {
+                lookup.as_mut_slice()[ket as usize] = row as u32;
+            }
+            Some(lookup)
+        } else {
+            None
+        };
         Ok(Self {
+            context: ctx.clone(),
             n,
             indices,
             reference,
+            full_register: !sector,
+            lookup,
         })
+    }
+    #[inline]
+    pub fn index(&self, ket: u64) -> Option<usize> {
+        if self.full_register {
+            return (ket < self.len() as u64).then_some(ket as usize);
+        }
+        if let Some(lookup) = &self.lookup {
+            return lookup
+                .as_slice()
+                .get(usize::try_from(ket).ok()?)
+                .copied()
+                .filter(|&row| row != u32::MAX)
+                .map(|row| row as usize);
+        }
+        self.indices.as_slice().binary_search(&ket).ok()
     }
     pub fn len(&self) -> usize {
         self.indices.as_slice().len()
@@ -536,17 +751,20 @@ impl Basis {
         if op.n != self.n {
             return Err(invalid("operator basis mismatch"));
         }
+        if self.full_register {
+            return Ok(());
+        }
         // Terms with the same flip can cancel outside the sector. Test their
         // combined amplitude, never each Pauli string separately.
+        let _memory = self.context.reserve(product(&[op.terms.len(), 128])?)?;
+        let mut flips = std::collections::BTreeMap::<u64, Vec<&Term>>::new();
+        for term in &op.terms {
+            flips.entry(term.x).or_default().push(term);
+        }
         for &ket in self.indices.as_slice() {
-            for t in &op.terms {
-                if self.indices.as_slice().binary_search(&(ket ^ t.x)).is_err() {
-                    let amplitude: C64 = op
-                        .terms
-                        .iter()
-                        .filter(|u| u.x == t.x)
-                        .map(|u| u.amplitude(ket))
-                        .sum();
+            for (&flip, terms) in &flips {
+                if self.index(ket ^ flip).is_none() {
+                    let amplitude: C64 = terms.iter().map(|term| term.amplitude(ket)).sum();
                     if amplitude.norm() > 1e-11 {
                         return Err(invalid(
                             "operator does not preserve the requested particle sector",

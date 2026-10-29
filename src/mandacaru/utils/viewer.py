@@ -52,13 +52,12 @@ surface.  The field itself stays in the units it was computed in.
 
 from __future__ import annotations
 
-import dataclasses
 import os
 from dataclasses import dataclass
 
 import numpy as np
 
-from ..units import BOHR_TO_ANGSTROM, to_bohr
+from ..units import BOHR_TO_ANGSTROM
 
 #: The drawing modes :class:`Viewer3D` knows.
 MODES = ("scatter", "isosurface")
@@ -348,10 +347,9 @@ class Viewer3D:
             grid_spacing = float(grid_spacing)
             if grid_spacing <= 0.0:
                 raise ValueError(f"grid_spacing must be positive, got {grid_spacing!r}")
-            own = source.volumetric_field(quantity, index, state=state,
-                                          component=component).grid
-            grid = dataclasses.replace(
-                own, grid_spacing=to_bohr(grid_spacing, "angstrom") / to_bohr(1.0, own.units))
+            return source.volumetric_field(quantity, index, state=state,
+                                           component=component,
+                                           grid_spacing=grid_spacing)
         return source.volumetric_field(quantity, index, state=state,
                                        component=component, grid=grid)
 

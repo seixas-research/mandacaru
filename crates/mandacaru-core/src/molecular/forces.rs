@@ -12,6 +12,11 @@ pub struct Gradient {
 }
 impl MolecularIntegrals {
     pub fn gradient(&self, state: &MeanField) -> Result<Gradient> {
+        if self.corrections.is_some() {
+            return Err(invalid(
+                "native molecular PAW force response is not yet implemented",
+            ));
+        }
         if !state.converged {
             return Err(invalid("forces require a converged SCF state"));
         }

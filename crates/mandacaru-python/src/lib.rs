@@ -30,6 +30,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
             .collect::<Vec<_>>(),
     )?;
     m.add("ABI_VERSION", 1)?;
+    m.add(
+        "OPTIMIZERS",
+        mandacaru_core::quantum::optimizer::Method::NAMES.to_vec(),
+    )?;
     m.add("THREAD_POLICY_VERSION", 1)?;
     m.add_class::<PyContext>()?;
     m.add_class::<persistence::PySnapshot>()?;

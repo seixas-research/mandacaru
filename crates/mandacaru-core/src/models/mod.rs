@@ -3,6 +3,7 @@ pub mod atom;
 pub mod dispersion;
 pub mod elements;
 pub mod nonlocal;
+pub mod spectrum;
 pub mod spherical;
 pub mod xc;
 fn invalid(message: impl Into<String>) -> crate::Error {

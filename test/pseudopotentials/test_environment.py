@@ -10,13 +10,14 @@
 (:mod:`mandacaru.pseudopotentials.environment`)."""
 
 import os
+import re
 
 import pytest
 
 from mandacaru.pseudopotentials import environment
 from mandacaru.pseudopotentials.environment import (
     FAMILY_VARIABLES, LibraryPathError, paw_dataset_folder, library_folder,
-    repository_path, status_lines, upaw_dataset_folder)
+    library_status, repository_path, upaw_dataset_folder)
 
 
 @pytest.fixture
@@ -27,12 +28,13 @@ def checkout(tmp_path):
     return tmp_path
 
 
-@pytest.mark.parametrize("family, flag", [("paw-lcao", "--set-paw"),
-                                          ("upaw-lcao", "--set-upaw")])
+@pytest.mark.parametrize("family, command", [
+    ("paw-lcao", "mandacaru-paw --set"),
+    ("upaw-lcao", "mandacaru-paw --set-upaw")])
 def test_an_unset_variable_names_the_command_that_sets_it(monkeypatch, family,
-                                                          flag):
+                                                          command):
     monkeypatch.delenv(FAMILY_VARIABLES[family], raising=False)
-    with pytest.raises(LibraryPathError, match=f"mandacaru {flag}") as error:
+    with pytest.raises(LibraryPathError, match=re.escape(command)) as error:
         paw_dataset_folder(family)
     assert f"{FAMILY_VARIABLES[family]} is not set" in str(error.value)
 
@@ -118,7 +120,7 @@ def test_upaw_is_generated_on_demand_without_the_variable(monkeypatch,
     # is still an error.
     monkeypatch.setenv("MANDACARU_UPAW_PATH",
                        str(tmp_path_factory.mktemp("u") / "missing"))
-    with pytest.raises(LibraryPathError, match="--set-upaw"):
+    with pytest.raises(LibraryPathError, match="mandacaru-paw --set-upaw /path/to/mandacaru-upaw"):
         upaw_dataset_folder()
 
 
@@ -127,14 +129,25 @@ def test_status_reports_every_family(monkeypatch, paw_checkout,
     monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     monkeypatch.setenv("MANDACARU_UPAW_PATH",
                        str(tmp_path_factory.mktemp("x") / "missing"))
-    lines = {line.split()[0]: line for line in status_lines()}
-    assert set(lines) == {"paw-lcao", "upaw-lcao"}
-    assert "lda-sr/: 1 datasets" in lines["paw-lcao"]
-    assert "lda-fr/: 1 datasets" in lines["paw-lcao"]
-    assert "NOT A DIRECTORY" in lines["upaw-lcao"]
+    report = {status.family: status for status in library_status()}
+    assert set(report) == {"paw-lcao", "upaw-lcao"}
+    paw = report["paw-lcao"]
+    assert paw.state == "ok" and paw.ok
+    sets = {item.name: item for item in paw.sets}
+    assert sets["lda-sr"].count == 1 and sets["lda-fr"].count == 1
+    assert (sets["lda-fr"].functional, sets["lda-fr"].relativity) == ("lda",
+                                                                      "dirac")
+    assert report["upaw-lcao"].state == "invalid"
+    assert not report["upaw-lcao"].ok
     monkeypatch.delenv("MANDACARU_PAW_PATH")
-    lines = {line.split()[0]: line for line in status_lines()}
-    assert "not set" in lines["paw-lcao"] and "--set-paw" in lines["paw-lcao"]
+    paw = {s.family: s for s in library_status()}["paw-lcao"]
+    assert paw.state == "unset" and not paw.ok and not paw.optional
+
+
+def test_an_unset_optional_family_is_fine(monkeypatch):
+    monkeypatch.delenv("MANDACARU_UPAW_PATH", raising=False)
+    upaw = {s.family: s for s in library_status()}["upaw-lcao"]
+    assert upaw.state == "unset" and upaw.optional and upaw.ok
 
 
 def test_a_loader_refuses_before_any_file_is_read(monkeypatch):
@@ -144,7 +157,7 @@ def test_a_loader_refuses_before_any_file_is_read(monkeypatch):
         monkeypatch.delenv(variable, raising=False)
     # UPAW-LCAO is optional: without its variable it is generated on demand,
     # so only PAW-LCAO is asked to refuse here.
-    with pytest.raises(LibraryPathError, match="--set-paw"):
+    with pytest.raises(LibraryPathError, match="mandacaru-paw --set"):
         get_paw("H")
 
 
@@ -159,7 +172,7 @@ def test_a_calculation_stops_before_it_starts(monkeypatch):
     atoms = Atoms("H2", positions=[(3.0, 3.0, 2.63), (3.0, 3.0, 3.37)],
                   cell=[6.0, 6.0, 6.0])
     atoms.calc = Mandacaru(basis={"name": "PAW-LCAO"})
-    with pytest.raises(LibraryPathError, match="--set-paw"):
+    with pytest.raises(LibraryPathError, match="mandacaru-paw --set"):
         atoms.get_potential_energy()
 
 

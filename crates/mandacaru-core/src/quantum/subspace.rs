@@ -11,6 +11,7 @@ pub struct SubspaceResult {
     pub indices: Vec<usize>,
     pub reference_indices: Vec<usize>,
     pub history: Vec<f64>,
+    pub optimizer_failures: Vec<(usize, String)>,
     pub success: bool,
     pub message: String,
     pub final_gradient: f64,
@@ -97,7 +98,15 @@ impl CachedProblem {
             let d = self.basis.len();
             let references = self.subspace_references(k)?;
             let max_parameters = if options.adapt {
-                options.max_growth
+                product(&[
+                    options.max_growth,
+                    self.growth_members
+                        .iter()
+                        .map(Vec::len)
+                        .max()
+                        .unwrap_or(1)
+                        .max(1),
+                ])?
             } else {
                 self.pool.len()
             };
@@ -106,11 +115,17 @@ impl CachedProblem {
                 64,
             ])?)?;
             let runs = if options.adapt { options.max_growth } else { 1 };
-            let memory = ctx.reserve(product(&[runs, options.optimizer.max_evaluations, 8])?)?;
+            let memory = ctx.reserve(
+                product(&[runs, options.optimizer.max_evaluations, 8])?
+                    .checked_add(product(&[runs, 128])?)
+                    .ok_or(Error::Overflow)?,
+            )?;
             let mut indices: Vec<usize> = if options.adapt {
                 vec![]
             } else {
-                (0..self.pool.len()).collect()
+                (0..self.pool.len())
+                    .filter(|&i| self.pool_screenable[i])
+                    .collect()
             };
             let mut parameters = initial
                 .map(|x| x.to_vec())
@@ -141,6 +156,7 @@ impl CachedProblem {
                 .subspace_evaluate(&[], &[], true, &references.as_slice()[..d])?
                 .energy;
             let mut history = Vec::new();
+            let mut optimizer_failures = Vec::new();
             let mut success = false;
             let mut message = "growth budget exhausted".to_owned();
             let mut delta = None;
@@ -189,6 +205,7 @@ impl CachedProblem {
                         .as_slice()
                         .iter()
                         .enumerate()
+                        .filter(|(i, _)| self.pool_screenable[*i])
                         .max_by(|(i, a), (j, b)| a.abs().total_cmp(&b.abs()).then_with(|| j.cmp(i)))
                         .map(|(i, _)| i);
                     final_gradient = selected
@@ -211,8 +228,22 @@ impl CachedProblem {
                     if growth == options.max_growth {
                         break;
                     }
-                    indices.push(selected.unwrap());
-                    parameters.push(0.);
+                    let selected = selected.unwrap();
+                    let members: Vec<_> = self.growth_members[selected]
+                        .iter()
+                        .copied()
+                        .filter(|&i| gradients.as_slice()[i].abs() > 1e-12)
+                        .collect();
+                    let grown = if members.len() >= 2 {
+                        members
+                    } else {
+                        vec![selected]
+                    };
+                    for index in grown {
+                        indices.push(index);
+                        parameters.push(0.);
+                    }
+
                     let out = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
                         objective(&indices, t)
                     })?;
@@ -232,8 +263,7 @@ impl CachedProblem {
                     }
                     delta = Some(next_lowest - lowest);
                     if !out.success {
-                        message = format!("inner optimization failed: {}", out.message);
-                        break;
+                        optimizer_failures.push((growth + 1, out.message));
                     }
                 }
             }
@@ -268,7 +298,9 @@ impl CachedProblem {
                 final_gradient = gradients
                     .as_slice()
                     .iter()
-                    .fold(0f64, |a, g| a.max(g.abs()));
+                    .enumerate()
+                    .filter(|(i, _)| self.pool_screenable[*i])
+                    .fold(0f64, |a, (_, g)| a.max(g.abs()));
             }
             let mut order: Vec<_> = (0..k).collect();
             order.sort_by(|&a, &b| energies[a].total_cmp(&energies[b]));
@@ -286,6 +318,7 @@ impl CachedProblem {
                 indices,
                 reference_indices: order,
                 history,
+                optimizer_failures,
                 success,
                 message,
                 final_gradient,

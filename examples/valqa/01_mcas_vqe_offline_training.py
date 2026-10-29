@@ -3,7 +3,7 @@ import os
 import numpy as np
 from ase import Atoms
 from mandacaru import Mandacaru
-from mandacaru.algorithms import fit
+from mandacaru.analysis.proposals import fit
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 STORE = os.path.join(DATA, "offline_store")

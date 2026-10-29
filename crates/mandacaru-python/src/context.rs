@@ -10,7 +10,8 @@ use mandacaru_core::periodic::{
 };
 use mandacaru_core::{kernels, product, Context, Error};
 use numpy::{
-    Complex64, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods,
+    Complex64, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArrayDyn,
+    PyUntypedArrayMethods,
 };
 use periodic::PyCrystal;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
@@ -22,6 +23,156 @@ pub(crate) struct PyContext {
 }
 #[pymethods]
 impl PyContext {
+    fn remove_force_translation<'py>(
+        &self,
+        py: Python<'py>,
+        values: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Array<'py, f64>> {
+        let atoms = values.shape()[0];
+        if values.shape()[1] != 3 {
+            return Err(PyValueError::new_err("forces must have shape (atoms,3)"));
+        }
+        let (values, _memory) = copy(&self.inner, &values)?;
+        let projected = py
+            .detach(|| mandacaru_core::math::rigid::remove_translation(&self.inner, &values))
+            .map_err(error)?;
+        array(py, &[atoms, 3], projected.as_slice().to_vec())
+    }
+    #[pyo3(signature=(data,*,group_by="molecule",fractions=vec![0.25,0.5,1.0],seed=0,folds=None,gnn_epochs=100,mixing=0.3,temperature=1.0))]
+    fn fit_proposal(
+        &self,
+        py: Python<'_>,
+        data: &str,
+        group_by: &str,
+        fractions: Vec<f64>,
+        seed: u64,
+        folds: Option<usize>,
+        gnn_epochs: usize,
+        mixing: f64,
+        temperature: f64,
+    ) -> PyResult<String> {
+        use mandacaru_core::quantum::search::learning::training::{self, Options};
+        py.detach(|| {
+            let options = Options {
+                fractions,
+                seed,
+                folds,
+                epochs: gnn_epochs,
+                mixing,
+                temperature,
+                ..Default::default()
+            };
+            training::fit_json(&self.inner, data, group_by, &options)
+        })
+        .map_err(error)
+    }
+    #[pyo3(signature=(qubits,num_particles=None))]
+    fn active_space_dimension(
+        &self,
+        qubits: usize,
+        num_particles: Option<[usize; 2]>,
+    ) -> PyResult<usize> {
+        mandacaru_core::quantum::expressibility::dimension(qubits, num_particles).map_err(error)
+    }
+    fn expressibility_kl(
+        &self,
+        py: Python<'_>,
+        fidelities: PyReadonlyArray1<'_, f64>,
+        bins: usize,
+        dimension: usize,
+    ) -> PyResult<f64> {
+        let (values, _memory) = super::copy(&self.inner, &fidelities)?;
+        py.detach(|| {
+            mandacaru_core::quantum::expressibility::kl(&self.inner, &values, bins, dimension)
+        })
+        .map_err(error)
+    }
+    #[pyo3(signature=(geometry,*,basis_spec="{\"name\":\"HAO\"}"))]
+    fn basis_size(
+        &self,
+        py: Python<'_>,
+        geometry: &PyGeometry,
+        basis_spec: &str,
+    ) -> PyResult<usize> {
+        py.detach(|| {
+            mandacaru_core::basis::Basis::build(&self.inner, &geometry.inner, basis_spec)
+                .map(|basis| basis.orbitals.len())
+        })
+        .map_err(error)
+    }
+    #[pyo3(signature=(levels,weights,axis,*,width_ha=0.01,degeneracy=2.))]
+    fn density_of_states<'py>(
+        &self,
+        py: Python<'py>,
+        levels: PyReadonlyArray3<'py, f64>,
+        weights: PyReadonlyArray1<'py, f64>,
+        axis: PyReadonlyArray1<'py, f64>,
+        width_ha: f64,
+        degeneracy: f64,
+    ) -> PyResult<Array<'py, f64>> {
+        let shape: [usize; 3] = levels.shape().try_into().unwrap();
+        let (levels, _levels) = copy(&self.inner, &levels)?;
+        let (weights, _weights) = copy(&self.inner, &weights)?;
+        let (axis, _axis) = copy(&self.inner, &axis)?;
+        let out = py
+            .detach(|| {
+                mandacaru_core::models::spectrum::gaussian_dos(
+                    &self.inner,
+                    mandacaru_core::models::spectrum::DosInput {
+                        shape,
+                        levels: &levels,
+                        weights: &weights,
+                    },
+                    &axis,
+                    width_ha,
+                    degeneracy,
+                )
+            })
+            .map_err(error)?;
+        array(py, &[axis.len()], out.as_slice().to_vec())
+    }
+    #[pyo3(signature=(operator,n_spatial_orbitals,num_particles,*,mapping="jordan_wigner",sector=true,include_singles=true,sparse=false,pool="fermionic"))]
+    fn quantum_problem(
+        &self,
+        py: Python<'_>,
+        operator: &quantum::PyOperator,
+        n_spatial_orbitals: usize,
+        num_particles: [usize; 2],
+        mapping: &str,
+        sector: bool,
+        include_singles: bool,
+        sparse: bool,
+        pool: &str,
+    ) -> PyResult<quantum::PyProblem> {
+        let inner = py
+            .detach(|| {
+                let modes = n_spatial_orbitals.checked_mul(2).ok_or(Error::Overflow)?;
+                let encoding =
+                    mandacaru_core::quantum::Encoding::new(mapping, modes, num_particles)?;
+                let operator = operator.inner.copy_into(&self.inner)?;
+                let mut problem = mandacaru_core::quantum::CachedProblem::new(
+                    &self.inner,
+                    encoding,
+                    operator,
+                    sector,
+                    false,
+                    include_singles,
+                )?;
+                if pool != "fermionic" {
+                    problem.use_pool(pool, include_singles)?;
+                }
+                if sparse {
+                    problem.sparse = Some(mandacaru_core::quantum::sparse::SparseMatrix::new(
+                        &self.inner,
+                        &problem.basis,
+                        &problem.hamiltonian,
+                    )?);
+                }
+                Ok::<_, Error>(problem)
+            })
+            .map_err(error)?;
+        Ok(quantum::PyProblem { inner })
+    }
     #[pyo3(signature=(variables,*,omega=0.11))]
     fn exchange_hole<'py>(
         &self,
@@ -755,6 +906,44 @@ impl PyContext {
             inner: std::sync::Arc::new(inner),
         })
     }
+    #[pyo3(signature=(geometry,grid,metadata,arrays,*,kinetic="spectral",cholesky_tolerance=1e-10))]
+    fn paw_molecular_integrals(
+        &self,
+        py: Python<'_>,
+        geometry: &PyGeometry,
+        grid: &PySpatialGrid,
+        metadata: &str,
+        arrays: &Bound<'_, PyDict>,
+        kinetic: &str,
+        cholesky_tolerance: f64,
+    ) -> PyResult<molecular::PyIntegrals> {
+        let mut tables = mandacaru_core::paw::molecular::Arrays::new();
+        for (key, value) in arrays.iter() {
+            let values: PyReadonlyArrayDyn<'_, f64> = value.extract()?;
+            super::layout(&values)?;
+            tables.insert(
+                key.extract::<String>()?,
+                self.inner.copy_slice(values.as_slice()?).map_err(error)?,
+            );
+        }
+        let _metadata = self.inner.reserve(metadata.len()).map_err(error)?;
+        let inner = py
+            .detach(|| {
+                mandacaru_core::paw::molecular::build(
+                    &self.inner,
+                    geometry.inner.clone(),
+                    grid.inner.clone(),
+                    metadata,
+                    tables,
+                    kinetic,
+                    cholesky_tolerance,
+                )
+            })
+            .map_err(error)?;
+        Ok(molecular::PyIntegrals {
+            inner: Arc::new(inner),
+        })
+    }
     #[pyo3(signature=(grid,density,*,periodic=false,slab_axis=None))]
     fn poisson<'py>(
         &self,
@@ -1149,6 +1338,57 @@ impl PyContext {
             .detach(|| kernels::eigenpair(&self.inner, &d, &e, index))
             .map_err(error)?;
         Ok((value, array(py, &[d.len()], vector.as_slice().to_vec())?))
+    }
+    #[pyo3(signature=(radii,potential,projectors,coupling,overlap,*,state=0,vectors=true))]
+    fn paw_eigenpair<'py>(
+        &self,
+        py: Python<'py>,
+        radii: PyReadonlyArray1<'py, f64>,
+        potential: PyReadonlyArray1<'py, f64>,
+        projectors: PyReadonlyArray2<'py, f64>,
+        coupling: PyReadonlyArray2<'py, f64>,
+        overlap: PyReadonlyArray2<'py, f64>,
+        state: usize,
+        vectors: bool,
+    ) -> PyResult<(f64, Option<Array<'py, f64>>)> {
+        let n = radii.len();
+        let rank = projectors.shape()[0];
+        if projectors.shape()[1] != n
+            || coupling.shape() != [rank, rank]
+            || overlap.shape() != [rank, rank]
+        {
+            return Err(PyValueError::new_err(
+                "PAW projectors must be (rank,nodes) and coupling/overlap (rank,rank)",
+            ));
+        }
+        let (radii, _r) = copy(&self.inner, &radii)?;
+        let (potential, _v) = copy(&self.inner, &potential)?;
+        let (projectors, _p) = copy(&self.inner, &projectors)?;
+        let (coupling, _d) = copy(&self.inner, &coupling)?;
+        let (overlap, _q) = copy(&self.inner, &overlap)?;
+        let result = py
+            .detach(|| {
+                mandacaru_core::paw::spectrum::eigenpair(
+                    &self.inner,
+                    mandacaru_core::paw::spectrum::Channel {
+                        radii: &radii,
+                        potential: &potential,
+                        projectors: &projectors,
+                        coupling: &coupling,
+                        overlap: &overlap,
+                        rank,
+                    },
+                    state,
+                    vectors,
+                )
+            })
+            .map_err(error)?;
+        let vector = result
+            .vector
+            .as_ref()
+            .map(|v| array(py, &[n], v.as_slice().to_vec()))
+            .transpose()?;
+        Ok((result.energy, vector))
     }
     #[pyo3(signature=(coefficient, source, initial, step_squared, boundary, inward=false))]
     fn numerov<'py>(

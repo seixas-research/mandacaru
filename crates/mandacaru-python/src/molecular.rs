@@ -6,7 +6,7 @@ use mandacaru_core::{
     quantum::{Basis, Encoding, C64},
     Context,
 };
-use numpy::PyReadonlyArray1;
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use std::sync::Arc;
 
@@ -25,6 +25,13 @@ pub struct PyIntegrals {
 }
 #[pymethods]
 impl PyIntegrals {
+    fn at_geometry(&self, py: Python<'_>, geometry: &super::PyGeometry) -> PyResult<Self> {
+        py.detach(|| self.inner.at_geometry(geometry.inner.clone()))
+            .map(|inner| Self {
+                inner: Arc::new(inner),
+            })
+            .map_err(error)
+    }
     #[getter]
     fn has_eri(&self) -> bool {
         self.inner.has_eri()
@@ -117,6 +124,21 @@ impl PyIntegrals {
         out.set_item("has_eri", self.inner.has_eri())?;
         if self.inner.has_eri() {
             match self.inner.eri().map_err(error)?.as_ref() {
+                mandacaru_core::molecular::integrals::Eri::Augmented {
+                    base, correction, ..
+                } => {
+                    out.set_item("representation", "cholesky+augmentation")?;
+                    out.set_item("augmentation_rank", correction.factors.len())?;
+                    if let mandacaru_core::molecular::integrals::Eri::Cholesky {
+                        rank,
+                        residual,
+                        ..
+                    } = base.as_ref()
+                    {
+                        out.set_item("cholesky_rank", rank)?;
+                        out.set_item("cholesky_residual", residual)?;
+                    }
+                }
                 mandacaru_core::molecular::integrals::Eri::Packed { .. } => {
                     out.set_item("representation", "packed")?
                 }
@@ -192,6 +214,254 @@ pub struct PyMeanField {
 }
 #[pymethods]
 impl PyMeanField {
+    #[pyo3(signature=(previous,previous_model,model,previous_problem,problem,indices,parameters,*,threshold=0.9))]
+    fn transfer_from<'py>(
+        &self,
+        py: Python<'py>,
+        previous: &PyMeanField,
+        previous_model: &PyModel,
+        model: &PyModel,
+        previous_problem: &PyProblem,
+        problem: &PyProblem,
+        indices: Vec<usize>,
+        parameters: Vec<f64>,
+        threshold: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        use mandacaru_core::quantum::transfer::{self, Frame};
+        let seed = py
+            .detach(|| {
+                transfer::carry(
+                    Frame {
+                        integrals: &previous.integrals,
+                        reference: &previous.inner,
+                        model: previous_model.inner(),
+                        problem: &previous_problem.inner,
+                    },
+                    Frame {
+                        integrals: &self.integrals,
+                        reference: &self.inner,
+                        model: model.inner(),
+                        problem: &problem.inner,
+                    },
+                    &indices,
+                    &parameters,
+                    threshold,
+                )
+            })
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        out.set_item("indices", seed.indices)?;
+        out.set_item("parameters", seed.parameters)?;
+        out.set_item("accepted", seed.accepted)?;
+        out.set_item("confidence", seed.confidence)?;
+        out.set_item("reason", seed.reason)?;
+        Ok(out)
+    }
+    #[pyo3(signature=(problem,model,state,*,active_spec=None,step=1e-3,internal=false))]
+    fn quantum_gradient<'py>(
+        &self,
+        py: Python<'py>,
+        problem: &PyProblem,
+        model: &PyModel,
+        state: PyReadonlyArray1<'py, C64>,
+        active_spec: Option<&str>,
+        step: f64,
+        internal: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (values, _memory) = copy(&self.integrals.context, &state)?;
+        let response = py
+            .detach(|| {
+                mandacaru_core::molecular::response::gradient(
+                    &self.integrals,
+                    &self.inner,
+                    model.inner(),
+                    &problem.inner,
+                    &values,
+                    &mandacaru_core::molecular::response::Options {
+                        active_spec,
+                        step,
+                        internal,
+                    },
+                )
+            })
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        out.set_item(
+            "gradient",
+            array(
+                py,
+                &[self.integrals.geometry.numbers().len(), 3],
+                response.gradient.as_slice().to_vec(),
+            )?,
+        )?;
+        out.set_item("energy_ha", response.energy)?;
+        out.set_item("directions", response.directions)?;
+        out.set_item("step_bohr", response.step)?;
+        out.set_item("scheme", "Richardson-reduced-Hamiltonian")?;
+        out.set_item("step_error_estimate", response.estimate)?;
+        out.set_item("orbital_response", "displaced-SCF-and-selector")?;
+        Ok(out)
+    }
+    #[pyo3(signature=(*,gamma=None,active=None,frozen=Vec::new(),model=None,grid=None,quantity=None,index=0,component="auto"))]
+    fn observables<'py>(
+        &self,
+        py: Python<'py>,
+        gamma: Option<PyReadonlyArray2<'py, C64>>,
+        active: Option<Vec<usize>>,
+        frozen: Vec<usize>,
+        model: Option<&PyModel>,
+        grid: Option<&PySpatialGrid>,
+        quantity: Option<&str>,
+        index: usize,
+        component: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let m = self.integrals.m();
+        let (active, frozen, rotation) = if let Some(model) = model {
+            if active.is_some() || !frozen.is_empty() {
+                return Err(PyValueError::new_err(
+                    "choose a native orbital model or explicit active/frozen indices",
+                ));
+            }
+            (
+                model.inner().orbital_indices.clone(),
+                model.inner().frozen_indices.clone(),
+                model.inner().orbital_rotation.clone(),
+            )
+        } else {
+            (
+                active.unwrap_or_else(|| (0..m).filter(|p| !frozen.contains(p)).collect()),
+                frozen,
+                None,
+            )
+        };
+        let gamma = if let Some(gamma) = gamma {
+            let n = active
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| error(mandacaru_core::Error::Overflow))?;
+            if gamma.shape() != [n, n] {
+                return Err(PyValueError::new_err(
+                    "one-particle RDM shape must match the active spin orbitals",
+                ));
+            }
+            Some(copy(&self.integrals.context, &gamma)?)
+        } else {
+            None
+        };
+        let grid = grid.map_or(&self.integrals.grid, |grid| &grid.inner);
+        let (analysis, field) = py
+            .detach(|| {
+                use mandacaru_core::molecular::observables::{self, ActiveDensity};
+                let input = gamma.as_ref().map(|(values, _)| ActiveDensity {
+                    gamma: values,
+                    active: &active,
+                    frozen: &frozen,
+                    rotation: rotation.as_ref().map(|r| &r.matrix),
+                });
+                let analysis = observables::analyze(&self.integrals, &self.inner, input)?;
+                let field = quantity
+                    .map(|quantity| {
+                        observables::sample(
+                            &self.integrals,
+                            &analysis,
+                            grid,
+                            quantity,
+                            index,
+                            component,
+                        )
+                    })
+                    .transpose()?;
+                Ok::<_, mandacaru_core::Error>((analysis, field))
+            })
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        out.set_item("occupations", array(py, &[m], analysis.occupations)?)?;
+        out.set_item("coefficients", matrix(py, &analysis.coefficients)?)?;
+        out.set_item(
+            "mo_coefficients",
+            analysis
+                .mo_coefficients
+                .as_ref()
+                .map(|c| matrix(py, c))
+                .transpose()?,
+        )?;
+        out.set_item("n_electrons", analysis.electrons)?;
+        if let Some(field) = field {
+            out.set_item(
+                "data",
+                array(py, &grid.index.shape(), field.values.as_slice().to_vec())?,
+            )?;
+            out.set_item("integral", field.integral)?;
+            out.set_item("norm", field.norm)?;
+            out.set_item("component", field.component)?;
+            out.set_item("augmentation_charge", field.augmentation_charge)?;
+            out.set_item("n_electrons", field.electrons)?;
+            out.set_item(
+                "charges",
+                self.integrals.corrections.as_ref().map_or_else(
+                    || {
+                        self.integrals
+                            .geometry
+                            .numbers()
+                            .iter()
+                            .map(|&z| z as f64)
+                            .collect::<Vec<_>>()
+                    },
+                    |c| c.charges.clone(),
+                ),
+            )?;
+            out.set_item(
+                "grid",
+                PySpatialGrid {
+                    inner: grid.clone(),
+                },
+            )?;
+            out.set_item(
+                "numbers",
+                self.integrals
+                    .geometry
+                    .numbers()
+                    .iter()
+                    .map(|&z| usize::from(z))
+                    .collect::<Vec<_>>(),
+            )?;
+            out.set_item("positions", self.integrals.geometry.positions().to_vec())?;
+        }
+        Ok(out)
+    }
+    #[getter]
+    fn n_iterations(&self) -> usize {
+        self.inner.iterations.len()
+    }
+    #[getter]
+    fn num_particles(&self) -> [usize; 2] {
+        self.inner.particles
+    }
+    #[getter]
+    fn n_occupied(&self) -> PyResult<usize> {
+        if self.inner.method == "ghf" {
+            return Ok(self.inner.particles.iter().sum());
+        }
+        if self.inner.particles[0] != self.inner.particles[1] {
+            return Err(PyValueError::new_err(
+                "open-shell orbitals have separate spin occupations",
+            ));
+        }
+        Ok(self.inner.particles[0])
+    }
+    #[getter]
+    fn mo_energies<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, f64>> {
+        let energies = &self.inner.energies;
+        if energies.len() == 1 {
+            array(py, &[energies[0].len()], energies[0].clone())
+        } else {
+            array(
+                py,
+                &[energies.len(), energies[0].len()],
+                energies.iter().flatten().copied().collect(),
+            )
+        }
+    }
     #[getter]
     fn has_model(&self) -> bool {
         self.inner.has_model()
@@ -304,13 +574,7 @@ impl PyMeanField {
     }
     fn active_model(&self, py: Python<'_>, spec: &str) -> PyResult<PyModel> {
         let inner = py
-            .detach(|| {
-                self.inner.model(&self.integrals)?.select(
-                    &self.integrals.context,
-                    self.integrals.geometry.numbers(),
-                    spec,
-                )
-            })
+            .detach(|| self.inner.active_model(&self.integrals, spec))
             .map_err(error)?;
         Ok(PyModel {
             context: self.integrals.context.clone(),
@@ -387,6 +651,51 @@ impl PyModel {
 }
 #[pymethods]
 impl PyModel {
+    #[getter]
+    fn orbital_symmetry_sets(&self) -> Vec<Vec<usize>> {
+        self.inner().orbital_symmetry_sets.clone()
+    }
+    #[getter]
+    fn one_body<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, C64>> {
+        let n = if self.inner().spinor {
+            2 * self.inner().m
+        } else {
+            self.inner().m
+        };
+        array(py, &[n, n], self.inner().one.as_slice().to_vec())
+    }
+    #[getter]
+    fn two_body<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, C64>> {
+        let n = if self.inner().spinor {
+            2 * self.inner().m
+        } else {
+            self.inner().m
+        };
+        array(py, &[n, n, n, n], self.inner().two.as_slice().to_vec())
+    }
+    #[getter]
+    fn orbital_rotation<'py>(&self, py: Python<'py>) -> PyResult<Option<Array<'py, C64>>> {
+        self.inner()
+            .orbital_rotation
+            .as_ref()
+            .map(|r| matrix(py, &r.matrix))
+            .transpose()
+    }
+    #[getter]
+    fn selection_occupations<'py>(&self, py: Python<'py>) -> PyResult<Option<Array<'py, f64>>> {
+        self.inner()
+            .orbital_rotation
+            .as_ref()
+            .map(|r| array(py, &[r.occupations.len()], r.occupations.clone()))
+            .transpose()
+    }
+    #[getter]
+    fn mp2_correlation_energy(&self) -> Option<f64> {
+        self.inner()
+            .orbital_rotation
+            .as_ref()
+            .map(|r| r.correlation_energy)
+    }
     fn mp2<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let model = self.inner();
         if model.spinor || model.particles[0] != model.particles[1] {
@@ -476,7 +785,7 @@ impl PyModel {
             inner,
         })
     }
-    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false))]
+    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic"))]
     fn problem(
         &self,
         py: Python<'_>,
@@ -485,6 +794,7 @@ impl PyModel {
         dense: bool,
         include_singles: bool,
         sparse: bool,
+        pool: &str,
     ) -> PyResult<PyProblem> {
         if sparse && dense {
             return Err(PyValueError::new_err(
@@ -497,6 +807,10 @@ impl PyModel {
                     .problem(&self.context, mapping, sector, dense, include_singles)
             })
             .map_err(error)?;
+        if pool != "fermionic" {
+            py.detach(|| inner.use_pool(pool, include_singles))
+                .map_err(error)?;
+        }
         if sparse {
             inner.sparse = Some(
                 py.detach(|| {

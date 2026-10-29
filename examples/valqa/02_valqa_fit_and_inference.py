@@ -2,7 +2,7 @@
 import os
 from ase.build import molecule
 from mandacaru import Mandacaru
-from mandacaru.algorithms import fit
+from mandacaru.analysis.proposals import fit
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 STORE = os.path.join(DATA, "offline_store")        # written by 01_mcas_vqe_offline_training.py

@@ -1,4 +1,4 @@
-"""Exercise an installed wheel with compilers and optional imports blocked."""
+"""Exercise an installed wheel with compilers and integration imports blocked."""
 
 import argparse
 from pathlib import Path
@@ -10,7 +10,7 @@ SMOKE = r"""
 import importlib.abc, importlib.metadata, json, pathlib, subprocess, sys
 class NoOptionalImports(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'ase','scipy','pandas','jax','qiskit','braket','cirq','matplotlib'}:
+        if fullname.split('.')[0] in {'scipy','pandas','jax','qiskit','braket','cirq','matplotlib'}:
             raise AssertionError('optional import: '+fullname)
 sys.meta_path.insert(0,NoOptionalImports())
 def no_process(*args,**kwargs):
@@ -22,7 +22,10 @@ import mandacaru
 from mandacaru import Geometry, Mandacaru, _native
 assert pathlib.Path(sys.argv[1]).resolve() not in pathlib.Path(mandacaru.__file__).resolve().parents
 requirements=importlib.metadata.requires('mandacaru')
-assert all('extra ==' in r or r.lower().startswith('numpy') for r in requirements), requirements
+required={r.split(';')[0].split('>')[0].split('=')[0].strip().lower()
+          for r in requirements if ';' not in r}
+assert {'numpy','ase','scipy','spglib','pandas','fastparquet','matplotlib',
+        'qiskit','qiskit-ibm-runtime','amazon-braket-sdk','cirq'}.issubset(required), requirements
 g=Geometry((1,1),np.array([[2.5,2.5,2.13],[2.5,2.5,2.87]]),np.eye(3)*5)
 with Mandacaru(method='dft',xc='pbe',grid_spacing=.5,resources={'threads':1}) as c:
     r=c.run(g)

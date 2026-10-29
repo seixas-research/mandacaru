@@ -94,7 +94,7 @@ def test_a_generator_warning_reaches_the_report(tmp_path, capsys, monkeypatch):
 def test_install_needs_the_library_variable(monkeypatch, capsys):
     monkeypatch.delenv("MANDACARU_PAW_PATH", raising=False)
     assert main(["--pp", "PAW", "--element", "H", "--install"]) == 2
-    assert "mandacaru --set-paw" in capsys.readouterr().err
+    assert "mandacaru-paw --set" in capsys.readouterr().err
 
 
 def test_install_writes_into_the_functional_folder(tmp_path, monkeypatch,

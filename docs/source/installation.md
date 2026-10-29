@@ -1,6 +1,6 @@
 # Installation
 
-Mandacaru requires Python 3.14 or later. The base package depends only on NumPy
+Mandacaru requires Python 3.14 or later. The package installs its scientific Python dependencies and quantum SDKs,
 and includes its Rust extension in a platform wheel.
 
 ```bash
@@ -18,35 +18,40 @@ python -m pip install -e ".[dev]"
 
 Reinstall the editable package after changing Rust code; Python edits alone do
 not rebuild the extension. Package construction is the only compilation step.
-
-## Optional integrations
-
-| Extra | Purpose |
-| --- | --- |
-| `ase` | ASE Calculator adapter and geometry file readers |
-| `periodic` | ASE, PAW setup, symmetry and columnar datasets |
-| `visualization` | Matplotlib plots |
-| `columnar` | Parquet persistence adapters |
-| `qiskit`, `braket`, `cirq` | External SDK integrations |
-| `docs` | Sphinx documentation tools |
-| `dev` | Scientific tests and documentation tools |
+Force a rebuild when the package version has not changed:
 
 ```bash
-python -m pip install "mandacaru[ase]"
+python -m pip install --force-reinstall --no-deps -e .
+# With uv:
+uv pip install --reinstall-package mandacaru --no-deps -e .
 ```
 
-ASE is optional for molecular calculations and cached crystal calculations.
-See [native execution](guide/native_engine.md) for a standalone `Geometry`
-example. No execution-engine option or runtime numerical fallback is provided.
+## Required Python dependencies
+
+A standard installation includes NumPy, SciPy, threadpoolctl, ASE, spglib,
+Matplotlib, pandas, fastparquet, Qiskit, Qiskit IBM Runtime, Amazon Braket SDK,
+Cirq, pytest and psutil. Documentation and development tools are extras.
+
+The scientific algorithms execute in Rust. Python integration packages remain
+required for the distributed user interface, examples, plotting, persistence
+and external SDK workflows. The core imports these integrations only when used.
+
+Attach the calculator directly with `atoms.calc = Mandacaru(...)`. Standalone
+`Geometry` values are also supported. No execution-engine option is provided.
 
 ## PAW datasets
 
-Periodic PAW geometry assembly remains an optional Python integration.
+Periodic PAW geometry assembly currently uses a Python setup adapter to the
+Rust crystal solver.
 Set `MANDACARU_PAW_PATH` to a `mandacaru-paw` checkout, or
 `MANDACARU_UPAW_PATH` to a `mandacaru-upaw` checkout. Dataset selection belongs
 to the basis specification; datasets do not ship in the base wheel.
-The native molecular geometry interface currently supports all-electron bases;
-molecular PAW setup has not been migrated to that interface.
+Molecular PAW HF and variational calculations use Rust for sampling, integral
+assembly, overlap augmentation, compensation multipoles and exact valence
+one-center interactions. Frozen-core exchange currently supports an empty core
+or a single closed 1s shell. Python still prepares the PAW basis radial tables.
+Molecular PAW DFT, spin-orbit projectors, forces and multi-shell core exchange
+remain unavailable.
 
 ## Verification
 
@@ -57,6 +62,6 @@ cargo test --release --manifest-path Cargo.toml --workspace
 python -m sphinx -W --keep-going -b html docs/source /tmp/mandacaru-docs
 ```
 
-Local scripts build and validate the wheel with only NumPy and pytest, then
-verify the optional ASE adapter separately. No GitHub workflows are used.
+Local scripts validate the installed wheel and the ASE adapter. A separate
+smoke check blocks integration imports to verify the native calculation boundary. No GitHub workflows are used.
 The [development guide](development/architecture.md) explains the contracts.

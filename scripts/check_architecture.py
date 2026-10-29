@@ -15,7 +15,15 @@ BOUNDARY = (
     "specifications.py",
     "models/basis.py",
 )
-OPTIONAL = {"ase", "scipy", "jax", "qiskit", "braket", "cirq", "pandas", "matplotlib"}
+INTEGRATIONS = {
+    "scipy",
+    "jax",
+    "qiskit",
+    "braket",
+    "cirq",
+    "pandas",
+    "matplotlib",
+}
 
 
 # Follow explicit and grouped Rust paths (including `use crate::{math, paw}`).
@@ -71,9 +79,9 @@ def check():
             else:
                 imports = []
             for name in imports:
-                if name.split(".")[0] in OPTIONAL:
+                if name.split(".")[0] in INTEGRATIONS:
                     failures.append(
-                        f"{filename}:{node.lineno}: optional dependency {name} in calculation boundary"
+                        f"{filename}:{node.lineno}: integration dependency {name} in calculation boundary"
                     )
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 arguments = (
@@ -85,8 +93,39 @@ def check():
                             f"{filename}:{node.lineno}: retired execution selector {arg.arg}"
                         )
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    if metadata["project"]["dependencies"] != ["numpy>=2.0.0"]:
-        failures.append("base dependencies must contain only NumPy")
+    required = {
+        "numpy",
+        "scipy",
+        "threadpoolctl",
+        "ase",
+        "spglib",
+        "matplotlib",
+        "fastparquet",
+        "pandas",
+        "qiskit",
+        "qiskit-ibm-runtime",
+        "amazon-braket-sdk",
+        "cirq",
+        "pytest",
+        "psutil",
+    }
+    declared = {
+        re.split(r"[<>=!~;\[]", item)[0].strip().lower()
+        for item in metadata["project"]["dependencies"]
+    }
+    if missing := required - declared:
+        failures.append(f"required Python dependencies are missing: {sorted(missing)}")
+    retired_extras = {
+        "ase",
+        "periodic",
+        "visualization",
+        "columnar",
+        "qiskit",
+        "braket",
+        "cirq",
+    }
+    if retired_extras & metadata["project"].get("optional-dependencies", {}).keys():
+        failures.append("runtime scientific and SDK dependencies must be required")
     for filename in (
         "_rust_molecular.py",
         "_rust_quantum.py",

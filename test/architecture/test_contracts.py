@@ -134,12 +134,12 @@ def test_checkpoint_resume_uses_owned_native_snapshot(tmp_path):
         assert calc.run().energy_hartree == pytest.approx(initial, abs=1e-10)
 
 
-def test_base_install_runs_without_optional_imports_or_scratch(tmp_path):
+def test_native_calculation_avoids_unrelated_integration_imports_and_scratch(tmp_path):
     script = """
 import importlib.abc, sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'ase','scipy','jax','qiskit','braket','cirq','matplotlib','pandas','threadpoolctl'}:
+        if fullname.split('.')[0] in {'scipy','jax','qiskit','braket','cirq','matplotlib','pandas','threadpoolctl'}:
             raise AssertionError('optional import: '+fullname)
 sys.meta_path.insert(0,Block())
 import numpy as np

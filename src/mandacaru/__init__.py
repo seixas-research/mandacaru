@@ -15,6 +15,9 @@ def __getattr__(name):
     if name == "Mandacaru":
         from .calculation import Mandacaru
         return Mandacaru
+    if name == "estimate_qubits":
+        from .specifications import estimate_qubits
+        return estimate_qubits
     if name == "Geometry":
         from .structure import Geometry
         return Geometry
@@ -27,4 +30,4 @@ def __getattr__(name):
     raise AttributeError(f"module 'mandacaru' has no attribute {name!r}")
 
 
-__all__ = ["__version__", "Mandacaru", "Geometry", "CalculationResources", "Viewer3D", "Camera"]
+__all__ = ["__version__", "Mandacaru", "estimate_qubits", "Geometry", "CalculationResources", "Viewer3D", "Camera"]

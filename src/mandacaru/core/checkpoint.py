@@ -48,9 +48,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .atomic import atomic_path
 from .mapping import PauliSum
-from .serialization import MAX_FILE_QUBITS
 
 #: Identifies a Mandacaru wavefunction checkpoint file.
 FORMAT_TAG = "mandacaru-wavefunction-checkpoint"
@@ -138,10 +136,9 @@ def prepare_state(n_qubits: int, reference_qubits, generators, parameters, prepa
 def _pauli_to_payload(operator: PauliSum | None):
     if operator is None:
         return None
-    simplified = operator.simplify()
     return {"num_qubits": int(operator.num_qubits),
             "terms": [[label, complex(c).real, complex(c).imag]
-                      for label, c in sorted(simplified.terms.items())]}
+                      for label, c in sorted(operator.terms.items())]}
 
 
 def _pauli_from_payload(payload) -> PauliSum | None:

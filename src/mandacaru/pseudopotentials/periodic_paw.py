@@ -897,18 +897,10 @@ class PeriodicPAW:
                 psi_all = bloch_values(self.basis, self.lattice, kpoints,
                                        self._grid_points(), center, radius)
                 shift = start - outer
-                from ..integrals.buffers import is_dump_buffers_enabled, create_disk_buffer
-                dump = is_dump_buffers_enabled()
                 for i, k in enumerate(kpoints):
                     weight = all_weights[start + i]
                     psi_raw, C = psi_all[i], C_wide[shift + i]
-                    if dump:
-                        psi = create_disk_buffer(f"kpoint_psi_k{start+i}", psi_raw.shape, dtype=psi_raw.dtype)
-                        psi[:] = psi_raw
-                        if hasattr(psi, "flush"):
-                            psi.flush()
-                    else:
-                        psi = psi_raw
+                    psi = psi_raw
                     S = (psi.conj() @ psi.T) * dV + C @ self.q_overlap \
                         @ C.conj().T
                     fixed = (self._kinetic(psi, k) + V_wide[shift + i]
@@ -2080,9 +2072,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
                       paw_overlap_blocks, paw_projectors,
                       paw_spin_orbit_blocks, paw_spin_orbit_projectors)
 
-    # The Bloch sums and the Bader ascent run in the C library: compile it
-    # (or a stale copy missing their symbols, as a tree synced from another
-    # machine has) before anything is sampled, as the molecular engine does.
+    # Sampling uses the packaged Rust kernels; calculation startup never compiles code.
     from ..integrals import _backend
     _backend.warn_fallback(_backend.ensure_backend())
 

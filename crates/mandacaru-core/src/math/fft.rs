@@ -7,12 +7,17 @@ use rustfft::{Fft, FftPlanner};
 use std::{f64::consts::PI, sync::Arc};
 
 pub struct Fft3 {
+    context: Context,
     shape: [usize; 3],
     forward: Vec<Arc<dyn Fft<f64>>>,
     backward: Vec<Arc<dyn Fft<f64>>>,
+    workers: Vec<FftWorker>,
+    _plans: Reservation,
+    _metadata: Reservation,
+}
+struct FftWorker {
     line: Buffer<C64>,
     scratch: Buffer<C64>,
-    _plans: Reservation,
 }
 impl Fft3 {
     pub fn new(ctx: &Context, shape: [usize; 3]) -> Result<Self> {
@@ -32,51 +37,115 @@ impl Fft3 {
             .map(|p| p.get_inplace_scratch_len())
             .max()
             .unwrap();
+        let workers = ctx.threads().min(shape[0].max(shape[1] * shape[2]));
         Ok(Self {
+            context: ctx.clone(),
             shape,
             forward,
             backward,
-            line: ctx.allocate(n)?,
-            scratch: ctx.allocate(work)?,
+            workers: (0..workers)
+                .map(|_| {
+                    Ok(FftWorker {
+                        line: ctx.allocate(n)?,
+                        scratch: ctx.allocate(work)?,
+                    })
+                })
+                .collect::<Result<_>>()?,
             _plans: plans,
+            _metadata: ctx.reserve(product(&[workers, n, 64])?)?,
         })
     }
     pub fn transform(&mut self, values: &mut [C64], inverse: bool) -> Result<()> {
+        let context = self.context.clone();
+        context.run(|| self.transform_inner(values, inverse))
+    }
+    fn transform_inner(&mut self, values: &mut [C64], inverse: bool) -> Result<()> {
         if values.len() != product(&self.shape)? {
             return Err(invalid("FFT input does not match its shape"));
         }
         let [nx, ny, nz] = self.shape;
+        let worker_count = if values.len() >= 32768 {
+            self.workers.len()
+        } else {
+            1
+        };
         for axis in (0..3).rev() {
             let plan = if inverse {
                 &self.backward[axis]
             } else {
                 &self.forward[axis]
             };
-            let length = self.shape[axis];
-            let stride = match axis {
-                0 => ny * nz,
-                1 => nz,
-                _ => 1,
-            };
-            let groups = match axis {
-                0 => ny * nz,
-                1 => nx * nz,
-                _ => nx * ny,
-            };
-            for group in 0..groups {
-                let base = match axis {
-                    0 => group,
-                    1 => (group / nz) * ny * nz + group % nz,
-                    _ => group * nz,
-                };
-                let line = &mut self.line.as_mut_slice()[..length];
-                for j in 0..length {
-                    line[j] = values[base + j * stride];
+            if axis == 2 {
+                let chunk = (nx * ny).div_ceil(worker_count) * nz;
+                std::thread::scope(|scope| {
+                    for (values, worker) in values.chunks_mut(chunk).zip(&mut self.workers) {
+                        let mut task = move || {
+                            // RustFFT accepts a contiguous batch of complete lines.
+                            plan.process_with_scratch(values, worker.scratch.as_mut_slice());
+                        };
+                        if worker_count == 1 {
+                            task();
+                        } else {
+                            mandacaru_kernels::runtime::spawn(scope, task);
+                        }
+                    }
+                });
+            } else if axis == 1 {
+                let chunk = nx.div_ceil(worker_count) * ny * nz;
+                std::thread::scope(|scope| {
+                    for (values, worker) in values.chunks_mut(chunk).zip(&mut self.workers) {
+                        let mut task = move || {
+                            let line = &mut worker.line.as_mut_slice()[..ny];
+                            for plane in values.chunks_mut(ny * nz) {
+                                for z in 0..nz {
+                                    for y in 0..ny {
+                                        line[y] = plane[y * nz + z];
+                                    }
+                                    plan.process_with_scratch(line, worker.scratch.as_mut_slice());
+                                    for y in 0..ny {
+                                        plane[y * nz + z] = line[y];
+                                    }
+                                }
+                            }
+                        };
+                        if worker_count == 1 {
+                            task();
+                        } else {
+                            mandacaru_kernels::runtime::spawn(scope, task);
+                        }
+                    }
+                });
+            } else {
+                let chunk = (ny * nz).div_ceil(worker_count);
+                let actual = (ny * nz).div_ceil(chunk);
+                let mut stripes: Vec<Vec<&mut [C64]>> =
+                    (0..actual).map(|_| Vec::with_capacity(nx)).collect();
+                for plane in values.chunks_mut(ny * nz) {
+                    for (stripe, slice) in stripes.iter_mut().zip(plane.chunks_mut(chunk)) {
+                        stripe.push(slice);
+                    }
                 }
-                plan.process_with_scratch(line, self.scratch.as_mut_slice());
-                for j in 0..length {
-                    values[base + j * stride] = line[j];
-                }
+                std::thread::scope(|scope| {
+                    for (mut stripe, worker) in stripes.into_iter().zip(&mut self.workers) {
+                        let mut task = move || {
+                            let line = &mut worker.line.as_mut_slice()[..nx];
+                            for column in 0..stripe[0].len() {
+                                for x in 0..nx {
+                                    line[x] = stripe[x][column];
+                                }
+                                plan.process_with_scratch(line, worker.scratch.as_mut_slice());
+                                for x in 0..nx {
+                                    stripe[x][column] = line[x];
+                                }
+                            }
+                        };
+                        if worker_count == 1 {
+                            task();
+                        } else {
+                            mandacaru_kernels::runtime::spawn(scope, task);
+                        }
+                    }
+                });
             }
         }
         if inverse {
@@ -346,9 +415,8 @@ impl Poisson {
             dv,
         })
     }
-    pub fn solve_into(&mut self, rho: &[C64], out: &mut [C64]) -> Result<()> {
+    fn prepare_density(&mut self, rho: &[C64]) -> Result<()> {
         if rho.len() != product(&self.shape)?
-            || out.len() != rho.len()
             || rho.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
         {
             return Err(invalid("Poisson density must be finite and match the grid"));
@@ -365,6 +433,36 @@ impl Poisson {
             }
         }
         self.fft.transform(self.workspace.as_mut_slice(), false)?;
+        Ok(())
+    }
+    /// `Re integral rho* V[rho]`, using Parseval on the same discrete kernel.
+    /// A Coulomb diagonal needs no inverse transform or potential grid.
+    pub fn quadratic_form(&mut self, rho: &[C64]) -> Result<f64> {
+        self.prepare_density(rho)?;
+        let value = self
+            .workspace
+            .as_slice()
+            .iter()
+            .zip(self.kernel.as_slice())
+            .map(|(rho, kernel)| rho.norm_sqr() * kernel.re)
+            .sum::<f64>()
+            * self.dv
+            * self.dv
+            / self.workspace.as_slice().len() as f64;
+        if !value.is_finite() {
+            return Err(crate::Error::Kernel(
+                "Poisson quadratic form overflowed".into(),
+            ));
+        }
+        Ok(value)
+    }
+    pub fn solve_into(&mut self, rho: &[C64], out: &mut [C64]) -> Result<()> {
+        if out.len() != rho.len() {
+            return Err(invalid("Poisson output must match its density"));
+        }
+        self.prepare_density(rho)?;
+        let [nx, ny, nz] = self.shape;
+        let [_, ly, lz] = self.padded;
         for (value, kernel) in self
             .workspace
             .as_mut_slice()

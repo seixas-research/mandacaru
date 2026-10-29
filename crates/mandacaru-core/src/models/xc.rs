@@ -709,6 +709,16 @@ pub fn evaluate_fields(
     kinetic: Option<&[f64]>,
     name: &str,
 ) -> Result<Xc> {
+    evaluate_fields_relativistic(ctx, grid, densities, kinetic, name, false)
+}
+pub fn evaluate_fields_relativistic(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    densities: &[f64],
+    kinetic: Option<&[f64]>,
+    name: &str,
+    relativistic: bool,
+) -> Result<Xc> {
     let definition = crate::models::functional(name)?;
     let name = definition.semilocal;
     let nonlocal_b = definition.nonlocal_b;
@@ -798,7 +808,7 @@ pub fn evaluate_fields(
                     kinetic.map(|v| v[k]).unwrap_or(0.),
                     kinetic.map(|v| v[n + k]).unwrap_or(0.),
                 ],
-                false,
+                relativistic,
             )?
         };
         if let Some(ref nonlocal) = nonlocal {

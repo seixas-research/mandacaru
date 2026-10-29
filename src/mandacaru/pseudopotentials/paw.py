@@ -1962,24 +1962,16 @@ def _channel_operator_on(pp: PAWDataset, l: int, r):
             np.asarray(pp.overlap_correction[l], dtype=float))
 
 
-def _generalized_matrices(r, v, p_u, D, q):
-    h = r[1] - r[0]
-    n = r.size
-    H = np.diag(1.0 / h ** 2 + v)
-    idx = np.arange(n - 1)
-    H[idx, idx + 1] = H[idx + 1, idx] = -0.5 / h ** 2
-    S = np.eye(n)
-    if p_u:
-        X = np.array(p_u)
-        H += h * X.T @ D @ X
-        S += h * X.T @ q @ X
-    return H, S
-
-
 def _generalized_spectrum(r, v, p_u, D, q, n_states):
-    from scipy.linalg import eigh
-    H, S = _generalized_matrices(r, v, p_u, D, q)
-    return eigh(H, S, eigvals_only=True, subset_by_index=[0, n_states - 1])
+    from .confinement import _radial_state
+    from .. import _native
+
+    context = _native.Context(threads=1)
+    return np.array([
+        _radial_state(r, v, p_u, D, q, state,
+                      vectors=False, context=context)[0]
+        for state in range(n_states)
+    ])
 
 
 def paw_spectrum(pp: PAWDataset, l: int, n_states: int = 3,
@@ -2013,25 +2005,23 @@ def paw_eigenstate(pp: PAWDataset, l: int, r_max: float | None = None,
     problem, Richardson-extrapolated pointwise from the ``stride`` and
     ``2 * stride`` grids (returned on the coarser one), ``S``-normalized
     and positive near the origin."""
-    from scipy.linalg import eigh
-
     from scipy.interpolate import CubicSpline
+    from .confinement import _radial_state
+    from .. import _native
 
+    context = _native.Context(threads=1)
     r_max = _spectrum_extent(pp, l) if r_max is None else float(r_max)
     bound = CubicSpline(pp.r, pp.channels[int(l)].pseudo_radial)
     out = []
     for s in (stride, 2 * stride):
         r, v, p_u, D, q = _channel_operator(pp, l, r_max, s)
-        H, S = _generalized_matrices(r, v, p_u, D, q)
-        values, vectors = eigh(H, S, subset_by_index=[0, 0])
-        u = vectors[:, 0]
+        energy, u = _radial_state(r, v, p_u, D, q, context=context)
         h = r[1] - r[0]
-        u = u / np.sqrt(h * u @ S @ u)                 # int u S u = 1
         # Sign: the stored bound smooth wave (a nodeless 2s is negative
         # near the origin, so "positive at the origin" is the wrong rule).
         if np.trapezoid(u * bound(r) * r, dx=h) < 0:
             u = -u
-        out.append((r, u, float(values[0])))
+        out.append((r, u, energy))
     (r_f, u_f, e_f), (r_c, u_c, e_c) = out
     u = (4.0 * u_f[1::2] - u_c) / 3.0
     return r_c, u, (4.0 * e_f - e_c) / 3.0

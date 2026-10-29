@@ -8,384 +8,219 @@
 
 """The ``mandacaru`` console script.
 
-``cli.py`` wraps the single entry point, so every option it forwards has to be
-one the selected method actually acts on: an option a method would ignore is a
-usage error, reported the way argparse reports one.
+``cli.py`` is a thin adapter over the single entry point: it reads a geometry,
+forwards its options to ``Mandacaru(...)`` and prints one JSON report.  The
+tests check three things: the options it forwards are the ones given, a real
+run agrees with calling ``Mandacaru`` directly, and bad input is refused the
+way argparse refuses it.  The PAW library commands live in
+``test/pseudopotentials/test_library_cli.py``.
 """
 
+import json
+
+import numpy as np
 import pytest
 
-from mandacaru.cli import build_parser, main, solver_options
+import mandacaru
+from mandacaru import Geometry, Mandacaru
+from mandacaru.cli import main
+from mandacaru.version import __version__
+
+H2 = {
+    "numbers": [1, 1],
+    "positions": [[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]],
+    "cell": [[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]],
+}
+QUICK = ["--method", "rhf", "--grid-spacing", "0.5", "--threads", "1"]
 
 
-class TestCommandLineOptions:
-    def _options(self, *argv):
-        return solver_options(build_parser().parse_args(
-            ["H2", "--cell", "6", *argv]))
-
-    def test_typed_options_are_forwarded_for_every_method(self):
-        options = self._options("--method", "vqe", "--txt", "out.txt",
-                                "--max-iterations", "0")
-        assert options["txt"] == "out.txt" and options["max_iterations"] == 0
-
-    @pytest.mark.parametrize("argv, expected", [
-        ([], None),
-        (["--convergence-gradient", "1e-4"], {"gradient": 1e-4}),
-        (["--convergence-energy", "1e-6"], {"energy": 1e-6}),
-        (["--convergence-gradient", "1e-3", "--convergence-energy", "1e-6"],
-         {"gradient": 1e-3, "energy": 1e-6}),
-    ])
-    def test_the_convergence_flags_build_the_dictionary(self, argv, expected):
-        """The flags given are the criteria used; none leaves the default."""
-        options = self._options("--method", "adapt-vqe", *argv)
-        assert options.get("convergence") == expected
-
-    def test_the_library_folder_reaches_the_calculator(self):
-        """``--paw-dataset pbe-sr`` selects the PBE PAW-LCAO datasets, as
-        ``Mandacaru(paw_dataset="pbe-sr")`` does; without it nothing is
-        forwarded and the calculator keeps its ``lda-sr`` default."""
-        assert "paw_dataset" not in self._options("--basis", "PAW-LCAO")
-        options = self._options("--basis", "PAW-LCAO", "--paw-dataset", "pbe-sr")
-        assert options["paw_dataset"] == "pbe-sr"
-
-    @pytest.mark.parametrize("argv, expected", [
-        ([], None),
-        (["--two-body", "dense"], {"method": "dense"}),
-        (["--two-body", "cholesky"], {"method": "cholesky"}),
-        (["--cholesky-tolerance", "1e-8"],
-         {"method": "cholesky", "tolerance": 1e-8}),
-    ])
-    def test_the_two_body_flags_build_the_option(self, argv, expected):
-        """``--two-body`` / ``--cholesky-tolerance`` are
-        ``Mandacaru(two_body=...)``; neither leaves the dense default."""
-        assert self._options("--method", "rhf", *argv).get(
-            "two_body") == expected
-
-    @pytest.mark.parametrize("argv, expected", [
-        ([], None),
-        (["--two-center", "grid"], "grid"),
-        (["--two-center", "analytic"], "analytic"),
-    ])
-    def test_the_two_center_flag_builds_the_option(self, argv, expected):
-        """``--two-center`` is ``Mandacaru(two_center=...)``; without it
-        nothing is forwarded and the calculator keeps the grid default."""
-        options = self._options("--basis", "PAW-LCAO", *argv)
-        assert options.get("two_center") == expected
-
-    def test_an_adaptive_method_gets_the_default_pool(self):
-        assert self._options("--method", "adapt-vqe")["pool"] == "fermionic"
-        assert "pool" not in self._options("--method", "vqe")
-
-    @pytest.mark.parametrize("flag", [["--max-iterations", "3"],
-                                      ["--pool", "qeb"]])
-    def test_an_option_the_method_ignores_is_a_usage_error(self, flag, capsys):
-        with pytest.raises(SystemExit) as raised:
-            main(["H2", "--cell", "6", "--method", "vqe", "--dry-run", *flag])
-        assert raised.value.code == 2
-        # Either refusal is a usage error: the solver does not take the option
-        # at all, or it takes it and its run() would never act on it.
-        message = capsys.readouterr().err
-        assert "does not take" in message or "does not write" in message
-
-    def test_a_supported_combination_still_runs(self, capsys):
-        assert main(["H2", "--cell", "6", "--method", "adapt-vqe", "--dry-run",
-                     "--max-iterations", "3"]) == 0
+@pytest.fixture
+def h2_json(tmp_path):
+    path = tmp_path / "h2.json"
+    path.write_text(json.dumps(H2))
+    return str(path)
 
 
-class TestMarkovChainOptions:
-    """The ``--method mcas-vqe`` flags, forwarded only when given."""
+class Recorder:
+    """Stands in for ``Mandacaru``: records how the CLI builds and calls it."""
 
-    def _options(self, *argv):
-        return solver_options(build_parser().parse_args(
-            ["H2", "--cell", "6", "--method", "mcas-vqe", *argv]))
+    instances = []
 
-    def test_nothing_given_forwards_nothing(self):
-        options = self._options()
-        for name in ("max_steps", "max_length", "move_weights", "temperature",
-                     "length_penalty", "warm_start", "replace_start",
-                     "transfer", "transfer_steps", "transfer_threshold",
-                     "rebuild_every", "seed", "proposal",
-                     "proposal_temperature", "record", "proposal_model"):
-            assert name not in options
+    def __init__(self, **options):
+        self.options = options
+        self.calls = []
+        self.results = {"forces": np.zeros((2, 3))}
+        Recorder.instances.append(self)
 
-    def test_every_flag_reaches_its_option(self):
-        options = self._options(
-            "--max-steps", "50", "--max-length", "8", "--length-penalty",
-            "0.002", "--no-warm-start", "--seed", "11", "--pool", "qeb",
-            "--proposal", "uniform", "--proposal-temperature", "0.5")
-        assert options["proposal"] == "uniform"
-        assert options["proposal_temperature"] == 0.5
-        assert options["max_steps"] == 50 and options["max_length"] == 8
-        assert options["length_penalty"] == 0.002
-        assert options["warm_start"] is False and options["seed"] == 11
-        assert options["pool"] == "qeb"
+    def __enter__(self):
+        return self
 
-    def test_the_transfer_flags_reach_their_options(self):
-        options = self._options("--transfer", "--transfer-steps", "6",
-                                "--replace-start", "inherit",
-                                "--transfer-threshold", "0.8",
-                                "--rebuild-every", "5")
-        assert options["transfer_threshold"] == 0.8
-        assert options["rebuild_every"] == 5
-        assert options["transfer"] is True
-        assert options["transfer_steps"] == 6
-        assert options["replace_start"] == "inherit"
+    def __exit__(self, *exc):
+        return False
 
-    def test_the_recording_and_model_flags_reach_valqa(self):
-        options = solver_options(build_parser().parse_args(
-            ["H2", "--cell", "6", "--method", "valqa", "--record", "edits",
-             "--proposal-model", "model.npz",
-             "--update-between-geometries", "--screen-insertions", "3"]))
-        assert options["record"] == "edits"
-        assert options["proposal_model"] == "model.npz"
-        assert options["update_between_geometries"] is True
-        assert options["screen_insertions"] == 3
+    def _result(self):
+        class Result:
+            success = True
 
-    def test_no_record_turns_the_shared_store_off(self):
-        assert self._options("--no-record")["record"] is False
+            @staticmethod
+            def in_units(unit):
+                return -1.0
 
-    def test_one_temperature_is_fixed_and_two_anneal(self):
-        assert self._options("--temperature", "0.05")["temperature"] == 0.05
-        assert self._options("--temperature", "0.1", "0.001")[
-            "temperature"] == {"initial": 0.1, "final": 0.001}
+        return Result()
 
-    def test_three_temperatures_are_a_usage_error(self, capsys):
-        with pytest.raises(SystemExit) as raised:
-            main(["H2", "--cell", "6", "--method", "mcas-vqe", "--dry-run",
-                  "--temperature", "1", "2", "3"])
-        assert raised.value.code == 2
-        assert "--temperature" in capsys.readouterr().err
+    def run(self, geometry=None):
+        self.calls.append(("run", geometry))
+        return self._result()
 
-    def test_named_move_weights_keep_the_others_at_one(self):
-        options = self._options("--move-weight", "swap=0",
-                                "--move-weight", "insert=2")
-        assert options["move_weights"] == {"insert": 2.0, "delete": 1.0,
-                                           "replace": 1.0, "swap": 0.0}
-
-    @pytest.mark.parametrize("text", ["grow=1", "insert=fast", "insert"])
-    def test_a_bad_move_weight_is_a_usage_error(self, text, capsys):
-        with pytest.raises(SystemExit) as raised:
-            build_parser().parse_args(["H2", "--move-weight", text])
-        assert raised.value.code == 2
-
-    @pytest.mark.parametrize("flag", [["--max-steps", "5"], ["--seed", "1"],
-                                      ["--no-warm-start"],
-                                      ["--transfer-steps", "5"],
-                                      ["--proposal", "uniform"],
-                                      ["--temperature", "0.1"]])
-    def test_another_method_refuses_them(self, flag, capsys):
-        with pytest.raises(SystemExit) as raised:
-            main(["H2", "--cell", "6", "--method", "adapt-vqe", "--dry-run",
-                  *flag])
-        assert raised.value.code == 2
-        assert "does not take" in capsys.readouterr().err
-
-    def test_adapt_vqe_takes_transfer(self, capsys):
-        # ADAPT-VQE carries its ansatz between geometries too; the
-        # chain-only transfer controls stay refused (the case above).
-        assert main(["H2", "--cell", "6", "--method", "adapt-vqe",
-                     "--dry-run", "--transfer", "--transfer-threshold",
-                     "0.8"]) == 0
-
-    def test_a_mcas_vqe_dry_run_accepts_them(self, capsys):
-        assert main(["H2", "--cell", "6", "--method", "mcas-vqe", "--dry-run",
-                     "--max-steps", "5", "--seed", "3", "--temperature",
-                     "0.1", "0.01", "--move-weight", "swap=0.5"]) == 0
-
-    def test_a_short_chain_runs_end_to_end(self, capsys):
-        assert main(["H2", "--cell", "5", "--grid-spacing", "0.4", "--method", "mcas-vqe",
-                     "--max-steps", "4", "--seed", "3", "--quiet"]) == 0
+    def calculate(self, geometry, properties):
+        self.calls.append(("calculate", geometry, tuple(properties)))
+        return self._result()
 
 
-class TestCrystalOptions:
-    """``--kpts``, ``--gamma-centered`` and ``--smearing``: forwarded as the
-    ``kpts`` and ``smearing`` options for a periodic geometry, refused for a
-    molecule."""
+@pytest.fixture
+def recorder(monkeypatch):
+    Recorder.instances = []
+    monkeypatch.setattr(mandacaru, "Mandacaru", Recorder)
+    return Recorder
 
-    @pytest.fixture
-    def crystal(self, tmp_path):
-        from ase.build import bulk
+
+class TestForwardedOptions:
+    def test_the_defaults_reach_the_calculator(self, recorder, h2_json):
+        assert main([h2_json]) == 0
+        options = recorder.instances[0].options
+        assert options["method"] == "dft" and options["xc"] == "lda"
+        assert options["basis"] == "HAO" and options["grid_spacing"] == 0.2
+        assert options["resources"] == {"threads": None,
+                                        "memory_limit_bytes": 512 * 1024**2}
+        assert options["load_hamiltonian"] is None
+        assert options["save_hamiltonian"] is None
+        assert options["load_crystal"] is None
+
+    def test_every_option_given_is_forwarded(self, recorder, h2_json):
+        assert main([h2_json, "--method", "dft", "--xc", "pbe", "--basis",
+                     "NAO", "--grid-spacing", "0.3", "--threads", "2",
+                     "--memory-mb", "64", "--save-hamiltonian", "h.parquet"]) == 0
+        options = recorder.instances[0].options
+        assert (options["xc"], options["basis"]) == ("pbe", "NAO")
+        assert options["grid_spacing"] == 0.3
+        assert options["resources"] == {"threads": 2,
+                                        "memory_limit_bytes": 64 * 1024**2}
+        assert options["save_hamiltonian"] == "h.parquet"
+
+    def test_a_cached_problem_needs_no_geometry(self, recorder, capsys):
+        assert main(["--load-hamiltonian", "h.parquet", "--method", "vqe"]) == 0
+        instance = recorder.instances[0]
+        assert instance.options["load_hamiltonian"] == "h.parquet"
+        assert instance.calls == [("run", None)]
+
+    def test_a_cached_crystal_needs_no_geometry(self, recorder):
+        assert main(["--load-crystal", "c.json"]) == 0
+        assert recorder.instances[0].options["load_crystal"] == "c.json"
+
+    def test_forces_use_the_calculate_route(self, recorder, h2_json, capsys):
+        assert main([h2_json, "--forces"]) == 0
+        kind, geometry, properties = recorder.instances[0].calls[0]
+        assert kind == "calculate" and properties == ("energy", "forces")
+        report = json.loads(capsys.readouterr().out)
+        assert report["forces_ev_per_angstrom"] == [[0.0] * 3] * 2
+
+    def test_without_forces_the_report_has_none(self, recorder, h2_json, capsys):
+        assert main([h2_json]) == 0
+        assert "forces_ev_per_angstrom" not in json.loads(capsys.readouterr().out)
+
+
+class TestGeometryInput:
+    def test_a_json_geometry_is_read_as_geometry_keywords(self, recorder,
+                                                          h2_json):
+        assert main([h2_json]) == 0
+        kind, geometry = recorder.instances[0].calls[0]
+        assert isinstance(geometry, Geometry) and geometry.numbers == (1, 1)
+        assert np.allclose(geometry.positions, H2["positions"])
+
+    def test_another_format_goes_through_ase(self, recorder, tmp_path):
+        ase = pytest.importorskip("ase")
         from ase.io import write
-        path = tmp_path / "Al.cif"
-        write(path, bulk("Al", "fcc", a=4.05))
-        return str(path)
 
-    def _options(self, geometry, *argv):
-        return solver_options(build_parser().parse_args(
-            [geometry, "--method", "dft", *argv]))
+        path = tmp_path / "h2.extxyz"
+        write(path, ase.Atoms("H2", positions=H2["positions"], cell=[5] * 3))
+        assert main([str(path)]) == 0
+        geometry = recorder.instances[0].calls[0][1]
+        assert list(geometry.get_chemical_symbols()) == ["H", "H"]
 
-    @pytest.mark.parametrize("argv, expected", [
-        (["--kpts", "4"], (4, 4, 4)),
-        (["--kpts", "2", "3", "4"], (2, 3, 4)),
-        (["--kpts", "4", "--gamma-centered"],
-         {"size": (4, 4, 4), "gamma": True}),
-    ])
-    def test_the_mesh_reaches_kpts(self, crystal, argv, expected):
-        assert self._options(crystal, *argv)["kpts"] == expected
-
-    @pytest.mark.parametrize("argv, expected", [
-        (["0.2"], {"width": 0.2}),
-        (["gaussian"], {"method": "gaussian"}),
-        (["methfessel-paxton", "0.3"],
-         {"method": "methfessel-paxton", "width": 0.3}),
-    ])
-    def test_the_smearing_reaches_its_option(self, crystal, argv, expected):
-        assert self._options(crystal, "--smearing", *argv)["smearing"] == \
-            expected
-
-    def test_nothing_given_forwards_nothing(self, crystal):
-        options = self._options(crystal)
-        assert "kpts" not in options and "smearing" not in options
-
-    @pytest.mark.parametrize("flag", [["--kpts", "2"], ["--smearing", "0.1"]])
-    def test_a_molecule_refuses_them(self, flag, capsys):
+    def test_without_ase_only_json_is_accepted(self, recorder, tmp_path,
+                                               monkeypatch, capsys):
+        monkeypatch.setitem(__import__("sys").modules, "ase", None)
+        monkeypatch.setitem(__import__("sys").modules, "ase.io", None)
         with pytest.raises(SystemExit) as raised:
-            main(["H2", "--cell", "6", "--method", "dft", "--dry-run", *flag])
+            main([str(tmp_path / "h2.xyz")])
         assert raised.value.code == 2
-        message = capsys.readouterr().err
-        assert f"{flag[0]} needs a periodic geometry" in message
-        assert "'H2' is a molecule" in message
+        assert "needs the ase extra" in capsys.readouterr().err
 
-    def test_a_cached_hamiltonian_refuses_them(self, tmp_path, capsys):
+    def test_a_json_that_is_not_a_geometry_is_refused(self, recorder, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps({"numbers": [1]}))
+        with pytest.raises(TypeError):
+            main([str(path)])
+
+
+class TestRefusals:
+    def test_no_geometry_and_no_cached_problem_is_a_usage_error(self, recorder,
+                                                                capsys):
         with pytest.raises(SystemExit) as raised:
-            main(["--load-hamiltonian", str(tmp_path / "h.parquet"),
-                  "--kpts", "2", "--dry-run"])
+            main([])
         assert raised.value.code == 2
-        assert "has no geometry" in capsys.readouterr().err
+        assert "provide geometry or a cached problem" in capsys.readouterr().err
 
-    @pytest.mark.parametrize("argv, message", [
-        (["--kpts", "2", "2"], "one mesh size or three"),
-        (["--kpts", "0"], "must be positive"),
-        (["--gamma-centered"], "give --kpts too"),
-        (["--smearing", "0.1", "gaussian"], "the method first"),
-        (["--smearing", "gaussian", "0.1", "1"], "got 3 values"),
-        (["--smearing", "cold"], "unknown smearing method"),
-        (["--smearing", "-0.1"], "must be positive"),
-    ])
-    def test_a_malformed_value_is_a_usage_error(self, crystal, argv, message,
-                                                capsys):
+    @pytest.mark.parametrize("argv", [["--method", "ccsd"], ["--xc", "nope"],
+                                      ["--threads", "many"]])
+    def test_an_unknown_choice_is_refused_before_any_work(self, recorder, argv,
+                                                          h2_json, capsys):
         with pytest.raises(SystemExit) as raised:
-            main([crystal, "--method", "dft", "--dry-run", *argv])
+            main([h2_json, *argv])
         assert raised.value.code == 2
-        assert message in capsys.readouterr().err
+        assert not recorder.instances
 
-    def test_a_method_without_smearing_refuses_it(self, crystal, capsys):
+    def test_the_version_is_the_package_version(self, capsys):
         with pytest.raises(SystemExit) as raised:
-            main([crystal, "--method", "adapt-vqe", "--dry-run",
-                  "--smearing", "0.1"])
-        assert raised.value.code == 2
-        assert "does not take 'smearing'" in capsys.readouterr().err
-
-    def test_a_crystal_dry_run_accepts_them(self, crystal, capsys):
-        assert main([crystal, "--method", "dft", "--basis", "PAW-LCAO",
-                     "--dry-run", "--kpts", "2", "--gamma-centered",
-                     "--smearing", "methfessel-paxton", "0.2"]) == 0
+            main(["--version"])
+        assert raised.value.code == 0
+        assert __version__ in capsys.readouterr().out
 
 
-class TestLibraryVariables:
-    """``--set-paw/--set-upaw`` and ``--pseudo-status``, on a
-    temporary home directory: the user's own shell files are never touched."""
+class TestReport:
+    def test_the_report_is_json_and_is_written_to_output(self, recorder,
+                                                         h2_json, tmp_path,
+                                                         capsys):
+        out = tmp_path / "report.json"
+        assert main([h2_json, "--method", "rhf", "--output", str(out)]) == 0
+        printed = json.loads(capsys.readouterr().out)
+        assert printed == {"energy_ev": -1.0, "converged": True,
+                           "method": "rhf"}
+        assert json.loads(out.read_text()) == printed
 
-    @pytest.fixture
-    def home(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("SHELL", "/bin/zsh")
-        for variable in ("MANDACARU_PAW_PATH", "MANDACARU_UPAW_PATH"):
-            # setenv first so monkeypatch records the original state, even
-            # when unset: `--set-*` writes os.environ itself, and a bare
-            # delenv of an unset variable would not undo that at teardown.
-            monkeypatch.setenv(variable, "")
-            monkeypatch.delenv(variable)
-        return tmp_path
 
-    def _checkout(self, home, name):
-        path = home / name
-        (path / "lda-sr").mkdir(parents=True)
-        (path / "lda-sr" / "H.parquet").write_bytes(b"")
-        return path
+class TestAgainstTheEntryPoint:
+    """No stand-in here: the CLI must report what ``Mandacaru`` computes."""
 
-    def test_set_records_the_variable_and_sets_it_here(self, home, capsys):
-        import os
+    def _direct(self, **extra):
+        options = dict(method="rhf", grid_spacing=0.5,
+                       resources={"threads": 1}, **extra)
+        return Mandacaru(**options)
 
-        paw = self._checkout(home, "mandacaru-paw")
-        assert main(["--set-paw", str(paw)]) == 0
-        out = capsys.readouterr().out
-        assert f"MANDACARU_PAW_PATH={paw} added to {home / '.zshrc'}" in out
-        assert "lda-sr/: 1 datasets" in out and "new terminal" in out
-        assert f"export MANDACARU_PAW_PATH={paw}" in (home / ".zshrc").read_text()
-        assert os.environ["MANDACARU_PAW_PATH"] == str(paw)
+    def test_the_energy_is_the_calculators(self, h2_json, capsys):
+        assert main([h2_json, *QUICK]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["converged"] is True and report["method"] == "rhf"
+        geometry = Geometry(**H2)
+        with self._direct() as calc:
+            expected = calc.run(geometry).in_units("eV")
+        assert report["energy_ev"] == pytest.approx(expected, abs=1e-8)
 
-    def test_both_at_once_and_a_relative_path(self, home, capsys,
-                                              monkeypatch):
-        monkeypatch.chdir(home)
-        for name in ("mandacaru-paw", "mandacaru-upaw"):
-            self._checkout(home, name)
-        assert main(["--set-paw", "mandacaru-paw",
-                     "--set-upaw", "mandacaru-upaw"]) == 0
-        text = (home / ".zshrc").read_text()
-        for variable, name in (("PAW", "paw"), ("UPAW", "upaw")):
-            # Recorded absolute, so it means the same thing from anywhere.
-            assert f"MANDACARU_{variable}_PATH={home}/mandacaru-{name}" in text
-        capsys.readouterr()
-        assert main(["--pseudo-status"]) == 0
-        assert "lda-sr/: 1 datasets" in capsys.readouterr().out
-
-    def test_upaw_is_optional_but_can_be_set(self, home, capsys):
-        self._checkout(home, "mandacaru-paw")
-        assert main(["--set-paw", str(home / "mandacaru-paw")]) == 0
-        capsys.readouterr()
-        # Unset UPAW: reported as optional, and the status still passes.
-        assert main(["--pseudo-status"]) == 0
-        assert "optional, generated on demand" in capsys.readouterr().out
-        upaw = self._checkout(home, "mandacaru-upaw")
-        assert main(["--set-upaw", str(upaw)]) == 0
-        assert f"MANDACARU_UPAW_PATH={upaw}" in (home / ".zshrc").read_text()
-
-    def test_the_proposal_store_is_created_and_recorded(self, home, capsys,
-                                                        monkeypatch):
-        import os
-
-        monkeypatch.setenv("MANDACARU_PROPOSAL_DATA", "")
-        store = home / "valqa" / "edits"
-        assert main(["--set-proposal-data", str(store)]) == 0
-        assert store.is_dir()
-        assert f"export MANDACARU_PROPOSAL_DATA={store}" in \
-            (home / ".zshrc").read_text()
-        assert os.environ["MANDACARU_PROPOSAL_DATA"] == str(store)
-        assert "added to" in capsys.readouterr().out
-
-    def test_a_missing_folder_writes_nothing(self, home, capsys):
-        assert main(["--set-paw", str(home / "nowhere")]) == 1
-        assert "is not a folder" in capsys.readouterr().out
-        assert not (home / ".zshrc").exists()
-
-    def test_an_existing_value_is_replaced_after_confirmation(self, home,
-                                                              capsys,
-                                                              monkeypatch):
-        old = self._checkout(home, "old")
-        new = self._checkout(home, "new")
-        (home / ".zshrc").write_text(f"export MANDACARU_PAW_PATH={old}\n")
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda prompt: "n")
-        assert main(["--set-paw", str(new)]) == 0
-        assert f"left at {old}" in capsys.readouterr().out
-        monkeypatch.setattr("builtins.input", lambda prompt: "")
-        assert main(["--set-paw", str(new)]) == 0
-        assert f"replaces {old}" in capsys.readouterr().out
-        assert (home / ".zshrc").read_text() == \
-            f"export MANDACARU_PAW_PATH={new}\n"
-
-    def test_status_fails_while_a_variable_is_unset(self, home, capsys):
-        assert main(["--pseudo-status"]) == 1
-        assert "MANDACARU_PAW_PATH is not set" in capsys.readouterr().out
-
-    @pytest.mark.parametrize("flag", ["--link-paw-lcao"])
-    def test_the_link_flags_are_gone(self, flag, capsys):
-        with pytest.raises(SystemExit):
-            main([flag, "/tmp"])
-        assert "unrecognized arguments" in capsys.readouterr().err
-
-    def test_a_run_without_its_library_says_how_to_fix_it(self, home, capsys):
-        assert main(["H2O", "--cell", "8", "--basis", "PAW-LCAO",
-                     "--dry-run"]) == 2
-        assert "mandacaru --set-paw" in capsys.readouterr().err
+    def test_the_forces_are_the_calculators_and_balance(self, h2_json, capsys):
+        assert main([h2_json, *QUICK, "--forces"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        forces = np.array(report["forces_ev_per_angstrom"])
+        assert forces.shape == (2, 3)
+        # Two identical atoms on the z axis: equal and opposite, none sideways.
+        assert np.allclose(forces[0], -forces[1], atol=1e-6)
+        assert np.allclose(forces[:, :2], 0.0, atol=1e-6)

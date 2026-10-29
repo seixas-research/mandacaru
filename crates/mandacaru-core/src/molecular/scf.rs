@@ -79,6 +79,29 @@ fn energy(d: &[Matrix], f: &[Matrix], h: &Matrix, method: &str) -> f64 {
         * multiplier
 }
 pub(super) fn jk(eri: &super::integrals::Eri, m: usize, d: &Matrix) -> (Matrix, Matrix) {
+    // Collinear real densities stay in real arithmetic. No imaginary part
+    // is discarded: genuinely complex and spinor densities use the complex
+    // path below. Pair factors are intrinsically real in this engine.
+    if d.iter().all(|v| v.im == 0.) {
+        let (j, k) = real_jk(eri, m, &d.map(|v| v.re));
+        return (j.map(|v| C64::new(v, 0.)), k.map(|v| C64::new(v, 0.)));
+    }
+    if let super::integrals::Eri::Augmented {
+        base, correction, ..
+    } = eri
+    {
+        let (mut j, mut k) = jk(base, m, d);
+        for (factor, &weight) in correction.factors.iter().zip(&correction.weights) {
+            let b = factor.map(|v| C64::new(v, 0.));
+            let charge = (0..m)
+                .flat_map(|p| (0..m).map(move |q| (p, q)))
+                .map(|(p, q)| d[(p, q)] * b[(q, p)])
+                .sum::<C64>();
+            j += &b * (charge * weight);
+            k += &b * d * &b * C64::new(weight, 0.);
+        }
+        return (j, k);
+    }
     let mut j = Matrix::zeros(m, m);
     let mut k = Matrix::zeros(m, m);
     if let super::integrals::Eri::Cholesky { rank, factors, .. } = eri {
@@ -89,8 +112,58 @@ pub(super) fn jk(eri: &super::integrals::Eri, m: usize, d: &Matrix) -> (Matrix, 
                     0.,
                 )
             });
-            let weight = (d * &b).trace();
+            let weight = (0..m)
+                .flat_map(|p| (0..m).map(move |q| (p, q)))
+                .map(|(p, q)| d[(p, q)] * b[(q, p)])
+                .sum::<C64>();
             j += &b * weight;
+            k += &b * d * &b;
+        }
+        return (j, k);
+    }
+    for p in 0..m {
+        for q in 0..m {
+            for r in 0..m {
+                for s in 0..m {
+                    j[(p, q)] += d[(s, r)] * eri.value(p, r, q, s);
+                    k[(p, q)] += d[(s, r)] * eri.value(p, r, s, q);
+                }
+            }
+        }
+    }
+    (j, k)
+}
+fn real_jk(
+    eri: &super::integrals::Eri,
+    m: usize,
+    d: &DMatrix<f64>,
+) -> (DMatrix<f64>, DMatrix<f64>) {
+    use super::integrals::{pair, Eri};
+    if let Eri::Augmented {
+        base, correction, ..
+    } = eri
+    {
+        let (mut j, mut k) = real_jk(base, m, d);
+        for (b, &weight) in correction.factors.iter().zip(&correction.weights) {
+            let charge = (0..m)
+                .flat_map(|p| (0..m).map(move |q| (p, q)))
+                .map(|(p, q)| d[(p, q)] * b[(q, p)])
+                .sum::<f64>();
+            j += b * (charge * weight);
+            k += b * d * b * weight;
+        }
+        return (j, k);
+    }
+    let mut j = DMatrix::zeros(m, m);
+    let mut k = DMatrix::zeros(m, m);
+    if let Eri::Cholesky { rank, factors, .. } = eri {
+        for column in 0..*rank {
+            let b = DMatrix::from_fn(m, m, |p, q| factors.as_slice()[pair(p, q) * rank + column]);
+            let charge = (0..m)
+                .flat_map(|p| (0..m).map(move |q| (p, q)))
+                .map(|(p, q)| d[(p, q)] * b[(q, p)])
+                .sum::<f64>();
+            j += &b * charge;
             k += &b * d * &b;
         }
         return (j, k);

@@ -1,12 +1,27 @@
-use super::{
-    algebra::{excitation_pool, Generator},
-    evolution, optimizer, Basis, Encoding, Operator, C64,
-};
+use super::{algebra::Generator, evolution, optimizer, Basis, Encoding, Operator, C64};
 use crate::{product, Buffer, Context, Error, Reservation, Result};
 use std::{path::Path, time::Instant};
 
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
+}
+pub type GrowthObserver<'a> = dyn FnMut(&[usize], &[f64], f64) -> Result<()> + 'a;
+
+/// External circuit execution. Optimization and operator construction stay native.
+pub trait Execution {
+    fn evaluate(
+        &mut self,
+        problem: &CachedProblem,
+        indices: &[usize],
+        parameters: &[f64],
+        gradients: bool,
+    ) -> Result<evolution::Evaluation>;
+    fn pool_gradients(
+        &mut self,
+        problem: &CachedProblem,
+        indices: &[usize],
+        parameters: &[f64],
+    ) -> Result<Vec<f64>>;
 }
 
 pub struct CachedProblem {
@@ -17,6 +32,10 @@ pub struct CachedProblem {
     pub pool: Vec<Generator>,
     pub dense: Option<Buffer<C64>>,
     pub sparse: Option<super::sparse::SparseMatrix>,
+    pub pool_screenable: Vec<bool>,
+    pub growth_members: Vec<Vec<usize>>,
+    pub hva: Option<super::hva::HVA>,
+    pub(super) _pool_metadata: Reservation,
 }
 impl CachedProblem {
     /// Read a bounded schema-v1 JSON cache; integrals and quantum SDKs are absent.
@@ -46,7 +65,8 @@ impl CachedProblem {
         }
         let basis = Basis::new(ctx, &encoding, sector)?;
         basis.check_invariant(&hamiltonian)?;
-        let pool = excitation_pool(ctx, &encoding, singles)?;
+        let built = super::pools::build(ctx, &encoding, "fermionic", singles)?;
+        let pool = built.operators;
         for g in &pool {
             basis.check_invariant(&g.operator)?;
         }
@@ -63,7 +83,48 @@ impl CachedProblem {
             pool,
             dense,
             sparse: None,
+            pool_screenable: built.screenable,
+            growth_members: built.growth_members,
+            hva: None,
+            _pool_metadata: built.memory,
         })
+    }
+    pub fn use_pool(&mut self, name: &str, singles: bool) -> Result<()> {
+        let pool = super::pools::build(&self.context, &self.encoding, name, singles)?;
+        for generator in &pool.operators {
+            self.basis.check_invariant(&generator.operator)?;
+        }
+        self.pool = pool.operators;
+        self.pool_screenable = pool.screenable;
+        self.growth_members = pool.growth_members;
+        self._pool_metadata = pool.memory;
+        self.hva = None;
+        Ok(())
+    }
+    fn growth_steps(&self, indices: &[usize]) -> Result<usize> {
+        let mut count = 0;
+        let mut i = 0;
+        while i < indices.len() {
+            let index = indices[i];
+            if index >= self.pool.len() {
+                return Err(invalid("generator index exceeds pool"));
+            }
+            if self.pool_screenable[index] {
+                i += 1;
+            } else {
+                if i + 1 >= indices.len()
+                    || !self
+                        .growth_members
+                        .iter()
+                        .any(|m| m.as_slice() == &indices[i..i + 2])
+                {
+                    return Err(invalid("checkpoint splits a coupled-exchange growth step"));
+                }
+                i += 2;
+            }
+            count += 1;
+        }
+        Ok(count)
     }
     pub fn evaluate(
         &self,
@@ -71,6 +132,25 @@ impl CachedProblem {
         parameters: &[f64],
         trotter: bool,
     ) -> Result<evolution::Evaluation> {
+        if let Some(hva) = &self.hva {
+            let expanded = hva.expand(&self.pool, indices, parameters)?;
+            let mut out = evolution::evaluate(
+                &self.context,
+                &self.basis,
+                &self.hamiltonian,
+                self.dense.as_ref().map(|d| d.as_slice()),
+                self.sparse.as_ref(),
+                &expanded.operators,
+                &expanded.parameters,
+                true,
+            )?;
+            let mut gradient = vec![0.; parameters.len()];
+            for (g, (i, w)) in out.gradient.iter().zip(expanded.links) {
+                gradient[i] += w * g;
+            }
+            out.gradient = gradient;
+            return Ok(out);
+        }
         let ops: Result<Vec<_>> = indices
             .iter()
             .map(|&i| {
@@ -91,6 +171,49 @@ impl CachedProblem {
             trotter,
         )
     }
+    pub fn prepare_state(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+    ) -> Result<Buffer<C64>> {
+        let expanded = self.sequence(indices, parameters)?;
+        evolution::state_from(
+            &self.context,
+            &self.basis,
+            &expanded.operators,
+            &expanded.parameters,
+            trotter || self.hva.is_some(),
+            false,
+            None,
+        )
+    }
+    pub fn sequence<'a>(
+        &'a self,
+        indices: &[usize],
+        parameters: &[f64],
+    ) -> Result<super::hva::Expanded<'a>> {
+        if let Some(hva) = &self.hva {
+            return hva.expand(&self.pool, indices, parameters);
+        }
+        if indices.len() != parameters.len() {
+            return Err(invalid("generator indices must match parameters"));
+        }
+        let operators = indices
+            .iter()
+            .map(|&i| {
+                self.pool
+                    .get(i)
+                    .map(|g| &g.operator)
+                    .ok_or_else(|| invalid("generator index exceeds pool"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(super::hva::Expanded {
+            operators,
+            parameters: parameters.to_vec(),
+            links: (0..parameters.len()).map(|i| (i, 1.)).collect(),
+        })
+    }
     pub fn solve(&self, options: &SolveOptions, initial: Option<&[f64]>) -> Result<SolveResult> {
         self.solve_sequence(options, initial, None)
     }
@@ -101,18 +224,44 @@ impl CachedProblem {
         sequence: Option<&[usize]>,
     ) -> Result<SolveResult> {
         self.context
-            .run(|| self.solve_inner(options, initial, sequence))
+            .run(|| self.solve_inner(options, initial, sequence, None, None))
+    }
+    pub fn solve_observed(
+        &self,
+        options: &SolveOptions,
+        initial: Option<&[f64]>,
+        sequence: Option<&[usize]>,
+        observer: &mut GrowthObserver<'_>,
+    ) -> Result<SolveResult> {
+        self.context
+            .run(|| self.solve_inner(options, initial, sequence, Some(observer), None))
+    }
+    pub fn solve_executed(
+        &self,
+        options: &SolveOptions,
+        initial: Option<&[f64]>,
+        observer: Option<&mut GrowthObserver<'_>>,
+        execution: &mut dyn Execution,
+    ) -> Result<SolveResult> {
+        self.context
+            .run(|| self.solve_inner(options, initial, None, observer, Some(execution)))
     }
     fn solve_inner(
         &self,
         options: &SolveOptions,
         initial: Option<&[f64]>,
         sequence: Option<&[usize]>,
+        mut observer: Option<&mut GrowthObserver<'_>>,
+        mut execution: Option<&mut dyn Execution>,
     ) -> Result<SolveResult> {
         options.validate()?;
+        if options.adapt && self.hva.is_some() {
+            return Err(invalid("HVA is a fixed ansatz"));
+        }
         if sequence.is_some_and(|s| {
             !options.adapt
-                || s.len() > options.max_growth
+                || self.growth_steps(s).is_err()
+                || self.growth_steps(s).is_ok_and(|n| n > options.max_growth)
                 || s.iter().any(|&i| i >= self.pool.len())
                 || initial.is_none_or(|p| p.len() != s.len())
         }) {
@@ -123,7 +272,15 @@ impl CachedProblem {
         let start = Instant::now();
         let ctx = &self.context;
         let max_parameters = if options.adapt {
-            options.max_growth
+            product(&[
+                options.max_growth,
+                self.growth_members
+                    .iter()
+                    .map(Vec::len)
+                    .max()
+                    .unwrap_or(1)
+                    .max(1),
+            ])?
         } else {
             self.pool.len()
         };
@@ -132,7 +289,11 @@ impl CachedProblem {
             product(&[
                 options.optimizer.max_evaluations,
                 if options.adapt {
-                    options.max_growth.max(1)
+                    options
+                        .max_growth
+                        .checked_add(usize::from(sequence.is_some_and(|s| !s.is_empty())))
+                        .ok_or(Error::Overflow)?
+                        .max(1)
                 } else {
                     1
                 },
@@ -142,6 +303,17 @@ impl CachedProblem {
             .ok_or(Error::Overflow)?,
         )?;
         let reference = self.evaluate(&[], &[], true)?.energy;
+        let derivatives = !matches!(
+            options.optimizer.method,
+            optimizer::Method::Cobyla | optimizer::Method::NelderMead | optimizer::Method::Spsa
+        );
+        let mut evaluate = |indices: &[usize],
+                            parameters: &[f64],
+                            trotter: bool,
+                            gradients: bool| match execution.as_mut() {
+            Some(device) => device.evaluate(self, indices, parameters, gradients),
+            None => self.evaluate(indices, parameters, trotter),
+        };
         let mut indices = Vec::new();
         let mut parameters = Vec::new();
         let mut iterations = Vec::new();
@@ -150,18 +322,21 @@ impl CachedProblem {
         let mut success = false;
         let mut message = "growth budget exhausted".to_owned();
         let mut final_gradient = 0.;
+        let mut seed = None;
         if !options.adapt {
-            indices = (0..self.pool.len()).collect();
-            parameters = initial
-                .map(|x| x.to_vec())
-                .unwrap_or_else(|| vec![0.; indices.len()]);
+            indices = (0..self.pool.len())
+                .filter(|&i| self.pool_screenable[i])
+                .collect();
+            parameters = initial.map(|x| x.to_vec()).unwrap_or_else(|| {
+                vec![self.hva.as_ref().map_or(0., |h| h.seed_angle); indices.len()]
+            });
             if parameters.len() != indices.len() {
                 return Err(invalid(
                     "initial parameter count differs from the UCCSD pool",
                 ));
             }
             let outcome = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
-                let v = self.evaluate(&indices, t, options.trotter)?;
+                let v = evaluate(&indices, t, options.trotter, derivatives)?;
                 Ok((v.energy, v.gradient))
             })?;
             parameters = outcome.parameters;
@@ -169,8 +344,7 @@ impl CachedProblem {
             steps = outcome.steps;
             success = outcome.success;
             message = outcome.message;
-            final_gradient = self
-                .evaluate(&indices, &parameters, options.trotter)?
+            final_gradient = evaluate(&indices, &parameters, options.trotter, true)?
                 .gradient
                 .iter()
                 .fold(0f64, |a, g| a.max(g.abs()));
@@ -181,17 +355,58 @@ impl CachedProblem {
             if let Some(sequence) = sequence {
                 indices = sequence.to_vec();
                 parameters = initial.unwrap().to_vec();
+                if !indices.is_empty() {
+                    let outcome = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
+                        let value = evaluate(&indices, t, true, derivatives)?;
+                        Ok((value.energy, value.gradient))
+                    })?;
+                    let kept = outcome.energy < reference;
+                    seed = Some(SeedRelaxation {
+                        kept,
+                        energy: outcome.energy,
+                        success: outcome.success,
+                        message: outcome.message.clone(),
+                        evaluations: outcome.history.len(),
+                        steps: outcome.steps,
+                    });
+                    if !outcome.success {
+                        iterations.push(Iteration {
+                            pool_index: *indices.last().unwrap(),
+                            energy: outcome.energy,
+                            max_gradient: 0.,
+                            optimizer_steps: outcome.steps,
+                            num_evaluations: outcome.history.len(),
+                            success: false,
+                            message: format!("initial sequence relaxation: {}", outcome.message),
+                            num_parameters: indices.len(),
+                        });
+                    }
+                    steps += outcome.steps;
+                    history.extend(outcome.history);
+                    parameters = outcome.parameters;
+                    if !kept {
+                        indices.clear();
+                        parameters.clear();
+                    }
+                }
             }
             let mut delta = None;
-            for growth in indices.len()..=options.max_growth {
-                let evaluation = self.evaluate(&indices, &parameters, true)?;
+            for growth in self.growth_steps(&indices)?..=options.max_growth {
+                // Release the objective closure before measured pool screening.
+                let evaluation = match execution.as_mut() {
+                    Some(device) => device.evaluate(self, &indices, &parameters, false)?,
+                    None => self.evaluate(&indices, &parameters, true)?,
+                };
                 let energy = evaluation.energy;
-                let hpsi = self
-                    .hamiltonian
-                    .apply(ctx, &self.basis, evaluation.state.as_slice())?;
+                let hpsi = self.hamiltonian.apply_centered(
+                    ctx,
+                    &self.basis,
+                    evaluation.state.as_slice(),
+                )?;
                 let mut action = ctx.allocate::<C64>(self.basis.len())?;
                 let mut selected = 0;
                 final_gradient = 0.;
+                let mut gradients = vec![0.; self.pool.len()];
                 for (i, g) in self.pool.iter().enumerate() {
                     g.operator.apply_into(
                         &self.basis,
@@ -200,9 +415,30 @@ impl CachedProblem {
                     );
                     let magnitude =
                         (2. * evolution::inner(hpsi.as_slice(), action.as_slice()).re).abs();
-                    if magnitude > final_gradient {
+                    gradients[i] = magnitude;
+                    if self.pool_screenable[i] && magnitude > final_gradient {
                         final_gradient = magnitude;
                         selected = i;
+                    }
+                }
+                if !indices.is_empty() {
+                    if let Some(device) = execution.as_mut() {
+                        gradients = device.pool_gradients(self, &indices, &parameters)?;
+                        if gradients.len() != self.pool.len()
+                            || gradients.iter().any(|g| !g.is_finite())
+                        {
+                            return Err(invalid(
+                                "external pool gradients have invalid size or values",
+                            ));
+                        }
+                        final_gradient = 0.;
+                        for (i, gradient) in gradients.iter_mut().enumerate() {
+                            *gradient = gradient.abs();
+                            if self.pool_screenable[i] && *gradient > final_gradient {
+                                final_gradient = *gradient;
+                                selected = i;
+                            }
+                        }
                     }
                 }
                 let gradient_ok = options
@@ -219,10 +455,26 @@ impl CachedProblem {
                 if growth == options.max_growth {
                     break;
                 }
-                indices.push(selected);
-                parameters.push(0.);
+                let members: Vec<_> = self.growth_members[selected]
+                    .iter()
+                    .copied()
+                    .filter(|&i| gradients[i] > 1e-12)
+                    .collect();
+                let grown = if members.len() >= 2 {
+                    members
+                } else {
+                    vec![selected]
+                };
+                for index in grown {
+                    indices.push(index);
+                    parameters.push(0.);
+                }
+
                 let outcome = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
-                    let v = self.evaluate(&indices, t, true)?;
+                    let v = match execution.as_mut() {
+                        Some(device) => device.evaluate(self, &indices, t, derivatives)?,
+                        None => self.evaluate(&indices, t, true)?,
+                    };
                     Ok((v.energy, v.gradient))
                 })?;
                 delta = Some(outcome.energy - energy);
@@ -236,28 +488,32 @@ impl CachedProblem {
                     num_evaluations: outcome.history.len(),
                     success: outcome.success,
                     message: outcome.message.clone(),
+                    num_parameters: parameters.len(),
                 });
                 history.extend(outcome.history);
-                if !outcome.success {
-                    message = format!("inner optimization failed: {}", outcome.message);
-                    // Recompute the final screening below, after the updated state.
-                    break;
+                if let Some(observer) = observer.as_deref_mut() {
+                    observer(&indices, &parameters, outcome.energy)?;
                 }
+                // Preserve an inner optimizer's best point and failure status.
+                // Growth continues; only the outer pool criteria certify ADAPT
+                // convergence, even when the inner tolerance hits roundoff.
             }
         }
-        let evaluation = self.evaluate(
-            &indices,
-            &parameters,
-            if options.adapt { true } else { options.trotter },
-        )?;
+        let evaluation = match execution.as_mut() {
+            Some(device) => device.evaluate(self, &indices, &parameters, false)?,
+            None => self.evaluate(&indices, &parameters, options.adapt || options.trotter)?,
+        };
         let energy = evaluation.energy;
-        if options.adapt {
-            let hpsi = self
-                .hamiltonian
-                .apply(ctx, &self.basis, evaluation.state.as_slice())?;
+        if options.adapt && execution.is_none() {
+            let hpsi =
+                self.hamiltonian
+                    .apply_centered(ctx, &self.basis, evaluation.state.as_slice())?;
             let mut action = ctx.allocate(self.basis.len())?;
             final_gradient = 0.;
-            for g in &self.pool {
+            for (i, g) in self.pool.iter().enumerate() {
+                if !self.pool_screenable[i] {
+                    continue;
+                }
                 g.operator.apply_into(
                     &self.basis,
                     evaluation.state.as_slice(),
@@ -272,6 +528,7 @@ impl CachedProblem {
             .map(|&i| self.pool[i].label.clone())
             .collect();
         Ok(SolveResult {
+            seed,
             energy,
             reference,
             parameters,
@@ -335,8 +592,10 @@ pub struct Iteration {
     pub num_evaluations: usize,
     pub success: bool,
     pub message: String,
+    pub num_parameters: usize,
 }
 pub struct SolveResult {
+    pub seed: Option<SeedRelaxation>,
     pub energy: f64,
     pub reference: f64,
     pub parameters: Vec<f64>,
@@ -350,5 +609,13 @@ pub struct SolveResult {
     pub message: String,
     pub final_gradient: f64,
     pub elapsed_seconds: f64,
-    _memory: Reservation,
+    pub(super) _memory: Reservation,
+}
+pub struct SeedRelaxation {
+    pub kept: bool,
+    pub energy: f64,
+    pub success: bool,
+    pub message: String,
+    pub evaluations: usize,
+    pub steps: usize,
 }
