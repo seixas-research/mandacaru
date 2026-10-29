@@ -78,8 +78,8 @@ def preflight_run_budget(driver, opts):
         raise RunBudgetExceeded(
             f"the optimizer may evaluate the energy {evaluations:,} times on "
             f"{provider!r}, over the run budget ({'; '.join(over)}).  Lower the "
-            "optimizer's maxiter or the shots, or raise run_budget= in "
-            "backend_options if you mean it.")
+            "optimizer's maxiter (maxfev for COBYLA) or the shots, or raise "
+            "run_budget= in backend_options if you mean it.")
 
 
 class CircuitExecutor:

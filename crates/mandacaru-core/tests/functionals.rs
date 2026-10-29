@@ -190,3 +190,80 @@ fn all_electron_species_is_constructed_without_python_and_respects_budget_lifeti
     drop(basis);
     assert_eq!(ctx.memory_used(), 0);
 }
+/// A Gaussian orbital psi = exp(-r^2 / 2 w^2) sampled on the grid of H2 at
+/// spacing `h` Bohr; returns the grid, the sampled psi and the analytic
+/// gradient of psi^2 (`[axis][point]`).
+fn gaussian_orbital(h: f64, w: f64) -> (SpatialGrid, Vec<f64>, Vec<f64>) {
+    let grid = SpatialGrid::from_geometry(&geometry(0.), [h; 3], false, false).unwrap();
+    let n = grid.index.points();
+    let shape = grid.index.shape();
+    let center = grid.point((shape[0] / 2 * shape[1] + shape[1] / 2) * shape[2] + shape[2] / 2);
+    let (mut psi, mut density_gradient) = (vec![0.; n], vec![0.; 3 * n]);
+    for k in 0..n {
+        let point = grid.point(k);
+        let delta: Vec<f64> = (0..3).map(|a| point[a] - center[a]).collect();
+        let r2: f64 = delta.iter().map(|x| x * x).sum();
+        psi[k] = (-r2 / (2. * w * w)).exp();
+        for a in 0..3 {
+            density_gradient[a * n + k] = -2. * psi[k] * delta[a] / (w * w) * psi[k];
+        }
+    }
+    (grid, psi, density_gradient)
+}
+fn max_difference(a: &[f64], b: &[f64]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0., f64::max)
+}
+#[test]
+fn the_orbital_product_rule_gradient_of_a_gaussian_density_is_the_analytic_one() {
+    // Resolved: the grid derivative of the sampled density agrees with the
+    // analytic gradient as well, to the (high) order of the stencil.
+    let (grid, psi, exact) = gaussian_orbital(0.3, 1.2);
+    let n = grid.index.points();
+    let density: Vec<f64> = psi.iter().map(|p| p * p).collect();
+    let (mut product_rule, mut stencil) = (vec![0.; 3 * n], vec![0.; 3 * n]);
+    for axis in 0..3 {
+        let slice = axis * n..(axis + 1) * n;
+        xc::derivative(&grid, &psi, axis, &mut product_rule[slice.clone()]).unwrap();
+        for k in 0..n {
+            product_rule[axis * n + k] *= 2. * psi[k];
+        }
+        xc::derivative(&grid, &density, axis, &mut stencil[slice]).unwrap();
+    }
+    let scale = exact.iter().fold(0f64, |m, v| m.max(v.abs()));
+    let product_error = max_difference(&product_rule, &exact) / scale;
+    let stencil_error = max_difference(&stencil, &exact) / scale;
+    assert!(product_error < 5e-5, "product rule error {product_error}");
+    assert!(stencil_error < 5e-4, "stencil error {stencil_error}");
+}
+#[test]
+fn only_the_orbital_product_rule_keeps_an_unresolved_orbital_iso_orbital() {
+    // psi as narrow as the grid spacing: |grad rho|^2 / 8 rho = |grad psi|^2 / 2
+    // is an algebraic identity of the product rule, and fails for the grid
+    // derivative of rho = psi^2 where rho is not resolved.
+    let (grid, psi, _) = gaussian_orbital(0.3, 0.3);
+    let n = grid.index.points();
+    let density: Vec<f64> = psi.iter().map(|p| p * p).collect();
+    let (mut orbital, mut stencil) = (vec![0.; 3 * n], vec![0.; 3 * n]);
+    for axis in 0..3 {
+        let slice = axis * n..(axis + 1) * n;
+        xc::derivative(&grid, &psi, axis, &mut orbital[slice.clone()]).unwrap();
+        xc::derivative(&grid, &density, axis, &mut stencil[slice]).unwrap();
+    }
+    let (mut product_worst, mut stencil_worst) = (0f64, 0f64);
+    for k in (0..n).filter(|&k| density[k] > 1e-12) {
+        let tau: f64 = (0..3).map(|a| 0.5 * orbital[a * n + k].powi(2)).sum();
+        let product_rule: f64 = (0..3)
+            .map(|a| (2. * psi[k] * orbital[a * n + k]).powi(2) / (8. * density[k]))
+            .sum();
+        let sampled: f64 = (0..3)
+            .map(|a| stencil[a * n + k].powi(2) / (8. * density[k]))
+            .sum();
+        product_worst = product_worst.max((product_rule - tau).abs() / tau);
+        stencil_worst = stencil_worst.max((sampled - tau).abs() / tau);
+    }
+    assert!(product_worst < 1e-12, "{product_worst}");
+    assert!(stencil_worst > 1e-2, "{stencil_worst}");
+}

@@ -697,6 +697,11 @@ pub struct Xc {
     pub energy: f64,
     pub potentials: Buffer<f64>,
     pub tau_potentials: Option<Buffer<f64>>,
+    /// Flux `dE/d(grad rho_s)` of each spin (`[spin][axis][point]`), returned
+    /// only when the caller supplied the density gradient itself: the caller
+    /// then contracts it with the gradient's own dependence on its density
+    /// matrix, and `potentials` leaves out the divergence of the flux.
+    pub gradient_potentials: Option<Buffer<f64>>,
 }
 pub fn evaluate(ctx: &Context, grid: &SpatialGrid, densities: &[f64], name: &str) -> Result<Xc> {
     let name = functional(name)?;
@@ -709,13 +714,25 @@ pub fn evaluate_fields(
     kinetic: Option<&[f64]>,
     name: &str,
 ) -> Result<Xc> {
-    evaluate_fields_relativistic(ctx, grid, densities, kinetic, name, false)
+    evaluate_fields_relativistic(ctx, grid, densities, kinetic, None, name, false)
 }
+/// Semilocal exchange-correlation of two spin densities on a molecular grid.
+///
+/// `gradient` (`[spin][axis][point]`) is the density gradient a meta-GGA sees
+/// when the caller builds it from the orbitals, `2 sum D phi grad phi`, so that
+/// the Weizsaecker `|grad rho|^2 / 8 rho` of a single orbital equals the `tau`
+/// built from the same orbital gradients (an iso-orbital indicator of exactly
+/// zero). Without it the sampled density is differentiated on the grid. With
+/// it the flux `dE/d(grad rho)` is returned in `Xc::gradient_potentials` and
+/// its divergence is not subtracted from the potentials. The nonlocal
+/// correlation keeps the grid derivative of the density. Only a meta-GGA
+/// accepts the field.
 pub fn evaluate_fields_relativistic(
     ctx: &Context,
     grid: &SpatialGrid,
     densities: &[f64],
     kinetic: Option<&[f64]>,
+    gradient: Option<&[f64]>,
     name: &str,
     relativistic: bool,
 ) -> Result<Xc> {
@@ -733,6 +750,16 @@ pub fn evaluate_fields_relativistic(
     if name == "r2scan" && kinetic.is_none() {
         return Err(invalid("r2scan requires both kinetic-energy densities"));
     }
+    if let Some(field) = gradient {
+        if name != "r2scan" {
+            return Err(invalid(
+                "an orbital density gradient is defined only for a meta-GGA",
+            ));
+        }
+        if field.len() != product(&[6, n])? || field.iter().any(|v| !v.is_finite()) {
+            return Err(invalid("XC requires a finite density gradient per spin"));
+        }
+    }
     let mut potentials = ctx.allocate::<f64>(2 * n)?;
     let mut tau_potentials = if name == "r2scan" {
         Some(ctx.allocate::<f64>(2 * n)?)
@@ -740,7 +767,7 @@ pub fn evaluate_fields_relativistic(
         None
     };
     let mut gradients = ctx.allocate::<f64>(6 * n)?;
-    if name != "lda" {
+    if name != "lda" && (gradient.is_none() || nonlocal_b.is_some()) {
         for s in 0..2 {
             for a in 0..3 {
                 derivative(
@@ -780,6 +807,12 @@ pub fn evaluate_fields_relativistic(
         None
     };
     let mut flux = ctx.allocate::<f64>(6 * n)?;
+    let mut product_flux = if gradient.is_some() {
+        Some(ctx.allocate::<f64>(6 * n)?)
+    } else {
+        None
+    };
+    let semilocal = gradient.unwrap_or(gradients.as_slice());
     let mut work = ctx.allocate::<f64>(n)?;
     let mut energy = 0.;
     for k in 0..n {
@@ -787,8 +820,8 @@ pub fn evaluate_fields_relativistic(
         let mut sigma = [0.; 3];
         if weighted {
             for a in 0..3 {
-                let u = gradients.as_slice()[a * n + k];
-                let d = gradients.as_slice()[(3 + a) * n + k];
+                let u = semilocal[a * n + k];
+                let d = semilocal[(3 + a) * n + k];
                 sigma[0] += u * u;
                 sigma[1] += u * d;
                 sigma[2] += d * d;
@@ -814,9 +847,21 @@ pub fn evaluate_fields_relativistic(
         if let Some(ref nonlocal) = nonlocal {
             df[0] += nonlocal.density.as_slice()[k];
             df[1] += nonlocal.density.as_slice()[k];
-            df[2] += nonlocal.sigma.as_slice()[k];
-            df[3] += 2. * nonlocal.sigma.as_slice()[k];
-            df[4] += nonlocal.sigma.as_slice()[k];
+            // With a supplied gradient the semilocal flux is returned whole
+            // and the nonlocal one, on the grid derivative, stays here.
+            if product_flux.is_none() {
+                df[2] += nonlocal.sigma.as_slice()[k];
+                df[3] += 2. * nonlocal.sigma.as_slice()[k];
+                df[4] += nonlocal.sigma.as_slice()[k];
+            } else if weighted {
+                let s = nonlocal.sigma.as_slice()[k];
+                for a in 0..3 {
+                    let u = gradients.as_slice()[a * n + k];
+                    let d = gradients.as_slice()[(3 + a) * n + k];
+                    flux.as_mut_slice()[a * n + k] = 2. * s * u + 2. * s * d;
+                    flux.as_mut_slice()[(3 + a) * n + k] = 2. * s * d + 2. * s * u;
+                }
+            }
         }
         energy += f;
         potentials.as_mut_slice()[k] = df[0];
@@ -827,14 +872,15 @@ pub fn evaluate_fields_relativistic(
         }
         if weighted && name != "lda" {
             for a in 0..3 {
-                let u = gradients.as_slice()[a * n + k];
-                let d = gradients.as_slice()[(3 + a) * n + k];
-                flux.as_mut_slice()[a * n + k] = 2. * df[2] * u + df[3] * d;
-                flux.as_mut_slice()[(3 + a) * n + k] = 2. * df[4] * d + df[3] * u;
+                let u = semilocal[a * n + k];
+                let d = semilocal[(3 + a) * n + k];
+                let target = product_flux.as_mut().unwrap_or(&mut flux).as_mut_slice();
+                target[a * n + k] = 2. * df[2] * u + df[3] * d;
+                target[(3 + a) * n + k] = 2. * df[4] * d + df[3] * u;
             }
         }
     }
-    if name != "lda" {
+    if name != "lda" && (product_flux.is_none() || nonlocal.is_some()) {
         for s in 0..2 {
             for a in 0..3 {
                 derivative(
@@ -853,5 +899,6 @@ pub fn evaluate_fields_relativistic(
         energy: energy * grid.index.dv() + nonlocal.map_or(0., |v| v.energy),
         potentials,
         tau_potentials,
+        gradient_potentials: product_flux,
     })
 }

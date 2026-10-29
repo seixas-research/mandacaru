@@ -34,12 +34,12 @@ atoms.rattle(stdev=0.1, seed=7)
 write(os.path.join(DATA, "ethanol_deformed.xyz"), atoms)
 
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis={"name": "PAW-LCAO", "size": "DZP"},
+                       basis={"name": "PAW-LCAO", "size": "SZP"},
                        grid_spacing=0.30,
-                       two_body={"method": "cholesky", "tolerance": 1e-7},
-                       active_space={"orbitals": {"occupied": 5, "virtual": 5},
+                       two_body={"method": "cholesky", "tolerance": 1e-5},
+                       active_space={"orbitals": {"occupied": 4, "virtual": 4},
                                      "method": "mp2"},
-                       pool="qeb",
+                       pool="ceo",
                        max_iterations=60,
                        convergence={"gradient": 1e-3},
                        transfer=True,

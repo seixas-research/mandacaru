@@ -17,6 +17,23 @@ from mandacaru.units import HARTREE_TO_EV
 H2 = Path(__file__).parent / "reference/h2_hamiltonian.json"
 
 
+def lowest_determinants(n_qubits, occupied, num_states):
+    """Determinants of the Hartree-Fock (n_alpha, n_beta) sector ordered by
+    number of promoted electrons, then lexicographically (spin-blocked modes)."""
+    from itertools import combinations
+    half = n_qubits // 2
+    hf = frozenset(occupied)
+    n_alpha = sum(1 for o in hf if o < half)
+    n_beta = len(hf) - n_alpha
+    dets = []
+    for alpha in combinations(range(half), n_alpha):
+        for beta in combinations(range(half, n_qubits), n_beta):
+            det = frozenset(alpha) | frozenset(beta)
+            dets.append((len(det - hf), tuple(sorted(det))))
+    dets.sort()
+    return [d for _, d in dets[:num_states]]
+
+
 def state(n=3):
     rng = np.random.default_rng(628)
     s = rng.normal(size=2**n) + 1j * rng.normal(size=2**n)
@@ -145,29 +162,65 @@ def integrals(m=5, occupied=2, rotate=False):
     return h, g
 
 
+def spin_orbital_mp2(h, g, o):
+    """Independent closed-shell MP2 from spin-orbital amplitudes.
+
+    Semicanonicalizes the occupied and virtual Fock blocks with numpy, forms the
+    antisymmetrized amplitudes over spin-orbitals and returns the correlation
+    energy, the spin-summed second-order density in the input MO basis and the
+    virtual-virtual density block (semicanonical basis).
+    """
+    m = h.shape[0]
+    f = h + sum(2*g[:, i, :, i] - g[:, i, i, :] for i in range(o))
+    eo, co = np.linalg.eigh(f[:o, :o])
+    ev, cv = np.linalg.eigh(f[o:, o:])
+    c = np.zeros((m, m))
+    c[:o, :o], c[o:, o:] = co, cv
+    gs = np.einsum("pi,qj,rk,sl,pqrs->ijkl", c, c, c, c, g, optimize=True)
+    energies = np.tile(np.concatenate([eo, ev]), 2)
+    occupied = [p+s*m for s in range(2) for p in range(o)]
+    virtual = [p+s*m for s in range(2) for p in range(o, m)]
+    anti = np.zeros((len(occupied), len(occupied), len(virtual), len(virtual)))
+    t = np.zeros_like(anti)
+    for i, I in enumerate(occupied):
+        for j, J in enumerate(occupied):
+            for a, A in enumerate(virtual):
+                for b, B in enumerate(virtual):
+                    value = (gs[I % m, J % m, A % m, B % m]
+                             if I//m == A//m and J//m == B//m else 0.)
+                    value -= (gs[I % m, J % m, B % m, A % m]
+                              if I//m == B//m and J//m == A//m else 0.)
+                    anti[i, j, a, b] = value
+                    t[i, j, a, b] = value / (energies[I]+energies[J]-energies[A]-energies[B])
+    dvv = .5 * np.einsum("ijac,ijbc->ab", t, t)
+    doo = -.5 * np.einsum("ikab,jkab->ij", t, t)
+    v = m-o
+    spatial_vv = dvv[:v, :v] + dvv[v:, v:]
+    density = np.zeros((m, m))
+    density[:o, :o] = 2*np.eye(o) + doo[:o, :o] + doo[o:, o:]
+    density[o:, o:] = spatial_vv
+    return .25 * np.sum(anti*t), c @ density @ c.T, spatial_vv
+
+
 @pytest.mark.parametrize("m,o", [(2, 1), (5, 2), (6, 3)])
 @pytest.mark.parametrize("rotate", [False, True])
 def test_mp2_density_trace_and_semicanonical_covariance(m, o, rotate):
     h, g = integrals(m, o, rotate)
-    expected = mp2_natural_orbitals(h, g, o)
+    expected_energy, expected_density, spatial_vv = spin_orbital_mp2(h, g, o)
     actual = mp2_natural_orbitals(h, g, o)
-    assert actual.correlation_energy == pytest.approx(expected.correlation_energy, abs=1e-13)
-    assert np.allclose(actual.occupations, expected.occupations, atol=1e-12)
-    assert np.allclose(actual.occupied_density, expected.occupied_density, atol=1e-12)
+    assert actual.correlation_energy == pytest.approx(expected_energy, abs=1e-13)
+    assert np.allclose(actual.virtual_occupations, np.linalg.eigvalsh(spatial_vv)[::-1], atol=1e-12)
     assert actual.occupations.sum() == pytest.approx(2*o, abs=2e-12)
     assert np.all(np.diff(actual.virtual_occupations) <= 0)
     assert np.allclose(actual.rotation.T @ actual.rotation, np.eye(m), atol=1e-12)
     assert np.allclose(actual.rotation[:o, o:], 0)
-    # Compare physical density, allowing arbitrary eigenvector signs.
-    for result in [expected, actual]:
-        natural_density = np.zeros((m, m))
-        natural_density[:o, :o] = result.occupied_density
-        natural_density[o:, o:] = np.diag(result.virtual_occupations)
-        density = result.rotation @ natural_density @ result.rotation.T
-        if result is expected:
-            expected_density = density
-        else:
-            assert np.allclose(density, expected_density, atol=2e-12)
+    # Compare the physical density in the input basis, allowing arbitrary
+    # eigenvector signs and the semicanonical gauge.
+    natural_density = np.zeros((m, m))
+    natural_density[:o, :o] = actual.occupied_density
+    natural_density[o:, o:] = np.diag(actual.virtual_occupations)
+    density = actual.rotation @ natural_density @ actual.rotation.T
+    assert np.allclose(density, expected_density, atol=2e-12)
 
 
 def test_mp2_against_independent_spin_orbital_prefactors():
@@ -201,21 +254,22 @@ def test_mp2_against_independent_spin_orbital_prefactors():
 
 
 def test_mp2_block_and_no_python_numerical_callbacks(monkeypatch):
-    import mandacaru.analysis.correlation as module
     h, g = integrals()
-    expected = mp2_natural_orbitals(h, g, 2)
-    f = module.fock_matrix(h, g, 2)
+    expected_energy = spin_orbital_mp2(h, g, 2)[0]
+    # Closed-shell Fock matrix, physicists' notation (the unrotated fixture is diagonal).
+    f = h + sum(2*g[:, i, :, i] - g[:, i, i, :] for i in range(2))
+    assert np.allclose(f, np.diag(np.diag(f)), atol=1e-14)
     eps = np.diag(f)
     def forbidden(*args, **kwargs):
         raise AssertionError("Python numerical callback used")
-    for name in ["fock_matrix", "semicanonical_rotation", "mp2_energy", "mp2_density"]:
-        monkeypatch.setattr(module, name, forbidden)
+    # The module's former Python helpers (fock_matrix, semicanonical_rotation,
+    # mp2_energy, mp2_density) are gone; the diagonalization remains forbidden.
     monkeypatch.setattr(np.linalg, "eigh", forbidden)
     actual = mp2_natural_orbitals(h, g, 2)
     block = mp2_natural_orbitals_from_block(g[:2, :2, 2:, 2:], eps, 2,
                                            np.eye(5))
-    assert actual.correlation_energy == pytest.approx(expected.correlation_energy)
-    assert block.correlation_energy == pytest.approx(expected.correlation_energy)
+    assert actual.correlation_energy == pytest.approx(expected_energy, abs=1e-13)
+    assert block.correlation_energy == pytest.approx(expected_energy, abs=1e-13)
     assert np.allclose(block.occupations, actual.occupations)
 
 
@@ -233,7 +287,11 @@ def test_public_subspace_shared_unitary_and_sorted_states(method, sector, trotte
     problem = calc.problem
     basis = np.asarray(problem.basis_indices, dtype=int)
     dense = result.qubit_hamiltonian().matrix()[np.ix_(basis, basis)]
-    states = np.asarray(result.states)
+    full = np.asarray(result.states)
+    # states are returned on the full register; the solve lives on basis_indices.
+    states = full[:, basis]
+    assert np.allclose(np.linalg.norm(full, axis=1), 1., atol=3e-12)
+    assert np.allclose(np.linalg.norm(states, axis=1), 1., atol=3e-12)
     assert np.allclose(states.conj() @ states.T, np.eye(2), atol=3e-12)
     assert np.allclose(np.einsum("ji,ik,jk->j", states.conj(), dense, states).real,
                        result.energies, atol=1e-12)
@@ -246,7 +304,6 @@ def test_public_subspace_shared_unitary_and_sorted_states(method, sector, trotte
 @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"])
 @pytest.mark.parametrize("trotter", [False, True])
 def test_shared_unitary_against_dense_reconstruction(tmp_path, mapping, trotter):
-    from mandacaru.algorithms.subspace import subspace_determinants
     from mandacaru.core.mapping import Fermion, reference_qubit_bits
     from mandacaru.core.serialization import save_hamiltonian
     terms = {((j, True), (j, False)): .13*j for j in range(6)}
@@ -272,27 +329,47 @@ def test_shared_unitary_against_dense_reconstruction(tmp_path, mapping, trotter)
     else:
         unitary = expm(sum(t*g for t, g in zip(result.optimal_parameters, matrices)))
     expected = []
-    for det in subspace_determinants(6, [0, 3], 3):
+    for det in lowest_determinants(6, [0, 3], 3):
         bits = reference_qubit_bits(mapping, 6, det)
         encoded = sum(int(b) << (len(bits)-1-i) for i, b in enumerate(bits))
         row = np.flatnonzero(basis == encoded)[0]
         expected.append(unitary[:, row])
     expected = np.asarray(expected)[result.snapshot()["reference_indices"]]
-    assert np.allclose(expected, result.states, atol=2e-12, rtol=0)
+    full = np.asarray(result.states)
+    # The public states are full-register vectors; nothing may sit outside basis.
+    assert np.allclose(np.linalg.norm(full, axis=1), 1., atol=2e-12)
+    assert np.allclose(expected, full[:, basis], atol=2e-12, rtol=0)
 
 
 def test_subspace_no_python_solver_and_inner_failure(monkeypatch):
-    import mandacaru.algorithms.subspace as subspace
+    import scipy.optimize
+    from mandacaru.optimizers.optim import Optimizer
     def forbidden(*args, **kwargs):
         raise AssertionError("Python numerical callback used")
-    monkeypatch.setattr(subspace.SubspaceVQE, "_subspace_optimize", forbidden)
-    monkeypatch.setattr(subspace.SubspaceADAPTVQE, "_subspace_optimize", forbidden)
+    # The Python subspace solver classes are gone; guard what a Python solve
+    # would still have to call: the Python optimizer wrapper, scipy, a dense
+    # eigensolver and the Python Pauli-to-matrix routes.
+    monkeypatch.setattr(Optimizer, "minimize", forbidden)
+    monkeypatch.setattr(scipy.optimize, "minimize", forbidden)
+    monkeypatch.setattr(np.linalg, "eigh", forbidden)
+    monkeypatch.setattr(PauliSum, "to_matrix", forbidden)
+    monkeypatch.setattr(PauliSum, "to_sparse_matrix", forbidden)
     for method in ["subspace-vqe", "subspace-adapt-vqe"]:
         calc = Mandacaru(method=method,  load_hamiltonian=str(H2),
                          optimizer={"maxfev": 1}, trace=False)
-        result = calc.run()
-        assert not (result.converged if method.endswith("adapt-vqe") else result.success)
-        assert "evaluation budget" in result.timings["termination"]
+        if method.endswith("adapt-vqe"):
+            # Since v26.10.40 an inner failure is recorded and growth continues,
+            # so the outer loop ends on its growth budget; the inner budget is
+            # reported through the optimizer failures.
+            with pytest.warns(RuntimeWarning, match="did not converge"):
+                result = calc.run()
+            assert not result.converged
+            assert result.optimizer_failures
+            assert all("evaluation budget" in message for _, message in result.optimizer_failures)
+        else:
+            result = calc.run()
+            assert not result.success
+            assert "evaluation budget" in result.timings["termination"]
 
 
 def test_native_rhf_mp2_and_geometry_subspace():

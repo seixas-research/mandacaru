@@ -73,27 +73,38 @@ impl MolecularIntegrals {
                 None
             };
             poisson.solve_into(source.as_slice(), potential.as_mut_slice())?;
-            let kinetic = if matches!(state.functional.as_deref(), Some("r2scan" | "r2scan+rvv10"))
-            {
-                let gradients = dft::orbital_gradients(self)?;
-                Some(dft::grid_kinetic(
-                    self,
-                    &state.densities,
-                    gradients.as_slice(),
-                )?)
-            } else {
-                None
-            };
+            // A meta-GGA sees the orbitals' own gradients: tau, and the density
+            // gradient by the product rule, as the SCF that produced the state.
+            let (kinetic, density_gradient) =
+                if matches!(state.functional.as_deref(), Some("r2scan" | "r2scan+rvv10")) {
+                    let gradients = dft::orbital_gradients(self)?;
+                    (
+                        Some(dft::grid_kinetic(
+                            self,
+                            &state.densities,
+                            gradients.as_slice(),
+                        )?),
+                        Some(dft::grid_density_gradients(
+                            self,
+                            &state.densities,
+                            gradients.as_slice(),
+                        )?),
+                    )
+                } else {
+                    (None, None)
+                };
             let xc = state
                 .functional
                 .as_ref()
                 .map(|name| {
-                    xc::evaluate_fields(
+                    xc::evaluate_fields_relativistic(
                         ctx,
                         &self.grid,
                         rho.as_slice(),
                         kinetic.as_ref().map(|v| v.as_slice()),
+                        density_gradient.as_ref().map(|v| v.as_slice()),
                         name,
+                        false,
                     )
                 })
                 .transpose()?;
@@ -189,6 +200,32 @@ impl MolecularIntegrals {
                             )?;
                             for k in 0..n {
                                 action.as_mut_slice()[k] -= 0.5 * derivative.as_slice()[k];
+                            }
+                        }
+                    }
+                    if let Some(flux) = xc.as_ref().and_then(|v| v.gradient_potentials.as_ref()) {
+                        // dE/dpsi of the product-rule density gradient
+                        // 2 psi grad psi: W . grad psi - div(W psi), the grid
+                        // derivative being antisymmetric.
+                        let mut slope = ctx.allocate::<f64>(n)?;
+                        let mut weighted = ctx.allocate::<f64>(n)?;
+                        let mut divergence = ctx.allocate::<f64>(n)?;
+                        for axis in 0..3 {
+                            let w =
+                                &flux.as_slice()[(spin * 3 + axis) * n..(spin * 3 + axis + 1) * n];
+                            xc::derivative(&self.grid, psi, axis, slope.as_mut_slice())?;
+                            for k in 0..n {
+                                weighted.as_mut_slice()[k] = w[k] * psi[k];
+                            }
+                            xc::derivative(
+                                &self.grid,
+                                weighted.as_slice(),
+                                axis,
+                                divergence.as_mut_slice(),
+                            )?;
+                            for k in 0..n {
+                                action.as_mut_slice()[k] +=
+                                    w[k] * slope.as_slice()[k] - divergence.as_slice()[k];
                             }
                         }
                     }

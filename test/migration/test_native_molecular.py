@@ -53,10 +53,23 @@ def test_atomic_basis_sampling_matches_generated_python_families(z, basis):
     rng = np.random.default_rng(90)
     points = np.ascontiguousarray(rng.normal(size=(91, 3)) * 2)
     points[0] = atoms.positions[0] * ANGSTROM_TO_BOHR
+    # Three more points 1e-9 Bohr from the nucleus, where every direction is
+    # defined, are compared at the full tolerance (gradients reach 1.5e4 for
+    # the Og p shells, so this also pins the slope at the nucleus).
+    points = np.ascontiguousarray(np.vstack([points, points[0] + 1e-9 * np.eye(3)]))
     native = _native.Context().sample_basis(geometry_from_atoms(atoms), points,
                                           basis_spec=json.dumps(basis_specification(basis)))
     functions = BasisSet.build(basis).atom(z, center=atoms.positions[0])
     expected = np.stack([f.evaluate(*points.T) for f in functions])
+    # Point 0 is exactly on the nucleus (the Python center equals it bit for
+    # bit), where R(r) Y_lm ~ r^l Y_lm is exactly zero for l > 0.  The Python
+    # sampler floors r at 1e-15 Bohr and picks the arbitrary direction
+    # theta = pi/2, phi = 0, so it returned the function at a displacement of
+    # 1e-15 Bohr along +x: 1.5e-11 = 1e-15 * 1.5e4 for the Og 2p, the slope of
+    # the shell, which is not roundoff of the center.  The analytic limit
+    # replaces that artifact for l > 0; s shells stay compared as sampled.
+    nucleus = np.array([f.l > 0 for f in functions])
+    expected[nucleus, 0] = 0.
     assert np.allclose(native, expected, atol=3e-12, rtol=1e-12)
 
 

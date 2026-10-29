@@ -84,6 +84,42 @@ pub(super) fn grid_kinetic(
     }
     Ok(tau)
 }
+/// Valence density gradient `2 sum_ab D_ab phi_a grad phi_b` of both spin
+/// channels (`[spin][axis][point]`) from the orbitals' own gradients: the
+/// product rule that makes `|grad rho|^2 / 8 rho` of one orbital equal the
+/// `tau` of `grid_kinetic`. The grid derivative of the sampled density does not
+/// obey the product rule where the density is not resolved, and the mismatch
+/// drives the iso-orbital indicator of a meta-GGA negative.
+pub(super) fn grid_density_gradients(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    gradients: &[f64],
+) -> Result<Buffer<f64>> {
+    let m = integrals.m();
+    let n = integrals.grid.index.points();
+    if gradients.len() != product(&[3, m, n])? {
+        return Err(invalid("orbital gradients have inconsistent dimensions"));
+    }
+    let phi = integrals.orthonormal_samples.read(&integrals.context)?;
+    let mut field = integrals.context.allocate::<f64>(product(&[6, n])?)?;
+    for spin in 0..2 {
+        let density = &d[if d.len() == 1 { 0 } else { spin }];
+        for axis in 0..3 {
+            let out = &mut field.as_mut_slice()[(spin * 3 + axis) * n..(spin * 3 + axis + 1) * n];
+            for (k, out) in out.iter_mut().enumerate() {
+                let mut value = 0.;
+                for a in 0..m {
+                    for b in 0..m {
+                        value +=
+                            density[(a, b)].re * phi[a * n + k] * gradients[(axis * m + b) * n + k];
+                    }
+                }
+                *out = 2. * value;
+            }
+        }
+    }
+    Ok(field)
+}
 fn evaluate(
     integrals: &MolecularIntegrals,
     h: &Matrix,
@@ -118,11 +154,34 @@ fn evaluate(
             }
         }
     }
+    // A meta-GGA sees the orbitals' own density gradient, valence by the
+    // product rule and the partial core (half per spin) by the grid.
+    let mut gradient = orbital_gradients
+        .filter(|_| crate::models::functional(name).is_ok_and(|f| f.requires_tau))
+        .map(|orbital| grid_density_gradients(integrals, d, orbital))
+        .transpose()?;
+    if let (Some(gradient), Some(paw)) = (gradient.as_mut(), paw) {
+        let mut core = ctx.allocate::<f64>(n)?;
+        for axis in 0..3 {
+            xc::derivative(
+                &integrals.grid,
+                paw.core.as_slice(),
+                axis,
+                core.as_mut_slice(),
+            )?;
+            for s in 0..2 {
+                for k in 0..n {
+                    gradient.as_mut_slice()[(s * 3 + axis) * n + k] += 0.5 * core.as_slice()[k];
+                }
+            }
+        }
+    }
     let terms = xc::evaluate_fields_relativistic(
         ctx,
         &integrals.grid,
         rho.as_slice(),
         kinetic.as_ref().map(|v| v.as_slice()),
+        gradient.as_ref().map(|v| v.as_slice()),
         name,
         paw.is_some_and(|p| p.relativistic_exchange)
             && matches!(crate::models::functional(name)?.semilocal, "lda" | "pbe"),
@@ -183,7 +242,21 @@ fn evaluate(
                         } else {
                             0.
                         };
-                        local + meta
+                        // dE/dD_ab through the product-rule density gradient.
+                        let flux = if let (Some(gradient), Some(flux)) =
+                            (orbital_gradients, terms.gradient_potentials.as_ref())
+                        {
+                            (0..3)
+                                .map(|axis| {
+                                    flux.as_slice()[(s * 3 + axis) * n + k]
+                                        * (phi[a * n + k] * gradient[(axis * m + b) * n + k]
+                                            + gradient[(axis * m + a) * n + k] * phi[b * n + k])
+                                })
+                                .sum::<f64>()
+                        } else {
+                            0.
+                        };
+                        local + meta + flux
                     })
                     .sum::<f64>()
                     * dv,
@@ -369,58 +442,91 @@ impl MolecularIntegrals {
                 starts.push(pair);
             }
             let mut best: Option<(Candidate, f64, f64)> = None;
-            for mut c in starts {
-                let mut d = c
-                    .iter()
-                    .zip(&occupations)
-                    .map(|(c, &n)| scf::density(c, n))
-                    .collect::<Vec<_>>();
-                let mut previous = None;
-                let mut history = vec![];
-                let mut mixer = Diis::new();
-                let mut converged = false;
-                for iteration in 1..=options.max_iterations {
-                    let value = evaluate(
-                        self,
-                        &h,
-                        &d,
-                        functional,
-                        &mut poisson,
-                        orbital_gradients.as_ref().map(|v| v.as_slice()),
-                        screened.as_ref(),
-                    )?;
-                    let effective = if options.diis {
-                        mixer.extrapolate(&value.f, &d)
-                    } else {
-                        value.f
-                    };
-                    c = effective
-                        .into_iter()
-                        .map(|f| crate::math::linalg::eigen(f).map(|(_, c)| c))
-                        .collect::<Result<_>>()?;
-                    let next = c
-                        .iter()
+            for start in starts {
+                let density = |c: &Vec<Matrix>| -> Vec<Matrix> {
+                    c.iter()
                         .zip(&occupations)
                         .map(|(c, &n)| scf::density(c, n))
-                        .collect::<Vec<_>>();
-                    let residual = d
-                        .iter()
-                        .zip(&next)
-                        .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).norm()))
-                        .fold(0f64, f64::max);
-                    let delta = previous.map(|p| value.energy - p);
-                    history.push(Iteration {
-                        iteration,
-                        energy: value.energy,
-                        delta,
-                        residual,
-                    });
-                    d = next;
-                    previous = Some(value.energy);
-                    if delta.is_some_and(|de: f64| de.abs() < options.tolerance)
-                        && residual < options.tolerance
-                    {
-                        converged = true;
+                        .collect()
+                };
+                let mut c = start.clone();
+                let mut d = density(&c);
+                let mut history = vec![];
+                let mut converged = false;
+                // The plain DIIS iteration decides every start that converges with it. A
+                // start that does not converge is retried with a level shift: a degenerate
+                // open shell (a diatomic radical's pi electron) lets the occupied orbital
+                // flip between iterations, and the first rise in energy then switches on a
+                // shift, as in the Hartree-Fock loop, that damps the flip. The shift is not
+                // used for a start that converges without it, because a shifted iteration
+                // can settle into a different stationary point than the plain one.
+                for retry in [false, true] {
+                    if retry {
+                        c = start.clone();
+                        d = density(&c);
+                        history = vec![];
+                    }
+                    let mut previous = None;
+                    let mut mixer = Diis::new();
+                    let mut shift = 0.;
+                    for iteration in 1..=options.max_iterations {
+                        let value = evaluate(
+                            self,
+                            &h,
+                            &d,
+                            functional,
+                            &mut poisson,
+                            orbital_gradients.as_ref().map(|v| v.as_slice()),
+                            screened.as_ref(),
+                        )?;
+                        if retry
+                            && previous.is_some_and(|p: f64| value.energy > p + 1e-10)
+                            && shift == 0.
+                        {
+                            shift = 0.5;
+                        }
+                        let mut effective = if options.diis {
+                            mixer.extrapolate(&value.f, &d)
+                        } else {
+                            value.f
+                        };
+                        if shift > 0. {
+                            for (f, d) in effective.iter_mut().zip(&d) {
+                                *f += (Matrix::identity(f.nrows(), f.nrows()) - d)
+                                    * C64::new(shift, 0.);
+                            }
+                        }
+                        c = effective
+                            .into_iter()
+                            .map(|f| crate::math::linalg::eigen(f).map(|(_, c)| c))
+                            .collect::<Result<_>>()?;
+                        let next = c
+                            .iter()
+                            .zip(&occupations)
+                            .map(|(c, &n)| scf::density(c, n))
+                            .collect::<Vec<_>>();
+                        let residual = d
+                            .iter()
+                            .zip(&next)
+                            .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).norm()))
+                            .fold(0f64, f64::max);
+                        let delta = previous.map(|p| value.energy - p);
+                        history.push(Iteration {
+                            iteration,
+                            energy: value.energy,
+                            delta,
+                            residual,
+                        });
+                        d = next;
+                        previous = Some(value.energy);
+                        if delta.is_some_and(|de: f64| de.abs() < options.tolerance)
+                            && residual < options.tolerance
+                        {
+                            converged = true;
+                            break;
+                        }
+                    }
+                    if converged {
                         break;
                     }
                 }
@@ -685,5 +791,70 @@ mod tests {
         let finite = (plus.energy - minus.energy) / (2. * step);
         let analytic = 2. * (&direction * &base.f[0]).trace().re;
         assert!((finite - analytic).abs() < 2e-7, "{finite} vs {analytic}");
+    }
+    #[test]
+    fn a_one_orbital_density_is_iso_orbital_with_the_orbital_product_rule_gradient() {
+        let ctx = Context::new(Some(1), 64 << 20).unwrap();
+        let geometry = Geometry::new(
+            vec![1, 1],
+            vec![[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]],
+            [[5., 0., 0.], [0., 5., 0.], [0., 0., 5.]],
+            [false; 3],
+            LengthUnit::Angstrom,
+        )
+        .unwrap();
+        let grid = super::super::SpatialGrid::from_geometry(
+            &geometry,
+            [0.5 / 0.529177210903; 3],
+            false,
+            false,
+        )
+        .unwrap();
+        let integrals =
+            MolecularIntegrals::new(&ctx, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None)
+                .unwrap();
+        let n = integrals.grid.index.points();
+        // One orbital per spin: rho = psi^2, so tau = |grad psi|^2 / 2 and the
+        // Weizsaecker kinetic density |grad rho|^2 / 8 rho must equal it.
+        let orbital = [0.6, 0.8];
+        let density = Matrix::from_fn(2, 2, |a, b| C64::new(orbital[a] * orbital[b], 0.));
+        let d = [density];
+        let gradients = orbital_gradients(&integrals).unwrap();
+        let tau = grid_kinetic(&integrals, &d, gradients.as_slice()).unwrap();
+        let product_rule = grid_density_gradients(&integrals, &d, gradients.as_slice()).unwrap();
+        let rho = grid_densities(&integrals, &d).unwrap();
+        let mut stencil = vec![0.; 3 * n];
+        for axis in 0..3 {
+            xc::derivative(
+                &integrals.grid,
+                &rho.as_slice()[..n],
+                axis,
+                &mut stencil[axis * n..(axis + 1) * n],
+            )
+            .unwrap();
+        }
+        let weizsaecker = |gradient: &dyn Fn(usize) -> f64, k: usize| {
+            (0..3)
+                .map(|axis| gradient(axis * n + k).powi(2))
+                .sum::<f64>()
+                / (8. * rho.as_slice()[k])
+        };
+        let (mut worst, mut violated, mut counted) = (0f64, 0, 0);
+        for k in 0..n {
+            if rho.as_slice()[k] < 1e-12 {
+                continue;
+            }
+            counted += 1;
+            let t = tau.as_slice()[k];
+            worst = worst.max((weizsaecker(&|i| product_rule.as_slice()[i], k) - t).abs() / t);
+            if t - weizsaecker(&|i| stencil[i], k) < -1e-3 * t {
+                violated += 1;
+            }
+        }
+        assert!(counted > 1000);
+        assert!(worst < 1e-9, "product rule: |tau_W - tau| / tau = {worst}");
+        // The grid derivative of the sampled density breaks that identity
+        // where the density is not resolved: the indicator would be negative.
+        assert!(violated > 0, "the stencil should violate tau_W <= tau");
     }
 }

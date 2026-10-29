@@ -40,7 +40,12 @@ The currently exposed XC choices are `lda`, `pbe`, `r2scan`, `hse06`,
 `pbe+rvv10`, and `r2scan+rvv10`. Point evaluations must return the energy density
 and derivatives with respect to spin densities, three gradient contractions
 and two kinetic-energy densities. A meta-GGA cannot be enabled in an SCF by
-substituting a fixed kinetic-energy density. A screened hybrid also needs its
+substituting a fixed kinetic-energy density. A molecular meta-GGA also takes
+its density gradient from the orbitals (`2 sum D phi grad phi`, the partial
+core by the grid), the same gradients that build tau, so that a one-orbital
+density is exactly iso-orbital; its Fock matrix and analytic force carry the
+matching flux term and the divergence of the flux is not subtracted from the
+potential. A screened hybrid also needs its
 short-range exact-exchange operator.
 
 Nonlocal correlation must use the same discrete kernel in its energy and

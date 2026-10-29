@@ -8,15 +8,20 @@ use serde_json::json;
 use std::{
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// Distinguishes directories made in the same clock tick of one process.
+static SERIAL: AtomicUsize = AtomicUsize::new(0);
 
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "mandacaru-native-persistence-{}-{}",
+            "mandacaru-native-persistence-{}-{}-{}",
             std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

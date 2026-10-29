@@ -32,11 +32,11 @@ atoms = crystal(
     primitive_cell=True,
 )
 
-basis_opts = {"name": "PAW-LCAO", "size": "DZP", "filter_cutoff": True}
-kpts_scf = {"size": (4, 4, 4), "gamma": True}
-grid_spacing = 0.20
+basis_opts = {"name": "PAW-LCAO", "size": "SZP", "filter_cutoff": True}
+kpts_scf = {"size": (3, 3, 3), "gamma": True}
+grid_spacing = 0.25
 path = "ZGFZL"
-npoints = 100
+npoints = 30
 precision="single"
 
 # 2. Run WITHOUT Spin-Orbit Coupling ('pbe-sr') -> Normal Insulator

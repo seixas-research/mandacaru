@@ -190,10 +190,29 @@ def test_numerical_atomic_orbitals_match_python_splines_and_shell_order(z, size,
     spec = dict(name="NAO", **options)
     points = np.ascontiguousarray(np.random.default_rng(55).normal(size=(90, 3))*1.5)
     points[:4] = [[0, 0, 0], [0, 0, 1], [0, 0, -2], [0, 0, 8]]
+    # Three more points 1e-4 Bohr from the nucleus along each axis: the
+    # direction is defined there, so the near-nucleus behavior of every shell
+    # is compared at the full tolerance.
+    points = np.ascontiguousarray(np.vstack([points, 1e-4*np.eye(3)]))
     actual = _native.Context(threads=1).sample_basis(geometry_from_atoms(atoms), points,
                            basis_spec=json.dumps(basis_specification(spec)))
-    expected = np.stack([f.evaluate(*points.T) for f in BasisSet.build("NAO", **options).atom(z)])
+    functions = BasisSet.build("NAO", **options).atom(z)
+    expected = np.stack([f.evaluate(*points.T) for f in functions])
     assert actual.shape == expected.shape
+    # Point 0 is the nucleus, where the direction of a shell with l > 0 is
+    # undefined.  The tabulated radial function starts at r = 0 with a small
+    # nonzero R(0) for those shells (1.6e-4 for the hydrogen polarization p,
+    # 2e-2 for the oxygen p), so the value there is R(0) times a harmonic of an
+    # arbitrary direction: the Python sampler used theta = pi/2, phi = 0, the
+    # native one the zero vector (p and m != 0 shells give 0, d_z2 keeps its
+    # -0.315 R(0)).  Only l = 0 is well defined there and is compared at the
+    # full tolerance; for l > 0 the sample must stay within the harmonic's
+    # bound times R(0).
+    for i, f in enumerate(functions):
+        if f.l > 0:
+            bound = abs(float(f.radial(np.zeros(1))[0])) * np.sqrt(2*(2*f.l + 1)/(4*np.pi))
+            assert abs(actual[i, 0]) <= bound + 1e-15
+            expected[i, 0] = actual[i, 0]
     assert np.allclose(actual, expected, atol=2e-10, rtol=2e-9)
     assert np.all(actual[:, 3] == 0.)
 
@@ -243,18 +262,17 @@ def test_native_radial_atom_confinement_and_nonconvergence_are_honest():
 
 
 def test_phase4_pipeline_does_not_call_python_numerical_implementations(monkeypatch):
-    from mandacaru.algorithms import dft, forces, _hamiltonian_from_atoms
     from mandacaru.basis import atomic_solver, nao, nao_ae
     from mandacaru.integrals import exchange_correlation
-    from mandacaru.integrals.poisson import PoissonFFTSolver
     def forbidden(*args, **kwargs):
         raise AssertionError("Python numerical callback entered native Phase 4")
-    for cls, name in [(dft.KohnSham, "run"), (dft.UnrestrictedKohnSham, "run"),
-                      (BasisSet, "build"), (PoissonFFTSolver, "solve"),
-                      (np.linalg, "eigh"), (np.linalg, "solve"),
+    # The Python Kohn-Sham loop, Poisson solver, force module and Hamiltonian
+    # builder are deleted (mandacaru.algorithms, integrals.poisson no longer
+    # exist), so absence is their guard; every Python numerical entry point
+    # that survives is poisoned, and a missing name fails the patch loudly.
+    for cls, name in [(BasisSet, "build"), (np.linalg, "eigh"), (np.linalg, "solve"),
                       (atomic_solver, "solve_radial"), (nao, "solve_confined_radial"), (nao_ae, "build_species"),
-                      (exchange_correlation, "evaluate"), (exchange_correlation, "evaluate_spin"),
-                      (forces, "nuclear_gradient"), (_hamiltonian_from_atoms, "build_basis_hamiltonian")]:
+                      (exchange_correlation, "evaluate"), (exchange_correlation, "evaluate_spin")]:
         monkeypatch.setattr(cls, name, forbidden)
     for functional in ["lda", "pbe"]:
         atoms = h2()
@@ -297,8 +315,10 @@ def test_dft_force_failures_and_budget_lifetimes_are_explicit():
     with pytest.raises(MemoryError):
         tiny.solve_atom(1)
     assert tiny.memory_used_bytes == 0
+    # "vqe" left this list: variational molecular forces are now supported
+    # (specifications.CAPABILITIES["vqe"].forces); subspace-vqe has none.
     for options in ({"method": "ghf"}, {"method": "rhf", "kinetic": "fd"},
-                    {"method": "vqe"}):
+                    {"method": "subspace-vqe"}):
         atoms = h2()
         atoms.calc = Mandacaru( grid_spacing=.35, trace=False, **options)
         with pytest.raises(NotImplementedError):

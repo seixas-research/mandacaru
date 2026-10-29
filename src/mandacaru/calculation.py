@@ -137,6 +137,24 @@ class Mandacaru(ASEProperties, Calculator):
             raise TypeError("profile must be True, False or None")
         if execute_circuits is not None and type(execute_circuits) is not bool:
             raise TypeError("execute_circuits must be a boolean or None")
+        if not self._capabilities.quantum:
+            requested = [
+                name
+                for name, given in (
+                    ("shots", shots > 0),
+                    ("execute_circuits", execute_circuits is True),
+                    ("backend_provider", backend_provider is not None),
+                    ("device", device != "AER_simulator"),
+                    ("backend_options", backend_options is not None),
+                    ("measurement_budget", measurement_budget is not None),
+                )
+                if given
+            ]
+            if requested:
+                raise ValueError(
+                    f"{', '.join(requested)} apply to quantum methods: method={method!r} "
+                    "is a classical mean-field calculation with no quantum state to measure"
+                )
         if execute_circuits is None:
             # Naming a non-Qiskit provider is a request to use it; the Qiskit
             # default keeps the fast state-vector numerics unless asked.
@@ -977,7 +995,12 @@ class Mandacaru(ASEProperties, Calculator):
                 raise NotImplementedError(
                     "forces require a supported molecular native calculation with spectral kinetic energy"
                 )
-            reusable = self.result is not None and geometry.same_as(self._geometry)
+            # Cleared ASE results never serve a property: the result is rerun.
+            reusable = (
+                self.result is not None
+                and "energy" in self.results
+                and geometry.same_as(self._geometry)
+            )
             if "forces" in properties and self._force_grid is None:
                 self._force_grid = (
                     self.integrals.grid

@@ -26,6 +26,49 @@ def py_operator(native):
     return PauliSum({p: complex(re, im) for p, re, im in native.terms}, num_qubits=native.num_qubits)
 
 
+def annihilate(mode, vector):
+    """Apply a_mode to {occupied-mode tuple: amplitude}; Jordan-Wigner sign of ascending order."""
+    out = {}
+    for occupied, amplitude in vector.items():
+        if mode in occupied:
+            sign = -1. if occupied.index(mode) % 2 else 1.
+            key = tuple(m for m in occupied if m != mode)
+            out[key] = out.get(key, 0.) + sign * amplitude
+    return out
+
+
+def overlap(left, right):
+    return sum(np.conj(a) * right[k] for k, a in left.items() if k in right)
+
+
+def determinant_rdms(amplitudes, n_modes):
+    """Reference RDMs from fermionic ladder algebra on Slater determinants.
+
+    ``amplitudes`` maps a tuple of occupied spin-orbitals (ascending) to its
+    amplitude.  gamma_pq = <a_p psi|a_q psi> and Gamma_pqrs = <a_q a_p psi|a_s a_r psi>
+    are evaluated without any qubit encoding, so they are independent of the
+    mappings, of the native RDM code and of the removed Python RDM module.
+    """
+    psi = dict(amplitudes)
+    single = [annihilate(p, psi) for p in range(n_modes)]
+    one = np.array([[overlap(single[p], single[q]) for q in range(n_modes)] for p in range(n_modes)])
+    pair = {(p, q): annihilate(q, single[p]) for p in range(n_modes) for q in range(n_modes)}
+    two = np.array([[[[overlap(pair[p, q], pair[r, s]) for s in range(n_modes)]
+                      for r in range(n_modes)] for q in range(n_modes)] for p in range(n_modes)])
+    return one, two
+
+
+def encoded_index(mapping, occupied, n_modes=6):
+    bits = reference_qubit_bits(mapping, n_modes, list(occupied))
+    return sum(int(b) << (len(bits) - 1 - i) for i, b in enumerate(bits))
+
+
+def sector_determinants():
+    """Determinants of the (1, 1) sector, in the ParticleSector(6, (1, 1)) order."""
+    sector = ParticleSector(6, (1, 1))
+    return [tuple(j for j in range(6) if int(occupation) & (1 << (5 - j))) for occupation in sector.indices]
+
+
 @pytest.mark.parametrize("mapping", MAPPINGS)
 def test_complex_fermion_algebra_and_encoding(mapping):
     ctx = _native.Context()
@@ -103,9 +146,7 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
     matrices = [g[np.ix_(ix, ix)] for g in matrices]
     # Four singles and four doubles have nonzero, noncommuting amplitudes.
     theta = np.random.default_rng(56).normal(scale=.35, size=len(matrices))
-    from mandacaru.core.mapping import reference_qubit_bits
-    bits=reference_qubit_bits(mapping,6,[0,3])
-    encoded=sum(int(b)<<(len(bits)-1-i) for i,b in enumerate(bits))
+    encoded = encoded_index(mapping, [0, 3])
     hf=np.zeros(problem.dimension,dtype=complex)
     hf[np.flatnonzero(ix==encoded)[0]]=1.
     if trotter:
@@ -131,11 +172,16 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
     assert np.allclose(one, one.conj().T, atol=2e-13)
     assert np.allclose(two, -two.swapaxes(0, 1), atol=2e-13)
     assert np.allclose(np.einsum("pqrq->pr", two), one, atol=2e-13)
-    if mapping != "parity_reduced":
-        from mandacaru.algorithms.rdm import one_rdm, two_rdm
-        py_sector = ParticleSector(h.num_qubits, (1, 1), mapping=mapping) if sector else None
-        assert np.allclose(one, one_rdm(expected, 6, mapping, sector=py_sector), atol=2e-13)
-        assert np.allclose(two, two_rdm(expected, 6, mapping, sector=py_sector), atol=2e-13)
+    # Reference RDMs: decode the encoded state into determinant amplitudes and
+    # apply the ladder algebra directly (no encoding, no native RDM code).
+    determinants = sector_determinants()
+    decoded = {}
+    for det in determinants:
+        decoded[det] = expected[np.flatnonzero(ix == encoded_index(mapping, det))[0]]
+    assert sum(abs(a)**2 for a in decoded.values()) == pytest.approx(1., abs=2e-12)
+    reference_one, reference_two = determinant_rdms(decoded, 6)
+    assert np.allclose(one, reference_one, atol=2e-13)
+    assert np.allclose(two, reference_two, atol=2e-13)
 
 
 @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
@@ -151,7 +197,11 @@ def test_public_h2_solve_matches_phase0(method, sector, sparse, optimizer):
     assert result.optimal_energy == pytest.approx(-25.871895455446612, abs=1e-9)
     assert result.reference_energy == pytest.approx(-25.5004433585557, abs=1e-9)
     assert calc.problem.num_qubits == 4 and result.num_particles == (1, 1)
-    state = result.state()
+    # state() is the full register; a sector solve lives on basis_indices only.
+    full = result.state()
+    basis = np.asarray(calc.problem.basis_indices, dtype=int)
+    state = full[basis]
+    assert np.vdot(full, full).real == pytest.approx(1., abs=1e-13)
     assert np.vdot(state, state).real == pytest.approx(1., abs=1e-13)
     key = "h2_cached_adapt" if sector else "h2_cached_vqe"
     frozen = json.loads((FIXTURE.parent / "numpy.json").read_text())["cases"][key]["samples"][0]["values"]["state_projector"]
@@ -167,13 +217,15 @@ def test_public_h2_solve_matches_phase0(method, sector, sparse, optimizer):
 def test_entire_solve_has_no_python_scientific_callbacks(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("Python scientific computation entered a native solve")
+    import scipy.optimize
     from mandacaru.optimizers.optim import Optimizer
     from mandacaru.core import serialization
-    from mandacaru.circuits.ansatz import UCCSD
     monkeypatch.setattr(Optimizer, "minimize", forbidden)
     monkeypatch.setattr(serialization, "load_hamiltonian", forbidden)
-    monkeypatch.setattr(UCCSD, "state", forbidden)
-    monkeypatch.setattr(UCCSD, "__init__", forbidden)
+    monkeypatch.setattr(scipy.optimize, "minimize", forbidden)
+    monkeypatch.setattr(Fermion, "map_to_qubits", forbidden)
+    monkeypatch.setattr(PauliSum, "to_matrix", forbidden)
+    monkeypatch.setattr(PauliSum, "to_sparse_matrix", forbidden)
     for method in ("vqe", "adapt-vqe"):
         calc = Mandacaru(method=method,  load_hamiltonian=FIXTURE, trace=False)
         assert calc.run().optimal_energy < -25.8
@@ -187,7 +239,11 @@ def test_failure_status_units_and_log(tmp_path):
     assert not result.success and result.optimizer_steps == 0
     assert result.num_evaluations == 1 and result.energy_unit == "Ha"
     assert result.in_units("eV") == pytest.approx(result.optimal_energy * HARTREE_TO_EV)
-    assert "iteration budget exhausted" in (tmp_path / "run.txt").read_text()
+    # The run log owns the converged flag and the effort; the termination
+    # reason is carried by the result.
+    assert result.timings["termination"] == "iteration budget exhausted"
+    log = (tmp_path / "run.txt").read_text()
+    assert "converged: False" in log and "optimizer_steps: 0" in log
     problem = _native.Context().load_hamiltonian(str(FIXTURE))
     exhausted = problem.solve(max_evaluations=1)
     assert not exhausted["success"] and exhausted["message"] == "evaluation budget exhausted"
@@ -252,9 +308,15 @@ def test_nonconserving_hamiltonian_and_unsupported_options_fail_explicitly(tmp_p
     with pytest.raises(ValueError, match="sector"):
         _native.Context().load_hamiltonian(str(path))
     assert _native.Context().load_hamiltonian(str(path), sector=False).dimension == 16
-    for options in ({"optimizer": "SLSQP"}, {"ansatz": "hva"}):
-        with pytest.raises((NotImplementedError,ValueError)):
-            Mandacaru(method="vqe",  load_hamiltonian=FIXTURE, **options)
+    # SLSQP is a native optimizer (the public default), so it is no longer an
+    # unsupported option; Adam and L-BFGS-B were removed from the public set.
+    for name in ("Adam", "L-BFGS-B"):
+        with pytest.raises(ValueError, match="native optimizer"):
+            Mandacaru(method="vqe",  load_hamiltonian=FIXTURE, optimizer=name)
+    # HVA needs the physical decomposition of a molecular Hamiltonian, which a
+    # cached Hamiltonian does not have: the solve raises, it never substitutes.
+    with pytest.raises(ValueError, match="HVA"):
+        Mandacaru(method="vqe",  load_hamiltonian=FIXTURE, ansatz="hva", trace=False).run()
     Mandacaru(method="dft",  xc="r2scan")
     with pytest.raises(TypeError, match="tetris"):
         Mandacaru(method="adapt-vqe",  load_hamiltonian=FIXTURE, tetris=True)
@@ -263,21 +325,20 @@ def test_nonconserving_hamiltonian_and_unsupported_options_fail_explicitly(tmp_p
 @pytest.mark.parametrize("mapping", MAPPINGS)
 @pytest.mark.parametrize("sector", [False, True])
 def test_rdms_of_complex_states_are_encoding_independent(tmp_path, mapping, sector):
-    from mandacaru.algorithms.rdm import one_rdm, two_rdm
     path, _ = cache(tmp_path, mapping)
     problem = _native.Context().load_hamiltonian(str(path), sector=sector)
     jw_sector = ParticleSector(6, (1, 1))
+    determinants = sector_determinants()
     amplitudes = np.random.default_rng(99).normal(size=(2, jw_sector.dim))
     amplitudes = amplitudes[0] + 1j * amplitudes[1]
     amplitudes /= np.linalg.norm(amplitudes)
     encoded = np.zeros(problem.dimension, dtype=complex)
     indices = np.asarray(problem.basis_indices)
-    for occupation, amplitude in zip(jw_sector.indices, amplitudes):
-        occupied = [j for j in range(6) if int(occupation) & (1 << (5 - j))]
-        bits = reference_qubit_bits(mapping, 6, occupied)
-        index = sum(int(b) << (len(bits) - 1 - j) for j, b in enumerate(bits))
+    for occupied, amplitude in zip(determinants, amplitudes):
+        index = encoded_index(mapping, occupied)
         encoded[np.searchsorted(indices, index)] = amplitude
     one, two = problem.rdms(encoded)
+    reference_one, reference_two = determinant_rdms(dict(zip(determinants, amplitudes)), 6)
     assert np.max(np.abs(one.imag)) > .01
-    assert np.allclose(one, one_rdm(amplitudes, 6, sector=jw_sector), atol=1e-13)
-    assert np.allclose(two, two_rdm(amplitudes, 6, sector=jw_sector), atol=1e-13)
+    assert np.allclose(one, reference_one, atol=1e-13)
+    assert np.allclose(two, reference_two, atol=1e-13)

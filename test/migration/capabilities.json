@@ -13,14 +13,11 @@
         "dry runs"
       ],
       "sources": [
-        "src/mandacaru/algorithms/calculator.py",
-        "src/mandacaru/cli.py",
-        "src/mandacaru/algorithms/dry_run.py"
+        "src/mandacaru/cli.py"
       ],
       "tests": [
         "test/test_single_entry_point.py",
-        "test/test_cli.py",
-        "test/algorithms/test_dry_run.py"
+        "test/test_cli.py"
       ],
       "reference_cases": []
     },
@@ -35,14 +32,8 @@
         "geometry invalidation and frozen force grids",
         "relaxation and molecular dynamics through ASE"
       ],
-      "sources": [
-        "src/mandacaru/algorithms/calculator.py"
-      ],
-      "tests": [
-        "test/algorithms/test_calculator.py",
-        "test/algorithms/test_forces.py",
-        "test/algorithms/test_crystal_forces.py"
-      ],
+      "sources": [],
+      "tests": [],
       "reference_cases": [
         "h2_dft_lda_forces"
       ]
@@ -65,8 +56,7 @@
       ],
       "tests": [
         "test/core/test_mapping.py",
-        "test/backends/test_providers.py",
-        "test/algorithms/test_calculator.py"
+        "test/backends/test_providers.py"
       ],
       "reference_cases": [
         "operator_algebra",
@@ -87,11 +77,9 @@
       "sources": [
         "src/mandacaru/backend_policy.py",
         "src/mandacaru/integrals/_backend.py",
-        "src/mandacaru/basis/radial_backend.py",
-        "src/mandacaru/integrals/rust/src/lib.rs"
+        "src/mandacaru/basis/radial_backend.py"
       ],
       "tests": [
-        "test/integrals/test_backend.py",
         "test/basis/test_radial_backend.py"
       ],
       "reference_cases": [
@@ -138,18 +126,11 @@
         "pool screening"
       ],
       "sources": [
-        "src/mandacaru/circuits/ansatz.py",
-        "src/mandacaru/circuits/adapt_ansatz.py",
-        "src/mandacaru/circuits/hva.py",
-        "src/mandacaru/circuits/pools.py",
-        "src/mandacaru/algorithms/ansatz_spec.py"
+        "src/mandacaru/circuits/pools.py"
       ],
       "tests": [
-        "test/circuits/test_ansatz.py",
         "test/circuits/test_adapt_ansatz.py",
-        "test/circuits/test_hva.py",
-        "test/circuits/test_pools.py",
-        "test/algorithms/test_adapt_gradient.py"
+        "test/circuits/test_pools.py"
       ],
       "reference_cases": [
         "h2_cached_vqe",
@@ -166,18 +147,8 @@
         "TETRIS growth and pruning",
         "RDMs and state properties"
       ],
-      "sources": [
-        "src/mandacaru/algorithms/vqe.py",
-        "src/mandacaru/algorithms/adapt_vqe.py",
-        "src/mandacaru/algorithms/rdm.py",
-        "src/mandacaru/algorithms/convergence.py"
-      ],
-      "tests": [
-        "test/algorithms/test_vqe.py",
-        "test/algorithms/test_adapt_vqe.py",
-        "test/algorithms/test_growth_strategies.py",
-        "test/algorithms/test_forces.py"
-      ],
+      "sources": [],
+      "tests": [],
       "reference_cases": [
         "h2_cached_vqe",
         "h2_cached_adapt"
@@ -220,15 +191,13 @@
       "sources": [
         "src/mandacaru/basis/factory.py",
         "src/mandacaru/basis/gaussian_families.py",
-        "src/mandacaru/integrals/grid.py",
-        "src/mandacaru/core/hamiltonian.py"
+        "src/mandacaru/integrals/grid.py"
       ],
       "tests": [
         "test/basis/test_factory.py",
         "test/basis/test_gaussian_families.py",
         "test/basis/test_sto_ng.py",
-        "test/integrals/test_grid.py",
-        "test/integrals/test_grid_numerics.py"
+        "test/integrals/test_grid.py"
       ],
       "reference_cases": [
         "h2_rhf",
@@ -245,20 +214,9 @@
         "packed/direct/Cholesky representations",
         "active/frozen-core and MO transformations"
       ],
-      "sources": [
-        "src/mandacaru/integrals/engine.py",
-        "src/mandacaru/integrals/poisson.py",
-        "src/mandacaru/integrals/direct.py",
-        "src/mandacaru/integrals/cholesky.py",
-        "src/mandacaru/core/hamiltonian.py",
-        "src/mandacaru/algorithms/active_space.py"
-      ],
+      "sources": [],
       "tests": [
-        "test/integrals/test_engine.py",
-        "test/integrals/test_poisson.py",
-        "test/integrals/test_direct.py",
-        "test/integrals/test_cholesky.py",
-        "test/algorithms/test_frozen_core.py"
+        "test/integrals/test_direct.py"
       ],
       "reference_cases": [
         "h2_rhf"
@@ -273,16 +231,9 @@
         "natural-orbital and spinor quantum export",
         "open-shell references"
       ],
-      "sources": [
-        "src/mandacaru/algorithms/hartree_fock.py",
-        "src/mandacaru/algorithms/mean_field.py",
-        "src/mandacaru/algorithms/scf_stability.py"
-      ],
+      "sources": [],
       "tests": [
-        "test/algorithms/test_hartree_fock.py",
-        "test/algorithms/test_mean_field.py",
-        "test/algorithms/test_open_shell.py",
-        "test/algorithms/test_scf_stability.py"
+        "test/algorithms/test_mean_field.py"
       ],
       "reference_cases": [
         "h2_rhf",
@@ -352,15 +303,11 @@
         "Hubbard U and onsite terms"
       ],
       "sources": [
-        "src/mandacaru/algorithms/dft.py",
-        "src/mandacaru/algorithms/spinor_dft.py",
-        "src/mandacaru/integrals/exchange_correlation.py",
-        "src/mandacaru/algorithms/hubbard.py"
+        "src/mandacaru/integrals/exchange_correlation.py"
       ],
       "tests": [
         "test/algorithms/test_dft.py",
         "test/algorithms/test_spinor_dft.py",
-        "test/algorithms/test_hubbard.py",
         "test/integrals/test_exchange_correlation.py",
         "test/integrals/test_vv10.py"
       ],
@@ -379,19 +326,8 @@
         "finite differences as validation",
         "electric-field response"
       ],
-      "sources": [
-        "src/mandacaru/algorithms/forces.py",
-        "src/mandacaru/algorithms/pseudo_forces.py",
-        "src/mandacaru/algorithms/_jax_energy.py",
-        "src/mandacaru/algorithms/active_space_forces.py",
-        "src/mandacaru/algorithms/polarizability.py"
-      ],
-      "tests": [
-        "test/algorithms/test_forces.py",
-        "test/algorithms/test_all_electron_forces.py",
-        "test/algorithms/test_active_space_forces.py",
-        "test/algorithms/test_polarizability.py"
-      ],
+      "sources": [],
+      "tests": [],
       "reference_cases": [
         "h2_dft_lda_forces"
       ]
@@ -407,19 +343,8 @@
         "forces and free-energy stress",
         "bands/DOS/PDOS/tetrahedra"
       ],
-      "sources": [
-        "src/mandacaru/algorithms/bloch.py",
-        "src/mandacaru/algorithms/periodic_dft.py",
-        "src/mandacaru/algorithms/crystal_forces.py",
-        "src/mandacaru/core/periodic.py"
-      ],
-      "tests": [
-        "test/algorithms/test_bloch.py",
-        "test/algorithms/test_periodic_dft.py",
-        "test/algorithms/test_crystal_forces.py",
-        "test/algorithms/test_kpoints.py",
-        "test/algorithms/test_tetrahedron.py"
-      ],
+      "sources": [],
+      "tests": [],
       "reference_cases": [
         "si_periodic_lda"
       ]
@@ -434,15 +359,9 @@
         "finite-size corrections and Ewald"
       ],
       "sources": [
-        "src/mandacaru/algorithms/wannier.py",
-        "src/mandacaru/algorithms/rpa_density.py",
-        "src/mandacaru/algorithms/berry_phase.py",
         "src/mandacaru/core/ewald.py"
       ],
       "tests": [
-        "test/algorithms/test_wannier.py",
-        "test/algorithms/test_rpa_density.py",
-        "test/algorithms/test_berry_phase.py",
         "test/core/test_ewald.py"
       ],
       "reference_cases": []
@@ -457,22 +376,8 @@
         "time evolution/echoes/nested OTOC/QPE",
         "expressivity"
       ],
-      "sources": [
-        "src/mandacaru/algorithms/subspace.py",
-        "src/mandacaru/algorithms/mcas_vqe.py",
-        "src/mandacaru/algorithms/valqa.py",
-        "src/mandacaru/algorithms/proposal_model.py",
-        "src/mandacaru/algorithms/time_evolution.py",
-        "src/mandacaru/algorithms/qpe.py"
-      ],
-      "tests": [
-        "test/algorithms/test_subspace.py",
-        "test/algorithms/test_mcas_vqe.py",
-        "test/algorithms/test_valqa.py",
-        "test/algorithms/test_proposal_model.py",
-        "test/algorithms/test_time_evolution.py",
-        "test/algorithms/test_qpe.py"
-      ],
+      "sources": [],
+      "tests": [],
       "reference_cases": []
     },
     {
@@ -484,19 +389,8 @@
         "dipoles/natural orbitals/volumetric fields",
         "interaction energies and spectroscopy"
       ],
-      "sources": [
-        "src/mandacaru/algorithms/mp2.py",
-        "src/mandacaru/algorithms/dlpno_mp2.py",
-        "src/mandacaru/algorithms/charges.py",
-        "src/mandacaru/algorithms/volumetric.py"
-      ],
-      "tests": [
-        "test/algorithms/test_mp2.py",
-        "test/algorithms/test_dlpno_mp2.py",
-        "test/algorithms/test_charges.py",
-        "test/algorithms/test_volumetric.py",
-        "test/algorithms/test_interaction.py"
-      ],
+      "sources": [],
+      "tests": [],
       "reference_cases": []
     },
     {
@@ -514,7 +408,6 @@
         "src/mandacaru/core/serialization.py",
         "src/mandacaru/core/checkpoint.py",
         "src/mandacaru/pseudopotentials/io.py",
-        "src/mandacaru/algorithms/proposal_data.py",
         "src/mandacaru/utils/cube.py",
         "src/mandacaru/utils/bxsf.py"
       ],
@@ -522,7 +415,6 @@
         "test/core/test_serialization.py",
         "test/core/test_checkpoint.py",
         "test/pseudopotentials/test_io.py",
-        "test/algorithms/test_proposal_data.py",
         "test/utils/test_bxsf.py"
       ],
       "reference_cases": [
@@ -570,15 +462,10 @@
         "resource reporting"
       ],
       "sources": [
-        "src/mandacaru/integrals/fft.py",
-        "src/mandacaru/integrals/buffers.py",
         "src/mandacaru/integrals/_backend.py",
         "src/mandacaru/utils/profiling.py"
       ],
       "tests": [
-        "test/integrals/test_precision.py",
-        "test/integrals/test_fft.py",
-        "test/integrals/test_eri_blocking.py",
         "test/utils/test_profiling.py"
       ],
       "reference_cases": [

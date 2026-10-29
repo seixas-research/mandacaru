@@ -46,22 +46,56 @@ def synthetic(functional='lda',spins=1):
                 reference=.02,electrons=2.,spins=spins,functional=functional,relativistic=False,permutations=[],qsym=[])
 
 
+def smearing_occupation(x,method):
+    """Occupation per spin state at x=(e-mu)/width, from the textbook closed forms."""
+    from scipy.special import erfc,expit
+    x=np.asarray(x,float)
+    if method=='fermi-dirac':
+        return expit(-x)
+    if method=='gaussian':
+        return .5*erfc(x)
+    # Methfessel-Paxton, first order: 1/2 erfc(x) + A1 H1(x) exp(-x^2), A1=-1/(4 sqrt(pi)), H1=2x.
+    return .5*erfc(x)-x*np.exp(-x*x)/(2*np.sqrt(np.pi))
+
+
+def smearing_entropy(x,method):
+    """Entropy term S(x) with F = E - width*sum(S): -f ln f - (1-f) ln(1-f) for
+    Fermi-Dirac, (1/2) A_N H_2N(x) exp(-x^2) for the Hermite expansions."""
+    from scipy.special import xlogy
+    x=np.asarray(x,float)
+    if method=='fermi-dirac':
+        f=smearing_occupation(x,method)
+        return -xlogy(f,f)-xlogy(1-f,1-f)
+    if method=='gaussian':
+        return np.exp(-x*x)/(2*np.sqrt(np.pi))
+    return .5*(-1/(4*np.sqrt(np.pi)))*(4*x*x-2)*np.exp(-x*x)
+
+
+def reference_fermi_level(levels,weights,electrons,method,width,degeneracy):
+    """Root of the charge neutrality condition by Brent's method."""
+    from scipy.optimize import brentq
+    def excess(mu):
+        return degeneracy*np.sum(smearing_occupation((levels-mu)/width,method)*weights[:,None])-electrons
+    return brentq(excess,levels.min()-60*width,levels.max()+60*width,xtol=1e-15,rtol=1e-15,maxiter=500)
+
+
 @pytest.mark.parametrize('method',['fermi-dirac','gaussian','methfessel-paxton'])
 @pytest.mark.parametrize('degeneracy',[1.,2.])
 def test_metallic_fermi_occupations_entropy_and_variational_free_energy(method,degeneracy):
-    from mandacaru.algorithms.periodic_dft import fermi_level,occupation,entropy
+    # The deleted Python smearing code is replaced by the closed forms above
+    # and a Brent root of the charge neutrality condition; same tolerances.
     levels=np.array([[-.3,-.01,.12,.4],[-.2,.03,.17,.5]])
     weights=np.array([.25,.75])
     width=.06
     electrons=degeneracy*1.7
     ctx=_native.Context()
     raw=ctx.fermi_distribution(levels.tolist(),weights.tolist(),electrons,method=method,width_ha=width,degeneracy=degeneracy)
-    mu=fermi_level(levels,weights,electrons,method,width,degeneracy)
+    mu=reference_fermi_level(levels,weights,electrons,method,width,degeneracy)
     assert raw['fermi_level']==pytest.approx(mu,abs=1e-12)
-    f=degeneracy*occupation((levels-mu)/width,method)
+    f=degeneracy*smearing_occupation((levels-mu)/width,method)
     assert np.allclose(raw['occupations'],f,atol=2e-12)
     assert np.sum(f*weights[:,None])==pytest.approx(electrons,abs=2e-11)
-    expected_entropy=degeneracy*np.sum(entropy((levels-mu)/width,method)*weights[:,None])
+    expected_entropy=degeneracy*np.sum(smearing_entropy((levels-mu)/width,method)*weights[:,None])
     assert raw['entropy']==pytest.approx(expected_entropy,abs=1e-11)
     def free(w):
         r=ctx.fermi_distribution(levels.tolist(),weights.tolist(),electrons,method=method,width_ha=w,degeneracy=degeneracy)
@@ -72,9 +106,13 @@ def test_metallic_fermi_occupations_entropy_and_variational_free_energy(method,d
 @pytest.mark.parametrize('size',[(1,1,1),(2,3,4),(3,3,3)])
 @pytest.mark.parametrize('gamma',[False,True])
 def test_native_kmesh_matches_ase_and_time_reversal_orbits(size,gamma):
-    from mandacaru.algorithms._hamiltonian_from_atoms import monkhorst_pack_kpts
+    from ase.calculators.calculator import kpts2ndarray
+    from ase.dft.kpoints import monkhorst_pack
     from mandacaru.pseudopotentials.periodic_paw import time_reversal_reduce
-    _,_,full=monkhorst_pack_kpts(dict(size=size,gamma=gamma))
+    # ASE's own mesh helpers replace the deleted Python wrapper around them:
+    # the plain Monkhorst-Pack mesh, or the Gamma-centered one (ASE spells
+    # that {"size": ..., "gamma": True}).
+    full=kpts2ndarray(dict(size=size,gamma=True)) if gamma else monkhorst_pack(size)
     points,weights=time_reversal_reduce(full)
     result=_native.Context().kmesh(size,gamma=gamma)
     assert np.allclose(result['full'],full,atol=1e-14)
@@ -193,12 +231,13 @@ def test_cached_silicon_matches_frozen_phase0_with_explicit_fermi_plateau(si_nat
 
 
 def test_cached_crystal_runs_without_python_scf_fft_linalg_or_xc_callbacks(monkeypatch):
-    from mandacaru.algorithms import periodic_dft,periodic_device
     from mandacaru.integrals import exchange_correlation
     def forbidden(*args,**kwargs):
         raise AssertionError('Python numerical callback entered the native periodic solve')
-    for obj,name in [(periodic_dft.PeriodicKohnSham,'run'),(periodic_dft.PulayMixer,'mix'),
-                     (periodic_device.CPUDevice,'eigensolve'),(np.linalg,'eigh'),(np.linalg,'solve'),
+    # The Python Kohn-Sham loop, Pulay mixer and CPU eigensolver lived in the
+    # deleted mandacaru.algorithms package, so their absence is the guard; the
+    # NumPy and Python XC entry points that remain are poisoned.
+    for obj,name in [(np.linalg,'eigh'),(np.linalg,'solve'),
                      (np.fft,'fftn'),(np.fft,'ifftn'),(exchange_correlation,'evaluate')]:
         monkeypatch.setattr(obj,name,forbidden)
     result=Mandacaru(method='dft',load_crystal=SI,

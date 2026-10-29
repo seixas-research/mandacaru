@@ -35,6 +35,10 @@ def build(driver, geometry):
     species = {
         symbol: family.get(symbol, options.get("paw_dataset")) for symbol in unique
     }
+    if driver.method == "dft":
+        from ..models.datasets import _warn_functional_mismatch
+
+        _warn_functional_mismatch(species.values(), driver.xc)
     grid = driver._grid(geometry)
     if grid is None:
         view = Grid(
