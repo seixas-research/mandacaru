@@ -51,7 +51,7 @@ calc_nosoc = Mandacaru(
     grid_spacing=grid_spacing,
     trace=False,
     precision=precision,
-    max_iter=45,
+    periodic_scf_options={"max_iterations": 45},
 )
 atoms.calc = calc_nosoc
 atoms.get_potential_energy()
@@ -74,7 +74,7 @@ calc_soc = Mandacaru(
     grid_spacing=grid_spacing,
     trace=False,
     precision=precision,
-    max_iter=45,
+    periodic_scf_options={"max_iterations": 45},
 )
 atoms.calc = calc_soc
 atoms.get_potential_energy()

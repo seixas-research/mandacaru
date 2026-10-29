@@ -51,7 +51,7 @@ def run_dft(atoms: Atoms, kpts=(2, 2, 1), grid_spacing: float = 0.35) -> Mandaca
     )
     atoms.calc = calc
     energy = atoms.get_potential_energy()
-    magmom = calc.get_total_magnetic_moment()
+    magmom = calc.get_magnetic_moment()
     print(f"DFT Total Energy: {energy:.4f} eV")
     print(f"Total Magnetic Moment: {magmom:.4f} mu_B")
     return calc

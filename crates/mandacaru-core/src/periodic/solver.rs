@@ -5,7 +5,11 @@ use super::{
     Crystal, KPoint,
 };
 use crate::{
-    math::{fft::Fft3, linalg::eigen},
+    math::{
+        fft::Fft3,
+        linalg::eigen,
+        storage::{MatrixSource, StoredMatrix},
+    },
     models::xc,
     product,
     quantum::C64,
@@ -44,6 +48,7 @@ pub struct Iteration {
     pub residual: f64,
     pub moment_residual: f64,
     pub magnetization: f64,
+    pub kinetic_residual: f64,
 }
 pub struct PeriodicResult {
     pub energy: f64,
@@ -54,19 +59,21 @@ pub struct PeriodicResult {
     pub history: Vec<Iteration>,
     pub eigenvalues: Vec<Vec<f64>>,
     pub occupations: Vec<Vec<f64>>,
-    pub coefficients: Vec<Matrix>,
-    pub matrices: Vec<Matrix>,
-    pub projections: Buffer<f64>,
+    pub coefficients: Vec<StoredMatrix>,
+    pub matrices: Vec<StoredMatrix>,
     pub density: Buffer<f64>,
     pub moments: Buffer<C64>,
     pub potential: Buffer<f64>,
     pub moment_potential: Buffer<C64>,
+    pub kinetic_density: Option<Buffer<f64>>,
+    pub kinetic_potential: Option<Buffer<f64>>,
     pub terms: [f64; 5],
     pub magnetization: f64,
+    pub spin_orbit_energy: Option<f64>,
     pub options: Options,
     _memory: Reservation,
 }
-fn sym_field(c: &Crystal, field: &[f64], out: &mut [f64]) {
+pub(super) fn sym_field(c: &Crystal, field: &[f64], out: &mut [f64]) {
     if c.permutations.is_empty() {
         out.copy_from_slice(field);
         return;
@@ -99,7 +106,12 @@ fn inverse(c: &Crystal, fft: &mut Fft3, input: &[C64]) -> Result<Buffer<f64>> {
     }
     Ok(real)
 }
-fn derivative(c: &Crystal, fft: &mut Fft3, input: &[f64], axis: usize) -> Result<Buffer<f64>> {
+pub(super) fn derivative(
+    c: &Crystal,
+    fft: &mut Fft3,
+    input: &[f64],
+    axis: usize,
+) -> Result<Buffer<f64>> {
     let n = c.grid.index.points();
     let mut out = c.context.allocate::<C64>(n)?;
     for (k, value) in input.iter().enumerate() {
@@ -128,9 +140,19 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
     let rho = reciprocal(c, fft, rho)?;
     let mut hats = c.context.allocate::<C64>(n)?;
     let mut potential = c.context.allocate::<C64>(n)?;
+    let mut moments = c.context.allocate::<C64>(h)?;
     let mut energy = c.eion + c.ion_constant;
+    for (a, &charge) in q.iter().enumerate().take(h) {
+        let table = c.hats.read_range(&c.context, a * n, n)?;
+        for k in 0..n {
+            hats.as_mut_slice()[k] += charge * table[k];
+        }
+        moments.as_mut_slice()[a] = (0..n)
+            .map(|k| c.kernel.as_slice()[k] * rho.as_slice()[k].conj() * table[k])
+            .sum::<C64>()
+            / volume;
+    }
     for k in 0..n {
-        hats.as_mut_slice()[k] = (0..h).map(|a| q[a] * c.hats.as_slice()[a * n + k]).sum();
         energy += c.kernel.as_slice()[k]
             * (0.5 * rho.as_slice()[k].norm_sqr()
                 + (rho.as_slice()[k].conj() * (hats.as_slice()[k] + c.ion.as_slice()[k])).re)
@@ -138,7 +160,6 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
         potential.as_mut_slice()[k] =
             c.kernel.as_slice()[k] * (rho.as_slice()[k] + hats.as_slice()[k] + c.ion.as_slice()[k]);
     }
-    let mut moments = c.context.allocate::<C64>(h)?;
     for a in 0..h {
         let uq = (0..h)
             .map(|b| c.u.as_slice()[a * h + b] * q[b])
@@ -147,15 +168,9 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
             + q[a].conj() * c.uion.as_slice()[a]
             + q[a] * c.linear.as_slice()[a])
             .re;
-        moments.as_mut_slice()[a] = (0..n)
-            .map(|k| {
-                c.kernel.as_slice()[k] * rho.as_slice()[k].conj() * c.hats.as_slice()[a * n + k]
-            })
+        moments.as_mut_slice()[a] += (0..h)
+            .map(|b| q[b].conj() * c.u.as_slice()[b * h + a])
             .sum::<C64>()
-            / volume
-            + (0..h)
-                .map(|b| q[b].conj() * c.u.as_slice()[b * h + a])
-                .sum::<C64>()
             + c.uion.as_slice()[a].conj()
             + c.linear.as_slice()[a];
     }
@@ -165,13 +180,33 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
         moments,
     })
 }
-fn exchange_correlation(c: &Crystal, fft: &mut Fft3, rho: &[f64]) -> Result<(f64, Buffer<f64>)> {
+fn exchange_correlation(
+    c: &Crystal,
+    fft: &mut Fft3,
+    rho: &[f64],
+    tau: Option<&[f64]>,
+) -> Result<super::fields::Terms> {
+    if c.spinor {
+        return super::spinor::exchange_correlation(c, fft, rho);
+    }
+    collinear_xc(c, fft, rho, tau, c.spins)
+}
+pub(super) fn collinear_xc(
+    c: &Crystal,
+    fft: &mut Fft3,
+    rho: &[f64],
+    tau: Option<&[f64]>,
+    spins: usize,
+) -> Result<super::fields::Terms> {
+    if !matches!(c.functional.as_str(), "lda" | "pbe") {
+        return super::fields::evaluate(c, fft, rho, tau);
+    }
     let n = c.grid.index.points();
     let ctx = &c.context;
     let mut densities = ctx.allocate::<f64>(2 * n)?;
     for spin in 0..2 {
         for k in 0..n {
-            densities.as_mut_slice()[spin * n + k] = (if c.spins == 1 {
+            densities.as_mut_slice()[spin * n + k] = (if spins == 1 {
                 0.5 * rho[k]
             } else {
                 rho[spin * n + k]
@@ -242,10 +277,10 @@ fn exchange_correlation(c: &Crystal, fft: &mut Fft3, rho: &[f64]) -> Result<(f64
             }
         }
     }
-    let mut result = ctx.allocate::<f64>(c.spins * n)?;
-    for s in 0..c.spins {
+    let mut result = ctx.allocate::<f64>(spins * n)?;
+    for s in 0..spins {
         for k in 0..n {
-            let raw = if c.spins == 1 {
+            let raw = if spins == 1 {
                 rho[k] + c.core.as_slice()[k]
             } else {
                 rho[s * n + k] + 0.5 * c.core.as_slice()[k]
@@ -257,40 +292,78 @@ fn exchange_correlation(c: &Crystal, fft: &mut Fft3, rho: &[f64]) -> Result<(f64
             };
         }
     }
-    Ok((energy * c.grid.index.dv(), result))
+    Ok(super::fields::Terms {
+        energy: energy * c.grid.index.dv(),
+        potential: result,
+        kinetic_potential: None,
+    })
+}
+struct LocalPotential {
+    local: Buffer<f64>,
+    moments: Buffer<C64>,
+    kinetic: Option<Buffer<f64>>,
 }
 fn local_potential(
     c: &Crystal,
     fft: &mut Fft3,
     rho: &[f64],
     q: &[C64],
-) -> Result<(Buffer<f64>, Buffer<C64>)> {
+    tau: Option<&[f64]>,
+) -> Result<LocalPotential> {
     let n = c.grid.index.points();
     let mut total = c.context.allocate::<f64>(n)?;
     for k in 0..n {
-        total.as_mut_slice()[k] = (0..c.spins).map(|s| rho[s * n + k]).sum();
+        total.as_mut_slice()[k] = if c.spinor {
+            rho[k]
+        } else {
+            (0..c.spins).map(|s| rho[s * n + k]).sum()
+        };
     }
     let electro = electrostatic(c, fft, total.as_slice(), q)?;
-    let (_, mut xc) = exchange_correlation(c, fft, rho)?;
+    let terms = exchange_correlation(c, fft, rho, tau)?;
+    let mut xc = terms.potential;
+    let mut kinetic = terms.kinetic_potential;
     let mut work = c.context.allocate::<f64>(n)?;
-    for s in 0..c.spins {
+    for s in 0..c.field_channels() {
         for k in 0..n {
-            work.as_mut_slice()[k] = electro.potential.as_slice()[k] + xc.as_slice()[s * n + k];
+            work.as_mut_slice()[k] = xc.as_slice()[s * n + k]
+                + if !c.spinor || s == 0 {
+                    electro.potential.as_slice()[k]
+                } else {
+                    0.
+                };
         }
         sym_field(
             c,
             work.as_slice(),
             &mut xc.as_mut_slice()[s * n..(s + 1) * n],
         );
+        if let Some(v) = &mut kinetic {
+            work.as_mut_slice()
+                .copy_from_slice(&v.as_slice()[s * n..(s + 1) * n]);
+            sym_field(
+                c,
+                work.as_slice(),
+                &mut v.as_mut_slice()[s * n..(s + 1) * n],
+            );
+        }
     }
-    Ok((xc, electro.moments))
+    Ok(LocalPotential {
+        local: xc,
+        moments: electro.moments,
+        kinetic,
+    })
 }
 pub fn diagonalize(
     c: &Crystal,
     data: &KPoint,
     v: &[f64],
     w: &[C64],
+    kinetic_potential: Option<&[f64]>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    if c.spinor {
+        return super::spinor::diagonalize(c, data, v, w);
+    }
     let m = c.m;
     let p = c.p;
     let n = c.grid.index.points();
@@ -299,23 +372,39 @@ pub fn diagonalize(
             .map(|a| w[a] * c.blocks.as_slice()[(a * p + i) * p + j])
             .sum()
     });
-    let h = &data.fixed
+    let mut field = c.context.allocate::<f64>(n)?;
+    if v.len() != n {
+        return Err(invalid("local periodic potential must match the grid"));
+    }
+    for (to, from) in field.as_mut_slice().iter_mut().zip(v) {
+        *to = from * c.grid.index.dv();
+    }
+    let samples = data.psi.read(&c.context)?;
+    let mut projector = crate::math::projection::ComplexProjector::new(&c.context, &samples, m, n)?;
+    let local = projector.project(field.as_slice())?;
+    let mut h = &data.fixed
         + &data.projections * operator * data.projections.adjoint()
-        + Matrix::from_fn(m, m, |a, b| {
-            (0..n)
-                .map(|k| {
-                    data.psi.as_slice()[a * n + k].conj() * v[k] * data.psi.as_slice()[b * n + k]
-                })
-                .sum::<C64>()
-                * c.grid.index.dv()
-        });
+        + Matrix::from_column_slice(m, m, local);
+    drop(projector);
+    drop(samples);
+    drop(field);
+    if let Some(v) = kinetic_potential {
+        let operator = super::fields::kinetic_operator(c, data, v)?;
+        for a in 0..m {
+            for b in 0..m {
+                h[(a, b)] += operator.as_slice()[a + b * m];
+            }
+        }
+    }
     let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
     let (eps, y) = eigen(data.lowdin.adjoint() * h * &data.lowdin)?;
     Ok((eps, &data.lowdin * &y, y))
 }
-fn density(c: &Crystal, matrices: &[Matrix]) -> Result<(Buffer<f64>, Buffer<C64>)> {
+fn density(c: &Crystal, matrices: &[StoredMatrix]) -> Result<(Buffer<f64>, Buffer<C64>)> {
+    if c.spinor {
+        return super::spinor::density(c, matrices);
+    }
     let n = c.grid.index.points();
-    let m = c.m;
     let p = c.p;
     let mut rho = c.context.allocate::<f64>(c.spins * n)?;
     let mut q = c.context.allocate::<C64>(c.channels)?;
@@ -323,20 +412,17 @@ fn density(c: &Crystal, matrices: &[Matrix]) -> Result<(Buffer<f64>, Buffer<C64>
     for s in 0..c.spins {
         let mut raw = c.context.allocate::<f64>(n)?;
         for (k, data) in c.points.iter().enumerate() {
-            let d = &matrices[s * c.points.len() + k];
+            let d = matrices[s * c.points.len() + k].matrix(&c.context)?;
             projected +=
-                data.projections.adjoint() * d * &data.projections * C64::new(data.weight, 0.);
-            for grid in 0..n {
-                raw.as_mut_slice()[grid] += data.weight
-                    * (0..m)
-                        .map(|a| {
-                            data.psi.as_slice()[a * n + grid]
-                                * (0..m)
-                                    .map(|b| d[(a, b)] * data.psi.as_slice()[b * n + grid].conj())
-                                    .sum::<C64>()
-                        })
-                        .sum::<C64>()
-                        .re;
+                data.projections.adjoint() * &*d * &data.projections * C64::new(data.weight, 0.);
+            let contribution = crate::math::projection::hermitian_density(
+                &c.context,
+                &data.psi.read(&c.context)?,
+                &d,
+                n,
+            )?;
+            for (to, from) in raw.as_mut_slice().iter_mut().zip(contribution.as_slice()) {
+                *to += data.weight * from;
             }
         }
         sym_field(
@@ -362,59 +448,97 @@ fn density(c: &Crystal, matrices: &[Matrix]) -> Result<(Buffer<f64>, Buffer<C64>
 fn energy(
     c: &Crystal,
     fft: &mut Fft3,
-    matrices: &[Matrix],
+    matrices: &[StoredMatrix],
     rho: &[f64],
     q: &[C64],
+    tau: Option<&[f64]>,
 ) -> Result<[f64; 4]> {
     let n = c.grid.index.points();
     let mut total = c.context.allocate::<f64>(n)?;
     for k in 0..n {
-        total.as_mut_slice()[k] = (0..c.spins).map(|s| rho[s * n + k]).sum();
+        total.as_mut_slice()[k] = if c.spinor {
+            rho[k]
+        } else {
+            (0..c.spins).map(|s| rho[s * n + k]).sum()
+        };
     }
     let band = (0..c.spins)
         .flat_map(|s| c.points.iter().enumerate().map(move |(k, d)| (s, k, d)))
-        .map(|(s, k, d)| d.weight * (&matrices[s * c.points.len() + k] * &d.fixed).trace().re)
-        .sum();
+        .map(|(s, k, d)| {
+            let matrix = matrices[s * c.points.len() + k].matrix(&c.context)?;
+            if c.spinor {
+                Ok(d.weight * super::spinor::fixed_energy(d, &matrix, c.m))
+            } else {
+                Ok(d.weight * (&*matrix * &d.fixed).trace().re)
+            }
+        })
+        .sum::<Result<f64>>()?;
     Ok([
         band,
         electrostatic(c, fft, total.as_slice(), q)?.energy,
-        exchange_correlation(c, fft, rho)?.0,
+        exchange_correlation(c, fft, rho, tau)?.energy,
         c.constant,
     ])
 }
-fn pack(c: &Crystal, rho: &[f64], q: &[C64]) -> Vec<C64> {
+fn pack(c: &Crystal, rho: &[f64], q: &[C64], tau: Option<&[f64]>) -> Vec<C64> {
     let n = c.grid.index.points();
-    let mut x = vec![C64::default(); c.spins * n + c.channels];
-    for k in 0..n {
-        x[k] = C64::new(
-            if c.spins == 1 {
-                rho[k]
-            } else {
-                rho[k] + rho[n + k]
-            },
-            0.,
-        );
-        if c.spins == 2 {
-            x[n + k] = C64::new(rho[k] - rho[n + k], 0.);
+    let fields = c.field_channels() * n;
+    let end = fields + c.channels;
+    let mut x = vec![C64::default(); end + tau.map_or(0, |t| t.len())];
+    if c.spinor {
+        for (to, &from) in x[..fields].iter_mut().zip(rho) {
+            *to = C64::new(from, 0.);
+        }
+    } else {
+        for k in 0..n {
+            x[k] = C64::new(
+                if c.spins == 1 {
+                    rho[k]
+                } else {
+                    rho[k] + rho[n + k]
+                },
+                0.,
+            );
+            if c.spins == 2 {
+                x[n + k] = C64::new(rho[k] - rho[n + k], 0.);
+            }
         }
     }
-    x[c.spins * n..].copy_from_slice(q);
+    x[fields..end].copy_from_slice(q);
+    if let Some(tau) = tau {
+        for (to, &from) in x[end..].iter_mut().zip(tau) {
+            *to = C64::new(from, 0.);
+        }
+    }
     x
 }
-fn unpack(c: &Crystal, x: &[C64], rho: &mut [f64], q: &mut [C64]) {
+fn unpack(c: &Crystal, x: &[C64], rho: &mut [f64], q: &mut [C64], tau: Option<&mut [f64]>) {
     let n = c.grid.index.points();
-    for k in 0..n {
-        if c.spins == 1 {
-            rho[k] = x[k].re;
-        } else {
-            rho[k] = 0.5 * (x[k] + x[n + k]).re;
-            rho[n + k] = 0.5 * (x[k] - x[n + k]).re;
+    let fields = c.field_channels() * n;
+    if c.spinor {
+        for (to, from) in rho.iter_mut().zip(&x[..fields]) {
+            *to = from.re;
+        }
+    } else {
+        for k in 0..n {
+            if c.spins == 1 {
+                rho[k] = x[k].re;
+            } else {
+                rho[k] = 0.5 * (x[k] + x[n + k]).re;
+                rho[n + k] = 0.5 * (x[k] - x[n + k]).re;
+            }
         }
     }
-    q.copy_from_slice(&x[c.spins * n..]);
+    let end = fields + c.channels;
+    q.copy_from_slice(&x[fields..end]);
+    if let Some(tau) = tau {
+        for (to, from) in tau.iter_mut().zip(&x[end..]) {
+            *to = from.re;
+        }
+    }
 }
 struct Mixer {
-    history: Vec<(Vec<C64>, Vec<C64>)>,
+    history: Vec<(StoredMatrix, StoredMatrix)>,
 }
 impl Mixer {
     fn next(
@@ -437,19 +561,31 @@ impl Mixer {
         let (mut x, mut r) = if warmup {
             (input, residual)
         } else {
-            self.history.push((input, residual));
+            let archive =
+                product(&[input.len(), 16, 2, options.history])? > c.context.memory_limit() / 8;
+            self.history.push((
+                StoredMatrix::new(&c.context, Matrix::from_vec(input.len(), 1, input), archive)?,
+                StoredMatrix::new(
+                    &c.context,
+                    Matrix::from_vec(residual.len(), 1, residual),
+                    archive,
+                )?,
+            ));
             let h = self.history.len();
             let mut b = DMatrix::<f64>::zeros(h + 1, h + 1);
             for i in 0..h {
                 for j in 0..h {
-                    b[(i, j)] = self.history[i]
-                        .1
+                    let left = self.history[i].1.matrix(&c.context)?;
+                    let right = self.history[j].1.matrix(&c.context)?;
+                    b[(i, j)] = left
                         .iter()
-                        .zip(&self.history[j].1)
+                        .zip(right.iter())
                         .enumerate()
                         .map(|(k, (a, b))| {
                             (a.conj() * b).re
-                                * if k < c.grid.index.points() * c.spins {
+                                * if k < c.grid.index.points() * c.field_channels()
+                                    || k >= c.grid.index.points() * c.field_channels() + c.channels
+                                {
                                     c.grid.index.dv()
                                 } else {
                                     1.
@@ -472,9 +608,11 @@ impl Mixer {
                 let a = alpha
                     .as_ref()
                     .map_or(if i == h - 1 { 1. } else { 0. }, |a| a[i]);
+                let input = self.history[i].0.matrix(&c.context)?;
+                let residual = self.history[i].1.matrix(&c.context)?;
                 for k in 0..x.len() {
-                    x[k] += a * self.history[i].0[k];
-                    r[k] += a * self.history[i].1[k];
+                    x[k] += a * input[k];
+                    r[k] += a * residual[k];
                 }
             }
             (x, r)
@@ -507,7 +645,11 @@ impl Crystal {
         let ctx = &c.context;
         let n = c.grid.index.points();
         let nk = c.points.len();
-        let m = c.m;
+        let m = c.bands();
+        let meta = crate::models::functional(&c.functional)?.requires_tau;
+        if c.spinor && c.functional != "lda" && c.functional != "pbe" {
+            return Err(invalid("periodic spinor XC currently requires LDA or PBE"));
+        }
         if options.max_iterations == 0
             || options.history == 0
             || options.history > 32
@@ -526,24 +668,31 @@ impl Crystal {
             ));
         }
         ctx.run(|| {
-            let retained = product(&[c.spins, nk, m, m, 16, 12])?
-                .checked_add(product(&[options.max_iterations, 128])?)
-                .ok_or(crate::Error::Overflow)?;
+            let retained = product(&[options.max_iterations, 128])?;
+            let archive_matrices = product(&[c.spins, nk, m, m, 32])? > ctx.memory_limit() / 8;
             let mut memory = ctx.reserve(
                 retained
                     .checked_add(product(&[
-                        c.spins * n + c.channels,
+                        c.field_channels() * n * (1 + usize::from(meta)) + c.channels,
                         16,
-                        2 * options.history + 12,
+                        8,
                     ])?)
                     .ok_or(crate::Error::Overflow)?,
             )?;
             let _projector_work = ctx.reserve(product(&[c.p, c.p, 16, 12])?)?;
+            let _matrix_work = ctx.reserve(product(&[m, m, 16, 16])?)?;
             let mut fft = Fft3::new(ctx, c.grid.index.shape())?;
-            let mut rho = ctx.allocate::<f64>(c.spins * n)?;
+            let mut rho = ctx.allocate::<f64>(c.field_channels() * n)?;
             let mut q = ctx.allocate::<C64>(c.channels)?;
             for k in 0..n {
-                if c.spins == 1 {
+                if c.spinor {
+                    rho.as_mut_slice()[k] = c.initial.as_slice()[k];
+                    if !c.time_reversal {
+                        for a in 0..3 {
+                            rho.as_mut_slice()[(a + 1) * n + k] = c.initial_m.as_slice()[a * n + k];
+                        }
+                    }
+                } else if c.spins == 1 {
                     rho.as_mut_slice()[k] = c.initial.as_slice()[k];
                 } else {
                     rho.as_mut_slice()[k] =
@@ -553,32 +702,51 @@ impl Crystal {
                 }
             }
             q.as_mut_slice().copy_from_slice(c.initial_q.as_slice());
+            let mut tau = if meta {
+                Some(super::fields::initial_kinetic_density(c, options)?)
+            } else {
+                None
+            };
             let mut previous = None;
             let mut history = vec![];
             let mut mixer = Mixer { history: vec![] };
             for iteration in 1..=options.max_iterations {
-                let (v, w) = local_potential(c, &mut fft, rho.as_slice(), q.as_slice())?;
+                let LocalPotential {
+                    local: v,
+                    moments: w,
+                    kinetic: kinetic_potential,
+                } = local_potential(
+                    c,
+                    &mut fft,
+                    rho.as_slice(),
+                    q.as_slice(),
+                    tau.as_ref().map(|t| t.as_slice()),
+                )?;
                 let mut eigenvalues = vec![];
                 let mut coefficients = vec![];
-                let mut projections = ctx.allocate::<f64>(product(&[c.spins, nk, m, m])?)?;
                 for s in 0..c.spins {
-                    for (k, data) in c.points.iter().enumerate() {
-                        let (eps, coeff, y) =
-                            diagonalize(c, data, &v.as_slice()[s * n..(s + 1) * n], w.as_slice())?;
+                    for data in &c.points {
+                        let (eps, coeff, _) = diagonalize(
+                            c,
+                            data,
+                            if c.spinor {
+                                v.as_slice()
+                            } else {
+                                &v.as_slice()[s * n..(s + 1) * n]
+                            },
+                            w.as_slice(),
+                            kinetic_potential
+                                .as_ref()
+                                .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
+                        )?;
                         eigenvalues.push(eps);
-                        coefficients.push(coeff);
-                        for a in 0..m {
-                            for b in 0..m {
-                                projections.as_mut_slice()[((s * nk + k) * m + a) * m + b] =
-                                    y[(a, b)].norm_sqr();
-                            }
-                        }
+                        coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
                     }
                 }
                 let weights: Vec<_> = (0..c.spins)
                     .flat_map(|_| c.points.iter().map(|p| p.weight))
                     .collect();
-                let degeneracy = if c.spins == 1 { 2. } else { 1. };
+                let degeneracy = c.degeneracy();
                 let mu = spectrum::fermi(
                     &eigenvalues,
                     &weights,
@@ -601,14 +769,29 @@ impl Crystal {
                     .iter()
                     .zip(&occupations)
                     .map(|(c, f)| {
-                        c * Matrix::from_diagonal(&DVector::from_iterator(
-                            m,
-                            f.iter().map(|f| C64::new(*f, 0.)),
-                        )) * c.adjoint()
+                        let c = c.matrix(ctx)?;
+                        let d =
+                            &*c * Matrix::from_diagonal(&DVector::from_iterator(
+                                m,
+                                f.iter().map(|f| C64::new(*f, 0.)),
+                            )) * c.adjoint();
+                        StoredMatrix::new(ctx, d, archive_matrices)
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>>>()?;
                 let (output, qout) = density(c, &matrices)?;
-                let terms = energy(c, &mut fft, &matrices, output.as_slice(), qout.as_slice())?;
+                let tauout = if meta {
+                    Some(super::fields::kinetic_density(c, &matrices)?)
+                } else {
+                    None
+                };
+                let terms = energy(
+                    c,
+                    &mut fft,
+                    &matrices,
+                    output.as_slice(),
+                    qout.as_slice(),
+                    tauout.as_ref().map(|t| t.as_slice()),
+                )?;
                 let energy = terms.iter().sum::<f64>();
                 let entropy = -options.width
                     * degeneracy
@@ -623,9 +806,27 @@ impl Crystal {
                         })
                         .sum::<f64>();
                 let free = energy + entropy;
-                let x = pack(c, rho.as_slice(), q.as_slice());
-                let y = pack(c, output.as_slice(), qout.as_slice());
-                let residual = x[..c.spins * n]
+                let x = pack(
+                    c,
+                    rho.as_slice(),
+                    q.as_slice(),
+                    tau.as_ref().map(|t| t.as_slice()),
+                );
+                let y = pack(
+                    c,
+                    output.as_slice(),
+                    qout.as_slice(),
+                    tauout.as_ref().map(|t| t.as_slice()),
+                );
+                let kinetic_residual = tau.as_ref().zip(tauout.as_ref()).map_or(0., |(a, b)| {
+                    a.as_slice()
+                        .iter()
+                        .zip(b.as_slice())
+                        .map(|(a, b)| (a - b).abs())
+                        .sum::<f64>()
+                        * c.grid.index.dv()
+                });
+                let residual = x[..c.field_channels() * n]
                     .iter()
                     .zip(&y)
                     .map(|(a, b)| (a.re - b.re).abs())
@@ -637,7 +838,9 @@ impl Crystal {
                     .zip(qout.as_slice())
                     .map(|(a, b)| (a - b).norm())
                     .fold(0f64, f64::max);
-                let magnetization = if c.spins == 2 {
+                let magnetization = if c.spinor {
+                    super::spinor::magnetic_moment(c, &matrices)?
+                } else if c.spins == 2 {
                     (0..nk)
                         .map(|k| {
                             c.points[k].weight
@@ -656,9 +859,11 @@ impl Crystal {
                     residual,
                     moment_residual,
                     magnetization,
+                    kinetic_residual,
                 });
                 let converged = delta.is_some_and(|d: f64| d.abs() < options.tolerance)
                     && residual < options.density_tolerance
+                    && kinetic_residual < options.density_tolerance
                     && moment_residual < options.density_tolerance;
                 if converged || iteration == options.max_iterations {
                     let mut eigenvalues = eigenvalues;
@@ -666,6 +871,11 @@ impl Crystal {
                         *e += c.reference;
                     }
                     memory.shrink_to(retained)?;
+                    let spin_orbit_energy = if c.spinor {
+                        Some(super::spinor::spin_orbit_energy(c, &matrices)?)
+                    } else {
+                        None
+                    };
                     return Ok(PeriodicResult {
                         energy,
                         free_energy: free,
@@ -681,20 +891,28 @@ impl Crystal {
                         occupations,
                         coefficients,
                         matrices,
-                        projections,
                         density: output,
                         moments: qout,
                         potential: v,
                         moment_potential: w,
+                        kinetic_density: tauout,
+                        kinetic_potential,
                         terms: [terms[0], terms[1], terms[2], terms[3], entropy],
                         magnetization,
+                        spin_orbit_energy,
                         options: options.clone(),
                         _memory: memory,
                     });
                 }
                 let next =
                     mixer.next(c, &mut fft, x, y, options, c.spins == 2 && iteration <= 12)?;
-                unpack(c, &next, rho.as_mut_slice(), q.as_mut_slice());
+                unpack(
+                    c,
+                    &next,
+                    rho.as_mut_slice(),
+                    q.as_mut_slice(),
+                    tau.as_mut().map(|t| t.as_mut_slice()),
+                );
                 previous = Some(free);
             }
             unreachable!()

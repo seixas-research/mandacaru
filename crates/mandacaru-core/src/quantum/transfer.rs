@@ -1,8 +1,9 @@
 //! Orbital-aware molecular ansatz handover between independent geometries.
 use super::{CachedProblem, C64};
 use crate::{
+    basis::{Basis, Radial},
     molecular::{response, transform::Model, MeanField, MolecularIntegrals},
-    product, Error, Result,
+    product, Error, Reservation, Result,
 };
 use nalgebra::DMatrix;
 use std::collections::BTreeMap;
@@ -11,6 +12,77 @@ pub struct Frame<'a> {
     pub reference: &'a MeanField,
     pub model: &'a Model,
     pub problem: &'a CachedProblem,
+}
+/// Immutable handover data without an integral cache, Hamiltonian or solver workspace.
+pub struct Handover {
+    basis: Basis,
+    coefficients: DMatrix<C64>,
+    numbers: Vec<u8>,
+    particles: [usize; 2],
+    mapping: String,
+    labels: Vec<String>,
+    parameters: Vec<f64>,
+    _memory: Reservation,
+}
+pub fn capture(previous: Frame<'_>, indices: &[usize], parameters: &[f64]) -> Result<Handover> {
+    if indices.len() != parameters.len()
+        || indices.iter().any(|i| *i >= previous.problem.pool.len())
+        || parameters.iter().any(|p| !p.is_finite())
+    {
+        return Err(Error::Invalid(
+            "ansatz handover needs a valid previous operator sequence".into(),
+        ));
+    }
+    let ctx = &previous.integrals.context;
+    ctx.run(|| {
+        let m = previous.integrals.m();
+        let labels_memory = indices
+            .iter()
+            .map(|&i| previous.problem.pool[i].label.len() + std::mem::size_of::<String>() + 8)
+            .sum::<usize>();
+        let radial_memory = previous
+            .integrals
+            .basis
+            .orbitals
+            .iter()
+            .map(|o| match &o.radial {
+                Radial::Gaussian {
+                    exponents,
+                    weighted,
+                } => 8 * (exponents.len() + weighted.len()),
+                _ => 0,
+            })
+            .sum::<usize>();
+        let memory = ctx.reserve(
+            product(&[m, previous.model.m, 16])?
+                .checked_add(labels_memory)
+                .and_then(|v| v.checked_add(radial_memory))
+                .and_then(|v| {
+                    v.checked_add(
+                        previous.integrals.geometry.numbers().len()
+                            + previous.problem.encoding.mapping.len(),
+                    )
+                })
+                .ok_or(crate::Error::Overflow)?,
+        )?;
+        let _work = ctx.reserve(product(&[m, m, 16, 8])?)?;
+        let coefficients = previous.integrals.lowdin.map(|v| C64::new(v, 0.))
+            * response::orbitals(previous.reference, previous.model)?;
+        let basis = Basis::from_orbitals(ctx, previous.integrals.basis.orbitals.clone())?;
+        Ok(Handover {
+            basis,
+            coefficients,
+            numbers: previous.integrals.geometry.numbers().to_vec(),
+            particles: previous.model.particles,
+            mapping: previous.problem.encoding.mapping.clone(),
+            labels: indices
+                .iter()
+                .map(|&i| previous.problem.pool[i].label.clone())
+                .collect(),
+            parameters: parameters.to_vec(),
+            _memory: memory,
+        })
+    })
 }
 pub struct Seed {
     pub indices: Vec<usize>,
@@ -28,23 +100,23 @@ fn refused(reason: impl Into<String>, confidence: f64) -> Seed {
         reason: reason.into(),
     }
 }
-fn normalized_overlap(previous: &Frame<'_>, current: &Frame<'_>) -> Result<DMatrix<C64>> {
+fn normalized_overlap(previous: &Handover, current: &Frame<'_>) -> Result<DMatrix<C64>> {
     let ctx = &current.integrals.context;
     let grid = &current.integrals.grid;
     let points = grid.index.points();
-    let a = previous.integrals.m();
+    let a = previous.basis.orbitals.len();
     let b = current.integrals.m();
     let _memory = ctx.reserve(product(&[a.max(b), a.max(b), 16, 12])?)?;
-    let old_samples = previous.integrals.basis.sample(ctx, grid)?;
+    let old_samples = previous.basis.sample(ctx, grid)?;
     let old = nalgebra::DMatrixView::from_slice(old_samples.as_slice(), points, a);
-    let new = nalgebra::DMatrixView::from_slice(current.integrals.samples.as_slice(), points, b);
+    let samples = current.integrals.samples.read(ctx)?;
+    let new = nalgebra::DMatrixView::from_slice(&samples, points, b);
     // Raw samples are real. All large grid contractions remain real, while
     // the small orbital transforms retain complex phases without clipping.
     let cross = old.transpose() * new * grid.index.dv();
     let old_metric = old.transpose() * old * grid.index.dv();
     let new_metric = new.transpose() * new * grid.index.dv();
-    let old_coeff = previous.integrals.lowdin.map(|v| C64::new(v, 0.))
-        * response::orbitals(previous.reference, previous.model)?;
+    let old_coeff = &previous.coefficients;
     let new_coeff = current.integrals.lowdin.map(|v| C64::new(v, 0.))
         * response::orbitals(current.reference, current.model)?;
     let mut overlap = old_coeff.adjoint() * cross.map(|v| C64::new(v, 0.)) * &new_coeff;
@@ -110,38 +182,27 @@ fn rename(label: &str, permutation: &[usize], signs: &[f64]) -> Option<(String, 
         sign,
     ))
 }
-pub fn carry(
-    previous: Frame<'_>,
-    current: Frame<'_>,
-    indices: &[usize],
-    parameters: &[f64],
-    threshold: f64,
-) -> Result<Seed> {
-    if !threshold.is_finite()
-        || !(0. ..=1.).contains(&threshold)
-        || indices.len() != parameters.len()
-        || indices.iter().any(|i| *i >= previous.problem.pool.len())
-        || parameters.iter().any(|p| !p.is_finite())
-    {
+pub fn carry(previous: &Handover, current: Frame<'_>, threshold: f64) -> Result<Seed> {
+    if !threshold.is_finite() || !(0. ..=1.).contains(&threshold) {
         return Err(Error::Invalid(
             "ansatz handover needs a valid previous sequence and an overlap threshold in [0,1]"
                 .into(),
         ));
     }
-    if previous.integrals.geometry.numbers() != current.integrals.geometry.numbers()
-        || previous.model.m != current.model.m
-        || previous.model.particles != current.model.particles
-        || previous.problem.encoding.mapping != current.problem.encoding.mapping
+    if previous.numbers != current.integrals.geometry.numbers()
+        || previous.coefficients.ncols() != current.model.m
+        || previous.particles != current.model.particles
+        || previous.mapping != current.problem.encoding.mapping
     {
         return Ok(refused(
             "geometry changes the atomic composition, active register, occupations or mapping",
             0.,
         ));
     }
-    if indices.is_empty() {
+    if previous.labels.is_empty() {
         return Ok(refused("the previous ansatz is empty", 1.));
     }
-    let overlap = normalized_overlap(&previous, &current)?;
+    let overlap = normalized_overlap(previous, &current)?;
     let identity = DMatrix::identity(overlap.nrows(), overlap.ncols());
     let (permutation, phases) = response::match_orbitals(
         &current.integrals.context,
@@ -180,10 +241,9 @@ pub fn carry(
         .enumerate()
         .map(|(i, g)| (g.label.as_str(), i))
         .collect();
-    let mut moved = Vec::with_capacity(indices.len());
-    let mut angles = Vec::with_capacity(indices.len());
-    for (&i, &angle) in indices.iter().zip(parameters) {
-        let label = &previous.problem.pool[i].label;
+    let mut moved = Vec::with_capacity(previous.labels.len());
+    let mut angles = Vec::with_capacity(previous.labels.len());
+    for (label, &angle) in previous.labels.iter().zip(&previous.parameters) {
         let renamed = if unchanged {
             Some((label.clone(), 1.))
         } else {

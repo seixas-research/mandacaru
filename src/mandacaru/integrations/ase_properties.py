@@ -5,6 +5,21 @@ from ..units import HARTREE_TO_EV
 
 
 class ASEProperties:
+    def wannier(self, n_functions=None, *, guess="bonds", windows=None,
+                bands=None, kpts=None, max_iterations=2000, tolerance=1e-10,
+                step=0.5):
+        """Localize periodic Bloch states with the native PAW Wannier solver.
+
+        Energy windows use eV on the ASE eigenvalue scale. Centers and
+        spreads are returned in Angstrom and Angstrom squared.
+        """
+        from .wannier import calculate
+
+        return calculate(self._calculation_owner(), n_functions, guess=guess,
+                         windows=windows, bands=bands, kpts=kpts,
+                         max_iterations=max_iterations, tolerance=tolerance,
+                         step=step)
+
     def _calculation_owner(self):
         return self
 
@@ -150,6 +165,8 @@ class ASEProperties:
             else np.asarray(energies, dtype=float)
         )
         degeneracy = 2.0 if levels.shape[0] == 1 else 1.0
+        if calculation.result.periodic is not None and self._periodic_snapshot()["spinor"]:
+            degeneracy = 1.0
         if calculation.native_reference is not None and calculation.method == "ghf":
             degeneracy = 1.0
         values = calculation.context.density_of_states(

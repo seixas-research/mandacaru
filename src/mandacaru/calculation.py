@@ -56,6 +56,7 @@ class Mandacaru(ASEProperties, Calculator):
         hamiltonian_format=None,
         basis="HAO",
         grid_spacing=0.2,
+        precision="double",
         grid=None,
         resources=None,
         xc=None,
@@ -125,6 +126,9 @@ class Mandacaru(ASEProperties, Calculator):
     ):
         super().__init__()
         self._method, self._capabilities = resolve_method(method)
+        if precision not in ("double", "single"):
+            raise ValueError("precision must be 'double' or 'single'")
+        self._precision = precision
         if gradient != "analytic":
             raise ValueError("the native state-vector solver uses analytic gradients")
         if profile is not None and type(profile) is not bool:
@@ -301,7 +305,9 @@ class Mandacaru(ASEProperties, Calculator):
             raise ValueError(
                 "weights must contain one positive finite value per requested state"
             )
-        self._convergence = dict(convergence or {})
+        self._convergence = dict(
+            {"gradient": 1e-3, "energy": 1e-3} if convergence is None else convergence
+        )
         self._atomic_units = atomic_units
         self._search = None
         self._search_geometry = None
@@ -320,7 +326,9 @@ class Mandacaru(ASEProperties, Calculator):
         self.trace = trace
         self.txt = txt
         self._optimizer = {
-            "method": "BFGS",
+            "method": "SLSQP",
+            "maxiter": 2000,
+            "tol": 1e-12,
             **(
                 dict(method=optimizer)
                 if isinstance(optimizer, str)
@@ -421,6 +429,8 @@ class Mandacaru(ASEProperties, Calculator):
     @property
     def implemented_properties(self):
         values = ["energy", "free_energy"]
+        if self.method == "dft":
+            values.append("magmom")
         if (
             self.capabilities.forces
             and (self._basis_spec is not None or self.capabilities.quantum)
@@ -531,6 +541,7 @@ class Mandacaru(ASEProperties, Calculator):
                 grid=self._grid(geometry),
                 kinetic=self._kinetic,
                 cholesky_tolerance=self._cholesky_tolerance,
+                precision=self._precision,
             )
         particles = self.integrals.particles(
             charge=self._charge,
@@ -667,8 +678,9 @@ class Mandacaru(ASEProperties, Calculator):
             max_evaluations=self._optimizer.get("maxfev", 5000),
             tolerance=self._optimizer.get("tol", 1e-9),
             max_growth=self._max_growth,
-            gradient_tolerance=self._convergence.get("gradient", 1e-7),
-            energy_tolerance=self._convergence.get("energy"),
+            gradient_tolerance=self._convergence.get("gradient"),
+            energy_tolerance=(None if self._convergence.get("energy") is None else
+                              self._convergence["energy"] / _native.HARTREE_TO_EV),
             initial_parameters=initial_parameters,
         )
         from .integrations.transfer import prepare as prepare_transfer
@@ -767,7 +779,7 @@ class Mandacaru(ASEProperties, Calculator):
         if result.optimizer_failures:
             warnings.warn(
                 f"the inner optimizer did not converge in "
-                f"{len(result.optimizer_failures)} growth steps; last message: "
+                f"{len(result.optimizer_failures)} inner minimizations; last message: "
                 f"{result.optimizer_failures[-1][1]!r}; "
                 f"outer convergence: {result.success} ({raw['message']})",
                 RuntimeWarning,
@@ -780,8 +792,8 @@ class Mandacaru(ASEProperties, Calculator):
             raise NotImplementedError(
                 "periodic geometry calculations currently provide native DFT"
             )
-        if self.xc not in ("lda", "pbe"):
-            raise NotImplementedError("periodic SCF currently provides lda and pbe")
+        if self.xc not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"):
+            raise NotImplementedError("periodic screened exact exchange requires its reciprocal exchange operator")
         if self._load_crystal is not None:
             self.periodic_problem = self.context.load_crystal(str(self._load_crystal))
         else:
@@ -801,7 +813,7 @@ class Mandacaru(ASEProperties, Calculator):
         return CalculationResult(
             method="dft",
             context=self.context,
-            raw=periodic.snapshot(),
+            raw=periodic.snapshot(include_matrices=False),
             periodic=periodic,
             crystal=self.periodic_problem,
             atomic_units=self._atomic_units,
@@ -814,8 +826,13 @@ class Mandacaru(ASEProperties, Calculator):
             source = geometry if geometry is not None else self._attached_atoms
             value = geometry_value(source) if source is not None else self._geometry
             self._search_geometry = value
-            self._previous_result = self.result if self._transfer else None
+            from .integrations.transfer import capture as capture_transfer
+
+            capture_transfer(self)
             self.result = None
+            self.solver = None
+            self.checkpoint = None
+            self.native_reference = None
             self.results = {}
             self.problem = None
             if (value is not None and any(value.pbc)) or self._load_crystal is not None:
@@ -851,6 +868,12 @@ class Mandacaru(ASEProperties, Calculator):
                 "energy": result.in_units("eV"),
                 "free_energy": result.free_energy_ev,
             }
+            if self.method == "dft":
+                if result.periodic is not None:
+                    self.results["magmom"] = result._raw["magnetic_moment"]
+                else:
+                    alpha, beta = self.native_reference.num_particles
+                    self.results["magmom"] = float(alpha - beta)
             if self.trace or self.txt is not None:
                 from .integrations.reporting import write_calculation
 
@@ -924,10 +947,21 @@ class Mandacaru(ASEProperties, Calculator):
             result = self.result if reusable else self.run(geometry)
             if "forces" in properties:
                 project = self._project_translation is not False and len(geometry.numbers) > 1
+                internal = project and self.capabilities.quantum and self._basis_spec is None
                 self.results["forces"] = result.forces(
-                    internal=project and self.capabilities.quantum and self._basis_spec is None,
+                    internal=internal,
                     project_translation=project)
+                from .integrations.reporting import write_forces
+
+                write_forces(self, result, geometry, internal=internal, translated=project)
             return result
+
+    def write_optimization_summary(self, atoms=None, fmax=None, optimizer=None, force=False, status=None):
+        """Record the geometry history and ASE optimizer's completion verdict."""
+        from .integrations.reporting import write_optimization_summary
+
+        with self.resources.lock:
+            return write_optimization_summary(self, atoms, fmax, optimizer, force, status)
 
     def set_atoms(self, atoms):
         self._attached_atoms = atoms

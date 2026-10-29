@@ -1,8 +1,9 @@
 """Langevin dynamics of LiH with VALQA, carrying the ansatz from step to step."""
 import os
 from ase import Atoms, units
+from ase.constraints import FixCom
 from ase.md.langevin import Langevin
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.md.velocitydistribution import thermalize_momenta
 from mandacaru import Mandacaru
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -22,9 +23,10 @@ atoms.calc = Mandacaru(method="valqa",
                        record=os.path.join(DATA, "langevin_edits"),
                        seed=7)
 
-MaxwellBoltzmannDistribution(atoms, temperature_K=300.0)
+atoms.set_constraint(FixCom())
+thermalize_momenta(atoms, temperature_K=300.0)
 dynamics = Langevin(atoms, timestep=0.5 * units.fs, temperature_K=300.0,
-                    friction=0.01 / units.fs)
+                    friction=0.01 / units.fs, fixcm=False)
 for step in range(20):
     dynamics.run(1)
     print(f"t = {0.5 * (step + 1):4.1f} fs  d = {atoms.get_distance(0, 1):.4f} A  "

@@ -171,6 +171,27 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
         let penalized = problem.search(&options, &[], &[]).unwrap();
         assert!(penalized.solution.indices.is_empty());
         assert!((penalized.optimal_cost - penalized.solution.energy).abs() < 1e-12);
+        options.transfer_steps = Some(3);
+        options.length_penalty = 0.;
+        let carried = problem
+            .search(
+                &options,
+                &first.solution.indices,
+                &first.solution.parameters,
+            )
+            .unwrap();
+        assert!(carried.solution.seed.as_ref().unwrap().kept);
+        assert_eq!(carried.steps.len(), 3);
+        options.length_penalty = 1.;
+        let refused = problem
+            .search(
+                &options,
+                &first.solution.indices,
+                &first.solution.parameters,
+            )
+            .unwrap();
+        assert!(!refused.solution.seed.as_ref().unwrap().kept);
+        assert_eq!(refused.steps.len(), 40);
     }
     assert_eq!(context.memory_used(), 0);
 }

@@ -12,6 +12,7 @@ mod paw;
 mod periodic;
 mod persistence;
 mod quantum;
+mod wannier;
 use arrays::{array, complex, complex_array, copy, error, layout, Array};
 use context::PyContext;
 use geometry::{PyGeometry, PyGrid, PySpatialGrid, Workspace};
@@ -47,8 +48,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySpatialGrid>()?;
     m.add_class::<molecular::PyIntegrals>()?;
     m.add_class::<molecular::PyMeanField>()?;
+    m.add_class::<molecular::PyHandover>()?;
     m.add_class::<molecular::PyModel>()?;
     m.add_class::<periodic::PyCrystal>()?;
     m.add_class::<periodic::PyPeriodicResult>()?;
+    m.add_class::<wannier::PyWannierSetup>()?;
+    m.add_class::<wannier::PyWannierResult>()?;
     Ok(())
 }

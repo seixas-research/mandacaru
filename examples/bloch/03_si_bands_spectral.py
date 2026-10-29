@@ -100,8 +100,8 @@ ax_dos.legend(loc="upper right")
 
 plt.tight_layout()
 png_name = "si_bloch_adapt_vqe_bands.png"
-artifact_dir = os.environ.get("MANDACARU_ARTIFACT_DIR", "/Users/leseixas/.gemini/antigravity-cli/brain/51e637a2-f0e3-4d9f-8c02-2601ea8eae40")
-for target_dir in [DATA, artifact_dir, "/tmp"]:
+artifact_dir = os.environ.get("MANDACARU_ARTIFACT_DIR", DATA)
+for target_dir in dict.fromkeys((DATA, artifact_dir, "/tmp")):
     try:
         os.makedirs(target_dir, exist_ok=True)
         dest = os.path.join(target_dir, png_name)

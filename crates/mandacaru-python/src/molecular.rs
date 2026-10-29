@@ -25,6 +25,29 @@ pub struct PyIntegrals {
 }
 #[pymethods]
 impl PyIntegrals {
+    #[pyo3(signature=(previous,*,max_iterations=300,tolerance=1e-9,diis=true))]
+    fn continue_mean_field(
+        &self,
+        py: Python<'_>,
+        previous: &PyMeanField,
+        max_iterations: usize,
+        tolerance: f64,
+        diis: bool,
+    ) -> PyResult<PyMeanField> {
+        let options = ScfOptions {
+            max_iterations,
+            tolerance,
+            diis,
+            guesses: 1,
+        };
+        let inner = py
+            .detach(|| self.inner.continue_mean_field(&previous.inner, &options))
+            .map_err(error)?;
+        Ok(PyMeanField {
+            inner: Arc::new(inner),
+            integrals: self.inner.clone(),
+        })
+    }
     fn at_geometry(&self, py: Python<'_>, geometry: &super::PyGeometry) -> PyResult<Self> {
         py.detach(|| self.inner.at_geometry(geometry.inner.clone()))
             .map(|inner| Self {
@@ -71,6 +94,7 @@ impl PyIntegrals {
     ) -> PyResult<Bound<'py, PyDict>> {
         let m = self.inner.m();
         let out = PyDict::new(py);
+        out.set_item("precision", self.inner.samples.precision().name())?;
         for (name, buffer) in [
             ("overlap", &self.inner.overlap),
             ("kinetic", &self.inner.kinetic),
@@ -104,22 +128,30 @@ impl PyIntegrals {
                 .collect::<Vec<_>>(),
         )?;
         if include_samples {
-            out.set_item(
-                "samples",
-                array(
-                    py,
-                    &[m, self.inner.grid.index.points()],
-                    self.inner.samples.as_slice().to_vec(),
-                )?,
-            )?;
-            out.set_item(
-                "orthonormal_samples",
-                array(
-                    py,
-                    &[m, self.inner.grid.index.points()],
-                    self.inner.orthonormal_samples.as_slice().to_vec(),
-                )?,
-            )?;
+            use mandacaru_core::math::storage::RealSamples;
+            for (name, samples) in [
+                ("samples", &self.inner.samples),
+                ("orthonormal_samples", &self.inner.orthonormal_samples),
+            ] {
+                match samples {
+                    RealSamples::Double(values) => out.set_item(
+                        name,
+                        array(
+                            py,
+                            &[m, self.inner.grid.index.points()],
+                            values.as_slice().to_vec(),
+                        )?,
+                    )?,
+                    RealSamples::Single(values) => out.set_item(
+                        name,
+                        array(
+                            py,
+                            &[m, self.inner.grid.index.points()],
+                            values.as_slice().to_vec(),
+                        )?,
+                    )?,
+                }
+            }
         }
         out.set_item("has_eri", self.inner.has_eri())?;
         if self.inner.has_eri() {
@@ -207,6 +239,11 @@ impl PyIntegrals {
         })
     }
 }
+#[pyclass(name = "MolecularHandover", module = "mandacaru._native", frozen)]
+pub struct PyHandover {
+    inner: mandacaru_core::quantum::transfer::Handover,
+}
+
 #[pyclass(name = "MeanField", module = "mandacaru._native", frozen)]
 pub struct PyMeanField {
     inner: Arc<MeanField>,
@@ -214,29 +251,18 @@ pub struct PyMeanField {
 }
 #[pymethods]
 impl PyMeanField {
-    #[pyo3(signature=(previous,previous_model,model,previous_problem,problem,indices,parameters,*,threshold=0.9))]
-    fn transfer_from<'py>(
+    fn capture_transfer(
         &self,
-        py: Python<'py>,
-        previous: &PyMeanField,
-        previous_model: &PyModel,
+        py: Python<'_>,
         model: &PyModel,
-        previous_problem: &PyProblem,
         problem: &PyProblem,
         indices: Vec<usize>,
         parameters: Vec<f64>,
-        threshold: f64,
-    ) -> PyResult<Bound<'py, PyDict>> {
+    ) -> PyResult<PyHandover> {
         use mandacaru_core::quantum::transfer::{self, Frame};
-        let seed = py
+        let inner = py
             .detach(|| {
-                transfer::carry(
-                    Frame {
-                        integrals: &previous.integrals,
-                        reference: &previous.inner,
-                        model: previous_model.inner(),
-                        problem: &previous_problem.inner,
-                    },
+                transfer::capture(
                     Frame {
                         integrals: &self.integrals,
                         reference: &self.inner,
@@ -245,6 +271,31 @@ impl PyMeanField {
                     },
                     &indices,
                     &parameters,
+                )
+            })
+            .map_err(error)?;
+        Ok(PyHandover { inner })
+    }
+    #[pyo3(signature=(previous,model,problem,*,threshold=0.9))]
+    fn transfer_from<'py>(
+        &self,
+        py: Python<'py>,
+        previous: &PyHandover,
+        model: &PyModel,
+        problem: &PyProblem,
+        threshold: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        use mandacaru_core::quantum::transfer::{self, Frame};
+        let seed = py
+            .detach(|| {
+                transfer::carry(
+                    &previous.inner,
+                    Frame {
+                        integrals: &self.integrals,
+                        reference: &self.inner,
+                        model: model.inner(),
+                        problem: &problem.inner,
+                    },
                     threshold,
                 )
             })
@@ -257,7 +308,8 @@ impl PyMeanField {
         out.set_item("reason", seed.reason)?;
         Ok(out)
     }
-    #[pyo3(signature=(problem,model,state,*,active_spec=None,step=1e-3,internal=false))]
+    #[pyo3(signature=(problem,model,state,*,active_spec=None,step=1e-3,internal=false,extrapolate=true))]
+    #[allow(clippy::too_many_arguments)]
     fn quantum_gradient<'py>(
         &self,
         py: Python<'py>,
@@ -267,6 +319,7 @@ impl PyMeanField {
         active_spec: Option<&str>,
         step: f64,
         internal: bool,
+        extrapolate: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let (values, _memory) = copy(&self.integrals.context, &state)?;
         let response = py
@@ -281,6 +334,7 @@ impl PyMeanField {
                         active_spec,
                         step,
                         internal,
+                        extrapolate,
                     },
                 )
             })
@@ -297,7 +351,7 @@ impl PyMeanField {
         out.set_item("energy_ha", response.energy)?;
         out.set_item("directions", response.directions)?;
         out.set_item("step_bohr", response.step)?;
-        out.set_item("scheme", "Richardson-reduced-Hamiltonian")?;
+        out.set_item("scheme", response.scheme)?;
         out.set_item("step_error_estimate", response.estimate)?;
         out.set_item("orbital_response", "displaced-SCF-and-selector")?;
         Ok(out)

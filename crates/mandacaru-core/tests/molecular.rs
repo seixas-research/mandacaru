@@ -21,6 +21,82 @@ fn integrals(ctx: &Context) -> MolecularIntegrals {
     MolecularIntegrals::new(ctx, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None).unwrap()
 }
 #[test]
+fn displaced_coulomb_factors_follow_reference_pivots_and_match_independent_columns() {
+    use mandacaru_core::molecular::integrals::pair_integrals;
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    {
+        let geometry = geometry();
+        let grid = SpatialGrid::from_geometry(&geometry, [0.9; 3], false, false).unwrap();
+        let reference = MolecularIntegrals::new(
+            &ctx,
+            geometry,
+            grid,
+            r#"{"name":"HAO","virtual_orbitals":1}"#,
+            "spectral",
+            Some(1e-2),
+        )
+        .unwrap();
+        let original = reference.eri().unwrap();
+        let pivots = original.pivots().unwrap();
+        let m = reference.m();
+        let pairs: Vec<_> = (0..m).flat_map(|a| (0..=a).map(move |b| (a, b))).collect();
+        assert!(!pivots.is_empty());
+        assert!(
+            pivots.len() < pairs.len(),
+            "exercise an incomplete factorization"
+        );
+        for shift in [0., 2e-3, -2e-3] {
+            let g = &reference.geometry;
+            let mut positions = g.positions().to_vec();
+            positions[1][2] += shift;
+            let displaced = Geometry::new(
+                g.numbers().to_vec(),
+                positions,
+                *g.cell(),
+                g.pbc(),
+                LengthUnit::Bohr,
+            )
+            .unwrap();
+            let rebuilt = reference.at_geometry_with_fixed_pivots(displaced).unwrap();
+            let eri = rebuilt.eri().unwrap();
+            assert_eq!(eri.pivots().unwrap(), pivots);
+            let exact = pair_integrals(
+                &ctx,
+                &rebuilt.grid,
+                &rebuilt.orthonormal_samples.read(&ctx).unwrap(),
+                m,
+            )
+            .unwrap();
+            let mut columns: Vec<Vec<f64>> = Vec::new();
+            for &pivot in pivots {
+                let (a, b) = pairs[pivot];
+                let diagonal =
+                    exact.value(a, a, b, b) - columns.iter().map(|v| v[pivot].powi(2)).sum::<f64>();
+                let column = pairs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(p, q))| {
+                        (exact.value(p, a, q, b)
+                            - columns.iter().map(|v| v[i] * v[pivot]).sum::<f64>())
+                            / diagonal.sqrt()
+                    })
+                    .collect();
+                columns.push(column);
+            }
+            for (i, &(a, b)) in pairs.iter().enumerate() {
+                for (j, &(p, q)) in pairs.iter().enumerate() {
+                    let expected = columns.iter().map(|v| v[i] * v[j]).sum::<f64>();
+                    assert!((eri.value(a, p, b, q) - expected).abs() < 1e-11);
+                    if shift == 0. {
+                        assert!((eri.value(a, p, b, q) - original.value(a, p, b, q)).abs() < 1e-11);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+#[test]
 fn geometry_to_rhf_and_quantum_h2_matches_the_portable_reference() {
     let ctx = Context::new(Some(1), 64 * 1024 * 1024).unwrap();
     let integrals = integrals(&ctx);
@@ -52,20 +128,46 @@ fn geometry_to_rhf_and_quantum_h2_matches_the_portable_reference() {
         }
     }
 }
+
+#[test]
+fn lazy_hf_factorization_and_scf_fit_the_same_budget_as_explicit_sequential_operations() {
+    let measure = Context::new(Some(1), 64 << 20).unwrap();
+    let explicit = integrals(&measure);
+    explicit.eri().unwrap();
+    let reference = explicit
+        .mean_field("rhf", [1, 1], &Default::default())
+        .unwrap();
+    let expected = reference.electronic_energy;
+    let limit = measure.memory_peak();
+    drop(reference);
+    drop(explicit);
+    assert_eq!(measure.memory_used(), 0);
+    let context = Context::new(Some(1), limit).unwrap();
+    {
+        let lazy = integrals(&context);
+        assert!(!lazy.has_eri());
+        let actual = lazy.mean_field("rhf", [1, 1], &Default::default()).unwrap();
+        assert!(actual.converged);
+        assert!((actual.electronic_energy - expected).abs() < 1e-12);
+        let continued = lazy
+            .continue_mean_field(&actual, &Default::default())
+            .unwrap();
+        assert!(continued.converged);
+        assert!((continued.electronic_energy - expected).abs() < 1e-11);
+    }
+    assert_eq!(context.memory_used(), 0);
+    assert!(context.memory_peak() <= limit);
+}
 #[test]
 fn lowdin_orbitals_and_eri_obey_independent_symmetries() {
     let ctx = Context::new(Some(1), 64 * 1024 * 1024).unwrap();
     let integrals = integrals(&ctx);
     let m = integrals.m();
     let g = integrals.grid.index.points();
+    let phi = integrals.orthonormal_samples.read(&ctx).unwrap();
     for p in 0..m {
         for q in 0..m {
-            let overlap: f64 = (0..g)
-                .map(|k| {
-                    integrals.orthonormal_samples.as_slice()[p * g + k]
-                        * integrals.orthonormal_samples.as_slice()[q * g + k]
-                })
-                .sum::<f64>()
+            let overlap: f64 = (0..g).map(|k| phi[p * g + k] * phi[q * g + k]).sum::<f64>()
                 * integrals.grid.index.dv();
             assert!((overlap - f64::from(p == q)).abs() < 1e-12);
             for r in 0..m {
@@ -325,7 +427,7 @@ fn column_cholesky_matches_independently_built_coulomb_pairs() {
     let exact = mandacaru_core::molecular::integrals::pair_integrals(
         &ctx,
         &integrals.grid,
-        integrals.orthonormal_samples.as_slice(),
+        &integrals.orthonormal_samples.read(&ctx).unwrap(),
         integrals.m(),
     )
     .unwrap();

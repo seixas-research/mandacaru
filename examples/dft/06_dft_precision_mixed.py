@@ -1,8 +1,8 @@
 """Mixed precision (single vs double) in Kohn-Sham DFT.
 
-Using precision="single" stores the real-space grid arrays in float32 / complex64,
-cutting grid RAM by ~50% and accelerating FFTs and grid operations, while accumulating
-Hamiltonian matrices in double precision so total energies match to within micro-eVs.
+Using precision="single" stores sampled molecular orbitals in float32, halving
+their retained storage. Integral accumulation, Hamiltonian matrices and FFT
+workspaces use double precision. This compares the resulting SCF energies.
 """
 import time
 from ase.build import molecule

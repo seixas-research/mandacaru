@@ -721,7 +721,7 @@ impl Orbital {
                 norm * (-rho / 2.).exp() * rho.powi(self.l as i32) * value
             }
         };
-        radial * real_harmonic(self.l, self.m, (z / r).clamp(-1., 1.).acos(), y.atan2(x))
+        radial * crate::math::angular::normalized(self.l, self.m, [x / r, y / r, z / r])
     }
 }
 fn tabulated(table: &crate::math::spline::Cubic, l: usize, r: f64) -> (f64, f64) {
@@ -741,37 +741,4 @@ fn tabulated(table: &crate::math::spline::Cubic, l: usize, r: f64) -> (f64, f64)
         );
     }
     table.value_slope(r)
-}
-pub fn real_harmonic(l: usize, m: i32, theta: f64, phi: f64) -> f64 {
-    let order = m.unsigned_abs() as usize;
-    let cos_t = theta.cos();
-    let mut legendre = 1. / (4. * PI).sqrt();
-    for k in 1..=order {
-        legendre *= -((2 * k + 1) as f64 / (2 * k) as f64).sqrt() * theta.sin();
-    }
-    if l > order {
-        let mut previous = legendre;
-        legendre *= ((2 * order + 3) as f64).sqrt() * cos_t;
-        for degree in order + 2..=l {
-            let d = degree as f64;
-            let o = order as f64;
-            let a = ((4. * d * d - 1.) / (d * d - o * o)).sqrt();
-            let b = (((d - 1.).powi(2) - o * o) / (4. * (d - 1.).powi(2) - 1.)).sqrt();
-            let next = a * (cos_t * legendre - b * previous);
-            previous = legendre;
-            legendre = next;
-        }
-    }
-    if m == 0 {
-        legendre
-    } else {
-        2f64.sqrt()
-            * if order % 2 == 0 { 1. } else { -1. }
-            * legendre
-            * if m > 0 {
-                (order as f64 * phi).cos()
-            } else {
-                (order as f64 * phi).sin()
-            }
-    }
 }

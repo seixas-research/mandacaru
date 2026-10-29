@@ -31,6 +31,15 @@ impl Smearing {
             Self::MethfesselPaxton => 0.5 * libm::erfc(x) - x * (-x * x).exp() / (2. * PI.sqrt()),
         }
     }
+    /// Derivative with respect to the dimensionless energy argument.
+    pub fn slope(self, x: f64) -> f64 {
+        match self {
+            Self::FermiDirac => 0.25 * ((0.5 * x).tanh().powi(2) - 1.),
+            Self::Gaussian if x.abs() <= 40. => -(-x * x).exp() / PI.sqrt(),
+            Self::MethfesselPaxton if x.abs() <= 40. => (x * x - 1.5) * (-x * x).exp() / PI.sqrt(),
+            _ => 0.,
+        }
+    }
     pub fn entropy(self, x: f64) -> f64 {
         match self {
             Self::FermiDirac => {

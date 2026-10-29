@@ -22,23 +22,32 @@ def configure(driver, *, transfer, transfer_threshold, transfer_steps,
     driver._transfer_threshold = transfer_threshold
     driver._transfer_steps = transfer_steps
     driver._update_between_geometries = update_between_geometries
-    driver._previous_result = None
+    driver._transfer_seed = None
     driver._transfer_info = None
+
+
+def capture(driver):
+    driver._transfer_seed = None
+    previous = driver.result
+    if (driver._transfer and previous is not None and previous.scf is not None
+            and previous._model is not None and previous._problem is not None):
+        driver._transfer_seed = previous.scf.capture_transfer(
+            previous._model, previous._problem, previous._raw["indices"],
+            previous.optimal_parameters.tolist())
 
 
 def prepare(driver, reference):
-    previous = driver._previous_result
+    previous = driver._transfer_seed
+    driver._transfer_seed = None
     driver._transfer_info = None
     if not driver._transfer:
         return None
-    if previous is None or reference is None or previous.scf is None or previous._model is None:
+    if previous is None or reference is None:
         driver._transfer_info = dict(accepted=False, confidence=0.,
                                      reason="no previous molecular ansatz")
         return None
     seed = driver.native_reference.transfer_from(
-        previous.scf, previous._model, reference.hamiltonian,
-        previous._problem, driver.problem,
-        previous._raw["indices"], previous.parameters.tolist(),
+        previous, reference.hamiltonian, driver.problem,
         threshold=driver._transfer_threshold)
     driver._transfer_info = seed
     return seed if seed["accepted"] else None

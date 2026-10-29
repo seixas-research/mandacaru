@@ -5,7 +5,10 @@ mod onecenter;
 use super::invalid;
 use crate::{
     basis::{Basis, Orbital, Radial},
-    math::{linalg::real_eigen, radial::gauss_legendre, spline::Cubic, SpatialGrid},
+    math::{
+        linalg::real_eigen, projection::PointAccumulator, radial::gauss_legendre, spline::Cubic,
+        SpatialGrid,
+    },
     molecular::{
         integrals::{MolecularCorrections, PairCorrection, PawKohnSham},
         MolecularIntegrals,
@@ -52,12 +55,12 @@ fn sphere(
     radial: usize,
     polar: usize,
     azimuthal: usize,
-    mut visit: impl FnMut([f64; 3], f64, f64),
+    mut visit: impl FnMut([f64; 3], f64, f64) -> Result<()>,
 ) -> Result<()> {
     let angular = angular_rule(polar, azimuthal)?;
     for (r, w) in radial_rule(radius, panel, radial)? {
         for (u, v) in &angular {
-            visit(u.map(|x| x * r), r, w * v);
+            visit(u.map(|x| x * r), r, w * v)?;
         }
     }
     Ok(())
@@ -76,8 +79,9 @@ fn projection(
             .checked_add(product(&[m, 8, 2])?)
             .ok_or(crate::Error::Overflow)?,
     )?;
-    let mut c = DMatrix::zeros(m, p);
+    let mut accumulator = PointAccumulator::new(ctx, m, p)?;
     let mut phi = vec![0.; m];
+    let mut target = vec![0.; p];
     for (index, ch) in species.channels.iter().enumerate() {
         sphere(
             ch.radius.max(species.local_radius),
@@ -90,6 +94,7 @@ fn projection(
                 for (value, orbital) in phi.iter_mut().zip(&basis.orbitals) {
                     *value = orbital.evaluate(point);
                 }
+                target.fill(0.);
                 for (b, p) in terms
                     .projectors
                     .iter()
@@ -99,14 +104,14 @@ fn projection(
                     let value = ch.projectors[p.radial].value_slope(r).0
                         * harmonic(p.l, p.m, offset)
                         * weight;
-                    for a in 0..m {
-                        c[(a, b)] += phi[a] * value;
-                    }
+                    target[b] = value;
                 }
+                accumulator.push(&phi, &target)
             },
         )?;
     }
-    Ok(c)
+    let values = accumulator.finish()?;
+    Ok(DMatrix::from_column_slice(m, p, values.as_slice()))
 }
 struct GlobalMultipole {
     atom: usize,
@@ -330,6 +335,8 @@ impl Setup {
                 .sum();
         }
         let mut phi = vec![0.; m];
+        let mut weighted = vec![0.; m];
+        let mut local = PointAccumulator::new(ctx, m, m)?;
         for (a, &s) in atoms.iter().enumerate() {
             let sp = &species[s];
             let tail = (0..7701)
@@ -343,16 +350,15 @@ impl Setup {
                 for (value, orbital) in phi.iter_mut().zip(&basis.orbitals) {
                     *value = orbital.evaluate(point);
                 }
-                for i in 0..m {
-                    if phi[i] == 0. {
-                        continue;
-                    }
-                    for j in 0..m {
-                        v[(i, j)] += weight * phi[i] * phi[j];
-                    }
+                for (to, from) in weighted.iter_mut().zip(&phi) {
+                    *to = weight * from;
                 }
+                local.push(&phi, &weighted)
             })?;
         }
+        let values = local.finish()?;
+        v += DMatrix::from_column_slice(m, m, values.as_slice());
+        drop(values);
         let samples = basis.sample(ctx, &grid)?;
         let mut ws = vec![DMatrix::zeros(m, m); nch];
         let mut projector = if m >= 16 {
@@ -392,7 +398,9 @@ impl Setup {
                     .copy_from_slice(projector.project(field.as_slice())?);
             }
         }
-        let mut u = DMatrix::<f64>::zeros(nch, nch);
+        let mut electrostatic = PointAccumulator::new(ctx, nch, nch)?;
+        let mut potentials = vec![0.; nch];
+        let mut densities = vec![0.; nch];
         for (b, &s) in atoms.iter().enumerate() {
             let sp = &species[s];
             sphere(
@@ -404,23 +412,22 @@ impl Setup {
                 |offset, r, weight| {
                     let point: [f64; 3] =
                         std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
+                    for (i, ci) in multipoles.iter().enumerate() {
+                        let delta =
+                            std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
+                        potentials[i] = potential(
+                            distance(delta, [0.; 3]),
+                            species[atoms[ci.atom]].compensation_radius,
+                            ci.l,
+                        ) * harmonic(ci.l, ci.m, delta);
+                    }
+                    densities.fill(0.);
                     for (j, cj) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                        let density = shape(r, sp.compensation_radius, cj.l)
+                        densities[j] = shape(r, sp.compensation_radius, cj.l)
                             * harmonic(cj.l, cj.m, offset)
                             * weight;
-                        for (i, ci) in multipoles.iter().enumerate() {
-                            let delta = std::array::from_fn(|k| {
-                                point[k] - geometry.positions()[ci.atom][k]
-                            });
-                            u[(i, j)] += density
-                                * potential(
-                                    distance(delta, [0.; 3]),
-                                    species[atoms[ci.atom]].compensation_radius,
-                                    ci.l,
-                                )
-                                * harmonic(ci.l, ci.m, delta);
-                        }
                     }
+                    electrostatic.push(&potentials, &densities)
                 },
             )?;
             let mut ionic = vec![0.; nch];
@@ -444,12 +451,16 @@ impl Setup {
                             * shape(r, sp.compensation_radius, ch.l)
                             * harmonic(ch.l, ch.m, offset);
                     }
+                    Ok(())
                 },
             )?;
             for (ch, value) in multipoles.iter().zip(ionic) {
                 v += &ch.q * value;
             }
         }
+        let values = electrostatic.finish()?;
+        let u = DMatrix::from_column_slice(nch, nch, values.as_slice());
+        drop(values);
         let smooth_start = factors.len();
         if nch > 0 {
             let coupled = DMatrix::from_fn(2 * nch, 2 * nch, |a, b| {

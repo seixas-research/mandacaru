@@ -5,6 +5,7 @@ pub mod elements;
 pub mod nonlocal;
 pub mod spectrum;
 pub mod spherical;
+pub mod spin_orbit;
 pub mod xc;
 fn invalid(message: impl Into<String>) -> crate::Error {
     crate::Error::Invalid(message.into())

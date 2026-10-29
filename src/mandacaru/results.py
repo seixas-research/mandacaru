@@ -99,7 +99,7 @@ class CalculationResult:
 
     @property
     def scf(self):
-        return self._reference
+        return self._reference if self._reference is not None else self.periodic
 
     @property
     def optimal_parameters(self):
@@ -211,14 +211,18 @@ class CalculationResult:
 
     @property
     def optimizer_failures(self):
-        """Growth steps whose inner minimizer did not certify convergence."""
+        """Inner minimizations that did not certify convergence."""
         if "optimizer_failures" in self._raw:
             return list(self._raw["optimizer_failures"])
-        return [
+        failures = [
             (step, row[6])
             for step, row in enumerate(self._raw.get("iterations", ()), 1)
             if not row[5]
         ]
+        seed = self._raw.get("seed_relaxation")
+        if seed is not None and not seed["success"]:
+            failures.insert(0, ("transferred sequence", seed["message"]))
+        return failures
 
     @cached_property
     def iterations(self):
@@ -450,7 +454,13 @@ class CalculationResult:
     def reference_state(self, mapping=None):
         return self.scf_state(mapping)
 
-    def forces(self, *, internal=False, project_translation=False):
+    def forces(self, *, internal=False, project_translation=False, step=1e-4, extrapolate=False):
+        """Forces in eV/Angstrom; variational steps are specified in Bohr.
+
+        Richardson extrapolation is available for force convergence checks.
+        """
+        if type(extrapolate) is not bool:
+            raise TypeError("extrapolate must be a boolean")
         if self._problem is not None:
             if self._reference is None or self._model is None or "state" not in self._raw:
                 raise ValueError("variational forces need a single molecular state and its retained reference")
@@ -460,14 +470,18 @@ class CalculationResult:
 
             if not hasattr(self, "_gradient_cache"):
                 self._gradient_cache = {}
-            if internal not in self._gradient_cache:
-                self._gradient_cache[internal] = self._reference.quantum_gradient(
+            cache_key = (internal, float(step), bool(extrapolate))
+            if cache_key not in self._gradient_cache:
+                self._gradient_cache[cache_key] = self._reference.quantum_gradient(
                     self._problem, self._model,
                     np.ascontiguousarray(self._raw["state"]),
                     active_spec=None if self._active_space is None else json.dumps(self._active_space),
-                    internal=internal)
-            gradient = self._gradient_cache[internal]["gradient"]
-            self.force_details = dict(self._gradient_cache[internal])
+                    internal=internal, step=step, extrapolate=extrapolate)
+            gradient = self._gradient_cache[cache_key]["gradient"]
+            self.force_details = {
+                key: value.copy() if isinstance(value, np.ndarray) else value
+                for key, value in self._gradient_cache[cache_key].items()
+            }
         elif self._reference is None:
             raise ValueError("stationary forces require a native mean-field state")
         else:

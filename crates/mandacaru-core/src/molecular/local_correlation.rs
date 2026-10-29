@@ -113,7 +113,7 @@ pub fn calculate(
     for start in (0..g).step_by(4096) {
         let size = (g - start).min(4096);
         let samples = DMatrix::from_fn(size, m, |i, j| {
-            integrals.orthonormal_samples.as_slice()[j * g + start + i]
+            integrals.orthonormal_samples.value(j * g + start + i)
         });
         for (axis, r) in position.iter_mut().enumerate() {
             let weighted = DMatrix::from_fn(size, m, |i, j| {
@@ -201,7 +201,7 @@ pub fn calculate(
     for start in (0..g).step_by(4096) {
         let size = (g - start).min(4096);
         let samples = DMatrix::from_fn(size, m, |i, j| {
-            integrals.orthonormal_samples.as_slice()[j * g + start + i]
+            integrals.orthonormal_samples.value(j * g + start + i)
         });
         let local = (&samples * &lmo_ao).map(|x| x * x);
         doi += local.transpose() * samples.map(|x| x * x) * dv;

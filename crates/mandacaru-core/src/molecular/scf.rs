@@ -384,6 +384,64 @@ fn collinear(ca: &Matrix, cb: &Matrix, particles: [usize; 2]) -> Matrix {
     out
 }
 impl MolecularIntegrals {
+    /// Follow the same collinear stationary state under a small geometry
+    /// displacement. The old orthonormal orbitals are a starting guess;
+    /// Fock matrices and convergence tests use the new integrals throughout.
+    pub fn continue_mean_field(
+        &self,
+        previous: &MeanField,
+        options: &ScfOptions,
+    ) -> Result<MeanField> {
+        let m = self.m();
+        let method = previous.method.as_str();
+        let channels = if method == "rhf" { 1 } else { 2 };
+        if !["rhf", "uhf"].contains(&method)
+            || previous.functional.is_some()
+            || !previous.converged
+            || previous.coefficients.len() != channels
+            || previous.particles.iter().any(|p| *p > m)
+            || options.max_iterations == 0
+            || !options.tolerance.is_finite()
+            || options.tolerance <= 0.
+            || previous.coefficients.iter().any(|c| {
+                c.shape() != (m, m)
+                    || c.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
+                    || (c.adjoint() * c - Matrix::identity(m, m))
+                        .iter()
+                        .any(|v| v.norm() > 1e-8)
+            })
+        {
+            return Err(invalid("SCF continuation needs a converged collinear HF frame with matching orthonormal orbitals and valid controls"));
+        }
+        self.context.run(|| {
+            // Factorization and SCF mixing do not run simultaneously. Release
+            // the factorization's FFT/column scratch before reserving DIIS
+            // workspace, rather than charging both peaks at the same time.
+            self.eri()?;
+            let workspace = self.context.reserve(
+                product(&[2 * m, 2 * m, 16, 160])?
+                    .checked_add(product(&[options.max_iterations, 128, 4])?)
+                    .ok_or(crate::Error::Overflow)?,
+            )?;
+            let h = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
+            let candidate = iterate(
+                self,
+                method,
+                &h,
+                previous.particles,
+                previous.coefficients.clone(),
+                options,
+            )?;
+            self.finish(
+                method,
+                previous.particles,
+                options,
+                candidate,
+                workspace,
+                None,
+            )
+        })
+    }
     pub fn mean_field(
         &self,
         method: &str,
@@ -412,6 +470,7 @@ impl MolecularIntegrals {
                 "invalid SCF method, occupation, iteration budget or tolerance",
             ));
         }
+        self.eri()?;
         let workspace = ctx.reserve(
             product(&[2 * m, 2 * m, 16, 160])?
                 .checked_add(product(&[options.max_iterations, 128, 4])?)

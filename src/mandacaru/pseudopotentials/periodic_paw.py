@@ -785,11 +785,16 @@ class PeriodicPAW:
     def __init__(self, basis, atom_of_orbital, projectors, datasets, centers,
                  grid, kpoints, weights, coupling, overlap_blocks,
                  multipole_blocks, filter_wavevector=None, symmetry=None,
-                 spin_orbit_projectors=None, spin_orbit_blocks=None):
+                 spin_orbit_projectors=None, spin_orbit_blocks=None,
+                 native_context=None, precision="double"):
         from ..models.paw_channels import assemble_block_matrix
         from .local_split import split_width
 
         self.basis = list(basis)
+        self._native_context = native_context
+        if precision not in ("double", "single"):
+            raise ValueError("precision must be double or single")
+        self.precision = precision
         self.atom_of_orbital = list(atom_of_orbital)
         self.projectors = list(projectors)
         self.datasets = list(datasets)
@@ -907,7 +912,8 @@ class PeriodicPAW:
                              + C @ self.D_ion @ C.conj().T)
                     out.append(KPointMatrices(
                         k=np.asarray(k, float), weight=float(weight),
-                        psi=psi, overlap=0.5 * (S + S.conj().T),
+                        psi=psi.astype(np.complex64) if self.precision == "single" else psi,
+                        overlap=0.5 * (S + S.conj().T),
                         fixed=0.5 * (fixed + fixed.conj().T), projections=C,
                         spin_orbit=SO_wide[shift + i]))
         return out
@@ -943,8 +949,13 @@ class PeriodicPAW:
             return np.zeros((len(kpoints), 2 * self.M, 2 * self.M),
                             dtype=complex)
         C = self._projections(kpoints, projectors=self.spin_orbit_projectors)
+        context = self._native_context
+        if context is None:
+            from .. import _native
+            context = _native.Context(threads=1)
         return np.stack([spin_orbit_one_body(C[i], self.spin_orbit_projectors,
-                                             self.spin_orbit_blocks)
+                                             self.spin_orbit_blocks,
+                                             context=context)
                          for i in range(len(kpoints))])
 
     def kpoint_block(self) -> int:
@@ -1770,77 +1781,63 @@ class PeriodicPAW:
         return self._place_cores(xc_core_density)
 
     def core_tau(self) -> np.ndarray | None:
-        r"""The cores' kinetic-energy densities on the grid, with images.
+        """Periodic smooth-core kinetic density evaluated and placed in Rust."""
+        from ..integrals.exchange_correlation import xc_core_density
 
-        Each atom's :math:`\tilde\rho_c'^2/8\tilde\rho_c` evaluated radially
-        (:func:`~mandacaru.integrals.exchange_correlation.core_tau_function`)
-        and placed like the core density.  The ratio taken on the grid would
-        divide by the core's vanishing tail.
-        """
-        from ..integrals.exchange_correlation import core_tau_function
+        return self._place_cores(xc_core_density, kinetic_density=True)
 
-        def table(dataset):
-            function = core_tau_function(dataset)
-            return (None if function is None
-                    else function(np.asarray(dataset.r, dtype=float)))
-        return self._place_cores(table)
+    def _native_radial_fields(self, tables, *, kinetic_density=False):
+        from .. import _native
 
-    def _place_cores(self, table) -> np.ndarray | None:
-        """Sum of ``table(dataset)`` (a radial array or ``None``) over atoms
-        and images."""
-        total = None
-        for atom in range(len(self.datasets)):
-            values = self.place_core(atom, table)
-            if values is not None:
-                total = values if total is None else total + values
-        return total
+        if not tables:
+            return None
+        context = getattr(self, "_native_context", None)
+        if context is None:
+            context = getattr(self, "_field_context", None)
+            if context is None:
+                context = _native.Context(threads=1)
+                self._field_context = context
+        grid = self.__dict__.get("_field_grid")
+        if grid is None:
+            grid = _native.SpatialGrid(
+                self.grid.shape, rc.grid_origin(self.grid),
+                np.ascontiguousarray(self.grid.step), periodic=True,
+            )
+            self._field_grid = grid
+        return context.radial_fields(grid, tables, kinetic_density=kinetic_density)
+
+    def _place_cores(self, table, *, kinetic_density=False) -> np.ndarray | None:
+        """Transfer radial species tables and atom centers for native placement."""
+        groups = {}
+        for atom, dataset in enumerate(self.datasets):
+            key = id(dataset)
+            if key not in groups:
+                values = table(dataset)
+                groups[key] = None if values is None else [
+                    np.ascontiguousarray(dataset.r, dtype=float),
+                    np.ascontiguousarray(values, dtype=float), [],
+                ]
+            if groups[key] is not None:
+                groups[key][2].append(self.centers[atom])
+        tables = []
+        for entry in groups.values():
+            if entry is not None:
+                r, values, centers = entry
+                tables.append((r, values, np.ascontiguousarray(centers, dtype=float)))
+        return self._native_radial_fields(tables, kinetic_density=kinetic_density)
 
     def place_core(self, atom, table, center=None) -> np.ndarray | None:
-        """Atom ``atom``'s share of :meth:`_place_cores`, centered at
-        ``center`` (default: the atom) -- what a force moves."""
-        from scipy.interpolate import CubicSpline
-
+        """One atom's radial field, placed with the native periodic kernel."""
         dataset = self.datasets[atom]
-        values_r = table(dataset)
-        if values_r is None:
+        values = table(dataset)
+        if values is None:
             return None
-        g = self.grid
-        gx, gy, gz = self._grid_points()
-        center = self.centers[atom] if center is None else np.asarray(center,
-                                                                      float)
-        r = np.asarray(dataset.r, dtype=float)
-        values_r = np.asarray(values_r, dtype=float)
-        peak = float(np.max(np.abs(values_r)))
-        significant = np.nonzero(np.abs(values_r) > 1e-14 * peak)[0]
-        support = float(r[significant[-1]]) if significant.size else 0.0
-        support2 = support * support
-        spline = CubicSpline(r, values_r)
-        values = np.zeros(g.size)
-        cell_center, cell_radius = self._cell_region()
-        reach = support + cell_radius
-        for R in rc.lattice_translations(
-                self.lattice, support + 2.0 * cell_radius):
-            pos = center + R
-            if np.linalg.norm(pos - cell_center) > reach:
-                continue
-            cand = np.flatnonzero(np.abs(gx - pos[0]) <= support)
-            if not cand.size:
-                continue
-            cand = cand[np.abs(gy[cand] - pos[1]) <= support]
-            if not cand.size:
-                continue
-            cand = cand[np.abs(gz[cand] - pos[2]) <= support]
-            if not cand.size:
-                continue
-            dx = gx[cand] - pos[0]
-            dy = gy[cand] - pos[1]
-            dz = gz[cand] - pos[2]
-            r2 = dx * dx + dy * dy + dz * dz
-            in_ball = r2 <= support2
-            if np.any(in_ball):
-                idx = cand[in_ball]
-                values[idx] += spline(np.sqrt(r2[in_ball]))
-        return values
+        center = self.centers[atom] if center is None else center
+        return self._native_radial_fields([(
+            np.ascontiguousarray(dataset.r, dtype=float),
+            np.ascontiguousarray(values, dtype=float),
+            np.ascontiguousarray([center], dtype=float),
+        )])
 
     def _superposed_valence(self, dataset, center) -> np.ndarray:
         """One atom's smooth valence density summed over its images on the
@@ -2026,7 +2023,8 @@ def spin_orbit_symbols(atoms, options: dict | None = None,
 def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=None,
                   family: str = "paw-lcao", grid=None, ghosts=(),
                   symmetry: bool = True, full_mesh: bool = False,
-                  spin_orbit: bool = False, filter_pin=None):
+                  spin_orbit: bool = False, filter_pin=None, native_context=None,
+                  precision="double"):
     r"""``(crystal, context)`` for a periodic ``atoms`` with a PAW-LCAO basis.
 
     The basis, projectors and dataset blocks are the molecular builder's
@@ -2170,7 +2168,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
         paw_overlap_blocks(projectors, real_symbols, potentials),
         paw_multipole_blocks(projectors, datasets), filter_wavevector=k_c,
         symmetry=operations, spin_orbit_projectors=so_projectors,
-        spin_orbit_blocks=so_blocks)
+        spin_orbit_blocks=so_blocks, native_context=native_context, precision=precision)
     context = {"crystal": crystal, "atom_of_orbital": atom_of_orbital,
                "n_electrons": float(valence_electrons(real_symbols,
                                                       potentials)),

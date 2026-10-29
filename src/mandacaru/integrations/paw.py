@@ -25,9 +25,13 @@ def band_input(crystal, fractional_kpoints):
         for field in ("psi", "overlap", "fixed", "projections"):
             key = f"k{index}.{field}"
             arrays[key] = np.ascontiguousarray(
-                getattr(point, field), dtype=complex
+                getattr(point, field), dtype=point.psi.dtype if field == "psi" else complex
             ).reshape(-1)
             row[field] = key
+        if point.spin_orbit is not None:
+            key = f"k{index}.spin_orbit"
+            arrays[key] = np.ascontiguousarray(point.spin_orbit, dtype=complex).reshape(-1)
+            row["spin_orbit"] = key
         metadata.append(row)
     return json.dumps(metadata, allow_nan=False), arrays
 
@@ -41,10 +45,12 @@ def crystal_input(
     relativistic=False,
     magnetic_moments=None,
     provenance=None,
+    precision="double",
+    time_reversal=False,
 ):
     """Snapshot the density-independent PAW setup; this performs no SCF steps."""
-    if functional not in ("lda", "pbe"):
-        raise NotImplementedError("native periodic SCF supports lda and pbe")
+    if functional not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"):
+        raise NotImplementedError("periodic screened exact exchange requires its reciprocal exchange operator")
     from ..integrals import reciprocal as rc, exchange_correlation as xc
 
     c = crystal
@@ -56,18 +62,18 @@ def crystal_input(
 
     def point_input(d, frac, index):
         prefix = f"k{index}."
-        return dict(
+        row = dict(
             k=np.asarray(d.k).tolist(),
             fractional=np.asarray(frac).tolist(),
             weight=float(d.weight),
-            psi=hold(prefix + "psi", d.psi, complex),
+            psi=hold(prefix + "psi", d.psi, d.psi.dtype),
             overlap=hold(prefix + "overlap", d.overlap, complex),
             fixed=hold(prefix + "fixed", d.fixed, complex),
             projections=hold(prefix + "projections", d.projections, complex),
         )
-
-    if c.has_spin_orbit:
-        raise NotImplementedError("native periodic spinor/SOC SCF is not implemented")
+        if d.spin_orbit is not None:
+            row["spin_orbit"] = hold(prefix + "spin_orbit", d.spin_orbit, complex)
+        return row
     n, p = c.grid.size, len(c.projectors)
     channels = c.channels
     blocks = np.zeros((len(channels), p, p), dtype=complex)
@@ -94,6 +100,9 @@ def crystal_input(
     hats = c.compensation_grid()
     short, onsite = c.short_range_ion_compensation(), c.onsite_ion_compensation()
     magnetization = c.initial_magnetization(magnetic_moments)
+    if c.has_spin_orbit:
+        # The public ASE scalar initial moments define the z direction.
+        magnetization = np.stack([np.zeros(n), np.zeros(n), magnetization])
     g2 = np.sum(c.G * c.G, axis=0)
     kerker = g2 / (g2 + 1.0)
     kerker.flat[0] = 1.0
@@ -138,9 +147,12 @@ def crystal_input(
         reference=float(2 * np.pi * c.sigma**2 * np.sum(c.charges) / c.volume),
         electrons=float(electrons),
         spins=2
-        if magnetic_moments is not None and np.any(np.asarray(magnetic_moments) != 0.0)
+        if not c.has_spin_orbit and magnetic_moments is not None and np.any(np.asarray(magnetic_moments) != 0.0)
         else 1,
+        spinor=c.has_spin_orbit,
+        time_reversal=bool(time_reversal),
         functional=functional,
+        precision=precision,
         relativistic=bool(relativistic),
         permutations=hold(
             "permutations", [] if sym is None else sym.permutations, np.uint64
@@ -150,12 +162,15 @@ def crystal_input(
         provenance=dict(provenance or {}, setup_engine="python-paw-adapter"),
     )
 
+    if functional.startswith("r2scan"):
+        core_tau = c.core_tau()
+        metadata["core_tau"] = hold("core_tau", np.zeros(n) if core_tau is None else core_tau)
     return json.dumps(metadata, allow_nan=False), arrays
 
 
 def configure(driver, atoms):
     from ..models.setup import resolve_basis, pseudopotential_family
-    from ..pseudopotentials.periodic_paw import build_crystal
+    from ..pseudopotentials.periodic_paw import build_crystal, spin_orbit_symbols
     from ..integrals.exchange_correlation import core_correction_offset
     from ..models.datasets import _datasets_relativistic, _warn_functional_mismatch
 
@@ -193,6 +208,8 @@ def configure(driver, atoms):
             "native periodic DFT currently uses the explicit PAW-LCAO/UPAW-LCAO setup adapter"
         )
     options = dict(options)
+    spinor = bool(spin_orbit_symbols(atoms, options, family.name))
+    time_reversal = spinor and not driver._unrestricted and not np.any(moments)
     for axis, periodic in enumerate(atoms.pbc):
         size = (
             driver._kpts_spec.get("size", (1, 1, 1))
@@ -209,10 +226,14 @@ def configure(driver, atoms):
         kpts=driver._kpts_spec,
         family=family.name,
         grid=driver._explicit_grid,
-        symmetry=driver._periodic_symmetry,
-        full_mesh=bool(np.any(moments)),
+        symmetry=driver._periodic_symmetry and not spinor,
+        full_mesh=bool(np.any(moments)) or (spinor and not time_reversal),
+        spin_orbit=spinor,
+        native_context=driver.context,
+        precision=driver._precision,
         filter_pin=getattr(driver, "filter_pin", None),
     )
+    crystal._native_context = driver.context
     _warn_functional_mismatch(crystal.datasets, driver.xc)
     metadata, arrays = crystal_input(
         crystal,
@@ -223,6 +244,8 @@ def configure(driver, atoms):
         ),
         relativistic=_datasets_relativistic(crystal.datasets),
         magnetic_moments=moments,
+        precision=driver._precision,
+        time_reversal=time_reversal,
         provenance=dict(
             mesh_size=list(context["kpts_size"]),
             mesh_gamma=context["kpts_gamma"],
@@ -245,16 +268,21 @@ def configure(driver, atoms):
     )
     # Explicitly retain the adapter for off-mesh PAW matrices only. The Rust
     # solver retains no callback or reference to this Python object.
-    if driver._unrestricted:
+    if driver._unrestricted and not spinor:
         options = json.loads(metadata)
         options["spins"] = 2
         metadata = json.dumps(options)
     driver._crystal_adapter, driver._crystal_metadata = crystal, context
     driver.periodic_problem = driver.context.periodic_problem(metadata, arrays)
-    driver._periodic, driver._geometry_seconds = True, perf_counter() - start
+    # This adapter owns recipes for new k-points. The SCF mesh and its samples
+    # have been transferred to the native owner and need no Python duplicate.
+    crystal.kpoint_data.clear()
+    driver._geometry_seconds = perf_counter() - start
     driver._periodic_atoms = atoms.copy()
     driver._orbital_groups = [
         (int(a), int(f.l)) for a, f in zip(crystal.atom_of_orbital, crystal.basis)
     ]
+    if spinor:
+        driver._orbital_groups *= 2
     if driver._save_crystal:
         driver.periodic_problem.save(str(driver._save_crystal))

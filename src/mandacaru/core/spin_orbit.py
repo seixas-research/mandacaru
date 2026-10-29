@@ -1,224 +1,64 @@
-# -*- coding: utf-8 -*-
-# file: core/spin_orbit.py
+"""Python projector labels and array views for Rust spin-orbit models.
 
-# This code is part of Mandacaru.
-# MIT License
-#
-# Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
-
-r"""Spin-orbit coupling as a one-body term of the many-body Hamiltonian.
-
-A PAW-LCAO dataset generated with ``relativity="dirac"`` carries a spin-orbit
-term alongside its ordinary channels:
-:func:`mandacaru.pseudopotentials.paw.generate_paw` constructs the two ``j``
-branches of each :math:`l` separately and stores their (2j+1) average and
-their difference on the union of the two branches' projectors
-(:func:`~mandacaru.pseudopotentials.paw.j_resolved_spin_orbit`).  The term
-acts through that projector set, the union of each channel's two branches
-(:func:`~mandacaru.pseudopotentials.paw.paw_spin_orbit_projectors`), added to
-the scalar Hamiltonian.  Each :math:`l` has a
-separable radial part and the angular operator
-:math:`\mathbf{L}\cdot\mathbf{S}`,
-
-.. math::
-
-    V_{SO} = \sum_{a}\sum_{l}\sum_{ij}\sum_{mm'}
-        |\chi^{a,l}_i Y_{lm}\rangle\, D^{SO,a,l}_{ij}\,
-        \langle lm\sigma|\mathbf{L}\cdot\mathbf{S}|lm'\sigma'\rangle\,
-        \langle \chi^{a,l}_j Y_{lm'}| .
-
-This module turns that into the one-body matrix
-:math:`h^{SO}_{P Q}` over spin-orbitals, which
-:meth:`~mandacaru.core.hamiltonian.MolecularIntegrals.molecular_hamiltonian`
-adds to :math:`h`.
-
-What spin-orbit coupling costs
-------------------------------
-
-Everything else in Mandacaru's one-body matrix is **block-diagonal in spin and
-diagonal in** :math:`m`: :meth:`~.hamiltonian.MolecularIntegrals.kb_nonlocal`
-returns an :math:`(M, M)` spatial matrix, and
-:func:`~.hamiltonian.spin_block_integrals` copies it into the
-:math:`\alpha\alpha` and :math:`\beta\beta` blocks.  :math:`\mathbf{L}\cdot
-\mathbf{S}` breaks both:
-
-- :math:`\tfrac12(L_+S_- + L_-S_+)` connects :math:`|m,\alpha\rangle` to
-  :math:`|m{+}1,\beta\rangle`, so :math:`h` acquires an
-  :math:`\alpha\beta` block and **is no longer block-diagonal in spin**;
-- that block makes :math:`S_z` no longer a good quantum number, only
-  :math:`J_z`.  The Hamiltonian still conserves particle number, so the
-  Jordan-Wigner register and the variational machinery still apply, but
-  anything that assumed a fixed :math:`(n_\alpha, n_\beta)` -- the
-  particle-number **sector** reduction, the parity mapping's two-qubit taper,
-  and the excitation pools -- has to be told not to;
-- the two spins of a spatial orbital are no longer partners, so the
-  molecular-orbital basis is the **GHF spinors** instead
-  (:meth:`~.hamiltonian.MolecularIntegrals.generalized_hartree_fock`), and a
-  frozen core or truncated virtual space removes Kramers **pairs** of them
-  (:func:`~.hamiltonian.freeze_spin_orbital_integrals`).
-
-:math:`h^{SO}` is complex and Hermitian.  That is not a problem in itself: the
-fermionic operator it builds is Hermitian, so its Pauli expansion has real
-coefficients -- it simply contains :math:`XY` and :math:`YX` strings that a
-real :math:`h` never produces.
+The angular L.S operator and all radial-projector contractions execute in the
+native scientific core. Spin-major ordering places alpha orbitals before beta.
 """
-
 from __future__ import annotations
-
 import numpy as np
+from .. import _native
 
-#: Spin index of the alpha (``S_z = +1/2``) and beta blocks, matching the
-#: spin-orbital ordering ``P = p + sigma * M`` used throughout.
 ALPHA, BETA = 0, 1
 
 
 def ls_matrix(l: int, *, real: bool) -> np.ndarray:
-    r""":math:`\mathbf{L}\cdot\mathbf{S}` in the :math:`|lm\sigma\rangle` basis
-    of the real (a molecule's) or complex (``real=False``) harmonics.
-
-    Ordered spin-major -- index ``sigma * (2l + 1) + (m + l)`` -- so the
-    :math:`\alpha\alpha`, :math:`\alpha\beta`, :math:`\beta\alpha` and
-    :math:`\beta\beta` blocks are the four quadrants.  With complex spherical
-    harmonics :math:`L_z` is diagonal and :math:`L_\pm` are the textbook
-    ladder operators:
-
-    .. math::
-
-        \mathbf{L}\cdot\mathbf{S} = L_zS_z
-            + \tfrac12\big(L_+S_- + L_-S_+\big),
-
-    giving :math:`\pm m/2` on the diagonal and
-    :math:`\tfrac12\sqrt{l(l+1)-m(m\pm1)}` off it.
-
-    The eigenvalues are :math:`l/2` with multiplicity :math:`2l+2` and
-    :math:`-(l+1)/2` with multiplicity :math:`2l` -- the two :math:`j` levels,
-    which is what ``test/core/test_spin_orbit.py`` checks.
-
-    In the real harmonics :math:`S_m = \sum_k U_{mk} Y_k`
-    (:func:`~mandacaru.basis._angular.real_harmonic_transform`) the elements
-    :math:`\langle S_m\sigma|\mathbf L\cdot\mathbf S|S_{m'}\sigma'\rangle`
-    are :math:`U^* (\mathbf L\cdot\mathbf S) U^T` in each spin block:
-    purely imaginary in :math:`L_z`, so the spin-orbit matrix of a molecule is
-    complex while every other matrix of it is real.
-    """
-    l = int(l)
-    size = 2 * l + 1
-    out = np.zeros((2 * size, 2 * size), dtype=complex)
-
-    def at(sigma, m):
-        return sigma * size + (m + l)
-
-    for m in range(-l, l + 1):
-        out[at(ALPHA, m), at(ALPHA, m)] = 0.5 * m
-        out[at(BETA, m), at(BETA, m)] = -0.5 * m
-        if m + 1 <= l:
-            # L_+ S_-: |m, alpha> -> |m+1, beta>
-            element = 0.5 * np.sqrt(l * (l + 1) - m * (m + 1))
-            out[at(BETA, m + 1), at(ALPHA, m)] = element
-            out[at(ALPHA, m), at(BETA, m + 1)] = element
-    if real:
-        from ..basis._angular import real_harmonic_transform
-
-        W = np.kron(np.eye(2), np.conj(real_harmonic_transform(l)))
-        out = W @ out @ W.conj().T
-    return out
+    """Native L.S in real or complex spherical harmonics, ordered by m+l."""
+    return _native.Context(threads=1).spin_orbit_angular(l, real=real)
 
 
-def _projector_index(projectors):
-    """``{(atom, l): {(m, i): position}}`` over the flat projector list."""
-    index: dict = {}
+def _channels(projectors, blocks):
+    labels = {}
     for position, projector in enumerate(projectors):
-        key = (projector.atom_index, projector.l)
-        index.setdefault(key, {})[(projector.m, projector.index)] = position
-    return index
+        key = (int(projector.atom_index), int(projector.l))
+        group = labels.setdefault(key, {})
+        label = (int(projector.m), int(projector.index))
+        if label in group:
+            raise ValueError("duplicate spin-orbit projector label")
+        group[label] = position
+    channels = []
+    for (atom, l), positions in labels.items():
+        if (atom, l) not in blocks or l == 0:
+            continue
+        radial = sorted({i for m, i in positions})
+        expected = [(m, i) for m in range(-l, l + 1) for i in radial]
+        if set(expected) != positions.keys():
+            raise ValueError("spin-orbit channel needs every angular and radial projector")
+        indices = [positions[label] for label in expected]
+        real = bool(projectors[indices[0]].real)
+        if any(bool(projectors[i].real) != real for i in indices):
+            raise ValueError("spin-orbit channel uses inconsistent harmonic conventions")
+        coupling = np.ascontiguousarray(blocks[atom, l], dtype=complex)
+        if coupling.shape != (len(radial), len(radial)):
+            raise ValueError("spin-orbit block dimensions must match its radial projectors")
+        channels.append((l, real, indices, coupling))
+    return channels
 
 
-def spin_orbit_one_body(projections, projectors, blocks) -> np.ndarray:
-    r"""The ``(2M, 2M)`` spin-orbital matrix of :math:`V_{SO}` (see
-    :func:`spin_orbit_pair`), made exactly Hermitian."""
-    out = spin_orbit_pair(projections, projections, projectors, blocks)
-    return 0.5 * (out + out.conj().T)
+def spin_orbit_pair(left, right, projectors, blocks, *, context=None) -> np.ndarray:
+    """Native left D_SO (L.S) right^dagger, including unequal bra/ket sets."""
+    context = _native.Context(threads=1) if context is None else context
+    return context.spin_orbit_pair(
+        np.ascontiguousarray(left, dtype=complex),
+        np.ascontiguousarray(right, dtype=complex), _channels(projectors, blocks),
+    )
 
 
-def spin_orbit_pair(left, right, projectors, blocks) -> np.ndarray:
-    r"""``sum left_al D_SO (L.S) right_al^dagger`` over every channel.
-
-    With ``left = right = C`` this is the ``(2M, 2M)`` spin-orbital matrix of
-    :math:`V_{SO}`; with one side a derivative of the projections it is half
-    of that matrix's derivative (the nuclear gradient needs
-    ``pair(dC, C) + pair(C, dC)``).
-
-    Parameters
-    ----------
-    left, right : ndarray
-        ``C[mu, p] = <phi_mu|chi_p>`` on the spin-orbit projectors, the
-        ``(M, P)`` array
-        :meth:`~.hamiltonian.MolecularIntegrals.spin_orbit_projections`
-        returns: the union set of
-        :func:`~mandacaru.pseudopotentials.paw.paw_spin_orbit_projectors`.
-    projectors : list
-        The :class:`~mandacaru.pseudopotentials.orbitals.KBProjector` list, for
-        the ``(atom, l, m, index)`` labels.
-    blocks : dict
-        ``{(atom, l): D_SO}`` -- the spin-orbit coupling of that channel,
-        ``(n, n)`` for its ``n`` radial projectors.  A channel absent from
-        ``blocks`` contributes nothing, which is how ``l = 0`` (no spin-orbit
-        term at all) and a scalar-relativistic atom in the same molecule are
-        handled.
-
-    Returns
-    -------
-    ndarray
-        Complex ``(2M, 2M)``, in the spin-blocked ordering
-        ``P = p + sigma * M``; Hermitian when ``left is right``.
-    """
-    C = np.asarray(left)
-    R = np.asarray(right)
-    M = C.shape[0]
-    out = np.zeros((2 * M, 2 * M), dtype=complex)
-    if not blocks:
-        return out
-
-    index = _projector_index(projectors)
-    for (atom, l), positions in index.items():
-        D = blocks.get((atom, l))
-        if D is None or int(l) == 0:
-            continue                      # no spin-orbit term for an s channel
-        D = np.asarray(D, dtype=complex)
-        ms = sorted({m for m, _i in positions})
-        radial = sorted({i for _m, i in positions})
-        if D.shape != (len(radial), len(radial)):
-            raise ValueError(
-                f"spin-orbit block for (atom {atom}, l={l}) must be "
-                f"({len(radial)}, {len(radial)}) for its {len(radial)} radial "
-                f"projectors, got {D.shape}")
-
-        # C_al[mu, m, i], and the same for the right side.
-        C_al = np.zeros((M, len(ms), len(radial)), dtype=complex)
-        R_al = np.zeros_like(C_al)
-        for a, m in enumerate(ms):
-            for b, i in enumerate(radial):
-                C_al[:, a, b] = C[:, positions[(m, i)]]
-                R_al[:, a, b] = R[:, positions[(m, i)]]
-
-        LS = ls_matrix(l, real=bool(projectors[positions[(ms[0], radial[0])]]
-                                    .real))
-        size = 2 * l + 1
-        if len(ms) != size:
-            raise ValueError(
-                f"channel (atom {atom}, l={l}) has {len(ms)} m values, "
-                f"expected {size}")
-        # T[mu, m, j] = sum_i C_al[mu, m, i] D_ij
-        T = np.einsum("umi,ij->umj", C_al, D)
-        for sigma in (ALPHA, BETA):
-            for tau in (ALPHA, BETA):
-                quadrant = LS[sigma * size:(sigma + 1) * size,
-                              tau * size:(tau + 1) * size]
-                block = np.einsum("umj,mn,vnj->uv", T, quadrant,
-                                  R_al.conj())
-                out[sigma * M:(sigma + 1) * M,
-                    tau * M:(tau + 1) * M] += block
-    return out
+def spin_orbit_one_body(projections, projectors, blocks, *, context=None) -> np.ndarray:
+    """Native Hermitian SOC matrix in the spin-major Bloch or molecular basis."""
+    context = _native.Context(threads=1) if context is None else context
+    values = np.ascontiguousarray(projections, dtype=complex)
+    return context.spin_orbit_pair(
+        values, values, _channels(projectors, blocks), hermitian=True,
+    )
 
 
 def conserves_spin_projection(fermion, tolerance: float = 1e-12) -> bool:

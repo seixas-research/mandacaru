@@ -23,6 +23,77 @@ pub(crate) struct PyContext {
 }
 #[pymethods]
 impl PyContext {
+    #[pyo3(signature=(l,*,real=false))]
+    fn spin_orbit_angular<'py>(
+        &self,
+        py: Python<'py>,
+        l: usize,
+        real: bool,
+    ) -> PyResult<Array<'py, Complex64>> {
+        let out = py
+            .detach(|| mandacaru_core::models::spin_orbit::angular(&self.inner, l, real))
+            .map_err(error)?;
+        let size = 2 * (2 * l + 1);
+        array(py, &[size, size], out.as_slice().to_vec())
+    }
+    #[pyo3(signature=(left,right,channels,*,hermitian=false))]
+    fn spin_orbit_pair<'py>(
+        &self,
+        py: Python<'py>,
+        left: PyReadonlyArray2<'py, Complex64>,
+        right: PyReadonlyArray2<'py, Complex64>,
+        channels: Vec<(usize, bool, Vec<usize>, PyReadonlyArray2<'py, Complex64>)>,
+        hermitian: bool,
+    ) -> PyResult<Array<'py, Complex64>> {
+        use mandacaru_core::models::spin_orbit::{self, Channel, Projectors};
+        let rows = left.shape()[0];
+        let columns = right.shape()[0];
+        let count = left.shape()[1];
+        if right.shape()[1] != count {
+            return Err(PyValueError::new_err(
+                "left and right spin-orbit projections need matching projector counts",
+            ));
+        }
+        let (left, _left) = copy(&self.inner, &left)?;
+        let (right, _right) = copy(&self.inner, &right)?;
+        let mut owned = Vec::with_capacity(channels.len());
+        let _channels = self
+            .inner
+            .reserve(product(&[channels.len(), 128]).map_err(error)?)
+            .map_err(error)?;
+        for (l, real, indices, coupling) in channels {
+            super::layout(&coupling)?;
+            if coupling.shape()[0] != coupling.shape()[1] {
+                return Err(PyValueError::new_err(
+                    "spin-orbit radial coupling must be square",
+                ));
+            }
+            owned.push(Channel {
+                l,
+                real,
+                indices: self.inner.copy_slice(&indices).map_err(error)?,
+                radial: coupling.shape()[0],
+                coupling: self.inner.copy_slice(coupling.as_slice()?).map_err(error)?,
+            });
+        }
+        let out = py
+            .detach(|| {
+                spin_orbit::pair(
+                    &self.inner,
+                    Projectors {
+                        left: &left,
+                        right: &right,
+                        rows,
+                        columns,
+                        count,
+                    },
+                    &owned,
+                    hermitian,
+                )
+            })
+            .map_err(error)?;
+        array(py, &[2 * rows, 2 * columns], out.as_slice().to_vec())
+    }
     fn remove_force_translation<'py>(
         &self,
         py: Python<'py>,
@@ -487,7 +558,7 @@ impl PyContext {
         arrays: &Bound<'_, PyDict>,
     ) -> PyResult<PyCrystal> {
         let snapshot_json = metadata_json;
-        let arrays = periodic::input_arrays(&self.inner, arrays)?;
+        let arrays = periodic::input_arrays(&self.inner, arrays, metadata_json, None)?;
         let _input = self.inner.reserve(snapshot_json.len()).map_err(error)?;
         let owned = snapshot_json.to_owned();
         let inner = py
@@ -867,7 +938,7 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[m, points.len() / 3], out.as_slice().to_vec())
     }
-    #[pyo3(signature=(geometry,*,basis_spec="{\"name\":\"HAO\"}",spacing_bohr=0.37794522492515404,grid=None,kinetic="spectral",cholesky_tolerance=None))]
+    #[pyo3(signature=(geometry,*,basis_spec="{\"name\":\"HAO\"}",spacing_bohr=0.37794522492515404,grid=None,kinetic="spectral",cholesky_tolerance=None,precision="double"))]
     #[allow(clippy::too_many_arguments)]
     fn molecular_integrals(
         &self,
@@ -878,7 +949,10 @@ impl PyContext {
         grid: Option<&PySpatialGrid>,
         kinetic: &str,
         cholesky_tolerance: Option<f64>,
+        precision: &str,
     ) -> PyResult<molecular::PyIntegrals> {
+        let precision =
+            mandacaru_core::math::storage::Precision::parse(precision).map_err(error)?;
         let geometry = geometry.inner.clone();
         let grid = match grid {
             Some(grid) => grid.inner.clone(),
@@ -899,14 +973,16 @@ impl PyContext {
                     basis_spec,
                     kinetic,
                     cholesky_tolerance,
-                )
+                )?
+                .with_precision(precision)
             })
             .map_err(error)?;
         Ok(molecular::PyIntegrals {
             inner: std::sync::Arc::new(inner),
         })
     }
-    #[pyo3(signature=(geometry,grid,metadata,arrays,*,kinetic="spectral",cholesky_tolerance=1e-10))]
+    #[pyo3(signature=(geometry,grid,metadata,arrays,*,kinetic="spectral",cholesky_tolerance=1e-10,precision="double"))]
+    #[allow(clippy::too_many_arguments)]
     fn paw_molecular_integrals(
         &self,
         py: Python<'_>,
@@ -916,7 +992,10 @@ impl PyContext {
         arrays: &Bound<'_, PyDict>,
         kinetic: &str,
         cholesky_tolerance: f64,
+        precision: &str,
     ) -> PyResult<molecular::PyIntegrals> {
+        let precision =
+            mandacaru_core::math::storage::Precision::parse(precision).map_err(error)?;
         let mut tables = mandacaru_core::paw::molecular::Arrays::new();
         for (key, value) in arrays.iter() {
             let values: PyReadonlyArrayDyn<'_, f64> = value.extract()?;
@@ -937,7 +1016,8 @@ impl PyContext {
                     tables,
                     kinetic,
                     cholesky_tolerance,
-                )
+                )?
+                .with_precision(precision)
             })
             .map_err(error)?;
         Ok(molecular::PyIntegrals {
@@ -1225,6 +1305,56 @@ impl PyContext {
         density: PyReadonlyArray1<'py, f64>,
     ) -> PyResult<Array<'py, f64>> {
         models::radial_hartree(self, py, r, density)
+    }
+    #[pyo3(signature=(grid,tables,*,kinetic_density=false))]
+    #[allow(clippy::type_complexity)]
+    fn radial_fields<'py>(
+        &self,
+        py: Python<'py>,
+        grid: &PySpatialGrid,
+        tables: Vec<(
+            PyReadonlyArray1<'py, f64>,
+            PyReadonlyArray1<'py, f64>,
+            PyReadonlyArray2<'py, f64>,
+        )>,
+        kinetic_density: bool,
+    ) -> PyResult<Array<'py, f64>> {
+        use mandacaru_core::paw::fields::{self, RadialSource};
+        let _metadata = self
+            .inner
+            .reserve(mandacaru_core::product(&[tables.len(), 128]).map_err(error)?)
+            .map_err(error)?;
+        let mut sources = Vec::with_capacity(tables.len());
+        for (r, values, centers) in tables {
+            super::layout(&r)?;
+            super::layout(&values)?;
+            super::layout(&centers)?;
+            if centers.shape()[1] != 3 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "radial field centers need shape (n,3)",
+                ));
+            }
+            let mut positions = self
+                .inner
+                .allocate::<[f64; 3]>(centers.shape()[0])
+                .map_err(error)?;
+            for (to, from) in positions
+                .as_mut_slice()
+                .iter_mut()
+                .zip(centers.as_slice()?.chunks_exact(3))
+            {
+                to.copy_from_slice(from);
+            }
+            sources.push(RadialSource {
+                knots: self.inner.copy_slice(r.as_slice()?).map_err(error)?,
+                values: self.inner.copy_slice(values.as_slice()?).map_err(error)?,
+                centers: positions,
+            });
+        }
+        let out = py
+            .detach(|| fields::sample_many(&self.inner, &grid.inner, &sources, kinetic_density))
+            .map_err(error)?;
+        array(py, &[grid.inner.index.points()], out.as_slice().to_vec())
     }
     #[pyo3(signature=(r, density, *, functional="lda", relativistic=false))]
     fn radial_xc<'py>(

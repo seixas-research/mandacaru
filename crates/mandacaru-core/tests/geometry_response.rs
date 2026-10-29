@@ -115,6 +115,28 @@ fn native_geometry_response_matches_independently_reoptimized_total_energies() {
         )
         .unwrap();
         assert!((gradient.energy - solved.energy).abs() < 1e-12);
+        let central = response::gradient(
+            &integrals,
+            &reference,
+            &model,
+            &problem,
+            solved.state.as_slice(),
+            &response::Options {
+                step: 1e-4,
+                extrapolate: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (a, b) in central
+            .gradient
+            .as_slice()
+            .iter()
+            .zip(gradient.gradient.as_slice())
+        {
+            assert!((a - b).abs() < 1e-7, "central {a} vs Richardson {b}");
+        }
+        assert!(central.estimate.is_none());
         let rdm = properties::spatial_rdms(
             &context,
             &problem.encoding,

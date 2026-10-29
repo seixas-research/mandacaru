@@ -9,6 +9,89 @@ use mandacaru_core::{
     Context,
 };
 use std::f64::consts::PI;
+
+#[test]
+fn archived_periodic_state_preserves_energy_and_projected_dos_weight() {
+    use mandacaru_core::math::storage::{ComplexSamples, MatrixSource, Precision, StoredMatrix};
+    let ctx = Context::new(Some(1), 128 << 20).unwrap();
+    {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test/migration/phase5/si_crystal.json");
+        let mut crystal = Crystal::load(&ctx, path.to_str().unwrap()).unwrap();
+        let reference = crystal.solve(&Options::default()).unwrap();
+        for point in &mut crystal.points {
+            let archived = ComplexSamples::archived_copy(
+                &ctx,
+                &point.psi.read(&ctx).unwrap(),
+                Precision::Double,
+            )
+            .unwrap();
+            point.psi = archived;
+        }
+        crystal.hats = ComplexSamples::archived_copy(
+            &ctx,
+            &crystal.hats.read(&ctx).unwrap(),
+            Precision::Double,
+        )
+        .unwrap();
+        let mut state = crystal.solve(&Options::default()).unwrap();
+        assert!(state.converged);
+        assert!((state.free_energy - reference.free_energy).abs() < 1e-12);
+        let axis: Vec<_> = (0..1601).map(|i| -1. + i as f64 / 400.).collect();
+        let original = analysis::projected_dos(&crystal, &state, &axis, 0.04).unwrap();
+        for matrix in state.coefficients.iter_mut().chain(&mut state.matrices) {
+            let archived =
+                StoredMatrix::new(&ctx, matrix.matrix(&ctx).unwrap().clone(), true).unwrap();
+            *matrix = archived;
+        }
+        let archived = analysis::projected_dos(&crystal, &state, &axis, 0.04).unwrap();
+        assert_eq!(original.as_slice(), archived.as_slice());
+        let weights: Vec<_> = crystal.points.iter().map(|p| p.weight).collect();
+        let total = spectrum::broaden(
+            &ctx,
+            &axis,
+            &state.eigenvalues,
+            &weights,
+            0.04,
+            crystal.degeneracy(),
+            None,
+        )
+        .unwrap();
+        for (partial, total) in archived
+            .as_slice()
+            .chunks(crystal.bands())
+            .zip(total.as_slice())
+        {
+            assert!((partial.iter().sum::<f64>() - total).abs() < 2e-11);
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn periodic_single_sample_storage_preserves_double_precision_band_matrices() {
+    use mandacaru_core::math::storage::Precision;
+    let ctx = Context::new(Some(1), 128 << 20).unwrap();
+    {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test/migration/phase5/si_crystal.json");
+        let source = std::fs::read_to_string(path).unwrap();
+        let double = Crystal::from_json(&ctx, &source).unwrap();
+        let compact = source.replacen('{', "{\"precision\":\"single\",", 1);
+        let single = Crystal::from_json(&ctx, &compact).unwrap();
+        assert_eq!(single.precision, Precision::Single);
+        for (a, b) in double.points.iter().zip(&single.points) {
+            assert_eq!(b.psi.precision(), Precision::Single);
+            assert_eq!(a.fixed, b.fixed);
+            assert_eq!(a.overlap, b.overlap);
+        }
+        let a = double.solve(&Options::default()).unwrap();
+        let b = single.solve(&Options::default()).unwrap();
+        assert!(a.converged && b.converged);
+        assert!((a.extrapolated_energy - b.extrapolated_energy).abs() * 27.211386245988 < 1e-4);
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
 #[test]
 fn silicon_crystal_solves_without_python_and_releases_owned_storage() {
     let ctx = Context::new(Some(1), 128 * 1024 * 1024).unwrap();

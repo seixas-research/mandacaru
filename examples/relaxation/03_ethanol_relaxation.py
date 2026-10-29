@@ -46,7 +46,9 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        txt=os.path.join(DATA, "ethanol_relaxation.txt"))
 
 trajectory = os.path.join(DATA, "ethanol_relaxation.traj")
-BFGS(atoms, trajectory=trajectory).run(fmax=0.05)
+optimizer = BFGS(atoms, trajectory=trajectory)
+optimizer.run(fmax=0.05)
+atoms.calc.write_optimization_summary(optimizer=optimizer)
 print(f"C-C: {atoms.get_distance(0, 1):.4f}  C-O: {atoms.get_distance(1, 2):.4f}  "
       f"O-H: {atoms.get_distance(2, 3):.4f} Angstrom, "
       f"C-O-H: {atoms.get_angle(1, 2, 3):.2f} degrees")

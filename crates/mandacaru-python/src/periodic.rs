@@ -1,6 +1,7 @@
 //! Owned periodic inputs and results. Numerical loops run detached in Rust.
 use super::{array, copy, error, Array, PyContext};
 use mandacaru_core::{
+    math::storage::MatrixSource,
     periodic::{
         spectrum::{self, Smearing},
         Crystal, KPoint, Options, PeriodicResult,
@@ -14,9 +15,56 @@ use std::sync::Arc;
 pub(super) fn input_arrays(
     ctx: &mandacaru_core::Context,
     values: &Bound<'_, PyDict>,
+    metadata: &str,
+    precision: Option<mandacaru_core::math::storage::Precision>,
 ) -> PyResult<mandacaru_core::periodic::input::InputArrays> {
+    use mandacaru_core::math::storage::{ComplexSamples, Precision};
     use mandacaru_core::periodic::input::{InputArray, InputArrays};
+    let _metadata = ctx
+        .reserve(product(&[metadata.len(), 32]).map_err(error)?)
+        .map_err(error)?;
+    let metadata: serde_json::Value = serde_json::from_str(metadata)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let precision = match precision {
+        Some(p) => p,
+        None => {
+            Precision::parse(metadata["precision"].as_str().unwrap_or("double")).map_err(error)?
+        }
+    };
+    let raw = metadata
+        .as_array()
+        .or_else(|| metadata["kpoints"].as_array());
+    let sample_keys: std::collections::BTreeSet<_> = raw
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row["psi"].as_str())
+        .collect();
     let mut out = InputArrays::default();
+    let mut sample_bytes = 0usize;
+    for key in &sample_keys {
+        if let Some(value) = values.get_item(*key)? {
+            let length = if let Ok(data) = value.extract::<PyReadonlyArrayDyn<'_, C64>>() {
+                data.len()
+            } else {
+                value
+                    .extract::<PyReadonlyArrayDyn<'_, numpy::Complex32>>()?
+                    .len()
+            };
+            let bytes = product(&[
+                length,
+                if precision == Precision::Single {
+                    8
+                } else {
+                    16
+                },
+            ])
+            .map_err(error)?;
+            sample_bytes = sample_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| error(mandacaru_core::Error::Overflow))?;
+        }
+    }
+    let archive = sample_bytes > ctx.memory_limit() / 8;
     for (key, value) in values.iter() {
         let key: String = key.extract()?;
         let owned = if let Ok(array) = value.extract::<PyReadonlyArrayDyn<'_, f64>>() {
@@ -24,13 +72,43 @@ pub(super) fn input_arrays(
             InputArray::Real(ctx.copy_slice(array.as_slice()?).map_err(error)?)
         } else if let Ok(array) = value.extract::<PyReadonlyArrayDyn<'_, C64>>() {
             super::layout(&array)?;
-            InputArray::Complex(ctx.copy_slice(array.as_slice()?).map_err(error)?)
+            if sample_keys.contains(key.as_str()) || metadata["hats"].as_str() == Some(key.as_str())
+            {
+                let is_hat = metadata["hats"].as_str() == Some(key.as_str());
+                let precision = if is_hat { Precision::Double } else { precision };
+                let archive = if is_hat {
+                    product(&[array.len(), 16]).map_err(error)? > ctx.memory_limit() / 8
+                } else {
+                    archive
+                };
+                InputArray::Samples(
+                    if archive {
+                        ComplexSamples::archived_copy(ctx, array.as_slice()?, precision)
+                    } else {
+                        ComplexSamples::copy(ctx, array.as_slice()?, precision)
+                    }
+                    .map_err(error)?,
+                )
+            } else {
+                InputArray::Complex(ctx.copy_slice(array.as_slice()?).map_err(error)?)
+            }
+        } else if let Ok(array) = value.extract::<PyReadonlyArrayDyn<'_, numpy::Complex32>>() {
+            super::layout(&array)?;
+            if !sample_keys.contains(key.as_str()) {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "complex64 inputs are reserved for Bloch samples",
+                ));
+            }
+            InputArray::Samples(
+                ComplexSamples::copy_single(ctx, array.as_slice()?, precision, archive)
+                    .map_err(error)?,
+            )
         } else if let Ok(array) = value.extract::<PyReadonlyArrayDyn<'_, u64>>() {
             super::layout(&array)?;
             InputArray::Indices(ctx.copy_slice(array.as_slice()?).map_err(error)?)
         } else {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "array {key} must have float64, complex128 or uint64 dtype"
+                "array {key} must have float64, complex128, complex64 Bloch samples or uint64 dtype"
             )));
         };
         out.0.insert(key, owned);
@@ -59,8 +137,20 @@ impl PyCrystal {
         &self.inner.functional
     }
     #[getter]
+    fn precision(&self) -> &'static str {
+        self.inner.precision.name()
+    }
+    #[getter]
     fn spins(&self) -> usize {
         self.inner.spins
+    }
+    #[getter]
+    fn spinor(&self) -> bool {
+        self.inner.spinor
+    }
+    #[getter]
+    fn time_reversal(&self) -> bool {
+        self.inner.time_reversal
     }
     #[getter]
     fn n_orbitals(&self) -> usize {
@@ -104,13 +194,37 @@ pub struct PyPeriodicResult {
 }
 #[pymethods]
 impl PyPeriodicResult {
+    fn wannier_setup(
+        &self,
+        py: Python<'_>,
+        metadata_json: &str,
+    ) -> PyResult<super::wannier::PyWannierSetup> {
+        let inner = py
+            .detach(|| {
+                mandacaru_core::periodic::wannier::setup::Setup::from_json(
+                    self.crystal.clone(),
+                    self.inner.clone(),
+                    metadata_json,
+                )
+            })
+            .map_err(error)?;
+        Ok(super::wannier::PyWannierSetup { inner: Some(inner) })
+    }
+    #[getter]
+    fn spin_orbit_energy(&self) -> Option<f64> {
+        self.inner.spin_orbit_energy
+    }
+    #[getter]
+    fn n_iterations(&self) -> usize {
+        self.inner.history.len()
+    }
     fn projectability<'py>(
         &self,
         py: Python<'py>,
         trials: PyReadonlyArray2<'py, C64>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let targets = trials.shape()[1];
-        if trials.shape()[0] != self.crystal.m {
+        if trials.shape()[0] != self.crystal.bands() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "trials need shape (n_basis,n_targets)",
             ));
@@ -132,7 +246,7 @@ impl PyPeriodicResult {
             "weights",
             array(
                 py,
-                &[c.spins, c.points.len(), c.m],
+                &[c.spins, c.points.len(), c.bands()],
                 out.weights.as_slice().to_vec(),
             )?,
         )?;
@@ -150,11 +264,16 @@ impl PyPeriodicResult {
     fn converged(&self) -> bool {
         self.inner.converged
     }
-    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    #[pyo3(signature=(*,include_matrices=true))]
+    fn snapshot<'py>(
+        &self,
+        py: Python<'py>,
+        include_matrices: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
         let c = &self.crystal;
         let r = &self.inner;
         let nk = c.points.len();
-        let m = c.m;
+        let m = c.bands();
         let s = c.spins;
         let n = c.grid.index.points();
         let out = PyDict::new(py);
@@ -169,8 +288,25 @@ impl PyPeriodicResult {
         }
         out.set_item("functional", &c.functional)?;
         out.set_item("n_spins", s)?;
+        out.set_item("spinor", c.spinor)?;
+        out.set_item("time_reversal", c.time_reversal)?;
+        out.set_item("spin_orbit_energy", r.spin_orbit_energy)?;
         out.set_item("converged", r.converged)?;
         out.set_item("n_iterations", r.history.len())?;
+        out.set_item("precision", c.precision.name())?;
+        if let Some(tau) = &r.kinetic_density {
+            out.set_item(
+                "kinetic_density",
+                array(py, &[s, n], tau.as_slice().to_vec())?,
+            )?;
+            out.set_item(
+                "kinetic_residuals",
+                r.history
+                    .iter()
+                    .map(|it| it.kinetic_residual)
+                    .collect::<Vec<_>>(),
+            )?;
+        }
         out.set_item("smearing", (r.options.smearing.name(), r.options.width))?;
         out.set_item(
             "eigenvalues",
@@ -188,25 +324,35 @@ impl PyPeriodicResult {
                 r.occupations.iter().flatten().copied().collect(),
             )?,
         )?;
-        out.set_item(
-            "coefficients",
-            array(
-                py,
-                &[s, nk, m, m],
-                r.coefficients.iter().flat_map(matrix_values).collect(),
-            )?,
-        )?;
-        out.set_item(
-            "density_matrices",
-            array(
-                py,
-                &[s, nk, m, m],
-                r.matrices.iter().flat_map(matrix_values).collect(),
-            )?,
-        )?;
+        if include_matrices {
+            let coefficients = r
+                .coefficients
+                .iter()
+                .map(|v| v.matrix(&c.context).map(|v| matrix_values(&v)))
+                .collect::<mandacaru_core::Result<Vec<_>>>()
+                .map_err(error)?;
+            out.set_item(
+                "coefficients",
+                array(
+                    py,
+                    &[s, nk, m, m],
+                    coefficients.into_iter().flatten().collect(),
+                )?,
+            )?;
+            let matrices = r
+                .matrices
+                .iter()
+                .map(|v| v.matrix(&c.context).map(|v| matrix_values(&v)))
+                .collect::<mandacaru_core::Result<Vec<_>>>()
+                .map_err(error)?;
+            out.set_item(
+                "density_matrices",
+                array(py, &[s, nk, m, m], matrices.into_iter().flatten().collect())?,
+            )?;
+        }
         out.set_item(
             "density",
-            array(py, &[s, n], r.density.as_slice().to_vec())?,
+            array(py, &[c.field_channels(), n], r.density.as_slice().to_vec())?,
         )?;
         out.set_item(
             "moments",
@@ -269,24 +415,28 @@ impl PyPeriodicResult {
                 let weights = (0..c.spins)
                     .flat_map(|_| c.points.iter().map(|p| p.weight))
                     .collect::<Vec<_>>();
+                if projected {
+                    return mandacaru_core::periodic::analysis::projected_dos(
+                        c,
+                        &self.inner,
+                        &energies,
+                        width_ha,
+                    );
+                }
                 spectrum::broaden(
                     &c.context,
                     &energies,
                     &self.inner.eigenvalues,
                     &weights,
                     width_ha,
-                    if c.spins == 1 { 2. } else { 1. },
-                    if projected {
-                        Some((self.inner.projections.as_slice(), c.m))
-                    } else {
-                        None
-                    },
+                    c.degeneracy(),
+                    None,
                 )
             })
             .map_err(error)?;
         array(
             py,
-            &[energies.len(), if projected { c.m } else { 1 }],
+            &[energies.len(), if projected { c.bands() } else { 1 }],
             out.as_slice().to_vec(),
         )
     }
@@ -298,7 +448,7 @@ impl PyPeriodicResult {
         arrays: &Bound<'_, PyDict>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let c = &self.crystal;
-        let mut arrays = input_arrays(&c.context, arrays)?;
+        let mut arrays = input_arrays(&c.context, arrays, data_json, Some(c.precision))?;
         let _parse = c
             .context
             .reserve(product(&[data_json.len(), 32]).map_err(error)?)
@@ -314,8 +464,9 @@ impl PyPeriodicResult {
                 let memory = c.context.reserve(product(&[
                     raw.len(),
                     c.spins,
-                    c.m,
-                    c.m.checked_add(c.p)
+                    c.bands(),
+                    c.bands()
+                        .checked_add(c.p)
                         .ok_or(mandacaru_core::Error::Overflow)?,
                     16,
                     16,
@@ -330,6 +481,7 @@ impl PyPeriodicResult {
                             c.p,
                             c.grid.index.points(),
                             &mut arrays,
+                            c.precision,
                         )
                     })
                     .collect::<mandacaru_core::Result<Vec<KPoint>>>()?;
@@ -346,12 +498,20 @@ impl PyPeriodicResult {
                         let (e, _, y) = mandacaru_core::periodic::solver::diagonalize(
                             c,
                             p,
-                            &self.inner.potential.as_slice()[s * n..(s + 1) * n],
+                            if c.spinor {
+                                self.inner.potential.as_slice()
+                            } else {
+                                &self.inner.potential.as_slice()[s * n..(s + 1) * n]
+                            },
                             self.inner.moment_potential.as_slice(),
+                            self.inner
+                                .kinetic_potential
+                                .as_ref()
+                                .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
                         )?;
                         eps.extend(e.iter().map(|e| e + c.reference));
-                        for a in 0..c.m {
-                            for b in 0..c.m {
+                        for a in 0..c.bands() {
+                            for b in 0..c.bands() {
                                 projections.push(y[(a, b)].norm_sqr());
                             }
                         }
@@ -360,12 +520,12 @@ impl PyPeriodicResult {
                 Ok::<_, mandacaru_core::Error>((eps, projections, memory))
             })
             .map_err(error)?;
-        let nk = eps.len() / (c.spins * c.m);
+        let nk = eps.len() / (c.spins * c.bands());
         let out = PyDict::new(py);
-        out.set_item("eigenvalues", array(py, &[c.spins, nk, c.m], eps)?)?;
+        out.set_item("eigenvalues", array(py, &[c.spins, nk, c.bands()], eps)?)?;
         out.set_item(
             "projections",
-            array(py, &[c.spins, nk, c.m, c.m], projections)?,
+            array(py, &[c.spins, nk, c.bands(), c.bands()], projections)?,
         )?;
         Ok(out)
     }

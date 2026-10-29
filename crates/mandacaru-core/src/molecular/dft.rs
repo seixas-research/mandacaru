@@ -14,7 +14,7 @@ pub(super) fn grid_densities(integrals: &MolecularIntegrals, d: &[Matrix]) -> Re
     let m = integrals.m();
     let n = integrals.grid.index.points();
     let mut rho = integrals.context.allocate::<f64>(2 * n)?;
-    let phi = integrals.orthonormal_samples.as_slice();
+    let phi = integrals.orthonormal_samples.read(&integrals.context)?;
     for s in 0..2 {
         let density = &d[if d.len() == 1 { 0 } else { s }];
         for k in 0..n {
@@ -41,11 +41,12 @@ pub(super) fn orbital_gradients(integrals: &MolecularIntegrals) -> Result<Buffer
     let m = integrals.m();
     let n = integrals.grid.index.points();
     let mut gradients = integrals.context.allocate::<f64>(product(&[3, m, n])?)?;
+    let phi = integrals.orthonormal_samples.read(&integrals.context)?;
     for axis in 0..3 {
         for a in 0..m {
             xc::derivative(
                 &integrals.grid,
-                &integrals.orthonormal_samples.as_slice()[a * n..(a + 1) * n],
+                &phi[a * n..(a + 1) * n],
                 axis,
                 &mut gradients.as_mut_slice()[(axis * m + a) * n..(axis * m + a + 1) * n],
             )?;
@@ -160,7 +161,7 @@ fn evaluate(
     }
     let mut f = vec![];
     let mut exact_energy = 0.;
-    let phi = integrals.orthonormal_samples.as_slice();
+    let phi = integrals.orthonormal_samples.read(&integrals.context)?;
     for s in 0..d.len() {
         let v = Matrix::from_fn(m, m, |a, b| {
             C64::new(
@@ -234,10 +235,11 @@ impl MolecularIntegrals {
                 Some(super::integrals::cholesky_from_grid(
                     ctx,
                     &self.grid,
-                    self.orthonormal_samples.as_slice(),
+                    &self.orthonormal_samples.read(&self.context)?,
                     m,
                     1e-12,
                     &mut solver,
+                    None,
                 )?)
             } else {
                 None
@@ -596,11 +598,12 @@ mod tests {
         let m = integrals.m();
         let n = integrals.grid.index.points();
         let mut gradients = ctx.allocate::<f64>(3 * m * n).unwrap();
+        let phi = integrals.orthonormal_samples.read(&ctx).unwrap();
         for axis in 0..3 {
             for a in 0..m {
                 xc::derivative(
                     &integrals.grid,
-                    &integrals.orthonormal_samples.as_slice()[a * n..(a + 1) * n],
+                    &phi[a * n..(a + 1) * n],
                     axis,
                     &mut gradients.as_mut_slice()[(axis * m + a) * n..(axis * m + a + 1) * n],
                 )

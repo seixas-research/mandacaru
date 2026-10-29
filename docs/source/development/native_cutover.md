@@ -24,10 +24,10 @@ infer parity from a module name or assume that every NumPy call is an algorithm.
 
 | Area | Current native coverage | Work before removing numerical Python |
 | --- | --- | --- |
-| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, semilocal molecular PAW Kohn–Sham, stationary all-electron forces and real/radial bases | PAW screened exchange, multi-shell core exchange and PAW response |
-| Periodic calculations | LDA/PBE iterations, spectra and Ewald primitives | Geometry assembly, advanced XC and electronic response |
-| Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, MCAS-VQE, SDK execution | GHF-to-quantum handoff and learned proposals |
-| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods; empty/closed-1s cores | Basis recipe preparation, multi-shell cores, screened exchange, spin-orbit terms and forces |
+| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, semilocal molecular PAW Kohn–Sham, stationary all-electron forces, variational molecular PAW forces and real/radial bases | PAW screened exchange, multi-shell core exchange and semilocal PAW force response |
+| Periodic calculations | LDA/PBE/meta-GGA/nonlocal iterations, two-component LDA/PBE spinor SCF and bands, spectra and Ewald primitives | Geometry assembly, screened exchange and electronic response |
+| Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, MCAS-VQE/VALQA, graph proposals and SDK execution | GHF-to-quantum handoff and optional GP/ranker proposal models |
+| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods; empty/closed-1s cores | Basis recipe preparation, multi-shell cores, screened exchange, spin-orbit terms and semilocal KS forces |
 | Radial PAW spectrum | Generalized separable eigenpairs, overlap normalization, confined and free channel spectra | Remaining dataset construction and basis recipes |
 | Correlation | Closed-shell MP2/FNO, local pair domains and PNOs, coupled local MP2 amplitudes, symmetry-preserving active spaces | Open-shell correlation and correlating-pair constraints |
 | Molecular result fields | Native natural orbitals, charge/reference/difference densities, orbital sampling and cube/XSF output; PAW augmentation charge accounting | Periodic field views |
@@ -95,6 +95,97 @@ zero-cutoff limit reproduces canonical MP2 energies and densities. Molecular
 symmetry selection retains whole orbital multiplets. Open-shell MP2 selection
 and correlating-pair constraints remain unported.
 
+## Molecular geometry response
+
+Molecular variational forces execute in Rust. Spin-summed reduced density
+matrices contract displaced reduced Hamiltonians, with SCF continuation,
+active-space selection response, and orbital-domain/phase matching. Coulomb
+factorizations retain the reference pivots during differentiation; fresh
+calculations still select pivots at their own geometry. The ASE-facing default
+uses two displaced energies per direction at a
+`1e-4` Bohr step. Richardson extrapolation remains available through
+`result.forces(step=1e-3, extrapolate=True)` and supplies a step error estimate.
+The two-point path reports that estimate as unmeasured. Tests compare these
+forces with independently reoptimized
+total energies, and fixed-pivot factors with independently computed Coulomb
+columns. A retained PAW setup rebuilds its geometry without reloading datasets.
+
+The ASE adapter supports free-molecule internal-direction projection and
+records its force convention in the text output. Unprojected Cartesian
+response remains available from the result. Geometry transfer matches occupied
+and virtual orbital domains, carries generator signs and parameters, and
+reoptimizes the seed against the new Hamiltonian before deciding whether to
+retain it. Seed relaxation is reported separately from ansatz growth. A small
+immutable handover owns only the source basis, active orbital
+coefficients, operator labels and parameters. The previous integral cache and
+quantum workspace are released before constructing the next calculation unless
+the caller retains its previous result. A budget regression distinguishes these
+lifetimes explicitly.
+
+The public optimizer default is SLSQP with 2000 iterations and tolerance
+`1e-12`, restoring the original calculator preset. Default ADAPT stopping
+criteria are a maximum gradient of `1e-3` Ha and an energy change of `1e-3` eV;
+an explicitly supplied criterion dictionary enables only its specified keys.
+User-supplied budgets and tolerances are preserved.
+
+Molecular `precision="single"` retains sampled orbitals in native `float32`
+buffers. One-body matrices, integral accumulation and FFT workspaces remain in
+double precision. Temporary accumulation views share the calculation budget and
+release their reservations on exit; displaced molecular setups retain the
+selected storage precision. The PBE/DZP water comparison differs by less than
+one micro-eV between the two storage choices. Periodic complex orbital samples
+also support compact `complex64` storage;
+Bloch matrices and SCF accumulation stay in double precision. Input snapshots
+retain the selected storage precision.
+
+Periodic meta-GGA SCF computes kinetic densities from the occupied complex
+Bloch orbitals and includes the matching kinetic-potential matrix. Both density
+and kinetic density participate in mixing and convergence. Reciprocal symbols
+average lattice-equivalent aliases, preserving the distinction between the
+mean vector and mean squared wave number at grid faces. Native complex
+projections preserve imaginary coherence and use bounded real matrix products.
+The rVV10 energy and potential use one discrete periodic kernel. Derivative,
+operator-contraction, converged r²SCAN and input-roundtrip tests cover these
+paths; the original MoS₂ r²SCAN+rVV10 example completes through its band path and DOS.
+
+Periodic LDA/PBE spinors retain charge and three magnetization components.
+Rust diagonalizes the two-component generalized Bloch Hamiltonian with the
+separable spin-orbit operator and uses unit band degeneracy. Exchange and
+correlation rotate the local density to its eigenframe and rotate the
+functional derivative back, retaining transverse spin coherence. Unrestricted spinors use the full
+k-point mesh; scalar symmetry averaging is disabled for axial-vector fields.
+Nonmagnetic spinors can impose time reversal: charge and scalar PAW moments
+use the time-reversal-reduced mesh, while magnetization remains zero. Scalar
+point-group averaging is disabled for both spinor modes. Spinor bands still
+have unit degeneracy and retain the complete SOC matrix. Off-mesh bands, DOS and projection weights retain both spinor blocks.
+The L.S angular matrices and radial-projector contractions also execute in Rust.
+Tests check exact angular spectra, all four XC derivatives, the density/operator
+contraction, the scalar zero-SOC limit, and the free-energy derivative with
+respect to SOC strength. The original Bi₂Te₃ example completes both its
+scalar-relativistic and spinor band paths and saves their comparison plot.
+
+Large periodic sample caches, coefficient matrices, density matrices and mixing
+histories can use owned Rust scratch arrays. A read charges its accumulation
+buffer to the same calculation budget and releases it after use. Scratch files
+use exclusive creation, private permissions and owner-based cleanup; damaged
+records surface an error. Small arrays remain resident. Tests compare streamed
+and resident SCF energies and densities, verify projected-DOS state counts,
+and check allocation failures and file cleanup. Ordinary ASE energy requests
+transfer scalar results, spectra and fields; dense coefficient and density
+matrices are copied only when explicitly requested from the native snapshot.
+The Python setup adapter releases its mesh samples after native transfer.
+Compensation form factors also use this storage and are read by channel,
+keeping their cache out of the Bloch projection workspace.
+
+Molecular PAW spherical contractions use bounded matrix batches with the same
+quadrature nodes and weights. Shared angular mathematics evaluates Cartesian
+harmonics without recovering polar angles. Tests compare the Cartesian and
+polar forms, exact shell normalization, direct signed quadratures and force
+responses. Large real-grid projections partition their tiles among the owning
+context's workers. Workspace size also limits that partition; each worker's
+BLAS call remains single-threaded and partial matrices are reduced in a fixed
+order. Thread, memory and independent direct-contraction checks cover this path.
+
 ## Remaining cutover work
 
 The following public paths from the Python implementation are still unavailable
@@ -104,12 +195,12 @@ or disconnected from their native replacements:
 | --- | --- |
 | Active spaces | Correlating-pair constraints and open-shell MP2 |
 | Variational methods | Optional Gaussian-process and pairwise-ranker proposal models; subspace checkpoint continuation |
-| Molecular PAW | Nonlinear one-center XC, augmented screened exchange, multi-shell frozen-core exchange, spin-orbit projectors and force response |
-| Dispersion and advanced periodic DFT | Complete D4, periodic meta-GGA/nonlocal XC, mixed-precision controls and spin-orbit band calculations |
+| Molecular PAW | Nonlinear one-center XC, augmented screened exchange, multi-shell frozen-core exchange, spin-orbit projectors and semilocal KS force response |
+| Dispersion and advanced periodic DFT | Complete D4, spinor meta-GGA and screened exchange |
 | Periodic quantum calculations | Bloch VQE/ADAPT, quasiparticle weights, interacting spectral functions and quantum unit-cell relaxation |
-| Electronic response | Wannier construction, constrained RPA and downfolding; magnetic-moment accessors also need reconnection |
+| Electronic response | Wannier construction, constrained RPA and downfolding |
 | Circuit execution | Multi-reference SDK execution and continuation of device runs |
-| Geometry workflows | Variational forces and wavefunction transfer between nuclear steps, blocking the relaxation and MD examples |
+| Geometry workflows | Remaining ethanol relaxation verification and periodic force/stress response |
 | Monitoring and analysis | Complete live SCF logging and migration of older standalone analysis interfaces |
 
 Some helper modules and native primitives for these features remain in the
@@ -132,8 +223,8 @@ Molecular PAW HF and variational paths cover empty cores and single closed
 model, compensation Hartree terms, smooth-core XC and the atomic energy offset.
 Its signed compensation Fock contribution and LDA/PBE/r²SCAN potentials pass
 energy-derivative checks. Multi-shell core exchange, spin-orbit projectors,
-PAW screened exchange and forces remain incomplete. Variational forces and
-advanced periodic methods also remain incomplete. All
+PAW screened exchange, semilocal KS forces and advanced periodic methods
+remain incomplete. All
 examples are retained; `scripts/check_examples.py` reports failures instead of
 filtering them out. The full scientific test suite still has collection errors
 from removed modules. Passing focused recovery tests does not resolve those

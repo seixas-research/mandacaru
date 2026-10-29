@@ -1126,7 +1126,8 @@ def _force_table(symbols: Sequence[str], vectors,
 def _force_block_lines(symbols: Sequence[str], forces, hellmann_feynman=None,
                        pulay=None, units: str = "eV/Angstrom",
                        extra: dict | None = None, unprojected=None,
-                       step: int | None = None) -> list[str]:
+                       step: int | None = None,
+                       convention: str | None = None) -> list[str]:
     """Lines of a ``[FORCES]`` block: the vectors, their breakdown and norms.
 
     ``forces`` is the ASE-facing force :math:`-dE/dR`; ``hellmann_feynman`` and
@@ -1137,7 +1138,9 @@ def _force_block_lines(symbols: Sequence[str], forces, hellmann_feynman=None,
     forces = np.atleast_2d(np.asarray(forces, dtype=float))
     keys = [] if step is None else [f"step: {int(step)}"]
     keys.append(f"units: {units}")
-    if unprojected is None:
+    if convention is not None:
+        keys.append(f"convention: {convention}")
+    elif unprojected is None:
         keys.append("convention: forces = -dE/dR (ASE sign); hellmann_feynman "
                     "and pulay are +dE/dR")
     else:
@@ -1573,7 +1576,8 @@ def append_performance(path: str, stages=None, wall_time_s=None,
 def append_forces(path: str, symbols: Sequence[str], forces,
                   hellmann_feynman=None, pulay=None,
                   units: str = "eV/Angstrom", extra: dict | None = None,
-                  unprojected=None, step: int | None = None) -> None:
+                  unprojected=None, step: int | None = None,
+                  convention: str | None = None) -> None:
     """Append a ``[FORCES]`` block to an existing ``output.txt``.
 
     The energies of a geometry step are written by the driver's own logger,
@@ -1604,13 +1608,16 @@ def append_forces(path: str, symbols: Sequence[str], forces,
         Geometry step the block belongs to; defaults to the number of blocks
         already written to ``path`` (:func:`log_steps`), i.e. the step whose
         energies were logged last.
+    convention : str, optional
+        Explicit force convention for a projection onto internal directions.
     """
     if step is None:
         step = log_steps(path) or None
     lines = _force_block_lines(symbols, forces,
                                hellmann_feynman=hellmann_feynman, pulay=pulay,
                                units=units, extra=extra,
-                               unprojected=unprojected, step=step)
+                               unprojected=unprojected, step=step,
+                               convention=convention)
     _write_lines(path, lines)
 
 

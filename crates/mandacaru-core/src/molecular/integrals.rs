@@ -2,6 +2,7 @@ use super::{invalid, SpatialGrid};
 use crate::basis::Basis;
 use crate::math::fft::{spectral_laplacian, Poisson};
 use crate::math::linalg::real_eigen;
+use crate::math::storage::{Precision, RealSamples};
 use crate::quantum::C64;
 use crate::{product, Buffer, Context, Geometry, Reservation, Result};
 use nalgebra::DMatrix;
@@ -11,6 +12,7 @@ pub fn pair(a: usize, b: usize) -> usize {
     let (a, b) = (a.max(b), a.min(b));
     a * (a + 1) / 2 + b
 }
+
 pub(crate) fn packed_len(n: usize) -> Result<usize> {
     n.checked_mul(n.checked_add(1).ok_or(crate::Error::Overflow)?)
         .map(|v| v / 2)
@@ -66,10 +68,20 @@ pub enum Eri {
         m: usize,
         rank: usize,
         factors: Buffer<f64>,
-        residual: f64,
+        /// Maximum unused diagonal when measured by adaptive pivot selection.
+        /// Fixed-pivot response does not scan unused Coulomb columns.
+        residual: Option<f64>,
+        pivots: Buffer<usize>,
     },
 }
 impl Eri {
+    pub fn pivots(&self) -> Option<&[usize]> {
+        match self {
+            Self::Cholesky { rank, pivots, .. } => Some(&pivots.as_slice()[..*rank]),
+            Self::Augmented { base, .. } => base.pivots(),
+            Self::Packed { .. } => None,
+        }
+    }
     pub fn m(&self) -> usize {
         match self {
             Self::Packed { m, .. } | Self::Cholesky { m, .. } | Self::Augmented { m, .. } => *m,
@@ -115,6 +127,7 @@ impl Eri {
             residual.as_mut_slice()[a] = self.value(p, p, q, q);
         }
         let mut rank = 0;
+        let mut pivots = ctx.allocate::<usize>(n)?;
         loop {
             let pivot = (0..n)
                 .max_by(|&a, &b| residual.as_slice()[a].total_cmp(&residual.as_slice()[b]))
@@ -124,6 +137,7 @@ impl Eri {
                 break;
             }
             let (p, r) = indices[pivot];
+            pivots.as_mut_slice()[rank] = pivot;
             for (a, &(q, s)) in indices.iter().enumerate() {
                 let previous: f64 = (0..rank)
                     .map(|k| columns.as_slice()[a * n + k] * columns.as_slice()[pivot * n + k])
@@ -150,7 +164,8 @@ impl Eri {
             m,
             rank,
             factors,
-            residual: error,
+            residual: Some(error),
+            pivots,
         })
     }
 }
@@ -159,8 +174,8 @@ pub struct MolecularIntegrals {
     pub geometry: Geometry,
     pub grid: SpatialGrid,
     pub basis: Basis,
-    pub samples: Buffer<f64>,
-    pub orthonormal_samples: Buffer<f64>,
+    pub samples: RealSamples,
+    pub orthonormal_samples: RealSamples,
     pub overlap: Buffer<f64>,
     pub kinetic: Buffer<f64>,
     pub potential: Buffer<f64>,
@@ -168,6 +183,7 @@ pub struct MolecularIntegrals {
     pub one: Buffer<f64>,
     eri: Mutex<Option<Arc<Eri>>>,
     cholesky_tolerance: f64,
+    fixed_pivots: Option<Buffer<usize>>,
     pub nuclear: f64,
     pub kinetic_method: String,
     pub overlap_min: f64,
@@ -188,6 +204,7 @@ pub(super) fn cholesky_from_grid(
     m: usize,
     tolerance: f64,
     solver: &mut Poisson,
+    fixed_pivots: Option<&[usize]>,
 ) -> Result<Eri> {
     if m == 0
         || samples.len() != product(&[m, grid.index.points()])?
@@ -197,6 +214,18 @@ pub(super) fn cholesky_from_grid(
         return Err(invalid("invalid grid Cholesky dimensions or tolerance"));
     }
     let n = packed_len(m)?;
+    if let Some(pivots) = fixed_pivots {
+        let _validation_memory = ctx.reserve(n)?;
+        let mut seen = vec![false; n];
+        for &pivot in pivots {
+            if pivot >= n || seen[pivot] {
+                return Err(invalid(
+                    "fixed Coulomb pivots must be distinct orbital pairs",
+                ));
+            }
+            seen[pivot] = true;
+        }
+    }
     let g = grid.index.points();
     let mut diagonal = ctx.allocate::<f64>(n)?;
     let mut rho = ctx.allocate::<C64>(g)?;
@@ -215,27 +244,66 @@ pub(super) fn cholesky_from_grid(
         None
     };
     let indices: Vec<_> = (0..m).flat_map(|a| (0..=a).map(move |b| (a, b))).collect();
-    for (i, &(a, b)) in indices.iter().enumerate() {
-        for k in 0..g {
-            rho.as_mut_slice()[k] = C64::new(samples[a * g + k] * samples[b * g + k], 0.);
+    if fixed_pivots.is_none() {
+        for (i, &(a, b)) in indices.iter().enumerate() {
+            for k in 0..g {
+                rho.as_mut_slice()[k] = C64::new(samples[a * g + k] * samples[b * g + k], 0.);
+            }
+            diagonal.as_mut_slice()[i] = solver.quadratic_form(rho.as_slice())?;
         }
-        diagonal.as_mut_slice()[i] = solver.quadratic_form(rho.as_slice())?;
     }
     let mut columns: Vec<Buffer<f64>> = Vec::new();
+    let mut pivots = ctx.allocate::<usize>(fixed_pivots.map_or(n, |p| p.len()))?;
     loop {
-        let pivot = (0..n)
-            .max_by(|&a, &b| diagonal.as_slice()[a].total_cmp(&diagonal.as_slice()[b]))
-            .unwrap();
-        let maximum = diagonal.as_slice()[pivot];
-        if maximum <= tolerance || columns.len() == n {
+        if columns.len() == fixed_pivots.map_or(n, |p| p.len()) {
             break;
         }
+        let pivot = fixed_pivots.map_or_else(
+            || {
+                (0..n)
+                    .max_by(|&a, &b| diagonal.as_slice()[a].total_cmp(&diagonal.as_slice()[b]))
+                    .unwrap()
+            },
+            |p| p[columns.len()],
+        );
+        let mut maximum = diagonal.as_slice()[pivot];
+        if fixed_pivots.is_none() && maximum <= tolerance {
+            break;
+        }
+        pivots.as_mut_slice()[columns.len()] = pivot;
         let (a, b) = indices[pivot];
         for k in 0..g {
             rho.as_mut_slice()[k] = C64::new(samples[a * g + k] * samples[b * g + k], 0.);
         }
         solver.solve_into(rho.as_slice(), potential.as_mut_slice())?;
-        let mut column = ctx.allocate::<f64>(n)?;
+        if fixed_pivots.is_some() {
+            maximum = rho
+                .as_slice()
+                .iter()
+                .zip(potential.as_slice())
+                .map(|(r, v)| r.re * v.re)
+                .sum::<f64>()
+                * grid.index.dv()
+                - columns
+                    .iter()
+                    .map(|c| c.as_slice()[pivot].powi(2))
+                    .sum::<f64>();
+        }
+        if !maximum.is_finite() || maximum <= 0. {
+            return Err(invalid(
+                "a retained Coulomb pivot lost positive rank at the displaced geometry",
+            ));
+        }
+        let mut column = match ctx.allocate::<f64>(n) {
+            Err(crate::Error::Budget { .. })
+                if projector
+                    .as_mut()
+                    .is_some_and(|p| p.release_extra_workspaces()) =>
+            {
+                ctx.allocate::<f64>(n)?
+            }
+            allocation => allocation?,
+        };
         let projected = if let (Some(projector), Some(field)) = (projector.as_mut(), field.as_mut())
         {
             for (value, potential) in field.as_mut_slice().iter_mut().zip(potential.as_slice()) {
@@ -262,7 +330,9 @@ pub(super) fn cholesky_from_grid(
                 .sum::<f64>();
             let value = (integral - previous) / maximum.sqrt();
             column.as_mut_slice()[i] = value;
-            diagonal.as_mut_slice()[i] -= value * value;
+            if fixed_pivots.is_none() {
+                diagonal.as_mut_slice()[i] -= value * value;
+            }
         }
         columns.push(column);
     }
@@ -275,8 +345,16 @@ pub(super) fn cholesky_from_grid(
             "Coulomb operator is not positive semidefinite at this grid accuracy",
         ));
     }
-    let residual = diagonal.as_slice().iter().copied().fold(0f64, f64::max);
+    let residual = fixed_pivots
+        .is_none()
+        .then(|| diagonal.as_slice().iter().copied().fold(0f64, f64::max));
     let rank = columns.len();
+    // Projection scratch is no longer needed while columns are copied into
+    // their compact retained representation.
+    drop(projector);
+    drop(field);
+    drop(rho);
+    drop(potential);
     let mut factors = ctx.allocate::<f64>(product(&[n, rank])?)?;
     for i in 0..n {
         for (k, column) in columns.iter().enumerate() {
@@ -288,6 +366,7 @@ pub(super) fn cholesky_from_grid(
         rank,
         factors,
         residual,
+        pivots,
     })
 }
 pub(super) fn pair_integrals_with_solver(
@@ -341,13 +420,15 @@ impl MolecularIntegrals {
         }
         self.context.run(|| {
             if let Some(setup) = &self.paw_setup {
-                return setup.at_geometry(
-                    &self.context,
-                    geometry,
-                    self.grid.clone(),
-                    &self.kinetic_method,
-                    self.cholesky_tolerance,
-                );
+                return setup
+                    .at_geometry(
+                        &self.context,
+                        geometry,
+                        self.grid.clone(),
+                        &self.kinetic_method,
+                        self.cholesky_tolerance,
+                    )?
+                    .with_precision(self.samples.precision());
             }
             if self.corrections.is_some() {
                 return Err(invalid(
@@ -367,11 +448,25 @@ impl MolecularIntegrals {
                 &self.kinetic_method,
                 Some(self.cholesky_tolerance),
                 None,
-            )
+            )?
+            .with_precision(self.samples.precision())
         })
     }
     pub fn has_eri(&self) -> bool {
         self.eri.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+    /// Keep the same low-rank Coulomb approximation while differentiating a
+    /// geometry. Fresh calculations continue to select their own pivots.
+    pub fn at_geometry_with_fixed_pivots(&self, geometry: Geometry) -> Result<Self> {
+        let source = self.eri()?;
+        let plan = source
+            .pivots()
+            .ok_or_else(|| invalid("geometry response needs a Coulomb factorization"))?;
+        let mut rebuilt = self.at_geometry(geometry)?;
+        let mut pivots = self.context.allocate::<usize>(plan.len())?;
+        pivots.as_mut_slice().copy_from_slice(plan);
+        rebuilt.fixed_pivots = Some(pivots);
+        Ok(rebuilt)
     }
     /// Build Coulomb factors only when a solver or Hamiltonian asks for them.
     /// Failed allocations do not poison the cache and can be retried.
@@ -384,10 +479,11 @@ impl MolecularIntegrals {
         let base = Arc::new(cholesky_from_grid(
             &self.context,
             &self.grid,
-            self.orthonormal_samples.as_slice(),
+            &self.orthonormal_samples.read(&self.context)?,
             self.m(),
             self.cholesky_tolerance,
             &mut solver,
+            self.fixed_pivots.as_ref().map(|p| p.as_slice()),
         )?);
         let factors = if let Some(correction) = self.corrections.as_ref() {
             Arc::new(Eri::Augmented {
@@ -635,8 +731,8 @@ impl MolecularIntegrals {
             geometry,
             grid,
             basis,
-            samples,
-            orthonormal_samples,
+            samples: samples.into(),
+            orthonormal_samples: orthonormal_samples.into(),
             overlap,
             kinetic: t,
             potential: v,
@@ -644,6 +740,7 @@ impl MolecularIntegrals {
             one,
             eri: Mutex::new(None),
             cholesky_tolerance,
+            fixed_pivots: None,
             nuclear,
             kinetic_method: kinetic.into(),
             overlap_min,
@@ -652,6 +749,18 @@ impl MolecularIntegrals {
             paw_setup: None,
             _matrices: matrices,
         })
+    }
+    pub fn with_precision(mut self, precision: Precision) -> Result<Self> {
+        if self.has_eri() {
+            return Err(invalid(
+                "sample precision must be selected before Coulomb factorization",
+            ));
+        }
+        self.samples = self.samples.into_precision(&self.context, precision)?;
+        self.orthonormal_samples = self
+            .orthonormal_samples
+            .into_precision(&self.context, precision)?;
+        Ok(self)
     }
     pub fn m(&self) -> usize {
         self.basis.orbitals.len()

@@ -135,6 +135,7 @@ impl MolecularIntegrals {
                     }
                 }
             }
+            let samples = self.samples.read(ctx)?;
             for spin in 0..2 {
                 let index = if state.method == "rhf" { 0 } else { spin };
                 let occupied = state.particles[spin];
@@ -150,8 +151,7 @@ impl MolecularIntegrals {
                 for i in 0..occupied {
                     for a in 0..m {
                         for k in 0..n {
-                            orbitals.as_mut_slice()[i * n + k] +=
-                                ao[(a, i)] * self.samples.as_slice()[a * n + k];
+                            orbitals.as_mut_slice()[i * n + k] += ao[(a, i)] * samples[a * n + k];
                         }
                     }
                 }

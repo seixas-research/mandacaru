@@ -1,5 +1,6 @@
 //! Validated portable density-independent crystal data. No Python dependency.
 use super::invalid;
+use crate::math::storage::{ComplexSamples, Precision};
 use crate::{
     math::{linalg::eigen, SpatialGrid},
     product,
@@ -14,10 +15,35 @@ pub enum InputArray {
     Real(Buffer<f64>),
     Complex(Buffer<C64>),
     Indices(Buffer<u64>),
+    Samples(ComplexSamples),
 }
 #[derive(Default)]
 pub struct InputArrays(pub BTreeMap<String, InputArray>);
 impl InputArrays {
+    fn samples(
+        &mut self,
+        ctx: &Context,
+        v: &Value,
+        n: usize,
+        precision: Precision,
+    ) -> Result<ComplexSamples> {
+        if let Some(key) = v.as_str() {
+            let samples = match self.0.remove(key) {
+                Some(InputArray::Samples(samples)) => samples,
+                Some(InputArray::Complex(values)) => ComplexSamples::Double(values),
+                _ => {
+                    return Err(invalid(format!(
+                        "missing or invalid Bloch sample array {key}"
+                    )))
+                }
+            };
+            if samples.len() != n || !samples.finite() {
+                return Err(invalid("Bloch samples have invalid dimensions or values"));
+            }
+            return samples.into_precision(ctx, precision);
+        }
+        ComplexSamples::Double(complex(ctx, v, n, "Bloch samples")?).into_precision(ctx, precision)
+    }
     fn real(&mut self, ctx: &Context, v: &Value, n: usize, name: &str) -> Result<Buffer<f64>> {
         if let Some(key) = v.as_str() {
             if let Some(InputArray::Real(out)) = self.0.remove(key) {
@@ -54,11 +80,12 @@ pub struct KPoint {
     pub k: [f64; 3],
     pub fractional: [f64; 3],
     pub weight: f64,
-    pub psi: Buffer<C64>,
+    pub psi: ComplexSamples,
     pub overlap: DMatrix<C64>,
     pub fixed: DMatrix<C64>,
     pub projections: DMatrix<C64>,
     pub lowdin: DMatrix<C64>,
+    pub spin_orbit: Option<DMatrix<C64>>,
 }
 pub struct Crystal {
     pub context: Context,
@@ -69,6 +96,8 @@ pub struct Crystal {
     pub points: Vec<KPoint>,
     pub blocks: Buffer<C64>,
     pub core: Buffer<f64>,
+    pub core_tau: Option<Buffer<f64>>,
+    pub precision: Precision,
     pub initial: Buffer<f64>,
     pub initial_m: Buffer<f64>,
     pub initial_q: Buffer<C64>,
@@ -77,7 +106,7 @@ pub struct Crystal {
     pub phase: Buffer<C64>,
     pub kerker: Buffer<f64>,
     pub ion: Buffer<C64>,
-    pub hats: Buffer<C64>,
+    pub hats: ComplexSamples,
     pub u: Buffer<C64>,
     pub uion: Buffer<C64>,
     pub linear: Buffer<C64>,
@@ -87,6 +116,8 @@ pub struct Crystal {
     pub reference: f64,
     pub electrons: f64,
     pub spins: usize,
+    pub spinor: bool,
+    pub time_reversal: bool,
     pub functional: String,
     pub relativistic: bool,
     pub permutations: Vec<Vec<usize>>,
@@ -148,8 +179,15 @@ fn hermitian(a: &DMatrix<C64>, name: &str) -> Result<()> {
     }
     Ok(())
 }
-pub fn kpoint(ctx: &Context, value: &Value, m: usize, p: usize, n: usize) -> Result<KPoint> {
-    kpoint_arrays(ctx, value, m, p, n, &mut InputArrays::default())
+pub fn kpoint(
+    ctx: &Context,
+    value: &Value,
+    m: usize,
+    p: usize,
+    n: usize,
+    precision: Precision,
+) -> Result<KPoint> {
+    kpoint_arrays(ctx, value, m, p, n, &mut InputArrays::default(), precision)
 }
 pub fn kpoint_arrays(
     ctx: &Context,
@@ -158,8 +196,9 @@ pub fn kpoint_arrays(
     p: usize,
     n: usize,
     arrays: &mut InputArrays,
+    precision: Precision,
 ) -> Result<KPoint> {
-    let psi = arrays.complex(ctx, &value["psi"], product(&[m, n])?, "Bloch samples")?;
+    let psi = arrays.samples(ctx, &value["psi"], product(&[m, n])?, precision)?;
     let overlap = arrays.complex(ctx, &value["overlap"], product(&[m, m])?, "overlap")?;
     let overlap = DMatrix::from_row_slice(m, m, overlap.as_slice());
     hermitian(&overlap, "overlap")?;
@@ -182,6 +221,19 @@ pub fn kpoint_arrays(
             m,
             s.iter().map(|s| C64::new(1. / s.sqrt(), 0.)),
         )) * c.adjoint();
+    let spin_orbit = if value["spin_orbit"].is_null() {
+        None
+    } else {
+        let values = arrays.complex(
+            ctx,
+            &value["spin_orbit"],
+            product(&[2, m, 2, m])?,
+            "spin-orbit Hamiltonian",
+        )?;
+        let matrix = DMatrix::from_row_slice(2 * m, 2 * m, values.as_slice());
+        hermitian(&matrix, "spin-orbit Hamiltonian")?;
+        Some(matrix)
+    };
     Ok(KPoint {
         k: vector(&value["k"], "Cartesian k-point")?,
         fractional: vector(&value["fractional"], "fractional k-point")?,
@@ -191,6 +243,7 @@ pub fn kpoint_arrays(
         fixed,
         projections,
         lowdin,
+        spin_orbit,
     })
 }
 impl Crystal {
@@ -227,6 +280,7 @@ impl Crystal {
             true,
         )?;
         let n = grid.index.points();
+        let precision = Precision::parse(v["precision"].as_str().unwrap_or("double"))?;
         let m = count(&v["m"], "basis dimension")?;
         let p = count(&v["p"], "projector dimension")?;
         let channels = count(&v["channels"], "moment count")?;
@@ -248,9 +302,10 @@ impl Crystal {
         let matrices = product(&[
             raw.len(),
             m,
-            m.checked_add(p).ok_or(crate::Error::Overflow)?,
+            m.checked_mul(3)
+                .and_then(|m| m.checked_add(p))
+                .ok_or(crate::Error::Overflow)?,
             16,
-            12,
         ])?;
         let memory = ctx.reserve(
             matrices
@@ -258,9 +313,10 @@ impl Crystal {
                 .and_then(|n| n.checked_add(source.len()))
                 .ok_or(crate::Error::Overflow)?,
         )?;
+        let _matrix_work = ctx.reserve(product(&[m, m, 16, 12])?)?;
         let points = raw
             .iter()
-            .map(|v| kpoint_arrays(ctx, v, m, p, n, &mut arrays))
+            .map(|v| kpoint_arrays(ctx, v, m, p, n, &mut arrays, precision))
             .collect::<Result<Vec<_>>>()?;
         if points.iter().any(|p| p.weight <= 0.)
             || (points.iter().map(|p| p.weight).sum::<f64>() - 1.).abs() > 1e-10
@@ -374,15 +430,49 @@ impl Crystal {
         }
         let electrons = number(&v["electrons"], "electrons")?;
         let spins = count(&v["spins"], "spin channels")?;
+        let spinor = v["spinor"].as_bool().unwrap_or(false);
+        let time_reversal = v["time_reversal"].as_bool().unwrap_or(false);
         if electrons < 0. || electrons > 2. * m as f64 + 1e-10 || ![1, 2].contains(&spins) {
             return Err(invalid("invalid periodic electron count or spin channels"));
         }
-        let functional = crate::models::xc::functional(
+        if time_reversal && !spinor {
+            return Err(invalid(
+                "spinor time-reversal constraint requires a spinor crystal",
+            ));
+        }
+        if spinor && (spins != 1 || !permutations.is_empty()) {
+            return Err(invalid(
+                "spinor crystals need one spinor block without scalar symmetry averaging",
+            ));
+        }
+        if points
+            .iter()
+            .any(|point| point.spin_orbit.is_some() != spinor)
+        {
+            return Err(invalid(
+                "spin-orbit matrices must be supplied at every k-point of a spinor crystal",
+            ));
+        }
+        let definition = crate::models::functional(
             v["functional"]
                 .as_str()
                 .ok_or_else(|| invalid("missing functional"))?,
-        )?
-        .to_string();
+        )?;
+        if definition.screened_exchange.is_some() {
+            return Err(invalid(
+                "periodic screened exact exchange requires its reciprocal exchange operator",
+            ));
+        }
+        let functional = definition.name.to_string();
+        let core_tau = if definition.requires_tau {
+            let values = arrays.real(ctx, &v["core_tau"], n, "core kinetic density")?;
+            if values.as_slice().iter().any(|v| *v < 0.) {
+                return Err(invalid("core kinetic density must be nonnegative"));
+            }
+            Some(values)
+        } else {
+            None
+        };
         let result = Self {
             context: ctx.clone(),
             grid,
@@ -395,10 +485,19 @@ impl Crystal {
             kernel,
             electrons,
             spins,
+            spinor,
+            time_reversal,
             functional,
             core: arrays.real(ctx, &v["core"], n, "core density")?,
+            core_tau,
+            precision,
             initial: arrays.real(ctx, &v["initial"], n, "initial density")?,
-            initial_m: arrays.real(ctx, &v["initial_m"], n, "initial magnetization")?,
+            initial_m: arrays.real(
+                ctx,
+                &v["initial_m"],
+                product(&[if spinor { 3 } else { 1 }, n])?,
+                "initial magnetization",
+            )?,
             initial_q: arrays.complex(ctx, &v["initial_q"], channels, "initial moments")?,
             xc_wave: arrays.real(
                 ctx,
@@ -409,12 +508,7 @@ impl Crystal {
             phase: arrays.complex(ctx, &v["phase"], n, "Fourier phase")?,
             kerker: arrays.real(ctx, &v["kerker"], n, "Kerker factors")?,
             ion: arrays.complex(ctx, &v["ion"], n, "ionic reciprocal density")?,
-            hats: arrays.complex(
-                ctx,
-                &v["hats"],
-                product(&[channels, n])?,
-                "compensation form factors",
-            )?,
+            hats: arrays.samples(ctx, &v["hats"], product(&[channels, n])?, Precision::Double)?,
             uion: arrays.complex(ctx, &v["uion"], channels, "compact ion couplings")?,
             linear: arrays.complex(ctx, &v["linear"], channels, "short-range moment couplings")?,
             eion: number(&v["eion"], "ionic energy")?,
@@ -437,6 +531,11 @@ impl Crystal {
         if !arrays.0.is_empty() {
             return Err(invalid("unreferenced arrays in crystal construction"));
         }
+        if result.time_reversal && result.initial_m.as_slice().iter().any(|v| *v != 0.) {
+            return Err(invalid(
+                "time-reversal spinor SCF requires zero initial magnetization",
+            ));
+        }
         Ok(result)
     }
     pub fn load(ctx: &Context, path: &str) -> Result<Self> {
@@ -452,12 +551,18 @@ impl Crystal {
     pub fn save(&self, path: &str) -> Result<()> {
         let mut value: Value =
             serde_json::from_str(&self.source).map_err(|e| invalid(e.to_string()))?;
+        value["functional"] = serde_json::json!(self.functional);
+        value["precision"] = serde_json::json!(self.precision.name());
+        value["spinor"] = serde_json::json!(self.spinor);
+        value["time_reversal"] = serde_json::json!(self.time_reversal);
+        if let Some(core) = &self.core_tau {
+            value["core_tau"] = serde_json::json!(core.as_slice());
+        }
         for (key, buffer) in [
             ("blocks", &self.blocks),
             ("initial_q", &self.initial_q),
             ("phase", &self.phase),
             ("ion", &self.ion),
-            ("hats", &self.hats),
             ("u", &self.u),
             ("uion", &self.uion),
             ("linear", &self.linear),
@@ -469,6 +574,12 @@ impl Crystal {
                 .map(|x| [x.re, x.im])
                 .collect::<Vec<_>>());
         }
+        value["hats"] = serde_json::json!(self
+            .hats
+            .read(&self.context)?
+            .iter()
+            .map(|v| [v.re, v.im])
+            .collect::<Vec<_>>());
         for (key, buffer) in [
             ("core", &self.core),
             ("initial", &self.initial),
@@ -488,10 +599,16 @@ impl Crystal {
         {
             row["psi"] = serde_json::json!(point
                 .psi
-                .as_slice()
+                .read(&self.context)?
                 .iter()
                 .map(|x| [x.re, x.im])
                 .collect::<Vec<_>>());
+            if let Some(matrix) = &point.spin_orbit {
+                row["spin_orbit"] = serde_json::json!((0..matrix.nrows())
+                    .flat_map(|i| (0..matrix.ncols())
+                        .map(move |j| [matrix[(i, j)].re, matrix[(i, j)].im]))
+                    .collect::<Vec<_>>());
+            }
             for (key, matrix) in [
                 ("overlap", &point.overlap),
                 ("fixed", &point.fixed),
@@ -507,5 +624,25 @@ impl Crystal {
             serde_json::to_writer(writer, &value)
                 .map_err(|e| invalid(format!("crystal output: {e}")))
         })
+    }
+
+    /// Number of bands in each independently diagonalized spin block.
+    pub fn bands(&self) -> usize {
+        self.m * if self.spinor { 2 } else { 1 }
+    }
+    /// Charge and three magnetization components for a spinor density.
+    pub fn field_channels(&self) -> usize {
+        if self.spinor && !self.time_reversal {
+            4
+        } else {
+            self.spins
+        }
+    }
+    pub fn degeneracy(&self) -> f64 {
+        if self.spins == 1 && !self.spinor {
+            2.
+        } else {
+            1.
+        }
     }
 }

@@ -19,12 +19,14 @@ pub struct Gradient {
     pub energy: f64,
     pub directions: usize,
     pub step: f64,
-    pub estimate: f64,
+    pub estimate: Option<f64>,
+    pub scheme: &'static str,
 }
 pub struct Options<'a> {
     pub active_spec: Option<&'a str>,
     pub step: f64,
     pub internal: bool,
+    pub extrapolate: bool,
 }
 impl Default for Options<'_> {
     fn default() -> Self {
@@ -32,6 +34,7 @@ impl Default for Options<'_> {
             active_spec: None,
             step: 1e-3,
             internal: false,
+            extrapolate: true,
         }
     }
 }
@@ -151,6 +154,7 @@ pub fn gradient(
         active_spec,
         step,
         internal,
+        extrapolate,
     } = *options;
     if !step.is_finite()
         || step <= 0.
@@ -195,7 +199,8 @@ pub fn gradient(
         let mut estimate = 0f64;
         for direction in 0..directions.ncols() {
             let mut values = [0.; 4];
-            for (at, sign) in [-1., 1., -0.5, 0.5].into_iter().enumerate() {
+            let displacements = if extrapolate { &[-1., 1., -0.5, 0.5][..] } else { &[-1., 1.][..] };
+            for (at, &sign) in displacements.iter().enumerate() {
                 let positions = geometry
                     .positions()
                     .iter()
@@ -213,10 +218,9 @@ pub fn gradient(
                     geometry.pbc(),
                     LengthUnit::Bohr,
                 )?;
-                let rebuilt = integrals.at_geometry(displaced)?;
-                let scf = rebuilt.mean_field(
-                    &reference.method,
-                    reference.particles,
+                let rebuilt = integrals.at_geometry_with_fixed_pivots(displaced)?;
+                let scf = rebuilt.continue_mean_field(
+                    reference,
                     &ScfOptions {
                         tolerance: 1e-11,
                         guesses: 1,
@@ -246,9 +250,11 @@ pub fn gradient(
                 values[at] = contracted(&reduced, &rdm, &indices, &phases)?;
             }
             let coarse = (values[1] - values[0]) / (2. * step);
-            let fine = (values[3] - values[2]) / step;
-            let derivative = (4. * fine - coarse) / 3.;
-            estimate = estimate.max((fine - coarse).abs() / 3.);
+            let derivative = if extrapolate {
+                let fine = (values[3] - values[2]) / step;
+                estimate = estimate.max((fine - coarse).abs() / 3.);
+                (4. * fine - coarse) / 3.
+            } else { coarse };
             for row in 0..size {
                 gradient.as_mut_slice()[row] += directions[(row, direction)] * derivative;
             }
@@ -258,7 +264,8 @@ pub fn gradient(
             energy,
             directions: directions.ncols(),
             step,
-            estimate,
+            estimate: extrapolate.then_some(estimate),
+            scheme: if extrapolate { "Richardson-reduced-Hamiltonian" } else { "Central-reduced-Hamiltonian" },
         })
     })
 }

@@ -26,17 +26,7 @@ pub fn layout(species: &Species) -> Vec<Projector> {
     out
 }
 pub fn harmonic(l: usize, m: i32, point: [f64; 3]) -> f64 {
-    let r = point.iter().map(|x| x * x).sum::<f64>().sqrt();
-    crate::basis::real_harmonic(
-        l,
-        m,
-        if r == 0. {
-            0.
-        } else {
-            (point[2] / r).clamp(-1., 1.).acos()
-        },
-        point[1].atan2(point[0]),
-    )
+    crate::math::angular::cartesian(l, m, point)
 }
 pub fn shape(r: f64, radius: f64, l: usize) -> f64 {
     if r >= radius {

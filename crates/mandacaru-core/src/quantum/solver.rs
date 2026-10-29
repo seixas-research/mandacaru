@@ -369,18 +369,6 @@ impl CachedProblem {
                         evaluations: outcome.history.len(),
                         steps: outcome.steps,
                     });
-                    if !outcome.success {
-                        iterations.push(Iteration {
-                            pool_index: *indices.last().unwrap(),
-                            energy: outcome.energy,
-                            max_gradient: 0.,
-                            optimizer_steps: outcome.steps,
-                            num_evaluations: outcome.history.len(),
-                            success: false,
-                            message: format!("initial sequence relaxation: {}", outcome.message),
-                            num_parameters: indices.len(),
-                        });
-                    }
                     steps += outcome.steps;
                     history.extend(outcome.history);
                     parameters = outcome.parameters;

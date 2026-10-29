@@ -171,4 +171,5 @@ def build(driver, geometry):
         arrays,
         kinetic=driver._kinetic,
         cholesky_tolerance=driver._cholesky_tolerance,
+        precision=driver._precision,
     )

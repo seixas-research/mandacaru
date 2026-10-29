@@ -308,20 +308,7 @@ impl Species {
                 + valence_potential(ps_xc.potential.as_slice())?;
         let dft_constant = number(&v["one_center_energy"])? + core_offset;
         let xc_core = Cubic::new(ctx, ctx.copy_slice(r.as_slice())?, xc_core)?;
-        let floor = xc_core.values.as_slice().iter().copied().fold(0., f64::max) * 1e-12;
-        let tau: Vec<_> = r
-            .as_slice()
-            .iter()
-            .map(|&at| {
-                let (value, slope) = xc_core.value_slope(at);
-                if value > floor {
-                    slope * slope / (8. * value)
-                } else {
-                    0.
-                }
-            })
-            .collect();
-        let xc_core_tau = Cubic::new(ctx, ctx.copy_slice(r.as_slice())?, ctx.copy_slice(&tau)?)?;
+        let xc_core_tau = crate::paw::fields::core_kinetic(ctx, &xc_core)?;
         let local_radius = number(&v["local_radius"])?;
         let sphere = channels
             .iter()

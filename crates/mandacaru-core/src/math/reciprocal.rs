@@ -1,6 +1,6 @@
 //! Symmetry-averaged reciprocal aliases of a discrete periodic grid.
 use super::{fft::frequency, invalid, SpatialGrid};
-use crate::{Buffer, Context, Result};
+use crate::{finite, Buffer, Context, Reservation, Result};
 use nalgebra::{Matrix3, Vector3};
 use std::{collections::HashSet, f64::consts::PI};
 
@@ -32,7 +32,13 @@ fn allowed(
     }
     true
 }
-pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
+struct Lattice {
+    reciprocal: Matrix3<f64>,
+    group: Vec<Matrix3<f64>>,
+    operations: Vec<Matrix3<f64>>,
+    _storage: Reservation,
+}
+fn lattice(ctx: &Context, grid: &SpatialGrid) -> Result<Lattice> {
     let shape = grid.index.shape();
     let cell = grid.step * Matrix3::from_diagonal(&Vector3::from_fn(|i, _| shape[i] as f64));
     let inverse = cell
@@ -79,6 +85,21 @@ pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
         .iter()
         .map(|w| w.try_inverse().unwrap().transpose())
         .collect();
+    Ok(Lattice {
+        reciprocal,
+        group,
+        operations,
+        _storage,
+    })
+}
+pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
+    let shape = grid.index.shape();
+    let Lattice {
+        reciprocal,
+        group,
+        operations,
+        _storage,
+    } = lattice(ctx, grid)?;
     let signed_permutations = operations
         .iter()
         .all(|v| (0..3).all(|i| (0..3).map(|j| v[(i, j)].abs()).sum::<f64>() == 1.));
@@ -108,4 +129,51 @@ pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
         }
     }
     Ok(out)
+}
+
+/// Alias-averaged Bloch derivative symbols and kinetic-energy multipliers.
+/// Cartesian k is in inverse Bohr. The mean square is retained separately
+/// from the square of the mean vector, including on Nyquist faces.
+pub struct BlochSymbols {
+    pub vectors: Buffer<f64>,
+    pub squares: Buffer<f64>,
+}
+pub fn bloch(ctx: &Context, grid: &SpatialGrid, k: [f64; 3]) -> Result<BlochSymbols> {
+    finite(&k, "Bloch wave vector")?;
+    let shape = grid.index.shape();
+    let n = grid.index.points();
+    let lattice = lattice(ctx, grid)?;
+    let kappa = lattice
+        .reciprocal
+        .try_inverse()
+        .ok_or_else(|| invalid("singular reciprocal cell"))?
+        * Vector3::from(k);
+    let mut vectors = ctx.allocate::<f64>(crate::product(&[3, n])?)?;
+    let mut squares = ctx.allocate::<f64>(n)?;
+    for at in 0..n {
+        let index = [
+            at / (shape[1] * shape[2]),
+            at / shape[2] % shape[1],
+            at % shape[2],
+        ];
+        let q = Vector3::from_fn(|a, _| frequency(index[a], shape[a]) + kappa[a]);
+        let mut mean = Vector3::zeros();
+        let mut mean_square = 0.;
+        for (w, v) in lattice.group.iter().zip(&lattice.operations) {
+            let image = v * q;
+            let wrapped = Vector3::from_fn(|a, _| {
+                let length = shape[a] as f64;
+                image[a] - length * ((image[a] + 0.5 * length + 1e-9) / length).floor()
+            });
+            let wave = lattice.reciprocal * (w.transpose() * wrapped);
+            mean += wave;
+            mean_square += wave.norm_squared();
+        }
+        mean /= lattice.operations.len() as f64;
+        squares.as_mut_slice()[at] = mean_square / lattice.operations.len() as f64;
+        for a in 0..3 {
+            vectors.as_mut_slice()[a * n + at] = mean[a];
+        }
+    }
+    Ok(BlochSymbols { vectors, squares })
 }

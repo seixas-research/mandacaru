@@ -161,6 +161,9 @@ modules; their migration is tracked in the [coverage audit](native_cutover.md).
 
 Public recovery also requires running `python scripts/check_examples.py`.
 It preserves every example, runs disposable copies, and records each failure
-or timeout. Outbound connections are blocked so hardware examples cannot
+or explicitly requested timeout. There is no default time limit for heavy
+scientific examples. The report records calculation energies, solver and SCF
+convergence, inner optimizer failures and peak native allocation separately
+from script completion. Outbound connections are blocked so hardware examples cannot
 submit remote jobs. Native tests and architecture checks alone do not certify
 that the ASE examples or the full scientific suite work.

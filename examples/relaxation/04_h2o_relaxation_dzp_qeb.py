@@ -37,6 +37,8 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        txt=os.path.join(DATA, "h2o_relaxation_dzp_qeb.txt"))
 
 trajectory = os.path.join(DATA, "h2o_relaxation_dzp_qeb.traj")
-BFGS(atoms, trajectory=trajectory).run(fmax=0.05)
+optimizer = BFGS(atoms, trajectory=trajectory)
+optimizer.run(fmax=0.05)
+atoms.calc.write_optimization_summary(optimizer=optimizer)
 print(f"O-H: {atoms.get_distance(0, 1):.4f} Angstrom, "
       f"H-O-H: {atoms.get_angle(1, 0, 2):.2f} degrees")

@@ -4,6 +4,64 @@ from types import SimpleNamespace
 from ..utils.logging import Logger, STDOUT
 
 
+def write_forces(driver, result, geometry, *, internal, translated):
+    import numpy as np
+    from ase.data import chemical_symbols
+    from ..utils.logging import append_forces
+
+    forces = driver.results["forces"]
+    history = getattr(driver, "_optimization_history", [])
+    entry = dict(energy=float(driver.results["energy"]),
+                 max_force=float(np.linalg.norm(forces, axis=1).max()),
+                 net_force=float(np.abs(forces.sum(axis=0)).max()))
+    if history and geometry.same_as(driver._last_force_geometry):
+        history[-1] = entry
+    else:
+        history.append(entry)
+    driver._optimization_history = history
+    driver._last_force_geometry = geometry
+    driver._summary_written = False
+    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
+    convention = (
+        "forces = negative energy derivative projected onto internal molecular directions"
+        if internal else
+        "forces = -dE/dR with its mean translation removed (ASE sign)"
+        if translated else "forces = -dE/dR (ASE sign)"
+    )
+    details = getattr(result, "force_details", {})
+    for target in targets:
+        append_forces(
+            target, [chemical_symbols[z] for z in geometry.numbers],
+            driver.results["forces"], convention=convention,
+            extra={key: value for key, value in details.items() if key != "gradient"},
+        )
+
+
+def write_optimization_summary(driver, atoms=None, fmax=None, optimizer=None, force=False, status=None):
+    from ase.data import chemical_symbols
+    from ..structure import geometry_value
+    from ..utils.logging import append_optimization_summary
+
+    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
+    history = getattr(driver, "_optimization_history", [])
+    if not targets or getattr(driver, "_summary_written", False) or not history or (len(history) < 2 and not force):
+        return False
+    converged = None
+    if optimizer is not None:
+        if fmax is None:
+            fmax = optimizer.fmax
+        converged = bool(optimizer.converged())
+    geometry = driver._last_force_geometry if atoms is None else geometry_value(atoms)
+    for target in targets:
+        append_optimization_summary(
+            target, history, symbols=[chemical_symbols[z] for z in geometry.numbers],
+            positions=geometry.positions, units=geometry.units, energy_unit="eV",
+            fmax=fmax, converged=converged, status=status,
+        )
+    driver._summary_written = True
+    return True
+
+
 def write_calculation(driver, result, geometry):
     targets = []
     if driver.txt is not None:

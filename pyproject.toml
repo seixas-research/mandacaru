@@ -15,7 +15,7 @@ dependencies = [
     'numpy>=2.0.0',
     'scipy',
     'threadpoolctl',
-    'ase',
+    'ase>=3.29',
     'spglib',
     'matplotlib',
     'fastparquet',
