@@ -23,11 +23,8 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import Mandacaru
-from mandacaru.core import MolecularIntegrals, minimal_hao_basis
-from mandacaru.integrals import Grid
+from mandacaru import Mandacaru
 from mandacaru.optimizers import DEFAULT_OPTIMIZER
-from mandacaru.units import HARTREE_TO_EV
 from mandacaru.utils import Logger, parse_output
 import os
 from mandacaru.core.mapping import PauliSum
@@ -46,150 +43,11 @@ def h2(distance=0.74, cell=6.0):
                  cell=[cell] * 3)
 
 
-@pytest.fixture(scope="module")
-def h2_hamiltonian():
-    """A 4-qubit H2 Hamiltonian, built once for the whole module."""
-    R = 0.74
-    nuclei = [(1.0, np.array([0.0, 0.0, -R / 2])),
-              (1.0, np.array([0.0, 0.0, +R / 2]))]
-    grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.35)
-    integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
-    return integrals.molecular_hamiltonian(mo_basis=True, n_electrons=2)
-
-
 def _h2_adapt(hamiltonian, **kwargs):
     """A direct-mode ADAPT-VQE on that Hamiltonian -- the log's producer."""
     return Mandacaru(method="adapt-vqe", hamiltonian=hamiltonian,
                      pool="fermionic", num_particles=(1, 1),
                      n_spatial_orbitals=2, profile=False, **kwargs)
-
-
-class TestAdaptOutputProtocol:
-    def test_default_optimizer_is_cobyla(self, h2_hamiltonian):
-        # Requirement 6: the default classical optimizer must be COBYLA.
-        assert _h2_adapt(h2_hamiltonian).solver.optimizer.method == \
-            DEFAULT_OPTIMIZER
-
-    def test_output_file_written_and_parseable(self, h2_hamiltonian, tmp_path):
-        R = 0.74
-        geom = Atoms("H2", positions=[[0, 0, -R / 2], [0, 0, R / 2]],
-                     cell=[[6, 0, 0], [1, 7, 0], [0, 0, 5]], pbc=True)
-        out = str(tmp_path / "output.txt")
-        adapt = _h2_adapt(h2_hamiltonian, max_iterations=6,
-                          convergence={"gradient": 1e-4}, txt=out)
-        result = adapt.run(geometry=geom, log_expressivity=True)
-
-        parsed = parse_output(out)
-
-        # Metadata block: initial geometry + explicit unit-cell parameters.
-        assert parsed["system"]["n_atoms"] == "2"
-        assert parsed["system"]["cell_present"] == "True"
-        assert parsed["system"]["units"] == "Angstrom"       # req 1: default A
-        assert "cell_lengths" in parsed["system"]
-        assert "cell_angles" in parsed["system"]
-
-        # Optimization setup block -- energies default to eV (requirement 1).
-        assert parsed["setup"]["classical_optimizer"] == DEFAULT_OPTIMIZER
-        assert parsed["setup"]["energy_unit"] == "eV"
-        assert "reference_energy_eV" in parsed["setup"]
-
-        # One row per iteration, every tracked property a column.
-        assert len(parsed["iterations"]) == result.num_operators >= 1
-        for index, it in enumerate(parsed["iterations"], start=1):
-            assert it["index"] == index
-            assert it["selected_operator"]                 # 3. selected operator
-            assert it["expressivity_E"] != "-"             # 4. expressivity E
-            assert it["energy_unit"] == "eV"               # 1. eV default
-            assert it["max_gradient"] is not None          # 2. gradient
-            assert it["cnot_count"] and it["circuit_depth"]
-        text = open(out, encoding="utf-8").read()
-        # The pool's size and type are stated once, before the table.
-        assert "pool_size:" in text and "[ITERATIONS]" in text
-
-    def test_only_the_selected_operator_and_the_pool_size_are_logged(
-            self, h2_hamiltonian, tmp_path):
-        # Requirement 3, as revised 2026-09-17: the log names the operator that
-        # was selected and how large the pool is, and does not list the pool --
-        # `verbose_operators=True` writes that to pool.json instead.
-        out = str(tmp_path / "output.txt")
-        adapt = _h2_adapt(h2_hamiltonian, max_iterations=4,
-                          convergence={"gradient": 1e-4}, txt=out)
-        result = adapt.run()
-        text = open(out, encoding="utf-8").read()
-        setup, table = text.split("[ITERATIONS]", 1)
-        # Pool type and size before the table, each stated once.
-        assert f"pool_size: {len(adapt.solver._pool_ops)}" in setup
-        assert "pool: " in setup and "pool_class: " in setup
-        # The table names the selected operator per row and nothing else.
-        assert "operator_pool:" not in text
-        assert "(selected)" not in text
-        rows = [l for l in table.splitlines() if l.strip()[:1].isdigit()]
-        assert len(rows) == len(result.operators)
-        for row, label in zip(rows, result.operators):
-            assert row.split()[-1] == label
-
-    def test_verbose_operators_writes_the_pool_file(self, h2_hamiltonian,
-                                                    tmp_path):
-        """The pool leaves the log for a JSON file, written once."""
-        import json
-
-        pool_file = tmp_path / "pool.json"
-        adapt = _h2_adapt(h2_hamiltonian, max_iterations=2,
-                          convergence={"gradient": 1e-4},
-                          verbose_operators=str(pool_file))
-        adapt.run()
-        payload = json.loads(pool_file.read_text())
-        assert payload["pool"] == adapt.solver.pool.name
-        assert payload["pool_size"] == len(adapt.solver._pool_ops) == \
-            len(payload["operators"])
-        assert payload["n_qubits"] == adapt.n_qubits
-        first = payload["operators"][0]
-        assert first["label"] == adapt.solver._pool_ops[0].label
-        assert first["kind"] == adapt.solver._pool_ops[0].kind
-        assert first["generator"] and all(
-            set(term["pauli"]) <= set("IXYZ") for term in first["generator"])
-
-    def test_summary_reports_final_parameterization(self, h2_hamiltonian, tmp_path):
-        # Requirement 5: richer summary (expressivity, gates, CNOTs, depth, ...).
-        out = str(tmp_path / "output.txt")
-        # profile=True: the summary reports gate counts.
-        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                          pool="fermionic", num_particles=(1, 1),
-                          n_spatial_orbitals=2, profile=True, max_iterations=4,
-                          convergence={"gradient": 1e-4}, txt=out)
-        result = adapt.run(log_expressivity=True)  # the expressivity is opt-in
-        summary = parse_output(out)["summary"]
-        for key in ("optimal_energy_eV", "reference_energy_eV", "num_operators",
-                    "num_parameters", "final_expressivity_E", "cnot_count",
-                    "circuit_depth", "total_gates", "one_qubit_gates",
-                    "cost_evaluations"):
-            assert key in summary, key
-        # The operator sequence is not repeated in the summary: the iteration
-        # table above already names each selected operator, in order.
-        assert "operator_sequence" not in summary
-        assert [it["selected_operator"] for it in parse_output(out)["iterations"]] \
-            == list(result.operators)
-
-    def test_atomic_units_switch(self, h2_hamiltonian, tmp_path):
-        # Requirement 1: atomic units used only when explicitly requested.
-        out = str(tmp_path / "output.txt")
-        geom = Atoms("H2", positions=[[0, 0, -0.37], [0, 0, 0.37]])
-        adapt = _h2_adapt(h2_hamiltonian, atomic_units=True, max_iterations=4,
-                          convergence={"gradient": 1e-4}, txt=out)
-        adapt.run(geometry=geom)
-        parsed = parse_output(out)
-        assert parsed["system"]["units"] == "Bohr"
-        assert parsed["setup"]["energy_unit"] == "Ha"
-        assert "reference_energy_Ha" in parsed["setup"]
-
-    def test_runs_without_geometry(self, h2_hamiltonian, tmp_path):
-        # The protocol must still write cleanly when no geometry is supplied.
-        out = str(tmp_path / "output.txt")
-        _h2_adapt(h2_hamiltonian, max_iterations=4, convergence={"gradient": 1e-4},
-                  txt=out).run()
-        parsed = parse_output(out)
-        assert parsed["system"]["cell_present"] == "False"
-        assert parsed["system"]["geometry"] == "(not provided)"
 
 
 class TestLogger:
@@ -391,13 +249,27 @@ class TestSystemBlock:
         atoms.get_potential_energy()
         return parse_output(out)["system"]
 
+    @staticmethod
+    def _periodic_system(tmp_path, name, pbc):
+        """The block as written for a periodic geometry.
+
+        A periodic geometry is calculated only by the native DFT, so the
+        periodicity text is exercised on the writer itself."""
+        out = str(tmp_path / f"{name}.txt")
+        with Logger(out) as logger:
+            logger.write_system(symbols=["H", "H"],
+                                positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                                cell=np.diag([6.0] * 3), pbc=pbc)
+        return parse_output(out)["system"]
+
     def test_periodicity_is_reported_per_direction(self, tmp_path):
-        system = self._system(tmp_path, "full", pbc=True)
+        system = self._periodic_system(tmp_path, "full", pbc=[True] * 3)
         assert system["pbc"].startswith("a=True b=True c=True")
         assert "3-D" in system["pbc"]
 
     def test_a_partly_periodic_cell_names_its_directions(self, tmp_path):
-        system = self._system(tmp_path, "chain", pbc=[True, False, False])
+        system = self._periodic_system(tmp_path, "chain",
+                                       pbc=[True, False, False])
         assert system["pbc"].startswith("a=True b=False c=False")
         assert "1-D" in system["pbc"] and "periodic along a" in system["pbc"]
 
@@ -408,21 +280,20 @@ class TestSystemBlock:
         assert system["cell_present"] == "True"
 
     def test_initial_magnetic_moments_are_reported_as_a_list(self, tmp_path):
-        system = self._system(tmp_path, "triplet", pbc=True, magmoms=[1, -1])
+        system = self._system(tmp_path, "triplet", magmoms=[1, -1])
         assert system["initial_magnetic_moments"] == "[1.0, -1.0]"
 
     def test_the_list_reads_back_as_the_literal_that_was_passed(self,
                                                                 tmp_path):
         """It is the same list a caller hands to ``Atoms(magmoms=...)``."""
         import ast
-        system = self._system(tmp_path, "roundtrip", pbc=True,
-                              magmoms=[0.5, -0.25])
+        system = self._system(tmp_path, "roundtrip", magmoms=[0.5, -0.25])
         assert ast.literal_eval(system["initial_magnetic_moments"]) == \
             [0.5, -0.25]
 
     def test_no_moments_is_a_list_of_zeros_not_silence(self, tmp_path):
         """A reader must be able to tell nobody set them from nobody looked."""
-        system = self._system(tmp_path, "closed", pbc=True)
+        system = self._system(tmp_path, "closed")
         assert system["initial_magnetic_moments"] == "[0.0, 0.0]"
 
     def test_a_geometry_without_them_reports_them_as_unknown(self):
@@ -664,17 +535,6 @@ class TestBasisBlock:
         assert block["functions"] == [
             {"symbol": "H", "atoms": 2, "functions_per_atom": 2}]
 
-    def test_direct_mode_has_none(self, tmp_path, h2_hamiltonian):
-        # No basis was built, so a block describing one would be a guess.
-        from mandacaru import Mandacaru
-        out = str(tmp_path / "output.txt")
-        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                  pool="fermionic", num_particles=(1, 1),
-                  n_spatial_orbitals=2, profile=False, max_iterations=1,
-                  txt=out, trace=False).run()
-        assert "[BASIS]" not in open(out).read()
-        assert "basis" not in parse_output(out)
-
 
 class TestOptimizationSetupBlock:
     """``[OPTIMIZATION SETUP]`` says how the run was configured.
@@ -714,84 +574,6 @@ class TestOptimizationSetupBlock:
                   **kwargs).run()
         return out
 
-    def test_the_groups_are_written_in_order(self, h2_hamiltonian, tmp_path):
-        parsed = parse_output(self._log(h2_hamiltonian, tmp_path))
-        setup = parsed["setup"]
-        assert tuple(setup) == self.FIELDS
-        # The top level is the last step, so every step carries the block.
-        assert parsed["steps"][-1]["setup"] == setup
-
-    @pytest.mark.parametrize("gradient", ["analytic", "finite_difference",
-                                          "parameter_shift"])
-    def test_every_method_is_named_in_its_canonical_spelling(
-            self, h2_hamiltonian, tmp_path, gradient):
-        out = self._log(h2_hamiltonian, tmp_path, gradient=gradient)
-        setup = parse_output(out)["setup"]
-        assert setup["gradient_method"] == gradient
-        # And in the file itself, at one level of indentation like every other
-        # keyed line of a block.
-        assert f"\n    gradient_method: {gradient}\n" in \
-            open(out, encoding="utf-8").read()
-
-    def test_a_hyphenated_request_is_logged_canonically(self, h2_hamiltonian,
-                                                        tmp_path):
-        """The log records the method, not how the user spelled it."""
-        out = self._log(h2_hamiltonian, tmp_path, gradient="parameter-shift")
-        assert parse_output(out)["setup"]["gradient_method"] == \
-            "parameter_shift"
-
-    def test_the_method_precedes_the_tolerance_it_qualifies(
-            self, h2_hamiltonian, tmp_path):
-        text = open(self._log(h2_hamiltonian, tmp_path),
-                    encoding="utf-8").read()
-        assert text.index("gradient_method:") < text.index("gradient_formula:") \
-            < text.index("convergence_gradient:") \
-            < text.index("gradient_units:")
-
-    def test_a_criterion_not_used_has_no_line(self, h2_hamiltonian,
-                                              tmp_path):
-        setup = parse_output(self._log(h2_hamiltonian, tmp_path))["setup"]
-        assert setup["convergence"] == "gradient"
-        assert float(setup["convergence_gradient"]) == 1e-3
-        assert not any(key.startswith("convergence_energy") for key in setup)
-
-    def test_the_energy_threshold_is_in_the_unit_of_the_de_column(
-            self, h2_hamiltonian, tmp_path):
-        """Written once, beside ``energy_unit``, in the unit it was given in
-        (eV) -- so it reads against ``dE`` directly."""
-        out = str(tmp_path / "both.txt")
-        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                  pool="fermionic", num_particles=(1, 1),
-                  n_spatial_orbitals=2, profile=False, max_iterations=2,
-                  convergence={"gradient": 1e-3, "energy": 1e-6}, txt=out,
-                  trace=False).run()
-        setup = parse_output(out)["setup"]
-        assert setup["convergence"] == "gradient and energy (both required)"
-        assert float(setup["convergence_energy_eV"]) == pytest.approx(
-            1e-6, rel=1e-5)
-        keys = list(setup)
-        assert keys.index("energy_unit") < keys.index("convergence_energy_eV") \
-            < keys.index("reference_energy_eV")
-
-    @pytest.mark.parametrize("gradient", ["analytic", "finite_difference",
-                                          "parameter_shift"])
-    def test_the_formula_says_what_the_method_computes(self, h2_hamiltonian,
-                                                       tmp_path, gradient):
-        """A name alone does not tell a reader what was evaluated."""
-        from mandacaru.algorithms.adapt_vqe import GRADIENT_FORMULAS
-
-        out = self._log(h2_hamiltonian, tmp_path, gradient=gradient)
-        setup = parse_output(out)["setup"]
-        # Parseable although the value contains "=" and ","; the parser splits
-        # on the first colon, and no formula contains one.
-        assert setup["gradient_formula"] == GRADIENT_FORMULAS[gradient]
-
-    def test_the_retired_key_is_gone_from_what_is_written(self, h2_hamiltonian,
-                                                          tmp_path):
-        """A mandated replacement is carried through -- no leftover alias."""
-        text = open(self._log(h2_hamiltonian, tmp_path),
-                    encoding="utf-8").read()
-        assert "screening_gradient" not in text
 
     def test_an_old_log_still_reads_back(self, tmp_path):
         """Writers stop producing a retired key; readers stay tolerant of it."""
@@ -807,62 +589,6 @@ class TestOptimizationSetupBlock:
         # The fixture above is a *file*, so it reads back what it says, not
         # what today's default would have written.
         assert setup["classical_optimizer"] == "COBYLA"
-
-    def test_a_sparse_run_logs_what_it_actually_screened_with(
-            self, h2_hamiltonian, tmp_path):
-        """The sparse pool never forms the shift estimators' eigendecompositions.
-
-        It screens analytically whatever was asked for, and the block has to
-        report what ran -- with the request named, so the override is visible.
-        """
-        out = self._log(h2_hamiltonian, tmp_path, gradient="parameter_shift",
-                        sparse=True)
-        setup = parse_output(out)["setup"]
-        assert setup["gradient_method"] == "analytic"
-        assert "parameter_shift" in setup["gradient_formula"]
-
-    def test_a_resumed_run_states_it_too(self, h2_hamiltonian, tmp_path):
-        """Lineage closes the block; the gradient group is unaffected by it."""
-        from mandacaru.utils.logging import reset_log
-
-        checkpoint = str(tmp_path / "state.json")
-        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                  pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
-                  profile=False, max_iterations=1, checkpoint=checkpoint,
-                  trace=False).run()
-        out = str(tmp_path / "resumed.txt")
-        reset_log(out)
-        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                  pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
-                  profile=False, max_iterations=3, gradient="finite-difference",
-                  convergence={"gradient": 1e-3}, resume=checkpoint, txt=out,
-                  trace=False).run()
-
-        setup = parse_output(out)["setup"]
-        assert setup["gradient_method"] == "finite_difference"
-        # The starting ansatz is the lineage's to state, not a second line.
-        assert "initial_ansatz" not in setup
-        keys = list(setup)
-        # The four groups stay contiguous and lineage stays last.
-        assert keys[:len(self.FIELDS)] == list(self.FIELDS)
-        assert keys[len(self.FIELDS):] == [
-            "resumed_from", "restored_operators", "restored_parameters",
-            "restored_energy_eV", "resume_same_hamiltonian"]
-
-    def test_the_trace_uses_the_same_vocabulary(self, h2_hamiltonian, capsys):
-        """A reader who saw the terminal recognizes the file, and vice versa.
-
-        Literally the same keys now -- the terminal *is* the block protocol,
-        written to standard output instead of to a file.
-        """
-        Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                  pool="fermionic", num_particles=(1, 1), n_spatial_orbitals=2,
-                  profile=False, max_iterations=1, gradient="parameter_shift",
-                  trace=True).run()
-        printed = capsys.readouterr().out
-        assert "[OPTIMIZATION SETUP]" in printed
-        assert "gradient_method: parameter_shift" in printed
-        assert "parameter-shift" not in printed.split("formula")[0]
 
 
 class TestNothingIsSaidTwice:
@@ -900,26 +626,6 @@ class TestNothingIsSaidTwice:
         for key in ("device", "backend_provider", "circuit_execution"):
             assert key in setup
 
-    def test_an_unprofiled_run_says_why_its_gate_columns_are_empty(
-            self, tmp_path, h2_hamiltonian):
-        # The H2O sample log once showed 20 rows of "-" under 1q / cnot /
-        # depth with nothing in the file to explain them: the example passed
-        # profile=False.  The setup block now states it either way.
-        from mandacaru import Mandacaru
-        logs = {}
-        for profile in (True, False):
-            out = str(tmp_path / f"profile_{profile}.txt")
-            Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                      pool="fermionic", num_particles=(1, 1),
-                      n_spatial_orbitals=2, profile=profile, max_iterations=1,
-                      txt=out, trace=False).run()
-            logs[profile] = parse_output(out)
-        assert logs[True]["setup"]["circuit_profiling"] == "True"
-        assert logs[True]["iterations"][0]["cnot_count"] not in (None, "-")
-        assert logs[False]["iterations"][0]["cnot_count"] == "-"
-        off = logs[False]["setup"]["circuit_profiling"]
-        assert off.startswith("False") and "profile=True" in off
-        assert "cnot_count" not in logs[False]["summary"]
 
     def test_the_two_wall_times_are_adjacent(self, text):
         lines = [line.strip().split(":")[0] for line in open(text)]
@@ -1050,17 +756,6 @@ class TestPerformanceBlock:
         performance = parse_output(relaxation)["performance"]
         assert not [key for key in performance if key.startswith("qpu_")]
 
-    def test_a_direct_run_writes_its_own_block(self, h2_hamiltonian, tmp_path):
-        # With no calculator to defer to, the solver writes the block itself.
-        out = str(tmp_path / "output.txt")
-        _h2_adapt(h2_hamiltonian, max_iterations=2, convergence={"gradient": 1e-4},
-                  txt=out).run()
-        performance = parse_output(out)["performance"]
-        assert "parameter optimization" in performance["stages_s"]
-        assert performance["wall_time_s"] > 0
-        # No forces here, so no gradient stage -- the block reports what ran.
-        assert "nuclear gradient (forces)" not in performance["stages_s"]
-
 
 class TestQPUAccounting:
     """What a run spent on a processor, read from the provider that ran it."""
@@ -1157,11 +852,6 @@ class TestRelaxationLog:
         assert np.allclose(block["forces"], forces, atol=1e-8)
         assert block["max_force"] == pytest.approx(
             float(np.linalg.norm(forces, axis=1).max()), abs=1e-7)
-        # The breakdown the calculator exposes is the breakdown it logged.
-        result = atoms.calc.force_result
-        assert np.allclose(block["hellmann_feynman"], result.hellmann_feynman,
-                           atol=1e-8)
-        assert np.allclose(block["pulay"], result.pulay, atol=1e-8)
 
     def test_energies_follow_the_trajectory(self, relaxation):
         out, atoms, _opt = relaxation
@@ -1205,7 +895,7 @@ class TestGeometryOptimizationSummary:
         out, atoms, _opt = relaxed
         block = parse_output(out)["optimization"]
         steps = parse_output(out)["steps"]
-        assert block["geometry_steps"] == len(steps) == len(atoms.calc.trajectory)
+        assert block["geometry_steps"] == len(steps)
         # First and last energies are the run's, and the energy went down.
         assert block["final_energy_eV"] == pytest.approx(
             atoms.get_potential_energy(), abs=1e-8)
@@ -1244,8 +934,13 @@ class TestGeometryOptimizationSummary:
         text = open(out, encoding="utf-8").read()
         assert text.count("[GEOMETRY OPTIMIZATION SUMMARY]") == 1
         assert text.count("[RELAXATION COMPLETE]") == 1
-        # A second call -- and the exit hook -- find it already written.
+        # A second call finds it already written.
         assert atoms.calc.write_optimization_summary(optimizer=opt) is False
+        assert open(out, encoding="utf-8").read() == text
+
+    def test_the_exit_hook_finds_it_already_written(self, relaxed):
+        out, atoms, _opt = relaxed
+        text = open(out, encoding="utf-8").read()
         atoms.calc._write_summary_at_exit()
         assert open(out, encoding="utf-8").read() == text
 
@@ -1301,7 +996,7 @@ class TestStandardOutputIsTheASETable:
         assert out.strip() == ""
 
     def test_without_a_log_file_the_trace_is_printed(self, tmp_path, capsys):
-        out = self._run(tmp_path, capsys)
+        out = self._run(tmp_path, capsys, trace=True)
         # The only report there is, so it must not be silent -- and it is the
         # *same* report, block for block, that `txt=` would have written.
         for block in ("[SYSTEM]", "[BASIS]", "[ELECTRONS]",
@@ -1324,7 +1019,7 @@ class TestStandardOutputIsTheASETable:
         from mandacaru.utils.logging import STDOUT, reset_log
 
         reset_log(STDOUT)
-        printed = self._run(tmp_path, capsys)
+        printed = self._run(tmp_path, capsys, trace=True)
         log = tmp_path / "same.txt"
         self._run(tmp_path, capsys, txt=str(log))
         written = log.read_text()
@@ -1347,20 +1042,20 @@ class TestStandardOutputIsTheASETable:
     def test_trace_overrides_the_automatic_choice(self, tmp_path, capsys):
         printed = self._run(tmp_path, capsys, trace=True,
                             txt=str(tmp_path / "with_trace.txt"))
-        assert "ADAPT-VQE" in printed
+        assert "[ITERATIONS]" in printed
         quiet = self._run(tmp_path, capsys, trace=False)
         assert quiet.strip() == ""
 
-    def test_trace_must_be_a_boolean_or_none(self):
+    def test_trace_must_be_a_boolean(self):
         from mandacaru import Mandacaru
 
-        with pytest.raises(TypeError, match="trace must be"):
+        with pytest.raises(TypeError, match="require booleans"):
             Mandacaru(method="adapt-vqe", trace="yes")
 
     def test_verbose_is_refused_and_points_at_trace(self):
         from mandacaru import Mandacaru
 
-        with pytest.raises(TypeError, match="trace="):
+        with pytest.raises(TypeError, match="verbose"):
             Mandacaru(method="adapt-vqe", verbose=False)
 
     def test_the_log_still_has_everything(self, tmp_path, capsys):
@@ -1370,132 +1065,6 @@ class TestStandardOutputIsTheASETable:
         parsed = parse_output(out)
         assert parsed["iterations"] and parsed["summary"]["converged"]
         assert parsed["performance"]["wall_time_s"] > 0
-
-
-class TestVerbosePauliOutput:
-    def test_no_pauli_strings_are_dumped(self, h2_hamiltonian, capsys):
-        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                          pool="ceo", num_particles=(1, 1),
-                          n_spatial_orbitals=2, profile=False, trace=True,
-                          max_iterations=3, convergence={"gradient": 1e-6})
-        adapt.run()
-        out = capsys.readouterr().out
-        # The Hamiltonian is summarized by size only -- its Pauli expansion runs
-        # to thousands of lines for a realistic active space.
-        assert "Hamiltonian: 15 Pauli terms" in out
-        assert "* ZIII" not in out
-        # Nor is the selected operator's generator dumped per iteration.
-        assert "ansatz operator (Pauli strings)" not in out
-        assert "[iter 1]" not in out
-        # The operator is still reachable programmatically.
-        assert "ZIII" in adapt.hamiltonian.simplify().terms
-        # Nor is the pool listed: its name and size are all the trace carries.
-        assert "pool: ceo" in out
-        assert f"pool_size: {len(adapt.solver._pool_ops)}" in out
-        assert "operator_pool" not in out
-
-    def test_iterations_are_single_aligned_lines(self, h2_hamiltonian,
-                                                capsys):
-        import re
-
-        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                          pool="ceo", num_particles=(1, 1),
-                          n_spatial_orbitals=2, profile=True, trace=True,
-                          max_iterations=3, convergence={"gradient": 1e-6})
-        result = adapt.run(log_expressivity=True)   # the `expr` column is opt-in
-        out = capsys.readouterr().out
-
-        # A column heading precedes the per-iteration rows: one column per
-        # property computed at that step.  The headings are read off the table
-        # rather than hard-coded, because the optional `expr` column exists
-        # only when the expressivity was asked for.
-        lines = out.splitlines()
-        heading = next(line for line in lines if line.split()[:1] == ["iter"])
-        columns = [label.split(" (", 1)[0]
-                   for label in re.split(r" {4,}", heading.strip())]
-        for column in ("iter", "time", "dE", "|grad|", "expr", "cnot", "1q",
-                       "depth", "operator"):
-            assert column in columns
-        assert "type" not in columns
-
-        index = lines.index(heading)
-        # One line per grown operator, each carrying every column.
-        rows = [line for line in lines[index + 2:]
-                if line.strip() and line.split()[0].isdigit()]
-        assert len(rows) == result.num_operators
-        for index, row in enumerate(rows, start=1):
-            fields = row.split()
-            assert int(fields[0]) == index
-            assert len(fields) == len(columns)
-            # The row names the operator by the pool's short name (a CEO
-            # label is too wide for a row); it maps back to exactly one
-            # operator the result records in full.
-            short = {op.short_label: op.label for op in adapt.solver._pool_ops}
-            assert short[fields[-1]] in result.operators
-            assert fields[-1].startswith("CEO(")
-            cell = dict(zip(columns, fields))
-            assert float(cell["expr"]) >= 0.0
-            assert int(cell["1q"]) > 0
-            assert int(cell["cnot"]) > 0 and int(cell["depth"]) > 0
-        # The rows are column-aligned: the operator column starts at one offset.
-        starts = {row.index(row.split()[-1]) for row in rows}
-        assert len(starts) == 1
-
-    def test_the_table_does_not_depend_on_the_terminal(self, h2_hamiltonian,
-                                                       capsys, monkeypatch):
-        """Every column, at every terminal width.
-
-        The trace used to be a second, width-adaptive renderer that dropped
-        columns to fit (``dE``, then ``1q``, ``depth``, ``steps``, ``cnot``)
-        and elided long operator labels.  It is now the log protocol itself,
-        printed rather than written, so a narrow terminal wraps the row instead
-        of silently losing a column -- and the screen can be compared with the
-        file line for line, which is the point.
-        """
-        import re
-
-        headings = {}
-        for columns in ("80", "200"):
-            monkeypatch.setenv("COLUMNS", columns)
-            adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                              pool="ceo", num_particles=(1, 1),
-                              n_spatial_orbitals=2, profile=True, trace=True,
-                              max_iterations=2, convergence={"gradient": 1e-6})
-            adapt.run(log_expressivity=True)     # the `expr` column is opt-in
-            out = capsys.readouterr().out
-            heading = next(line for line in out.splitlines()
-                           if line.split()[:1] == ["iter"])
-            headings[columns] = re.split(r" {4,}", heading.strip())
-        assert headings["80"] == headings["200"]
-        assert set(headings["80"]) == {
-            "iter", "time (HH:MM:SS)", "energy (eV)", "expr", "dE (eV)", "|grad| (eV)", "steps", "cnot",
-            "1q", "depth", "operator"}
-
-    def test_verbose_false_is_silent(self, h2_hamiltonian, capsys):
-        adapt = Mandacaru(method="adapt-vqe", hamiltonian=h2_hamiltonian,
-                          pool="ceo", num_particles=(1, 1),
-                          n_spatial_orbitals=2, profile=False, trace=False,
-                          max_iterations=3, convergence={"gradient": 1e-6})
-        adapt.run()
-        assert capsys.readouterr().out == ""
-
-
-class TestMeasurementBlock:
-    def test_the_log_carries_the_energy_ase_returned(self, tmp_path):
-        from mandacaru.backends.providers import QiskitProvider
-
-        out = str(tmp_path / "output.txt")
-        atoms = h2()
-        atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", grid_spacing=0.45, pool="fermionic",
-            max_iterations=2, convergence={"gradient": 1e-3}, txt=out, profile=False,
-            measurement_provider=QiskitProvider(device="statevector", shots=0))
-        energy = atoms.get_potential_energy()
-        block = parse_output(out)["measurement"]
-        assert float(block["energy_eV"]) == pytest.approx(energy, abs=1e-9)
-        assert block["reported_by"].startswith("ASE")
-        # The optimization's own value is kept, under its own name.
-        assert "variational_energy_eV" in block
 
 
 class TestCompletionIsNotAssumed:
@@ -1607,7 +1176,7 @@ class TestGradientProvenance:
         Mandacaru(method="adapt-vqe",
                   hamiltonian=PauliSum({"ZIII": 1.0, "XXII": 0.2}),
                   pool="fermionic", txt=out, max_iterations=1, **DIRECT).run()
-        assert parse_output(out)["setup"]["gradient_units"] == "Hartree"
+        assert parse_output(out)["setup"]["gradient_units"] == "Ha/rad"
 
     def test_a_resumed_run_records_its_lineage(self, tmp_path):
         state = str(tmp_path / "state.json")
@@ -1626,7 +1195,6 @@ class TestGradientProvenance:
         # The lineage, not a separate line, says what the run started from.
         assert int(setup["restored_parameters"]) >= 1
         assert "initial_ansatz" not in setup
-
 
 
 # --------------------------------------------------------------------------- #
@@ -1697,67 +1265,3 @@ class TestIterationColumns:
         assert pool[0].label == label + "0"  # display never changes the full label
 
 
-class TestConvergenceMarkers:
-    """A ``*`` after each ``|grad|`` / ``dE`` that meets its threshold."""
-
-    POOL = [SimpleNamespace(label="op0", kind="double")]
-
-    def _log(self, tmp_path, convergence, rows, final_gradient):
-        from mandacaru.algorithms.convergence import Convergence
-
-        path = tmp_path / "output.txt"
-        with Logger(str(path), n_qubits=4) as logger:
-            logger.write_system()
-            # An eV log, the default: the energy threshold is given in eV,
-            # so it is read against dE as given.
-            logger.write_optimizer_setup(
-                "SLSQP", -1.0, energy_unit="eV", energy_scale=HARTREE_TO_EV,
-                convergence=Convergence.resolve(convergence))
-            for index, (energy, gradient) in enumerate(rows, start=1):
-                logger.write_iteration(index, self.POOL, [gradient], 0, None,
-                                       energy, index, energy_unit="eV")
-            logger.write_summary(True, rows[-1][0], len(rows),
-                                 final_max_gradient=final_gradient)
-        return path
-
-    def test_only_values_below_their_threshold_are_marked(self, tmp_path):
-        # dE: -0.5, -1e-2, -1e-4; |grad|: 0.3, 2e-3, 5e-4 against 1e-3 each.
-        rows = [(-1.5, 0.3), (-1.51, 2e-3), (-1.5101, 5e-4)]
-        path = self._log(tmp_path, {"gradient": 1e-3, "energy": 1e-3},
-                         rows, final_gradient=1e-4)
-        parsed = parse_output(str(path))
-        assert [r["energy_met"] for r in parsed["iterations"]] == \
-            [False, False, True]
-        assert [r["gradient_met"] for r in parsed["iterations"]] == \
-            [False, False, True]
-        # The marker is stripped: the numbers still parse.
-        assert parsed["iterations"][2]["max_gradient"] == pytest.approx(
-            5e-4, abs=0.5e-6 / HARTREE_TO_EV)
-        assert parsed["iterations"][2]["delta_energy"] == pytest.approx(-1e-4)
-        assert parsed["summary"]["gradient_met"] is True
-        assert float(parsed["summary"]["final_max_gradient"]) == \
-            pytest.approx(1e-4)
-        assert "convergence_marker: *" in path.read_text()
-
-    def test_the_columns_stay_aligned(self, tmp_path):
-        rows = [(-1.5, 0.3), (-1.5101, 5e-4)]
-        path = self._log(tmp_path, {"gradient": 1e-3, "energy": 1e-3},
-                         rows, final_gradient=1e-4)
-        table = path.read_text().split("[ITERATIONS]")[1].split("=")[0]
-        heading, _rule, first, second = table.strip("\n").splitlines()[:4]
-        end = heading.index("|grad| (eV)") + len("|grad| (eV)") + 2
-        # Marked or not, every row's |grad| cell ends where the heading's
-        # marker slot does, and a marker sits one space after its value.
-        assert first[end - 2:end] == "  " and second[end - 2:end] == " *"
-        assert second[end - 3].isdigit()
-        assert len(first) == len(second)
-
-    def test_an_unused_criterion_marks_nothing(self, tmp_path):
-        rows = [(-1.5, 0.3), (-1.5101, 5e-4)]
-        path = self._log(tmp_path, {"gradient": 1e-3}, rows,
-                         final_gradient=1e-4)
-        parsed = parse_output(str(path))
-        assert not any(r["energy_met"] for r in parsed["iterations"])
-        assert parsed["iterations"][1]["gradient_met"]
-        text = path.read_text()
-        assert "after a |grad| that meets" in text

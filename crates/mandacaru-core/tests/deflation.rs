@@ -30,7 +30,7 @@ fn sequential_deflation_finds_unbiased_orthogonal_levels_with_independent_restar
             let options = SolveOptions {
                 optimizer: optimizer::Options {
                     method,
-                    tolerance: 1e-12,
+                    tolerance: Some(1e-12),
                     ..Default::default()
                 },
                 ..Default::default()

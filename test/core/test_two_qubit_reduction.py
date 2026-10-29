@@ -18,19 +18,18 @@ import numpy as np
 from mandacaru.units import HARTREE_TO_EV
 import pytest
 
-from mandacaru.algorithms import Mandacaru
-from mandacaru.circuits import AdaptAnsatz, UCCSD
+from mandacaru import Mandacaru
 from mandacaru.circuits.pools import build_pool
 from mandacaru.core.mapping import (parity_tapered_qubits, reference_qubit_bits,
                                     two_qubit_reduce)
 from mandacaru.core import PauliSum
-from mandacaru.optimizers import Optimizer
+from mandacaru.specifications import estimate_qubits
 
 # The classical optimizers used below, with the iteration budget and
 # the convergence tolerance written out rather than left to the
 # library default: a test that pins an energy should say what it was
 # optimized with.
-LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
+LBFGS = {"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12}
 
 
 def _h2():
@@ -88,17 +87,7 @@ class TestPoolsAndAnsatze:
         with pytest.raises(ValueError, match="do not commute"):
             build_pool("qubit", 2, (1, 1), mapping="parity_reduced")
 
-    def test_adapt_ansatz_reference_is_tapered(self):
-        ansatz = AdaptAnsatz(2, (0, 2), "parity_reduced",
-                             num_particles=(1, 1))
-        assert ansatz.reference_qubits() == [0]
-        assert np.isclose(np.abs(ansatz.reference_state()[0b10]), 1.0)
 
-    def test_uccsd_is_tapered(self):
-        uccsd = UCCSD(2, (1, 1), mapping="parity_reduced")
-        assert uccsd.n_qubits == 2
-        assert all(g.num_qubits == 2 for g in uccsd.pauli_generators)
-        assert np.isclose(np.abs(uccsd.reference_state()[0b10]), 1.0)
 
 
 class TestDrivers:
@@ -112,7 +101,8 @@ class TestDrivers:
         atoms.get_total_energy()
         calc = atoms.calc
         assert calc.n_qubits == 2
-        assert len(calc.hamiltonian.simplify().terms) == 5
+        terms = {label for label, _re, _im in calc.problem.hamiltonian_terms}
+        assert len(PauliSum({label: 1.0 for label in terms}).simplify().terms) == 5
         assert calc.result.metrics.cnot_count is not None   # profiled on 2 qubits
         # Both sides are eV (1e-8 / 1e-7 Ha scaled by the conversion factor).
         assert calc.result.reference_energy == pytest.approx(
@@ -136,31 +126,39 @@ class TestDrivers:
             Mandacaru(method="adapt-vqe", pool="fermionic", basis="HAO",
                       two_qubit_reduction=True)
 
-    def test_subspace_solvers_refuse(self):
-        with pytest.raises(NotImplementedError):
-            Mandacaru(method="subspace-vqe", basis="HAO",
-                      mapping="parity_reduced", trace=False)
+    def test_subspace_solvers_run_on_the_reduced_register(self):
+        energies = {}
+        for mapping in ("jordan_wigner", "parity_reduced"):
+            atoms = _h2()
+            atoms.calc = Mandacaru(method="subspace-vqe", basis="HAO",
+                                   grid_spacing=0.4, mapping=mapping,
+                                   trace=False)
+            atoms.get_total_energy()
+            energies[mapping] = (atoms.calc.n_qubits,
+                                 np.asarray(atoms.calc.result.energies))
+        assert energies["jordan_wigner"][0] == 4
+        assert energies["parity_reduced"][0] == 2
+        assert np.allclose(energies["parity_reduced"][1],
+                           energies["jordan_wigner"][1], atol=1e-6)
 
-    def test_dry_run_counts_the_reduced_register(self):
-        atoms = _h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
-                               basis="HAO", mapping="parity_reduced",
-                               dry_run=True,
-                               trace=False)
-        assert np.isnan(atoms.get_potential_energy())
-        assert atoms.calc.dry_run_result.n_qubits == 2
+    def test_the_dry_run_counts_the_reduced_register(self):
+        estimate = estimate_qubits(_h2(), basis="HAO", mapping="parity_reduced")
+        assert estimate.n_qubits == 2
 
     def test_measured_energy_on_the_reduced_register(self, reference):
-        from mandacaru.backends.providers import QiskitProvider
         exact, _hf = reference
         atoms = _h2()
         atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
                                basis="HAO", grid_spacing=0.4,
                                mapping="parity_reduced", trace=False,
-                               profile=False, max_iterations=4)
+                               profile=False, max_iterations=4,
+                               execute_circuits=True)
         atoms.get_total_energy()
-        provider = QiskitProvider()
-        assert atoms.calc.solver.measured_energy(provider) == pytest.approx(
+        assert atoms.calc.result.optimal_energy == pytest.approx(
             exact, abs=1e-8 * HARTREE_TO_EV)
-        qc = provider.build(*atoms.calc.solver.ansatz_problem()[:4])
+        problem = atoms.calc.problem
+        qc = atoms.calc.provider.build(
+            problem.num_qubits, problem.reference_qubits,
+            atoms.calc.solver.ansatz.pauli_generators,
+            atoms.calc.result.optimal_parameters)
         assert qc.num_qubits == 2

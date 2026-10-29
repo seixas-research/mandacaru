@@ -15,7 +15,7 @@ falling back to a simulator.
 
 import pytest
 
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 from mandacaru.backends import (available_devices, is_simulator,
                                 normalize_device)
 

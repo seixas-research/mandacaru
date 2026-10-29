@@ -209,6 +209,54 @@ fn evaluate(
     })
 }
 impl MolecularIntegrals {
+    /// One-electron matrix of the Kohn-Sham model: the shared core operator
+    /// plus the frozen atomic one-center Kohn-Sham difference of a PAW setup.
+    fn kohn_sham_core(&self) -> Matrix {
+        let m = self.m();
+        Matrix::from_fn(m, m, |a, b| {
+            C64::new(
+                self.one.as_slice()[a * m + b]
+                    + self
+                        .corrections
+                        .as_ref()
+                        .and_then(|c| c.dft.as_ref())
+                        .map_or(0., |p| p.one[(a, b)]),
+                0.,
+            )
+        })
+    }
+    /// Electronic Kohn-Sham energy of orthonormal-frame spin densities, which
+    /// need not be idempotent. Nuclear repulsion is not included. Screened
+    /// exact exchange has no PAW augmentation, so it is not evaluated here.
+    pub(super) fn kohn_sham_energy(&self, functional: &str, d: &[Matrix]) -> Result<f64> {
+        let definition = crate::models::functional(functional)?;
+        let m = self.m();
+        if definition.screened_exchange.is_some()
+            || d.is_empty()
+            || d.len() > 2
+            || d.iter().any(|d| d.shape() != (m, m))
+        {
+            return Err(invalid(
+                "Kohn-Sham energy needs one or two spin densities and no screened exchange",
+            ));
+        }
+        let mut poisson = Poisson::isolated(&self.context, &self.grid)?;
+        let gradients = if definition.requires_tau {
+            Some(orbital_gradients(self)?)
+        } else {
+            None
+        };
+        Ok(evaluate(
+            self,
+            &self.kohn_sham_core(),
+            d,
+            functional,
+            &mut poisson,
+            gradients.as_ref().map(|v| v.as_slice()),
+            None,
+        )?
+        .energy)
+    }
     pub fn kohn_sham(
         &self,
         functional: &str,
@@ -265,17 +313,7 @@ impl MolecularIntegrals {
                     .checked_add(product(&[options.max_iterations, 128, 4])?)
                     .ok_or(crate::Error::Overflow)?,
             )?;
-            let h = Matrix::from_fn(m, m, |a, b| {
-                C64::new(
-                    self.one.as_slice()[a * m + b]
-                        + self
-                            .corrections
-                            .as_ref()
-                            .and_then(|c| c.dft.as_ref())
-                            .map_or(0., |p| p.one[(a, b)]),
-                    0.,
-                )
-            });
+            let h = self.kohn_sham_core();
             let (_, core) = crate::math::linalg::eigen(h.clone())?;
             let mut starts = vec![if unrestricted {
                 vec![core.clone(), core.clone()]

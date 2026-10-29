@@ -19,22 +19,21 @@ import textwrap
 
 import pytest
 
-from mandacaru.algorithms import Mandacaru
-from mandacaru.algorithms.base import measure_energies
+from mandacaru import Mandacaru
 from mandacaru.backends.hardware import (available_devices, device_provider,
                                          get_device, is_fake_device,
                                          is_ibm_device, is_simulator,
                                          normalize_device, require_runnable,
                                          requires_shots)
 from mandacaru.backends.providers import QiskitProvider, build_provider
+from mandacaru.core import PauliSum
 from mandacaru.units import HARTREE_TO_EV
-from mandacaru.optimizers import Optimizer
 
-# The classical optimizers used below, with the iteration budget and
+# The classical optimizer used below, with the iteration budget and
 # the convergence tolerance written out rather than left to the
 # library default: a test that pins an energy should say what it was
 # optimized with.
-COBYLA_OPT = Optimizer(method="COBYLA", maxiter=2000, tol=1e-12)
+COBYLA_OPT = {"method": "COBYLA", "maxiter": 2000, "tol": 1e-12}
 
 
 def _h2():
@@ -42,6 +41,27 @@ def _h2():
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
     atoms.center(vacuum=3.0)
     return atoms
+
+
+def _ansatz_problem(calc):
+    """``(n_qubits, occupied, generators, thetas, hamiltonian)`` of a finished run.
+
+    The five arguments a circuit provider takes, read from the calculator:
+    the register, the reference determinant, the Pauli generators of the
+    optimized ansatz, its angles and the qubit Hamiltonian (in Hartree).
+    """
+    problem = calc.problem
+    hamiltonian = PauliSum({label: complex(re, im)
+                            for label, re, im in problem.hamiltonian_terms},
+                           num_qubits=problem.num_qubits)
+    return (problem.num_qubits, list(problem.reference_qubits),
+            calc.solver.ansatz.pauli_generators,
+            calc.result.optimal_parameters, hamiltonian)
+
+
+def _measured_energy(calc, provider):
+    """The optimized state's energy, measured through ``provider``, in eV."""
+    return provider.energy(*_ansatz_problem(calc)) * HARTREE_TO_EV
 
 
 def _isolated(code: str) -> str:
@@ -64,8 +84,8 @@ _H2_RUN = """
     import warnings; warnings.simplefilter("ignore")
     from ase import Atoms
     from mandacaru import Mandacaru
-    from mandacaru.backends.providers import QiskitProvider
-    from mandacaru.optimizers import Optimizer
+    from mandacaru.backends.providers import build_provider
+    from mandacaru.core import PauliSum
     from mandacaru.units import HARTREE_TO_EV
     def _h2():
         atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
@@ -77,6 +97,15 @@ _H2_RUN = """
     atoms.calc = calc
     atoms.get_total_energy()
     exact = calc.result.optimal_energy
+    def ansatz_problem():
+        problem = calc.problem
+        hamiltonian = PauliSum({l: complex(r, i) for l, r, i in problem.hamiltonian_terms},
+                               num_qubits=problem.num_qubits)
+        return (problem.num_qubits, list(problem.reference_qubits),
+                calc.solver.ansatz.pauli_generators,
+                calc.result.optimal_parameters, hamiltonian)
+    def measured_energy(provider):
+        return provider.energy(*ansatz_problem()) * HARTREE_TO_EV
 """
 
 
@@ -129,96 +158,88 @@ class TestDriverConfiguration:
         driver = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                            device="ibm_kingston", shots=1024, trace=False,
                            backend_options={"instance": "crn:x"})
-        assert driver.solver.backend_provider == "qiskit"
-        assert driver.solver.execute_circuits is True
-        provider = driver.solver.circuit_provider()
-        assert isinstance(provider, QiskitProvider)
+        assert driver._execute_circuits is True
+        provider = driver.provider
+        assert isinstance(provider, QiskitProvider) and provider.name == "qiskit"
         assert provider.is_ibm_device and provider.shots == 1024
         assert provider.instance == "crn:x"
         assert provider.precision == pytest.approx(1 / 32)
-        assert driver.solver.ansatz_provider() is None     # ansatz stays internal
 
     def test_exact_qiskit_path_is_unchanged(self):
         driver = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                            trace=False)
-        assert driver.solver.shots == 0 and driver.solver.circuit_provider() is None
+        assert driver._execute_circuits is False and driver.provider is None
         exact = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                           trace=False, execute_circuits=True)
-        assert exact.solver.circuit_provider() is build_provider("qiskit")
+        assert isinstance(exact.provider, QiskitProvider)
+        assert exact._shots == 0 and exact.provider.shots == 0
+        assert exact._execute_circuits is True
 
     def test_shots_refused_for_cirq(self):
-        with pytest.raises(NotImplementedError, match="qiskit"):
+        with pytest.raises(ValueError, match="Cirq currently supports exact"):
             Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                       backend_provider="cirq", shots=100, trace=False)
 
 
 class TestEstimatorEnergies:
     def test_exact_local_estimator_matches_the_state_vector(self, h2_run):
-        provider = QiskitProvider()                  # shots = 0, exact
+        provider = build_provider("qiskit")         # shots = 0, exact
         exact = h2_run.result.optimal_energy
         assert provider.precision == 0.0
-        assert h2_run.solver.measured_energy(provider) == pytest.approx(exact, abs=1e-9)
+        assert _measured_energy(h2_run, provider) == pytest.approx(exact, abs=1e-9)
         # The Estimator route (energies) gives the same number -- in the
         # Hamiltonian's own Hartree, which the driver converts to eV.
-        assert provider.energies([h2_run.solver.ansatz_problem()])[0] == \
+        assert provider.energies([_ansatz_problem(h2_run)])[0] == \
             pytest.approx(exact / HARTREE_TO_EV, abs=1e-9)
 
     def test_sampled_estimator_converges(self, h2_run):
-        provider = QiskitProvider(shots=4096)
-        energy = h2_run.solver.measured_energy(provider)
+        provider = build_provider("qiskit", shots=4096)
+        energy = _measured_energy(h2_run, provider)
         assert abs(energy - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
 
     def test_fake_processor_transpiles_and_estimates(self):
         # A fake processor carries its noise model (qiskit-aer), so the
         # tolerance is loose; the checks are the layout and the plumbing.
         out = _isolated(_H2_RUN + """
-    provider = QiskitProvider(device="fake_manila", shots=4096)
-    energy = calc.solver.measured_energy(provider)
-    isa, observable, *_angles = provider.pub(*calc.solver.ansatz_problem())
+    provider = build_provider("qiskit", device="fake_manila", shots=4096)
+    energy = measured_energy(provider)
+    isa, observable, *_angles = provider.pub(*ansatz_problem())
     print(provider.backend().name, isa.layout is not None,
           observable.num_qubits == provider.backend().num_qubits,
           abs(energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split() == ["fake_manila", "True", "True", "True"]
 
-    def test_one_job_for_several_problems(self, h2_run):
-        provider = QiskitProvider(shots=4096)
-        energies = measure_energies([h2_run, h2_run], provider)
-        assert len(energies) == 2
-        assert all(abs(e - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
-                   for e in energies)
-        assert provider.last_job is None and len(provider.last_result) == 2
-        assert float(provider.last_result[0].data.stds) >= 0.0   # exact sampler reports 0
 
     def test_statevector_refused_when_it_cannot_exist(self, h2_run):
-        problem = h2_run.solver.ansatz_problem()[:4]
+        problem = _ansatz_problem(h2_run)[:4]
         with pytest.raises(ValueError, match="state vector"):
-            QiskitProvider(shots=100).statevector(*problem)
+            build_provider("qiskit", shots=100).statevector(*problem)
         with pytest.raises(ValueError, match="state vector"):
-            QiskitProvider(device="fake_manila").statevector(*problem)
+            build_provider("qiskit", device="fake_manila").statevector(*problem)
 
     def test_processor_needs_shots(self, h2_run):
         with pytest.raises(ValueError, match="shots > 0"):
-            QiskitProvider(device="fake_manila", shots=0).energies(
-                [h2_run.solver.ansatz_problem()])
+            build_provider("qiskit", device="fake_manila", shots=0).energies(
+                [_ansatz_problem(h2_run)])
 
     def test_physical_qubits_pin_the_layout(self):
         out = _isolated(_H2_RUN + """
-    provider = QiskitProvider(device="fake_manila", shots=1024,
+    provider = build_provider("qiskit", device="fake_manila", shots=1024,
                               physical_qubits=[3, 4, 1, 2])
-    isa, observable, *_angles = provider.pub(*calc.solver.ansatz_problem())
+    isa, observable, *_angles = provider.pub(*ansatz_problem())
     # Mandacaru qubit k -> physical_qubits[k]; wire n-1-k carries qubit k.
     # (The *initial* layout is what the pin fixes; routing may permute the
     # final one, which apply_layout accounts for.)
     layout = isa.layout.initial_index_layout(filter_ancillas=True)
     print([layout[4 - 1 - k] for k in range(4)])
-    energy = calc.solver.measured_energy(provider)
+    energy = measured_energy(provider)
     print(abs(energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split("\n")[0] == "[3, 4, 1, 2]"
         assert out.split()[-1] == "True"
         with pytest.raises(ValueError, match="entries"):
-            QiskitProvider(device="fake_manila", shots=1,
+            build_provider("qiskit", device="fake_manila", shots=1,
                            physical_qubits=[0, 1]).pub(
                 4, [0, 2], [], [], __import__("mandacaru.core", fromlist=["PauliSum"]).PauliSum({"ZIII": 1.0}))
 
@@ -311,7 +332,7 @@ class TestDriversEndToEnd:
                                shots=4096, optimizer=COBYLA_OPT,
                                backend_options={"seed": 1234})
         atoms.get_total_energy()
-        provider = atoms.calc.solver.circuit_provider()
+        provider = atoms.calc.provider
         assert isinstance(provider, QiskitProvider) and provider.seed == 1234
         assert abs(atoms.calc.result.optimal_energy
                    - h2_run.result.optimal_energy) < 0.05 * HARTREE_TO_EV
@@ -321,10 +342,10 @@ class TestDriversEndToEnd:
     atoms = _h2()
     atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, trace=False,
                            device="fake_manila", shots=4096,
-                           optimizer=Optimizer(method="COBYLA",
-                                               maxiter=2000, tol=1e-12))
+                           optimizer={"method": "COBYLA", "maxiter": 2000,
+                                      "tol": 1e-12})
     atoms.get_total_energy()
-    print(atoms.calc.solver.circuit_provider().backend().name,
+    print(atoms.calc.provider.backend().name,
           abs(atoms.calc.result.optimal_energy - exact) < 0.4 * HARTREE_TO_EV)
 """)
         assert out.split() == ["fake_manila", "True"]

@@ -531,14 +531,21 @@ impl PyMeanField {
             "gradient",
             array(py, &shape, gradient.total.as_slice().to_vec())?,
         )?;
-        out.set_item(
-            "hellmann_feynman",
-            array(py, &shape, gradient.hellmann_feynman.as_slice().to_vec())?,
-        )?;
-        out.set_item(
-            "pulay",
-            array(py, &shape, gradient.pulay.as_slice().to_vec())?,
-        )?;
+        for (key, part) in [
+            ("hellmann_feynman", &gradient.hellmann_feynman),
+            ("pulay", &gradient.pulay),
+        ] {
+            if let Some(part) = part {
+                out.set_item(key, array(py, &shape, part.as_slice().to_vec())?)?;
+            }
+        }
+        out.set_item("scheme", gradient.scheme)?;
+        if let Some(step) = gradient.step {
+            out.set_item("step_bohr", step)?;
+        }
+        if let Some(estimate) = gradient.estimate {
+            out.set_item("step_error_estimate", estimate)?;
+        }
         Ok(out)
     }
     #[getter]

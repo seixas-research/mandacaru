@@ -83,7 +83,7 @@ model retains its original context, so configure that context at its origin.
 | Calculation | Native support | Limits |
 | --- | --- | --- |
 | Molecular mean field | RHF, UHF, GHF | Gradients require real collinear orbitals and spectral kinetic energy |
-| Molecular PAW | HF and variational methods, exact valence one-center terms, smooth fields and augmentation-charge accounting | Empty or single closed-1s cores; no PAW DFT, spin-orbit projectors or forces |
+| Molecular PAW | HF, semilocal Kohn–Sham and variational methods, exact valence one-center terms, stationary RHF/UHF/KS forces, smooth fields and augmentation-charge accounting | Empty or single closed-1s cores; no PAW screened exchange or spin-orbit projectors; no PAW forces for GHF, screened exchange or nonlocal correlation |
 | Molecular DFT | `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10`, `r2scan+rvv10` | All-electron geometry interface |
 | Periodic DFT | LDA/PBE SCF, occupations, spectra | Python PAW geometry assembly; no high-level periodic force/stress interface |
 | Quantum methods | UCCSD VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspace searches | Other ansätze, GHF quantum handoff and learned proposals remain unported |

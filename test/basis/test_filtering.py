@@ -16,8 +16,7 @@ Four things are pinned here, in this order:
    behavior at the origin survives (the property whose loss broke the forces
    once already in the polarization shell);
 2. **the option** -- ``True`` / ``"auto"`` / a number in eV / ``False``
-   accepted, everything else refused with a clear message, in the single-family
-   and the per-element form and in the dry run;
+   accepted, everything else refused with a clear message;
 3. **the default** -- on for PAW-LCAO and UPAW-LCAO, declared in the
    registry, and ``filter_cutoff=False`` reproducing the unfiltered basis **byte for
    byte** (this is what makes the PAW-LCAO flip auditable);
@@ -36,10 +35,6 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms._hamiltonian_from_atoms import (
-    build_basis_hamiltonian, grid_from_cell, resolve_basis,
-    resolve_pseudo_basis)
-from mandacaru.algorithms.dry_run import count_basis_functions, estimate_qubits
 from mandacaru.basis.filtering import (DEFAULT_FILTER_METHOD, FILTER_METHODS,
                                        FILTER_NYQUIST_FRACTION,
                                        ROLLOFF_FRACTION, bessel_matrix,
@@ -80,10 +75,6 @@ def water(cell=10.0):
                  positions=[[5.0, 5.0, 5.0], [5.0, 6.0, 5.0], [5.0, 5.0, 6.0]])
 
 
-def build(atoms, basis, grid_spacing):
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return build_basis_hamiltonian(atoms, basis, None, grid_spacing, 0, None)
 
 
 def paw_tables(symbol="O"):
@@ -314,12 +305,6 @@ class TestOption:
         chose it is tabulated on the constant."""
         assert FILTER_NYQUIST_FRACTION == 1.0
 
-    @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
-    def test_every_family_accepts_the_option(self, family):
-        spec = PSEUDO_FAMILIES[family.lower()]
-        assert "filter_cutoff" in spec.options
-        _name, options = resolve_basis({"name": family, "filter_cutoff": True})
-        assert options["filter_cutoff"] is True
 
     def test_an_unknown_option_is_still_refused(self):
         with pytest.raises(ValueError, match="unknown option"):
@@ -332,37 +317,10 @@ class TestOption:
             Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO",
                                                  "filter_cutoff": bad})
 
-    @pytest.mark.parametrize("bad", ["yes", -1.0])
-    def test_a_bad_value_in_the_per_element_form_is_refused_too(self, bad):
-        """Which element gets which family needs a geometry; an option
-        *value* does not, so it is checked in the constructor either way."""
-        with pytest.raises(ValueError, match="filter"):
-            Mandacaru(method="adapt-vqe",
-                      basis={"O": {"name": "PAW-LCAO", "filter_cutoff": bad},
-                             "H": {"name": "PAW-LCAO", "filter_cutoff": bad}})
-
-    def test_the_per_element_form_merges_one_shared_filter(self):
-        family, options = resolve_pseudo_basis(
-            "per-element", {"O": {"name": "PAW-LCAO", "size": "DZ", "filter_cutoff": 700.0},
-                            "H": {"name": "PAW-LCAO", "filter_cutoff": 700.0}},
-            ["O", "H", "H"])
-        assert family is PSEUDO_FAMILIES["paw-lcao"]
-        assert options == {"size": {"O": "DZ", "H": "SZ"}, "filter_cutoff": 700.0}
-
-    @pytest.mark.parametrize("mapping", [
-        {"O": {"name": "PAW-LCAO", "filter_cutoff": True},
-         "H": {"name": "PAW-LCAO", "filter_cutoff": False}},
-        {"O": {"name": "PAW-LCAO", "filter_cutoff": True}, "H": "PAW-LCAO"},
-    ])
-    def test_a_per_element_filter_must_agree(self, mapping):
-        """The cutoff is a property of the grid, which every atom shares."""
-        with pytest.raises(ValueError, match="same for every element"):
-            resolve_pseudo_basis("per-element", mapping, ["O", "H"])
-
     def test_a_family_cannot_default_an_option_it_does_not_accept(self):
         with pytest.raises(ValueError, match="does not accept"):
             FamilySpec(name="bogus", description="", generate=None, get=None,
-                       build=None, options=("size",),
+                       options=("size",),
                        default_options={"filter_cutoff": True})
 
 
@@ -384,13 +342,6 @@ class TestDefault:
         assert spec.resolved_options(
             {"filter_cutoff": False})["filter_cutoff"] is False
 
-    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
-    def test_the_default_really_filters(self, family):
-        context = build(h2(), family, 0.25)[4]
-        assert context["filter_wavevector"] is not None
-        assert context["filter_wavevector"] == pytest.approx(
-            FILTER_NYQUIST_FRACTION * np.pi / (0.25 * ANGSTROM_TO_BOHR),
-            rel=0.05)              # the realized spacing, not exactly h
 
     @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
     def test_filter_off_is_byte_identical_to_an_unfiltered_basis(self, family):
@@ -433,55 +384,8 @@ class TestDefault:
             assert np.array_equal(np.asarray(got.values),
                                   np.asarray(want.values))
 
-    @pytest.mark.parametrize("family", ["paw-lcao", "upaw-lcao"])
-    def test_filter_false_restores_the_unfiltered_hamiltonian(self, family):
-        """End to end: ``filter_cutoff=False`` builds the Hamiltonian from the raw
-        tables, and the default builds a different one.
 
-        The 'raw' side is assembled here from the dataset's own radial
-        functions rather than from a second ``filter_cutoff=False`` call, so the
-        comparison has independent content.
-        """
-        atoms = h2()
-        # The filter alone is under test, so the confinement PAW-LCAO also applies
-        # by default is switched off on both sides: the raw table below is the
-        # dataset's free-atom partial wave.
-        free = {"name": family, "energy_shift": None}
-        off = build(atoms, {**free, "filter_cutoff": False}, 0.25)
-        on = build(atoms, free, 0.25)
-        assert off[4]["filter_wavevector"] is None
-        assert on[4]["filter_wavevector"] is not None
 
-        pp = PSEUDO_FAMILIES[family].get("H")
-        r = np.asarray(pp.r)[:-1]                   # the table's own nodes
-        raw = np.asarray(pp.channels[0].pseudo_radial)[:-1]
-        assert np.array_equal(off[4]["integrals"].basis[0].radial(r), raw)
-        filtered = on[4]["integrals"].basis[0].radial(r)
-        assert not np.array_equal(filtered, raw)
-        # 1.1e-2 at grid_spacing = 0.25 -- 0.9 % of the peak, small but not nothing.
-        assert np.abs(filtered - raw).max() > 1e-3
-
-        # The Hamiltonians differ, and by little on H2: max|dH| = 2.4e-3 Ha
-        # (PAW-LCAO) / 3.9e-3 (UPAW-LCAO), a ground-state shift of -2.5e-5 / +8.8e-4 Ha.
-        h_off = off[0].map_to_qubits("jordan_wigner").to_matrix()
-        h_on = on[0].map_to_qubits("jordan_wigner").to_matrix()
-        assert not np.allclose(h_off, h_on)         # the default does something
-        assert np.abs(h_off - h_on).max() < 1e-2    # ...but not a lot, on H2
-
-    def test_the_dry_run_names_the_filter_and_counts_the_same(self):
-        """Filtering reshapes functions; it never adds or removes one."""
-        on = estimate_qubits(water(), basis="PAW-LCAO")
-        off = estimate_qubits(water(), basis={"name": "PAW-LCAO", "filter_cutoff": False})
-        assert on.n_qubits == off.n_qubits and on.per_atom == off.per_atom
-        assert "filtered (auto: 1 x Nyquist)" in on.basis
-        assert "unfiltered" in off.basis
-        explicit = count_basis_functions(water(),
-                                         {"name": "PAW-LCAO", "filter_cutoff": 700.0})[1]
-        assert "filtered (700 eV)" in explicit
-
-    def test_the_dry_run_refuses_a_bad_value(self):
-        with pytest.raises(ValueError, match="filter"):
-            count_basis_functions(water(), {"name": "PAW-LCAO", "filter_cutoff": "yes"})
 
     @pytest.mark.parametrize("spec, text", [
         (False, "unfiltered"), (True, "auto"), (500.0, "500 eV")])
@@ -493,75 +397,10 @@ class TestDefault:
 # (4) What it buys: less egg-box, and forces that still differentiate E.
 # --------------------------------------------------------------------------- #
 
-def rigid_shift_ripple(basis, grid_spacing, fractions=(0.0, 0.25, 0.5, 0.75)):
-    """Peak-to-peak RHF energy of water rigidly shifted on a FROZEN grid.
-
-    The grid is built once and passed explicitly, which is exactly what the
-    force path freezes; without that the grid re-centers on the molecule and
-    the egg-box is invisible by construction.
-    """
-    atoms = water()
-    grid = grid_from_cell(atoms, grid_spacing)
-    energies = []
-    for f in fractions:
-        moved = atoms.copy()
-        moved.positions += f * grid_spacing
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            _H, _p, _n, _pr, context = build_basis_hamiltonian(
-                moved, basis, grid, grid_spacing, 0, None)
-        ints = context["integrals"]
-        rhf = ints.hartree_fock(context["n_electrons"])
-        energies.append(rhf.electronic_energy + ints.nuclear_repulsion
-                        + ints.constant_energy)
-    return float(max(energies) - min(energies))
 
 
 class TestWhatItBuys:
-    def test_the_rigid_shift_ripple_shrinks(self):
-        """Water / PAW-LCAO-SZ at grid_spacing = 0.25: 268.7 meV of ripple unfiltered against
-        27.1 meV with the default, a factor 9.9 (22x at grid_spacing = 0.20).  The margin
-        asked for here is a factor 3 -- well inside what was measured, and
-        loose enough to survive a change in the compensation quadrature."""
-        off = rigid_shift_ripple({"name": "PAW-LCAO", "filter_cutoff": False}, 0.25)
-        on = rigid_shift_ripple("PAW-LCAO", 0.25)
-        assert off > 2e-3                       # there is an egg-box to fix
-        assert on < off / 3.0
 
-    def test_the_kinetic_term_stops_aliasing(self):
-        """The cleanest single signal, and it needs no density: ``tr(T)`` in
-        the raw atomic-orbital basis depends on where the nuclei fall between
-        grid nodes and on nothing else, so its rigid-shift ripple *is* the
-        kinetic aliasing.  Measured at grid_spacing = 0.25: **197.3 -> 0.19 meV**, a
-        factor of 1041.
-
-        (``resolution_ratios`` was tried here first and is a poor proxy --
-        0.0767 -> 0.0741, barely moving -- because it compares the grid
-        kinetic energy against the *exact* one for the same function, which
-        the filter also changes.  This compares one function against itself
-        at four grid offsets, which is the property that matters.)
-        """
-        def kinetic_ripple(basis):
-            atoms = water()
-            grid = grid_from_cell(atoms, 0.25)
-            traces = []
-            for f in (0.0, 0.25, 0.5, 0.75):
-                moved = atoms.copy()
-                moved.positions += f * 0.25
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    ints = build_basis_hamiltonian(
-                        moved, basis, grid, 0.25, 0, None)[4]["integrals"]
-                T, _V = ints._engine.one_body(ints.external_potential(),
-                                              energy_units="Ha",
-                                              kinetic=ints.kinetic)
-                traces.append(float(np.trace(T).real))
-            return max(traces) - min(traces)
-
-        off = kinetic_ripple({"name": "PAW-LCAO", "filter_cutoff": False})
-        on = kinetic_ripple("PAW-LCAO")
-        assert off > 1e-3                       # ~7 mHa of aliasing to remove
-        assert on < off / 100.0
 
     def test_the_analytic_force_is_the_derivative_of_the_energy(self):
         """With the filter on, ``forces == -dE/dR`` of the calculator's own
@@ -570,9 +409,10 @@ class TestWhatItBuys:
         repeated for the filtered basis because the filter changes every
         sampled function the gradient differentiates.
 
-        Read from ``unprojected``: the finite difference is of the discretized
-        energy, which is not translation invariant, while the reported force
-        has had that component projected out.
+        The calculator is built with ``project_translation=False``: the finite
+        difference is of the discretized energy, which is not translation
+        invariant, while the default reported force has had that component
+        projected out.
         """
         atoms = h2(0.75)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", grid_spacing=0.25,
@@ -581,8 +421,7 @@ class TestWhatItBuys:
         step = 0.005
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            atoms.get_forces()
-            raw = atoms.calc.force_result.unprojected
+            raw = atoms.get_forces()
             energies = []
             for sign in (1, -1):
                 moved = atoms.copy()

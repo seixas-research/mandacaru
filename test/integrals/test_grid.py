@@ -9,29 +9,19 @@
 """The real-space grid: anisotropic boxes, resolution, and the ASE cell.
 
 :class:`~mandacaru.integrals.Grid` accepts an anisotropic ``box_size`` or a
-full ``cell`` tensor, and the integral engine must still recover the reference
-physics (H 1s on-site repulsion = 5/8 Ha) on a non-cubic box.  The grid a
-calculator uses is cut from the geometry's own cell
-(:func:`~mandacaru.algorithms._hamiltonian_from_atoms.grid_from_cell`), which
-is also why where a molecule sits inside that cell must not matter.
+full ``cell`` tensor.  The grid a calculator uses is cut from the geometry's
+own cell, which is also why where a molecule sits inside that cell must not
+matter.
 """
 
 import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import Mandacaru
-from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
-from mandacaru.basis import HydrogenicAtomicOrbital
-from mandacaru.integrals import Grid, IntegralEngine
+from mandacaru import Mandacaru
+from mandacaru.integrals import Grid
 
 
-def _eri_00(grid):
-    """H 1s on-site repulsion <00|00> on ``grid`` (Hartree)."""
-    orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0.0, 0.0, 0.0],
-                                  units="bohr")
-    eng = IntegralEngine([orb], grid)
-    return float(np.real(eng.two_body(energy_units="Ha")[0, 0, 0, 0]))
 
 
 class TestNonCubicGrid:
@@ -73,26 +63,7 @@ class TestNonCubicGrid:
         assert g.size > 0
         assert g.dx == pytest.approx(0.25)
 
-    def test_eri_matches_cubic_reference(self):
-        # The H 1s self-repulsion must be 5/8 Ha independent of box shape.
-        cubic = _eri_00(Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=0.20, units="bohr"))
-        rect = _eri_00(Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0],
-                            grid_spacing=0.20, units="bohr"))
-        cell = _eri_00(Grid(center=[0, 0, 0], box_size=0.0, grid_spacing=0.20, units="bohr",
-                            cell=np.diag([16.0, 18.0, 14.0])))
-        assert cubic == pytest.approx(0.625, abs=2e-3)
-        assert rect == pytest.approx(0.625, abs=2e-3)
-        assert cell == pytest.approx(0.625, abs=2e-3)
-        assert rect == pytest.approx(cubic, abs=1e-4)
 
-    def test_kinetic_energy_non_cubic(self):
-        # <1s|-1/2 nabla^2|1s> = 1/2 Ha for hydrogen, on a non-cubic grid.
-        orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
-        g = Grid(center=[0, 0, 0], box_size=[8.0, 9.0, 7.0], grid_spacing=0.20, units="bohr")
-        eng = IntegralEngine([orb], g)
-        zero_v = lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape)
-        T, _ = eng.one_body(zero_v, energy_units="Ha")
-        assert float(np.real(T[0, 0])) == pytest.approx(0.5, abs=1e-2)
 
 
 class TestVaryingResolution:
@@ -110,79 +81,16 @@ class TestVaryingResolution:
             g.metric_inverse(),
             np.diag([1 / 0.20 ** 2, 1 / 0.25 ** 2, 1 / 0.30 ** 2]), atol=1e-12)
 
-    def test_kinetic_energy_varying_resolution(self):
-        # The generalized (per-axis) Laplacian still recovers <1s|T|1s> = 1/2 Ha.
-        orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
-        g = Grid(center=[0, 0, 0], box_size=8.0, grid_spacing=[0.20, 0.25, 0.30],
-                 units="bohr")
-        T, _ = IntegralEngine([orb], g).one_body(
-            lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape),
-            energy_units="Ha")
-        assert float(np.real(T[0, 0])) == pytest.approx(0.5, abs=2e-2)
-
-    def test_skewed_non_orthogonal_grid(self):
-        # skew=True samples the actual (non-orthogonal) lattice; the step matrix
-        # is non-diagonal and dV = |det(step)|.
-        cell = np.array([[16.0, 0.0, 0.0],
-                         [3.0, 16.0, 0.0],
-                         [0.0, 1.0, 16.0]])
-        g = Grid(center=[0, 0, 0], cell=cell, grid_spacing=0.4, units="bohr", skew=True)
-        assert not g.is_orthorhombic
-        assert g.dV == pytest.approx(abs(np.linalg.det(g.step)))
-        # Cross-term Laplacian recovers the hydrogen kinetic energy.
-        orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0], units="bohr")
-        T, _ = IntegralEngine([orb], g).one_body(
-            lambda x, y, z: np.zeros(np.broadcast(x, y, z).shape),
-            energy_units="Ha")
-        assert float(np.real(T[0, 0])) == pytest.approx(0.5, abs=3e-2)
-
-    def test_c_and_numpy_kernels_agree(self):
-        # The C general kernel and the NumPy fallback must stay in lockstep on
-        # anisotropic and skewed grids.
-        import mandacaru.integrals._backend as backend
-        if not backend.HAS_C_BACKEND:
-            pytest.skip("C backend not built")
-        orb = HydrogenicAtomicOrbital(1, 0, 0, Z=1.0, center=[0, 0, 0.2], units="bohr")
-        for g in (Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=[0.25, 0.30, 0.35],
-                       units="bohr"),
-                  Grid(center=[0, 0, 0],
-                       cell=np.array([[12., 0, 0], [3., 12., 0], [0, 1., 12.]]),
-                       grid_spacing=0.4, units="bohr", skew=True)):
-            psi = np.stack([orb.sample(g)])
-            vext = np.zeros(g.size)
-            saved = backend.HAS_C_BACKEND
-            try:
-                backend.HAS_C_BACKEND = True
-                Tc, _ = backend.one_body_matrices(psi, vext, g)
-                backend.HAS_C_BACKEND = False
-                Tn, _ = backend.one_body_matrices(psi, vext, g)
-            finally:
-                backend.HAS_C_BACKEND = saved
-            np.testing.assert_allclose(Tc, Tn, atol=1e-10)
-
-
-class TestGridFromCell:
-    def test_grid_spans_the_cell_and_is_non_cubic(self):
-        cell = [[10.0, 0, 0], [0, 12.0, 0], [0, 0, 8.0]]  # Angstrom, orthorhombic
-        atoms = Atoms("H", positions=[[5, 6, 4]], cell=cell, pbc=True)
-        grid = grid_from_cell(atoms, grid_spacing=0.25)
-        assert not grid.is_cubic          # 10 != 12 != 8
-        # grid_spacing is in Angstrom; dx is that value converted to Bohr.
-        assert grid.dx == pytest.approx(0.25 * 1.8897259886)
-
-    def test_grid_requires_a_cell(self):
-        atoms = Atoms("H", positions=[[0, 0, 0]])          # no unit cell
-        with pytest.raises(ValueError, match="no unit cell"):
-            grid_from_cell(atoms, grid_spacing=0.2)
-
 
 class TestPlacementInvariance:
     def test_energy_independent_of_position_in_cell(self):
-        # PBC-aware grid: the molecule is centered on itself, so placing H2 at the
-        # cell corner vs. the cell center gives the same Hamiltonian and energy.
+        # The grid is cut from the cell and centered on the molecule, so placing
+        # H2 at the cell corner vs. the cell center gives the same Hamiltonian
+        # and energy.  (A periodic molecular adapt-vqe run is no longer offered:
+        # periodic geometries are native DFT only.)
         def energy(pos):
             atoms = Atoms("H2", positions=pos,
-                          cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=True)
+                          cell=[[8, 0, 0], [0, 8, 0], [0, 0, 8]], pbc=False)
             atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
                                    grid_spacing=0.35, trace=False, max_iterations=6,
                                    convergence={"gradient": 1e-3})

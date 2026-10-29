@@ -1,7 +1,7 @@
 //! Isolated PAW-LCAO integrals with exact valence one-center interactions.
 //! Dataset decoding and basis recipes are outside this numerical boundary.
-mod data;
-mod onecenter;
+pub(super) mod data;
+pub(super) mod onecenter;
 use super::invalid;
 use crate::{
     basis::{Basis, Orbital, Radial},

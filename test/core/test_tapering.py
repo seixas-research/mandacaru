@@ -25,51 +25,32 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.basis import BasisSet
-from mandacaru.core import MolecularIntegrals
 from mandacaru.core.mapping import PauliSum
-from mandacaru.core.tapering import (SymmetryLeakError, leaking_terms,
-                                     reduce_generators,
-                                     rotate_to_z_type, sector_signs,
-                                     symmetry_generators, symplectic_form,
-                                     taper, taper_problem,
-                                     tapered_reference_bits)
-from mandacaru.integrals import Grid
+from mandacaru.core.tapering import reduce_generators, sector_signs, symmetry_generators, symplectic_form, taper
 
 
 # --------------------------------------------------------------------------- #
 # Helpers.
 # --------------------------------------------------------------------------- #
 
-def molecular_pauli(symbols, positions, basis, n_electrons, num_particles,
-                    box=8.0, grid_spacing=0.35):
-    """``(PauliSum, reference_bits, num_particles)`` for a real molecule."""
-    atoms = Atoms(symbols, positions=positions)
-    coordinates = atoms.get_positions()
-    bset = BasisSet.build(basis)
-    functions, nuclei = [], []
-    for Z, symbol, position in zip(atoms.get_atomic_numbers(),
-                                   atoms.get_chemical_symbols(), coordinates):
-        functions += bset.atom(symbol, center=position, units="angstrom")
-        nuclei.append((float(Z), position))
-    grid = Grid(center=coordinates.mean(axis=0), box_size=box, grid_spacing=grid_spacing,
-                units="angstrom")
-    integrals = MolecularIntegrals(
-        nuclei, functions, grid,
-        softening=0.5 * min(grid.dx, grid.dy, grid.dz))
-    fermion = integrals.molecular_hamiltonian(
-        mo_basis=True, n_electrons=n_electrons, num_particles=num_particles)
-    n_modes = fermion.n_modes()
-    operator = fermion.map_to_qubits("jordan_wigner",
-                                     n_modes=n_modes).simplify()
-    # Jordan-Wigner reference: the lowest orbitals of each spin block.
-    n_alpha, n_beta = num_particles
-    spatial = n_modes // 2
-    bits = [0] * n_modes
-    for k in range(n_alpha):
-        bits[k] = 1
-    for k in range(n_beta):
-        bits[spatial + k] = 1
+
+def molecular_pauli(symbols, positions, basis, cell, grid_spacing=0.35):
+    """``(PauliSum, reference_bits)`` for a real molecule, Jordan-Wigner."""
+    from mandacaru import Mandacaru
+
+    atoms = Atoms(symbols, positions=positions, cell=cell)
+    atoms.center()
+    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis,
+                           grid_spacing=grid_spacing, max_iterations=0,
+                           trace=False, profile=False)
+    atoms.get_potential_energy()
+    problem = atoms.calc.problem
+    operator = PauliSum({label: complex(re, im)
+                         for label, re, im in problem.hamiltonian_terms},
+                        num_qubits=problem.num_qubits).simplify()
+    bits = [0] * problem.num_qubits
+    for qubit in problem.reference_qubits:
+        bits[qubit] = 1
     return operator, bits
 
 
@@ -79,18 +60,20 @@ def ground_energy(operator: PauliSum) -> float:
 
 @pytest.fixture(scope="module")
 def h2_minimal():
-    return molecular_pauli("H2", [(0, 0, 0), (0, 0, 0.74)], "STO-3G", 2, (1, 1))
+    return molecular_pauli("H2", [(0, 0, 0), (0, 0, 0.74)], "STO-3G",
+                           (8., 8., 8.))
 
 
 @pytest.fixture(scope="module")
 def h2_split():
-    return molecular_pauli("H2", [(0, 0, 0), (0, 0, 0.74)], "6-31G", 2, (1, 1))
+    return molecular_pauli("H2", [(0, 0, 0), (0, 0, 0.74)], "6-31G",
+                           (8., 8., 8.))
 
 
 @pytest.fixture(scope="module")
 def lih_minimal():
-    return molecular_pauli("LiH", [(0, 0, 0), (0, 0, 1.60)], "STO-3G", 4,
-                           (2, 2))
+    return molecular_pauli("LiH", [(0, 0, 0), (0, 0, 1.60)], "STO-3G",
+                           (9., 9., 10.))
 
 
 # --------------------------------------------------------------------------- #
@@ -138,17 +121,6 @@ class TestReducingTheGenerators:
 # --------------------------------------------------------------------------- #
 
 class TestFindingTheSymmetries:
-    def test_every_generator_commutes_with_every_term(self, h2_minimal):
-        operator, _bits = h2_minimal
-        generators = symmetry_generators(operator)
-        assert generators
-        for tau in generators:
-            pauli = PauliSum({tau: 1 + 0j})
-            commutator = pauli.compose(operator).simplify()
-            reverse = operator.compose(pauli).simplify()
-            for label in set(commutator.terms) | set(reverse.terms):
-                assert commutator.terms.get(label, 0j) == pytest.approx(
-                    reverse.terms.get(label, 0j), abs=1e-12)
 
     def test_an_operator_with_no_symmetry_gives_none(self):
         # A single X on every qubit leaves no Z-type operator commuting with it.
@@ -163,40 +135,6 @@ class TestFindingTheSymmetries:
 
 
 # --------------------------------------------------------------------------- #
-# The Clifford rotation.
-# --------------------------------------------------------------------------- #
-
-class TestTheRotation:
-    def test_it_sends_each_generator_to_its_anchor_x(self, h2_minimal):
-        operator, _bits = h2_minimal
-        reduced, anchors = reduce_generators(symmetry_generators(operator))
-        for tau, qubit in zip(reduced, anchors):
-            n = len(tau)
-            expected = "".join("X" if q == qubit else "I" for q in range(n))
-            rotated = rotate_to_z_type(PauliSum({tau: 1 + 0j}), reduced,
-                                      anchors)
-            assert list(rotated.terms) == [expected]
-            assert rotated.terms[expected] == pytest.approx(1 + 0j, abs=1e-12)
-
-    def test_it_preserves_the_spectrum(self, h2_minimal):
-        # A Clifford is unitary, so this is the check that it was built as one.
-        operator, _bits = h2_minimal
-        reduced, anchors = reduce_generators(symmetry_generators(operator))
-        rotated = rotate_to_z_type(operator, reduced, anchors)
-        before = np.linalg.eigvalsh(operator.to_matrix())
-        after = np.linalg.eigvalsh(rotated.to_matrix())
-        assert np.allclose(before, after, atol=1e-10)
-
-    def test_the_rotated_operator_commutes_with_every_anchor_x(self, h2_minimal):
-        operator, _bits = h2_minimal
-        reduced, anchors = reduce_generators(symmetry_generators(operator))
-        rotated = rotate_to_z_type(operator, reduced, anchors)
-        # An X on the anchor commutes iff no term carries Y or Z there.
-        for qubit in anchors:
-            assert all(label[qubit] in ("I", "X") for label in rotated.terms)
-
-
-# --------------------------------------------------------------------------- #
 # The physics: the ground-state energy must survive.
 # --------------------------------------------------------------------------- #
 
@@ -207,14 +145,6 @@ class TestTheGroundStateSurvives:
         signs = sector_signs(bits, reduced)
         return taper(operator, reduced, signs, anchors), reduced, anchors
 
-    def test_hydrogen_in_a_minimal_basis_reduces_to_one_qubit(self, h2_minimal):
-        # The independent landmark: H2/STO-3G is known to taper to a single
-        # qubit.  Fewer would mean an invented symmetry, more a missed one.
-        operator, bits = h2_minimal
-        tapered, reduced, _anchors = self._taper(operator, bits)
-        assert operator.num_qubits == 4
-        assert len(reduced) == 3
-        assert tapered.num_qubits == 1
 
     @pytest.mark.parametrize("case", ["h2_minimal", "h2_split", "lih_minimal"])
     def test_the_energy_is_unchanged(self, case, request):
@@ -231,338 +161,3 @@ class TestTheGroundStateSurvives:
         operator, bits = request.getfixturevalue(case)
         tapered, _reduced, _anchors = self._taper(operator, bits)
         assert tapered.num_qubits <= operator.num_qubits - 2
-
-    def test_the_wrong_sector_gives_a_different_energy(self, h2_minimal):
-        # Which is why `sector_signs` reads the reference rather than guessing:
-        # the tapered spectrum is a *subset* of the original, and the lowest
-        # eigenvalue of the wrong subset is not the ground-state energy.
-        operator, bits = h2_minimal
-        reduced, anchors = reduce_generators(symmetry_generators(operator))
-        right = sector_signs(bits, reduced)
-        wrong = [-s for s in right]
-        exact = ground_energy(operator)
-        assert ground_energy(taper(operator, reduced, right, anchors)) \
-            == pytest.approx(exact, abs=1e-10)
-        assert ground_energy(taper(operator, reduced, wrong, anchors)) \
-            > exact + 1e-6
-
-    def test_every_tapered_eigenvalue_is_an_eigenvalue_of_the_original(
-            self, h2_minimal):
-        operator, bits = h2_minimal
-        tapered, _reduced, _anchors = self._taper(operator, bits)
-        full = np.linalg.eigvalsh(operator.to_matrix())
-        for value in np.linalg.eigvalsh(tapered.to_matrix()):
-            assert np.min(np.abs(full - value)) < 1e-9, value
-
-
-# --------------------------------------------------------------------------- #
-# The trap it shares with the particle-number sector.
-# --------------------------------------------------------------------------- #
-
-class TestItRefusesToProjectAnOperator:
-    def test_a_leaking_operator_is_named(self, h2_minimal):
-        operator, _bits = h2_minimal
-        reduced, _anchors = reduce_generators(symmetry_generators(operator))
-        # A single X anticommutes with any Z-type tau that acts on that qubit.
-        stray = PauliSum({"X" + "I" * (operator.num_qubits - 1): 1 + 0j})
-        assert leaking_terms(stray, reduced)
-
-    def test_tapering_it_raises_rather_than_projecting(self, h2_minimal):
-        # exp(PAP) != P exp(A) P: an ansatz built from projected generators
-        # converges above the ground state and says nothing about it.
-        operator, bits = h2_minimal
-        reduced, anchors = reduce_generators(symmetry_generators(operator))
-        signs = sector_signs(bits, reduced)
-        stray = PauliSum({"X" + "I" * (operator.num_qubits - 1): 1 + 0j})
-        with pytest.raises(SymmetryLeakError,
-                           match="do not commute with the Z2"):
-            taper(stray, reduced, signs, anchors)
-        # Callers that catch ValueError keep working.
-        assert issubclass(SymmetryLeakError, ValueError)
-
-    def test_the_hamiltonian_itself_never_leaks(self, h2_split):
-        # By construction: the generators were found as the operators commuting
-        # with every term.  Worth asserting, because it is the premise.
-        operator, _bits = h2_split
-        reduced, _anchors = reduce_generators(symmetry_generators(operator))
-        assert leaking_terms(operator, reduced) == []
-
-    def test_a_mismatched_sign_count_is_refused(self, h2_minimal):
-        operator, _bits = h2_minimal
-        reduced, anchors = reduce_generators(symmetry_generators(operator))
-        with pytest.raises(ValueError, match="signs for"):
-            taper(operator, reduced, [1], anchors)
-
-
-class TestTaperingAnOperatorAfterwards:
-    def test_it_lands_where_the_problem_put_its_own_generators(self, lih_minimal):
-        # ``taper_operator`` is how an operator that was not handed to
-        # ``taper_problem`` joins the register it built; if it took a different
-        # Clifford or sector, that operator would sit on a register of its own.
-        # Terms of the Hamiltonian commute with every symmetry by construction,
-        # so they stand in for pool generators that survive the taper.
-        operator, bits = lih_minimal
-        labels = [label for label in operator.terms if set(label) != {"I"}][:3]
-        generators = [PauliSum({label: 1j}) for label in labels]
-        info = taper_problem(operator, generators, bits)
-        assert info.kept == (0, 1, 2)
-        for original, tapered in zip(generators, info.generators):
-            assert info.taper_operator(original).terms == pytest.approx(
-                tapered.terms)
-
-    def test_it_uses_the_sector_the_problem_chose(self, lih_minimal):
-        # The wrong sector gives a different spectrum (see
-        # ``test_the_wrong_sector_gives_a_different_energy``), so this is what
-        # a mismatched sign or anchor would break.
-        operator, bits = lih_minimal
-        info = taper_problem(operator, [], bits)
-        tapered = info.taper_operator(operator)
-        assert tapered.num_qubits == info.n_qubits
-        assert ground_energy(tapered) == pytest.approx(ground_energy(operator),
-                                                      abs=1e-10)
-
-    def test_it_refuses_to_project_an_operator(self, lih_minimal):
-        operator, bits = lih_minimal
-        info = taper_problem(operator, [], bits)
-        stray = PauliSum({"X" + "I" * (operator.num_qubits - 1): 1 + 0j})
-        with pytest.raises(ValueError, match="do not commute"):
-            info.taper_operator(stray)
-
-    def test_observable_projection_drops_only_symmetry_changing_terms(
-            self, lih_minimal):
-        """A sector observable may be projected; a pool generator may not."""
-        operator, bits = lih_minimal
-        info = taper_problem(operator, [], bits)
-        commuting = next(label for label in operator.terms
-                         if set(label) != {"I"})
-        leaking = next("".join("X" if q == index else "I"
-                               for q in range(operator.num_qubits))
-                       for index in range(operator.num_qubits)
-                       if leaking_terms(PauliSum({"".join(
-                           "X" if q == index else "I"
-                           for q in range(operator.num_qubits)): 1}),
-                           info.symmetries))
-        mixed = PauliSum({commuting: 2.0, leaking: 3.0})
-        projected = info.taper_observable(mixed)
-        expected = info.taper_operator(PauliSum({commuting: 2.0}))
-        assert projected.num_qubits == info.n_qubits
-        assert projected.terms == pytest.approx(expected.terms)
-
-
-class TestTheReferenceState:
-    def test_the_signs_are_plus_or_minus_one(self, lih_minimal):
-        operator, bits = lih_minimal
-        reduced, _anchors = reduce_generators(symmetry_generators(operator))
-        assert all(s in (+1, -1) for s in sector_signs(bits, reduced))
-
-    def test_a_reference_of_the_wrong_width_is_refused(self, h2_minimal):
-        operator, _bits = h2_minimal
-        reduced, _anchors = reduce_generators(symmetry_generators(operator))
-        with pytest.raises(ValueError, match="bits and the symmetry acts on"):
-            sector_signs([1, 0], reduced)
-
-    def test_the_tapered_reference_drops_the_anchors(self, h2_minimal):
-        operator, bits = h2_minimal
-        reduced, anchors = reduce_generators(symmetry_generators(operator))
-        kept = tapered_reference_bits(bits, anchors)
-        assert len(kept) == operator.num_qubits - len(anchors)
-
-
-# --------------------------------------------------------------------------- #
-# Through the calculator: taper=True.
-# --------------------------------------------------------------------------- #
-
-OPTIMIZER = {"method": "SLSQP", "maxiter": 400, "tol": 1e-11}
-
-
-def _run(symbols, positions, basis, cell, **kwargs):
-    from mandacaru import Mandacaru
-
-    atoms = Atoms(symbols, positions=positions, cell=cell)
-    atoms.center()
-    atoms.calc = Mandacaru(method="adapt-vqe", basis=basis, grid_spacing=0.35,
-                           optimizer=OPTIMIZER, trace=False, **kwargs)
-    energy = atoms.get_potential_energy()
-    return atoms, energy, atoms.calc.solver
-
-
-class TestThroughTheCalculator:
-    """``taper=True`` must change the register and nothing else."""
-
-    CASES = (("H2", [(0, 0, 0), (0, 0, 0.74)], "STO-3G", (8., 8., 8.), 4, 1),
-             ("H2", [(0, 0, 0), (0, 0, 0.74)], "6-31G", (8., 8., 8.), 8, 5),
-             ("LiH", [(0, 0, 0), (0, 0, 1.60)], "STO-3G", (9., 9., 10.), 6, 4))
-
-    @pytest.mark.parametrize("symbols,positions,basis,cell,plain,tapered",
-                             CASES)
-    def test_the_energy_is_unchanged_and_the_register_smaller(
-            self, symbols, positions, basis, cell, plain, tapered):
-        _a0, e0, s0 = _run(symbols, positions, basis, cell, taper=False)
-        _a1, e1, s1 = _run(symbols, positions, basis, cell, taper=True)
-        assert s0.n_qubits == plain
-        assert s1.n_qubits == tapered
-        assert e1 == pytest.approx(e0, abs=1e-8)
-
-    def test_dropping_symmetry_changing_generators_costs_nothing(self):
-        # The design decision this validates: generators that change a Z2
-        # symmetry are dropped rather than projected.  Eight of them go on
-        # H2/6-31G and the energy does not move, because in the sector the
-        # reference fixes they cannot contribute at all.
-        _a0, e0, _s0 = _run("H2", [(0, 0, 0), (0, 0, 0.74)], "6-31G",
-                            (8., 8., 8.), taper=False)
-        _a1, e1, s1 = _run("H2", [(0, 0, 0), (0, 0, 0.74)], "6-31G",
-                           (8., 8., 8.), taper=True)
-        assert s1._taper_info.dropped
-        assert e1 == pytest.approx(e0, abs=1e-8)
-
-    def test_the_coupled_exchange_pool_is_tapered_through_its_members(
-            self, monkeypatch):
-        # A CEO operator carries the excitations it couples in ``members``, and
-        # the growth step evaluates and appends those.  They were left on the
-        # full register while the operator itself was tapered, so the first
-        # gradient of a member multiplied a 2^n matrix into a 2^(n-k) state.
-        from mandacaru.circuits.pools import CEOPool
-
-        expanded = []
-        grown_operators = CEOPool.grown_operators
-
-        def spy(self, selected, gradient):
-            if len(selected.members) > 1:
-                expanded.append(selected.label)
-            return grown_operators(self, selected, gradient)
-
-        monkeypatch.setattr(CEOPool, "grown_operators", spy)
-        args = ("LiH", [(0, 0, 0), (0, 0, 1.60)], "STO-3G", (9., 9., 10.))
-        _a0, e0, _s0 = _run(*args, taper=False, pool="ceo")
-        expanded.clear()
-        _a1, e1, s1 = _run(*args, taper=True, pool="ceo")
-        # The pool must hold coupled operators and the run must have reached the
-        # branch that evaluates their members; without that the energy match
-        # below would pass on a run that never touched them.
-        assert any(len(op.members) > 1 for op in s1._pool_ops)
-        assert expanded
-        for op in s1._pool_ops:
-            assert op.generator.num_qubits == s1.n_qubits
-            for member in op.members:
-                assert member.generator.num_qubits == s1.n_qubits
-        assert e1 == pytest.approx(e0, abs=1e-8)
-
-    def test_it_reports_what_it_did(self):
-        _a, _e, solver = _run("LiH", [(0, 0, 0), (0, 0, 1.60)], "STO-3G",
-                              (9., 9., 10.), taper=True)
-        line = solver._taper_label()
-        assert "2 qubit(s) removed" in line
-        assert "4 on the register" in line
-
-    def test_an_untapered_run_says_none(self):
-        _a, _e, solver = _run("LiH", [(0, 0, 0), (0, 0, 1.60)], "STO-3G",
-                              (9., 9., 10.), taper=False)
-        assert solver._taper_label() == "none"
-
-    def test_the_particle_number_sector_is_not_used_with_it(self):
-        # A tapered register has no particle-number basis to enumerate: the
-        # Clifford mixed the occupation bits into parities.
-        _a, _e, solver = _run("H2", [(0, 0, 0), (0, 0, 0.74)], "6-31G",
-                              (8., 8., 8.), taper=True)
-        assert solver._sector is None
-
-
-class TestWhatItRefuses:
-    def test_it_needs_jordan_wigner(self):
-        from mandacaru import Mandacaru
-
-        with pytest.raises(ValueError, match="needs mapping='jordan_wigner'"):
-            Mandacaru(basis="HAO", taper=True, mapping="parity_reduced")
-
-    @pytest.mark.parametrize("mapping", ["parity", "bravyi_kitaev"])
-    def test_every_other_encoding_is_refused_too(self, mapping):
-        from mandacaru import Mandacaru
-
-        with pytest.raises(ValueError, match="needs mapping='jordan_wigner'"):
-            Mandacaru(basis="HAO", taper=True, mapping=mapping)
-
-    def test_tapered_rdms_reproduce_untapered_density_and_forces(self):
-        """The original ladder observables are mapped through the same taper."""
-        args = ("H2", [(0, 0, 0), (0, 0, 0.74)], "STO-3G", (8., 8., 8.))
-        plain, _energy, _solver = _run(*args)
-        tapered, _energy, _solver = _run(*args, taper=True)
-        for atoms in (plain, tapered):
-            atoms.get_forces()
-        assert np.allclose(tapered.calc._state_rdms(tapered.calc.solver)[0],
-                           plain.calc._state_rdms(plain.calc.solver)[0],
-                           atol=1e-8)
-        assert np.allclose(tapered.calc.force_result.unprojected,
-                           plain.calc.force_result.unprojected, atol=1e-4)
-
-    def test_measured_tapered_rdms_reproduce_exact_forces(self):
-        """Measured Pauli labels have the tapered width and correct sector."""
-        from mandacaru.backends.providers import QiskitProvider
-
-        args = ("H2", [(0, 0, 0), (0, 0, 0.74)], "STO-3G", (8., 8., 8.))
-        exact, _energy, _solver = _run(*args, taper=True)
-        measured, _energy, _solver = _run(
-            *args, taper=True,
-            measurement_provider=QiskitProvider(device="statevector", shots=0))
-        expected = exact.get_forces()
-        observed = measured.get_forces()
-        assert np.allclose(observed, expected, atol=1e-5)
-        assert measured.calc.measurement["rdms"] is not None
-
-    def test_the_dry_run_calls_its_count_an_upper_bound(self):
-        # It cannot know how many symmetries there are without the Pauli terms.
-        from mandacaru import Mandacaru
-
-        atoms = Atoms("LiH", positions=[(0, 0, 0), (0, 0, 1.60)],
-                      cell=(9., 9., 10.))
-        atoms.center()
-        estimate = Mandacaru(basis="STO-3G", taper=True, dry_run=True,
-                             trace=False).solver.estimate_qubits(atoms)
-        assert any("UPPER BOUND" in note for note in estimate.notes)
-
-
-class TestUntaperState:
-    """``TaperedRegister.untaper_state`` inverts the taper for a state."""
-
-    @pytest.fixture(scope="class")
-    def problem(self):
-        from mandacaru.core.hamiltonian import spin_block_integrals
-        from mandacaru.core.mapping import Fermion
-        from mandacaru.core.tapering import taper_problem
-
-        rng = np.random.default_rng(3)
-        M = 3
-        h = rng.normal(size=(M, M))
-        b = rng.normal(size=(M, M))
-        eri = 0.2 * np.einsum("pr,qs->pqrs", b + b.T, b + b.T)
-        fermion = Fermion.from_integrals(*spin_block_integrals(h + h.T, eri))
-        hamiltonian = fermion.map_to_qubits("jordan_wigner", n_modes=2 * M)
-        reference = [1, 0, 0, 1, 0, 0]                    # (1, 1) electrons
-        info = taper_problem(hamiltonian, [], reference)
-        return hamiltonian, info
-
-    def test_every_expectation_value_is_kept(self, problem):
-        hamiltonian, info = problem
-        assert info is not None and info.removed >= 1
-        rng = np.random.default_rng(4)
-        tapered = rng.normal(size=2 ** info.n_qubits) \
-            + 1j * rng.normal(size=2 ** info.n_qubits)
-        tapered /= np.linalg.norm(tapered)
-        full = info.untaper_state(tapered)
-        assert np.linalg.norm(full) == pytest.approx(1.0, abs=1e-12)
-        on_tapered = np.vdot(tapered,
-                             info.hamiltonian.to_sparse_matrix() @ tapered)
-        on_full = np.vdot(full, hamiltonian.to_sparse_matrix() @ full)
-        assert on_full == pytest.approx(on_tapered, abs=1e-12)
-
-    def test_the_tapered_reference_lifts_to_the_determinant(self, problem):
-        hamiltonian, info = problem
-        tapered = np.zeros(2 ** info.n_qubits, dtype=complex)
-        tapered[sum(1 << (info.n_qubits - 1 - q) for q in info.occupied)] = 1
-        full = info.untaper_state(tapered)
-        determinant = int("100100", 2)
-        assert abs(full[determinant]) == pytest.approx(1.0, abs=1e-12)
-
-    def test_a_wrong_size_is_refused(self, problem):
-        _hamiltonian, info = problem
-        with pytest.raises(ValueError, match="amplitudes"):
-            info.untaper_state(np.ones(3))

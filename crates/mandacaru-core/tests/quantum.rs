@@ -98,7 +98,7 @@ fn bfgs_and_lbfgs_solve_rosenbrock_and_report_budgets() {
             } else {
                 optimizer::Method::Bfgs
             },
-            tolerance: 1e-8,
+            tolerance: Some(1e-8),
             ..Default::default()
         };
         let out = optimizer::minimize(&ctx, &[-1.2, 1.], &options, objective).unwrap();
@@ -251,5 +251,34 @@ fn nonfinite_objectives_and_invalid_quantum_inputs_are_errors() {
         ]
     )
     .is_err());
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn spsa_on_the_cached_h2_problem_reproduces_the_frozen_state_vector_run() {
+    // Captured before the strict two-evaluation form existed (default track_best).
+    let ctx = context();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/migration/reference/h2_hamiltonian.json");
+    let problem = CachedProblem::load(&ctx, &fixture, true, false, true).unwrap();
+    for (adapt, evaluations, energy) in [
+        (false, 46, -0.9507155950597947),
+        (true, 138, -0.950774621387072),
+    ] {
+        let options = SolveOptions {
+            adapt,
+            optimizer: optimizer::Options {
+                method: optimizer::Method::Spsa,
+                max_iterations: 15,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = problem.solve(&options, None).unwrap();
+        assert_eq!(result.history.len(), evaluations, "adapt={adapt}");
+        assert_eq!(result.energy, energy, "adapt={adapt}");
+        assert!(!result.budget_stopped);
+    }
+    drop(problem);
     assert_eq!(ctx.memory_used(), 0);
 }

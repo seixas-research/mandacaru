@@ -1427,15 +1427,6 @@ class PeriodicPAW:
                             np.atleast_2d(np.asarray(kpoints, dtype=float)),
                             self._grid_points(), center, radius)
 
-    def localized_basis(self, atom_of_orbital=None):
-        r"""Atom-centered localized representation of basis functions on the cell grid."""
-        if getattr(self, "_localized", None) is None:
-            from ..integrals.localized import LocalizedBasisCollection
-            owners = self.atom_of_orbital if atom_of_orbital is None else atom_of_orbital
-            self._localized = LocalizedBasisCollection(
-                self.basis, self.grid, atom_of_orbital=owners)
-        return self._localized
-
     def projections(self, kpoints) -> np.ndarray:
         r"""``(nk, M, P)``: :math:`\langle\chi_{\mu\mathbf k}|\tilde
         p_p\rangle` at the Cartesian ``kpoints``."""

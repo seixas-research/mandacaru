@@ -11,9 +11,7 @@ from mandacaru import Mandacaru, _native
 from mandacaru.integrations.ase import geometry_from_atoms
 from mandacaru.specifications import basis_specification
 from mandacaru.basis import BasisSet
-from mandacaru.core import MolecularIntegrals
 from mandacaru.integrals import Grid
-from mandacaru.integrals.poisson import PoissonFFTSolver, PeriodicPoissonSolver
 from mandacaru.units import ANGSTROM_TO_BOHR, HARTREE_TO_EV
 
 HERE = Path(__file__).parent
@@ -45,41 +43,6 @@ def test_geometry_mean_field_matches_frozen_phase0(case_id):
         assert np.vdot(state, op @ state).real * HARTREE_TO_EV == pytest.approx(energy, abs=1e-8)
 
 
-@pytest.mark.parametrize("basis", ["HAO", {"name": "HAO", "virtual_orbitals": 1},
-                                   "STO-3G", "6-31G", "cc-pVDZ", "def2-SVP"])
-@pytest.mark.parametrize("kinetic", ["spectral", "fd"])
-def test_native_grid_integrals_and_lowdin_match_python(basis, kinetic):
-    atoms = h2()
-    geometry = geometry_from_atoms(atoms)
-    ctx = _native.Context(threads=1)
-    native = ctx.molecular_integrals(geometry, basis_spec=json.dumps(basis_specification(basis)),
-                                    spacing_bohr=.45 * ANGSTROM_TO_BOHR, kinetic=kinetic)
-    snapshot = native.snapshot(include_samples=True,include_hamiltonian=True)
-    if isinstance(basis, dict):
-        options = dict(basis)
-        family = BasisSet.build(options.pop("name"), **options)
-    else:
-        family = BasisSet.build(basis)
-    orbitals = [fn for atom in atoms for fn in family.atom(atom.symbol, center=atom.position)]
-    grid = Grid(center=atoms.positions.mean(axis=0), cell=atoms.cell.array, grid_spacing=.45)
-    py = MolecularIntegrals([(atom.number, atom.position) for atom in atoms], orbitals, grid,
-                            softening=.5 * min(grid.dx, grid.dy, grid.dz), kinetic=kinetic)
-    assert native.grid.shape == list(grid.shape)
-    assert np.allclose(native.grid.step_bohr, grid.step, atol=1e-14)
-    assert np.allclose(native.grid.origin_bohr, [grid.X.flat[0], grid.Y.flat[0], grid.Z.flat[0]], atol=1e-14)
-    assert np.allclose(snapshot["samples"], py._engine._psi, atol=1e-13)
-    assert np.allclose(snapshot["overlap"], py.overlap(), atol=2e-12)
-    assert np.allclose(snapshot["lowdin"], py._lowdin_x(), atol=2e-10)
-    t, v = py.kinetic_and_local()
-    assert np.allclose(snapshot["kinetic"], t, atol=2e-11)
-    assert np.allclose(snapshot["potential"], v, atol=2e-11)
-    assert np.allclose(snapshot["one_body"], py.one_body(), atol=2e-10, rtol=1e-10)
-    assert np.allclose(snapshot["two_body"], np.asarray(py.two_body()), atol=3e-10, rtol=1e-10)
-    psi = snapshot["orthonormal_samples"]
-    assert np.allclose(psi @ psi.T * native.grid.dv_bohr3, np.eye(len(orbitals)), atol=1e-10)
-    eri = snapshot["two_body"]
-    assert np.allclose(eri, eri.transpose(2, 1, 0, 3), atol=1e-13)
-    assert np.allclose(eri, eri.transpose(1, 0, 3, 2), atol=1e-13)
 
 
 @pytest.mark.parametrize("z,basis", [(1, "HAO"), (8, "HAO"), (26, "HAO"), (118, "HAO"),
@@ -108,23 +71,6 @@ def test_per_element_basis_matches_each_selected_family():
     assert np.allclose(native, expected, atol=1e-13)
 
 
-@pytest.mark.parametrize("shape", [(3, 4, 5), (6, 5, 4)])
-@pytest.mark.parametrize("skew", [False, True])
-@pytest.mark.parametrize("boundary", ["isolated", "periodic", "slab"])
-def test_fft_poisson_matches_scipy_for_complex_densities(shape, skew, boundary):
-    step = np.diag([.4, .5, .6])
-    if skew:
-        step[0, 1] = .15
-        if boundary != "slab":
-            step[0, 2] = -.12
-    grid = _native.SpatialGrid(shape, [0., 0., 0.], step, periodic=boundary != "isolated")
-    rho = np.random.default_rng(5).normal(size=np.prod(shape)) + .3j * np.random.default_rng(6).normal(size=np.prod(shape))
-    actual = _native.Context(threads=1).poisson(grid, rho, periodic=boundary != "isolated",
-                                               slab_axis=2 if boundary == "slab" else None)
-    py = (PoissonFFTSolver(shape, step=step, workers=1) if boundary == "isolated" else
-          PeriodicPoissonSolver(shape, step=step, workers=1,
-                                truncation="slab" if boundary == "slab" else "none", axis=2 if boundary == "slab" else None))
-    assert np.allclose(actual, py.solve(rho), atol=2e-12, rtol=2e-12)
 
 
 def test_native_triclinic_grid_and_integrals_use_the_explicit_metric():
@@ -193,29 +139,6 @@ def test_packed_cholesky_and_frozen_active_models_preserve_reference_energy():
     assert problem.evaluate([], indices=[])["energy_ha"] * HARTREE_TO_EV == pytest.approx(energy, abs=1e-8)
 
 
-@pytest.mark.parametrize("method", ["rhf", "uhf", "ghf"])
-def test_cholesky_fock_and_mo_transforms_match_packed_water(method):
-    case = next(c for c in CASES if c["id"] == "h2o_rhf_sto3g")
-    atoms = Atoms(case["symbols"], positions=case["positions"], cell=case["cell"])
-    ctx = _native.Context(threads=1)
-    options = dict(basis_spec=json.dumps(basis_specification("STO-3G")), spacing_bohr=.4 * ANGSTROM_TO_BOHR)
-    packed = ctx.molecular_integrals(geometry_from_atoms(atoms), **options)
-    chol = ctx.molecular_integrals(geometry_from_atoms(atoms), cholesky_tolerance=1e-11, **options)
-    expected = packed.mean_field(method, [5, 5]).snapshot(include_hamiltonian=True)
-    actual = chol.mean_field(method, [5, 5]).snapshot(include_hamiltonian=True)
-    assert actual["converged"] and actual["electronic_energy"] == pytest.approx(expected["electronic_energy"], abs=1e-8)
-    c = actual["model_orbitals"]
-    eri = packed.snapshot(include_hamiltonian=True)["two_body"]
-    if method == "ghf":
-        from mandacaru.algorithms.hartree_fock import spinor_integrals
-        h = packed.snapshot()["one_body"]
-        spin_h = np.kron(np.eye(2), h)
-        h_mo, eri_mo = spinor_integrals(spin_h, eri, c)
-    else:
-        h_mo = c.conj().T @ packed.snapshot()["one_body"] @ c
-        eri_mo = np.einsum("ap,bq,cr,ds,abcd->pqrs", c.conj(), c.conj(), c, c, eri, optimize=True)
-    assert np.allclose(actual["h_mo"], h_mo, atol=2e-10, rtol=1e-11)
-    assert np.allclose(actual["eri_mo"], eri_mo, atol=2e-9, rtol=1e-10)
 
 
 def test_native_json_export_reloads_in_phase2_and_geometry_roundtrip_is_fresh(tmp_path):
@@ -232,27 +155,6 @@ def test_native_json_export_reloads_in_phase2_and_geometry_roundtrip_is_fresh(tm
     assert atoms.get_potential_energy() == pytest.approx(initial, abs=1e-10)
 
 
-def test_native_pipeline_avoids_python_scientific_implementations(monkeypatch):
-    from mandacaru.algorithms import _hamiltonian_from_atoms
-    from mandacaru.algorithms.hartree_fock import RHF, UHF, GHF
-    from mandacaru.core.mapping import Fermion
-    from mandacaru.integrals.engine import IntegralEngine
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Python numerical implementation entered the native pipeline")
-    monkeypatch.setattr(_hamiltonian_from_atoms, "build_basis_hamiltonian", forbidden)
-    monkeypatch.setattr(BasisSet, "build", forbidden)
-    monkeypatch.setattr(MolecularIntegrals, "__init__", forbidden)
-    monkeypatch.setattr(IntegralEngine, "one_body", forbidden)
-    monkeypatch.setattr(IntegralEngine, "two_body", forbidden)
-    monkeypatch.setattr(RHF, "run", forbidden)
-    monkeypatch.setattr(UHF, "solve", forbidden)
-    monkeypatch.setattr(GHF, "solve", forbidden)
-    monkeypatch.setattr(Fermion, "map_to_qubits", forbidden)
-    monkeypatch.setattr(np.linalg, "eigh", forbidden)
-    for method in ("rhf", "uhf", "ghf", "vqe", "adapt-vqe"):
-        atoms = h2()
-        atoms.calc = Mandacaru(method=method,  grid_spacing=.35, trace=False)
-        assert atoms.get_potential_energy() < -25.
 
 
 def test_failed_scf_invalid_inputs_and_budget_cleanup_are_explicit():
@@ -283,7 +185,7 @@ def test_failed_scf_invalid_inputs_and_budget_cleanup_are_explicit():
                          scf_options={"max_iterations": 1})
     with pytest.raises(RuntimeError, match="did not converge"):
         work.get_potential_energy()
-    for options in ({"kinetic": "other"}, {"scf_options": {"tolerance": -1}}, {"active_space": {"method": "mp2", "orbitals": 2}}):
+    for options in ({"kinetic": "other"}, {"scf_options": {"tolerance": -1}}, {"active_space": {"method": "bogus", "orbitals": 2}}):
         with pytest.raises((ValueError, NotImplementedError)):
             calc=Mandacaru(method="rhf", **options)
             reference=calc.run(h2())

@@ -36,6 +36,9 @@ pub struct Reservation {
     bytes: usize,
 }
 impl Reservation {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
     /// Release unused workspace capacity while continuously accounting for
     /// storage retained by a result. This operation cannot grow a reservation.
     pub fn shrink_to(&mut self, bytes: usize) -> Result<()> {

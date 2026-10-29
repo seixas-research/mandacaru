@@ -126,6 +126,18 @@ def write_calculation(driver, result, geometry):
                 extra={
                     "pool": driver._pool,
                     "pool_size": len(driver.problem.pool_labels),
+                    "device": driver._device,
+                    **(
+                        {}
+                        if driver.provider is None
+                        else {"backend_provider": driver.provider.name}
+                    ),
+                    "circuit_execution": driver._execute_circuits,
+                    "shots": (
+                        f"{driver._shots} (sampled expectation values)"
+                        if driver._shots
+                        else "0 (exact expectation values)"
+                    ),
                 },
                 gradient_method="analytic",
                 gradient_units="Ha/rad",

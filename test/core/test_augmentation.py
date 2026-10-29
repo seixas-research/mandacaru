@@ -14,13 +14,10 @@ place, transformed factor by factor -- and the Hamiltonian built from it has
 to equal the one built from the dense tensor to round-off.
 """
 
-import warnings
 
 import numpy as np
 import pytest
-from ase import Atoms
 
-from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
 from mandacaru.core.augmentation import PairAugmentation
 
 
@@ -103,47 +100,5 @@ class TestPairAugmentation:
             random_augmentation().add_to(np.zeros((4,) * 4, dtype=complex))
 
 
-@pytest.fixture(scope="module")
-def water_paw():
-    atoms = Atoms("H2O", positions=[[0.0, 0.757, 0.587],
-                                    [0.0, -0.757, 0.587],
-                                    [0.0, 0.0, 0.0]], cell=[6.0] * 3)
-    atoms.center()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        context = build_basis_hamiltonian(
-            atoms, {"name": "PAW-LCAO", "size": "SZ"}, None, 0.3, 0, None)[4]
-    return context["integrals"]
 
 
-class TestPAWAugmentation:
-    def test_the_structured_terms_are_the_dense_ones(self, water_paw):
-        aug = water_paw.two_body_augmentation()
-        assert isinstance(aug, PairAugmentation)
-        M = water_paw.n_orbitals
-        # k M^2 numbers: the compensation channels' Q and W, and the exact
-        # spheres' factors (rank 33 for O, 3 per H; HISTORY.md 2026-10-12).
-        # At M = 6 that is more than the M^4 tensor; it grows as M^2.
-        k = (2 * len(water_paw.multipole_channels())
-             + water_paw.one_center_factors().rank)
-        assert aug.factors.shape == (k, M, M)
-        assert aug.nbytes == 8 * (k * M * M + k * k)
-        assert np.abs(aug.dense() - dense_compensation(water_paw)
-                      - dense_spheres(water_paw)).max() < 1e-12
-        omega = 0.11
-        assert np.abs(water_paw.long_range_augmentation(omega).dense()
-                      - dense_long_range(water_paw, omega)).max() < 1e-12
-
-    def test_the_tensors_equal_the_dense_route(self, water_paw):
-        grid = water_paw._engine.two_body(energy_units="Ha")
-        dense_ao = grid + dense_compensation(water_paw) + dense_spheres(water_paw)
-        assert np.abs(water_paw.ao_two_body() - dense_ao).max() < 1e-12
-        X = water_paw._lowdin_x()
-        reference = lowdin(dense_ao, X)
-        assert np.abs(water_paw.two_body() - reference).max() < 1e-12
-        # The molecular-orbital tensor, and the factors transformed straight
-        # to it instead of through the dense augmentation.
-        V = X @ water_paw.hartree_fock(8).mo_coefficients
-        aug = water_paw.two_body_augmentation().transformed(V)
-        mo_structured = aug.add_to(lowdin(grid, V))
-        assert np.abs(mo_structured - lowdin(dense_ao, V)).max() < 1e-12

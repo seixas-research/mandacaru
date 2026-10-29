@@ -6,10 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 pub enum Response {
     State(Buffer<C64>),
     Expectations(Vec<f64>),
+    /// The executor refuses further circuits (its run budget is exhausted).
+    Stop(String),
 }
 pub type CircuitCall<'a> = dyn FnMut(&[String], &[f64], &[String]) -> Result<Response> + 'a;
 pub struct CircuitExecution<'a> {
-    pub call: &'a mut CircuitCall<'a>,
+    call: &'a mut CircuitCall<'a>,
+    stopped: Option<String>,
 }
 struct Circuit {
     labels: Vec<String>,
@@ -18,6 +21,14 @@ struct Circuit {
 }
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
+}
+impl<'a> CircuitExecution<'a> {
+    pub fn new(call: &'a mut CircuitCall<'a>) -> Self {
+        Self {
+            call,
+            stopped: None,
+        }
+    }
 }
 impl CircuitExecution<'_> {
     fn circuit(problem: &CachedProblem, indices: &[usize], parameters: &[f64]) -> Result<Circuit> {
@@ -75,8 +86,16 @@ impl CircuitExecution<'_> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        // After a stop the executor is never called again.
+        if let Some(message) = &self.stopped {
+            return Err(Error::Interrupted(message.clone()));
+        }
         let response = (self.call)(&circuit.labels, &circuit.angles, &labels)?;
         match response {
+            Response::Stop(message) => {
+                self.stopped = Some(message.clone());
+                Err(Error::Interrupted(message))
+            }
             Response::State(state) => {
                 let state = state.as_slice();
                 let basis = Basis::register(&problem.context, problem.hamiltonian.n)?;

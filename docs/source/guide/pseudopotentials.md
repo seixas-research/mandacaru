@@ -708,6 +708,25 @@ from the H augmentation radius, 1.30 bohr, which two atoms 0.75 Å apart overlap
 almost entirely — while the LiH bond forces from 2.1 to 3.2 Å match within
 0.15 eV/Å. Pinned by `test/algorithms/test_paw_forces.py` and `test/core/test_sector.py`.
 
+#### Mean-field forces
+
+`Mandacaru(method="rhf" | "uhf" | "dft", basis={"name": "PAW-LCAO", ...})`
+returns forces without a variational state. The converged orbitals are
+orthonormal in a Löwdin frame that is rebuilt at every geometry, so the force
+is the derivative of the total energy at fixed densities in that frame. Mandacaru
+takes it as a Richardson difference (step $10^{-3}$ Bohr) of the same energy
+expression on the fixed grid, using the retained PAW setup; no SCF is repeated.
+All geometry dependence is differentiated together: the basis and projector
+centers, the overlap and compensation augmentation, the compensation charge and
+core density on the grid, the one-center terms, the closed-1s core exchange and
+the ion–ion repulsion. Hartree–Fock, LDA, PBE and r²SCAN, restricted and
+unrestricted, are supported. GHF, screened exchange (HSE06) and nonlocal
+correlation (rVV10) raise. Because the grid does not follow the atoms, the force
+is the exact derivative of the discretized energy, egg-box term included;
+`project_translation` removes the net force as for the other methods. The run
+log records the scheme, the step and the step-error estimate. Pinned by
+`crates/mandacaru-core/tests/paw_forces.rs` and `test/migration/test_native_dft.py`.
+
 ### Validation (pinned by `test/pseudopotentials/test_paw.py`, 70 tests, 11.5 s, peak RSS 0.77 GB)
 
 Atomic, freshly generated (`check_paw_channel`: `paw_spectrum` = the

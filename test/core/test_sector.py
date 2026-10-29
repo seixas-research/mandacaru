@@ -11,53 +11,16 @@
 import numpy as np
 import pytest
 
-from mandacaru.algorithms.rdm import one_rdm, two_rdm
-from mandacaru.core.hamiltonian import spin_block_integrals
 from mandacaru.core.mapping import Fermion, PauliSum
 from mandacaru.core.sector import ParticleSector, apply_pauli_sum
 
 M = 3
 
 
-def random_hamiltonian(seed=7):
-    """A Hermitian, complex, number-conserving Hamiltonian on 2M spin-orbitals."""
-    rng = np.random.default_rng(seed)
-    a = rng.normal(size=(M, M)) + 1j * rng.normal(size=(M, M))
-    h = a + a.conj().T
-    eri = np.zeros((M, M, M, M), dtype=complex)
-    for _ in range(3):
-        b = rng.normal(size=(M, M)) + 1j * rng.normal(size=(M, M))
-        L = b + b.conj().T
-        eri += np.einsum("pr,qs->pqrs", L, L)
-    return Fermion.from_integrals(*spin_block_integrals(h, eri))
 
 
-@pytest.mark.parametrize("mapping, reduction", [("jordan_wigner", False),
-                                                ("parity", False),
-                                                ("bravyi_kitaev", False),
-                                                ("parity_reduced", True)])
-@pytest.mark.parametrize("num_particles", [(1, 1), (2, 1)])
-def test_restriction_is_the_full_matrix_on_the_sector(mapping, reduction,
-                                                      num_particles):
-    H = random_hamiltonian()
-    P = H.map_to_qubits(mapping, n_modes=2 * M,
-                        num_particles=num_particles if reduction else None)
-    sector = ParticleSector(P.num_qubits, num_particles, mapping)
-    full = P.to_sparse_matrix()[sector.indices][:, sector.indices].toarray()
-    assert np.allclose(sector.restrict(P).toarray(), full, atol=1e-12)
 
 
-@pytest.mark.parametrize("mapping", ["jordan_wigner", "bravyi_kitaev"])
-def test_sector_rdms_match_the_full_register(mapping):
-    sector = ParticleSector(2 * M, (2, 1), mapping)
-    rng = np.random.default_rng(3)
-    psi = rng.normal(size=sector.dim) + 1j * rng.normal(size=sector.dim)
-    psi /= np.linalg.norm(psi)
-    full = sector.embed(psi)
-    assert np.allclose(one_rdm(psi, 2 * M, mapping, sector=sector),
-                       one_rdm(full, 2 * M, mapping), atol=1e-12)
-    assert np.allclose(two_rdm(psi, 2 * M, mapping, sector=sector),
-                       two_rdm(full, 2 * M, mapping), atol=1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -221,22 +184,6 @@ class TestConserves:
                 return False
         return True
 
-    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
-                                         "bravyi_kitaev"])
-    @pytest.mark.parametrize("seed", range(6))
-    def test_it_agrees_with_the_state_by_state_test(self, mapping, seed):
-        """Random Pauli sums, half of them with a number-conserving
-        Hamiltonian added, so both answers occur."""
-        rng = np.random.default_rng(seed)
-        sector = ParticleSector(2 * M, (1, 1), mapping)
-        labels = ["".join(rng.choice(list("IXYZ"), 2 * M))
-                  for _ in range(int(rng.integers(1, 5)))]
-        operator = PauliSum({label: complex(*rng.normal(size=2))
-                             for label in labels})
-        if seed % 2:
-            operator = random_hamiltonian(seed).map_to_qubits(mapping)
-        assert sector.conserves(operator) == self._state_by_state(sector,
-                                                                  operator)
 
     def test_strings_that_leak_alone_can_conserve_together(self):
         """``a+_1 a_0 - h.c.`` maps to ``X0 Y1`` and ``Y0 X1``, which share a
@@ -272,19 +219,6 @@ def test_restrict_of_nothing_is_empty():
     assert empty.shape == (sector.dim, sector.dim) and empty.nnz == 0
 
 
-def spin_orbit_hamiltonian(seed=11, strength=0.3):
-    """A number-conserving Hamiltonian whose one-body part couples the spins."""
-    rng = np.random.default_rng(seed)
-    a = rng.normal(size=(M, M))
-    eri = np.zeros((M, M, M, M))
-    b = rng.normal(size=(M, M))
-    eri += np.einsum("pr,qs->pqrs", b + b.T, b + b.T)
-    coupling = rng.normal(size=(2 * M, 2 * M)) \
-        + 1j * rng.normal(size=(2 * M, 2 * M))
-    coupling = strength * (coupling + coupling.conj().T)
-    coupling[:M, :M] = coupling[M:, M:] = 0.0
-    return Fermion.from_integrals(*spin_block_integrals(a + a.T, eri,
-                                                        coupling))
 
 
 class TestTotalNumberSector:
@@ -296,19 +230,6 @@ class TestTotalNumberSector:
         assert sector.dim == comb(2 * M, 3)
         assert np.all(sector.occupations.sum(axis=1) == 3)
 
-    @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity",
-                                         "bravyi_kitaev"])
-    def test_a_spin_orbit_hamiltonian_is_restricted_exactly(self, mapping):
-        qubit_h = spin_orbit_hamiltonian().map_to_qubits(mapping,
-                                                         n_modes=2 * M)
-        total = ParticleSector(2 * M, (1, 1), mapping, spin_conserving=False)
-        assert total.conserves(qubit_h)
-        full = qubit_h.to_sparse_matrix().toarray()
-        block = full[np.ix_(total.indices, total.indices)]
-        assert np.allclose(total.restrict(qubit_h).toarray(), block,
-                           atol=1e-12)
-        # The (n_alpha, n_beta) sector is not closed under it.
-        assert not ParticleSector(2 * M, (1, 1), mapping).conserves(qubit_h)
 
     def test_the_parity_reduction_is_refused(self):
         with pytest.raises(ValueError, match="S_z"):

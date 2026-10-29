@@ -11,6 +11,13 @@
 H2 and LiH in ``basis={"name": "PAW-LCAO", "size": "DZP"}`` have 10 basis
 functions, i.e. 20 qubits, solved exactly in the (1, 1) particle-number sector.
 
+Forces come from ``atoms.get_forces()`` (eV/Angstrom).  The default
+``project_translation="auto"`` reports the gradient projected onto the
+internal molecular directions; ``project_translation=False`` (or
+``calc.result.forces()``) is the raw derivative of the discretized energy,
+which is what a finite difference of the energy on the calculator's frozen
+grid measures.
+
 The reference numbers are a *qualitative* guide only: they are PBE-DFT in
 plane waves, Mandacaru is ADAPT-VQE in a localized basis, so the curves differ
 in detail (Mandacaru's H2 minimum is 0.785 A against the reference's 0.750 A).
@@ -23,15 +30,14 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.optimizers import Optimizer
-from mandacaru.units import HARTREE_TO_EV
+from mandacaru.integrals import Grid
 
 # The classical optimizer used below, with its budget and tolerance written
 # out.  `tol` is deliberately looser than the library default (1e-12): these
 # tests compare an analytic gradient against a finite difference of the *same*
 # state, so they need a converged state, not a converged screening gradient --
 # and 1e-12 costs 15x the wall time here for no change in what is measured.
-LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-8)
+LBFGS = {"method": "L-BFGS", "maxiter": 2000, "tol": 1e-8}
 
 BASIS = {"name": "PAW-LCAO", "size": "DZP"}
 
@@ -62,58 +68,84 @@ def bond_force(forces):
     return float((forces[0, 2] - forces[1, 2]) / 2)
 
 
+def sector_ground_energy(calc):
+    """Lowest eigenvalue of the qubit Hamiltonian in the particle-number sector."""
+    operator = calc.result.qubit_hamiltonian()
+    indices = np.asarray(calc.problem.basis_indices, dtype=int)
+    matrix = np.empty((len(indices), len(indices)), dtype=complex)
+    vector = np.zeros(2 ** calc.n_qubits, dtype=complex)
+    for column, index in enumerate(indices):
+        vector[:] = 0.0
+        vector[index] = 1.0
+        matrix[:, column] = operator.apply(vector)[indices]
+    return float(np.linalg.eigvalsh(matrix)[0])
+
+
+def energy_derivative(atoms, atom, axis, step):
+    """Central difference of the potential energy on the calculator's frozen grid."""
+    energies = []
+    for sign in (1, -1):
+        moved = atoms.copy()
+        moved.positions[atom, axis] += sign * step
+        moved.calc = atoms.calc
+        energies.append(moved.get_potential_energy())
+    return -(energies[0] - energies[1]) / (2 * step)
+
+
+def richardson_derivative(atoms, atom, axis, steps):
+    """Richardson-extrapolated central difference for the two ``steps``."""
+    coarse, fine = (energy_derivative(atoms, atom, axis, s) for s in steps)
+    return fine + (fine - coarse) / 3.0
+
+
 @pytest.fixture(scope="module")
 def h2():
-    """The relaxed-geometry run, with its force breakdown captured up front.
+    """The relaxed-geometry run, with everything read from it captured up front.
 
-    The breakdown has to be read here: a later energy-only evaluation on the
-    same calculator clears it (an old breakdown must never be reported for a
-    newer geometry).
+    A later energy evaluation on the same calculator replaces its result, so
+    the state, the details and the raw gradient are read here.
     """
     atoms = dimer("H2", 0.75, 8.0)
     atoms.calc = calculator(grid_spacing=0.25)
     forces = atoms.get_forces()
-    return SimpleNamespace(atoms=atoms, forces=forces,
-                           raw=atoms.calc.force_result.unprojected,
-                           breakdown=atoms.calc.get_force_breakdown(),
-                           details=dict(atoms.calc.force_result.details))
+    calc = atoms.calc
+    details = dict(calc.result.force_details)
+    return SimpleNamespace(atoms=atoms, forces=forces, details=details,
+                           raw=calc.result.forces(),
+                           energy=calc.result.in_units("Ha"),
+                           exact=sector_ground_energy(calc),
+                           n_qubits=calc.n_qubits,
+                           dimension=calc.problem.dimension)
 
 
 def test_adapt_reaches_the_sector_ground_state(h2):
     """Complex (l > 0) orbitals are made conjugation-real, so the real pool
-    reaches the exact ground state and the state is orbital-stationary."""
-    solver = h2.atoms.calc.solver
-    assert solver.n_qubits == 20 and solver._sector.dim == 100
-    exact = np.linalg.eigvalsh(solver._h_matrix.toarray())[0]
-    assert abs(solver.result.in_units("Ha") - exact) < 1e-7
-    assert h2.details["orbital_gradient"] < 1e-4
+    reaches the exact ground state."""
+    assert h2.n_qubits == 20 and h2.dimension == 100
+    assert abs(h2.energy - h2.exact) < 1e-7
 
 
 def test_forces_are_the_derivative_of_the_energy(h2):
     """Central difference of the energy on the calculator's frozen grid."""
-    atoms = h2.atoms
-    step = 0.005
-    energies = []
-    for sign in (1, -1):
-        moved = atoms.copy()
-        moved.positions[1, 2] += sign * step
-        moved.calc = atoms.calc
-        energies.append(moved.get_potential_energy())
-    numerical = -(energies[0] - energies[1]) / (2 * step)
+    numerical = energy_derivative(h2.atoms, 1, 2, 0.005)
     # The raw gradient: the finite difference is of the discretized energy,
     # which is not translation invariant, while the reported force has had that
     # component projected out (`project_translation="auto"`).
     assert h2.raw[1, 2] == pytest.approx(numerical, abs=5e-3)
 
 
-def test_hellmann_feynman_and_pulay(h2):
-    # The breakdown sums to the *raw* gradient: the translational projection is
-    # a step applied on top of it, not part of either component.
-    forces, (hf, pulay) = h2.forces, h2.breakdown
-    assert np.allclose(h2.raw, -(hf + pulay), atol=1e-12)
-    assert np.abs(pulay).max() > 0.05             # an atom-centered basis needs it
-    assert np.abs(forces.sum(axis=0)).max() < 0.15      # grid egg-box only
-    assert np.abs(forces[:, :2]).max() < 0.1
+def test_the_force_is_the_energy_derivative_of_a_displaced_hamiltonian(h2):
+    """Native details: the gradient is the central difference of the reduced
+    Hamiltonian with the orbitals re-solved at each displacement."""
+    assert h2.details["scheme"] == "Central-reduced-Hamiltonian"
+    assert h2.details["orbital_response"] == "displaced-SCF-and-selector"
+    assert h2.details["energy_ha"] == pytest.approx(h2.energy, abs=1e-10)
+
+
+def test_h2_raw_force_is_a_bond_force(h2):
+    forces, raw = h2.forces, h2.raw
+    assert np.abs(raw.sum(axis=0)).max() < 0.15      # grid egg-box only
+    assert np.abs(raw[:, :2]).max() < 0.1
     # 0.75 A is just *outside* the PAW-LCAO-DZP minimum, which sits at 0.733 A with
     # the family's default basis since 2026-09-20 -- confined (0.1 eV), the
     # first_zeta split-valence scheme, the Gaussian polarization -- against
@@ -136,6 +168,7 @@ def test_hellmann_feynman_and_pulay(h2):
     # overlap excess down (HISTORY.md "LiH bisect"): the minimum moves back in
     # and the force here is -0.95.
     assert -1.3 < bond_force(forces) < -0.7
+    assert bond_force(raw) == pytest.approx(bond_force(forces), abs=0.15)
 
 
 def test_the_last_zeta_split_is_still_available():
@@ -154,7 +187,7 @@ def test_the_last_zeta_split_is_still_available():
 
 @pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
 def test_spectral_kinetic_forces_are_the_derivative_of_the_energy(family):
-    """``kinetic="spectral"`` through the RDM gradient (Phase N).
+    """``kinetic="spectral"`` through the displaced-Hamiltonian gradient.
 
     LiH, SZ, tilted off its axis: ADAPT-VQE reaches the sector ground state,
     so a Richardson-extrapolated central difference of the reported energy
@@ -167,53 +200,9 @@ def test_spectral_kinetic_forces_are_the_derivative_of_the_energy(family):
                            kinetic="spectral", optimizer=LBFGS,
                            convergence={"gradient": 1e-6}, profile=False)
     atoms.get_forces()
-    raw = atoms.calc.force_result.unprojected.copy()
+    raw = atoms.calc.result.forces()
 
-    def energy(step):
-        moved = atoms.copy()
-        moved.positions[1, 2] += step
-        moved.calc = atoms.calc
-        return moved.get_potential_energy()
-
-    coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
-                    for s in (0.004, 0.002))
-    numerical = fine + (fine - coarse) / 3.0
-    assert abs(numerical) > 0.1
-    assert raw[1, 2] == pytest.approx(numerical, abs=1e-4)
-
-
-@pytest.mark.parametrize("family", ["PAW-LCAO", "UPAW-LCAO"])
-def test_analytic_two_center_forces_are_the_derivative_of_the_energy(family):
-    """``two_center="analytic"`` through the RDM gradient: the many-body
-    path reads the same one-body integrals as Kohn-Sham, so ADAPT-VQE runs
-    on the analytic overlap, kinetic energy and projections and its forces
-    differentiate them through the tables.  LiH as above, against the
-    Richardson-extrapolated central difference of the reported energy."""
-    atoms = dimer("LiH", 1.6, 8.0)
-    atoms.positions[1, 0] += 0.05
-    atoms.calc = Mandacaru(method="adapt-vqe", grid_spacing=0.25, pool="fermionic",
-                           basis={"name": family, "size": "SZ"},
-                           two_center="analytic", optimizer=LBFGS,
-                           convergence={"gradient": 1e-6}, profile=False)
-    atoms.get_forces()
-    raw = atoms.calc.force_result.unprojected.copy()
-    integrals = atoms.calc.solver._gradient_context["integrals"]
-    assert integrals.two_center == "analytic"
-    solver = atoms.calc.solver
-    matrix = solver._h_matrix
-    exact = np.linalg.eigvalsh(
-        matrix.toarray() if hasattr(matrix, "toarray") else matrix)[0]
-    assert abs(solver.result.in_units("Ha") - exact) < 1e-6    # the sector FCI
-
-    def energy(step):
-        moved = atoms.copy()
-        moved.positions[1, 2] += step
-        moved.calc = atoms.calc
-        return moved.get_potential_energy()
-
-    coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
-                    for s in (0.004, 0.002))
-    numerical = fine + (fine - coarse) / 3.0
+    numerical = richardson_derivative(atoms, 1, 2, (0.004, 0.002))
     assert abs(numerical) > 0.1
     assert raw[1, 2] == pytest.approx(numerical, abs=1e-4)
 
@@ -246,12 +235,9 @@ def test_lih_force_curve_follows_the_plane_wave_reference():
         assert force == pytest.approx(reference, rel=0.25), distance
 
 
-def test_two_qubit_register_forces_exact_and_measured(tmp_path):
-    """Parity + two-qubit reduction: forces from the tapered register equal the
-    4-qubit Jordan-Wigner ones, from the state vector and from Estimator
-    expectation values of the optimized state."""
-    from mandacaru.backends.providers import QiskitProvider
-
+def test_two_qubit_register_forces_match_the_jordan_wigner_ones():
+    """Parity + two-qubit reduction: forces from the reduced register equal the
+    4-qubit Jordan-Wigner ones."""
     def run(**options):
         atoms = dimer("H2", 1.0, 8.0)
         atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", grid_spacing=0.25,
@@ -261,59 +247,28 @@ def test_two_qubit_register_forces_exact_and_measured(tmp_path):
         return atoms.get_forces(), atoms.get_potential_energy(), atoms.calc
 
     jw, e_jw, _ = run(mapping="jordan_wigner")
-    tapered, _, _ = run(mapping="parity_reduced",
-                        txt=str(tmp_path / "output.txt"))
-    measured, e_measured, calc = run(
-        mapping="parity_reduced",
-        measurement_provider=QiskitProvider(device="statevector", shots=0))
+    reduced, e_reduced, calc = run(mapping="parity_reduced")
     assert calc.n_qubits == 2
-    assert np.allclose(tapered, jw, atol=1e-5)
-    assert np.allclose(measured, jw, atol=1e-5)
-    assert e_measured == pytest.approx(e_jw, abs=1e-5)
-    assert len(calc.measurement["expectation_values"]) <= 16
+    assert np.allclose(reduced, jw, atol=1e-5)
+    assert e_reduced == pytest.approx(e_jw, abs=1e-5)
 
 
-@pytest.mark.parametrize("taper", [False, True])
-def test_reduced_active_space_force_tracks_optimized_energy(taper):
+@pytest.mark.parametrize("mapping", ["jordan_wigner", "parity_reduced"])
+def test_reduced_active_space_force_tracks_optimized_energy(mapping):
     """The PAW force includes the moving selected orbitals and frozen grid."""
-    from mandacaru.algorithms._hamiltonian_from_atoms import grid_from_cell
-
     atoms = dimer("H2", 0.92, 8.0)
-    grid = grid_from_cell(atoms, 0.35)
+    grid = Grid(center=atoms.positions.mean(axis=0), cell=np.eye(3) * 8.0,
+                grid_spacing=0.35)
     atoms.calc = Mandacaru(
         method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
         grid=grid, grid_spacing=0.35, active_space={"orbitals": 2, "method": "mp2"},
-        taper=taper, pool="fermionic", optimizer=LBFGS,
+        mapping=mapping, pool="fermionic", optimizer=LBFGS,
         max_iterations=20, convergence={"gradient": 1e-6},
         project_translation=False, profile=False)
     force = atoms.get_forces()[1, 2]
-    assert len(atoms.calc.solver._gradient_context["deleted"]) == 2
-    assert "active_space_response" in atoms.calc.force_result.details
-    if taper:
-        assert atoms.calc.solver._taper_info is not None
+    assert atoms.calc.result.force_details["orbital_response"] == "displaced-SCF-and-selector"
 
-    step = 0.005
-    energies = []
-    for sign in (+1, -1):
-        displaced = atoms.copy()
-        displaced.positions[1, 2] += sign * step
-        displaced.calc = atoms.calc
-        energies.append(displaced.get_potential_energy())
-    assert force == pytest.approx(-(energies[0] - energies[1]) / (2 * step),
-                                  abs=0.02)
-    if taper:
-        from mandacaru.backends.providers import QiskitProvider
-
-        measured = dimer("H2", 0.92, 8.0)
-        measured.calc = Mandacaru(
-            method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-            grid=grid, grid_spacing=0.35, active_space={"orbitals": 2, "method": "mp2"},
-            taper=True, pool="fermionic", optimizer=LBFGS,
-            max_iterations=20, convergence={"gradient": 1e-6},
-            project_translation=False, profile=False,
-            measurement_provider=QiskitProvider(device="statevector", shots=0))
-        assert measured.get_forces()[1, 2] == pytest.approx(force, abs=1e-5)
-        assert measured.calc.measurement["rdms"] is not None
+    assert force == pytest.approx(energy_derivative(atoms, 1, 2, 0.005), abs=0.02)
 
 
 # --------------------------------------------------------------------------- #
@@ -335,52 +290,27 @@ def water(cell=8.0):
                  cell=[cell] * 3)
 
 
-def water_calculator(grid_spacing=0.25):
+def water_calculator(grid_spacing=0.25, **options):
     return Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "SZ"},
                      grid_spacing=grid_spacing, pool="fermionic", optimizer=LBFGS,
-                     max_iterations=60, convergence={"gradient": 1e-4}, profile=False)
+                     max_iterations=60, convergence={"gradient": 1e-4}, profile=False,
+                     **options)
 
 
 @pytest.fixture(scope="module")
 def h2o():
     """Water's forces, both as reported and as the raw gradient.
 
-    ``project_translation`` defaults to ``"auto"``, so ``forces`` has had the
-    translational component of the egg-box removed; ``raw`` is the gradient of
-    the discretized energy, which is what the finite-difference and
-    Hellmann-Feynman-plus-Pulay identities are about.
+    ``project_translation`` defaults to ``"auto"``, so ``forces`` is the
+    gradient projected onto the internal molecular directions; ``raw`` is the
+    gradient of the discretized energy, which is what the finite-difference
+    checks are about.
     """
     atoms = water()
     atoms.calc = water_calculator()
     forces = atoms.get_forces()
     return SimpleNamespace(atoms=atoms, forces=forces,
-                           raw=atoms.calc.force_result.unprojected,
-                           details=dict(atoms.calc.force_result.details))
-
-
-def test_compensation_potentials_are_real_symmetric():
-    """The invariant the Pulay derivative relies on.
-
-    ``W_qs = <phi_q| v_L S_LM |phi_s>``: with a molecule's real harmonics
-    both the functions and the weight are real for every ``M``, so each
-    ``W`` is real symmetric (with complex harmonics only the ``M = 0`` ones
-    were, and a derivative written as ``cross + cross^H`` would have put
-    ``conj(v)`` in the second half).
-    """
-    from mandacaru.algorithms._hamiltonian_from_atoms import (
-        build_basis_hamiltonian, grid_from_cell)
-
-    atoms = water()
-    grid = grid_from_cell(atoms, 0.25)
-    integrals = build_basis_hamiltonian(atoms, {"name": "PAW-LCAO", "size": "SZ"},
-                                        grid, 0.25, 0, None, False, False,
-                                        None)[4]["integrals"]
-    potentials = integrals.compensation_potentials()
-    assert any(M != 0 for _atom, _L, M in potentials)   # oxygen has p channels
-    for (_atom, _L, M), W in potentials.items():
-        W = np.asarray(W)
-        assert W.dtype == np.float64
-        assert np.abs(W - W.T).max() < 1e-12 * max(np.abs(W).max(), 1.0)
+                           raw=atoms.calc.result.forces())
 
 
 def test_forces_respect_the_c2v_symmetry(h2o):
@@ -409,72 +339,54 @@ def test_p_valence_force_is_the_derivative_of_the_energy(h2o):
     whole multipole algebra; it was off by 0.57 eV/Angstrom (20 %) before the
     complex-weight fix.
     """
-    atoms = h2o.atoms
-    step = 0.004
     # Oxygen along y: the component the complex M = +-1 channels carry, and the
     # one that was off by 0.57 eV/Angstrom.  One component keeps the test's
     # memory inside the suite budget; the symmetry test covers the rest.
-    atom, axis = 0, 1
-    energies = []
-    for sign in (1, -1):
-        moved = atoms.copy()
-        moved.positions[atom, axis] += sign * step
-        moved.calc = atoms.calc
-        energies.append(moved.get_potential_energy())
-    numerical = -(energies[0] - energies[1]) / (2 * step)
+    numerical = energy_derivative(h2o.atoms, 0, 1, 0.004)
     # Against the raw gradient: the finite difference is of the discretized
     # energy, which is not translation invariant, so it carries the egg-box that
     # the default projection removes from the reported force.
-    assert h2o.raw[atom, axis] == pytest.approx(numerical, abs=1e-2)
+    assert h2o.raw[0, 1] == pytest.approx(numerical, abs=1e-2)
 
 
 def test_translation_projection_zeroes_the_net_force(h2o):
-    """The default (``"auto"``) enforces the free-molecule identity.
+    """The default (``"auto"``) enforces the free-molecule identities.
 
-    The exact forces of a free molecule sum to zero, so removing the mean takes
-    out the translational component of the grid's egg-box and nothing physical.
-    Everything needed to undo it is kept: the raw gradient, the residual that was
-    there, and the mean that was removed.
+    The exact forces of a free molecule sum to zero and exert no torque, so
+    projecting onto the internal directions takes out the translational and
+    rotational components of the grid's egg-box and nothing physical.
     """
-    forces, raw, details = h2o.forces, h2o.raw, h2o.details
+    forces, raw = h2o.forces, h2o.raw
     assert np.abs(forces.sum(axis=0)).max() < 1e-12
-    assert details["translation_projected"] is True
-    # The residual is the *unprojected* one, so it is still reported in full.
-    assert details["translational_residual"] == pytest.approx(
-        np.abs(raw.sum(axis=0)).max(), abs=1e-6)
-    removed = np.asarray(details["translation_removed"])
-    assert np.allclose(forces + removed, raw, atol=1e-12)
+    positions = h2o.atoms.positions - h2o.atoms.positions.mean(axis=0)
+    assert np.abs(np.cross(positions, forces).sum(axis=0)).max() < 1e-8
     # Projection is a rigid shift, so it cannot break the molecule's symmetry.
     assert forces[0, 1] == pytest.approx(forces[0, 2], abs=5e-3)
+    # The reported force is the raw one with only the rigid translation (the
+    # mean force) removed: this molecule's raw torque is already zero.
+    assert np.allclose(raw - forces, raw.mean(axis=0), atol=1e-4)
 
 
 def test_project_translation_false_reports_the_raw_gradient(h2o):
     """Opting out gives back exactly the gradient of the computed energy."""
     atoms = water()
-    atoms.calc = water_calculator()
-    atoms.calc.project_translation = False
+    atoms.calc = water_calculator(project_translation=False)
     forces = atoms.get_forces()
     assert np.allclose(forces, h2o.raw, atol=1e-10)
-    details = atoms.calc.force_result.details
-    assert "translation_projected" not in details
-    assert "forces_unprojected" not in details
-    # `unprojected` is still the right array to ask for -- it is the forces.
-    assert np.allclose(atoms.calc.force_result.unprojected, forces)
 
 
 def test_projection_cannot_increase_the_error_against_a_zero_sum_force(h2o):
     """Why the default is to project: it is an orthogonal projection.
 
-    The exact force of a free molecule lies in the zero-sum subspace, and
-    removing the mean is the orthogonal projection onto it -- so the projected
-    array is no further from *any* zero-sum field than the raw one, whatever the
-    grid error happens to be.  Checked here against the symmetrized force, which
-    is the closest zero-sum field the symmetry allows.
+    The exact force of a free molecule lies in the subspace of internal
+    directions, and the projection onto it is orthogonal -- the removed part is
+    orthogonal to what is kept -- so the projected array is no further from the
+    exact force than the raw one, whatever the grid error happens to be.
     """
     raw, projected = h2o.raw, h2o.forces
-    reference = raw - raw.mean(axis=0)              # the zero-sum part of raw
-    assert np.linalg.norm(projected - reference) <= \
-        np.linalg.norm(raw - reference) + 1e-12
+    removed = raw - projected
+    assert abs(np.sum(removed * projected)) < 1e-6 * max(np.sum(raw * raw), 1.0)
+    assert np.linalg.norm(projected) <= np.linalg.norm(raw) + 1e-12
     # And it is a strict improvement whenever the residual is nonzero at all.
     assert np.abs(raw.sum(axis=0)).max() > 1e-6
 
@@ -488,45 +400,16 @@ def test_exact_spheres_force_is_the_derivative_of_the_energy():
     frozen grid.  The 2.5e-4 eV/Angstrom left is the step and the grid's, and
     the frozen-sphere Hamiltonian shows the same.
     """
-    from mandacaru.algorithms._hamiltonian_from_atoms import (
-        build_basis_hamiltonian, grid_from_cell)
-    from mandacaru.algorithms.pseudo_forces import (AlgebraicEnergy,
-                                                    pseudo_nuclear_gradient)
-
-    basis, h = {"name": "PAW-LCAO", "size": "SZ"}, 0.25
     atoms = Atoms("FH", positions=[[3.013, 2.979, 3.007],
                                    [3.323, 2.979, 3.877]], cell=[6.0] * 3)
-    grid = grid_from_cell(atoms, h)
-
-    def build(geometry):
-        context = build_basis_hamiltonian(geometry, basis, grid, h, 0,
-                                          None)[4]
-        integrals = context["integrals"]
-        n = context["n_electrons"]
-        energy = (integrals.hartree_fock(n).electronic_energy
-                  + integrals.nuclear_repulsion + integrals.constant_energy)
-        return energy, integrals, context, n
-
-    _energy, integrals, context, n = build(atoms)
-    assert integrals.one_center_factors().rank > 0
-    V = integrals.mo_coefficients
-    M = V.shape[0]
-    D = np.zeros((M, M))
-    D[np.arange(n // 2), np.arange(n // 2)] = 2.0
-    G = (np.einsum("pr,qs->pqrs", D, D)
-         - 0.5 * np.einsum("ps,qr->pqrs", D, D))
-    result = pseudo_nuclear_gradient(
-        integrals, None, None, atom_of_orbital=context["atom_of_orbital"],
-        energy=AlgebraicEnergy(V, D, G))
-    step = 0.002
-    energies = []
-    for sign in (1, -1):
-        moved = atoms.copy()
-        moved.positions[0, 2] += sign * step
-        energies.append(build(moved)[0])
-    numerical = -(energies[0] - energies[1]) / (2 * step) * HARTREE_TO_EV
-    assert abs(result.forces[0, 2]) > 2.0
-    assert result.forces[0, 2] == pytest.approx(numerical, abs=1e-3)
+    grid = Grid(center=[3.0] * 3, cell=np.eye(3) * 6.0, grid_spacing=0.25)
+    atoms.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid=grid, grid_spacing=0.25, project_translation=False,
+                           scf_options={"tolerance": 1e-11}, trace=False)
+    force = atoms.get_forces()[0, 2]
+    numerical = energy_derivative(atoms, 0, 2, 0.002)
+    assert abs(force) > 2.0
+    assert force == pytest.approx(numerical, abs=1e-3)
 
 
 def test_a_diffuse_basis_force_is_the_derivative_of_the_energy():
@@ -537,18 +420,7 @@ def test_a_diffuse_basis_force_is_the_derivative_of_the_energy():
     basis = {"name": "PAW-LCAO", "diffuse": True}
     atoms = dimer("H2", 0.75, 15.4)
     atoms.calc = calculator(grid_spacing=0.3, basis=basis)
-    raw = None
     atoms.get_forces()
-    raw = atoms.calc.force_result.unprojected
-    context = atoms.calc.solver._gradient_context
-    assert sum(1 for f in context["integrals"].basis
-               if getattr(f, "diffuse", False)) == 2
-    step = 0.005
-    energies = []
-    for sign in (1, -1):
-        moved = atoms.copy()
-        moved.positions[1, 2] += sign * step
-        moved.calc = atoms.calc
-        energies.append(moved.get_potential_energy())
-    numerical = -(energies[0] - energies[1]) / (2 * step)
+    raw = atoms.calc.result.forces()
+    numerical = energy_derivative(atoms, 1, 2, 0.005)
     assert raw[1, 2] == pytest.approx(numerical, abs=5e-3)

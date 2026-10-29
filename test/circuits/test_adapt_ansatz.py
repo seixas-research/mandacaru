@@ -19,7 +19,7 @@ matrix at all (:mod:`mandacaru.core.matrix_free`).
 import numpy as np
 import pytest
 
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 from ase import Atoms
 
 

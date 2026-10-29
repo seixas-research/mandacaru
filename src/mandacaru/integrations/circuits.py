@@ -2,9 +2,17 @@
 from types import SimpleNamespace
 import numpy as np
 
+from .. import _native
 from ..backends.hardware import get_device
 from ..backends.providers import build_provider, normalize_provider
-from ..backends.measurement import resolve_measurement_budget, resilience_multipliers
+from ..backends.measurement import (
+    RunBudgetExceeded,
+    resilience_multipliers,
+    resolve_measurement_budget,
+    resolve_run_budget,
+    resolve_shots_per_energy,
+)
+from ..core import PauliSum
 
 
 def configure(driver, *, provider, device, shots, options, measurement_budget):
@@ -31,13 +39,62 @@ def configure(driver, *, provider, device, shots, options, measurement_budget):
     driver._gradient_measurement = None
 
 
+def preflight_run_budget(driver, opts):
+    """Refuse an optimization that cannot fit the provider's run budget.
+
+    Called before the first job is queued, so a refusal costs nothing. A fixed
+    ansatz has a known cap on its energy evaluations (``None`` when the
+    optimizer is not capped by its iteration count, e.g. Nelder-Mead); that
+    many evaluations are checked against the jobs and shots left. An unbounded
+    method is left to the provider's per-job check, which stops the run where
+    the budget ends.
+    """
+    if not driver._shots or driver.method != "vqe":
+        return
+    method = opts["optimizer"]
+    if method == "Nelder-Mead":
+        return      # not capped by its iteration count: the ledger stops it
+    # COBYLA's intended budget is its iteration count unless `maxfev` says more.
+    cap = opts["max_evaluations"]
+    if method == "COBYLA" and "maxfev" not in driver._optimizer:
+        cap = opts["max_iterations"]
+    evaluations = _native.optimizer_evaluation_bound(
+        method, opts["max_iterations"], cap, opts["track_best"])
+    if evaluations is None:
+        return
+    provider = driver.provider
+    budget = resolve_run_budget(provider.run_budget, provider.is_hardware)
+    if budget is None:
+        return
+    hamiltonian = PauliSum(
+        {label: complex(re, im) for label, re, im in driver.problem.hamiltonian_terms},
+        num_qubits=driver.problem.num_qubits)
+    usage = provider.run_usage()
+    needed = {"jobs": usage["jobs"] + evaluations * max(int(provider.jobs_per_energy(hamiltonian)), 1),
+              "total_shots": usage["shots"] + evaluations * resolve_shots_per_energy(provider, hamiltonian)}
+    over = [f"{key} {needed[key]:,} > {budget[key]:,}" for key in needed
+            if budget.get(key) is not None and needed[key] > budget[key]]
+    if over:
+        raise RunBudgetExceeded(
+            f"the optimizer may evaluate the energy {evaluations:,} times on "
+            f"{provider!r}, over the run budget ({'; '.join(over)}).  Lower the "
+            "optimizer's maxiter or the shots, or raise run_budget= in "
+            "backend_options if you mean it.")
+
+
 class CircuitExecutor:
-    """Translate native Pauli rotations to SDK requests; return raw results."""
+    """Translate native Pauli rotations to SDK requests; return raw results.
+
+    A submission the run budget refuses is not an error to the solver: the
+    executor answers ``{"stop": message}`` and the solver ends at the best
+    point it has reached.
+    """
 
     def __init__(self, driver):
         self.driver = driver
         self.problem = driver.problem
         self.provider = driver.provider
+        self.stopped = None
         self._point = None
         self._values = {}
         self._state = None
@@ -69,6 +126,15 @@ class CircuitExecutor:
                 raise ValueError(f"measurement {key} budget exceeded: {count} > {limit}")
 
     def __call__(self, labels, angles, observables):
+        if self.stopped is not None:
+            return {"stop": self.stopped}
+        try:
+            return self._execute(labels, angles, observables)
+        except RunBudgetExceeded as exc:
+            self.stopped = str(exc)
+            return {"stop": self.stopped}
+
+    def _execute(self, labels, angles, observables):
         point = (tuple(labels), tuple(angles))
         if point != self._point:
             self._point, self._values, self._state = point, {}, None

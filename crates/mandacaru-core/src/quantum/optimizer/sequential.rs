@@ -24,7 +24,7 @@ pub(super) fn minimize(
     let mut success = false;
     let mut message = "iteration budget exhausted".to_owned();
     loop {
-        if gradient.iter().fold(0_f64, |a, g| a.max(g.abs())) <= options.tolerance {
+        if gradient.iter().fold(0_f64, |a, g| a.max(g.abs())) <= options.tolerance_or_default() {
             success = true;
             message = "stationarity converged".into();
             break;
@@ -93,8 +93,8 @@ pub(super) fn minimize(
             }
         }
         steps += 1;
-        let small =
-            (value - energy).abs() <= options.tolerance && s.amax() <= options.tolerance.sqrt();
+        let small = (value - energy).abs() <= options.tolerance_or_default()
+            && s.amax() <= options.tolerance_or_default().sqrt();
         x = next;
         energy = value;
         gradient = g;
@@ -111,5 +111,6 @@ pub(super) fn minimize(
         steps,
         success,
         message,
+        interrupted: None,
     })
 }

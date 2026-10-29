@@ -18,7 +18,7 @@ pub(super) fn minimize(
     let mut success = false;
     let mut message = "iteration budget exhausted".to_owned();
     loop {
-        if gradient.iter().fold(0_f64, |a, g| a.max(g.abs())) <= options.tolerance {
+        if gradient.iter().fold(0_f64, |a, g| a.max(g.abs())) <= options.tolerance_or_default() {
             success = true;
             message = "gradient converged".into();
             break;
@@ -108,5 +108,6 @@ pub(super) fn minimize(
         steps,
         success,
         message,
+        interrupted: None,
     })
 }

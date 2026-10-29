@@ -36,6 +36,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         mandacaru_core::quantum::optimizer::Method::NAMES.to_vec(),
     )?;
     m.add("THREAD_POLICY_VERSION", 1)?;
+    m.add_function(wrap_pyfunction!(quantum::optimizer_evaluation_bound, m)?)?;
     m.add_class::<PyContext>()?;
     m.add_class::<persistence::PySnapshot>()?;
     m.add_class::<persistence::PyLedger>()?;

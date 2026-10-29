@@ -26,15 +26,24 @@ pub use units::LengthUnit;
 pub enum Error {
     Invalid(String),
     Overflow,
-    Budget { requested: usize, available: usize },
+    Budget {
+        requested: usize,
+        available: usize,
+    },
     Allocation,
     Kernel(String),
+    /// An external executor ended the run on purpose (for example, its run
+    /// budget is exhausted). Not a fault: solvers that can keep their best
+    /// point catch it, every other caller propagates it.
+    Interrupted(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(message) | Self::Kernel(message) => f.write_str(message),
+            Self::Invalid(message) | Self::Kernel(message) | Self::Interrupted(message) => {
+                f.write_str(message)
+            }
             Self::Overflow => f.write_str("array shape or byte count exceeds addressable size"),
             Self::Budget { requested, available } => write!(f, "calculation memory budget exceeded: requested {requested} bytes, {available} available"),
             Self::Allocation => f.write_str("could not allocate calculation buffer"),

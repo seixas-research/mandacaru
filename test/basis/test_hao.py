@@ -21,16 +21,14 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms.dry_run import estimate_qubits
 from mandacaru.basis import BasisSet, HAOBasisSet
 from mandacaru.basis._config import ground_state_config, unoccupied_subshells
-from mandacaru.optimizers import Optimizer
 
 # The classical optimizers used below, with the iteration budget and
 # the convergence tolerance written out rather than left to the
 # library default: a test that pins an energy should say what it was
 # optimized with.
-LBFGS = Optimizer(method="L-BFGS", maxiter=2000, tol=1e-12)
+LBFGS = {"method": "L-BFGS", "maxiter": 2000, "tol": 1e-12}
 
 
 def occupied_levels(symbol):
@@ -164,44 +162,6 @@ class TestBasisConstruction:
 # Through the basis argument.
 # --------------------------------------------------------------------------- #
 
-class TestBasisArgument:
-    @pytest.mark.parametrize("spec, n_qubits, per_atom", [
-        ("HAO", 4, [("H", 1), ("H", 1)]),
-        ({"name": "HAO"}, 4, [("H", 1), ("H", 1)]),
-        ({"name": "HAO", "virtual_orbitals": 0}, 4, [("H", 1), ("H", 1)]),
-        ({"name": "HAO", "virtual_orbitals": 1}, 8, [("H", 2), ("H", 2)]),
-        ({"name": "HAO", "virtual_orbitals": 2}, 20, [("H", 5), ("H", 5)]),
-    ])
-    def test_the_dry_run_counts_the_virtual_levels(self, spec, n_qubits,
-                                                   per_atom):
-        estimate = estimate_qubits(h2(), basis=spec)
-        assert estimate.n_qubits == n_qubits
-        assert estimate.per_atom == per_atom
-
-    def test_the_dry_run_label_carries_the_option(self):
-        estimate = estimate_qubits(h2(),
-                                   basis={"name": "HAO", "virtual_orbitals": 1})
-        assert "virtual_orbitals" in estimate.basis
-
-    def test_per_element(self):
-        """Only the oxygen gets a virtual level."""
-        water = Atoms("OH2", positions=[[0, 0, 0], [0, 0.76, 0.59],
-                                        [0, -0.76, 0.59]], cell=[10.0] * 3)
-        water.center()
-        estimate = estimate_qubits(
-            water, basis={"O": {"name": "HAO", "virtual_orbitals": 1},
-                          "H": "HAO"})
-        assert estimate.per_atom == [("O", 6), ("H", 1), ("H", 1)]
-        assert estimate.n_qubits == 16
-
-    def test_the_electron_count_does_not_change(self):
-        """Virtual levels widen the basis, never the number of electrons."""
-        plain = estimate_qubits(h2(), basis="HAO")
-        wide = estimate_qubits(h2(),
-                               basis={"name": "HAO", "virtual_orbitals": 1})
-        assert wide.n_electrons == plain.n_electrons == 2
-        assert wide.num_particles == plain.num_particles == (1, 1)
-        assert wide.n_spatial_orbitals == 4 and plain.n_spatial_orbitals == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -233,13 +193,6 @@ class TestVariationalPayoff:
 
 
 class TestHAONaming:
-    def test_hao_names_exist(self):
-        from mandacaru.basis import HAOBasisSet, HydrogenicAtomicOrbital
-        from mandacaru.core import MolecularIntegrals, minimal_hao_basis
-        assert HydrogenicAtomicOrbital is not None
-        assert HAOBasisSet is not None
-        assert MolecularIntegrals is not None
-        assert minimal_hao_basis is not None
 
     def test_factory_builds_hao(self):
         from mandacaru.basis import BasisSet, HAOBasisSet

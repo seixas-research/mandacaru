@@ -49,6 +49,7 @@ pub(super) fn minimize(
                 "iteration budget exhausted"
             }
             .into(),
+            interrupted: None,
         });
     }
     let cobyla = options.method == Method::Cobyla;
@@ -80,7 +81,7 @@ pub(super) fn minimize(
             break;
         }
         if cobyla {
-            if radius <= options.tolerance {
+            if radius <= options.tolerance_or_default() {
                 success = true;
                 message = "linear-model trust region converged".into();
                 break;
@@ -177,8 +178,8 @@ pub(super) fn minimize(
                 .iter()
                 .flat_map(|s| s.x.iter().zip(&simplex[0].x).map(|(a, b)| (a - b).abs()))
                 .fold(0_f64, f64::max);
-            if spread <= options.tolerance
-                && (simplex[n].value - simplex[0].value).abs() <= options.tolerance
+            if spread <= options.tolerance_or_default()
+                && (simplex[n].value - simplex[0].value).abs() <= options.tolerance_or_default()
             {
                 success = true;
                 message = "simplex converged".into();
@@ -255,5 +256,6 @@ pub(super) fn minimize(
         steps,
         success,
         message,
+        interrupted: None,
     })
 }

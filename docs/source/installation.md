@@ -46,12 +46,13 @@ Rust crystal solver.
 Set `MANDACARU_PAW_PATH` to a `mandacaru-paw` checkout, or
 `MANDACARU_UPAW_PATH` to a `mandacaru-upaw` checkout. Dataset selection belongs
 to the basis specification; datasets do not ship in the base wheel.
-Molecular PAW HF and variational calculations use Rust for sampling, integral
+Molecular PAW HF, semilocal Kohn–Sham and variational calculations, and the
+stationary RHF/UHF/Kohn–Sham forces, use Rust for sampling, integral
 assembly, overlap augmentation, compensation multipoles and exact valence
 one-center interactions. Frozen-core exchange currently supports an empty core
 or a single closed 1s shell. Python still prepares the PAW basis radial tables.
-Molecular PAW DFT, spin-orbit projectors, forces and multi-shell core exchange
-remain unavailable.
+Molecular PAW screened exchange, spin-orbit projectors, GHF forces and
+multi-shell core exchange remain unavailable.
 
 ## Verification
 

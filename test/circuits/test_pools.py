@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 from mandacaru.circuits.pools import build_pool
 from mandacaru.core.mapping import Fermion, PauliSum, qubit_excitation
 from mandacaru.core.sector import ParticleSector

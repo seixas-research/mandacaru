@@ -596,27 +596,6 @@ def refuse_energy_ranking(method, n_diffuse: int, n_virtual: int,
             "keep every virtual orbital")
 
 
-def check_active_space(active_space, basis_fns, num_particles) -> None:
-    """:func:`refuse_energy_ranking` for a resolved basis and register
-    request (``active_space`` as the builder receives it)."""
-    from ..algorithms.active_space import (_resolve_counts,
-                                           resolve_active_space_spec)
-
-    n_diffuse = sum(1 for f in basis_fns if is_diffuse(f))
-    if not n_diffuse or active_space is None:
-        return
-    spec = resolve_active_space_spec(active_space)
-    if spec is None or spec.orbitals is None or isinstance(spec.orbitals,
-                                                           tuple):
-        return            # nothing ranked: no truncation, or explicit indices
-    n_doubly = min(num_particles)
-    n_singly = abs(num_particles[0] - num_particles[1])
-    n_virtual = len(basis_fns) - n_doubly - n_singly
-    _occupied, n_kept = _resolve_counts(spec.orbitals, n_doubly, n_singly,
-                                        n_virtual, 0)
-    refuse_energy_ranking(spec.method, n_diffuse, n_virtual, n_kept)
-
-
 def _radial_table_norm(function) -> float:
     table = function.table
     r = np.asarray(table.r, dtype=float)

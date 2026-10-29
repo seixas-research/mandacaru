@@ -342,7 +342,7 @@ impl CachedProblem {
                     state:final_state,labels:best.sequence.iter().map(|&i|self.pool[i].label.clone()).collect(),indices:best.sequence,
                     iterations:vec![],history:evaluator.history,optimizer_steps:evaluator.optimizer_steps,success:false,
                     message:"architecture search budget completed; no eigenstate convergence certificate".into(),
-                    final_gradient:best.gradients.iter().map(|g|g.abs()).fold(0.,f64::max),elapsed_seconds:started.elapsed().as_secs_f64(),_memory:result_memory},
+                    final_gradient:best.gradients.iter().map(|g|g.abs()).fold(0.,f64::max),budget_stopped:false,elapsed_seconds:started.elapsed().as_secs_f64(),_memory:result_memory},
                 records,steps,acceptance,optimal_cost:best.cost,best_energy:best_energy.energy,
                 best_energy_indices:best_energy.sequence,best_energy_parameters:best_energy.parameters,final_energy:current.energy,
                 final_indices:current.sequence,final_parameters:current.parameters,num_architectures:evaluator.seen.len(),

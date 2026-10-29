@@ -6,6 +6,7 @@ pub mod forces;
 pub mod integrals;
 pub mod local_correlation;
 pub mod observables;
+mod paw_gradient;
 pub mod response;
 pub mod scf;
 pub mod symmetry;

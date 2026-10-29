@@ -323,6 +323,12 @@ impl CachedProblem {
         let mut message = "growth budget exhausted".to_owned();
         let mut final_gradient = 0.;
         let mut seed = None;
+        // A run budget exhausted mid-solve (the executor answered with a stop)
+        // ends the solve at the best point reached. `measured` holds the last
+        // measured energy of the accepted ansatz; without one there is no
+        // point to keep and the interruption propagates.
+        let mut stopped: Option<String> = None;
+        let mut measured: Option<f64> = None;
         if !options.adapt {
             indices = (0..self.pool.len())
                 .filter(|&i| self.pool_screenable[i])
@@ -335,19 +341,28 @@ impl CachedProblem {
                     "initial parameter count differs from the UCCSD pool",
                 ));
             }
-            let outcome = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
-                let v = evaluate(&indices, t, options.trotter, derivatives)?;
-                Ok((v.energy, v.gradient))
-            })?;
+            let outcome =
+                optimizer::minimize_interruptible(ctx, &parameters, &options.optimizer, |t| {
+                    let v = evaluate(&indices, t, options.trotter, derivatives)?;
+                    Ok((v.energy, v.gradient))
+                })?;
             parameters = outcome.parameters;
             history = outcome.history;
             steps = outcome.steps;
             success = outcome.success;
             message = outcome.message;
-            final_gradient = evaluate(&indices, &parameters, options.trotter, true)?
-                .gradient
-                .iter()
-                .fold(0f64, |a, g| a.max(g.abs()));
+            measured = Some(outcome.energy);
+            stopped = outcome.interrupted;
+            final_gradient = f64::NAN;
+            if stopped.is_none() {
+                match evaluate(&indices, &parameters, options.trotter, true) {
+                    Ok(v) => {
+                        final_gradient = v.gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
+                    }
+                    Err(Error::Interrupted(m)) => stopped = Some(m),
+                    Err(e) => return Err(e),
+                }
+            }
         } else {
             if sequence.is_none() && initial.is_some_and(|p| !p.is_empty()) {
                 return Err(invalid("basic ADAPT starts with an empty ansatz"));
@@ -382,10 +397,17 @@ impl CachedProblem {
             for growth in self.growth_steps(&indices)?..=options.max_growth {
                 // Release the objective closure before measured pool screening.
                 let evaluation = match execution.as_mut() {
-                    Some(device) => device.evaluate(self, &indices, &parameters, false)?,
+                    Some(device) => match device.evaluate(self, &indices, &parameters, false) {
+                        Err(Error::Interrupted(m)) if measured.is_some() => {
+                            stopped = Some(m);
+                            break;
+                        }
+                        other => other?,
+                    },
                     None => self.evaluate(&indices, &parameters, true)?,
                 };
                 let energy = evaluation.energy;
+                measured = Some(energy);
                 let hpsi = self.hamiltonian.apply_centered(
                     ctx,
                     &self.basis,
@@ -411,7 +433,13 @@ impl CachedProblem {
                 }
                 if !indices.is_empty() {
                     if let Some(device) = execution.as_mut() {
-                        gradients = device.pool_gradients(self, &indices, &parameters)?;
+                        gradients = match device.pool_gradients(self, &indices, &parameters) {
+                            Err(Error::Interrupted(m)) => {
+                                stopped = Some(m);
+                                break;
+                            }
+                            other => other?,
+                        };
                         if gradients.len() != self.pool.len()
                             || gradients.iter().any(|g| !g.is_finite())
                         {
@@ -453,19 +481,36 @@ impl CachedProblem {
                 } else {
                     vec![selected]
                 };
+                let accepted = indices.len();
                 for index in grown {
                     indices.push(index);
                     parameters.push(0.);
                 }
 
-                let outcome = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
-                    let v = match execution.as_mut() {
-                        Some(device) => device.evaluate(self, &indices, t, derivatives)?,
-                        None => self.evaluate(&indices, t, true)?,
-                    };
-                    Ok((v.energy, v.gradient))
-                })?;
+                let outcome = match optimizer::minimize_interruptible(
+                    ctx,
+                    &parameters,
+                    &options.optimizer,
+                    |t| {
+                        let v = match execution.as_mut() {
+                            Some(device) => device.evaluate(self, &indices, t, derivatives)?,
+                            None => self.evaluate(&indices, t, true)?,
+                        };
+                        Ok((v.energy, v.gradient))
+                    },
+                ) {
+                    // Stopped before the grown ansatz was measured once:
+                    // growth ends at the last accepted ansatz.
+                    Err(Error::Interrupted(m)) if measured.is_some() => {
+                        indices.truncate(accepted);
+                        parameters.truncate(accepted);
+                        stopped = Some(m);
+                        break;
+                    }
+                    other => other?,
+                };
                 delta = Some(outcome.energy - energy);
+                measured = Some(outcome.energy);
                 parameters = outcome.parameters;
                 steps += outcome.steps;
                 iterations.push(Iteration {
@@ -482,31 +527,53 @@ impl CachedProblem {
                 if let Some(observer) = observer.as_deref_mut() {
                     observer(&indices, &parameters, outcome.energy)?;
                 }
+                if outcome.interrupted.is_some() {
+                    // The partly optimized ansatz at its best point is kept.
+                    stopped = outcome.interrupted;
+                    break;
+                }
                 // Preserve an inner optimizer's best point and failure status.
                 // Growth continues; only the outer pool criteria certify ADAPT
                 // convergence, even when the inner tolerance hits roundoff.
             }
         }
-        let evaluation = match execution.as_mut() {
-            Some(device) => device.evaluate(self, &indices, &parameters, false)?,
-            None => self.evaluate(&indices, &parameters, options.adapt || options.trotter)?,
+        let trotter = options.adapt || options.trotter;
+        let final_evaluation = match (execution.as_mut(), stopped.is_some()) {
+            (_, true) => None,
+            (Some(device), false) => match device.evaluate(self, &indices, &parameters, false) {
+                Err(Error::Interrupted(m)) if measured.is_some() => {
+                    stopped = Some(m);
+                    None
+                }
+                other => Some(other?),
+            },
+            (None, false) => Some(self.evaluate(&indices, &parameters, trotter)?),
         };
-        let energy = evaluation.energy;
+        // After a stop no circuit is submitted: the state comes from the
+        // native simulator and the energy is the last one measured.
+        let (energy, state) = match final_evaluation {
+            Some(evaluation) => (evaluation.energy, evaluation.state),
+            None => (
+                measured.expect("a stop keeps a measured point"),
+                self.prepare_state(&indices, &parameters, trotter)?,
+            ),
+        };
+        if let Some(reason) = &stopped {
+            success = false;
+            message = format!("run budget exhausted: {reason}");
+        }
         if options.adapt && execution.is_none() {
-            let hpsi =
-                self.hamiltonian
-                    .apply_centered(ctx, &self.basis, evaluation.state.as_slice())?;
+            let hpsi = self
+                .hamiltonian
+                .apply_centered(ctx, &self.basis, state.as_slice())?;
             let mut action = ctx.allocate(self.basis.len())?;
             final_gradient = 0.;
             for (i, g) in self.pool.iter().enumerate() {
                 if !self.pool_screenable[i] {
                     continue;
                 }
-                g.operator.apply_into(
-                    &self.basis,
-                    evaluation.state.as_slice(),
-                    action.as_mut_slice(),
-                );
+                g.operator
+                    .apply_into(&self.basis, state.as_slice(), action.as_mut_slice());
                 final_gradient = final_gradient
                     .max((2. * evolution::inner(hpsi.as_slice(), action.as_slice()).re).abs());
             }
@@ -520,7 +587,7 @@ impl CachedProblem {
             energy,
             reference,
             parameters,
-            state: evaluation.state,
+            state,
             indices,
             labels,
             iterations,
@@ -529,6 +596,7 @@ impl CachedProblem {
             success,
             message,
             final_gradient,
+            budget_stopped: stopped.is_some(),
             elapsed_seconds: start.elapsed().as_secs_f64(),
             _memory,
         })
@@ -596,6 +664,9 @@ pub struct SolveResult {
     pub success: bool,
     pub message: String,
     pub final_gradient: f64,
+    /// The executor refused further circuits (its run budget is exhausted)
+    /// and the result is the best point reached, `success == false`.
+    pub budget_stopped: bool,
     pub elapsed_seconds: f64,
     pub(super) _memory: Reservation,
 }

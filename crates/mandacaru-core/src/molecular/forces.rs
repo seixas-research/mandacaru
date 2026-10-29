@@ -5,23 +5,28 @@ use crate::models::xc;
 use crate::{product, quantum::C64, Buffer, Result};
 use nalgebra::DMatrix;
 
+/// Nuclear gradient dE/dR in Hartree per Bohr, three components per atom.
+/// The analytic all-electron path splits it into Hellmann-Feynman and Pulay
+/// parts; the PAW path differentiates the whole energy at fixed densities and
+/// reports no split, its step, and the Richardson error estimate.
 pub struct Gradient {
-    pub hellmann_feynman: Buffer<f64>,
-    pub pulay: Buffer<f64>,
+    pub hellmann_feynman: Option<Buffer<f64>>,
+    pub pulay: Option<Buffer<f64>>,
     pub total: Buffer<f64>,
+    pub scheme: &'static str,
+    pub step: Option<f64>,
+    pub estimate: Option<f64>,
 }
 impl MolecularIntegrals {
     pub fn gradient(&self, state: &MeanField) -> Result<Gradient> {
-        if self.corrections.is_some() {
-            return Err(invalid(
-                "native molecular PAW force response is not yet implemented",
-            ));
-        }
         if !state.converged {
             return Err(invalid("forces require a converged SCF state"));
         }
         if state.method == "ghf" {
             return Err(invalid("native spinor gradients are not implemented"));
+        }
+        if self.corrections.is_some() {
+            return self.paw_gradient(state);
         }
         if self.kinetic_method != "spectral" {
             return Err(invalid(
@@ -227,9 +232,12 @@ impl MolecularIntegrals {
                 return Err(invalid("nonfinite stationary gradient"));
             }
             Ok(Gradient {
-                hellmann_feynman: hf,
-                pulay,
+                hellmann_feynman: Some(hf),
+                pulay: Some(pulay),
                 total: total_gradient,
+                scheme: "Analytic-Hellmann-Feynman-Pulay",
+                step: None,
+                estimate: None,
             })
         })
     }

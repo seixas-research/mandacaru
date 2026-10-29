@@ -458,6 +458,9 @@ class CalculationResult:
         """Forces in eV/Angstrom; variational steps are specified in Bohr.
 
         Richardson extrapolation is available for force convergence checks.
+        A stationary mean-field state ignores ``step`` and ``extrapolate``: the
+        all-electron gradient is analytic, and the PAW-LCAO gradient is a
+        Richardson difference at the native step of ``force_details``.
         """
         if type(extrapolate) is not bool:
             raise TypeError("extrapolate must be a boolean")
@@ -485,7 +488,12 @@ class CalculationResult:
         elif self._reference is None:
             raise ValueError("stationary forces require a native mean-field state")
         else:
-            gradient = self._reference.gradient()["gradient"]
+            stationary = self._reference.gradient()
+            gradient = stationary["gradient"]
+            self.force_details = {
+                key: value for key, value in stationary.items()
+                if not isinstance(value, np.ndarray)
+            }
         if project_translation and not internal:
             gradient = self.context.remove_force_translation(np.ascontiguousarray(gradient))
         return -gradient * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)

@@ -23,6 +23,8 @@ from .structure import geometry_value
 from .units import ANGSTROM_TO_BOHR
 
 DEFAULT_METHOD = "adapt-vqe"
+#: Methods that difference the energy at tiny steps: refused on a measured energy.
+NOISE_INTOLERANT = ("SLSQP", "BFGS", "L-BFGS", "CG")
 STABLE_METHODS = tuple(METHODS)
 
 
@@ -92,7 +94,7 @@ class Mandacaru(ASEProperties, Calculator):
         txt=None,
         gradient="analytic",
         profile=None,
-        execute_circuits=False,
+        execute_circuits=None,
         backend_provider=None,
         device="AER_simulator",
         shots=0,
@@ -133,9 +135,20 @@ class Mandacaru(ASEProperties, Calculator):
             raise ValueError("the native state-vector solver uses analytic gradients")
         if profile is not None and type(profile) is not bool:
             raise TypeError("profile must be True, False or None")
-        if type(execute_circuits) is not bool:
-            raise TypeError("execute_circuits must be a boolean")
+        if execute_circuits is not None and type(execute_circuits) is not bool:
+            raise TypeError("execute_circuits must be a boolean or None")
+        if execute_circuits is None:
+            # Naming a non-Qiskit provider is a request to use it; the Qiskit
+            # default keeps the fast state-vector numerics unless asked.
+            from .backends.providers import normalize_provider
+
+            execute_circuits = (
+                backend_provider is not None
+                and normalize_provider(backend_provider) != "qiskit"
+            )
         self._execute_circuits = execute_circuits or shots > 0 or device != "AER_simulator"
+        self._device = device
+        self._shots = shots
         from .integrations.transfer import configure as configure_transfer
 
         configure_transfer(self, transfer=transfer, transfer_threshold=transfer_threshold,
@@ -201,6 +214,8 @@ class Mandacaru(ASEProperties, Calculator):
         )
         self.context = self.resources.context
         self.provider = None
+        #: Why the run budget ended the last run early, or ``None``.
+        self.run_budget_exhausted = None
         self._gradient_measurement = None
         if self._execute_circuits or backend_provider is not None:
             from .integrations.circuits import configure
@@ -325,22 +340,29 @@ class Mandacaru(ASEProperties, Calculator):
             raise ValueError("architecture-search controls require mcas-vqe or valqa")
         self.trace = trace
         self.txt = txt
-        self._optimizer = {
-            "method": "SLSQP",
-            "maxiter": 2000,
-            "tol": 1e-12,
-            **(
-                dict(method=optimizer)
-                if isinstance(optimizer, str)
-                else dict(optimizer or {})
-            ),
-        }
+        requested = (
+            dict(method=optimizer)
+            if isinstance(optimizer, str)
+            else dict(optimizer or {})
+        )
+        defaults = {"method": "SLSQP", "maxiter": 2000, "tol": 1e-12}
+        if shots > 0 and requested.get("method", "SPSA") == "SPSA":
+            # A measured energy: the strict two-evaluation SPSA, whose
+            # 2 * maxiter + 1 evaluations are each one job on a processor.
+            defaults = {"method": "SPSA", "maxiter": 100, "tol": None, "track_best": False}
+        self._optimizer = {**defaults, **requested}
         if self._optimizer["method"] not in _native.OPTIMIZERS:
             raise ValueError(
                 f"expected a native optimizer in {tuple(_native.OPTIMIZERS)}"
             )
-        if set(self._optimizer) - {"method", "maxiter", "maxfev", "tol"}:
-            raise ValueError("optimizer options are method, maxiter, maxfev and tol")
+        if set(self._optimizer) - {"method", "maxiter", "maxfev", "tol", "track_best"}:
+            raise ValueError("optimizer options are method, maxiter, maxfev, tol and track_best")
+        if shots > 0 and self._optimizer["method"] in NOISE_INTOLERANT:
+            raise ValueError(
+                f"optimizer {self._optimizer['method']!r} differences the energy at tiny "
+                "steps, which turns shot noise into gradient noise; with "
+                "shots > 0 use 'SPSA' (the default) or 'COBYLA'"
+            )
         if set(self._convergence) - {"gradient", "energy"}:
             raise ValueError("convergence options are gradient and energy")
         if not self.capabilities.quantum and (
@@ -433,7 +455,6 @@ class Mandacaru(ASEProperties, Calculator):
             values.append("magmom")
         if (
             self.capabilities.forces
-            and (self._basis_spec is not None or self.capabilities.quantum)
             and not self._execute_circuits
             and self._kinetic == "spectral"
             and self._load_crystal is None
@@ -677,6 +698,7 @@ class Mandacaru(ASEProperties, Calculator):
             max_iterations=self._optimizer.get("maxiter", 300),
             max_evaluations=self._optimizer.get("maxfev", 5000),
             tolerance=self._optimizer.get("tol", 1e-9),
+            track_best=self._optimizer.get("track_best", True),
             max_growth=self._max_growth,
             gradient_tolerance=self._convergence.get("gradient"),
             energy_tolerance=(None if self._convergence.get("energy") is None else
@@ -725,6 +747,9 @@ class Mandacaru(ASEProperties, Calculator):
                 from .integrations.circuits import CircuitExecutor
 
                 executor = CircuitExecutor(self)
+                from .integrations.circuits import preflight_run_budget
+
+                preflight_run_budget(self, opts)
             if self._search is not None:
                 if callback is not None:
                     raise ValueError("growth callbacks apply to ADAPT, not architecture edits")
@@ -732,8 +757,25 @@ class Mandacaru(ASEProperties, Calculator):
 
                 raw = run(self, initial_parameters)
             else:
-                raw = self.problem.solve(resume=resumed, callback=observer,
-                                         executor=executor, **opts)
+                self.run_budget_exhausted = None
+                try:
+                    raw = self.problem.solve(resume=resumed, callback=observer,
+                                             executor=executor, **opts)
+                except RuntimeError as exc:
+                    if executor is not None and executor.stopped is not None:
+                        # The budget ended the run before any energy existed.
+                        from .backends.measurement import RunBudgetExceeded
+
+                        raise RunBudgetExceeded(executor.stopped) from exc
+                    raise
+                if raw.get("budget_stopped"):
+                    self.run_budget_exhausted = raw["message"]
+                    warnings.warn(
+                        "the run budget stopped the optimization at its best "
+                        f"point so far: {raw['message']}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
             if executor is not None:
                 raw["execution"] = self.provider.name
                 raw["state_kind"] = "ideal-circuit" if self._shots else "statevector"

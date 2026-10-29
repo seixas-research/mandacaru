@@ -167,7 +167,7 @@ fn subspace_weights_sorting_and_one_state_limit() {
             let options = SolveOptions {
                 adapt,
                 optimizer: optimizer::Options {
-                    tolerance: 1e-9,
+                    tolerance: Some(1e-9),
                     ..Default::default()
                 },
                 ..Default::default()

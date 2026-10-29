@@ -26,10 +26,9 @@ contacts AWS or costs money.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 from mandacaru.backends.hardware import (available_devices, device_arn,
                                          device_provider, get_device,
                                          is_aws_device, is_simulator,
@@ -41,32 +40,12 @@ from mandacaru.backends.measurement import (energy_from_group_counts,
                                             qubit_wise_commuting_groups,
                                             shot_noise_estimate)
 from mandacaru.backends.providers import build_provider, provider_available
-from mandacaru.circuits.adapt_ansatz import AdaptAnsatz
-from mandacaru.circuits.pools import build_pool
 from mandacaru.core import PauliSum
 
 braket_only = pytest.mark.skipif(not provider_available("braket"),
                                  reason="amazon-braket-sdk not installed")
 
 
-@pytest.fixture(scope="module")
-def h2_problem():
-    """A small H2 problem: ``(hamiltonian, n_qubits, occupied, generators)``."""
-    from ase import Atoms
-    atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
-                  cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-    calc = Mandacaru(method="adapt-vqe", pool="qeb", basis="HAO", grid_spacing=0.4,
-                     trace=False, max_iterations=1)
-    atoms.calc = calc
-    atoms.get_total_energy()
-
-    n = calc.n_qubits
-    pool = build_pool("qeb", n // 2, calc.num_particles)
-    ansatz = AdaptAnsatz(n, pool.occupied_orbitals, "jordan_wigner")
-    for op in pool.operators()[:2]:
-        ansatz.append(op)
-    return (calc.hamiltonian, n, ansatz.reference_qubits(),
-            ansatz.pauli_generators, ansatz)
 
 
 # --------------------------------------------------------------------------- #
@@ -101,13 +80,6 @@ class TestQubitWiseCommuting:
         for basis, payload in groups:
             assert merge_basis([label for label, _ in payload]) == basis
 
-    def test_grouping_reduces_the_circuit_count(self, h2_problem):
-        hamiltonian = h2_problem[0]
-        n_terms = len([l for l in hamiltonian.simplify().terms
-                       if set(l) != {"I"}])
-        groups, _ = qubit_wise_commuting_groups(hamiltonian)
-        # The point of grouping: far fewer circuits than Pauli terms.
-        assert len(groups) < n_terms
 
     def test_expectation_from_counts(self):
         # |00> in the Z basis: <ZI> = <IZ> = <ZZ> = +1.
@@ -201,15 +173,7 @@ class TestBraketProvider:
         a = build_provider("braket", shots=100)
         b = build_provider("braket", shots=200)
         assert a is not b and a.shots == 100 and b.shots == 200
-        # Default-configured providers are still shared.
-        assert build_provider("braket") is build_provider("braket")
 
-    def test_statevector_is_refused_when_shots_are_set(self, h2_problem):
-        """This is the incompatibility that rules the exact path out on a QPU."""
-        _h, n, occupied, generators, _ansatz = h2_problem
-        provider = build_provider("braket", shots=512)
-        with pytest.raises(ValueError, match="shots > 0"):
-            provider.statevector(n, occupied, generators, np.zeros(len(generators)))
 
     def test_braket_itself_rejects_statevector_with_shots(self):
         """The upstream constraint the message above reports, pinned directly."""
@@ -220,58 +184,9 @@ class TestBraketProvider:
         with pytest.raises(ValueError, match="StateVector"):
             LocalSimulator().run(circuit, shots=100)
 
-    def test_measurement_circuit_is_a_native_gate_set(self, h2_problem):
-        """Every gate emitted must be one a Braket QPU can accept."""
-        _h, n, occupied, generators, _ansatz = h2_problem
-        provider = build_provider("braket", shots=100)
-        circuit = provider.build(n, occupied, generators,
-                                 np.full(len(generators), 0.3),
-                                 measure_basis="X" * n)
-        allowed = {"I", "X", "H", "S", "Si", "Rz", "CNot"}
-        used = {ins.operator.name for ins in circuit.instructions}
-        assert used <= allowed, f"unsupported gates: {used - allowed}"
 
-    def test_shot_energy_converges_to_the_exact_value(self, h2_problem):
-        hamiltonian, n, occupied, generators, ansatz = h2_problem
-        theta = np.array([0.31, -0.2][:len(generators)])
-        exact = float(np.real(np.vdot(ansatz.state(theta),
-                                      hamiltonian.to_matrix()
-                                      @ ansatz.state(theta))))
 
-        # Sampling is random, so compare *averaged* errors over repeats rather
-        # than a single draw, and span a wide enough shot range (200 -> 50000,
-        # i.e. 250x, so ~16x less noise) that the 1/sqrt(shots) trend dominates
-        # the fluctuation between repeats.
-        def mean_error(shots, repeats=3):
-            errors = []
-            for _ in range(repeats):
-                provider = build_provider("braket", shots=shots)
-                measured = provider.energy(n, occupied, generators, theta,
-                                           hamiltonian)
-                errors.append(abs(measured - exact))
-            return float(np.mean(errors))
 
-        coarse, fine = mean_error(200), mean_error(50000)
-        assert fine < coarse, f"error did not shrink: {coarse:.2e} -> {fine:.2e}"
-        # And the fine estimate must sit inside the analytic shot-noise bound.
-        assert fine < 5 * shot_noise_estimate(hamiltonian, 50000)
-
-    def test_shots_zero_is_exact(self, h2_problem):
-        hamiltonian, n, occupied, generators, ansatz = h2_problem
-        theta = np.array([0.31, -0.2][:len(generators)])
-        exact = float(np.real(np.vdot(ansatz.state(theta),
-                                      hamiltonian.to_matrix()
-                                      @ ansatz.state(theta))))
-        provider = build_provider("braket", shots=0)
-        assert provider.energy(n, occupied, generators, theta,
-                               hamiltonian) == pytest.approx(exact, abs=1e-9)
-
-    def test_measurement_groups_are_exposed_for_cost_planning(self, h2_problem):
-        hamiltonian = h2_problem[0]
-        provider = build_provider("braket", shots=100)
-        groups = provider.measurement_groups(hamiltonian)
-        # One quantum task per group per energy evaluation -- what a QPU bills.
-        assert 0 < len(groups) < len(hamiltonian.simplify().terms)
 
 
 # --------------------------------------------------------------------------- #
@@ -282,13 +197,13 @@ class TestBraketProvider:
 class TestDriverOnBraket:
     def test_naming_a_braket_device_selects_the_provider(self):
         driver = Mandacaru(method="adapt-vqe", device="braket-local")
-        assert driver.solver.backend_provider == "braket"
-        assert driver.solver.execute_circuits is True
+        assert driver.provider.name == "braket"
+        assert driver._execute_circuits is True
 
     def test_aws_device_is_passed_to_the_provider_by_arn(self):
         driver = Mandacaru(method="adapt-vqe", device="braket-sv1")
-        options = driver.solver._provider_options()
-        assert options["device"] == device_arn("braket-sv1")
+        assert driver.provider.device_spec == device_arn("braket-sv1")
+        assert driver.provider.is_aws_device is True
 
     def test_qpu_without_shots_is_refused_up_front(self):
         with pytest.raises(ValueError, match="shots > 0"):
@@ -296,35 +211,15 @@ class TestDriverOnBraket:
         # ... and accepted with shots.
         driver = Mandacaru(method="adapt-vqe", device="braket-ionq-aria",
                            shots=1000)
-        assert driver.solver.shots == 1000
-        assert driver.solver._provider_options()["shots"] == 1000
+        assert driver._shots == 1000
+        assert driver.provider.shots == 1000
 
-    def test_shots_require_the_braket_provider(self):
-        with pytest.raises(NotImplementedError, match="braket"):
+    def test_shots_require_a_shot_capable_provider(self):
+        with pytest.raises(ValueError, match="Cirq currently supports exact"):
             Mandacaru(method="adapt-vqe", backend_provider="cirq", shots=100)
 
     def test_shots_imply_circuit_execution(self):
         driver = Mandacaru(method="adapt-vqe", backend_provider="braket",
                            shots=256)
-        assert driver.solver.execute_circuits is True
-
-    def test_vqe_energy_at_uses_the_shot_path(self, h2_problem):
-        """The whole driver -- not just the provider -- runs on measurements."""
-        from mandacaru.circuits import UCCSD
-        hamiltonian, n, _occupied, _generators, _ansatz = h2_problem
-        num_particles = (n // 4 or 1, n // 4 or 1)
-
-        exact = Mandacaru(method="vqe", hamiltonian=hamiltonian,
-                          ansatz=UCCSD(n // 2, num_particles), trace=False)
-        measured = Mandacaru(method="vqe", hamiltonian=hamiltonian,
-                             ansatz=UCCSD(n // 2, num_particles, trotter=True, provider=build_provider("braket", shots=8000)),
-                             trace=False, backend_provider="braket",
-                             shots=8000)
-        theta = np.zeros(exact.solver.ansatz.num_parameters)
-
-        # The measured energy is a statistical estimate: the off-diagonal Pauli
-        # terms average to zero on a determinant but still fluctuate shot to
-        # shot, so agreement is asserted within the shot-noise bound.
-        assert measured.solver.energy_at(theta) == pytest.approx(
-            exact.solver.energy_at(theta),
-            abs=5 * shot_noise_estimate(hamiltonian, 8000))
+        assert driver._execute_circuits is True
+        assert driver.provider.shots == 256

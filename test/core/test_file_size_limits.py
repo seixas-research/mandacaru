@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from mandacaru.algorithms.base import VariationalDriver
 from mandacaru.core.mapping import PauliSum
 from mandacaru.core.serialization import MAX_FILE_QUBITS, save_hamiltonian
 from mandacaru.utils.logging import (DETAILED_LOG_MAX_QUBITS, Logger,
@@ -28,13 +27,6 @@ def test_hamiltonian_file_refused_above_the_limit(tmp_path):
     assert not big.exists()
 
 
-def test_driver_skips_the_hamiltonian_file_and_keeps_running(tmp_path):
-    cache = tmp_path / "h.parquet"
-    driver = SimpleNamespace(n_qubits=MAX_FILE_QUBITS + 1, _save_path=str(cache),
-                             load_hamiltonian=None)
-    with pytest.warns(RuntimeWarning, match="qubit limit"):
-        assert VariationalDriver._maybe_save_hamiltonian(driver) is None
-    assert not cache.exists()
 
 
 def _pool(n_qubits, count=3):

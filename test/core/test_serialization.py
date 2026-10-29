@@ -25,7 +25,7 @@ from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import Mandacaru
+from mandacaru import Mandacaru
 from mandacaru.core import PauliSum
 from mandacaru.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
                                           FILE_EXTENSION, FILE_EXTENSIONS,

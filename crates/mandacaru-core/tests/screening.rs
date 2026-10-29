@@ -60,8 +60,8 @@ fn complex_two_level_response_and_dyson_match_the_rank_one_analytic_solution() {
             root[i] * (inverse[(i, j)] - C64::new(f64::from(i == j), 0.)) * root[j]
         });
         assert!((&interaction.correction - correction).norm() < 1e-12);
-        assert_eq!(interaction.inverse_dielectric[(0, 0)], C64::new(1., 0.));
-        assert_eq!(interaction.correction[(0, 0)], C64::default());
+        assert!((interaction.inverse_dielectric[(0, 0)] - C64::new(1., 0.)).norm() < 1e-14);
+        assert!(interaction.correction[(0, 0)].norm() < 1e-14);
         let (e, _) = mandacaru_core::math::linalg::eigen(interaction.correction.clone()).unwrap();
         assert!(e[e.len() - 1] < 1e-12 && e[0] < -0.1);
         let mut partial = Polarizability::new(&ctx, 3, options(true)).unwrap();

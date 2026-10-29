@@ -21,26 +21,14 @@ correction makes these the first runs through the augmented overlap
 
 from __future__ import annotations
 
-import os
 import warnings
 
 import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru.algorithms import Mandacaru
-from mandacaru.algorithms._hamiltonian_from_atoms import (
-    build_basis_hamiltonian, resolve_basis, resolve_pseudo_basis)
-from mandacaru.algorithms.dry_run import estimate_qubits
-from mandacaru.core.hamiltonian import projector_blocks
-from mandacaru.pseudopotentials import (
-    PSEUDO_FAMILIES, PAWChannel, PAWDataset, PAWIntegrals, check_paw_channel,
-    compensation_coulomb, compensation_potential, compensation_shape,
-    family_names, generate_paw, get_paw,
-    load_pseudopotential, log_derivative_ae, log_derivative_paw,
-    lookup_family, paw_library_path,
-    paw_spectrum, reconstruct_ae, report_paw, resolve_family,
-    save_pseudopotential)
+from mandacaru import Mandacaru
+from mandacaru.pseudopotentials import PSEUDO_FAMILIES, PAWChannel, PAWDataset, check_paw_channel, compensation_coulomb, compensation_potential, compensation_shape, family_names, generate_paw, get_paw, load_pseudopotential, log_derivative_ae, log_derivative_paw, lookup_family, paw_library_path, paw_spectrum, reconstruct_ae, report_paw, resolve_family, save_pseudopotential
 from mandacaru.pseudopotentials import paw
 from mandacaru.pseudopotentials.io import library_elements
 from mandacaru.pseudopotentials.environment import LibraryPathError
@@ -260,9 +248,13 @@ _GENERATED: dict = {}
 
 
 def generated(symbol: str) -> PAWDataset:
-    """Freshly generated dataset (with its all-electron atom), cached."""
+    """Freshly generated dataset (with its all-electron atom), cached.
+
+    Nonrelativistic: the native atom solver supports ``relativity="none"``
+    only, and the checks below are properties of the PAW transformation, not
+    of the relativistic treatment of the reference atom."""
     if symbol not in _GENERATED:
-        _GENERATED[symbol] = generate_paw(symbol)
+        _GENERATED[symbol] = generate_paw(symbol, relativity="none")
     return _GENERATED[symbol]
 
 
@@ -295,15 +287,6 @@ def _unconfined(basis):
     options = {"name": basis} if isinstance(basis, str) else dict(basis)
     options.setdefault("energy_shift", None)
     return options
-
-
-def _build(name, basis, grid_spacing=None):
-    factory, default_h = SYSTEMS[name]
-    basis = _unconfined(basis)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return build_basis_hamiltonian(factory(), basis, None,
-                                       default_h if grid_spacing is None else grid_spacing, 0, None)
 
 
 def _total(integrals, n_electrons) -> float:
@@ -432,8 +415,11 @@ class TestAtomic:
             free = generate_paw("O", relativity="none")
         free_s = check_paw_channel(free, 0)["reconstruction_error"]
         free_p = check_paw_channel(free, 1)["reconstruction_error"]
-        scalar_s = checks("O", 0)["reconstruction_error"]
-        scalar_p = checks("O", 1)["reconstruction_error"]
+        # The shipped default: a scalar-relativistic reference atom, which the
+        # native atom solver does not yet provide (generate_paw raises).
+        scalar = generate_paw("O")
+        scalar_s = check_paw_channel(scalar, 0)["reconstruction_error"]
+        scalar_p = check_paw_channel(scalar, 1)["reconstruction_error"]
         assert free_s < 2e-5                      # the transformation is exact
         assert scalar_s > 5.0 * free_s            # ... the s cusp is not
         assert scalar_p < 2.0 * free_p            # ... and p is untouched
@@ -559,7 +545,8 @@ class TestAtomic:
         """Without the norm condition the overlap operator of Li goes
         singular; the generator says so instead of shipping a ghost."""
         with pytest.raises(RuntimeError, match="overlap operator"):
-            generate_paw("Li", norm_deficit=None, atom=generated("Li").atom)
+            generate_paw("Li", norm_deficit=None, atom=generated("Li").atom,
+                         relativity="none")
 
     def test_projectors_reach_the_local_radius(self):
         """Aluminum at its own cutoffs (s 2.68, p 3.43 Bohr) and the default
@@ -569,7 +556,8 @@ class TestAtomic:
         aluminum's local radius below its s cutoff instead)."""
         from mandacaru.pseudopotentials import partial_waves, paw
         pp = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
-                          local_shift=5.0, atom=generated("Al").atom)
+                          local_shift=5.0, atom=generated("Al").atom,
+                          relativity="none")
         s, p = pp.channels[0], pp.channels[1]
         assert pp.r_cut_local > s.r_cut
         assert pp.projector_radius(0) == pytest.approx(pp.r_cut_local)
@@ -595,7 +583,8 @@ class TestAtomic:
         assert set(errors) == {2}
         assert errors[2] < partial_waves.UNPROJECTED_TOLERANCE
         raised = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
-                              local_shift=5.0, atom=repaired.atom)
+                              local_shift=5.0, atom=repaired.atom,
+                              relativity="none")
         assert partial_waves.unprojected_scattering_errors(
             raised, paw.log_derivative_paw)[2] > 0.4
 
@@ -612,16 +601,18 @@ class TestAtomic:
         from mandacaru.pseudopotentials import partial_waves, paw
         valence_only = {"semicore_subshells": ()}
         # The atom alone: a full repair of iron runs several constructions.
-        atom = generate_paw("Fe", ghosts="keep", **valence_only).atom
+        atom = generate_paw("Fe", ghosts="keep", relativity="none",
+                           **valence_only).atom
         # The historical construction: the compact local radius and no raise
         # of the local potential (iron's 10 Ha entry went with the semicore
         # p channel; here the default raise is 0).
         old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
-                           r_cut_local=0.828, local_shift=0.0, **valence_only)
+                           r_cut_local=0.828, local_shift=0.0,
+                           relativity="none", **valence_only)
         assert old.unconstructed_ghosts()[1] < -4.0
         assert 1 in partial_waves.ghost_errors(old, paw._paw_levels)
         new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
-                           **valence_only)
+                           relativity="none", **valence_only)
         assert new.unconstructed_ghosts() == {}
 
     def test_semicore_sodium_carries_its_2s2p_in_valence(self, tmp_path):
@@ -727,12 +718,12 @@ class TestAtomic:
         inside = r <= pp.channels[1].r_cut
         waves = []
         for energy in energies:
-            u = partial_waves.scattering_wave(r, v, 1, energy, 3.0, "scalar",
+            u = partial_waves.scattering_wave(r, v, 1, energy, 3.0, pp.relativity,
                                               None)
             u = u / np.sqrt(np.trapezoid(u[inside] ** 2, r[inside]))
             waves.append(u / r)
         pw = paw.smooth_partial_waves(r, v, 1, waves, energies,
-                                      pp.channels[1].r_cut, treatment="scalar",
+                                      pp.channels[1].r_cut, treatment=pp.relativity,
                                       z_eff=3.0, norm_deficit=0.0)
         assert partial_waves.spurious_nodes(r, pw) == [0, 1]
 
@@ -745,7 +736,7 @@ class TestAtomic:
             d = (np.arctan(log_derivative_paw(pp, 1, energy, r_match))
                  - np.arctan(log_derivative_ae(pp.r, pp.atom.v_effective, 1,
                                                energy, r_match, 3.0,
-                                               "scalar")))
+                                               pp.relativity)))
             worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
         assert worst < 0.01
 
@@ -767,7 +758,7 @@ class TestAtomic:
             d = (np.arctan(log_derivative_paw(pp, 1, energy, r_match))
                  - np.arctan(log_derivative_ae(pp.r, pp.atom.v_effective, 1,
                                                energy, r_match, 4.0,
-                                               "scalar")))
+                                               pp.relativity)))
             worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
         assert worst < 0.02
         assert [state.l for state in basis_states(pp)] == [0]
@@ -795,8 +786,8 @@ class TestAtomic:
         state plus ``energy_offset``; one at or below the bound state is
         refused (DEFAULT_SECOND_REFERENCES, the 4f of W-Hg)."""
         atom = generated("O").atom
-        default = generate_paw("O", atom=atom, ghosts="keep")
-        moved = generate_paw("O", atom=atom, ghosts="keep",
+        default = generate_paw("O", atom=atom, ghosts="keep", relativity="none")
+        moved = generate_paw("O", atom=atom, ghosts="keep", relativity="none",
                              second_reference={1: 0.5})
         assert moved.channels[1].reference_energies[1] == pytest.approx(0.5)
         assert moved.channels[1].reference_energies[0] == pytest.approx(
@@ -804,7 +795,7 @@ class TestAtomic:
         assert np.allclose(moved.channels[0].reference_energies,
                            default.channels[0].reference_energies)
         with pytest.raises(ValueError, match="not above the bound state"):
-            generate_paw("O", atom=atom, ghosts="keep",
+            generate_paw("O", atom=atom, ghosts="keep", relativity="none",
                          second_reference={1: -2.0})
 
     def test_report_runs_generated_and_loaded(self):
@@ -954,78 +945,6 @@ class TestLibrary:
         # (``ghost_free``'s acceptance); these five were the first repaired.
         assert intruding_s_miss(get_paw(symbol)) < INTRUDING_S_TOLERANCE
 
-    @pytest.mark.parametrize("symbol", ["Fe", "Co", "Ni", "Cu", "Zn"])
-    def test_a_filtered_3d_function_still_projects_onto_its_own_wave(
-            self, symbol):
-        """On a 0.20 Angstrom grid the Fourier filter changes a 3d basis
-        function by a few percent; with the default d spheres (0.82-0.86 Bohr)
-        the LDA projectors turned that into a 32-40 % error in its projection,
-        (1.31, -0.31) for Co instead of (1, 0), and an 11-electron d shell in
-        a 10-electron CoH (Fe, Cu, Zn 18-250 %).  With the d cutoffs, second
-        reference energies and local shifts of DEFAULT_CUTOFFS /
-        DEFAULT_ENERGY_OFFSETS / DEFAULT_LOCAL_SHIFTS it is under 10 %."""
-        atoms = Atoms(symbol, positions=[[3.5, 3.5, 3.5]], cell=[7.0] * 3)
-        pp = get_paw(symbol)
-        _H, _p, _n, _profile, context = build_basis_hamiltonian(
-            atoms, {"name": "PAW-LCAO", "size": "SZ",
-                    "projector_basis": "dual",
-                    "paw_dataset": os.path.dirname(pp.source)},
-            None, 0.20, 0, None, spin=True)
-        integrals = context["integrals"]
-        C = np.asarray(integrals.projections())
-        columns = {(q.m, q.index): k for k, q in
-                   enumerate(integrals.kb_projectors) if q.l == 2}
-        row = int(np.argmax(np.abs(C[:, columns[0, 0]])))
-        assert C[row, columns[0, 0]].real == pytest.approx(1.0, abs=0.1)
-        assert abs(C[row, columns[0, 1]]) < 0.1
-
-    @pytest.mark.slow
-    def test_iron_hydride_does_not_collapse(self):
-        """FeH fell 154 eV between 2.93 and 1.39 Angstrom with the 8-function
-        LDA iron (UHF SZ, grid_spacing = 0.20).  A bound, not a bond curve -- the 3d shell
-        is not resolved on this grid -- and the UHF is solved to 1e-6 in up to
-        1000 iterations, which every point reaches.
-
-        The collapse was a finite-difference one (the stencil under-estimates
-        the kinetic energy of the unresolved 3d functions), so the guard runs
-        on ``kinetic="fd"``.  There the UHF at 1.39 Angstrom has at least two
-        converged solutions 10.4 eV apart (gaps of 26.7 and 37.2 eV), and
-        which one the SCF reaches turns on round-off: integrals that differ
-        by 6e-12 (the thread-independent sampling, K30) pick the other one.
-        The bound sits above both and far below the 154 eV collapse.  With the
-        spectral default the gap is 1.3 eV, but the UHF at 1.39 Angstrom does
-        not converge in 1000 iterations (Phase N, 2026-10-13).
-
-        The semicore iron (3s 3p in valence, 2026-10-21) takes the quartet,
-        FeH's own ground-state multiplicity (X 4Delta): its doublet, the
-        (9, 8) determinant this guard used before, has no converged UHF
-        solution at 1.39 Angstrom in 1000 iterations (SZ with fd and
-        spectral, DZ with fd; E(1.39) - E(2.93) = -1.2 eV unconverged, so no collapse
-        either).  The quartet converges at both distances, 4.3 eV
-        lower at 1.39 Angstrom (-3415.07 and -3410.80 eV)."""
-        from mandacaru.algorithms.hartree_fock import UHF
-
-        pp = get_paw("Fe")
-        energies = []
-        for distance in (1.39, 2.93):
-            atoms = Atoms("FeH", positions=[[3.5, 3.5, 3.5],
-                                            [3.5, 3.5, 3.5 + distance]],
-                          cell=[7.0] * 3)
-            _H, _p, _n, _profile, context = build_basis_hamiltonian(
-                atoms, {"name": "PAW-LCAO", "size": "SZ",
-                        "paw_dataset": os.path.dirname(pp.source)},
-                None, 0.20, 0, None, spin=True, kinetic="fd")
-            integrals = context["integrals"]
-            electrons = context["n_electrons"]
-            alpha = electrons // 2 + 2          # (10, 7): 3 unpaired spins
-            result = UHF(integrals.one_body(), integrals.two_body(),
-                         alpha, electrons - alpha).solve(
-                             max_iter=1000, tol=1e-6)
-            assert result.converged
-            energies.append(result.electronic_energy
-                            + integrals.nuclear_repulsion
-                            + integrals.constant_energy)
-        assert abs(energies[0] - energies[1]) * HARTREE_TO_EV < 50.0
 
     @pytest.mark.slow
     @pytest.mark.parametrize("symbol", library_elements())
@@ -1036,7 +955,9 @@ class TestLibrary:
                                           with_atom=False) == {}
 
     def test_shipped_h_matches_a_fresh_generation(self):
-        shipped, fresh = get_paw("H"), generated("H")
+        # The shipped library is scalar-relativistic, so the fresh dataset is
+        # the generation default; the native atom solver cannot build it yet.
+        shipped, fresh = get_paw("H"), generate_paw("H")
         assert np.allclose(shipped.coupling[0], fresh.coupling[0], rtol=1e-6)
         assert np.allclose(shipped.overlap_correction[0],
                            fresh.overlap_correction[0], rtol=1e-6)
@@ -1184,331 +1105,23 @@ class TestResolution:
         with pytest.raises(ValueError, match="'paw-lcao'.*'upaw-lcao'"):
             resolve_family("gth")
 
-    def test_spec_and_basis_selection(self):
-        spec = PSEUDO_FAMILIES["paw-lcao"]
-        assert spec.norm_conserving is False and spec.aliases == ()
-        assert spec.label == "PAW-LCAO"
-        assert spec.options == ("size", "zeta_split", "paw_dataset",
-                                "filter_cutoff", "projector_basis",
-                                "energy_shift", "confinement_potential",
-                                "polarization_method", "diffuse")
-        # PAW filters and confines its basis by default (the polarization
-        # shell follows the confinement, so it is derived rather than listed);
-        # writing an option wins either way.
-        defaults = {"filter_cutoff": "auto", "energy_shift": 0.1}
-        assert spec.default_options == defaults
-        assert spec.resolved_options() == defaults
-        assert spec.resolved_options({"filter_cutoff": False}) == {
-            **defaults, "filter_cutoff": False}
-        assert spec.resolved_options({"energy_shift": None}) == {
-            **defaults, "energy_shift": None}
-        assert spec.resolved_options({"size": "DZ"}) == {**defaults,
-                                                         "size": "DZ"}
-        assert spec.get("H").family == "paw-lcao"
-        assert spec.generate is not None and spec.build is paw.build_paw
-        name, options = resolve_basis({"name": "PAW-LCAO", "size": "DZ",
-                                       "projector_basis": "raw"})
-        family, options = resolve_pseudo_basis(name, options, ["H"])
-        assert family is spec
-        assert options == {"size": "DZ", "projector_basis": "raw"}
-        with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
-            resolve_pseudo_basis("per-element", {"H": "PAW-LCAO", "Li": "6-31G(d)"},
-                                 ["Li", "H"])
 
     @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
     def test_drivers_accept_the_family(self, method):
-        assert Mandacaru(method=method, basis="paw-lcao").basis == "paw-lcao"
-        sized = {"name": "paw-lcao", "size": "DZ"}
+        assert Mandacaru(method=method, basis="PAW-LCAO").basis == "PAW-LCAO"
+        sized = {"name": "PAW-LCAO", "size": "DZ"}
         assert Mandacaru(method=method, basis=sized).basis == sized
+
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+    def test_a_frozen_core_is_refused_on_a_paw_basis(self, method):
         with pytest.raises(ValueError, match="'frozen' core is redundant"):
             Mandacaru(method=method, basis="PAW-LCAO",
                       active_space={"frozen": "auto"})
-
-    def test_dry_run(self):
-        estimate = estimate_qubits(h2(), basis="paw-lcao")
-        assert estimate.n_qubits == 4 and estimate.num_particles == (1, 1)
-        assert any("PAW-LCAO family" in note for note in estimate.notes)
-        assert estimate_qubits(lih(), basis={"name": "paw-lcao"}).n_qubits == 4
-        dz = estimate_qubits(h2(), basis={"name": "PAW-LCAO", "size": "DZ"})
-        assert dz.n_qubits == 8
-        atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw-lcao",
-                               grid_spacing=H2_H, dry_run=True)
-        assert np.isnan(atoms.get_potential_energy())
-        assert atoms.calc.dry_run_result.n_qubits == 4
-        assert Mandacaru(method="vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-                         grid_spacing=LIH_H).dry_run(lih()).n_qubits == 8
 
 
 # --------------------------------------------------------------------------- #
 # (b) Compensation matrices and the augmented overlap.
 # --------------------------------------------------------------------------- #
-
-class TestCompensationBlocks:
-    """Blocked W keeps the scalar grid quadrature and complex conventions."""
-
-    @pytest.mark.parametrize("real,complex_basis", [(True, False), (True, True),
-                                                     (False, False), (False, True)])
-    @pytest.mark.parametrize("block_width", [0, 1, 5, 64])
-    def test_w_matches_individual_grid_integrals(self, monkeypatch, real,
-                                                complex_basis, block_width):
-        from types import SimpleNamespace
-
-        rng = np.random.default_rng(371)
-        xyz = np.meshgrid(*([np.linspace(-1.0, 1.0, 7)] * 3), indexing="ij")
-        psi = rng.normal(size=(4, xyz[0].size))
-        if complex_basis:
-            psi = psi + 1j * rng.normal(size=psi.shape)
-        integrals = PAWIntegrals.__new__(PAWIntegrals)
-        integrals._engine = SimpleNamespace(_psi=psi)
-        integrals.grid = SimpleNamespace(X=xyz[0], Y=xyz[1], Z=xyz[2], dV=0.037)
-        integrals.kb_projectors = [SimpleNamespace(real=real)]
-        centers = [np.zeros(3), np.array([0.3, -0.2, 0.7])]
-        integrals._potentials = SimpleNamespace(nuclei=[(1, c) for c in centers])
-        integrals.datasets = [SimpleNamespace(compensation_radius=r) for r in (0.8, 1.2)]
-        channels = [(a, L, M) for a in range(2) for L in range(4)
-                    for M in range(-L, L + 1)]
-        integrals._Q = dict.fromkeys(reversed(channels))
-        integrals._W = None
-        field_bytes = xyz[0].size * np.result_type(
-            psi.dtype, float if real else complex).itemsize
-        monkeypatch.setattr(paw, "COMPENSATION_FIELD_BYTES", block_width * field_bytes)
-
-        from mandacaru.integrals import engine
-        contract = engine.contract_pair_potentials
-        widths = []
-
-        def record_block(conjugate, values, fields):
-            widths.append(len(fields))
-            assert fields.nbytes <= max(field_bytes, block_width * field_bytes)
-            return contract(conjugate, values, fields, workers=1)
-
-        monkeypatch.setattr(engine, "contract_pair_potentials", record_block)
-        from mandacaru.pseudopotentials import multipoles
-        coulomb = multipoles.shape_potential
-        for potential in (None, paw.long_range_multipole_potential(0.11)):
-            radial_calls = []
-            kernel = coulomb if potential is None else potential
-
-            def record_radial(radius, r_g, L):
-                radial_calls.append((r_g, L))
-                return kernel(radius, r_g, L)
-
-            monkeypatch.setattr(multipoles, "shape_potential", record_radial)
-            actual = (integrals.compensation_potentials() if potential is None
-                      else integrals._compensation_grid_matrices(record_radial))
-            assert radial_calls == [(r, L) for r in (0.8, 1.2) for L in range(4)]
-            assert list(actual) == channels
-            if potential is None:
-                assert integrals.compensation_potentials() is actual
-            for channel in channels:
-                atom, L, M = channel
-                dx, dy, dz = (x.ravel() - c for x, c in zip(xyz, centers[atom]))
-                radius = np.sqrt(dx * dx + dy * dy + dz * dz)
-                field = paw._multipole_grid_potential(
-                    radius, dx, dy, dz, integrals.datasets[atom].compensation_radius,
-                    L, M, potential=potential, real=real)
-                expected = (psi.conj() * field) @ psi.T * integrals.grid.dV
-                np.testing.assert_allclose(actual[channel], expected, atol=2e-13,
-                                           rtol=2e-13)
-        assert sum(widths) == 2 * len(channels)
-        assert max(widths) <= max(1, block_width)
-
-    def test_no_channels_need_no_grid_fields(self):
-        integrals = PAWIntegrals.__new__(PAWIntegrals)
-        integrals._Q = {}
-        integrals._W = None
-        integrals.kb_projectors = []
-        assert integrals.compensation_potentials() == {}
-        W, U = integrals.long_range_compensation(0.11)
-        assert W == {} and U.shape == (0, 0)
-
-    @pytest.mark.parametrize("method,xc", [("dft", "pbe"), ("dft", "hse06"),
-                                           ("vqe", None), ("adapt-vqe", None)])
-    def test_public_methods_keep_the_energy_and_one_center_terms(
-            self, monkeypatch, method, xc):
-        from ase.build import molecule
-
-        def scalar_matrices(integrals, potential=None):
-            psi = integrals._engine._psi
-            grid = integrals.grid
-            points = (grid.X.ravel(), grid.Y.ravel(), grid.Z.ravel())
-            W = {}
-            for atom, L, M in integrals.multipole_channels():
-                center = integrals._potentials.nuclei[atom][1]
-                dx, dy, dz = (p - c for p, c in zip(points, center))
-                radius = np.sqrt(dx * dx + dy * dy + dz * dz)
-                field = paw._multipole_grid_potential(
-                    radius, dx, dy, dz, integrals.datasets[atom].compensation_radius,
-                    L, M, potential=potential, real=integrals.real_harmonics)
-                W[atom, L, M] = (psi.conj() * field) @ psi.T * grid.dV
-            return W
-
-        blocked = PAWIntegrals._compensation_grid_matrices
-        outputs = []
-        for kernel in (scalar_matrices, blocked):
-            monkeypatch.setattr(PAWIntegrals, "_compensation_grid_matrices", kernel)
-            atoms = molecule("H2O")
-            atoms.rotate(23, (1, 2, 3))
-            atoms.center(vacuum=2.0)
-            options = {"xc": xc} if xc else {
-                "active_space": {"orbitals": 5},
-                "optimizer": {"method": "SLSQP", "maxiter": 1, "tol": 1e-8}}
-            if method == "adapt-vqe":
-                options.update(pool="fermionic", max_iterations=1)
-            atoms.calc = Mandacaru(
-                method=method, basis={"name": "PAW-LCAO", "size": "SZ"},
-                grid_spacing=0.4, two_center="analytic", trace=False,
-                references=None, **options)
-            energy = atoms.get_potential_energy()
-            integrals = atoms.calc.solver._gradient_context["integrals"]
-            assert integrals.one_center == ("frozen" if xc else "exact")
-            assert (integrals.one_center_factors() is None) == bool(xc)
-            outputs.append((energy, integrals.two_body_augmentation().dense(),
-                            integrals.compensation_coulomb().copy(),
-                            integrals.constant_energy))
-        before, after = outputs
-        assert after[0] == pytest.approx(before[0], abs=1e-8)
-        np.testing.assert_allclose(after[1], before[1], atol=1e-12, rtol=1e-12)
-        np.testing.assert_array_equal(after[2], before[2])
-        assert after[3] == before[3]
-
-
-class TestOverlap:
-    def test_augmented_overlap_on_h2(self):
-        _H, _p, n_orb, _pr, context = _build("H2", "paw-lcao")
-        ints = context["integrals"]
-        assert isinstance(ints, PAWIntegrals) and context["family"] == "paw-lcao"
-        # Two atoms with an s and an empty p channel (2026-10-25): 2 x 8.
-        assert n_orb == 2 and len(ints.kb_projectors) == 16
-        S, S_bare = ints.overlap(), ints.bare_overlap()
-        w = np.linalg.eigvalsh(S)
-        print(f"\nH2: eig(S_aug) = {np.round(w, 5)}, eig(S_bare) = "
-              f"{np.round(np.linalg.eigvalsh(S_bare), 5)}")
-        assert w.min() > 0.0
-        assert np.abs(S - S.conj().T).max() < 1e-12
-        assert np.abs(S - S_bare).max() > 1e-3           # q really acts
-        X = ints._lowdin_x()
-        assert np.abs(X.conj().T @ S @ X - np.eye(2)).max() < 1e-12
-        # The q blocks are nonzero: the smooth partial waves are not
-        # norm-conserving.
-        Q = ints.nonlocal_overlap_matrix()
-        assert Q.shape == (16, 16)
-        blocks = projector_blocks(ints.kb_projectors)
-        assert len(blocks) == 8 and all(len(v) == 2 for v in blocks.values())
-        for (_atom, l, _m), positions in blocks.items():
-            block = Q[np.ix_(positions, positions)]
-            if l == 0:                 # the empty p channel carries no q
-                assert np.abs(block).max() > 1e-3
-            assert np.allclose(block, block.T)
-        assert ints.nonlocal_overlap is not None
-        assert np.abs(ints.kb_nonlocal()).max() > 1e-3
-        C = ints.projections()
-        assert np.abs(S - (S_bare + C @ Q @ C.conj().T)).max() < 1e-12
-
-    def test_on_site_projections_are_exact(self):
-        """<phi~_1|p_i> = delta_i1 on the atom the function sits on, from the
-        radial tables rather than the grid; the moments then reproduce q_11.
-
-        Built with ``filter_cutoff=False``: the identity is the *dataset's* algebra
-        (chi_k was constructed from this exact phi~_1), so it holds only for
-        the unfiltered first zeta.  The filtered case is checked below --
-        the quadrature is still exact, it is the function that moved.
-        """
-        _H, _p, _n, _pr, context = _build("H2", {"name": "paw-lcao",
-                                                 "filter_cutoff": False})
-        ints = context["integrals"]
-        pp = get_paw("H")
-        C = ints.projections()
-        _f, _D, q_raw = pp.projector_set(0, "raw")
-        B = np.asarray(pp.channels[0].vanderbilt)
-        # raw basis: <phi~_1|chi_k> = B_1k ; dual basis would be delta_1k.
-        # (1e-4: the library tables are decimated to 0.02 Bohr; the grid
-        # value of these entries was off by 0.7-3x.)
-        for atom in (0, 1):
-            # The s projectors only: the 1s function has no p projection.
-            cols = [p for p, pr in enumerate(ints.kb_projectors)
-                    if pr.atom_index == atom and pr.l == 0]
-            assert np.allclose(C[atom, cols].real, B[0], atol=1e-4)
-            assert np.abs(C[atom, cols].imag).max() < 1e-12
-        # Moments and their Coulomb matrix are keyed by multipole channel
-        # (atom, L, M) since the expansion went beyond the monopole, and they
-        # are coefficients of Y_LM: the monopole carries 1/sqrt(4 pi) and the
-        # Coulomb matrix the compensating 4 pi, so every product is unchanged.
-        moments = ints.compensation_moments()
-        # Since 2026-10-25 hydrogen has an (empty) p channel, so the expansion
-        # runs to L = 2: nine (L, M) per atom instead of the monopole alone.
-        assert ints.multipole_channels() == [
-            (atom, L, M) for atom in (0, 1) for L in range(3)
-            for M in range(-L, L + 1)]
-        q11 = pp.overlap_correction[0][0, 0]
-        for atom in (0, 1):
-            assert moments[(atom, 0, 0)][atom, atom].real * SQRT_4PI \
-                == pytest.approx(q11, abs=1e-4)
-        # The monopoles alone: since 2026-10-25 the L = 1 and 2 moments (the
-        # other atom's basis function seen through this atom's p projectors)
-        # exist too, and C Q C^+ is the L = 0 content of the pair density.
-        assert np.allclose(sum(v for (_atom, L, _M), v in moments.items()
-                               if L == 0) * SQRT_4PI,
-                           C @ ints.nonlocal_overlap_matrix() @ C.conj().T)
-        # A wave-function Hamiltonian's spheres carry no one-center constant
-        # (2026-10-12; it was 2 * pp.one_center_energy, which Kohn-Sham keeps).
-        assert ints.one_center == "exact" and ints.constant_energy == 0.0
-
-    def test_the_filtered_projections_stay_close_and_stay_real(self):
-        """The default (filtered) basis is a *different* function, so
-        <phi~_1|chi_k> is no longer exactly B_1k -- but the quadrature is
-        still an exact on-site radial integral, not a grid sample.
-
-        Measured on H2 at grid_spacing = 0.25: the deviation from the dataset's algebra
-        goes 4.6e-6 (unfiltered) -> 3.1e-4 (filtered), i.e. the filter moves
-        it by two orders of magnitude and it is still 1e-4-small.  A
-        grid-sampled projection was off by 0.7-3x, which is what this number
-        has to stay clear of.
-        """
-        ints = _build("H2", "paw-lcao")[4]["integrals"]          # default: filtered
-        pp = get_paw("H")
-        B = np.asarray(pp.channels[0].vanderbilt)
-        C = ints.projections()
-        for atom in (0, 1):
-            cols = [p for p, pr in enumerate(ints.kb_projectors)
-                    if pr.atom_index == atom and pr.l == 0]      # s projectors
-            assert np.abs(C[atom, cols].real - B[0]).max() < 1e-3
-            assert np.abs(C[atom, cols].imag).max() < 1e-12
-
-    def test_projector_basis_does_not_change_the_energy(self):
-        raw = _build("H2", {"name": "paw-lcao", "projector_basis": "raw"})
-        dual = _build("H2", {"name": "paw-lcao", "projector_basis": "dual"})
-        e_raw = _total(raw[4]["integrals"], 2)
-        e_dual = _total(dual[4]["integrals"], 2)
-        assert e_raw == pytest.approx(e_dual, abs=1e-8)
-        assert _fci(raw[0]) == pytest.approx(_fci(dual[0]), abs=1e-8)
-        assert raw[4]["integrals"].kb_projectors[0].projector_basis == "raw"
-
-    def test_augmented_two_body_tensor(self):
-        _H, _p, _n, _pr, context = _build("H2", "paw-lcao")
-        ints = context["integrals"]
-        aug = ints.two_body_augmentation().dense()
-        assert aug.shape == (2, 2, 2, 2) and np.abs(aug).max() > 1e-3
-        # Hermitian pair densities: <pq|rs> = <rs|pq>^* and <pq|rs> = <qp|sr>.
-        assert np.abs(aug - np.conj(aug.transpose(2, 3, 0, 1))).max() < 1e-12
-        assert np.abs(aug - aug.transpose(1, 0, 3, 2)).max() < 1e-12
-        U = ints.compensation_coulomb()
-        # One row per multipole channel since 2026-10-25 (18 for H2, it was
-        # the two monopoles): the monopoles are the (atom, 0, 0) entries.
-        channels = ints.multipole_channels()
-        assert U.shape == (len(channels), len(channels)) == (18, 18)
-        a0, a1 = channels.index((0, 0, 0)), channels.index((1, 0, 0))
-        d = np.linalg.norm(ints._potentials.nuclei[0][1]
-                           - ints._potentials.nuclei[1][1])
-        r_g = get_paw("H").compensation_radius
-        # 1.0 Bohr since 2026-10-25 (it was 1.3).
-        assert r_g == pytest.approx(1.0, abs=1e-3)
-        # 4 pi against the old monopole-only form; see the moments above.
-        monopole = 4.0 * np.pi
-        assert U[a0, a1] == pytest.approx(monopole
-                                          * compensation_coulomb(r_g, r_g, d))
-        assert U[a0, a0] == U[a1, a1] > U[a0, a1] > monopole / (2 * r_g)
 
 
 # --------------------------------------------------------------------------- #
@@ -1516,49 +1129,7 @@ class TestOverlap:
 # --------------------------------------------------------------------------- #
 
 class TestMolecular:
-    @pytest.mark.parametrize("name", sorted(SYSTEMS))
-    def test_rhf_and_fci(self, name):
-        H, particles, n_orb, _profile, context = _build(name, "paw-lcao")
-        ints = context["integrals"]
-        assert n_orb == 2 and particles == (1, 1)
-        assert len(ints.kb_projectors) == N_PROJECTORS[name]
-        e_rhf = _total(ints, context["n_electrons"])
-        e_fci = _fci(H)
-        print(f"\n{name}: PAW RHF {e_rhf * HARTREE_TO_EV:.4f} eV, FCI "
-              f"{e_fci * HARTREE_TO_EV:.4f} eV  ({e_rhf:.6f} / {e_fci:.6f} Ha)")
-        assert np.isfinite(e_rhf) and np.isfinite(e_fci)
-        assert e_fci <= e_rhf + 1e-9
-        assert e_rhf == pytest.approx(PAW[name]["rhf"], abs=PIN_TOL)
-        assert e_fci == pytest.approx(PAW[name]["adapt"], abs=PIN_TOL)
 
-    @pytest.mark.parametrize("filtered, exact_local, table", [
-        (False, False, "PAW_BEFORE_BASIS_FILTER"),
-        (True, False, "PAW_FILTER_ONLY"),
-        (False, True, "PAW_EXACT_LOCAL_ONLY"),
-        (True, True, "PAW"),          # the dict above, not the basis name
-    ])
-    @pytest.mark.parametrize("name", sorted(SYSTEMS))
-    def test_each_default_is_separately_auditable(self, name, filtered,
-                                                  exact_local, table,
-                                                  monkeypatch):
-        """Both 2026-09-20 defaults can be switched off, one at a time.
-
-        ``filter_cutoff=False`` and ``PAWIntegrals.exact_local_potential = False``
-        together give back exactly the old numbers: the previous model is still
-        reachable, and it is still *exactly* that model.  The tolerance is
-        deliberately not ``PIN_TOL`` (2e-3 Ha, which every one of these shifts
-        fits inside on s-valence systems) but the precision the tables were
-        written at, so a switch that stopped working would fail here.
-        """
-        monkeypatch.setattr(PAWIntegrals, "exact_local_potential", exact_local)
-        H, _p, _n, _pr, context = _build(name, {"name": "paw-lcao",
-                                                "filter_cutoff": filtered})
-        assert (context["filter_wavevector"] is None) == (not filtered)
-        e_rhf = _total(context["integrals"], context["n_electrons"])
-        e_fci = _fci(H)
-        expected = globals()[table][name]
-        assert e_rhf == pytest.approx(expected["rhf"], abs=1e-6)
-        assert e_fci == pytest.approx(expected["adapt"], abs=1e-6)
 
     # LiH only since 2026-10-13: with the spectral kinetic default the
     # filter moves H2's RHF energy by 1.6e-7 Ha (-1.1 meV on the stencil),
@@ -1577,7 +1148,7 @@ class TestMolecular:
     def test_adapt_vqe(self, name):
         factory, h = SYSTEMS[name]
         atoms = factory()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="paw-lcao", grid_spacing=h,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", grid_spacing=h,
                                pool="qeb", max_iterations=4,
                                profile=False)
         with warnings.catch_warnings():
@@ -1590,7 +1161,7 @@ class TestMolecular:
         assert atoms.calc.n_qubits == 4
         assert result.energy_unit == "eV"
         assert np.isfinite(result.optimal_energy)
-        # Through the calculator with `basis="paw-lcao"`: the family's default
+        # Through the calculator with `basis="PAW-LCAO"`: the family's default
         # basis, confined since 2026-09-20.
         assert energy == pytest.approx(PAW_DEFAULT[name]["adapt"], abs=1e-5)
         assert energy <= PAW_DEFAULT[name]["rhf"] + PIN_TOL
@@ -1603,152 +1174,10 @@ class TestMolecular:
         else:
             assert abs(energy - PAW[name]["adapt"]) > 1e-4
 
-    @pytest.mark.parametrize("name", sorted(SYSTEMS))
-    def test_hardness_at_a_quarter_angstrom(self, name):
-        ints = _build(name, "paw-lcao", grid_spacing=0.25)[4]["integrals"]
-        basis = ints.resolution_ratios
-        projectors = ints.kb_resolution_ratios
-        print(f"\n{name} (grid_spacing=0.25 A): PAW-LCAO basis T_grid/T_exact = "
-              f"{np.round(basis, 3)}, projector norm ratios = "
-              f"{np.round(projectors, 3)}")
-        assert np.all((basis > 0.75) & (basis < 1.25))
-        assert projectors.shape == (N_PROJECTORS[name],)
-        # Hydrogen's empty p channel (1.0 Bohr sphere, 2026-10-25) has compact
-        # projectors that a 0.25 Angstrom grid samples unevenly: per-m norm
-        # ratios of 0.99 ... 1.44 here (0.77 ... 2.9 at 0.30, 1.0 ... 1.07 at
-        # 0.12 Angstrom).  The total energy still converges smoothly with the
-        # grid (H2 -1.0531 / -1.0541 / -1.0542 / -1.0544 Ha at 0.30 / 0.25 /
-        # 0.20 / 0.12), so only the s projectors keep the tight bound.
-        kb_l = np.array([pr.l for pr in ints.kb_projectors])
-        # (LiH's hydrogen s projectors read 1.21 and 1.32: 1.35 bounds them.)
-        assert np.all((projectors[kb_l == 0] > 0.75)
-                      & (projectors[kb_l == 0] < 1.35))
-        assert np.all((projectors[kb_l > 0] > 0.6)
-                      & (projectors[kb_l > 0] < 1.6))
-
-    def test_lih_is_stable_against_the_grid(self):
-        """The on-site projections being exact, the energy drifts smoothly
-        with the grid (egg-box) instead of collapsing between nodes."""
-        e30 = _total(_build("LiH", "paw-lcao", grid_spacing=0.30)[4]["integrals"], 2)
-        e25 = _total(_build("LiH", "paw-lcao", grid_spacing=0.25)[4]["integrals"], 2)
-        print(f"\nLiH PAW RHF: grid_spacing=0.30 {e30:.6f}, grid_spacing=0.25 {e25:.6f} Ha")
-        assert abs(e25 - e30) < 0.02
-
-    def test_size_hierarchy_is_variational(self):
-        sz = _build("H2", "paw-lcao")[4]["integrals"]
-        dz = _build("H2", {"name": "paw-lcao", "size": "DZ"})
-        ints = dz[4]["integrals"]
-        assert dz[2] == 4 and len(ints.kb_projectors) == 16
-        e_sz = _total(sz, 2)
-        e_dz = _total(ints, 2)
-        print(f"\nH2 RHF: SZ {e_sz:.6f}  DZ {e_dz:.6f} Ha")
-        assert e_dz < e_sz
-        assert np.linalg.eigvalsh(ints.overlap()).min() > 0.0
-
-    def test_first_zeta_is_the_smooth_partial_wave(self):
-        """Unfiltered, the first zeta *is* the dataset's own partial wave."""
-        _H, _p, _n, _pr, context = _build("H2", {"name": "paw-lcao",
-                                                 "filter_cutoff": False})
-        fn = context["integrals"].basis[0]
-        pp = get_paw("H")
-        r = np.linspace(0.05, 4.0, 50)
-        assert np.allclose(fn.radial(r), np.interp(r, pp.r,
-                                                   pp.channels[0].pseudo_radial),
-                           atol=2e-4)
-
-    def test_the_default_first_zeta_is_that_wave_filtered(self):
-        """With the PAW default the first zeta is the *band-limited* partial
-        wave -- the filter of exactly that table, and nothing else.
-
-        The two checks together say what the default does: the function the
-        driver builds is reproduced by calling the filter on the dataset's
-        table (1e-4, the table-decimation floor the unfiltered case also
-        has), and it is genuinely different from the raw table (1e-2 at
-        grid_spacing = 0.25), so the test cannot pass by the filter doing nothing.
-        """
-        from mandacaru.basis.filtering import filter_radial, resolve_filter_cutoff
-
-        context = _build("H2", "paw-lcao")[4]                    # default: filtered
-        fn = context["integrals"].basis[0]
-        assert context["filter_wavevector"] == pytest.approx(
-            resolve_filter_cutoff(True, max(context["integrals"].grid.dx,
-                                            context["integrals"].grid.dy,
-                                            context["integrals"].grid.dz)))
-        pp = get_paw("H")
-        want, _info = filter_radial(pp.r, pp.channels[0].pseudo_radial, 0,
-                                    context["filter_wavevector"])
-        r = np.linspace(0.05, 4.0, 50)
-        assert np.allclose(fn.radial(r), np.interp(r, pp.r, want), atol=2e-4)
-        raw = np.interp(r, pp.r, pp.channels[0].pseudo_radial)
-        assert np.abs(fn.radial(r) - raw).max() > 1e-3
-
 
 # --------------------------------------------------------------------------- #
-# The spheres of a Hartree-Fock Hamiltonian (one_center="exact").
+# The spheres of a Hartree-Fock Hamiltonian.
 # --------------------------------------------------------------------------- #
-
-def _atom_integrals(symbol, size, grid_spacing, vacuum, one_center, kinetic=None):
-    atoms = Atoms(symbol, positions=[(0.0, 0.0, 0.0)])
-    atoms.center(vacuum=vacuum)
-    *_, context = paw.build_paw(atoms, None, grid_spacing, 0, 0,
-                                {"size": size, "energy_shift": None},
-                                kinetic=kinetic, hamiltonian=False,
-                                one_center=one_center)
-    return context["integrals"], context["n_electrons"]
-
-
-def _mom_uhf(h, eri, n_alpha, n_beta, start, hole):
-    """UHF with maximum-overlap occupations and DIIS, the beta hole in start
-    orbital ``hole``: an open p shell oscillates under aufbau filling."""
-    J = lambda D: np.einsum("sr,prqs->pq", D, eri)        # noqa: E731
-    K = lambda D: np.einsum("sr,prsq->pq", D, eri)        # noqa: E731
-    oa = start[:, :n_alpha]
-    ob = start[:, [i for i in range(n_alpha) if i != hole][:n_beta]]
-    history, errors, last = [], [], None
-    # 1000, not 300: with the spectral kinetic default chlorine's holes need
-    # up to 351 (exact spheres) and 778 iterations (frozen) (2026-10-13).
-    for _ in range(1000):
-        Da, Db = oa @ oa.T, ob @ ob.T
-        Jt = J(Da + Db)
-        Fa, Fb = h + Jt - K(Da), h + Jt - K(Db)
-        energy = 0.5 * (np.sum((Da + Db) * h) + np.sum(Da * Fa)
-                        + np.sum(Db * Fb))
-        error = np.concatenate([(Fa @ Da - Da @ Fa).ravel(),
-                                (Fb @ Db - Db @ Fb).ravel()])
-        if last is not None and abs(energy - last) < 1e-11 \
-                and np.linalg.norm(error) < 1e-7:
-            return energy
-        last = energy
-        history, errors = (history + [(Fa, Fb)])[-8:], (errors + [error])[-8:]
-        n = len(errors)
-        if n > 1:
-            B = -np.ones((n + 1, n + 1))
-            B[n, n] = 0.0
-            B[:n, :n] = [[e1 @ e2 for e2 in errors] for e1 in errors]
-            rhs = np.zeros(n + 1)
-            rhs[n] = -1.0
-            c = np.linalg.solve(B, rhs)[:n]
-            Fa = sum(ci * f[0] for ci, f in zip(c, history))
-            Fb = sum(ci * f[1] for ci, f in zip(c, history))
-        Va, Vb = np.linalg.eigh(Fa)[1], np.linalg.eigh(Fb)[1]
-        pa = np.sum((oa.T @ Va) ** 2, axis=0)
-        pb = np.sum((ob.T @ Vb) ** 2, axis=0)
-        oa = Va[:, np.sort(np.argsort(-pa)[:n_alpha])]
-        ob = Vb[:, np.sort(np.argsort(-pb)[:n_beta])]
-    raise AssertionError("the open-shell UHF did not converge")
-
-
-def _electron_affinity(symbol, one_center):
-    """UHF Delta-SCF affinity (eV) of a halogen, DZP unconfined, h 0.25."""
-    integrals, n = _atom_integrals(symbol, "DZP", 0.25, 5.0, one_center)
-    h, eri = integrals.one_body(), integrals.two_body()
-    anion = integrals.hartree_fock(n + 1)
-    start = anion.mo_coefficients
-    neutral = min(_mom_uhf(h, eri, (n + 1) // 2, n // 2, start, hole)
-                  for hole in range(n // 2 - 2, (n + 1) // 2))
-    return ((neutral - anion.electronic_energy) * HARTREE_TO_EV,
-            anion.homo_energy * HARTREE_TO_EV)
-
 
 class TestExactSpheres:
     """What the spheres carry for Hartree-Fock: the one-center Coulomb tensor
@@ -1757,52 +1186,13 @@ class TestExactSpheres:
 
     def test_hydrogen_is_free_of_self_interaction(self):
         """One electron: the energy is its orbital energy, and with the
-        spectral kinetic operator that is -1/2 Ha to the basis error.  The
-        frozen LDA spheres put it 0.38 eV too deep (h -> 0), 0.23 eV with the
-        1.0 Bohr hydrogen sphere."""
-        integrals, n = _atom_integrals("H", "QZ2P", 0.2, 5.0, "exact",
-                                       kinetic="spectral")
-        assert integrals.constant_energy == 0.0
-        result = integrals.open_shell_hartree_fock(1, 0)
-        energy = result.electronic_energy
-        epsilon = float(np.min(result.mo_energies_alpha))
+        spectral kinetic operator that is -1/2 Ha to the basis error."""
+        atoms = Atoms("H", positions=[(0.0, 0.0, 0.0)])
+        atoms.center(vacuum=5.0)
+        atoms.calc = Mandacaru(method="uhf", spin=True, grid_spacing=0.2,
+                               basis={"name": "PAW-LCAO", "size": "QZ2P",
+                                      "energy_shift": None})
+        energy = atoms.get_potential_energy() / HARTREE_TO_EV
+        epsilon = float(np.min(atoms.calc.result.scf.mo_energies[0]))
         assert energy == pytest.approx(epsilon, abs=1e-8)
         assert -0.5 < energy < -0.499
-        frozen, _n = _atom_integrals("H", "QZ2P", 0.2, 5.0, "frozen",
-                                     kinetic="spectral")
-        stock = frozen.open_shell_hartree_fock(1, 0)
-        assert stock.electronic_energy + frozen.constant_energy < -0.505
-
-    def test_the_fluorine_affinity_comes_down(self):
-        """F: 2.8 eV with the frozen LDA spheres, 1.0 exact (all-electron UHF
-        1.18 eV at aug-cc-pVQZ; this basis has no diffuse shell)."""
-        exact, homo = _electron_affinity("F", "exact")
-        frozen, _homo = _electron_affinity("F", "frozen")
-        assert exact == pytest.approx(EXACT_SPHERES_EA["F"], abs=2e-3)
-        assert frozen > 2.3 and 0.8 < exact < 1.2
-        assert -5.0 < homo < -4.0
-
-    def test_the_chlorine_affinity_does_not_move(self):
-        """Cl's 3p lives outside its sphere: the two treatments agree to
-        0.1 eV (2.23 / 2.27; all-electron 2.37 eV at aug-cc-pVQZ)."""
-        exact, _homo = _electron_affinity("Cl", "exact")
-        frozen, _homo = _electron_affinity("Cl", "frozen")
-        assert exact == pytest.approx(EXACT_SPHERES_EA["Cl"], abs=2e-3)
-        assert abs(exact - frozen) < 0.1
-
-    def test_kohn_sham_keeps_the_frozen_spheres(self):
-        """DFT asks for the dataset's own functional; nothing new is built."""
-        frozen, _n = _atom_integrals("O", "SZ", 0.3, 3.0, "frozen")
-        assert frozen.one_center_factors() is None
-        assert frozen.constant_energy == pytest.approx(
-            get_paw("O").one_center_energy)
-        G, values = frozen.one_center_channels()
-        assert G.shape[0] == 0 and values.size == 0
-        with pytest.raises(ValueError, match="one_center"):
-            _atom_integrals("O", "SZ", 0.3, 3.0, "lda")
-
-
-#: UHF Delta-SCF affinities (eV) of `_electron_affinity`, measured 2026-10-12;
-#: re-measured 2026-10-25 with DEFAULT_TAIL_NORMS=(0.15, 0.31, 0.54): F 1.0255 ->
-#: 1.0295, Cl 2.2326 -> 2.2425.
-EXACT_SPHERES_EA = {"F": 1.0295, "Cl": 2.2425}

@@ -11,9 +11,7 @@
 import numpy as np
 import pytest
 
-from mandacaru.basis import HydrogenicAtomicOrbital
-from mandacaru.integrals import Grid, IntegralEngine
-from mandacaru.integrals.packed import PackedERI, dense_tensor, is_packed
+from mandacaru.integrals.packed import PackedERI, dense_tensor
 
 
 def _symmetric_tensor(n, seed=0):
@@ -32,29 +30,9 @@ def tensor():
     return eri, PackedERI.from_dense(eri)
 
 
-@pytest.fixture(scope="module")
-def engine():
-    c = (0.6, 0.2, -0.3)
-    fns = [HydrogenicAtomicOrbital(1, 0, 0),
-           HydrogenicAtomicOrbital(2, 0, 0, center=c),
-           HydrogenicAtomicOrbital(2, 1, 1, center=c),
-           HydrogenicAtomicOrbital(2, 1, 0, center=c),
-           HydrogenicAtomicOrbital(2, 1, -1, center=c),
-           HydrogenicAtomicOrbital(3, 2, 0)]
-    return IntegralEngine(fns, Grid(box_size=6.0, grid_spacing=0.5,
-                                    center=(0, 0, 0)))
 
 
 class TestTheStore:
-    def test_the_engine_writes_the_tensor_packed(self, engine):
-        """Both contraction routes, row by row, the full tensor's entries."""
-        dense = engine.two_body(energy_units="Ha")
-        for budget in (None, 0.05):
-            packed = engine.two_body(energy_units="Ha", packed=True,
-                                     max_memory_mb=budget)
-            assert is_packed(packed) and engine.two_body_profile["packed"]
-            assert np.abs(packed.dense() - dense).max() < 1e-14 * np.abs(
-                dense).max()
 
     def test_it_holds_one_eighth_of_the_entries(self, tensor):
         eri, packed = tensor

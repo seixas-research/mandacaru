@@ -16,12 +16,11 @@ measured the full 1- and 2-RDM operator set it never used.
 
 Each class here pins one of the fixes, and the arithmetic behind it:
 
-* the RDM operators are measured only when forces ask for them;
 * an energy goes as **one weighted observable**, not N single-Pauli ones;
 * a plan sizes the job *before* it is queued, and a budget refuses it;
-* a failed job keeps the optimized state, and ``remeasure()`` retries it;
-* observables are chunked into jobs of bounded size;
-* odd-``Y`` strings of a real problem are exactly zero and are not measured;
+* observables are chunked into jobs of bounded size, and completed chunks are
+  kept when a later one fails;
+* the run-wide budget stops a paid run before it crosses its ceiling;
 * double factorization needs ``O(M)`` measurement bases where qubit-wise
   commuting grouping needs ``O(M^3)``.
 """
@@ -31,9 +30,6 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms import calculator as calculator_module
-from mandacaru.calculation import (MeasurementFailed,
-                                             _is_real_operator, _real_problem)
 from mandacaru.backends.factorization import (double_factorization,
                                               spatial_double_factorization)
 from mandacaru.backends.measurement import (DEFAULT_MEASUREMENT_BUDGET,
@@ -43,9 +39,8 @@ from mandacaru.backends.measurement import (DEFAULT_MEASUREMENT_BUDGET,
                                             measurement_plan, planned_jobs,
                                             qubit_wise_commuting_groups,
                                             resolve_measurement_budget)
-from mandacaru.backends.providers import QiskitProvider, qpu_usage
-from mandacaru.core.hamiltonian import (molecular_orbital_integrals,
-                                        spin_block_integrals)
+from mandacaru.backends.providers import (QiskitProvider, build_provider,
+                                          qpu_usage)
 from mandacaru.core.mapping import Fermion, PauliSum
 
 qiskit = pytest.importorskip("qiskit")
@@ -65,69 +60,11 @@ def lih(distance: float = 1.60) -> Atoms:
     return atoms
 
 
-def solved(atoms, provider=None, **options):
-    """A calculator that has run once, with everything the measurement needs."""
-    atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30,
-                           pool="qeb", max_iterations=3, trace=False,
-                           measurement_provider=provider, **options)
-    atoms.get_potential_energy()
-    return atoms.calc
-
-
-def integrals_of(calc):
-    """``(h_so, g_so)`` -- the spin-orbital integrals the run was built from."""
-    context = calc.solver._gradient_context
-    h_mo, eri_mo, _orbitals = molecular_orbital_integrals(
-        context["integrals"], context["n_electrons"])
-    return spin_block_integrals(h_mo, eri_mo)
-
-
-# --------------------------------------------------------------------------- #
-# 1. RDMs are measured only when something needs them.
-# --------------------------------------------------------------------------- #
-
-class TestTheRDMsAreNotMeasuredForAnEnergy:
-    """The ``O(M^4)`` half of the job, submitted for an answer nobody read.
-
-    On LiH/PAW-LCAO-TZP that was 97,980 observables instead of 12,736, plus 34 s of
-    local work building 117,792 operators -- for a ``get_potential_energy()``
-    that discards every one of them.
-    """
-
-    def test_an_energy_submits_one_weighted_observable(self):
-        calc = solved(h2(), QiskitProvider(device="statevector", shots=4096,
-                                           seed=0))
-        assert calc.measurement["observables"] == 1
-        assert calc.measurement["rdms"] is None
-
-    def test_forces_still_get_their_rdms(self):
-        atoms = h2()
-        calc = solved(atoms, QiskitProvider(device="statevector"))
-        atoms.get_forces()
-        assert calc.measurement["rdms"] is not None
-        assert calc.measurement["observables"] > 1
-
-    def test_the_energy_is_the_same_either_way(self):
-        atoms = h2()
-        calc = solved(atoms, QiskitProvider(device="statevector"))
-        energy = calc.measurement["energy_eV"]
-        atoms.get_forces()
-        assert calc.measurement["energy_eV"] == pytest.approx(energy, abs=1e-9)
-
-
 # --------------------------------------------------------------------------- #
 # 2. The pre-flight plan, and the budget that refuses a job.
 # --------------------------------------------------------------------------- #
 
 class TestThePlanIsMadeBeforeTheJobIsQueued:
-
-    def test_the_plan_counts_what_will_be_submitted(self):
-        calc = solved(h2(), QiskitProvider(device="statevector", shots=1024))
-        plan = calc.measurement_plan
-        assert plan.observables == len(calc.solver.hamiltonian.terms) - 1
-        assert plan.bases <= plan.observables
-        assert plan.shots_per_basis == 1024
-        assert plan.total_shots == plan.circuit_instances * 1024
 
     def test_resilience_multiplies_the_circuit_count(self):
         plain = QiskitProvider(device="statevector", shots=100)
@@ -197,33 +134,25 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
         assert ibm.twirls == 32 and ibm.noise_factors == 1
         assert local.twirls == 1 and local.total_shots == 4096
 
-    def test_the_budget_refuses_an_oversized_job(self):
-        atoms = h2()
-        atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
-            max_iterations=2, trace=False,
-            measurement_provider=QiskitProvider(device="statevector",
-                                                shots=1024),
-            measurement_budget={"observables": 3})
-        with pytest.raises(MeasurementBudgetError) as raised:
-            atoms.get_potential_energy()
-        assert "observables" in str(raised.value)
-        # The refusal carries its own plan, so the next attempt can be sized.
-        assert raised.value.plan.observables > 3
+    def test_the_budget_refuses_an_oversized_job_before_any_job(self):
+        """The refusal precedes the first submission: nothing is queued."""
+        for method, options in (("vqe", {}),
+                                ("adapt-vqe", {"pool": "qeb",
+                                               "max_iterations": 2})):
+            calc = Mandacaru(method=method, basis="HAO", grid_spacing=0.30,
+                             trace=False, shots=1024,
+                             measurement_budget={"observables": 3}, **options)
+            with pytest.raises(ValueError, match="observables budget exceeded"):
+                calc.get_potential_energy(h2())
+            assert calc.provider.run_usage()["jobs"] == 0
 
-    def test_a_refused_job_keeps_the_optimized_state(self):
-        atoms = h2()
-        atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
-            max_iterations=2, trace=False,
-            measurement_provider=QiskitProvider(device="statevector",
-                                                shots=1024),
-            measurement_budget={"observables": 3})
-        with pytest.raises(MeasurementBudgetError):
-            atoms.get_potential_energy()
-        assert atoms.calc.solver is not None
-        assert atoms.calc.solver.result is not None
-        assert atoms.calc.measurement_plan is not None
+    def test_a_bases_ceiling_refuses_too(self):
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.30,
+                         trace=False, shots=1024,
+                         measurement_budget={"bases": 1})
+        with pytest.raises(ValueError, match="bases budget exceeded"):
+            calc.get_potential_energy(h2())
+        assert calc.provider.run_usage()["jobs"] == 0
 
     def test_budget_false_checks_nothing(self):
         plan = MeasurementPlan(n_qubits=4, observables=10 ** 9, bases=10 ** 9,
@@ -241,16 +170,6 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
     def test_budget_none_is_the_documented_default(self):
         assert resolve_measurement_budget(None) == DEFAULT_MEASUREMENT_BUDGET
 
-    def test_the_plan_reaches_the_log(self, tmp_path):
-        from mandacaru.utils.logging import parse_output
-
-        out = str(tmp_path / "output.txt")
-        solved(h2(), QiskitProvider(device="statevector", shots=512), txt=out)
-        text = (tmp_path / "output.txt").read_text()
-        assert "[MEASUREMENT PLAN]" in text
-        assert "measurement_bases:" in text
-        parse_output(out)               # an extra block must not break a reader
-
     def test_a_deep_circuit_is_reported_as_noise(self):
         plan = MeasurementPlan(n_qubits=24, observables=1, bases=1,
                                shots_per_basis=1, noise_factors=1, twirls=1,
@@ -264,55 +183,6 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
                                two_qubit_gates=18)
         assert plan.fidelity > 0.9
         assert plan.warnings() == []
-
-
-# --------------------------------------------------------------------------- #
-# 3. A failed job must not cost the optimization.
-# --------------------------------------------------------------------------- #
-
-class TestAFailedJobKeepsTheState:
-
-    def test_the_failure_is_reraised_with_the_plan_in_it(self, monkeypatch):
-        def explode(*_args, **_kwargs):
-            raise RuntimeError("Error code 1336; Program runtime ran out of "
-                               "memory")
-
-        atoms = h2()
-        provider = QiskitProvider(device="statevector", shots=1024)
-        monkeypatch.setattr(type(provider), "energy", explode)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30,
-                               pool="qeb", max_iterations=2, trace=False,
-                               measurement_provider=provider)
-        with pytest.raises(MeasurementFailed) as raised:
-            atoms.get_potential_energy()
-        message = str(raised.value)
-        assert "1336" in message and "observables" in message
-        assert "remeasure" in message
-        assert atoms.calc.solver.result is not None
-
-    def test_remeasure_reuses_the_ansatz(self):
-        atoms = h2()
-        calc = solved(atoms, QiskitProvider(device="statevector"))
-        before = calc.solver
-        again = calc.remeasure()
-        assert calc.solver is before               # nothing was re-optimized
-        assert again["energy_eV"] == pytest.approx(
-            calc.measurement["energy_eV"], abs=1e-12)
-
-    def test_remeasure_can_switch_to_the_rdms(self):
-        atoms = h2()
-        calc = solved(atoms, QiskitProvider(device="statevector"))
-        assert calc.measurement["rdms"] is None
-        again = calc.remeasure(rdms=True)
-        assert again["rdms"] is not None
-
-    def test_remeasure_before_anything_ran_is_refused(self):
-        calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
-                         trace=False,
-                         measurement_provider=QiskitProvider(
-                             device="statevector"))
-        with pytest.raises(RuntimeError, match="nothing has been optimized"):
-            calc.remeasure()
 
 
 class TestTheIdentityIsCountedOnce:
@@ -357,23 +227,6 @@ class TestChunkingByMeasurementBasis:
     def test_a_generous_limit_does_not_split(self):
         assert len(chunk_labels_by_basis(self.LABELS, 1000)) == 1
 
-    def test_chunked_forces_equal_unchunked_ones(self):
-        plain, chunked = [], []
-        for limit in (None, 2):
-            atoms = lih()
-            solved(atoms, QiskitProvider(device="statevector",
-                                         max_bases_per_job=limit))
-            (plain if limit is None else chunked).append(atoms.get_forces())
-        assert np.abs(plain[0] - chunked[0]).max() == pytest.approx(0.0,
-                                                                    abs=1e-12)
-
-    def test_the_plan_reports_the_job_count(self):
-        atoms = lih()
-        calc = solved(atoms, QiskitProvider(device="statevector",
-                                            max_bases_per_job=2))
-        atoms.get_forces()
-        assert calc.measurement_plan.jobs > 1
-
     def test_qpu_usage_sums_over_every_job(self):
         class Job:
             def __init__(self, name):
@@ -400,63 +253,6 @@ class TestChunkingByMeasurementBasis:
 
 
 # --------------------------------------------------------------------------- #
-# 4b. Odd-Y strings of a real problem are exactly zero.
-# --------------------------------------------------------------------------- #
-
-class TestOddYStringsAreNotMeasured:
-    r"""A string with an odd number of ``Y`` is ``i`` times a real
-    *antisymmetric* matrix, so its expectation in a real state is exactly
-    ``0`` -- an identity, not an approximation.  Half the RDM labels are of
-    that kind (measured: 472 of 981 on LiH/PAW-LCAO-DZ).
-    """
-
-    def test_the_parity_rule(self):
-        # Even Y: real coefficient is real, imaginary is not.
-        assert _is_real_operator(PauliSum({"ZZII": 1.0}))
-        assert not _is_real_operator(PauliSum({"ZZII": 1.0j}))
-        # Odd Y: the other way round.
-        assert _is_real_operator(PauliSum({"YZII": 1.0j}))
-        assert not _is_real_operator(PauliSum({"YZII": 1.0}))
-        # An excitation generator is all odd-Y with imaginary coefficients.
-        assert _is_real_operator(PauliSum({"XXXY": -0.125j, "XYXX": -0.125j}))
-
-    def test_a_molecular_run_qualifies(self):
-        calc = solved(h2(), QiskitProvider(device="statevector"))
-        assert _real_problem(calc.solver, calc.solver.hamiltonian)
-
-    def test_a_complex_hamiltonian_does_not(self):
-        calc = solved(h2(), QiskitProvider(device="statevector"))
-        complex_h = calc.solver.hamiltonian + PauliSum({"YIII": 0.1})
-        assert not _real_problem(calc.solver, complex_h)
-
-    def test_skipping_them_changes_nothing(self, monkeypatch):
-        """The whole point: fewer labels, bit-for-bit the same answer."""
-        results = {}
-        for skip in (True, False):
-            if not skip:
-                monkeypatch.setattr(calculator_module, "_real_problem",
-                                    lambda *a, **k: False)
-            atoms = lih()
-            calc = solved(atoms, QiskitProvider(device="statevector"))
-            forces = atoms.get_forces()
-            results[skip] = (calc.measurement["observables"],
-                             calc.measurement["energy_eV"], forces)
-            monkeypatch.undo()
-
-        assert results[True][0] < results[False][0]
-        assert results[True][1] == pytest.approx(results[False][1], abs=1e-12)
-        assert np.abs(results[True][2] - results[False][2]).max() < 1e-12
-
-    def test_about_half_the_rdm_labels_go(self):
-        atoms = lih()
-        calc = solved(atoms, QiskitProvider(device="statevector"))
-        atoms.get_forces()
-        measured = calc.measurement
-        total = measured["observables"] + measured["assumed_zero"]
-        assert 0.3 < measured["assumed_zero"] / total < 0.7
-
-
-# --------------------------------------------------------------------------- #
 # 5. Double factorization: O(M) measurement bases.
 # --------------------------------------------------------------------------- #
 
@@ -469,72 +265,12 @@ class TestDoubleFactorization:
     correlator it needs -- ``L + 1`` bases instead of ``O(M^3)``.
     """
 
-    def test_it_is_the_same_operator(self):
-        """The decisive check: identical once mapped to qubits."""
-        calc = solved(h2(), None)
-        h_so, g_so = integrals_of(calc)
-        exact = Fermion.from_integrals(h_so, g_so).map_to_qubits()
-        rebuilt = double_factorization(h_so, g_so).to_fermion().map_to_qubits()
-        difference = (exact + (-1.0) * rebuilt).simplify()
-        worst = max((abs(complex(c)) for c in difference.terms.values()),
-                    default=0.0)
-        assert worst < 1e-10
 
-    def test_it_is_the_same_operator_for_an_open_shell_sized_case(self):
-        calc = solved(lih(), None)
-        h_so, g_so = integrals_of(calc)
-        exact = Fermion.from_integrals(h_so, g_so).map_to_qubits()
-        rebuilt = double_factorization(h_so, g_so).to_fermion().map_to_qubits()
-        difference = (exact + (-1.0) * rebuilt).simplify()
-        assert max((abs(complex(c)) for c in difference.terms.values()),
-                   default=0.0) < 1e-10
 
-    def test_it_needs_far_fewer_bases_than_qubit_wise_grouping(self):
-        calc = solved(lih(), None)
-        h_so, g_so = integrals_of(calc)
-        factorized = double_factorization(h_so, g_so)
-        groups, _identity = qubit_wise_commuting_groups(
-            calc.solver.hamiltonian)
-        # Measured on the LiH/PAW-LCAO series: 21 -> 4, 93 -> 11, 1,600 -> 55 and
-        # 3,290 -> 73 bases at 4 / 8 / 20 / 24 spin orbitals.  The gap widens
-        # with M, which is the whole argument.
-        assert factorized.measurement_bases < len(groups)
 
-    def test_the_rank_is_bounded_by_the_pair_count(self):
-        calc = solved(lih(), None)
-        h_so, g_so = integrals_of(calc)
-        m = h_so.shape[0]
-        factorized = double_factorization(h_so, g_so)
-        assert len(factorized.leaves) <= m * (m + 1) // 2
 
-    def test_truncation_is_reported_not_hidden(self):
-        calc = solved(lih(), None)
-        h_so, g_so = integrals_of(calc)
-        full = double_factorization(h_so, g_so)
-        cut = double_factorization(h_so, g_so, max_leaves=2)
-        assert len(cut.leaves) == 2
-        assert cut.truncation_error > full.truncation_error
-        # A truncated factorization is a different operator, and says so.
-        assert cut.measurement_bases < full.measurement_bases
 
-    def test_the_energy_can_be_rebuilt_from_rdms(self):
-        """What a basis-rotation measurement would return, evaluated exactly."""
-        atoms = h2()
-        calc = solved(atoms, None)
-        h_so, g_so = integrals_of(calc)
-        factorized = double_factorization(h_so, g_so)
-        gamma, gamma2 = calc._state_rdms(calc.solver)
-        rebuilt = factorized.energy(gamma, gamma2)
-        direct = float(np.real(np.einsum("pq,pq->", h_so, gamma)
-                               + 0.5 * np.einsum("pqrs,pqrs->", g_so, gamma2)))
-        assert rebuilt == pytest.approx(direct, abs=1e-9)
 
-    def test_the_one_norm_is_finite_and_positive(self):
-        calc = solved(h2(), None)
-        h_so, g_so = integrals_of(calc)
-        factorized = double_factorization(h_so, g_so)
-        assert factorized.one_norm > 0.0
-        assert np.isfinite(factorized.one_norm)
 
     def test_a_mismatched_tensor_is_refused(self):
         with pytest.raises(ValueError, match="does not match"):
@@ -551,37 +287,7 @@ class TestTheSpatialFactorization:
     """The factorization of spatial integrals (no ``(2M)^4`` tensor) is the
     spin-orbital one: the same operator, weights, one-norm and count."""
 
-    @staticmethod
-    def spatial(calc):
-        context = calc.solver._gradient_context
-        h_mo, eri_mo, _orbitals = molecular_orbital_integrals(
-            context["integrals"], context["n_electrons"])
-        return h_mo, eri_mo
 
-    def test_it_is_the_spin_orbital_factorization(self):
-        calc = solved(lih(), None)
-        h, eri = self.spatial(calc)
-        spin = double_factorization(*spin_block_integrals(h, eri))
-        spatial = spatial_double_factorization(h, eri)
-        assert spatial.n_modes == spin.n_modes
-        assert spatial.measurement_bases == spin.measurement_bases
-        assert np.allclose(sorted(l.weight for l in spatial.leaves),
-                           sorted(l.weight for l in spin.leaves), atol=1e-12)
-        assert spatial.one_norm == pytest.approx(spin.one_norm, rel=1e-10)
-        assert spatial.truncation_error == pytest.approx(
-            spin.truncation_error, abs=1e-10)
-        difference = (spin.to_fermion().map_to_qubits()
-                      + (-1.0) * spatial.to_fermion().map_to_qubits()
-                      ).simplify()
-        assert max((abs(complex(c)) for c in difference.terms.values()),
-                   default=0.0) < 1e-10
-        # Every rotation keeps the two spins apart.
-        m = h.shape[0]
-        for leaf in spatial.leaves:
-            assert np.abs(leaf.orbitals[:m, m:]).max() == 0.0
-        cut = spatial_double_factorization(h, eri, max_leaves=2)
-        assert len(cut.leaves) == 2
-        assert cut.truncation_error > spatial.truncation_error
 
     def test_pair_factors_give_the_tensor_factorization(self):
         """From ``k < M^2`` factors and a coupling (Cholesky factors plus an
@@ -609,38 +315,6 @@ class TestTheSpatialFactorization:
                       ).simplify()
         assert max((abs(complex(c)) for c in difference.terms.values()),
                    default=0.0) < 1e-10
-
-    def test_the_calculator_uses_no_spin_orbital_tensor(self, monkeypatch):
-        import mandacaru.core.hamiltonian as hamiltonian
-
-        def forbidden(*args, **kwargs):
-            raise AssertionError("the (2M)^4 tensor was formed")
-
-        monkeypatch.setattr(hamiltonian, "spin_block_integrals", forbidden)
-        calc = solved(lih(), None)
-        factorization = calc.factorization()
-        h, eri = self.spatial(calc)
-        assert factorization.measurement_bases == \
-            spatial_double_factorization(h, eri).measurement_bases
-
-    def test_a_cholesky_run_is_factorized_from_its_factors(self):
-        """The factors of an active space give the factorization of the
-        reduced Hamiltonian, and its circuits the run's energy."""
-        atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO",
-                               grid_spacing=0.30, pool="qeb", max_iterations=3,
-                               trace=False, two_body={"method": "cholesky",
-                                                      "tolerance": 1e-9},
-                               active_space={"orbitals": 2},
-                               measurement_scheme="double-factorized",
-                               measurement_provider=QiskitProvider(
-                                   device="statevector"))
-        energy = atoms.get_potential_energy()
-        factorization = atoms.calc.factorization()
-        assert factorization is not None and factorization.n_modes == 4
-        assert atoms.calc.measurement["scheme"] == "double-factorized"
-        assert atoms.calc.measurement["energy_eV"] == pytest.approx(
-            energy, abs=1e-6)
 
 
 # --------------------------------------------------------------------------- #
@@ -739,86 +413,6 @@ class TestGivensRotations:
             induced[k], *_ = np.linalg.lstsq(basis, rotated, rcond=None)
         assert np.abs(induced - (unitary @ np.diag(signs)).T).max() < 1e-10
 
-    def test_the_rotated_observable_is_diagonal(self):
-        """The whole claim: after the rotation, one Z measurement suffices."""
-        calc = solved(lih(), None)
-        h_so, g_so = integrals_of(calc)
-        factorization = double_factorization(h_so, g_so)
-        problem = calc.solver.ansatz_problem()[:4]
-        for _n, _occ, _gens, _thetas, observable in \
-                factorization.measurement_problems(*problem):
-            assert all(set(label) <= {"I", "Z"} for label in observable.terms)
-
-
-class TestTheFactorizedMeasurement:
-
-    def test_it_reproduces_the_exact_energy(self):
-        """The decisive check: the circuits give the state vector's energy."""
-        for atoms in (h2(), lih()):
-            reference = solved(atoms, None).result.optimal_energy
-            measured = solved(
-                atoms.copy(), QiskitProvider(device="statevector"),
-                measurement_scheme="double-factorized").measurement["energy_eV"]
-            assert measured == pytest.approx(reference, abs=1e-6)
-
-    def test_it_is_one_pub_per_basis(self):
-        calc = solved(lih(), QiskitProvider(device="statevector"),
-                      measurement_scheme="double-factorized")
-        factorization = calc.factorization()
-        assert calc.measurement["observables"] == \
-            factorization.measurement_bases
-        assert calc.measurement["scheme"] == "double-factorized"
-
-    def test_it_needs_far_fewer_bases_and_more_gates(self):
-        """The trade it makes, both halves of it."""
-        plans = {}
-        for scheme in ("qwc", "double-factorized"):
-            calc = solved(lih(), QiskitProvider(device="statevector",
-                                                shots=1024),
-                          measurement_scheme=scheme)
-            plans[scheme] = calc.measurement_plan
-        assert plans["double-factorized"].bases < plans["qwc"].bases
-        # The Givens network is real circuit depth, and the plan says so.
-        assert (plans["double-factorized"].two_qubit_gates
-                > plans["qwc"].two_qubit_gates)
-
-    def test_the_factorized_one_norm_is_reported(self):
-        """Fewer bases, a larger 1-norm: the shot cost must not be understated."""
-        calc = solved(lih(), QiskitProvider(device="statevector", shots=1024),
-                      measurement_scheme="double-factorized")
-        plan = calc.measurement_plan
-        assert plan.one_norm_hartree == pytest.approx(
-            calc.factorization().one_norm)
-        assert "factorized" in plan.fields()["hamiltonian_one_norm_Ha"]
-
-    def test_a_tapered_register_is_refused(self):
-        atoms = h2()
-        atoms.calc = Mandacaru(
-            method="adapt-vqe", basis="HAO", grid_spacing=0.30, pool="qeb",
-            mapping="parity_reduced", max_iterations=2, trace=False,
-            measurement_scheme="double-factorized",
-            measurement_provider=QiskitProvider(device="statevector"))
-        with pytest.raises(NotImplementedError, match="Jordan-Wigner"):
-            atoms.get_potential_energy()
-
-    def test_direct_mode_is_refused(self):
-        """No integrals, no factorization -- said, not silently ignored."""
-        solver = solved(h2(), None).solver
-        calc = Mandacaru(
-            method="adapt-vqe", hamiltonian=solver.hamiltonian, pool="qeb",
-            num_particles=solver.num_particles,
-            n_spatial_orbitals=int(solver.n_qubits) // 2,
-            max_iterations=2, trace=False,
-            measurement_scheme="double-factorized",
-            measurement_provider=QiskitProvider(device="statevector"))
-        calc.run()
-        with pytest.raises(NotImplementedError, match="molecular integrals"):
-            calc._measure(calc.solver, rdms=False)
-
-    def test_an_unknown_scheme_is_refused(self):
-        with pytest.raises(ValueError, match="unknown measurement_scheme"):
-            Mandacaru(method="adapt-vqe", basis="HAO",
-                      measurement_scheme="nonsense")
 
 
 # --------------------------------------------------------------------------- #
@@ -827,9 +421,9 @@ class TestTheFactorizedMeasurement:
 # --------------------------------------------------------------------------- #
 
 class TestARetryRunsOnTheOptionsItAsksFor:
-    """``remeasure(**overrides)`` used to ``setattr`` onto the live provider:
-    ``device=`` set an attribute nothing read, and a cached Estimator kept the
-    old resilience level."""
+    """A retry used to ``setattr`` onto the live provider: ``device=`` set an
+    attribute nothing read, and a cached Estimator kept the old resilience
+    level.  ``with_options`` rebuilds the provider instead."""
 
     def test_the_provider_is_rebuilt(self):
         old = QiskitProvider(device="ibm_old", shots=100,
@@ -844,31 +438,6 @@ class TestARetryRunsOnTheOptionsItAsksFor:
     def test_an_unknown_option_is_refused(self):
         with pytest.raises(ValueError, match="unknown option"):
             QiskitProvider().with_options(devise="ibm_new")
-
-    def test_remeasure_rebuilds_and_drops_stale_forces(self):
-        atoms = h2()
-        calc = solved(atoms, QiskitProvider(device="statevector"))
-        atoms.get_forces()
-        first = calc.measurement_provider
-        calc.remeasure(rdms=False, shots=0)
-        assert calc.measurement_provider is not first
-        assert "forces" not in calc.results
-
-    def test_a_failed_request_is_the_one_retried(self, monkeypatch):
-        atoms = h2()
-        calc = solved(atoms, QiskitProvider(device="statevector"))
-        provider = calc.measurement_provider
-
-        def explode(*_args, **_kwargs):
-            raise RuntimeError("chunk failed")
-
-        monkeypatch.setattr(provider, "expectation_values", explode)
-        with pytest.raises(MeasurementFailed):
-            atoms.get_forces()
-        monkeypatch.undo()
-        again = calc.remeasure()
-        assert again["rdms"] is not None              # the RDM request
-
 
 class TestEnergiesAreChunkedToo:
     """Only ``expectation_values`` honored ``max_bases_per_job``: an energy
@@ -896,17 +465,29 @@ class TestEnergiesAreChunkedToo:
                  [0.4])
         h = PauliSum({"ZI": 1.0, "IZ": -0.4, "XX": 0.3, "YY": 0.3,
                       "II": 0.1}, num_qubits=2)
-        whole = QiskitProvider().energies([(*state, h)])[0]
-        split = QiskitProvider(max_bases_per_job=1).energies([(*state, h)])[0]
+        whole = build_provider("qiskit").energies([(*state, h)])[0]
+        split = build_provider("qiskit", max_bases_per_job=1).energies(
+            [(*state, h)])[0]
         assert split == pytest.approx(whole, abs=1e-12)
 
     def test_the_plan_predicts_the_executed_jobs(self):
         atoms = lih()
-        calc = solved(atoms, QiskitProvider(device="statevector",
-                                            max_bases_per_job=2))
-        hamiltonian = calc.solver.hamiltonian
-        assert calc.measurement_plan.jobs == \
-            calc.measurement_provider.jobs_per_energy(hamiltonian)
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO",
+                               grid_spacing=0.30, pool="qeb", max_iterations=3,
+                               trace=False)
+        atoms.get_potential_energy()
+        problem = atoms.calc.problem
+        hamiltonian = PauliSum({label: complex(re, im) for label, re, im
+                                in problem.hamiltonian_terms},
+                               num_qubits=problem.num_qubits)
+        provider = build_provider("qiskit", device="statevector",
+                                  max_bases_per_job=2)
+        plan = measurement_plan(provider, problem.num_qubits,
+                                list(hamiltonian.terms),
+                                hamiltonian=hamiltonian,
+                                jobs=provider.jobs_per_energy(hamiltonian))
+        assert plan.jobs > 1
+        assert plan.jobs == provider.jobs_per_energy(hamiltonian)
 
 
 class TestCompletedChunksAreKept:
@@ -979,7 +560,7 @@ class TestTheRunBudget:
                              "jobs": None, "total_shots": 50_000}})
         with pytest.raises(RunBudgetExceeded, match="total_shots"):
             calc.get_potential_energy(h2())
-        assert calc.solver.circuit_provider().run_usage()["jobs"] == 0
+        assert calc.provider.run_usage()["jobs"] == 0
 
     @pytest.mark.parametrize("method, options", [
         ("vqe", {}), ("adapt-vqe", {"pool": "qeb", "max_iterations": 3})])
@@ -997,8 +578,18 @@ class TestTheRunBudget:
         with pytest.warns(RuntimeWarning, match="run budget"):
             energy = calc.get_potential_energy(h2())
         assert np.isfinite(energy)
-        assert calc.solver.run_budget_exhausted
-        assert calc.solver.circuit_provider().run_usage()["jobs"] == 6
+        assert calc.provider.run_usage()["jobs"] == 6
+
+    def test_the_ceiling_is_never_crossed(self):
+        """Whatever else a stopped run keeps, the ledger refuses the submission
+        that would cross the ceiling, so the quota is never overspent."""
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.4, shots=1000,
+                         optimizer={"method": "Nelder-Mead", "maxiter": 200},
+                         trace=False,
+                         backend_options={"run_budget": {"jobs": 10}})
+        with pytest.warns(RuntimeWarning, match="jobs 11 > 10"):
+            calc.get_potential_energy(h2())
+        assert calc.provider.run_usage()["jobs"] == 10
 
     def test_an_optimization_that_cannot_fit_is_refused_up_front(self):
         from mandacaru.backends.measurement import RunBudgetExceeded

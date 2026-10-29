@@ -1,5 +1,31 @@
 //! Simultaneous-perturbation stochastic approximation with seeded gains.
+//!
+//! Two forms, chosen by `Options::track_best`:
+//!
+//! * `true` (default, the state-vector form): one initial evaluation, then
+//!   three per iteration, the two perturbed points and the updated point. The
+//!   returned point is the lowest energy among the initial and the updated
+//!   points. At most `3 * max_iterations + 1` evaluations.
+//! * `false` (the strict two-evaluation form for hardware): one initial
+//!   evaluation, then the two perturbed points only; the updated point is
+//!   never evaluated. The returned point is the lowest energy among the
+//!   points actually evaluated, the initial point and the perturbed trial
+//!   points. At most `2 * max_iterations + 1` evaluations.
+//!
+//! Both are further capped by `Options::max_evaluations`. With
+//! `Options::tolerance == None` the five-calm-steps convergence test is off,
+//! so a run always uses its whole iteration budget.
 use super::*;
+/// Most evaluations one run can request. Lives beside the loop so the two
+/// cannot drift apart.
+pub(super) fn evaluation_bound(options: &Options) -> usize {
+    let per_iteration = if options.track_best { 3 } else { 2 };
+    options
+        .max_iterations
+        .saturating_mul(per_iteration)
+        .saturating_add(1)
+        .min(options.max_evaluations)
+}
 fn random(state: &mut u64) -> f64 {
     *state = state.wrapping_add(0x9e3779b97f4a7c15);
     let mut z = *state;
@@ -36,7 +62,8 @@ pub(super) fn minimize(
     }
     .to_owned();
     for k in 0..if n == 0 { 0 } else { options.max_iterations } {
-        if history.len().saturating_add(3) > options.max_evaluations {
+        let per_iteration = if options.track_best { 3 } else { 2 };
+        if history.len().saturating_add(per_iteration) > options.max_evaluations {
             message = "evaluation budget exhausted".into();
             break;
         }
@@ -54,21 +81,30 @@ pub(super) fn minimize(
             validate(value, &g, n)?;
             history.push(value);
             *out = value;
+            if !options.track_best && value < best_energy {
+                best_energy = value;
+                best = trial;
+            }
         }
         let estimate = (values[0] - values[1]) / (2. * ck);
         let step = ak * estimate;
         for (x, d) in x.iter_mut().zip(delta) {
             *x -= step * d;
         }
-        let (value, g) = objective(&x)?;
-        validate(value, &g, n)?;
-        history.push(value);
         steps += 1;
-        if value < best_energy {
-            best_energy = value;
-            best.clone_from(&x);
+        if options.track_best {
+            let (value, g) = objective(&x)?;
+            validate(value, &g, n)?;
+            history.push(value);
+            if value < best_energy {
+                best_energy = value;
+                best.clone_from(&x);
+            }
         }
-        calm = if step.abs() * (n as f64).sqrt() < options.tolerance {
+        calm = if options
+            .tolerance
+            .is_some_and(|t| step.abs() * (n as f64).sqrt() < t)
+        {
             calm + 1
         } else {
             0
@@ -86,5 +122,6 @@ pub(super) fn minimize(
         steps,
         success,
         message,
+        interrupted: None,
     })
 }

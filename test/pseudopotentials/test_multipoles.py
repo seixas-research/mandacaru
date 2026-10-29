@@ -12,9 +12,7 @@ isolated copper atom collapsed to -16,000 Ha as the grid was refined.
 
 import numpy as np
 import pytest
-from ase import Atoms
 
-from mandacaru.algorithms._hamiltonian_from_atoms import build_basis_hamiltonian
 from mandacaru.integrals import reciprocal as rc
 from mandacaru.pseudopotentials import get_paw, multipoles
 from mandacaru.pseudopotentials.multipoles import (partial_waves,
@@ -108,29 +106,6 @@ class TestTheRemainderBeyondTheMultipoles:
         assert np.abs(E).max() < 1e-12
 
 
-def test_compensation_keeps_the_copper_coulomb_tensor_positive():
-    """``(n~ + n^ | n~ + n^)`` is a Coulomb energy: the augmentation may not
-    push the tensor's spectrum below what the grid part alone gives."""
-    atoms = Atoms("Cu", positions=[[0, 0, 0]], cell=[7.0] * 3)
-    atoms.center()
-    _H, _particles, n, _profile, context = build_basis_hamiltonian(
-        atoms, {"name": "PAW-LCAO", "size": "SZ"}, None, 0.25, 0, None,
-        spin=True)
-    integrals = context["integrals"]
-    grid = np.asarray(integrals._engine.two_body(energy_units="Ha"))
-    total = grid + integrals.two_body_augmentation().dense()
-
-    def lowest(tensor):
-        matrix = tensor.transpose(0, 2, 1, 3).reshape(n * n, n * n)
-        return np.linalg.eigvalsh(0.5 * (matrix + matrix.conj().T)).min()
-
-    assert lowest(total) > lowest(grid) - 0.05
-    # The copper atom's 19 valence electrons (3s 3p 3d 4s since 2026-10-21;
-    # (6, 5) was the eleven of the valence-only dataset): (10, 9) fills the
-    # ten functions of this basis but one.  Window -60..-30 -> -215..-175
-    # Ha (measured -195.9 Ha).
-    energy = integrals.open_shell_hartree_fock(10, 9).electronic_energy
-    assert -215.0 < energy < -175.0
 
 
 class TestRealAngularTables:

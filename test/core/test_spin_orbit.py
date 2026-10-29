@@ -15,7 +15,6 @@ cannot be left to assume a fixed ``(n_alpha, n_beta)``.
 import numpy as np
 import pytest
 
-from mandacaru.core.hamiltonian import spin_block_integrals
 from mandacaru.core.mapping import Fermion
 from mandacaru.core.spin_orbit import (ALPHA, BETA, breaks_spin_symmetry,
                                        conserves_spin_projection, ls_matrix,
@@ -179,7 +178,7 @@ class TestTheAssembledOneBodyMatrix:
     def test_a_mismatched_block_is_refused_by_shape(self):
         projectors = channel()
         M = len(projectors)
-        with pytest.raises(ValueError, match="must be"):
+        with pytest.raises(ValueError, match="dimensions must match"):
             spin_orbit_one_body(np.eye(M, dtype=complex), projectors,
                                 {(0, 1): np.eye(3)})
 
@@ -193,48 +192,11 @@ class TestTheAssembledOneBodyMatrix:
                                                    {(0, 1): D}), atol=1e-12)
 
 
-class TestTheIntegralsHook:
-    def test_an_ordinary_molecule_carries_no_spin_orbit_term(self):
-        """Nothing that did not ask for it may acquire an alpha-beta block."""
-        from mandacaru.core.hamiltonian import MolecularIntegrals
-
-        assert not MolecularIntegrals.has_spin_orbit.fget(
-            type("Fake", (), {"spin_orbit_coupling": {}})())
-
-    def test_spin_orbit_blocks_need_projectors_to_act_on(self):
-        from mandacaru.core.hamiltonian import (MolecularIntegrals,
-                                                 minimal_hao_basis)
-        from mandacaru.integrals.grid import Grid
-
-        nuclei = [(1.0, np.zeros(3))]
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.4)
-        with pytest.raises(ValueError, match="needs projectors"):
-            MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid,
-                               spin_orbit_coupling={(0, 1): np.eye(2)})
-
-    def test_an_ordinary_molecule_gets_a_zero_spin_orbit_matrix(self):
-        from mandacaru.core.hamiltonian import (MolecularIntegrals,
-                                                 minimal_hao_basis)
-        from mandacaru.integrals.grid import Grid
-
-        nuclei = [(1.0, np.zeros(3))]
-        grid = Grid(center=[0.0, 0.0, 0.0], box_size=5.0, grid_spacing=0.4)
-        integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid)
-        assert not integrals.has_spin_orbit
-        h = integrals.spin_orbit_matrix()
-        assert h.shape == (2 * integrals.n_orbitals,) * 2
-        assert not np.any(h)
 
 
 class TestSpinProjection:
     """``conserves_spin_projection`` reads S_z symmetry off the operator."""
 
-    def test_a_spin_blocked_hamiltonian_conserves_it(self):
-        h = np.array([[1.0, 0.2], [0.2, -0.5]])
-        eri = np.zeros((2, 2, 2, 2))
-        eri[0, 0, 0, 0] = eri[1, 1, 1, 1] = 0.7
-        fermion = Fermion.from_integrals(*spin_block_integrals(h, eri))
-        assert conserves_spin_projection(fermion)
 
     def test_a_spin_flip_breaks_it(self):
         # Modes 0, 1 alpha and 2, 3 beta: a+_2 a_0 flips a spin.

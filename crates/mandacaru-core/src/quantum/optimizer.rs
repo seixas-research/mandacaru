@@ -39,13 +39,24 @@ impl Method {
     }
 }
 
+/// Convergence tolerance of every method when `Options::tolerance` is `None`
+/// (SPSA is the exception: `None` disables its convergence test).
+pub const DEFAULT_TOLERANCE: f64 = 1e-9;
+
 #[derive(Clone, Debug)]
 pub struct Options {
     pub method: Method,
     pub max_iterations: usize,
     pub max_evaluations: usize,
-    pub tolerance: f64,
+    /// `None` means the method default ([`DEFAULT_TOLERANCE`]); for SPSA it
+    /// disables the five-calm-steps test so the run uses its whole iteration
+    /// budget.
+    pub tolerance: Option<f64>,
     pub seed: u64,
+    /// SPSA only. `true` (default) evaluates the objective at every updated
+    /// point (three evaluations per iteration); `false` is the strict
+    /// two-evaluation form used on hardware. Other methods ignore it.
+    pub track_best: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -53,19 +64,37 @@ impl Default for Options {
             method: Method::Bfgs,
             max_iterations: 300,
             max_evaluations: 5000,
-            tolerance: 1e-9,
+            tolerance: Some(DEFAULT_TOLERANCE),
             seed: 0,
+            track_best: true,
         }
     }
 }
 impl Options {
     pub fn validate(&self) -> Result<()> {
-        if self.max_evaluations == 0 || !self.tolerance.is_finite() || self.tolerance <= 0. {
+        if self.max_evaluations == 0 || self.tolerance.is_some_and(|t| !t.is_finite() || t <= 0.) {
             return Err(Error::Invalid(
                 "optimizer needs positive finite tolerance and evaluation budget".into(),
             ));
         }
         Ok(())
+    }
+    /// The tolerance a method that always tests convergence uses.
+    fn tolerance_or_default(&self) -> f64 {
+        self.tolerance.unwrap_or(DEFAULT_TOLERANCE)
+    }
+    /// Most objective evaluations the method can request, or `None` when an
+    /// objective call is not one energy evaluation (gradient methods).
+    ///
+    /// SPSA is bounded by its iteration count; the derivative-free simplex
+    /// methods only by `max_evaluations`, because a Nelder-Mead shrink or a
+    /// COBYLA geometry refresh spends several evaluations in one iteration.
+    pub fn evaluation_bound(&self) -> Option<usize> {
+        match self.method {
+            Method::Spsa => Some(stochastic::evaluation_bound(self)),
+            Method::Cobyla | Method::NelderMead => Some(self.max_evaluations),
+            Method::Bfgs | Method::Lbfgs | Method::Slsqp | Method::Cg => None,
+        }
     }
 }
 pub struct Outcome {
@@ -75,6 +104,9 @@ pub struct Outcome {
     pub steps: usize,
     pub success: bool,
     pub message: String,
+    /// Set by [`minimize_interruptible`] when the objective ended the run;
+    /// `parameters`, `energy` and `history` are then the best point reached.
+    pub interrupted: Option<String>,
 }
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(a, b)| a * b).sum()
@@ -86,6 +118,42 @@ fn validate(energy: f64, gradient: &[f64], n: usize) -> Result<()> {
         ))
     } else {
         Ok(())
+    }
+}
+/// Like [`minimize`], but an objective that fails with
+/// [`Error::Interrupted`] ends the run cleanly: the lowest energy among the
+/// completed evaluations is returned with `success == false`, `interrupted`
+/// set and `steps == 0` (the loop was cut short). When no evaluation
+/// completed there is no best point and the error propagates.
+pub fn minimize_interruptible(
+    ctx: &Context,
+    initial: &[f64],
+    options: &Options,
+    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> Result<Outcome> {
+    let mut best: Option<(Vec<f64>, f64)> = None;
+    let mut history = Vec::new();
+    let result = minimize(ctx, initial, options, |x| {
+        let value = objective(x)?;
+        if value.0.is_finite() {
+            history.push(value.0);
+            if best.as_ref().is_none_or(|(_, e)| value.0 < *e) {
+                best = Some((x.to_vec(), value.0));
+            }
+        }
+        Ok(value)
+    });
+    match (result, best) {
+        (Err(Error::Interrupted(message)), Some((parameters, energy))) => Ok(Outcome {
+            parameters,
+            energy,
+            history,
+            steps: 0,
+            success: false,
+            message: format!("run budget exhausted: {message}"),
+            interrupted: Some(message),
+        }),
+        (result, _) => result,
     }
 }
 pub fn minimize(
@@ -102,7 +170,7 @@ pub fn minimize(
         Method::Slsqp => return sequential::minimize(ctx, initial, options, objective),
         Method::Cg => return conjugate::minimize(ctx, initial, options, objective),
         Method::NelderMead | Method::Cobyla => {
-            return derivative_free::minimize(ctx, initial, options, objective)
+            return derivative_free::minimize(ctx, initial, options, objective);
         }
         Method::Spsa => return stochastic::minimize(ctx, initial, options, objective),
         Method::Bfgs | Method::Lbfgs => {}
@@ -130,7 +198,7 @@ pub fn minimize(
     let mut message = "iteration budget exhausted".to_owned();
     loop {
         let max_gradient = gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
-        if max_gradient <= options.tolerance {
+        if max_gradient <= options.tolerance_or_default() {
             return Ok(Outcome {
                 parameters: x,
                 energy,
@@ -138,6 +206,7 @@ pub fn minimize(
                 steps,
                 success: true,
                 message: "gradient converged".into(),
+                interrupted: None,
             });
         }
         if steps >= options.max_iterations {
@@ -292,5 +361,6 @@ pub fn minimize(
         steps,
         success: false,
         message,
+        interrupted: None,
     })
 }

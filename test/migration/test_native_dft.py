@@ -110,6 +110,44 @@ def test_stationary_forces_match_independent_fixed_grid_scf_differences(method, 
         assert forces[atom, axis] == pytest.approx(fd, abs=2e-5)
 
 
+@pytest.mark.parametrize("symbols,method,xc,unrestricted", [
+    ("H2", "rhf", None, False), ("H2", "uhf", None, False), ("H2", "dft", "lda", False),
+    ("H2", "dft", "pbe", False), ("H2", "dft", "pbe", True),
+    # Lithium carries a closed 1s core: its frozen-core exchange is part of the force.
+    ("LiH", "rhf", None, False), ("LiH", "dft", "pbe", False)])
+def test_paw_stationary_forces_match_independent_fixed_grid_scf_differences(symbols, method, xc, unrestricted):
+    """PAW-LCAO mean-field forces in eV/Angstrom against converged energies in eV.
+
+    The native gradient is a fixed-density Richardson difference in Hartree per
+    Bohr; the conversion to the ASE unit happens once, in ``Result.forces``, so
+    agreement with a finite difference of ``get_potential_energy()`` over
+    Angstrom displacements checks the unit as well as the derivative.
+    """
+    atoms = h2() if symbols == "H2" else Atoms("LiH", positions=[[2.5, 2.5, 1.85], [2.6, 2.5, 3.45]], cell=[5] * 3)
+    atoms.positions[0, 0] += .07  # off the bond axis, so a transverse force exists
+    grid = Grid(center=[2.5] * 3, cell=np.eye(3) * 5, grid_spacing=.4)
+    options = dict(method=method, basis={"name": "PAW-LCAO", "size": "SZ"}, grid=grid, grid_spacing=.4,
+                   project_translation=False, trace=False, scf_options={"tolerance": 1e-11})
+    if xc:
+        options.update(xc=xc, unrestricted=unrestricted)
+    atoms.calc = Mandacaru(**options)
+    assert "forces" in atoms.calc.implemented_properties
+    forces = atoms.get_forces()
+    details = atoms.calc.result.force_details
+    assert details["scheme"] == "Richardson-fixed-density-PAW"
+    assert details["step_bohr"] == 1e-3 and details["step_error_estimate"] < 1e-5
+    for atom, axis in [(0, 0), (1, 2)]:
+        energies = []
+        step = 2e-5
+        for sign in [-1, 1]:
+            moved = atoms.copy()
+            moved.positions[atom, axis] += sign * step
+            moved.calc = Mandacaru(**options)
+            energies.append(moved.get_potential_energy())
+        fd = -(energies[1] - energies[0]) / (2 * step)
+        assert forces[atom, axis] == pytest.approx(fd, abs=2e-5)
+
+
 @pytest.mark.parametrize("functional", ["lda", "pbe"])
 @pytest.mark.parametrize("system", ["h2", "h", "water"])
 def test_kohn_sham_energy_density_and_spectrum_match_python(functional, system):

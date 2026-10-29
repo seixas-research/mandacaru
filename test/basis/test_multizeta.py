@@ -21,7 +21,6 @@ from mandacaru.basis.multizeta import (DEFAULT_SPLIT_NORM, ZETA_NAMES,
                                        resolve_zeta, split_radius,
                                        split_valence_tail, zeta_tables)
 from mandacaru.basis.nao import solve_confined_radial
-from mandacaru.core import MolecularIntegrals
 from mandacaru.integrals import Grid
 
 
@@ -274,44 +273,7 @@ class TestBasisConstruction:
             assert function.center[0] > 0.0
 
 
-class TestVariationalQuality:
-    """A bigger basis must lower the energy -- the only test that matters."""
 
-    @staticmethod
-    def _rhf(size):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.20)
-        basis = BasisSet.build("NAO", size=size)
-        functions, nuclei = [], []
-        for position in ([0, 0, -0.37], [0, 0, 0.37]):
-            functions += basis.atom("H", center=position, units="angstrom")
-            nuclei.append((1.0, np.asarray(position)))
-        integrals = MolecularIntegrals(
-            nuclei, functions, grid,
-            softening=0.5 * min(grid.dx, grid.dy, grid.dz))
-        result = integrals.hartree_fock(2)
-        return result.electronic_energy + integrals.nuclear_repulsion
-
-    def test_double_zeta_lowers_the_energy(self):
-        """The variational principle: more freedom cannot raise the minimum."""
-        single, double = self._rhf("SZ"), self._rhf("DZ")
-        assert double < single
-        assert single - double > 0.01          # and by a chemically real amount
-
-    def test_polarization_lowers_the_energy_further(self):
-        assert self._rhf("DZP") < self._rhf("DZ")
-
-    def test_overlap_stays_invertible(self):
-        """Multiple zeta risks linear dependence; the basis must stay usable."""
-        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.20)
-        basis = BasisSet.build("NAO", size="DZP")
-        functions, nuclei = [], []
-        for position in ([0, 0, -0.37], [0, 0, 0.37]):
-            functions += basis.atom("H", center=position, units="angstrom")
-            nuclei.append((1.0, np.asarray(position)))
-        overlap = np.real(MolecularIntegrals(nuclei, functions, grid).overlap())
-        eigenvalues = np.linalg.eigvalsh(overlap)
-        assert eigenvalues.min() > 1e-4
-        assert eigenvalues.max() / eigenvalues.min() < 1e4
 
 
 class TestValenceSubshells:

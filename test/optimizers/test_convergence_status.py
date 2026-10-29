@@ -16,11 +16,7 @@ stops the run instead of steering it.
 
 import numpy as np
 import pytest
-from ase import Atoms
 
-from mandacaru.algorithms import Mandacaru, resolve_method
-from mandacaru.core.hamiltonian import spin_block_integrals
-from mandacaru.core.mapping import Fermion
 from mandacaru.optimizers.optim import Optimizer
 
 # The classical optimizers used below, with the iteration budget and
@@ -33,78 +29,12 @@ SPSA_OPT = Optimizer(method="SPSA", maxiter=2000, tol=1e-12)
 UNCERTIFIABLE = Optimizer(method="SPSA", maxiter=20, tol=None)
 
 
-def random_hamiltonian(orbitals=3, seed=5):
-    """A Hermitian, number-conserving Hamiltonian on ``2 * orbitals`` modes."""
-    rng = np.random.default_rng(seed)
-    a = rng.normal(size=(orbitals, orbitals))
-    h = a + a.T
-    eri = np.zeros((orbitals,) * 4)
-    for _ in range(2):
-        b = rng.normal(size=(orbitals, orbitals))
-        L = b + b.T
-        eri += np.einsum("pr,qs->pqrs", L, L)
-    fermion = Fermion.from_integrals(*spin_block_integrals(h, eri))
-    return fermion.map_to_qubits("jordan_wigner", n_modes=2 * orbitals)
 
 
-def driver(**options):
-    return Mandacaru(method="adapt-vqe", hamiltonian=random_hamiltonian(),
-                     num_particles=(1, 1), n_spatial_orbitals=3, trace=False,
-                     profile=False, **options)
 
 
-class TestAdaptConvergenceFlag:
-    def test_reports_convergence_after_the_final_screening(self):
-        """A loose threshold is met at the last step, not before it."""
-        result = driver(pool="qeb", max_iterations=0,
-                        convergence={"gradient": 1e3}).run()
-        assert result.converged
-        assert np.isfinite(result.final_max_gradient)
-
-    def test_an_unconverged_run_reports_a_finite_final_gradient(self):
-        result = driver(pool="qeb", max_iterations=1,
-                        convergence={"gradient": 1e-12}).run()
-        assert not result.converged
-        assert np.isfinite(result.final_max_gradient)
-
-    def test_optimizer_failures_are_recorded(self):
-        """Inner optimizations that never certify convergence are reported."""
-        with pytest.warns(RuntimeWarning, match="no convergence"):
-            result = driver(pool="qeb", max_iterations=2,
-                            convergence={"gradient": 1e-12},
-                            optimizer=UNCERTIFIABLE).run()
-        assert result.optimizer_failures
-        assert all(isinstance(step, int) for step, _ in result.optimizer_failures)
 
 
-class TestSectorGuard:
-    def test_requested_sector_refuses_a_leaking_pool(self):
-        with pytest.raises(ValueError, match="conserve"):
-            driver(pool="qubit", sector=True, max_iterations=1).run()
-
-    def test_automatic_sector_falls_back_to_the_full_register(self, monkeypatch):
-        monkeypatch.setattr(resolve_method("adapt-vqe")[1],
-                            "SECTOR_AUTO_QUBITS", 4)
-        solver = driver(pool="qubit", sector="auto", max_iterations=1,
-                        convergence={"gradient": 1e-6})
-        # The problem is configured on first use, which is where the sector is
-        # resolved and the fallback announced.
-        with pytest.warns(RuntimeWarning, match="full register"):
-            assert solver.solver._sector is None
-        assert np.isfinite(solver.run().optimal_energy)
-
-    def test_automatic_sector_is_used_for_a_conserving_pool(self, monkeypatch):
-        monkeypatch.setattr(resolve_method("adapt-vqe")[1],
-                            "SECTOR_AUTO_QUBITS", 4)
-        sector_solver = driver(pool="qeb", sector="auto", max_iterations=3)
-        full_solver = driver(pool="qeb", sector=False, max_iterations=3)
-        sector_result, full_result = sector_solver.run(), full_solver.run()
-        assert sector_solver.solver._sector is not None and full_solver.solver._sector is None
-        # Same ansatz, same minimum -- only the state representation differs
-        # (9 sector amplitudes against 64 full-register ones).
-        assert sector_result.operators == full_result.operators
-        assert sector_result.optimal_energy == pytest.approx(
-            full_result.optimal_energy, abs=1e-4)
 
 
 class TestOptimizerStatus:
@@ -128,20 +58,6 @@ class TestOptimizerStatus:
         assert result.success and result.nfev == 1
 
 
-class TestAdaptEndToEndStillWorks:
-    def test_h2_reaches_its_fci_energy(self):
-        atoms = Atoms("H2", positions=[[4, 4, 3.63], [4, 4, 4.37]],
-                      cell=[8.0] * 3)
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.4,
-                               pool="fermionic", trace=False, profile=False,
-                               convergence={"gradient": 1e-6})
-        energy = atoms.get_potential_energy()
-        exact = np.linalg.eigvalsh(atoms.calc.solver._h_matrix if isinstance(
-            atoms.calc.solver._h_matrix, np.ndarray)
-            else atoms.calc.solver._h_matrix.toarray())[0]
-        from mandacaru.units import HARTREE_TO_EV
-        assert atoms.calc.result.converged
-        assert energy == pytest.approx(exact * HARTREE_TO_EV, abs=1e-6)
 
 
 class TestSPSAEvaluationBudget:

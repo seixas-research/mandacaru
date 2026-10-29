@@ -33,6 +33,7 @@ ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md",
                 "HISTORY.md",
                 "LICENSE", "README.md", "TODO.md",
                 "VERSION_DESCRIPTION.md",
+                "Cargo.toml", "Cargo.lock",
                 "pyproject.toml"}
 
 #: The development plans (DFT, PAW-LCAO datasets, VALQA, diffuse functions):
@@ -58,7 +59,7 @@ def is_git_ignored(name: str) -> bool:
 
 #: Directories that may live in the repository root.
 ROOT_DIRS_ALLOWED = {".git", ".claude", ".github", "docs", "examples", "plan",
-                     DEV_PLAN_DIR,
+                     DEV_PLAN_DIR, "crates", "build_hooks", "scripts",
                      "latex", "logo",
                      "src", "test", "dist", "build", ".pytest_cache",
                      ".ruff_cache", ".mypy_cache", "mandacaru.egg-info"}

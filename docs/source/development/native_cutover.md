@@ -24,10 +24,10 @@ infer parity from a module name or assume that every NumPy call is an algorithm.
 
 | Area | Current native coverage | Work before removing numerical Python |
 | --- | --- | --- |
-| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, semilocal molecular PAW Kohn–Sham, stationary all-electron forces, variational molecular PAW forces and real/radial bases | PAW screened exchange, multi-shell core exchange and semilocal PAW force response |
+| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, semilocal molecular PAW Kohn–Sham, stationary all-electron forces, stationary PAW-LCAO RHF/UHF/semilocal-KS forces, variational molecular PAW forces and real/radial bases | PAW screened exchange and multi-shell core exchange; PAW forces for screened exchange and nonlocal correlation |
 | Periodic calculations | LDA/PBE/meta-GGA/nonlocal iterations, two-component LDA/PBE spinor SCF and bands, spectra and Ewald primitives | Geometry assembly, screened exchange and electronic response |
 | Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, MCAS-VQE/VALQA, graph proposals and SDK execution | GHF-to-quantum handoff and optional GP/ranker proposal models |
-| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods; empty/closed-1s cores | Basis recipe preparation, multi-shell cores, screened exchange, spin-orbit terms and semilocal KS forces |
+| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods and their forces; empty/closed-1s cores | Basis recipe preparation, multi-shell cores, screened exchange and spin-orbit terms |
 | Radial PAW spectrum | Generalized separable eigenpairs, overlap normalization, confined and free channel spectra | Remaining dataset construction and basis recipes |
 | Correlation | Closed-shell MP2/FNO, local pair domains and PNOs, coupled local MP2 amplitudes, symmetry-preserving active spaces | Open-shell correlation and correlating-pair constraints |
 | Molecular result fields | Native natural orbitals, charge/reference/difference densities, orbital sampling and cube/XSF output; PAW augmentation charge accounting | Periodic field views |
@@ -109,6 +109,24 @@ The two-point path reports that estimate as unmeasured. Tests compare these
 forces with independently reoptimized
 total energies, and fixed-pivot factors with independently computed Coulomb
 columns. A retained PAW setup rebuilds its geometry without reloading datasets.
+
+Stationary PAW-LCAO forces (RHF, UHF and semilocal Kohn–Sham, LDA/PBE/r²SCAN)
+use that rebuild without a displaced SCF. Every matrix of the engine lives in
+the Löwdin-orthonormal frame of its own geometry, so the orthonormality
+constraint does not depend on the positions and, at a converged SCF, the force
+is the partial derivative of the energy at fixed orthonormal-frame densities:
+the overlap (Pulay) term is carried by the position dependence of the Löwdin
+matrix inside the rebuilt integrals. The derivative is a Richardson difference
+of the total energy (electronic plus ion–ion) on the same fixed grid, at the
+documented step `paw_gradient::STEP = 1e-3` Bohr, with the error estimate
+`|fine - coarse| / 3` reported as `step_error_estimate`; Hartree–Fock keeps the
+reference Coulomb pivots. The same finite difference differentiates the basis
+and projector centers, the overlap and compensation augmentation, the
+compensation charges and core densities on the fixed grid, the one-center
+Coulomb and exchange–correlation terms, closed-1s core exchange, the local
+potential and the kinetic energy at once, so GGA and open-shell states need no
+separate term. It raises for GHF, screened exchange, nonlocal correlation,
+single-precision samples and unconverged states.
 
 The ASE adapter supports free-molecule internal-direction projection and
 records its force convention in the text output. Unprojected Cartesian
@@ -195,7 +213,7 @@ or disconnected from their native replacements:
 | --- | --- |
 | Active spaces | Correlating-pair constraints and open-shell MP2 |
 | Variational methods | Optional Gaussian-process and pairwise-ranker proposal models; subspace checkpoint continuation |
-| Molecular PAW | Nonlinear one-center XC, augmented screened exchange, multi-shell frozen-core exchange, spin-orbit projectors and semilocal KS force response |
+| Molecular PAW | Nonlinear one-center XC, augmented screened exchange, multi-shell frozen-core exchange, spin-orbit projectors and forces for screened exchange and nonlocal correlation |
 | Dispersion and advanced periodic DFT | Complete D4, spinor meta-GGA and screened exchange |
 | Periodic quantum calculations | Bloch VQE/ADAPT, quasiparticle weights, interacting spectral functions and quantum unit-cell relaxation |
 | Electronic response | Wannier construction, constrained RPA and downfolding |
@@ -223,8 +241,7 @@ Molecular PAW HF and variational paths cover empty cores and single closed
 model, compensation Hartree terms, smooth-core XC and the atomic energy offset.
 Its signed compensation Fock contribution and LDA/PBE/r²SCAN potentials pass
 energy-derivative checks. Multi-shell core exchange, spin-orbit projectors,
-PAW screened exchange, semilocal KS forces and advanced periodic methods
-remain incomplete. All
+PAW screened exchange and advanced periodic methods remain incomplete. All
 examples are retained; `scripts/check_examples.py` reports failures instead of
 filtering them out. The full scientific test suite still has collection errors
 from removed modules. Passing focused recovery tests does not resolve those

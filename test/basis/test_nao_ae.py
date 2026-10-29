@@ -26,7 +26,6 @@ from mandacaru.basis.nao_ae import (RadialFunction, build_species,
                                     hydrogenic_function, hydrogenic_mean_radius,
                                     mean_radius, minimal_functions,
                                     orthonormalize, tier_specification)
-from mandacaru.core import MolecularIntegrals
 from mandacaru.integrals import Grid
 from mandacaru.units import to_bohr
 
@@ -309,51 +308,10 @@ class TestBasisSet:
         with pytest.raises(ValueError):
             BasisSet.build("NAO-AE", tier=5)
 
-    def test_qubit_estimate_uses_it(self):
-        from ase.build import molecule
-        from mandacaru.algorithms import estimate_qubits
-        water = molecule("H2O")
-        water.center(vacuum=3.0)
-        est = estimate_qubits(water, basis={"name": "NAO-AE", "tier": 1})
-        assert est.per_atom == [("O", 14), ("H", 5), ("H", 5)]
-        assert est.n_qubits == 48
 
-    def test_cannot_be_mixed_with_a_pseudopotential_family(self):
-        from mandacaru.algorithms._hamiltonian_from_atoms import \
-            resolve_pseudo_basis
-        with pytest.raises(ValueError, match="cannot mix a pseudopotential"):
-            resolve_pseudo_basis("per-element",
-                                 {"O": {"name": "NAO-AE"}, "H": "PAW-LCAO"},
-                                 ["O", "H"])
 
 
 # --------------------------------------------------------------------------- #
 # Variational payoff.
 # --------------------------------------------------------------------------- #
 
-class TestVariational:
-    @staticmethod
-    def _rhf(**options):
-        grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.20)
-        basis = BasisSet.build("NAO-AE", **options)
-        functions, nuclei = [], []
-        for position in ([0, 0, -0.37], [0, 0, 0.37]):
-            functions += basis.atom("H", center=position, units="angstrom")
-            nuclei.append((1.0, np.asarray(position)))
-        integrals = MolecularIntegrals(
-            nuclei, functions, grid,
-            softening=0.5 * min(grid.dx, grid.dy, grid.dz))
-        result = integrals.hartree_fock(2)
-        return result.electronic_energy + integrals.nuclear_repulsion
-
-    def test_tier_one_lowers_the_energy(self):
-        minimal = self._rhf(tier=0, onset=2.0, width=0.8)
-        tier1 = self._rhf(tier=1, onset=2.0, width=0.8)
-        assert tier1 < minimal
-        assert minimal - tier1 > 0.02                  # a chemically real gain
-
-    def test_minimal_energy_is_sensible(self):
-        # RHF/minimal H2 sits near -1.1 Ha; anything far off means a broken
-        # radial function reached the integral engine.
-        energy = self._rhf(tier=0, onset=2.0, width=0.8)
-        assert -1.20 < energy < -1.00

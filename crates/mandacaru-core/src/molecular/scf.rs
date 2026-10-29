@@ -642,6 +642,25 @@ impl MolecularIntegrals {
     }
 }
 
+impl MolecularIntegrals {
+    /// Electronic Hartree-Fock energy of orthonormal-frame spin densities,
+    /// which need not be idempotent. Nuclear repulsion is not included.
+    pub(super) fn hartree_fock_energy(&self, method: &str, d: &[Matrix]) -> Result<f64> {
+        let m = self.m();
+        let channels = if method == "rhf" { 1 } else { 2 };
+        if !["rhf", "uhf"].contains(&method)
+            || d.len() != channels
+            || d.iter().any(|d| d.shape() != (m, m))
+        {
+            return Err(invalid(
+                "Hartree-Fock energy needs collinear spin densities in the molecular basis",
+            ));
+        }
+        let h = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
+        let f = fock(self.eri()?.as_ref(), &h, d, method);
+        Ok(energy(d, &f, &h, method))
+    }
+}
 impl MeanField {
     pub fn has_model(&self) -> bool {
         self.model

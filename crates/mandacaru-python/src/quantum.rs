@@ -114,13 +114,33 @@ impl PyOperator {
     }
 }
 
+/// Most energy evaluations the named optimizer can request, or `None` when
+/// an objective call is not one energy evaluation (the gradient methods).
+#[pyfunction]
+#[pyo3(signature=(method,max_iterations,max_evaluations,track_best=true))]
+pub fn optimizer_evaluation_bound(
+    method: &str,
+    max_iterations: usize,
+    max_evaluations: usize,
+    track_best: bool,
+) -> PyResult<Option<usize>> {
+    Ok(optimizer::Options {
+        method: optimizer::Method::parse(method).map_err(error)?,
+        max_iterations,
+        max_evaluations,
+        track_best,
+        ..Default::default()
+    }
+    .evaluation_bound())
+}
+
 #[pyclass(name = "QuantumProblem", module = "mandacaru._native", frozen)]
 pub struct PyProblem {
     pub inner: CachedProblem,
 }
 #[pymethods]
 impl PyProblem {
-    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;4],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.2,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=1e-9,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None))]
+    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;4],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.2,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None))]
     fn search<'py>(
         &self,
         py: Python<'py>,
@@ -139,7 +159,8 @@ impl PyProblem {
         optimizer: &str,
         max_iterations: usize,
         max_evaluations: usize,
-        tolerance: f64,
+        tolerance: Option<f64>,
+        track_best: bool,
         initial_indices: Option<Vec<usize>>,
         initial_parameters: Option<Vec<f64>>,
         proposal_model: Option<&str>,
@@ -173,6 +194,7 @@ impl PyProblem {
                 max_evaluations,
                 tolerance,
                 seed,
+                track_best,
             },
         };
         let mut result = py
@@ -286,8 +308,9 @@ impl PyProblem {
                 method: optimizer::Method::parse(optimizer).map_err(error)?,
                 max_iterations,
                 max_evaluations,
-                tolerance,
+                tolerance: Some(tolerance),
                 seed,
+                track_best: true,
             },
             ..Default::default()
         };
@@ -419,7 +442,7 @@ impl PyProblem {
             inner,
         })
     }
-    #[pyo3(signature=(weights,*,adapt=false,trotter=false,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=1e-9,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,initial_parameters=None))]
+    #[pyo3(signature=(weights,*,adapt=false,trotter=false,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,initial_parameters=None))]
     fn solve_subspace<'py>(
         &self,
         py: Python<'py>,
@@ -429,7 +452,8 @@ impl PyProblem {
         optimizer: &str,
         max_iterations: usize,
         max_evaluations: usize,
-        tolerance: f64,
+        tolerance: Option<f64>,
+        track_best: bool,
         max_growth: usize,
         gradient_tolerance: Option<f64>,
         energy_tolerance: Option<f64>,
@@ -448,6 +472,7 @@ impl PyProblem {
                 max_evaluations,
                 tolerance,
                 seed: 0,
+                track_best,
             },
         };
         let result = py
@@ -647,7 +672,7 @@ impl PyProblem {
         )?;
         Ok(out)
     }
-    #[pyo3(signature=(*,adapt=false,trotter=false,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,max_iterations=300,max_evaluations=5000,tolerance=1e-9,initial_parameters=None,initial_indices=None,optimizer="BFGS",resume=None,callback=None,executor=None))]
+    #[pyo3(signature=(*,adapt=false,trotter=false,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_parameters=None,initial_indices=None,optimizer="BFGS",resume=None,callback=None,executor=None))]
     #[allow(clippy::too_many_arguments)]
     fn solve<'py>(
         &self,
@@ -659,7 +684,8 @@ impl PyProblem {
         energy_tolerance: Option<f64>,
         max_iterations: usize,
         max_evaluations: usize,
-        tolerance: f64,
+        tolerance: Option<f64>,
+        track_best: bool,
         initial_parameters: Option<Vec<f64>>,
         initial_indices: Option<Vec<usize>>,
         optimizer: &str,
@@ -680,6 +706,7 @@ impl PyProblem {
                 max_evaluations,
                 tolerance,
                 seed: 0,
+                track_best,
             },
         };
         if resume.is_some() && (initial_parameters.is_some() || initial_indices.is_some()) {
@@ -730,6 +757,9 @@ impl PyProblem {
                                     angles.to_vec(),
                                     observables.to_vec(),
                                 ))?;
+                                if let Ok(stop) = response.get_item("stop") {
+                                    return Ok(Response::Stop(stop.extract()?));
+                                }
                                 if let Ok(state) = response.get_item("state") {
                                     let state: PyReadonlyArray1<'_, C64> = state.extract()?;
                                     let mut owned =
@@ -752,7 +782,7 @@ impl PyProblem {
                             })
                         })
                     };
-                    let mut execution = CircuitExecution { call: &mut invoke };
+                    let mut execution = CircuitExecution::new(&mut invoke);
                     return self.inner.solve_executed(
                         &options,
                         initial_parameters.as_deref(),
@@ -818,6 +848,7 @@ fn solution_dict<'py>(
     )?;
     out.set_item("success", result.success)?;
     out.set_item("message", result.message)?;
+    out.set_item("budget_stopped", result.budget_stopped)?;
     out.set_item("operators", result.labels)?;
     out.set_item("indices", result.indices)?;
     out.set_item("history_ha", result.history)?;
