@@ -119,7 +119,9 @@ pub struct OrbitalRotation {
     pub(crate) _memory: Reservation,
 }
 impl Model {
-    pub fn save(&self, ctx: &Context, path: &std::path::Path, mapping: &str) -> Result<()> {
+    /// The qubit-Hamiltonian document of this model (terms and native term
+    /// groups), validated, without a JSON text in between.
+    pub fn document(&self, ctx: &Context, mapping: &str) -> Result<crate::persistence::Document> {
         let operator = self.operator(ctx, mapping)?;
         let terms: Vec<_> = operator
             .labels()
@@ -128,12 +130,73 @@ impl Model {
             .collect();
         let groups:Vec<_>=operator.decomposition.iter().map(|g|serde_json::json!({"num_qubits":g.n,"terms":g.labels().into_iter().map(|(s,c)|serde_json::json!([s,c.re,c.im])).collect::<Vec<_>>()})).collect();
         let value = serde_json::json!({"format":"mandacaru-qubit-hamiltonian","version":1,"num_qubits":operator.n,"mapping":mapping,"num_particles":self.particles,"n_spatial_orbitals":self.m,"metadata":{"energy_unit":"Ha","source_engine":"rust","groups":groups},"terms":terms});
-        crate::persistence::Document::parse(
+        crate::persistence::Document::from_value(ctx, value, crate::persistence::HAMILTONIAN)
+    }
+    pub fn save(&self, ctx: &Context, path: &std::path::Path, mapping: &str) -> Result<()> {
+        self.document(ctx, mapping)?.save(path)
+    }
+    /// Writes the same document as Parquet, atomically, straight from the
+    /// operator: no JSON payload is built, so the memory is the term list and
+    /// the three columns, not a JSON tree of every term (twice, with the
+    /// groups). The file equals `document(..).save_parquet(..)`.
+    pub fn save_parquet(
+        &self,
+        ctx: &Context,
+        path: &std::path::Path,
+        mapping: &str,
+        codec: crate::parquet::Codec,
+    ) -> Result<()> {
+        use std::fmt::Write as _;
+        let operator = self.operator(ctx, mapping)?;
+        let text = |label: &str, c: &C64| {
+            serde_json::to_string(&(label, c.re, c.im)).map_err(|e| invalid(e.to_string()))
+        };
+        // Compact JSON of {"energy_unit","groups","source_engine"}, keys in
+        // the order serde_json gives a map.
+        let mut metadata_json = String::from(r#"{"energy_unit":"Ha","groups":["#);
+        for (i, group) in operator.decomposition.iter().enumerate() {
+            if i > 0 {
+                metadata_json.push(',');
+            }
+            write!(metadata_json, r#"{{"num_qubits":{},"terms":["#, group.n)
+                .map_err(|e| invalid(e.to_string()))?;
+            for (j, (label, c)) in group.labels().into_iter().enumerate() {
+                if !c.re.is_finite() || !c.im.is_finite() {
+                    return Err(invalid("real coefficient must be finite"));
+                }
+                if j > 0 {
+                    metadata_json.push(',');
+                }
+                metadata_json.push_str(&text(&label, &c)?);
+            }
+            metadata_json.push_str("]}");
+        }
+        metadata_json.push_str(r#"],"source_engine":"rust"}"#);
+        let terms = operator
+            .labels()
+            .into_iter()
+            .map(|(label, c)| (label, c.re, c.im))
+            .collect();
+        let table = crate::snapshot_table::table_from_terms(
             ctx,
-            &value.to_string(),
-            crate::persistence::HAMILTONIAN,
-        )?
-        .save(path)
+            &crate::snapshot_table::TermsHeader {
+                num_qubits: operator.n,
+                mapping,
+                num_particles: Some(self.particles),
+                n_spatial_orbitals: Some(self.m),
+                metadata_json,
+            },
+            terms,
+        )?;
+        crate::parquet::write_table(
+            ctx,
+            path,
+            &table,
+            &crate::parquet::WriteOptions {
+                codec,
+                ..crate::parquet::WriteOptions::default()
+            },
+        )
     }
     pub fn new(
         ctx: &Context,

@@ -53,6 +53,10 @@ impl Cubic {
             second,
         })
     }
+    /// Second derivatives at the knots (the spline's curvature).
+    pub fn curvature(&self) -> &[f64] {
+        self.second.as_slice()
+    }
     pub fn value_slope(&self, at: f64) -> (f64, f64) {
         let x = self.knots.as_slice();
         let y = self.values.as_slice();

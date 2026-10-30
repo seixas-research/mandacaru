@@ -17,6 +17,8 @@ tested here are structural (which parameters move) and variational.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 from ase import Atoms
@@ -91,3 +93,16 @@ class TestVQEJointOptimization:
         assert result.optimal_energy < result.reference_energy
         assert result.num_parameters == vqe.solver.ansatz.num_parameters
         assert result.num_evaluations > 0
+
+
+def test_one_hva_layer_is_refused_loudly_because_it_cannot_beat_hartree_fock():
+    """One layer builds an imaginary relative amplitude, so the energy has no
+    first-order term and the result is exactly Hartree-Fock (H2 and LiH, any
+    seed angle). Two layers recover the correlation of H2."""
+    with pytest.warns(RuntimeWarning, match="cannot lower the Hartree-Fock energy"):
+        Mandacaru(method="vqe", ansatz={"name": "hva", "layers": 1}, trace=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        Mandacaru(method="vqe", ansatz={"name": "hva", "layers": 2}, trace=False)
+        Mandacaru(method="vqe", ansatz="hva", trace=False)    # default is two layers
+

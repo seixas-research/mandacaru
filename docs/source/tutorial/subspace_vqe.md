@@ -1,10 +1,10 @@
 # Simultaneous States with Subspace-Search VQE
 
-The {doc}`energy_levels` tutorial found excited states **one at a time** with
-deflation. **Subspace-search VQE** (SSVQE) instead finds the ground state and the
-first few excited states **all at once**, in a single optimization — select it on
-{class}`~mandacaru.calculation.Mandacaru` with `method="subspace-vqe"`
-(fixed ansatz) or `method="subspace-adapt-vqe"` (adaptively grown ansatz).
+The [energy levels](energy_levels.md) tutorial found excited states **one at a
+time** with deflation. **Subspace-search VQE** (SSVQE) finds the ground state and
+the first few excited states **all at once**, in a single optimization. Select it
+with `method="subspace-vqe"` (a fixed ansatz) or `method="subspace-adapt-vqe"` (an
+adaptively grown ansatz).
 
 ## The idea
 
@@ -19,155 +19,96 @@ L(\vec\theta) = \sum_{j=0}^{k-1} w_j\,
 ```
 
 Because $U$ is unitary, the images $U|\varphi_j\rangle$ stay orthonormal; the
-descending weights force the largest weight onto the lowest energy, so at an exact, fully expressive global
-optimum $U|\varphi_0\rangle$ is the ground state, $U|\varphi_1\rangle$ the first
-excited state, and so on. Each level's reported energy is the *bare* expectation
-value $\langle\varphi_j|U^\dagger H U|\varphi_j\rangle$.
-
-The reference determinants are chosen automatically as the $k$ lowest-lying
-determinants of the Hartree-Fock particle-number sector (all orthonormal and with
-the correct electron count).
-
----
+descending weights force the largest weight onto the lowest energy, so at an
+exact, fully expressive global optimum $U|\varphi_0\rangle$ is the ground state,
+$U|\varphi_1\rangle$ the first excited state, and so on. Each level's reported
+energy is the *bare* expectation value $\langle\varphi_j|U^\dagger H U|\varphi_j\rangle$.
+The reference determinants are chosen automatically, all with the correct
+electron count.
 
 ## Subspace-VQE
 
-Both methods run through the same ASE calculator. Attach it, evaluate the energy
-(which builds the Hamiltonian and runs the subspace search), and read the full
-spectrum off `result`:
+Attach the calculator, evaluate the energy (which builds the Hamiltonian and runs
+the subspace search), and read the spectrum off `result`:
 
 ```python
-import numpy as np
-from ase import Atoms
+from ase.build import molecule
 from mandacaru import Mandacaru
 
-atoms = Atoms("H2", positions=[[4.0, 4.0, 3.63], [4.0, 4.0, 4.37]],
-              cell=[[8.0, 0, 0], [0, 8.0, 0], [0, 0, 8.0]], pbc=True)
-
+atoms = molecule("H2")
+atoms.center(vacuum=3.0)
 atoms.calc = Mandacaru(method="subspace-vqe",
-                       basis="HAO",
-                       grid_spacing=0.20,
-                       num_states=2,
-                       weights=[2.0, 1.0])
+                       basis={"name": "PAW-LCAO", "size": "SZ"},
+                       grid_spacing=0.25,
+                       num_states=2)
 atoms.get_potential_energy()               # ASE energy = ground state (eV)
 
 result = atoms.calc.result
-print(result.energies)                     # [E0, E1, ...] all levels (eV)
+for i, energy in enumerate(result.energies):
+    print(f"State {i}: {energy:.6f} eV")
 print(result.excitation_energies)          # [0, E1 - E0, ...] (eV)
-print(result.in_units("Ha"))               # the same levels in Hartree
-print(result.levels)                        # an EnergyLevels view
+print(result.in_units("Ha"))               # the ground state in Hartree
 ```
 
-`num_states` sets how many levels to compute; `weights` are the (strictly
-decreasing, positive) SSVQE weights, defaulting to $(k, k-1, \dots, 1)$. The
-result exposes `energies` (ascending, eV -- like every Mandacaru result),
-`optimal_energy` (the ground state), the orthonormal `states`, and
-`in_units("Ha")` for the atomic-unit view.
-
----
+This is `examples/excited_states/01_ssvqe_h2.py`. `num_states` sets the number of
+levels. `weights` takes one positive finite value per state, defaulting to
+$(k, k-1, \dots, 1)$. The result has `energies` (ascending, eV, like every
+Mandacaru result), `optimal_energy` (the ground state), `excitation_energies`
+and the orthonormal `states`.
 
 ## Subspace-ADAPT-VQE
 
-`method="subspace-adapt-vqe"` grows **one shared adaptive ansatz**
-for all the states: its pool-screening gradient is the weighted sum of the
-per-reference gradients $\sum_j w_j\,\langle\psi_j|[H, A_i]|\psi_j\rangle$, and the
-inner re-optimization minimizes the weighted energy. It records how many operators
-were grown.
+`method="subspace-adapt-vqe"` grows **one shared adaptive ansatz** for all the
+states: the pool-screening gradient is the weighted sum of the per-reference
+gradients $\sum_j w_j\,\langle\psi_j|[H, A_i]|\psi_j\rangle$, and the inner
+re-optimization minimizes the weighted energy.
 
 ```python
 atoms.calc = Mandacaru(method="subspace-adapt-vqe",
-                       txt="subspace.txt",
-                       basis="HAO",
-                       grid_spacing=0.20,
+                       basis={"name": "PAW-LCAO", "size": "SZ"},
+                       grid_spacing=0.25,
                        pool="fermionic",
                        num_states=2,
-                       convergence={"gradient": 1e-4},
-                       max_iterations=20)
+                       convergence={"gradient": 1e-4})
 atoms.get_potential_energy()
 
 result = atoms.calc.result
 print(result.energies)                     # eV
-print(result.num_operators)                # operators in the shared ansatz
+print(f"{result.num_operators} operators in the shared ansatz")
 ```
 
-The log uses the shared `[ITERATIONS]` table with local clock times and
-screening gradients displayed in eV. Its setup names the state weights;
-the iteration energy is the lowest level while the gradient screens the
-weighted objective. The summary includes the excited-state energies.
+This is `examples/excited_states/02_subspace_adapt_vqe_h2.py`. The iteration
+energy is the lowest level, while the gradient screens the weighted objective.
 
----
+## Limits
+
+* Subspace methods do not execute circuits, write a checkpoint or resume from
+  one: circuit execution (`shots`, a non-default `device`), `checkpoint=` and
+  `resume=` raise `NotImplementedError`. They have no forces, and a force request
+  raises. Subspace checkpoint continuation is listed in the
+  [native coverage](../development/native_cutover.md).
+* A spin-adapted subspace search with the Hamiltonian variational ansatz, with
+  a named spin multiplicity, is not available. See
+  [what is not yet available](#not-yet-available).
 
 ## What the levels mean
 
-Each returned energy is an expectation value for a normalized trial state,
-and therefore lies above the Hamiltonian's ground-state energy. Orthogonality
-alone does **not** make the sorted expectation values separate upper bounds to
-the corresponding excited-state eigenvalues.
-
-For example, equal mixtures of two exact eigenstates are orthogonal but both
-have their mean energy. The higher sorted expectation is then below the exact
-excited-state energy. To obtain the usual Rayleigh–Ritz bounds, diagonalize the
-Hamiltonian projected onto the trial subspace:
+Each returned energy is an expectation value for a normalized trial state, and
+therefore lies above the Hamiltonian's ground-state energy. Orthogonality alone
+does **not** make the sorted expectation values separate upper bounds to the
+corresponding excited-state eigenvalues. For example, equal mixtures of two exact
+eigenstates are orthogonal but both have their mean energy, so the higher sorted
+expectation is below the exact excited-state energy. To obtain the usual
+Rayleigh-Ritz bounds, diagonalize the Hamiltonian projected onto the trial
+subspace,
 
 ```{math}
 H^{\mathrm{sub}}_{ij}=\langle\psi_i|\hat H|\psi_j\rangle,
-\qquad E_i^{\mathrm{Ritz}} \geq \lambda_i.
+\qquad E_i^{\mathrm{Ritz}} \geq \lambda_i ,
 ```
 
-Here $E_i^{\mathrm{Ritz}}$ are the ordered projected eigenvalues and
-$\lambda_i$ are the ordered exact eigenvalues in the chosen sector. The
-reported SSVQE expectations coincide with these eigenvalues only when the
-trial states diagonalize the projected Hamiltonian.
-
-A larger ansatz and successful joint optimization can improve the estimates.
-Neither a ground-state weight nor a small optimization tolerance guarantees an
-exact spectrum. Compare the resulting states and energies with a small exact
-calculation where possible.
-
-## Subspace search with the Hamiltonian variational ansatz
-
-`method="subspace-vqe"` also runs the Hamiltonian variational ansatz. Its
-layers are the Hamiltonian's own spin-free one- and two-body parts, so it
-conserves $\hat S^2$: it cannot change the spin makeup of a reference. A
-singly excited determinant is half singlet and half triplet, and from such
-references the open-shell level of H2 converges to $-0.418716$ Ha. That is the
-average of the triplet ($-0.551998$) and the open-shell singlet ($-0.285434$),
-and it is neither level.
-
-The HVA therefore takes **spin-adapted references**, and you name the spin you
-want:
-
-```python
-from mandacaru import Mandacaru
-
-singlets = Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=1,
-                     num_states=3, **problem).run()
-triplet = Mandacaru(method="subspace-vqe", ansatz="hva", multiplicity=3,
-                    num_states=1, **problem).run()
-```
-
-The references are $\hat S^2$ eigenvectors built within each orbital
-configuration, taken by excitation level from Hartree-Fock. For H2 they give
-all three singlets and the triplet exactly. Larger systems need depth: on a
-linear H4 chain (8 qubits), 16 layers reach both triplets exactly but leave
-the lowest two singlets 3-5 mHa high and the third 0.13 Ha high. The default
-HVA has only two angles per layer, and the finer groupings that would add
-angles break $\hat S^2$.
-
-Three limits come with the construction:
-
-- **Symmetry.** Each reference reaches only the states of its own spin and
-  spatial symmetry. The result is the lowest level of each symmetry sector the
-  references span, which is the lowest `num_states` of that spin only when
-  those sectors hold them.
-- **Spin-free generators.** Every generator must commute with $\hat S^2$:
-  use the default `body_order` grouping with `evolution="exact"`. The
-  `spin_resolved` groups and a product formula's single Pauli rotations mix
-  spins, and the search refuses them before it starts.
-- **No circuits or UHF.** A spin-adapted reference is a combination of
-  determinants, so these levels are not exported as circuits. A UHF
-  reference, which breaks $\hat S^2$, is refused.
-
-Complete, runnable scripts for the two methods are
-`examples/excited_states/01_ssvqe_h2.py` and
-`examples/excited_states/02_subspace_adapt_vqe_h2.py`.
+where $E_i^{\mathrm{Ritz}}$ are the ordered projected eigenvalues and
+$\lambda_i$ the ordered exact eigenvalues in the chosen sector. A larger ansatz
+and a successful joint optimization improve the estimates, but neither a
+ground-state weight nor a small optimization tolerance guarantees an exact
+spectrum. Compare with a small exact calculation where possible.

@@ -1,192 +1,137 @@
-# Caching the Hamiltonian (Parquet / JSON)
+# Caching the Hamiltonian
 
-Building a molecular Hamiltonian is by far the most expensive stage of a Mandacaru
-run: the real-space one- and two-body integrals scale as $O(N \log N)$ and
-$O(M^4)$ in the grid and basis size, and the fermion-to-qubit mapping then
-composes a Pauli sum per fermionic term.
-
-None of that depends on the *algorithm* you run afterwards. So the qubit
-Hamiltonian is worth caching: build it once, then sweep operator pools,
-optimizers, ansätze, mappings or temperature schedules essentially for free.
+Building the molecular Hamiltonian is the expensive stage of a run: the
+real-space integrals, the SCF and the fermion-to-qubit mapping. None of it
+depends on the algorithm that runs afterwards, so the qubit Hamiltonian is worth
+caching. Build it once, then sweep operator pools, optimizers, ansätze or
+search settings against the same operator.
 
 ```python
-from ase import Atoms
+import os
+from ase.build import molecule
 from mandacaru import Mandacaru
 
-atoms = Atoms("LiH", positions=[[7.5, 7.5, 6.7], [7.5, 7.5, 8.3]],
-              cell=[[15, 0, 0], [0, 15, 0], [0, 0, 15]], pbc=True)
+atoms = molecule("LiH")
+atoms.center(vacuum=3.0)
+path = os.path.join("data", "lih_hamiltonian.parquet")
+os.makedirs("data", exist_ok=True)
 
 # 1. Build once and save.
 atoms.calc = Mandacaru(method="adapt-vqe",
-                       pool="qeb",
-                       basis="HAO",
+                       basis={"name": "PAW-LCAO", "size": "SZ"},
                        grid_spacing=0.25,
-                       save_hamiltonian="lih.parquet")
-atoms.get_total_energy()
+                       save_hamiltonian=path)
+print(f"built   E = {atoms.get_potential_energy():.6f} eV")
 
-# 2. Reload -- no geometry, no integrals, no mapping.
-result = Mandacaru(method="adapt-vqe",
-                   pool="ceo",
-                   load_hamiltonian="lih.parquet").run()
-```
-
-The second run needs **no `Atoms` object at all**. The file records
-`num_particles` and `n_spatial_orbitals` alongside the operator, which is exactly
-what the ADAPT pool and the UCCSD ansatz are built from, so a loaded calculator is
-in *direct mode* immediately.
-
-:::{admonition} What is bypassed
-:class: note
-
-Loading a cached Hamiltonian skips **the integral engine and the
-fermion-to-qubit transformation of the Hamiltonian**. On a small LiH problem this
-turns a ~0.8 s build into a ~0.05 s load.
-
-The *pool's own* excitation generators are still mapped to qubits — those are a
-different operator, unrelated to the Hamiltonian, and are cheap to build.
-:::
-
----
-
-## Choosing a format
-
-Two interchangeable formats are selected with `hamiltonian_format`:
-
-| | `"parquet"` (default) | `"json"` |
-|---|---|---|
-| Layout | Compressed columnar table | Plain-text object |
-| Size (LiH, 118 terms) | 1.9 KiB | 8.0 KiB |
-| Dependencies | a Parquet engine | none (standard library) |
-| Best for | large active spaces; analysis in pandas/Arrow/Spark | inspection, diffing, dependency-free environments |
-
-```python
-Mandacaru(method="adapt-vqe",
-          basis="HAO",
-          save_hamiltonian="lih",
-          hamiltonian_format="json")
-# -> writes lih.json
-```
-
-The extension is appended automatically from the format when the path has none.
-`save_hamiltonian=True` writes `hamiltonian.parquet` (or `hamiltonian.json`).
-
-### Format detection on load
-
-`load_hamiltonian` **detects the format automatically** — first from the file
-extension, and failing that from the file's own leading bytes (a Parquet file
-starts with the `PAR1` magic number; a JSON document with `{`). A cache written
-either way loads through the same call, even if the file is named `.cache`:
-
-```python
-from mandacaru.core import detect_format, load_hamiltonian
-
-detect_format("lih.parquet")     # 'parquet'
-detect_format("opaque.bin")      # 'parquet' or 'json', read from the bytes
-record = load_hamiltonian("opaque.bin")
-```
-
----
-
-## File layout
-
-### Parquet
-
-One row per Pauli term, three columns:
-
-| column | type | meaning |
-|---|---|---|
-| `pauli` | string | the Pauli string; character `k` acts on qubit `k` |
-| `real` | double | real part of the coefficient |
-| `imag` | double | imaginary part of the coefficient |
-
-Rows are sorted by Pauli string, so an identical Hamiltonian produces an
-identical file. The problem metadata (`mapping`, `num_particles`,
-`n_spatial_orbitals`, `num_qubits`) travels in the Parquet key/value metadata, so
-one file fully specifies the problem. Being ordinary Parquet, it is directly
-queryable:
-
-```python
-import pandas as pd
-
-terms = pd.read_parquet("lih.parquet")
-terms["weight"] = terms["real"].abs() + terms["imag"].abs()
-print(terms.nlargest(5, "weight"))
-```
-
-### JSON
-
-The same content as one object: `format`, `version`, `num_qubits`, `mapping`,
-`num_particles`, `n_spatial_orbitals`, `metadata`, and `terms` as a list of
-`[pauli_string, real, imag]` triples.
-
----
-
-## Working with the record directly
-
-```python
-from mandacaru.core import load_hamiltonian, save_hamiltonian
-
-record = load_hamiltonian("lih.parquet")
-record.hamiltonian          # a PauliSum
-record.mapping              # 'jordan_wigner'
-record.num_particles        # (2, 2)
-record.n_spatial_orbitals   # 3
-record.num_qubits           # 6
-record.metadata             # {'driver': 'ADAPTVQE', 'basis': {...}, ...}
-
-save_hamiltonian("copy.json", record.hamiltonian, mapping=record.mapping,
-                 num_particles=record.num_particles,
-                 n_spatial_orbitals=record.n_spatial_orbitals, format="json")
-```
-
----
-
-## Parquet engines
-
-Parquet is read and written through either **`fastparquet`** (the default) or
-**`pyarrow`**, selected with `engine=`. Both produce standard Parquet, so files
-are portable between them and to any other Parquet reader.
-
-:::{warning}
-`fastparquet` leads **on purpose**. On some platforms — reproduced on CPython
-3.14 with `qiskit` 2.5 and `pyarrow` 25 — calling
-`pyarrow.parquet.write_table` in a process that has *also* run Qiskit's
-`transpile` crashes the interpreter, since both ship their own native runtimes.
-Mandacaru transpiles circuits for gate-count profiling in the same process that
-saves the Hamiltonian, so the default engine avoids that combination, and
-`resolve_engine("auto")` stops at the first engine that imports rather than
-importing them all.
-
-If your environment is unaffected, pass `engine="pyarrow"` explicitly. Or
-side-step Parquet entirely with `hamiltonian_format="json"`, which has no native
-dependency and cannot be affected.
-:::
-
----
-
-## A worked sweep
-
-Caching turns a pool comparison into a few seconds of work:
-
-```python
-from mandacaru import Mandacaru
-
-# Build once ...
-atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="HAO",
-                       grid_spacing=0.25,
-                       save_hamiltonian="lih.parquet",
-                       max_iterations=1)
-atoms.get_total_energy()
-
-# ... compare every pool against the *same* operator.
+# 2. Reload: no geometry, no integrals, no mapping.
 for pool in ("fermionic", "qubit", "qeb", "ceo"):
-    result = Mandacaru(method="adapt-vqe",
-                       pool=pool,
-                       load_hamiltonian="lih.parquet").run()
-    print(f"{pool:<10} E = {result.optimal_energy:.6f} eV  "
-          f"{result.num_operators} ops  {result.metrics.cnot_count} CNOTs")
+    result = Mandacaru(method="adapt-vqe", pool=pool,
+                       load_hamiltonian=path).run()
+    print(f"{pool:10s} E = {result.optimal_energy:.6f} eV  "
+          f"({result.num_operators} operators)")
 ```
 
-See `examples/hamiltonian_cache/01_save_and_load_lih.py` for a runnable version that
-saves the LiH Hamiltonian in both formats and runs every pool from the file.
+The second calculator needs **no `Atoms` object**. The file records the mapping,
+the particle counts and the spatial orbital count with the operator, which is
+what the pool and the ansatz are built from, so a loaded calculator is a
+complete problem. `examples/hamiltonian_cache/01_save_and_load_lih.py` runs the
+same sweep and also saves the JSON form.
+
+Loading skips the integral engine, the SCF and the mapping of the
+*Hamiltonian*. The pool's own excitation generators are still mapped to qubits;
+they are a different operator and cheap to build.
+
+## Formats
+
+`hamiltonian_format` is `"parquet"`, `"json"` or `None`.
+
+* `"parquet"`, or `None` with a path ending in `.parquet` or `.pq`: a compressed
+  columnar table with one row per Pauli term (`pauli`, `real`, `imag`) and the
+  problem metadata in the file's key/value metadata.
+* `"json"`, or `None` with any other path: the native text snapshot, the same
+  content as plain JSON.
+
+`load_hamiltonian` detects the format from the file itself: a Parquet file starts
+with the `PAR1` magic number, anything else is read as the native snapshot. A
+cache written either way loads through the same call, whatever the file is
+called. `mandacaru.core.detect_format(path)` reports which one a file is.
+
+## The Parquet file
+
+The native engine reads and writes the file. Mandacaru has no Python Parquet
+dependency: it declares and imports none of `fastparquet`, `pandas` or
+`pyarrow`, and there is no engine to choose. The `engine=` and `codec=` keywords
+of earlier releases are gone, with no alias, so passing either to
+`save_hamiltonian` or `load_hamiltonian` raises `TypeError`; the compression is
+the `compression=` keyword below. The rows are sorted by Pauli label, so saving
+the same Hamiltonian twice writes the same bytes. The file is a standard Parquet
+file: any Parquet reader opens it, with `pauli` as a string column and `real` and
+`imag` as float64 columns.
+
+* **What a write produces.** One layout: DATA_PAGE v1, REQUIRED columns (no
+  definition levels), PLAIN encoding, no dictionary, a CRC32 on every page, and
+  no `pandas` key in the metadata. Rows go in row groups of at most 1,048,576
+  rows and pages of at most 65,536 rows. The key/value entries that hold JSON
+  (the particle counts, the orbital count and the free-form metadata) are
+  compact text, so a particle count reads `[1,1]`, not `[1, 1]`; a reader that
+  parses the JSON is unaffected.
+* **Codec.** `zstd` (the default) or `uncompressed`; `none` is accepted as a
+  synonym for `uncompressed`. Any other name raises `ValueError`; Snappy files
+  can be read but not written. The zstd encoder works at its fastest level, the
+  only one the engine implements, so a file can be larger than one another tool
+  wrote with a higher zstd level.
+* **Atomic writes.** The file is staged next to its destination and renamed, so a
+  failed save leaves an existing cache untouched.
+* **What a read accepts.** Flat tables of float64 and UTF-8 string columns, with
+  data pages of version 1 or 2, PLAIN or dictionary encoding (dictionary pages
+  included), UNCOMPRESSED, Snappy or ZSTD pages and any number of row groups or
+  pages, so a cache written by another Parquet tool still loads. A ZSTD page
+  must be one frame that records its content size and has neither a dictionary
+  nor a checksum. Anything else raises `ValueError` naming the unsupported
+  feature: null values (a Hamiltonian has none, so a null is corruption, not a
+  missing term, and the Python reader of earlier releases turned nulls into NaN
+  instead of raising), nested columns, text columns annotated as something
+  other than text (for example DECIMAL or BSON), more than 65,536 columns, other
+  compression codecs such as GZIP, Brotli or LZ4 (the message says to re-save the
+  file with zstd), encrypted files and files whose declared sizes do not match
+  their contents. A table with zero rows loads whichever way the writing tool
+  laid out its empty chunks.
+* **Validation.** A loaded cache passes the same checks as a JSON snapshot: at
+  most 50 qubits, finite coefficients, Pauli labels of the register width and
+  the format version. The format, version and qubit-count entries of the
+  key/value metadata are required: a file without the format entry is not a
+  Mandacaru Hamiltonian, and a missing version or qubit count raises
+  `ValueError`, as does format version 0 or a version newer than 1. A missing
+  mapping entry defaults to `jordan_wigner`; a missing particle count, orbital
+  count or metadata entry loads as none, none and an empty dictionary. A cache
+  with no terms still keeps its register width.
+* **Memory.** A read charges the context's memory budget before it allocates, so a
+  file that claims more data than the budget allows raises `MemoryError` instead
+  of exhausting the machine. The Python objects a read returns (the `str` of a
+  text column, the metadata dictionary) count against the budget too; float64
+  columns move into their arrays without a copy. Columns are decoded in parallel,
+  on at most as many threads as the context has and as many as its budget can
+  hold buffers for, and the compression codec runs on a thread of its own, so a
+  caller on a small thread stack cannot be killed by it.
+
+## What a cached run does not have
+
+A calculator built from a cache never saw a molecule. It has the Hamiltonian
+and nothing else, so everything that needs the molecular reference is
+unavailable: forces, densities, cube files, natural orbitals and
+`result.hamiltonian`. Rebuild from the geometry for those.
+
+* If `mapping=` is given and disagrees with the cache, the run raises
+  `ValueError`; without it the cache's mapping is used.
+* `load_hamiltonian` cannot be combined with `hamiltonian=`, `native_model=` or
+  `load_crystal=`: supply one source of the problem.
+* Rebuild the cache after any change of geometry, basis, grid, charge, spin or
+  active space. A cache belongs to one electronic problem.
+
+## Building from a Hamiltonian you supply
+
+`hamiltonian=` accepts a `Fermion` or a `PauliSum` (both in `mandacaru.core`) or
+a native Pauli operator, and needs `n_spatial_orbitals` and `num_particles` with
+it.
+It is how `result.as_quantum_problem()` hands a mean-field Hamiltonian to a
+quantum method; see [mean field and HVA](mean_field_hva.md).

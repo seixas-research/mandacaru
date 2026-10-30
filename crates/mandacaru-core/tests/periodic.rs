@@ -23,7 +23,7 @@ fn archived_periodic_state_preserves_energy_and_projected_dos_weight() {
             let archived = ComplexSamples::archived_copy(
                 &ctx,
                 &point.psi.read(&ctx).unwrap(),
-                Precision::Double,
+                Precision::Float64,
             )
             .unwrap();
             point.psi = archived;
@@ -31,7 +31,7 @@ fn archived_periodic_state_preserves_energy_and_projected_dos_weight() {
         crystal.hats = ComplexSamples::archived_copy(
             &ctx,
             &crystal.hats.read(&ctx).unwrap(),
-            Precision::Double,
+            Precision::Float64,
         )
         .unwrap();
         let mut state = crystal.solve(&Options::default()).unwrap();
@@ -69,24 +69,24 @@ fn archived_periodic_state_preserves_energy_and_projected_dos_weight() {
 }
 
 #[test]
-fn periodic_single_sample_storage_preserves_double_precision_band_matrices() {
+fn periodic_float32_sample_storage_preserves_float64_band_matrices() {
     use mandacaru_core::math::storage::Precision;
     let ctx = Context::new(Some(1), 128 << 20).unwrap();
     {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../test/migration/phase5/si_crystal.json");
         let source = std::fs::read_to_string(path).unwrap();
-        let double = Crystal::from_json(&ctx, &source).unwrap();
-        let compact = source.replacen('{', "{\"precision\":\"single\",", 1);
-        let single = Crystal::from_json(&ctx, &compact).unwrap();
-        assert_eq!(single.precision, Precision::Single);
-        for (a, b) in double.points.iter().zip(&single.points) {
-            assert_eq!(b.psi.precision(), Precision::Single);
+        let float64 = Crystal::from_json(&ctx, &source).unwrap();
+        let compact = source.replacen('{', "{\"precision\":\"float32\",", 1);
+        let float32 = Crystal::from_json(&ctx, &compact).unwrap();
+        assert_eq!(float32.precision, Precision::Float32);
+        for (a, b) in float64.points.iter().zip(&float32.points) {
+            assert_eq!(b.psi.precision(), Precision::Float32);
             assert_eq!(a.fixed, b.fixed);
             assert_eq!(a.overlap, b.overlap);
         }
-        let a = double.solve(&Options::default()).unwrap();
-        let b = single.solve(&Options::default()).unwrap();
+        let a = float64.solve(&Options::default()).unwrap();
+        let b = float32.solve(&Options::default()).unwrap();
         assert!(a.converged && b.converged);
         assert!((a.extrapolated_energy - b.extrapolated_energy).abs() * 27.211386245988 < 1e-4);
     }

@@ -1,18 +1,22 @@
 //! Ordered Pauli product formulas and finite-register phase estimation.
-use super::{algebra::Term, evolution::inner, Basis, Operator, C64};
+use super::{
+    algebra::Term,
+    amplitude::{finite, inner, stack, Amplitude, State},
+    Basis, Operator, C64,
+};
 use crate::{product, Buffer, Context, Error, Reservation, Result};
 use rustfft::FftPlanner;
 
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
 }
-pub fn check_state(state: &[C64], dimension: usize, normalized: bool) -> Result<()> {
-    if state.len() != dimension || state.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+pub fn check_state<A: Amplitude>(state: &[A], dimension: usize, normalized: bool) -> Result<()> {
+    if state.len() != dimension || !finite(state) {
         return Err(invalid(
             "state must have finite amplitudes and match the basis",
         ));
     }
-    if normalized && (inner(state, state).re - 1.).abs() > 1e-10 {
+    if normalized && (inner(state, state).re - 1.).abs() > A::INPUT_NORM_TOLERANCE {
         return Err(invalid("initial state must be normalized"));
     }
     Ok(())
@@ -133,21 +137,23 @@ impl Propagator {
             _memory: memory,
         })
     }
-    pub fn evolve(
+    /// Ordered Pauli rotations on a stored state of either precision; each
+    /// rotation is evaluated in float64 and rounded once into the stored state.
+    pub fn evolve<A: Amplitude>(
         &self,
         ctx: &Context,
-        state: &[C64],
+        state: &[A],
         time: f64,
         steps: usize,
         inverse: bool,
         normalized: bool,
-    ) -> Result<Buffer<C64>> {
+    ) -> Result<Buffer<A>> {
         ctx.run(|| {
             check_state(state, self.basis.len(), normalized)?;
             if !time.is_finite() || steps == 0 {
                 return Err(invalid("finite time and positive steps required"));
             }
-            let mut out = ctx.allocate::<C64>(state.len())?;
+            let mut out = ctx.allocate::<A>(state.len())?;
             out.as_mut_slice().copy_from_slice(state);
             let signed_time = if inverse { -time } else { time };
             let dt = signed_time / steps as f64;
@@ -157,7 +163,7 @@ impl Propagator {
                 return Err(invalid("propagation angle overflow"));
             }
             if time != 0. {
-                let mut scratch = ctx.allocate::<C64>(state.len())?;
+                let mut scratch = ctx.allocate::<A>(state.len())?;
                 for _ in 0..steps {
                     for k in 0..self.rotations.len() {
                         let (term, w) = &self.rotations[if inverse {
@@ -168,24 +174,22 @@ impl Propagator {
                         let (sine, cosine) = (dt * w).sin_cos();
                         for ket in 0..state.len() {
                             let target = ket ^ term.x as usize;
-                            scratch.as_mut_slice()[target] = cosine * out.as_slice()[target]
-                                - C64::new(0., sine)
-                                    * term.amplitude(ket as u64)
-                                    * out.as_slice()[ket];
+                            scratch.as_mut_slice()[target] = A::narrow(
+                                cosine * out.as_slice()[target].widen()
+                                    - C64::new(0., sine)
+                                        * term.amplitude(ket as u64)
+                                        * out.as_slice()[ket].widen(),
+                            );
                         }
                         std::mem::swap(&mut out, &mut scratch);
                     }
                 }
                 let phase = C64::from_polar(1., -signed_time * self.constant);
                 for c in out.as_mut_slice() {
-                    *c *= phase;
+                    *c = A::narrow(c.widen() * phase);
                 }
             }
-            if out
-                .as_slice()
-                .iter()
-                .any(|c| !c.re.is_finite() || !c.im.is_finite())
-            {
+            if !finite(out.as_slice()) {
                 return Err(Error::Kernel(
                     "propagation produced nonfinite amplitudes".into(),
                 ));
@@ -193,23 +197,33 @@ impl Propagator {
             Ok(out)
         })
     }
-    pub fn apply(&self, ctx: &Context, state: &[C64]) -> Result<Buffer<C64>> {
-        ctx.run(|| self.h.apply(ctx, &self.basis, state))
+    pub fn apply<A: Amplitude>(&self, ctx: &Context, state: &[A]) -> Result<Buffer<A>> {
+        ctx.run(|| {
+            if self.h.n != self.basis.n || state.len() != self.basis.len() || !finite(state) {
+                return Err(invalid("state must be finite and match the operator basis"));
+            }
+            let mut out = ctx.allocate::<A>(state.len())?;
+            let mut acc = ctx.allocate::<C64>(A::accumulator_len(state.len()))?;
+            A::with_wide(out.as_mut_slice(), acc.as_mut_slice(), |wide| {
+                self.h.add_into(&self.basis, state, C64::new(1., 0.), wide)
+            });
+            Ok(out)
+        })
     }
 }
 
 pub struct QpeResult {
     pub probabilities: Buffer<f64>,
-    pub amplitudes: Option<Buffer<C64>>,
+    pub amplitudes: Option<State>,
     pub exact_energies: Option<Vec<f64>>,
     pub overlaps: Option<Vec<f64>>,
     _memory: Reservation,
 }
 /// Exact finite-register simulation: powers of exp(2πi(H-lo)/width), then DFT.
-pub fn qpe(
+pub fn qpe<A: Amplitude>(
     ctx: &Context,
     h: &Operator,
-    state: &[C64],
+    state: &[A],
     evaluation_qubits: usize,
     window: [f64; 2],
     keep: bool,
@@ -234,7 +248,7 @@ pub fn qpe(
         let d = basis.len();
         check_state(state, d, true)?;
         let memory = ctx.reserve(if h.n <= 12 { product(&[d, 16])? } else { 0 })?;
-        let mut columns = ctx.allocate::<C64>(product(&[bins, d])?)?;
+        let mut columns = stack::<A>(ctx, bins, d)?;
         let mut exact_energies = None;
         let mut overlaps = None;
         let width = window[1] - window[0];
@@ -245,17 +259,29 @@ pub fn qpe(
                 nalgebra::DMatrix::from_row_slice(d, d, dense.as_slice()),
             )?;
             let c: Vec<C64> = (0..d)
-                .map(|j| (0..d).map(|i| vectors[(i, j)].conj() * state[i]).sum())
+                .map(|j| {
+                    (0..d)
+                        .map(|i| vectors[(i, j)].conj() * state[i].widen())
+                        .sum()
+                })
                 .collect();
+            let mut row = ctx.allocate::<C64>(d)?;
             for k in 0..bins {
+                row.as_mut_slice().fill(C64::default());
                 for j in 0..d {
                     let phase = C64::from_polar(
                         1.,
                         std::f64::consts::TAU * k as f64 * (energies[j] - window[0]) / width,
                     ) * c[j];
                     for i in 0..d {
-                        columns.as_mut_slice()[k * d + i] += vectors[(i, j)] * phase;
+                        row.as_mut_slice()[i] += vectors[(i, j)] * phase;
                     }
+                }
+                for (to, &from) in columns.as_mut_slice()[k * d..(k + 1) * d]
+                    .iter_mut()
+                    .zip(row.as_slice())
+                {
+                    *to = A::narrow(from);
                 }
             }
             overlaps = Some(c.iter().map(|x| x.norm_sqr()).collect());
@@ -277,6 +303,7 @@ pub fn qpe(
             });
             let generator = Operator::from_terms(ctx, h.n, terms)?;
             columns.as_mut_slice()[..d].copy_from_slice(state);
+            let mut acc = ctx.allocate::<C64>(A::accumulator_len(d))?;
             for k in 1..bins {
                 let (previous, next) = columns.as_mut_slice().split_at_mut(k * d);
                 next[..d].copy_from_slice(&previous[(k - 1) * d..k * d]);
@@ -288,6 +315,7 @@ pub fn qpe(
                     &mut next[..d],
                     1,
                     &[],
+                    acc.as_mut_slice(),
                 )?;
             }
         }
@@ -298,11 +326,11 @@ pub fn qpe(
         let mut scratch = ctx.allocate::<C64>(fft.get_inplace_scratch_len())?;
         for i in 0..d {
             for k in 0..bins {
-                line.as_mut_slice()[k] = columns.as_slice()[k * d + i];
+                line.as_mut_slice()[k] = columns.as_slice()[k * d + i].widen();
             }
             fft.process_with_scratch(line.as_mut_slice(), scratch.as_mut_slice());
             for k in 0..bins {
-                columns.as_mut_slice()[k * d + i] = line.as_slice()[k] / bins as f64;
+                columns.as_mut_slice()[k * d + i] = A::narrow(line.as_slice()[k] / bins as f64);
             }
         }
         let mut probabilities = ctx.allocate::<f64>(bins)?;
@@ -314,13 +342,14 @@ pub fn qpe(
             .re;
         }
         if probabilities.as_slice().iter().any(|p| !p.is_finite())
-            || (probabilities.as_slice().iter().sum::<f64>() - 1.).abs() > 1e-9
+            || (probabilities.as_slice().iter().sum::<f64>() - 1.).abs()
+                > A::norm_tolerance(bins).max(1e-9)
         {
             return Err(Error::Kernel("QPE lost probability normalization".into()));
         }
         Ok(QpeResult {
             probabilities,
-            amplitudes: if keep { Some(columns) } else { None },
+            amplitudes: if keep { Some(A::wrap(columns)) } else { None },
             exact_energies,
             overlaps,
             _memory: memory,

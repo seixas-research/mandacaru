@@ -21,6 +21,39 @@ pub fn validate(r: &[f64], values: &[f64]) -> Result<()> {
     finite(r, "radial mesh")?;
     finite(values, "radial values")
 }
+/// Second-order first derivative on a mesh, edges included (the `edge_order=2`
+/// convention): the uniform formulas when every step is identical, the
+/// nonuniform ones otherwise.
+pub fn gradient(x: &[f64], f: &[f64]) -> Result<Vec<f64>> {
+    validate(x, f)?;
+    let n = x.len();
+    if n < 3 {
+        return Err(invalid("a second-order gradient needs three points"));
+    }
+    let steps = x.windows(2).map(|w| w[1] - w[0]).collect::<Vec<_>>();
+    let mut out = vec![0.; n];
+    if steps.iter().all(|s| *s == steps[0]) {
+        let h = steps[0];
+        for i in 1..n - 1 {
+            out[i] = (f[i + 1] - f[i - 1]) / (2. * h);
+        }
+        out[0] = (-1.5 * f[0] + 2. * f[1] - 0.5 * f[2]) / h;
+        out[n - 1] = (0.5 * f[n - 3] - 2. * f[n - 2] + 1.5 * f[n - 1]) / h;
+        return Ok(out);
+    }
+    for i in 1..n - 1 {
+        let (hs, hd) = (steps[i - 1], steps[i]);
+        out[i] = (hs * hs * f[i + 1] - hd * hd * f[i - 1] + (hd * hd - hs * hs) * f[i])
+            / (hs * hd * (hd + hs));
+    }
+    let (d1, d2) = (steps[0], steps[1]);
+    out[0] = -(2. * d1 + d2) / (d1 * (d1 + d2)) * f[0] + (d1 + d2) / (d1 * d2) * f[1]
+        - d1 / (d2 * (d1 + d2)) * f[2];
+    let (d1, d2) = (steps[n - 3], steps[n - 2]);
+    out[n - 1] = d2 / (d1 * (d1 + d2)) * f[n - 3] - (d2 + d1) / (d1 * d2) * f[n - 2]
+        + (2. * d2 + d1) / (d2 * (d1 + d2)) * f[n - 1];
+    Ok(out)
+}
 /// Gauss–Legendre nodes and weights, generated natively by Newton iteration.
 pub fn gauss_legendre(n: usize) -> Result<Vec<(f64, f64)>> {
     if !(2..=4096).contains(&n) {

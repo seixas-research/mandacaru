@@ -73,7 +73,8 @@ measuring all three on the functions Mandacaru really filters:
     split zeta stops being compact, which is the one thing it exists for.
 ``"switch"`` (**the default**)
     Filter, then multiply by a smooth window that is 1 out to the function's
-    own support radius and 0 at :data:`SWITCH_MARGIN` times it.
+    own support radius and 0 at 1.5 times it (``SWITCH_MARGIN`` in the Rust
+    filter).
 ``"mask"``
     Divide by a window that starts decaying *inside* the support, filter,
     multiply back -- the classic mask trick, which pre-compensates the
@@ -137,12 +138,13 @@ basis exactly.  The measured prices and benefits are in
 
 from __future__ import annotations
 
+import hashlib
 import warnings
 from dataclasses import replace
 
 import numpy as np
-from scipy.special import spherical_jn
 
+from .. import _native
 from ..units import EV_TO_HARTREE
 
 #: ``filter_cutoff="auto"`` / ``True`` puts the cutoff at this fraction of the grid's
@@ -176,48 +178,15 @@ from ..units import EV_TO_HARTREE
 #: something above it, and 1.0 is the one that leaves nothing aliased.
 FILTER_NYQUIST_FRACTION = 1.0
 
-#: Width of the :math:`k`-space roll-off, as a fraction of :math:`k_c`: the
-#: window is 1 below :math:`(1-\text{rolloff})k_c` and reaches 0 at
-#: :math:`k_c`.  A hard step (rolloff 0) rings with a ``sin(k_c r)/r`` tail
-#: that only decays as ``1/r``; a raised cosine over a quarter of the band
-#: decays as ``1/r^3`` and is invisible past the orbital.  Measured: with the
-#: switch-off in place a hard step leaves 5x more residual weight above
-#: :math:`k_c` on the compact split zetas (1.4e-3 against 2.8e-4 for O 2s
-#: zeta 3) -- the ringing the switch chops off comes straight back as
-#: high-:math:`k` content.
-ROLLOFF_FRACTION = 0.25
-
-#: Points per oscillation of :math:`j_l(k r_\text{max})` in the :math:`k`
-#: quadrature.  The transform is exact enough at 4 (verified: the round trip
-#: does not move between 4 and 16); 8 is margin, and the cost is one
-#: ``(n_k, n_r)`` matrix per function -- milliseconds.
-TRANSFORM_OVERSAMPLE = 8
-
-#: A function's **support radius** is where its remaining tail norm drops
-#: below this fraction of the total -- where the switch-off (or the mask) is
-#: placed relative to.
-SUPPORT_TAIL_NORM = 1e-6
-
-#: The switch-off (or mask) reaches zero at this multiple of the support
-#: radius, clipped to the end of the table.  The filtered function needs room
-#: for its ringing tail before it is switched off: measured on the compact
-#: split zetas, 1.25 / 1.5 / 2.0 / 3.0 leave 5.6e-4 / 2.8e-4 / 9.9e-5 /
-#: 1.9e-5 of the norm above :math:`k_c` (O 2s zeta 3) at 1.44 / 1.73 / 2.30 /
-#: 3.46 Bohr of range.  1.5 is the knee: it halves the residual for 20 % more
-#: range, and a split zeta that stretches to three times its support is no
-#: longer the short-ranged function the split-valence construction built.
-SWITCH_MARGIN = 1.5
-
-#: The ``"mask"`` method's window is exactly 1 below this fraction of its
-#: outer radius -- i.e. it starts decaying *inside* the support, which is what
-#: makes it a mask rather than a switch-off (and, here, what makes it lose).
-MASK_INNER_FRACTION = 0.6
-
-#: Available real-space treatments; see the module docstring.
-FILTER_METHODS = ("plain", "switch", "mask")
+#: The filter methods, the default (``"switch"``) first: defined once, in Rust
+#: (``mandacaru_core::basis::filter``), together with the numerical constants of
+#: the transform (the roll-off, the quadrature oversampling, the support tail,
+#: the switch margin and the mask's inner fraction) and the measurements that
+#: chose them.
+FILTER_METHODS = tuple(_native.RADIAL_FILTER_METHODS)
 
 #: The default, chosen on the measurements tabulated in the module docstring.
-DEFAULT_FILTER_METHOD = "switch"
+DEFAULT_FILTER_METHOD = FILTER_METHODS[0]
 
 #: Warn when the filter throws away more than this fraction of a function's
 #: norm -- at that point the cutoff is not smoothing the basis, it is
@@ -357,147 +326,31 @@ def cutoff_energy_ev(k_c: float) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# The transform pair.
+# The filter: the numerics are native (``mandacaru_core::basis::filter``).
 # --------------------------------------------------------------------------- #
 
-def bessel_matrix(l: int, k, r) -> np.ndarray:
-    """The ``(n_k, n_r)`` kernel :math:`j_l(k_i r_j)`, shared by both directions."""
-    return spherical_jn(int(l), np.outer(np.asarray(k, dtype=float),
-                                         np.asarray(r, dtype=float)))
+def _table(values) -> np.ndarray:
+    return np.ascontiguousarray(values, dtype=float)
 
 
-def _augment_origin(r, values, l: int):
-    """Prepend ``r = 0`` using the :math:`r^l` continuation.
-
-    The radial tables start at ``r_0 > 0`` (0.0025-0.005 Bohr), so a plain
-    quadrature silently drops :math:`[0, r_0]`.  The omission is tiny
-    (:math:`\\sim r_0^3/3` of the norm) but it is free to avoid, and it keeps
-    the round trip clean at the origin, which is exactly where the
-    :math:`r^l` behavior is checked.
-    """
-    r = np.asarray(r, dtype=float)
-    values = np.asarray(values, dtype=float)
-    if r[0] <= 0.0:
-        return r, values
-    edge = values[0] if int(l) == 0 else 0.0
-    return np.concatenate(([0.0], r)), np.concatenate(([edge], values))
+def _angular_momentum(l) -> int:
+    l = int(l)
+    if l < 0:
+        raise ValueError(f"the angular momentum must be non-negative, got {l}")
+    return l
 
 
-def spherical_bessel_transform(r, values, l: int, k, matrix=None) -> np.ndarray:
-    r""":math:`F_l(k) = \int R_l(r) j_l(kr) r^2 dr` on the tabulated grid."""
-    r = np.asarray(r, dtype=float)
-    values = np.asarray(values, dtype=float)
-    kernel = bessel_matrix(l, k, r) if matrix is None else matrix
-    return np.trapezoid(kernel * (values * r * r), r, axis=1)
+def residual_weight(r, values, l: int, k_c: float, oversample=None, *,
+                    context=None) -> float:
+    """Fraction of :math:`\\int R^2r^2dr` carried above ``k_c`` -- what the grid
+    cannot represent.  Computed natively from *below* the cutoff (never by
+    integrating a truncated high-:math:`k` tail, where the quadrature of
+    :math:`j_l(kr)` on the radial mesh degrades)."""
+    context = _native.Context(threads=1) if context is None else context
+    return 1.0 - _native.radial_band_weight(
+        context, _table(r), _table(values), _angular_momentum(l), float(k_c),
+        oversample)
 
-
-def inverse_spherical_bessel_transform(k, transform, l: int, r,
-                                       matrix=None) -> np.ndarray:
-    r""":math:`R_l(r) = \frac{2}{\pi}\int F_l(k) j_l(kr) k^2 dk`."""
-    k = np.asarray(k, dtype=float)
-    transform = np.asarray(transform, dtype=float)
-    kernel = bessel_matrix(l, k, r) if matrix is None else matrix
-    weight = (transform * k * k)[:, None]
-    return (2.0 / np.pi) * np.trapezoid(kernel * weight, k, axis=0)
-
-
-def transform_grid(r_max: float, k_max: float,
-                   oversample: int = TRANSFORM_OVERSAMPLE) -> np.ndarray:
-    """A :math:`k` grid dense enough to resolve :math:`j_l(k\\,r_\\text{max})`."""
-    step = np.pi / (float(oversample) * float(r_max))
-    count = int(np.ceil(float(k_max) / step)) + 1
-    return np.linspace(0.0, float(k_max), max(count, 8))
-
-
-def cutoff_window(k, k_c: float, rolloff: float = ROLLOFF_FRACTION
-                  ) -> np.ndarray:
-    """A raised-cosine window: 1 below ``(1-rolloff) k_c``, 0 at ``k_c``."""
-    k = np.asarray(k, dtype=float)
-    k_c = float(k_c)
-    inner = (1.0 - float(rolloff)) * k_c
-    window = np.ones_like(k)
-    if k_c > inner:
-        s = np.clip((k - inner) / (k_c - inner), 0.0, 1.0)
-        window = 0.5 * (1.0 + np.cos(np.pi * s))
-    return np.where(k >= k_c, 0.0, window)
-
-
-def radial_norm(r, values) -> float:
-    r""":math:`\int R^2 r^2 dr` -- the norm the Parseval identity balances."""
-    r = np.asarray(r, dtype=float)
-    values = np.asarray(values, dtype=float)
-    return float(np.trapezoid(values * values * r * r, r))
-
-
-def band_weight(r, values, l: int, k_c: float,
-                oversample: int = TRANSFORM_OVERSAMPLE) -> float:
-    """Fraction of :math:`\\int R^2r^2dr` carried by wave-vectors below ``k_c``.
-
-    Computed from *below*, never by integrating a truncated high-:math:`k`
-    tail: the quadrature of :math:`j_l(kr)` on the tabulated radial grid
-    degrades once ``k`` approaches :math:`\\pi/\\Delta r` (only ~6 points per
-    oscillation at ``k = 50`` on the hydrogen table), and integrating out
-    there produces spurious weight rather than measuring it.
-    """
-    r_aug, values_aug = _augment_origin(r, values, l)
-    total = radial_norm(r_aug, values_aug)
-    if total <= 0.0:
-        return 1.0
-    k = transform_grid(r_aug[-1], k_c, oversample)
-    F = spherical_bessel_transform(r_aug, values_aug, l, k)
-    inside = (2.0 / np.pi) * float(np.trapezoid(F * F * k * k, k))
-    return inside / total
-
-
-def residual_weight(r, values, l: int, k_c: float,
-                    oversample: int = TRANSFORM_OVERSAMPLE) -> float:
-    """``1 - band_weight`` -- the fraction of the norm the grid cannot represent."""
-    return 1.0 - band_weight(r, values, l, k_c, oversample)
-
-
-# --------------------------------------------------------------------------- #
-# Confinement: support radius and mask.
-# --------------------------------------------------------------------------- #
-
-def support_radius(r, values, tail: float = SUPPORT_TAIL_NORM) -> float:
-    """Radius beyond which the function carries less than ``tail`` of its norm.
-
-    This is the range the *unfiltered* function occupies; the mask is placed
-    beyond it so the division never meets a tail that has not decayed.
-    """
-    from scipy.integrate import cumulative_trapezoid
-
-    r = np.asarray(r, dtype=float)
-    values = np.asarray(values, dtype=float)
-    density = values * values * r * r
-    total = float(np.trapezoid(density, r))
-    if total <= 0.0:
-        return float(r[-1])
-    outside = (total - cumulative_trapezoid(density, r, initial=0.0)) / total
-    index = int(np.argmax(outside <= float(tail)))
-    if outside[index] > float(tail):        # never drops: use the whole table
-        return float(r[-1])
-    return float(r[max(index, 1)])
-
-
-def mask_function(r, r_inner: float, r_outer: float) -> np.ndarray:
-    """A raised-cosine mask: 1 below ``r_inner``, 0 at and beyond ``r_outer``.
-
-    Value *and* slope vanish at ``r_outer`` and the slope vanishes at
-    ``r_inner``, so multiplying by it adds as little high-:math:`k` content as
-    a compactly supported window can.
-    """
-    r = np.asarray(r, dtype=float)
-    r_inner, r_outer = float(r_inner), float(r_outer)
-    if not r_outer > r_inner:
-        return np.where(r < r_outer, 1.0, 0.0)
-    s = np.clip((r - r_inner) / (r_outer - r_inner), 0.0, 1.0)
-    return np.where(r >= r_outer, 0.0, 0.5 * (1.0 + np.cos(np.pi * s)))
-
-
-# --------------------------------------------------------------------------- #
-# The filter itself.
-# --------------------------------------------------------------------------- #
 
 #: ``key -> (filtered, info)``: a radial table's filter is a pure function of
 #: the table and the options, and every crystal build (a strained cell for the
@@ -505,123 +358,64 @@ def mask_function(r, r_inner: float, r_outer: float) -> np.ndarray:
 _FILTERED: dict = {}
 
 
-def filter_radial(r, values, l: int, k_c: float, **options):
-    """Remove the content above ``k_c`` from one radial table (memoized; see
-    :func:`_filter_radial` for the options).  The returned array is a copy,
-    free for the caller to modify."""
-    import hashlib
+def filter_radial(r, values, l: int, k_c: float, *, context=None, **options):
+    """Remove the content above ``k_c`` from one radial table (memoized).
 
-    r = np.asarray(r, dtype=float)
-    values = np.asarray(values, dtype=float)
+    Options: ``method`` (one of :data:`FILTER_METHODS`), ``rolloff``,
+    ``oversample``, ``renormalize`` (rescale to the original norm, default
+    ``True``), ``switch_margin`` and ``warn``; an omitted option takes the
+    native default.  Returns ``(filtered_values, info)`` where ``info`` records
+    the residual weight above ``k_c`` before and after, the support radius, the
+    mask radius and the largest real-space change -- the numbers the guide
+    quotes and the tests assert.  The returned array is a copy, free for the
+    caller to modify.
+
+    The result is rescaled to the **original** norm rather than to 1: the
+    tables do not all arrive normalized (the PAW-LCAO hydrogen 1s carries
+    0.979), and forcing them to 1 would make the filter change the function
+    even in the ``k_c -> infinity`` limit where it must be the identity.
+    """
+    r, values, l, k_c = _table(r), _table(values), _angular_momentum(l), float(k_c)
     digest = hashlib.sha1(r.tobytes())
     digest.update(values.tobytes())
-    key = (digest.hexdigest(), int(l), float(k_c),
+    key = (digest.hexdigest(), l, k_c,
            tuple(sorted((k, v) for k, v in options.items() if k != "warn")))
     cached = _FILTERED.get(key)
     if cached is None:
-        # Computed with its warnings on and recorded, so that a cached call
-        # warns exactly as the first one did.
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            filtered, info = _filter_radial(r, values, l, k_c,
-                                            **{**options, "warn": True})
-        cached = (filtered, info, [(w.message, w.category) for w in caught])
+        unknown = set(options) - {"method", "rolloff", "oversample",
+                                  "renormalize", "switch_margin", "warn"}
+        if unknown:
+            raise TypeError(f"unknown filter option(s) {sorted(unknown)}")
+        context = _native.Context(threads=1) if context is None else context
+        filtered, report = _native.radial_filter(
+            context, r, values, l, k_c,
+            options.get("method"), options.get("rolloff"),
+            options.get("oversample"), options.get("renormalize", True),
+            options.get("switch_margin"))
+        (before, after, support, outer, masked, kept, change) = report
+        info = {
+            "l": l, "cutoff": k_c,
+            "method": options.get("method") or DEFAULT_FILTER_METHOD,
+            "residual_before": float(before), "residual_after": float(after),
+            "support_radius": float(support), "mask_radius": float(outer),
+            "masked": bool(masked), "norm_kept": float(kept),
+            "max_change": float(change),
+        }
+        # The warning is recorded with the entry, so that a cached call warns
+        # exactly as the first one did.
+        message = None
+        if 1.0 - kept > FILTER_WEIGHT_WARN:
+            message = (
+                f"the basis filter at k_c = {k_c:.3g} Bohr^-1 "
+                f"({cutoff_energy_ev(k_c):.0f} eV) removed "
+                f"{100 * (1.0 - kept):.1f}% of the norm of an l = {l} radial "
+                "function: at that cutoff the filter is replacing the basis, "
+                "not smoothing it.  Raise the cutoff (or the grid resolution).")
+        cached = (filtered, info, message)
         _FILTERED[key] = cached
-    if options.get("warn", True):
-        for message, category in cached[2]:
-            warnings.warn(message, category, stacklevel=2)
-    return cached[0].copy(), cached[1]
-
-
-def _filter_radial(r, values, l: int, k_c: float, *,
-                  method: str = DEFAULT_FILTER_METHOD,
-                  rolloff: float = ROLLOFF_FRACTION,
-                  oversample: int = TRANSFORM_OVERSAMPLE,
-                  renormalize: bool = True,
-                  switch_margin: float = SWITCH_MARGIN,
-                  warn: bool = True):
-    """Remove the content above ``k_c`` from one radial table.
-
-    Returns ``(filtered_values, info)`` where ``info`` records the residual
-    weight above ``k_c`` before and after, the support radius, the mask radius
-    and the largest real-space change -- the numbers the guide quotes and the
-    tests assert.
-
-    The result is rescaled to the **original** norm rather than to 1: the
-    tables do not all arrive normalized (the PAW-LCAO hydrogen 1s carries 0.979),
-    and forcing them to 1 would make the filter change the function even in
-    the ``k_c -> infinity`` limit where it must be the identity.  The scale is
-    in any case invisible downstream -- the basis is Loewdin-orthogonalized
-    before the Hamiltonian is built.
-    """
-    if method not in FILTER_METHODS:
-        raise ValueError(f"unknown filter method {method!r}; "
-                         f"use one of {list(FILTER_METHODS)}")
-    r = np.asarray(r, dtype=float)
-    values = np.asarray(values, dtype=float)
-    l = int(l)
-    k_c = float(k_c)
-    if k_c <= 0.0:
-        raise ValueError(f"the filter cutoff must be positive, got {k_c!r}")
-
-    r_aug, values_aug = _augment_origin(r, values, l)
-    original_norm = radial_norm(r_aug, values_aug)
-    before = 1.0 - band_weight(r, values, l, k_c, oversample)
-
-    r_support = support_radius(r_aug, values_aug)
-    r_outer = min(float(switch_margin) * r_support, float(r_aug[-1]))
-    r_inner = (MASK_INNER_FRACTION * r_outer if method == "mask"
-               else min(r_support, r_outer))
-    use_window = method != "plain" and r_outer < float(r_aug[-1])
-
-    work = values_aug
-    mask = None
-    if use_window:
-        mask = mask_function(r_aug, r_inner, r_outer)
-        if method == "mask":
-            # Pre-compensate the multiplication that follows.  Safe because
-            # the mask reaches zero beyond the support (MASK_MARGIN), so the
-            # divisor is never small where the function is not.
-            inside = r_aug < r_outer
-            work = np.zeros_like(values_aug)
-            np.divide(values_aug, mask, out=work, where=inside & (mask > 0.0))
-
-    k = transform_grid(r_aug[-1], k_c, oversample)
-    matrix = bessel_matrix(l, k, r_aug)
-    transform = spherical_bessel_transform(r_aug, work, l, k, matrix)
-    transform = transform * cutoff_window(k, k_c, rolloff)
-    filtered = inverse_spherical_bessel_transform(k, transform, l, r_aug,
-                                                  matrix)
-    if use_window:
-        filtered = filtered * mask
-
-    new_norm = radial_norm(r_aug, filtered)
-    kept = new_norm / original_norm if original_norm > 0.0 else 1.0
-    if renormalize and new_norm > 0.0 and original_norm > 0.0:
-        filtered = filtered * np.sqrt(original_norm / new_norm)
-
-    if r_aug.size != r.size:                 # drop the prepended r = 0 node
-        filtered = filtered[1:]
-    after = 1.0 - band_weight(r, filtered, l, k_c, oversample)
-
-    scale = float(np.max(np.abs(values))) or 1.0
-    info = {
-        "l": l, "cutoff": k_c, "method": method,
-        "residual_before": float(before), "residual_after": float(after),
-        "support_radius": float(r_support), "mask_radius": float(r_outer),
-        "masked": bool(use_window),
-        "norm_kept": float(kept),
-        "max_change": float(np.max(np.abs(filtered - values)) / scale),
-    }
-    if warn and 1.0 - kept > FILTER_WEIGHT_WARN:
-        warnings.warn(
-            f"the basis filter at k_c = {k_c:.3g} Bohr^-1 "
-            f"({cutoff_energy_ev(k_c):.0f} eV) removed "
-            f"{100 * (1.0 - kept):.1f}% of the norm of an l = {l} radial "
-            "function: at that cutoff the filter is replacing the basis, not "
-            "smoothing it.  Raise the cutoff (or the grid resolution).",
-            RuntimeWarning, stacklevel=2)
-    return filtered, info
+    if cached[2] is not None and options.get("warn", True):
+        warnings.warn(cached[2], RuntimeWarning, stacklevel=2)
+    return cached[0].copy(), dict(cached[1])
 
 
 def filter_table(table, k_c: float, **kwargs):

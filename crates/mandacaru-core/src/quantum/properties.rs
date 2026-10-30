@@ -1,5 +1,8 @@
 //! Spin-orbital RDMs in physicists' notation, evaluated in occupation space.
-use super::{Basis, Encoding, C64};
+use super::{
+    amplitude::{finite, Amplitude},
+    Basis, Encoding, C64,
+};
 use crate::{product, Buffer, Context, Error, Result};
 
 fn ladder(n: usize, mut ket: u64, factors: &[(usize, bool)]) -> Option<(u64, f64)> {
@@ -16,10 +19,10 @@ fn ladder(n: usize, mut ket: u64, factors: &[(usize, bool)]) -> Option<(u64, f64
     }
     Some((ket, sign))
 }
-fn expectation(
+fn expectation<A: Amplitude>(
     encoding: &Encoding,
     basis: &Basis,
-    state: &[C64],
+    state: &[A],
     factors: &[(usize, bool)],
 ) -> C64 {
     let mut value = C64::default();
@@ -31,7 +34,7 @@ fn expectation(
                 continue;
             }
             if let Some(row) = basis.index(encoded) {
-                value += state[row].conj() * amplitude * sign;
+                value += state[row].widen().conj() * amplitude.widen() * sign;
             }
         }
     }
@@ -49,16 +52,13 @@ pub struct SpatialRdms {
     pub one: Buffer<C64>,
     pub two: Buffer<C64>,
 }
-pub fn spatial_rdms(
+pub fn spatial_rdms<A: Amplitude>(
     ctx: &Context,
     encoding: &Encoding,
     basis: &Basis,
-    state: &[C64],
+    state: &[A],
 ) -> Result<SpatialRdms> {
-    if encoding.modes % 2 != 0
-        || state.len() != basis.len()
-        || state.iter().any(|c| !c.re.is_finite() || !c.im.is_finite())
-    {
+    if encoding.modes % 2 != 0 || state.len() != basis.len() || !finite(state) {
         return Err(Error::Invalid(
             "spatial RDMs need a finite state in an even spin-blocked register".into(),
         ));
@@ -76,9 +76,10 @@ pub fn spatial_rdms(
         }
     };
     for (&index, &amplitude) in basis.indices.as_slice().iter().zip(state) {
-        if amplitude == C64::new(0., 0.) {
+        if amplitude == A::default() {
             continue;
         }
+        let amplitude = amplitude.widen();
         let ket = encoding.decode(index);
         for r in 0..n {
             let Some((first, sign_r)) = ladder(n, ket, &[(r, false)]) else {
@@ -89,7 +90,7 @@ pub fn spatial_rdms(
                 if let Some((target, sign_p)) = ladder(n, first, &[(p, true)]) {
                     if let Some(row) = locate(target) {
                         one.as_mut_slice()[(p % m) * m + r % m] +=
-                            state[row].conj() * amplitude * (sign_r * sign_p);
+                            state[row].widen().conj() * amplitude * (sign_r * sign_p);
                     }
                 }
             }
@@ -106,7 +107,7 @@ pub fn spatial_rdms(
                         if let Some((target, sign_p)) = ladder(n, third, &[(p, true)]) {
                             if let Some(row) = locate(target) {
                                 let at = (((p % m) * m + q % m) * m + r % m) * m + s % m;
-                                two.as_mut_slice()[at] += state[row].conj()
+                                two.as_mut_slice()[at] += state[row].widen().conj()
                                     * amplitude
                                     * (sign_r * sign_s * sign_q * sign_p);
                             }
@@ -118,14 +119,14 @@ pub fn spatial_rdms(
     }
     Ok(SpatialRdms { m, one, two })
 }
-pub fn rdms(
+pub fn rdms<A: Amplitude>(
     ctx: &Context,
     encoding: &Encoding,
     basis: &Basis,
-    state: &[C64],
+    state: &[A],
     two_body: bool,
 ) -> Result<Rdms> {
-    if state.len() != basis.len() || state.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+    if state.len() != basis.len() || !finite(state) {
         return Err(Error::Invalid(
             "RDM state must be finite and match the basis".into(),
         ));

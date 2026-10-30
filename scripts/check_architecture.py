@@ -22,8 +22,12 @@ INTEGRATIONS = {
     "braket",
     "cirq",
     "pandas",
+    "pyarrow",
+    "fastparquet",
     "matplotlib",
 }
+# Parquet is read and written by mandacaru-core; no Python package may return.
+RETIRED_PARQUET_PACKAGES = {"fastparquet", "pandas", "pyarrow"}
 
 
 # Follow explicit and grouped Rust paths (including `use crate::{math, paw}`).
@@ -100,8 +104,6 @@ def check():
         "ase",
         "spglib",
         "matplotlib",
-        "fastparquet",
-        "pandas",
         "qiskit",
         "qiskit-ibm-runtime",
         "amazon-braket-sdk",
@@ -115,6 +117,28 @@ def check():
     }
     if missing := required - declared:
         failures.append(f"required Python dependencies are missing: {sorted(missing)}")
+    extras = {
+        re.split(r"[<>=!~;\[]", item)[0].strip().lower()
+        for items in metadata["project"].get("optional-dependencies", {}).values()
+        for item in items
+    }
+    if retired := RETIRED_PARQUET_PACKAGES & (declared | extras):
+        failures.append(
+            f"Parquet is native; Python packages must not be declared: {sorted(retired)}"
+        )
+    for path in sorted(PACKAGE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                imports = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                imports = [node.module or ""]
+            else:
+                continue
+            for name in imports:
+                if name.split(".")[0] in RETIRED_PARQUET_PACKAGES:
+                    failures.append(
+                        f"{path.relative_to(ROOT)}:{node.lineno}: imports retired Parquet package {name}"
+                    )
     retired_extras = {
         "ase",
         "periodic",
@@ -191,6 +215,7 @@ def check():
         "math": solvers | {"basis", "models"},
         "models": solvers | {"basis"},
         "basis": solvers,
+        "parquet": solvers | {"basis", "models"},
     }
     for layer, forbidden in boundaries.items():
         for path in (core / layer).rglob("*.rs"):
@@ -199,6 +224,28 @@ def check():
                 failures.append(
                     f"{path.relative_to(ROOT)}: {layer} depends on {sorted(invalid)}"
                 )
+    # ruzstd is the one third-party Parquet dependency: pinned and declared once,
+    # in the workspace, and used by mandacaru-core only.
+    ruzstd = workspace.get("dependencies", {}).get("ruzstd")
+    if not isinstance(ruzstd, dict) or not str(ruzstd.get("version", "")).startswith("="):
+        failures.append("the workspace must pin ruzstd to an exact version")
+    elif ruzstd.get("default-features") is not False:
+        failures.append("the workspace must declare ruzstd with default-features = false")
+    for name, manifest in manifests.items():
+        entry = {
+            key: value
+            for section in [manifest, *manifest.get("target", {}).values()]
+            for category in ("dependencies", "build-dependencies", "dev-dependencies")
+            for key, value in section.get(category, {}).items()
+        }.get("ruzstd")
+        if name == "mandacaru-core":
+            if entry != {"workspace": True}:
+                failures.append("mandacaru-core must take ruzstd from the workspace")
+        elif entry is not None:
+            failures.append(f"{name}: only mandacaru-core may depend on ruzstd")
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+    if sum(item["name"] == "ruzstd" for item in lock["package"]) != 1:
+        failures.append("Cargo.lock must hold exactly one ruzstd package")
     hook = metadata["tool"]["hatch"]["build"]["targets"]["wheel"]["hooks"]["custom"][
         "path"
     ]

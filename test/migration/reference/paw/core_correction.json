@@ -1,0 +1,112 @@
+{
+ "stride": 4,
+ "details": {
+  "H_auto": {
+   "applied": false,
+   "r_nlcc": null,
+   "reason": "the core density never exceeds the valence density"
+  },
+  "H_ratio2": {
+   "applied": false,
+   "r_nlcc": null,
+   "reason": "the core density never exceeds the valence density"
+  },
+  "C_auto": {
+   "applied": true,
+   "r_nlcc": 0.5966228222504778,
+   "amplitude": 0.2072132845455456,
+   "wavevector": 4.499169653447999,
+   "core_electrons": 1.99054126319816,
+   "partial_core_electrons": 0.4564798103670349
+  },
+  "C_ratio2": {
+   "applied": true,
+   "r_nlcc": 0.5388682854666483,
+   "amplitude": 0.30976326705403634,
+   "wavevector": 4.874143320589481,
+   "core_electrons": 1.99054126319816,
+   "partial_core_electrons": 0.5939592254276854
+  },
+  "C_fixed": {
+   "applied": true,
+   "r_nlcc": 0.9,
+   "amplitude": 0.016132208783742413,
+   "wavevector": 3.080494132005081,
+   "core_electrons": 1.99054126319816,
+   "partial_core_electrons": 0.07102813449369985
+  },
+  "O_auto": {
+   "applied": true,
+   "r_nlcc": 0.4260934461151781,
+   "amplitude": 0.5304280129098445,
+   "wavevector": 6.525627803945479,
+   "core_electrons": 1.9901583221676644,
+   "partial_core_electrons": 0.5635579831876721
+  },
+  "O_ratio2": {
+   "applied": true,
+   "r_nlcc": 0.38234316319265016,
+   "amplitude": 0.7940083582594741,
+   "wavevector": 7.120486745477339,
+   "core_electrons": 1.9901583221676644,
+   "partial_core_electrons": 0.7275423543786926
+  },
+  "O_fixed": {
+   "applied": true,
+   "r_nlcc": 0.9,
+   "amplitude": 0.0024718257930337077,
+   "wavevector": 3.2627214895156036,
+   "core_electrons": 1.9901583221676644,
+   "partial_core_electrons": 0.00947758680123124
+  },
+  "Si_auto": {
+   "applied": true,
+   "r_nlcc": 1.201353743297668,
+   "amplitude": 0.1727123806417485,
+   "wavevector": 2.2998506082264196,
+   "core_electrons": 9.988651566576005,
+   "partial_core_electrons": 1.4051492552265512
+  },
+  "Si_ratio2": {
+   "applied": true,
+   "r_nlcc": 1.0996017192295977,
+   "amplitude": 0.26644678435042674,
+   "wavevector": 2.4644024048951128,
+   "core_electrons": 9.988651566576005,
+   "partial_core_electrons": 1.9129840249728536
+  },
+  "Si_fixed": {
+   "applied": true,
+   "r_nlcc": 0.9,
+   "amplitude": 0.6728295669682514,
+   "wavevector": 2.9327265844675012,
+   "core_electrons": 9.988651566576005,
+   "partial_core_electrons": 3.5654808679706016
+  },
+  "Cu_auto": {
+   "applied": true,
+   "r_nlcc": 0.4123951532054881,
+   "amplitude": 2.259963668898218,
+   "wavevector": 6.651802572367484,
+   "core_electrons": 9.986937703866271,
+   "partial_core_electrons": 2.201162323740034
+  },
+  "Cu_ratio2": {
+   "applied": true,
+   "r_nlcc": 0.3744266235626768,
+   "amplitude": 3.4251800022227816,
+   "wavevector": 7.134163974307503,
+   "core_electrons": 9.986937703866271,
+   "partial_core_electrons": 2.9478055009791104
+  },
+  "Cu_fixed": {
+   "applied": true,
+   "r_nlcc": 0.9,
+   "amplitude": 0.0014786897643675545,
+   "wavevector": 3.2940759187275956,
+   "core_electrons": 9.986937703866271,
+   "partial_core_electrons": 0.0054819331808572055
+  }
+ },
+ "source": "partial_core_density on the shipped lda-sr datasets' core/valence densities"
+}

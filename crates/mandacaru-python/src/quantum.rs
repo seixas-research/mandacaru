@@ -1,10 +1,201 @@
 use super::{array, copy, error, Array};
 use mandacaru_core::{
-    quantum::{optimizer, Basis, CachedProblem, Encoding, Operator, SolveOptions, C64},
-    Context,
+    math::storage::Precision,
+    quantum::{
+        optimizer, Amplitude, Basis, CachedProblem, Encoding, Operator, SolveOptions, State, C64,
+    },
+    Context, Reservation,
 };
-use numpy::{PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
-use pyo3::{prelude::*, types::PyDict};
+use numpy::{Complex32, PyReadonlyArray1, PyUntypedArrayMethods};
+use pyo3::{
+    exceptions::{PyTypeError, PyValueError},
+    prelude::*,
+    types::PyDict,
+};
+
+/// A validated state copied in from NumPy, in the dtype of its precision.
+/// The reservation keeps the copy charged to the budget while it is alive.
+#[allow(dead_code)]
+pub(crate) enum Input {
+    Float64(Vec<C64>, Reservation),
+    Float32(Vec<Complex32>, Reservation),
+}
+impl Input {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Float64(v, _) => v.len(),
+            Self::Float32(v, _) => v.len(),
+        }
+    }
+}
+/// Run `$body` with `$values` bound to the typed slice of an [`Input`].
+macro_rules! typed {
+    ($input:expr, $values:ident => $body:expr) => {
+        match $input {
+            $crate::quantum::Input::Float64(ref $values, _) => $body,
+            $crate::quantum::Input::Float32(ref $values, _) => $body,
+        }
+    };
+}
+pub(crate) use typed;
+
+pub(crate) fn parse_precision(name: &str) -> PyResult<Precision> {
+    Precision::parse(name).map_err(error)
+}
+fn dtype_name(precision: Precision) -> &'static str {
+    match precision {
+        Precision::Float64 => "complex128",
+        Precision::Float32 => "complex64",
+    }
+}
+/// Copy a state array in. Its dtype must be the one of `precision`; a state
+/// of the other dtype raises `TypeError` instead of being cast.
+pub(crate) fn input_state(
+    ctx: &Context,
+    precision: Precision,
+    state: &Bound<'_, PyAny>,
+) -> PyResult<Input> {
+    let mismatch = || -> PyErr {
+        let got = state
+            .getattr("dtype")
+            .and_then(|d| d.str().map(|s| s.to_string()))
+            .unwrap_or_else(|_| "a non-array".into());
+        PyTypeError::new_err(format!(
+            "state has dtype {got}, but precision='{}' requires {}; convert it explicitly",
+            precision.name(),
+            dtype_name(precision)
+        ))
+    };
+    match precision {
+        Precision::Float64 => {
+            let array: PyReadonlyArray1<'_, C64> = state.extract().map_err(|_| mismatch())?;
+            let (values, memory) = copy(ctx, &array)?;
+            Ok(Input::Float64(values, memory))
+        }
+        Precision::Float32 => {
+            let array: PyReadonlyArray1<'_, Complex32> = state.extract().map_err(|_| mismatch())?;
+            let (values, memory) = copy(ctx, &array)?;
+            Ok(Input::Float32(values, memory))
+        }
+    }
+}
+/// Hand a state to NumPy as an owned array of its own dtype (moved, not copied).
+pub(crate) fn state_array<'py>(
+    py: Python<'py>,
+    shape: &[usize],
+    state: State,
+) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match state {
+        State::Float64(buffer) => array(py, shape, buffer.into_parts().0)?.into_any(),
+        State::Float32(buffer) => array(py, shape, buffer.into_parts().0)?.into_any(),
+    })
+}
+
+/// Run `$body` with `$values` bound to the slice of a complex64 or complex128
+/// state array; any other array raises `TypeError`. The array is only read,
+/// under the GIL and its read-only borrow, so nothing is copied or detached.
+macro_rules! read_state {
+    ($state:expr, $values:ident => $body:expr) => {{
+        let state = $state;
+        if let Ok(array) = state.extract::<PyReadonlyArray1<'_, C64>>() {
+            let $values = array
+                .as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            $body
+        } else if let Ok(array) = state.extract::<PyReadonlyArray1<'_, Complex32>>() {
+            let $values = array
+                .as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            $body
+        } else {
+            return Err(PyTypeError::new_err(
+                "a state must be a one-dimensional complex64 or complex128 array",
+            ));
+        }
+    }};
+}
+
+/// `<psi|psi>` of a stored state, summed in float64 whatever its dtype.
+#[pyfunction]
+pub fn state_norm_squared(state: &Bound<'_, PyAny>) -> PyResult<f64> {
+    read_state!(state, values => Ok(mandacaru_core::quantum::amplitude::norm_squared(values)))
+}
+
+/// Raise `ValueError` unless `|<psi|psi> - 1|` is within the dtype's input
+/// tolerance (1e-10 for complex128, 1e-5 for complex64), summed in float64.
+#[pyfunction]
+pub fn require_normalized_state(state: &Bound<'_, PyAny>) -> PyResult<()> {
+    let off = |norm: f64, tolerance: f64| {
+        if (norm - 1.).abs() <= tolerance {
+            Ok(())
+        } else {
+            Err(PyValueError::new_err("initial_state must be normalized"))
+        }
+    };
+    if let Ok(array) = state.extract::<PyReadonlyArray1<'_, C64>>() {
+        let values = array
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        off(
+            mandacaru_core::quantum::amplitude::norm_squared(values),
+            <C64 as Amplitude>::INPUT_NORM_TOLERANCE,
+        )
+    } else if let Ok(array) = state.extract::<PyReadonlyArray1<'_, Complex32>>() {
+        let values = array
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        off(
+            mandacaru_core::quantum::amplitude::norm_squared(values),
+            <Complex32 as Amplitude>::INPUT_NORM_TOLERANCE,
+        )
+    } else {
+        Err(PyTypeError::new_err(
+            "a state must be a one-dimensional complex64 or complex128 array",
+        ))
+    }
+}
+
+/// `sum conj(a) b` of two states of the same dtype, summed in float64.
+/// Returns `(real, imaginary)`.
+#[pyfunction]
+pub fn state_inner(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<(f64, f64)> {
+    let mismatch = || {
+        PyTypeError::new_err("both states must be one-dimensional arrays of the same complex dtype")
+    };
+    if let (Ok(x), Ok(y)) = (
+        a.extract::<PyReadonlyArray1<'_, C64>>(),
+        b.extract::<PyReadonlyArray1<'_, C64>>(),
+    ) {
+        let (x, y) = (
+            x.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+            y.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        );
+        if x.len() != y.len() {
+            return Err(PyValueError::new_err("states must have the same length"));
+        }
+        let v = mandacaru_core::quantum::amplitude::inner(x, y);
+        Ok((v.re, v.im))
+    } else if let (Ok(x), Ok(y)) = (
+        a.extract::<PyReadonlyArray1<'_, Complex32>>(),
+        b.extract::<PyReadonlyArray1<'_, Complex32>>(),
+    ) {
+        let (x, y) = (
+            x.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+            y.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        );
+        if x.len() != y.len() {
+            return Err(PyValueError::new_err("states must have the same length"));
+        }
+        let v = mandacaru_core::quantum::amplitude::inner(x, y);
+        Ok((v.re, v.im))
+    } else {
+        Err(mismatch())
+    }
+}
 
 #[pyclass(name = "PauliOperator", module = "mandacaru._native", frozen)]
 pub struct PyOperator {
@@ -13,16 +204,25 @@ pub struct PyOperator {
 }
 #[pymethods]
 impl PyOperator {
-    #[pyo3(signature=(state,evaluation_qubits,window,*,keep_amplitudes=true))]
+    #[pyo3(signature=(state,evaluation_qubits,window,*,keep_amplitudes=true,precision="float64"))]
     fn qpe<'py>(
         &self,
         py: Python<'py>,
-        state: PyReadonlyArray1<'py, C64>,
+        state: &Bound<'py, PyAny>,
         evaluation_qubits: usize,
         window: [f64; 2],
         keep_amplitudes: bool,
+        precision: &str,
     ) -> PyResult<Bound<'py, PyDict>> {
-        super::advanced::qpe(py, self, state, evaluation_qubits, window, keep_amplitudes)
+        super::advanced::qpe(
+            py,
+            self,
+            state,
+            evaluation_qubits,
+            window,
+            keep_amplitudes,
+            parse_precision(precision)?,
+        )
     }
     #[getter]
     fn num_qubits(&self) -> usize {
@@ -271,6 +471,7 @@ impl PyProblem {
                     self.inner.dense.is_some(),
                     true,
                 )?;
+                problem.precision = self.inner.precision;
                 problem.use_hva(layers, evolution, order, steps, seed_angle)?;
                 if self.inner.sparse.is_some() {
                     problem.sparse = Some(mandacaru_core::quantum::sparse::SparseMatrix::new(
@@ -324,11 +525,7 @@ impl PyProblem {
         out.set_item("energies_ha", array(py, &[num_states], result.energies)?)?;
         out.set_item(
             "states",
-            array(
-                py,
-                &[num_states, self.inner.basis.len()],
-                result.states.as_slice().to_vec(),
-            )?,
+            state_array(py, &[num_states, self.inner.basis.len()], result.states)?,
         )?;
         out.set_item("parameters", result.parameters)?;
         out.set_item("success", result.success)?;
@@ -341,11 +538,12 @@ impl PyProblem {
     fn expand_state<'py>(
         &self,
         py: Python<'py>,
-        state: PyReadonlyArrayDyn<'py, C64>,
-    ) -> PyResult<Array<'py, C64>> {
-        let shape = state.shape().to_vec();
-        if !(1..=2).contains(&shape.len()) || shape[shape.len() - 1] != self.inner.basis.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+        state: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let shape: Vec<usize> = state.getattr("shape")?.extract()?;
+        let dimension = self.inner.basis.len();
+        if !(1..=2).contains(&shape.len()) || shape[shape.len() - 1] != dimension {
+            return Err(PyValueError::new_err(
                 "states need shape (sector_dimension,) or (states,sector_dimension)",
             ));
         }
@@ -353,21 +551,13 @@ impl PyProblem {
         let n = 1usize
             .checked_shl(self.inner.basis.n as u32)
             .ok_or_else(|| error(mandacaru_core::Error::Overflow))?;
-        let (values, _memory) = copy(&self.inner.context, &state)?;
+        let flat = state.call_method1("reshape", (rows * dimension,))?;
+        let input = input_state(&self.inner.context, self.inner.precision, &flat)?;
         let out = py
             .detach(|| {
-                let mut out = self
-                    .inner
-                    .context
-                    .allocate::<C64>(mandacaru_core::product(&[rows, n])?)?;
-                for row in 0..rows {
-                    let expanded = self.inner.basis.expand_state(
-                        &self.inner.context,
-                        &values[row * self.inner.basis.len()..(row + 1) * self.inner.basis.len()],
-                    )?;
-                    out.as_mut_slice()[row * n..(row + 1) * n].copy_from_slice(expanded.as_slice());
-                }
-                Ok::<_, mandacaru_core::Error>(out)
+                typed!(input, values => {
+                    self.expand_rows(values, rows, n)
+                })
             })
             .map_err(error)?;
         let output_shape = if shape.len() == 1 {
@@ -375,7 +565,7 @@ impl PyProblem {
         } else {
             vec![rows, n]
         };
-        array(py, &output_shape, out.as_slice().to_vec())
+        state_array(py, &output_shape, out)
     }
     #[pyo3(signature=(parameters,*,trotter=false,indices=None))]
     fn state<'py>(
@@ -384,7 +574,7 @@ impl PyProblem {
         parameters: Vec<f64>,
         trotter: bool,
         indices: Option<Vec<usize>>,
-    ) -> PyResult<Array<'py, C64>> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let indices = indices.unwrap_or_else(|| {
             (0..self.inner.pool.len())
                 .filter(|&i| self.inner.pool_screenable[i])
@@ -393,12 +583,19 @@ impl PyProblem {
         let out = py
             .detach(|| {
                 let state = self.inner.prepare_state(&indices, &parameters, trotter)?;
-                self.inner
-                    .basis
-                    .expand_state(&self.inner.context, state.as_slice())
+                let ctx = &self.inner.context;
+                Ok::<_, mandacaru_core::Error>(match &state {
+                    State::Float64(v) => {
+                        State::Float64(self.inner.basis.expand_state(ctx, v.as_slice())?)
+                    }
+                    State::Float32(v) => {
+                        State::Float32(self.inner.basis.expand_state(ctx, v.as_slice())?)
+                    }
+                })
             })
             .map_err(error)?;
-        array(py, &[out.as_slice().len()], out.as_slice().to_vec())
+        let length = out.len();
+        state_array(py, &[length], out)
     }
     #[pyo3(signature=(indices,parameters,*,product_form=true,energy_ha,status_json="{}",method="adapt-vqe"))]
     fn checkpoint(
@@ -489,11 +686,7 @@ impl PyProblem {
         )?;
         out.set_item(
             "states",
-            array(
-                py,
-                &[weights.len(), self.inner.basis.len()],
-                result.states.as_slice().to_vec(),
-            )?,
+            state_array(py, &[weights.len(), self.inner.basis.len()], result.states)?,
         )?;
         out.set_item("reference_ha", result.reference)?;
         out.set_item(
@@ -606,31 +799,12 @@ impl PyProblem {
     fn rdms<'py>(
         &self,
         py: Python<'py>,
-        state: PyReadonlyArray1<'py, C64>,
+        state: &Bound<'py, PyAny>,
         two_body: bool,
     ) -> PyResult<(Array<'py, C64>, Option<Array<'py, C64>>)> {
-        let (state, _memory) = copy(&self.inner.context, &state)?;
+        let input = input_state(&self.inner.context, self.inner.precision, state)?;
         let rdms = py
-            .detach(|| {
-                let compressed = if state.len() != self.inner.basis.len() {
-                    Some(
-                        self.inner
-                            .basis
-                            .compress_state(&self.inner.context, &state)?,
-                    )
-                } else {
-                    None
-                };
-                mandacaru_core::quantum::properties::rdms(
-                    &self.inner.context,
-                    &self.inner.encoding,
-                    &self.inner.basis,
-                    compressed
-                        .as_ref()
-                        .map_or(state.as_slice(), |v| v.as_slice()),
-                    two_body,
-                )
-            })
+            .detach(|| typed!(input, values => self.rdms_of(values, two_body)))
             .map_err(error)?;
         let n = self.inner.encoding.modes;
         Ok((
@@ -639,6 +813,10 @@ impl PyProblem {
                 .map(|two| array(py, &[n, n, n, n], two.as_slice().to_vec()))
                 .transpose()?,
         ))
+    }
+    #[getter]
+    fn precision(&self) -> &'static str {
+        self.inner.precision.name()
     }
     #[pyo3(signature=(parameters,*,trotter=false,indices=None))]
     fn evaluate<'py>(
@@ -662,14 +840,8 @@ impl PyProblem {
             "gradient",
             array(py, &[value.gradient.len()], value.gradient)?,
         )?;
-        out.set_item(
-            "state",
-            array(
-                py,
-                &[value.state.as_slice().len()],
-                value.state.as_slice().to_vec(),
-            )?,
-        )?;
+        let length = value.state.len();
+        out.set_item("state", state_array(py, &[length], value.state)?)?;
         Ok(out)
     }
     #[pyo3(signature=(*,adapt=false,trotter=false,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_parameters=None,initial_indices=None,optimizer="BFGS",resume=None,callback=None,executor=None))]
@@ -838,14 +1010,8 @@ fn solution_dict<'py>(
         "parameters",
         array(py, &[result.parameters.len()], result.parameters)?,
     )?;
-    out.set_item(
-        "state",
-        array(
-            py,
-            &[result.state.as_slice().len()],
-            result.state.as_slice().to_vec(),
-        )?,
-    )?;
+    let length = result.state.len();
+    out.set_item("state", state_array(py, &[length], result.state)?)?;
     out.set_item("success", result.success)?;
     out.set_item("message", result.message)?;
     out.set_item("budget_stopped", result.budget_stopped)?;
@@ -917,4 +1083,49 @@ pub fn fermion(
         context: context.clone(),
         inner,
     })
+}
+
+impl PyProblem {
+    fn expand_rows<A: Amplitude>(
+        &self,
+        values: &[A],
+        rows: usize,
+        n: usize,
+    ) -> mandacaru_core::Result<State> {
+        let ctx = &self.inner.context;
+        let dimension = self.inner.basis.len();
+        let mut out = ctx.allocate::<A>(mandacaru_core::product(&[rows, n])?)?;
+        for row in 0..rows {
+            let expanded = self
+                .inner
+                .basis
+                .expand_state(ctx, &values[row * dimension..(row + 1) * dimension])?;
+            out.as_mut_slice()[row * n..(row + 1) * n].copy_from_slice(expanded.as_slice());
+        }
+        Ok(A::wrap(out))
+    }
+}
+impl PyProblem {
+    fn rdms_of<A: Amplitude>(
+        &self,
+        state: &[A],
+        two_body: bool,
+    ) -> mandacaru_core::Result<mandacaru_core::quantum::properties::Rdms> {
+        let compressed = if state.len() != self.inner.basis.len() {
+            Some(
+                self.inner
+                    .basis
+                    .compress_state(&self.inner.context, state)?,
+            )
+        } else {
+            None
+        };
+        mandacaru_core::quantum::properties::rdms(
+            &self.inner.context,
+            &self.inner.encoding,
+            &self.inner.basis,
+            compressed.as_ref().map_or(state, |v| v.as_slice()),
+            two_body,
+        )
+    }
 }

@@ -1,136 +1,57 @@
+(dry-run)=
 # Dry run: how many qubits will this need?
 
-Before submitting a calculation to a quantum device — or to a state-vector
-simulator whose memory doubles with every qubit — you want to know the size of
-the register it needs. A **dry run** answers that without computing a single
-integral, mapping a Hamiltonian, or executing a circuit.
+Before submitting a calculation to a quantum device, or to a state-vector
+simulator whose memory doubles with every qubit, you want to know the size of the
+register. `estimate_qubits` answers that by *counting* the basis functions of a
+geometry; it computes no integral, builds no Hamiltonian and runs no circuit.
 
-## On the command line
-
-```console
-$ mandacaru water.xyz --frozen --dry-run
-Dry run -- no integrals computed, no circuits executed.
-
-  method            : adapt-vqe
-  basis             : HAO
-  mapping           : jordan_wigner
-  source            : geometry
-  basis functions   : 7  (O:5, H:1, H:1)
-  frozen core       : 1 spatial orbital(s)
-  active orbitals   : 6 spatial / 12 spin
-  active electrons  : 8  (n_alpha, n_beta) = (4, 4)
-
-  QUBITS REQUIRED   : 12
-  with parity 2-qubit reduction : 10
-
-  device            : AER_simulator  (ideal state-vector simulator (default))
-  state vector      : 2^12 amplitudes = 64 KiB
-```
-
-Every solver option is a flag (`--basis`, `--basis-option size=DZP`,
-`--charge`, `--magmoms`, `--frozen`, `--mapping`,
-`--device`, ...), so the estimate is for exactly the run you would launch by
-dropping `--dry-run`. The geometry can be a file (`.xyz`, `.cif`, `POSCAR`, ...)
-or an ASE `g2` molecule name (`H2O`, `LiH`, `NH3`, ...). With
-`--load-hamiltonian` only the cache file's header is read and no geometry is
-needed at all.
-
-Naming a real device compares the register with its capacity:
-
-```console
-$ mandacaru H2O --cell 8 --basis NAO --basis-option size=DZP --device braket-ionq-aria --dry-run
-  ...
-  QUBITS REQUIRED   : 46
-  device            : braket-ionq-aria  (IonQ Aria-1 trapped-ion QPU (25 qubits))
-  device capacity   : 25 qubits  -> DOES NOT FIT
-```
-
-The `ibm-quantum` label (the least-busy IBM processor) does not fix a register
-size, so pass `--device-qubits 127` to compare against a specific processor. `--json` prints the estimate as machine-readable JSON.
-
-## A shot-based run
-
-With `shots > 0` nothing is simulated, so the state-vector line is replaced by
-what the run *will* need: an estimate of one energy's measurement bases, the
-classical memory (every term polynomial: the Hamiltonian, the pool, the
-gradient batches), and for ADAPT-VQE the cost of one measured gradient step:
-
-```python
-calc = Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"},
-                 pool="fermionic", device="ibm_fez", shots=1000,
-                 active_space={"orbitals": {"occupied": 5, "virtual": 5},
-                               "method": "mp2"})
-print(calc.dry_run(methanol).summary())
-```
-
-```text
-  ...
-  shots             : 1000 (every expectation value measured; no state vector)
-  energy            : ~3,066 bases per evaluation (estimate)
-  classical memory  : ~396 MiB  (polynomial: Hamiltonian, pool, gradient batches)
-  gradient step     : ~670,688 bases (~218.8 energies), ~68 jobs, ~670,688,000 shots, 875 pool operators  (estimate; the run logs the exact plan)
-```
-
-These are order-of-magnitude estimates: the pool size is exact (it is
-counted), but no Hamiltonian exists yet, so its Pauli strings are taken as
-those of dense integrals (`1.41 M^4`; a real molecule has fewer -- methanol's
-CAS(10, 10) has 7,279, not 14,100) and the step as about a quarter of an
-energy per fermionic operator. The measured step of this methanol run is
-229,641 bases in 34 jobs. The run computes the exact plan before anything is
-queued and writes it to `[GRADIENT MEASUREMENT]` ({doc}`measurement_cost`).
-The same fields are on the estimate (`energy_bases`, `classical_memory_bytes`,
-`gradient_step`) and in `--json`.
-
-## From Python
+(dry-run-estimate)=
+## The estimate
 
 ```python
 from ase.build import molecule
-from mandacaru.algorithms import Mandacaru, estimate_qubits
+from mandacaru import estimate_qubits
 
-water = molecule("H2O"); water.center(vacuum=3.0)
+water = molecule("H2O")
+water.center(vacuum=3.0)
 
-# One-off, on an existing calculator:
-calc = Mandacaru(active_space={"frozen": "auto"})
-estimate = calc.dry_run(water)          # -> QubitEstimate
-print(estimate.n_qubits)                # 12
+estimate = estimate_qubits(water, basis="HAO")
+print(estimate.n_qubits, estimate.n_spatial_orbitals, estimate.mapping)
 
-# Or make every evaluation a dry run (energies come back as NaN):
-water.calc = Mandacaru(method="adapt-vqe",
-                       active_space={"frozen": "auto"},
-                       dry_run=True)
-water.get_potential_energy()            # nan
-water.calc.dry_run_result.summary()
-
-# Or the bare function, mirroring the driver keywords:
-estimate_qubits(water, basis={"name": "NAO-AE", "tier": 1}, device="braket-iqm-garnet")
+reduced = estimate_qubits(water, basis={"name": "NAO", "size": "DZP"},
+                          mapping="parity_reduced")
 ```
 
-Constructing the calculator never materializes anything: the options are
-validated at once, but the solver — and with it the pool and the $2^n$ matrix of
-an explicit `hamiltonian=` — is only built on first use. So the one-off
-`calc.dry_run()` is safe on a problem too large to run. A cached Hamiltonian is
-estimated from its **header**: a Parquet cache keeps it in the file footer and
-its Pauli table is never decoded (`read_hamiltonian_header`); a JSON cache is one
-document and has to be parsed to reach it.
-
-`dry_run=True` is honored by every driver: the ASE hook stores the
-{class}`~mandacaru.algorithms.dry_run.QubitEstimate` on `dry_run_result` and
-reports `NaN`, and a direct-mode `run()` returns the estimate instead of a
-result. Nothing expensive is touched — the test suite pins this by making the
-Hamiltonian builder, the timings and the circuit providers raise.
+The arguments are the geometry (an ASE `Atoms` or a `Geometry`), `basis`
+(any all-electron specification of [Basis sets](basis_sets.md), including a
+per-element mapping), `mapping` (default `"jordan_wigner"`) and `resources` (the
+dictionary the calculator takes, for the thread count and the memory limit). It
+returns a `QubitEstimate` with the fields `n_qubits`, `n_spatial_orbitals` and
+`mapping`.
 
 ## How the count is made
 
 ```{math}
-N_\text{qubits} = 2\,(M_\text{basis} - M_\text{frozen}),
+N_\text{qubits} = 2\,M_\text{basis},
 ```
 
-one qubit per active **spin-orbital**: the basis family is instantiated exactly
-as a run would (so `size`, polarization and cutoff options are honored) and
-its functions are *counted* rather than integrated; the frozen core removes
-doubly occupied spatial orbitals; the plane-wave family counts plane waves
-below the cutoff.
-Jordan-Wigner, parity and Bravyi-Kitaev all use this many qubits.
+one qubit per **spin orbital**, where $M_\text{basis}$ is the number of basis
+functions the engine generates for the geometry, counted rather than integrated.
+The Jordan–Wigner, parity and Bravyi–Kitaev mappings all use this many qubits;
 `parity_reduced` uses two fewer.
 
-See {mod}`mandacaru.algorithms.dry_run` and {mod}`mandacaru.cli`.
+The estimate is the size of the **full** basis. It does not apply a frozen core
+or any other [active space](active_space.md), so a run that truncates its active
+space needs a smaller register; after the run, `calc.n_qubits` reports the size
+of the register that was actually used. The pseudopotential families
+(`PAW-LCAO`, `UPAW-LCAO`) are built from datasets and are not counted by this
+function.
+
+A shot-based run does not simulate a state vector, so memory is not the limit
+there; the limits are the number of measurement circuits and the device
+capacity, covered in [Measurement cost](measurement_cost.md).
+
+The command line has no dry-run flag. Constructing a `Mandacaru` calculator
+validates its options at once without building the solver, so a mistyped option
+fails before anything expensive runs.

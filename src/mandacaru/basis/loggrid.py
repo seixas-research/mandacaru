@@ -97,10 +97,10 @@ This module solves; it does not replace the uniform grid.  The reference atom,
 the pseudopotential generators and everything downstream stay on the uniform
 grid they were written for.
 
-It is reached only on request, through ``grid="log"`` of
-:func:`~mandacaru.basis.relativity.solve_radial_relativistic` and
-:func:`~mandacaru.basis.atomic_solver.solve_atom`; the generators never pass
-it.  Making it their default would change every relativistic eigenvalue they
+It is **not wired into** :func:`~mandacaru.basis.atomic_solver.solve_atom` or
+:func:`~mandacaru.basis.relativity.solve_radial_relativistic` any more: the native
+reference atom is uniform-grid only, and this module (Python numerics, awaiting a port
+or removal) is reachable only by calling :func:`solve_radial_log` directly.  Making it their default would change every relativistic eigenvalue they
 produce, and so every shipped dataset -- a deliberate step to take on its own,
 not a side effect of adding a solver.  What it would buy is an accurate **eigenvalue**; the wave on
 the uniform grid still could not represent the cusp, but nothing downstream

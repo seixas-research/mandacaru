@@ -36,6 +36,31 @@ fn parallel_projection_respects_thread_and_memory_limits_and_matches_a_direct_su
 }
 
 #[test]
+fn float32_tiles_widen_per_tile_and_match_the_projection_of_the_widened_values() {
+    let (m, n) = (20, 5001);
+    let wide: Vec<f64> = (0..m * n).map(|i| (i as f64 * 0.031).sin()).collect();
+    let narrow: Vec<f32> = wide.iter().map(|v| *v as f32).collect();
+    let rounded: Vec<f64> = narrow.iter().map(|v| f64::from(*v)).collect();
+    let field: Vec<_> = (0..n).map(|i| (i as f64 * 0.017).cos()).collect();
+    let ctx = Context::new(Some(1), 8 << 20).unwrap();
+    {
+        let mut reference = RealProjector::new(&ctx, &rounded, m, n).unwrap();
+        let expected = reference.project(&field).unwrap().to_vec();
+        let live = ctx.memory_used();
+        let mut projector = RealProjector::new(&ctx, &narrow, m, n).unwrap();
+        // The float32 source adds no whole-stack expansion: only its own tile
+        // workspace is charged, and the products are those of the widened values.
+        assert!(ctx.memory_used() - live <= live);
+        let result = projector.project(&field).unwrap();
+        assert_eq!(result, expected.as_slice());
+        let mut invalid = narrow.clone();
+        invalid[7] = f32::NAN;
+        assert!(RealProjector::new(&ctx, &invalid, m, n).is_err());
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
 fn streamed_signed_quadrature_matches_direct_outer_products_across_partial_tiles() {
     use mandacaru_core::math::projection::PointAccumulator;
     let ctx = Context::new(Some(1), 1 << 20).unwrap();

@@ -1,10 +1,13 @@
 //! Bounded schema-v1 Hamiltonians, schema-v1/v2 checkpoints and atomic snapshots.
 use crate::{
+    math::storage::Precision,
+    parquet::{self, Codec, Table, WriteOptions},
     product,
     quantum::{
-        evolution, Basis, CachedProblem, Encoding, Operator, SolveOptions, SolveResult, C64,
+        evolution, solver::by_precision, Amplitude, Basis, CachedProblem, Encoding, Operator,
+        SolveOptions, SolveResult, State, C64,
     },
-    Buffer, Context, Error, Reservation, Result,
+    snapshot_table, Buffer, Context, Error, Reservation, Result,
 };
 use serde_json::{json, Value};
 use std::{
@@ -63,6 +66,25 @@ pub fn pauli_payload(op: &Operator) -> Value {
     terms.sort_by(|a, b| a.0.cmp(&b.0));
     json!({"num_qubits":op.n,"terms":terms.into_iter().map(|(s,c)| json!([s,c.re,c.im])).collect::<Vec<_>>()})
 }
+/// Upper bound of the heap bytes a JSON value holds (the `Value` itself is
+/// 32 bytes; strings, arrays and map nodes add their contents and a fixed
+/// allocator and node overhead).
+fn value_bytes(value: &Value) -> usize {
+    const NODE: usize = std::mem::size_of::<Value>();
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => NODE,
+        Value::String(text) => NODE + text.len() + 16,
+        Value::Array(items) => items.iter().fold(NODE + 16, |total, item| {
+            total.saturating_add(value_bytes(item))
+        }),
+        Value::Object(map) => map.iter().fold(NODE + 16, |total, (key, item)| {
+            total
+                .saturating_add(key.len())
+                .saturating_add(64)
+                .saturating_add(value_bytes(item))
+        }),
+    }
+}
 pub struct Document {
     pub(crate) payload: Value,
     _memory: Reservation,
@@ -91,8 +113,24 @@ impl Document {
         doc.validate(ctx, kind)?;
         Ok(doc)
     }
+    /// A document built from an in-memory payload, validated like a parsed
+    /// one. The payload's size is charged before it is kept.
+    pub fn from_value(ctx: &Context, payload: Value, kind: &str) -> Result<Self> {
+        let memory = ctx.reserve(value_bytes(&payload))?;
+        let doc = Self {
+            payload,
+            _memory: memory,
+        };
+        doc.validate(ctx, kind)?;
+        Ok(doc)
+    }
     pub fn read(ctx: &Context, path: &Path, kind: &str) -> Result<Self> {
         let file = File::open(path).map_err(|e| invalid(format!("cannot open snapshot: {e}")))?;
+        // A leading `PAR1` marks a Parquet file; JSON never starts with it.
+        if parquet::is_parquet(path)? {
+            drop(file);
+            return Self::read_parquet(ctx, path, kind);
+        }
         let bytes = usize::try_from(file.metadata().map_err(|e| invalid(e.to_string()))?.len())
             .map_err(|_| Error::Overflow)?;
         if bytes > MAX_JSON_BYTES {
@@ -109,6 +147,50 @@ impl Document {
             return Err(invalid("snapshot changed while reading"));
         }
         Self::parse_inner(ctx, &text, kind, memory)
+    }
+    /// Reads a Hamiltonian stored as Parquet. The table is released before the
+    /// payload is validated, so the peak is the larger of the two, not their sum.
+    fn read_parquet(ctx: &Context, path: &Path, kind: &str) -> Result<Self> {
+        let source = format!("'{}'", path.display());
+        let table = parquet::read_table(ctx, path)?;
+        let (payload, memory) = snapshot_table::payload_from_table(ctx, &table, kind, &source)?;
+        drop(table);
+        let doc = Self {
+            payload,
+            _memory: memory,
+        };
+        doc.validate(ctx, kind)?;
+        Ok(doc)
+    }
+    /// Builds a Hamiltonian document from a Parquet table (`pauli`, `real`,
+    /// `imag` columns and the `mandacaru.*` footer entries) and validates it
+    /// like any other document. `source` names the table in messages.
+    pub fn from_table(ctx: &Context, table: &Table, kind: &str, source: &str) -> Result<Self> {
+        let (payload, memory) = snapshot_table::payload_from_table(ctx, table, kind, source)?;
+        let doc = Self {
+            payload,
+            _memory: memory,
+        };
+        doc.validate(ctx, kind)?;
+        Ok(doc)
+    }
+    /// The Parquet table of a Hamiltonian document, rows sorted by Pauli label.
+    pub fn to_table(&self, ctx: &Context) -> Result<Table> {
+        snapshot_table::table_from_payload(ctx, &self.payload)
+    }
+    /// Writes a Hamiltonian document as Parquet, atomically. Nothing is created
+    /// when the document cannot be converted.
+    pub fn save_parquet(&self, ctx: &Context, path: &Path, codec: Codec) -> Result<()> {
+        let table = self.to_table(ctx)?;
+        parquet::write_table(
+            ctx,
+            path,
+            &table,
+            &WriteOptions {
+                codec,
+                ..WriteOptions::default()
+            },
+        )
     }
     fn validate(&self, ctx: &Context, kind: &str) -> Result<()> {
         let p = &self.payload;
@@ -262,7 +344,12 @@ impl Document {
         }
         CachedProblem::new(ctx, encoding, h, sector, dense, singles)
     }
-    pub fn state(&self, ctx: &Context) -> Result<Buffer<C64>> {
+    /// The state this checkpoint prepares, stored in `precision` (complex128
+    /// or complex64); the generators and parameters stay float64.
+    pub fn state(&self, ctx: &Context, precision: Precision) -> Result<State> {
+        by_precision!(precision, A => self.state_as::<A>(ctx).map(Amplitude::wrap))
+    }
+    fn state_as<A: Amplitude>(&self, ctx: &Context) -> Result<Buffer<A>> {
         ctx.run(|| {
             if self.payload["format"] != CHECKPOINT {
                 return Err(invalid("state preparation requires a checkpoint"));
@@ -270,12 +357,12 @@ impl Document {
             let p = &self.payload;
             let n = integer(&p["n_qubits"], "qubits")?;
             let basis = Basis::register(ctx, n)?;
-            let mut initial = ctx.allocate::<C64>(basis.len())?;
+            let mut initial = ctx.allocate::<A>(basis.len())?;
             let mut index = 0;
             for q in p["reference_qubits"].as_array().unwrap() {
                 index |= 1usize << (n - 1 - integer(q, "reference qubit")?);
             }
-            initial.as_mut_slice()[index] = C64::new(1., 0.);
+            initial.as_mut_slice()[index] = A::narrow(C64::new(1., 0.));
             let operators = p["operators"].as_array().unwrap();
             let _memory = ctx.reserve(product(&[operators.len(), 64])?)?;
             let generators: Vec<_> = operators
@@ -299,7 +386,7 @@ impl Document {
         })
     }
     pub fn expectation(&self, ctx: &Context) -> Result<f64> {
-        let state = self.state(ctx)?;
+        let state = self.state_as::<C64>(ctx)?;
         ctx.run(|| {
             let n = integer(&self.payload["n_qubits"], "qubits")?;
             let basis = Basis::register(ctx, n)?;

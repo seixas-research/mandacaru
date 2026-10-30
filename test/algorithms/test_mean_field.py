@@ -133,12 +133,66 @@ def test_classical_force_request_is_refused_before_scf():
     assert atoms.calc.result is None
 
 
+@pytest.mark.parametrize("method", ["rhf", "dft"])
+def test_all_electron_analytic_forces_are_allowed_under_float32(method):
+    """The refusal is for forces that difference the energy; these do not."""
+    forces = {}
+    for precision in ("float64", "float32"):
+        atoms = h2()
+        atoms.calc = Mandacaru(method=method, grid_spacing=0.25, precision=precision,
+                               resources={"threads": 1})
+        forces[precision] = atoms.get_forces()
+    scale = max(np.abs(forces["float64"]).max(), 10.0)
+    assert np.abs(forces["float32"] - forces["float64"]).max() / scale <= 1e-6
+
+
 @pytest.mark.parametrize("option", [
     {"shots": 100}, {"load_hamiltonian": "unused.json"}])
 def test_classical_options_cannot_silently_request_quantum_work(option):
     """Quantum-only controls are rejected at calculator construction."""
     with pytest.raises(ValueError, match="classical|mean-field calculations"):
         Mandacaru(method="rhf", trace=False, **option)
+
+
+@pytest.mark.parametrize("method", ["rhf", "uhf", "ghf", "dft", "vqe", "adapt-vqe"])
+@pytest.mark.parametrize("option", [
+    {"seed": 3}, {"max_length": 5}, {"min_length": 1}, {"temperature": 0.05},
+    {"length_penalty": 0.01}, {"warm_start": False}, {"replace_start": "inherit"},
+    {"proposal_temperature": 0.5}, {"proposal": "uniform"},
+    {"move_weights": {"insert": 1.0}}])
+def test_search_controls_are_refused_outside_the_search_methods(method, option):
+    """These steer the architecture search of mcas-vqe and valqa only."""
+    with pytest.raises(ValueError, match="does not use"):
+        Mandacaru(method=method, trace=False, **option)
+
+
+@pytest.mark.parametrize("method, option", [
+    ("rhf", {"xc": "pbe"}), ("uhf", {"xc": "pbe"}), ("ghf", {"xc": "lda"}),
+    ("vqe", {"xc": "pbe"}), ("adapt-vqe", {"xc": "pbe"}),
+    ("rhf", {"spin": True}), ("ghf", {"unrestricted": True}),
+    ("adapt-vqe", {"spin": True}),
+    ("rhf", {"kpts": (2, 1, 1)}), ("adapt-vqe", {"smearing": 0.1}),
+    ("vqe", {"periodic_scf_options": {"mixing": 0.2}}),
+    ("rhf", {"pool": "qeb"}), ("dft", {"pool": "ceo"})])
+def test_options_of_another_method_are_refused(method, option):
+    with pytest.raises(ValueError, match="does not use"):
+        Mandacaru(method=method, trace=False, **option)
+
+
+def test_options_a_method_uses_are_accepted():
+    """The refusal is by method: each of these is meaningful where it is given."""
+    Mandacaru(method="dft", xc="pbe", spin=True, trace=False)
+    Mandacaru(method="uhf", spin=True, trace=False)
+    Mandacaru(method="dft", kpts=(2, 2, 1), smearing=0.1, trace=False)
+    Mandacaru(method="mcas-vqe", seed=3, max_length=8, temperature=0.05, trace=False)
+    Mandacaru(method="vqe", pool="qeb", trace=False)
+    # a default value is never "given": naming it changes nothing
+    Mandacaru(method="rhf", xc=None, spin=False, pool="fermionic", seed=None, trace=False)
+
+
+def test_the_hamiltonian_export_controls_stay_available_to_classical_methods():
+    """mapping and active_space shape the quantum problem a classical run exports."""
+    Mandacaru(method="rhf", mapping="parity", active_space={"orbitals": 2}, trace=False)
 
 
 def test_ghf_is_rhf_for_a_closed_shell_and_exports_its_spinor_problem():

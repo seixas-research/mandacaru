@@ -52,8 +52,9 @@ E(\boldsymbol{\theta};R)
 = \langle\psi(\boldsymbol{\theta})|\hat H(R)|\psi(\boldsymbol{\theta})\rangle.
 ```
 
-Use the [LiH scan](pes_scan.md) for the general procedure for varying $R$,
-comparing pools and plotting the energies. The hydrogen examples
+Use the [potential-energy scan](pes_scan.md) for the general procedure for
+varying $R$ and plotting the energies, and the [ADAPT tutorial](adapt_vqe_lih.md)
+for comparing pools. The hydrogen examples
 `examples/excited_states/03_deflation_h2.py`, `examples/excited_states/01_ssvqe_h2.py` and
 `examples/excited_states/02_subspace_adapt_vqe_h2.py` explore
 excited-state calculations in this smaller system.

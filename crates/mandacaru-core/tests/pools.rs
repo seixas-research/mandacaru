@@ -136,7 +136,7 @@ fn complex_spin_mixing_reaches_the_independent_one_electron_ground_state() {
             .indices
             .as_slice()
             .iter()
-            .zip(result.state.as_slice())
+            .zip(result.state.complex128().unwrap())
         {
             let occupation = p.encoding.decode(encoded);
             if occupation.count_ones() != 1 {

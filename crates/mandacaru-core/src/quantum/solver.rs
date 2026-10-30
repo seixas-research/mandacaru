@@ -1,6 +1,27 @@
+use super::amplitude::{self, inner_wide, Amplitude, State};
 use super::{algebra::Generator, evolution, optimizer, Basis, Encoding, Operator, C64};
-use crate::{product, Buffer, Context, Error, Reservation, Result};
+use crate::{math::storage::Precision, product, Buffer, Context, Error, Reservation, Result};
+use num_complex::Complex32;
 use std::{path::Path, time::Instant};
+
+/// Run `body` once with `A` bound to the stored amplitude of `precision`.
+/// The one dispatch point of every quantum entry: below it the code is
+/// generic, so there is a single numerical definition per precision.
+macro_rules! by_precision {
+    ($precision:expr, $a:ident => $body:expr) => {
+        match $precision {
+            $crate::math::storage::Precision::Float64 => {
+                type $a = $crate::quantum::C64;
+                $body
+            }
+            $crate::math::storage::Precision::Float32 => {
+                type $a = num_complex::Complex32;
+                $body
+            }
+        }
+    };
+}
+pub(crate) use by_precision;
 
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
@@ -31,6 +52,9 @@ pub struct CachedProblem {
     pub basis: Basis,
     pub pool: Vec<Generator>,
     pub dense: Option<Buffer<C64>>,
+    /// Storage precision of every state this problem prepares. The
+    /// Hamiltonian, the pool, the parameters and all reductions are float64.
+    pub precision: Precision,
     pub sparse: Option<super::sparse::SparseMatrix>,
     pub pool_screenable: Vec<bool>,
     pub growth_members: Vec<Vec<usize>>,
@@ -82,12 +106,18 @@ impl CachedProblem {
             basis,
             pool,
             dense,
+            precision: Precision::Float64,
             sparse: None,
             pool_screenable: built.screenable,
             growth_members: built.growth_members,
             hva: None,
             _pool_metadata: built.memory,
         })
+    }
+    /// State storage: complex128 (`Float64`, the default) or complex64.
+    pub fn with_precision(mut self, precision: Precision) -> Self {
+        self.precision = precision;
+        self
     }
     pub fn use_pool(&mut self, name: &str, singles: bool) -> Result<()> {
         let pool = super::pools::build(&self.context, &self.encoding, name, singles)?;
@@ -132,9 +162,17 @@ impl CachedProblem {
         parameters: &[f64],
         trotter: bool,
     ) -> Result<evolution::Evaluation> {
+        by_precision!(self.precision, A => self.evaluate_as::<A>(indices, parameters, trotter))
+    }
+    fn evaluate_as<A: Amplitude>(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+    ) -> Result<evolution::Evaluation> {
         if let Some(hva) = &self.hva {
             let expanded = hva.expand(&self.pool, indices, parameters)?;
-            let mut out = evolution::evaluate(
+            let mut out = evolution::evaluate::<A>(
                 &self.context,
                 &self.basis,
                 &self.hamiltonian,
@@ -160,7 +198,7 @@ impl CachedProblem {
                     .ok_or_else(|| invalid("generator index exceeds pool"))
             })
             .collect();
-        evolution::evaluate(
+        evolution::evaluate::<A>(
             &self.context,
             &self.basis,
             &self.hamiltonian,
@@ -176,9 +214,27 @@ impl CachedProblem {
         indices: &[usize],
         parameters: &[f64],
         trotter: bool,
-    ) -> Result<Buffer<C64>> {
+    ) -> Result<State> {
+        by_precision!(self.precision, A => self.prepare_state_as::<A>(indices, parameters, trotter))
+    }
+    fn prepare_state_as<A: Amplitude>(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+    ) -> Result<State> {
+        Ok(A::wrap(
+            self.prepare_buffer::<A>(indices, parameters, trotter)?,
+        ))
+    }
+    pub(super) fn prepare_buffer<A: Amplitude>(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+    ) -> Result<Buffer<A>> {
         let expanded = self.sequence(indices, parameters)?;
-        evolution::state_from(
+        evolution::state_from::<A>(
             &self.context,
             &self.basis,
             &expanded.operators,
@@ -187,6 +243,45 @@ impl CachedProblem {
             false,
             None,
         )
+    }
+    /// `2 Re <H psi | G_i psi>` for every pool generator (the Hamiltonian
+    /// without its identity term when `centered`). `H psi` is stored in the
+    /// state precision, `G_i psi` is a float64 row, the sums are float64.
+    pub(super) fn pool_gradients(&self, state: &State, centered: bool) -> Result<Vec<f64>> {
+        match state {
+            State::Float64(buffer) => self.pool_gradients_of::<C64>(buffer.as_slice(), centered),
+            State::Float32(buffer) => {
+                self.pool_gradients_of::<Complex32>(buffer.as_slice(), centered)
+            }
+        }
+    }
+    fn pool_gradients_of<A: Amplitude>(&self, state: &[A], centered: bool) -> Result<Vec<f64>> {
+        let ctx = &self.context;
+        let d = self.basis.len();
+        if state.len() != d || !amplitude::finite(state) {
+            return Err(invalid("state must be finite and match the operator basis"));
+        }
+        let mut hpsi = ctx.allocate::<A>(d)?;
+        {
+            let mut acc = ctx.allocate::<C64>(A::accumulator_len(d))?;
+            A::with_wide(hpsi.as_mut_slice(), acc.as_mut_slice(), |wide| {
+                if centered {
+                    self.hamiltonian
+                        .add_centered_into(&self.basis, state, C64::new(1., 0.), wide)
+                } else {
+                    self.hamiltonian
+                        .add_into(&self.basis, state, C64::new(1., 0.), wide)
+                }
+            });
+        }
+        let mut action = ctx.allocate::<C64>(d)?;
+        let mut out = Vec::with_capacity(self.pool.len());
+        for g in &self.pool {
+            g.operator
+                .apply_into(&self.basis, state, action.as_mut_slice());
+            out.push(2. * inner_wide(hpsi.as_slice(), action.as_slice()).re);
+        }
+        Ok(out)
     }
     pub fn sequence<'a>(
         &'a self,
@@ -254,7 +349,12 @@ impl CachedProblem {
         mut observer: Option<&mut GrowthObserver<'_>>,
         mut execution: Option<&mut dyn Execution>,
     ) -> Result<SolveResult> {
-        options.validate()?;
+        // A circuit executor measures energies: the state floors do not apply.
+        options.validate(if execution.is_none() {
+            self.precision
+        } else {
+            Precision::Float64
+        })?;
         if options.adapt && self.hva.is_some() {
             return Err(invalid("HVA is a fixed ansatz"));
         }
@@ -408,23 +508,15 @@ impl CachedProblem {
                 };
                 let energy = evaluation.energy;
                 measured = Some(energy);
-                let hpsi = self.hamiltonian.apply_centered(
-                    ctx,
-                    &self.basis,
-                    evaluation.state.as_slice(),
-                )?;
-                let mut action = ctx.allocate::<C64>(self.basis.len())?;
                 let mut selected = 0;
                 final_gradient = 0.;
                 let mut gradients = vec![0.; self.pool.len()];
-                for (i, g) in self.pool.iter().enumerate() {
-                    g.operator.apply_into(
-                        &self.basis,
-                        evaluation.state.as_slice(),
-                        action.as_mut_slice(),
-                    );
-                    let magnitude =
-                        (2. * evolution::inner(hpsi.as_slice(), action.as_slice()).re).abs();
+                for (i, signed) in self
+                    .pool_gradients(&evaluation.state, true)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    let magnitude = signed.abs();
                     gradients[i] = magnitude;
                     if self.pool_screenable[i] && magnitude > final_gradient {
                         final_gradient = magnitude;
@@ -563,19 +655,11 @@ impl CachedProblem {
             message = format!("run budget exhausted: {reason}");
         }
         if options.adapt && execution.is_none() {
-            let hpsi = self
-                .hamiltonian
-                .apply_centered(ctx, &self.basis, state.as_slice())?;
-            let mut action = ctx.allocate(self.basis.len())?;
             final_gradient = 0.;
-            for (i, g) in self.pool.iter().enumerate() {
-                if !self.pool_screenable[i] {
-                    continue;
+            for (i, signed) in self.pool_gradients(&state, true)?.into_iter().enumerate() {
+                if self.pool_screenable[i] {
+                    final_gradient = final_gradient.max(signed.abs());
                 }
-                g.operator
-                    .apply_into(&self.basis, state.as_slice(), action.as_mut_slice());
-                final_gradient = final_gradient
-                    .max((2. * evolution::inner(hpsi.as_slice(), action.as_slice()).re).abs());
             }
         }
         let labels = indices
@@ -624,7 +708,9 @@ impl Default for SolveOptions {
     }
 }
 impl SolveOptions {
-    pub fn validate(&self) -> Result<()> {
+    /// Reject thresholds the state precision cannot resolve. The float32
+    /// floors are the measured values of `amplitude::FLOAT32_FLOORS`.
+    pub fn validate(&self, precision: Precision) -> Result<()> {
         self.optimizer.validate()?;
         if self
             .gradient_tolerance
@@ -636,6 +722,40 @@ impl SolveOptions {
             return Err(invalid(
                 "ADAPT needs positive finite convergence thresholds and at least one criterion",
             ));
+        }
+        if let Some(floors) = amplitude::floors(precision) {
+            let name = precision.name();
+            // `None` is the optimizer default (1e-9), below the floor; SPSA
+            // without a tolerance runs its whole budget and tests nothing.
+            let tolerance = self
+                .optimizer
+                .tolerance
+                .or((self.optimizer.method != optimizer::Method::Spsa)
+                    .then_some(optimizer::DEFAULT_TOLERANCE));
+            if tolerance.is_some_and(|t| t < floors.energy) {
+                return Err(invalid(&format!(
+                    "optimizer tolerance {:e} Ha is below the {name} state floor {:e} Ha; \
+                     raise it or use precision='float64'",
+                    tolerance.unwrap(),
+                    floors.energy
+                )));
+            }
+            if self.adapt {
+                if let Some(t) = self.energy_tolerance.filter(|&t| t < floors.energy) {
+                    return Err(invalid(&format!(
+                        "ADAPT energy threshold {t:e} Ha is below the {name} state floor {:e} Ha; \
+                         raise it or use precision='float64'",
+                        floors.energy
+                    )));
+                }
+                if let Some(t) = self.gradient_tolerance.filter(|&t| t < floors.gradient) {
+                    return Err(invalid(&format!(
+                        "ADAPT gradient threshold {t:e} Ha/rad is below the {name} state floor {:e} Ha/rad; \
+                         raise it or use precision='float64'",
+                        floors.gradient
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -655,7 +775,7 @@ pub struct SolveResult {
     pub energy: f64,
     pub reference: f64,
     pub parameters: Vec<f64>,
-    pub state: Buffer<C64>,
+    pub state: State,
     pub indices: Vec<usize>,
     pub labels: Vec<String>,
     pub iterations: Vec<Iteration>,

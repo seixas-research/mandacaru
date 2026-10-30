@@ -1,169 +1,158 @@
-# Calculation architecture
+# Architecture
 
-`Mandacaru` is an ASE `Calculator`. Users attach it directly with
-`atoms.calc = Mandacaru(...)`. The Python calculator owns one native context,
-its geometry snapshot, scientific result views and resource lifetimes. Rust
-owns numerical arrays, integral kernels, mean-field iterations and variational
-optimization. Standalone `Geometry` input is also available through `run`.
-
-```text
-ASE Atoms / Geometry + specifications + CalculationResources
-                       │
-                 Mandacaru.run
-                       │
-               PyO3 owned array boundary
-                       │
-     Rust molecular / periodic / quantum solvers
-                       │
-           shared math + scientific models
-```
-
-The Rust math layer provides spatial grids, Fourier operators, reciprocal
-geometry, radial quadrature, differentiation and eigensolvers. It cannot depend
-on physical models, basis construction or solvers. Spherical Hartree and XC
-models are shared by reference atoms and PAW; the atomic model does not depend
-on PAW.
-Separable generalized eigenproblems live in `math/separable.rs`. PAW radial
-channels use them through `paw/spectrum.rs`: the tridiagonal kinetic operator
-and projector corrections stay structured, including the overlap metric.
-Confinement and radial spectrum checks call this Rust implementation.
-The functional registry and physical unit constants live in Rust and are
-exported to Python. Python basis recipe metadata is separate from sampled
-basis generation.
-
-## Repository layout
+Mandacaru has two layers with one boundary between them. **Rust owns the numerics**:
+arrays, integrals, mean-field iterations and variational optimization. **Python is the
+interface**: the ASE calculator, array conversion, visualization and the adapters for
+quantum-computing services. Numerical work moves to Rust before its Python is deleted;
+there is no fallback to Python and no execution selector, and an unsupported request
+raises instead of selecting a different calculation. The state of that move is on
+[the cutover page](native_cutover.md).
 
 ```text
-Cargo.toml                         Rust workspace and shared dependencies
-Cargo.lock                         Locked native dependencies
-crates/
-  mandacaru-core/
-    src/basis/                     Native basis generation and radial tables
-    src/math/                      Grids, FFTs, radial quadrature, linear algebra
-    src/models/                    Atoms, spherical Hartree/XC, nonlocal and dispersion models
-    src/molecular/                 Molecular integrals, HF/DFT, forces, transformations
-    src/periodic/                  Crystal SCF, electrostatics and spectra
-    src/paw/                       PAW radial potentials and projectors
-    src/quantum/                   States, optimizers and variational solvers
-  mandacaru-kernels/                Low-level numerical kernels
-  mandacaru-python/                 PyO3 boundary and owned NumPy transfers
-build_hooks/native.py              Native extension construction during packaging
-src/mandacaru/
-  calculation.py                   Rust-only calculation orchestration
-  structure.py                     Geometry input values
-  resources.py                     Per-calculation resource lifecycle
-  results.py                       Native state/result views
-  models/                          Python input recipes and metadata
-  integrations/                    ASE, dataset codecs and external SDK adapters
-  workflows/                       Workflows over native quantum operations
-  analysis/                        Native correlation result views
-scripts/                           Local architecture and wheel validation
+ASE Atoms / Geometry + options + CalculationResources
+                       │
+          Mandacaru   (Python: validates options, converts units)
+                       │
+        mandacaru._native   (PyO3 boundary: owned-array copies)
+                       │
+     Rust solvers: molecular · periodic · quantum · PAW
+                       │
+          shared math, scientific models, kernels
 ```
 
-The workspace is rooted at the repository's `Cargo.toml`. No Rust source is
-nested inside the Python package, and no compatibility directories or import
-aliases preserve the former layout. The core depends on the kernel crate;
-the Python binding depends on the core. Neither scientific crate depends on
-Python or NumPy. Workspace-level dependency versions are declared once.
+## The crates and their dependency rule
 
-The binding entry point registers types. Array conversion, geometry and spatial-grid values,
-context dispatch, molecular states, periodic states, quantum problems, shared scientific models and PAW
-adapters live in separate binding modules. PAW dataset storage and evaluation
-live in `paw/dataset.rs`, construction in `paw/generate.rs`, and projector
-operators in `paw/channel.rs`. Shared radial interpolation belongs to `math`.
+The repository root `Cargo.toml` is the workspace of three crates:
 
-Python workflows import from `mandacaru.workflows.qpe`,
-`mandacaru.workflows.time_evolution`, `mandacaru.workflows.quantum_echoes` and
-`mandacaru.workflows.nested_otoc`. Their tests live in `test/workflows`. ASE
-conversion and calculator adapters live in `mandacaru.integrations.ase`.
+| Crate | Owns |
+| --- | --- |
+| `mandacaru-kernels` | Low-level numerical kernels (one-body and two-center integrals, radial and localized functions). `SAFETY.md` holds the contract of its raw ABI, and every `unsafe` block needs an entry there. |
+| `mandacaru-core` | Everything scientific: grids, FFTs, linear algebra, models, basis generation, molecular and periodic solvers, PAW, quantum states and optimizers. |
+| `mandacaru-python` | The PyO3 boundary: array transfer, context dispatch, and the molecular, periodic, quantum and PAW bindings. It contains no numerics. |
 
-## Lazy electronic interactions
+The dependency direction is `python -> core -> kernels`. Neither `mandacaru-core` nor
+`mandacaru-kernels` depends on Python or NumPy, and each dependency version is
+declared once, in the workspace `Cargo.toml`. Inside the core, `math` depends on no
+physical model: grids, FFTs, radial quadrature, splines and the separable
+eigenproblem are usable without knowing what an atom is. The default workspace
+members are the core and the kernels, so `cargo test` tests them; the Python crate is
+a cdylib built by the installation. `python scripts/check_architecture.py` enforces
+the rules, including grouped Rust imports, retired selectors in the supported
+Python boundary and Python dependencies in either scientific crate.
 
-Molecular setup builds basis samples and one-body matrices. Semilocal SCF uses
-density fields without allocating electron-repulsion factors. HF requests
-Coulomb factors lazily. Pivoted Cholesky computes a diagonal and selected
-Poisson columns, avoiding the full pair matrix. The same factor contractions
-serve HF and screened hybrid exchange.
+## Where the numerics live
 
-Molecular PAW adds atom-centered projector/local-potential quadrature,
-augmented overlap, compensation multipoles and exact one-center terms in Rust.
-Its smooth Coulomb operator uses Cholesky factors; the signed augmentation
-factors remain separate. The combined correction is not assumed positive
-semidefinite. The resulting representation supports both Fock contractions and
-explicit orbital transformations without an intermediate molecular four-index
-tensor. Only an explicit transformed Hamiltonian request allocates that tensor.
+| Core module | Contents |
+| --- | --- |
+| `math/` | Spatial grids, FFTs, radial quadrature, splines, linear algebra with a verified Jacobi fallback, symmetry, reciprocal geometry, separable generalized eigenproblems. |
+| `models/` | Atoms, spherical Hartree and exchange-correlation models, the functional registry, nonlocal correlation, dispersion primitives, spin-orbit operators. |
+| `basis/` | Native basis generation: radial functions, NAO and NAO-AE. |
+| `parquet/` | The Parquet container (Thrift footer, PLAIN and dictionary pages, Snappy and ZSTD codecs, writer); depends on no physical model, and its one third-party crate, `ruzstd`, is used only in `codec/zstd.rs`. Python reads and writes Hamiltonian caches and pseudopotential datasets through it ([Parquet files](#native-parquet)). |
+| `molecular/` | Molecular integrals, RHF/UHF/GHF and Kohn-Sham, forces and geometry response, orbital selection and MP2, PAW-LCAO gradients. |
+| `periodic/` | Crystal SCF and spinors, Ewald sums, spectra, Wannier functions. |
+| `paw/` | PAW dataset storage and evaluation, generation, projector channels, augmentation, molecular PAW. |
+| `quantum/` | Pauli and fermion algebra, mappings, sectors, pools, states, evolution, the optimizers, ADAPT, subspace and deflation solvers, architecture search, execution hooks. |
 
-The molecular PAW adapter decodes datasets and supplies basis radial tables.
-Rust constructs their nonuniform cubic interpolants and owns all operator
-arrays. A single closed 1s core is recovered exactly from its stored density,
-preserving the dataset's reference convention; other frozen-core partitions
-remain unsupported. PAW field views sample the smooth valence density and
-report augmentation charge separately from the charge present in a cube file.
+The functional registry and the physical constants live in Rust and are exported to
+Python, so there is one list of exchange-correlation functionals.
 
-A mean-field state contains orbitals, densities and SCF records. Its transformed
-four-index model is a separately cached explicit request. Quantum calculations
-request that model; ordinary energy, forces and snapshots do not. Native locks
-protect factor and model initialization. Failed construction does not cache a
-partial model.
+## The Python layer
 
-Orbital selection lives in `molecular/active.rs`. Energy selection and
-closed-shell MP2 frozen natural orbitals build the selected Hamiltonian
-directly from Coulomb factors and signed PAW factors. MP2 requests only an
-occupied–occupied–virtual–virtual block for its density. Neither path constructs
-the full source-MO four-index tensor. Frozen-core contributions use native
-Coulomb and exchange contractions. The selected model owns its orbital
-rotation and occupations; density views consume that same native model,
-including after the calculator closes.
+`src/mandacaru/` is the interface layer. Numerics that still sit in it are awaiting
+their move to Rust and are tracked on the cutover page; no new numerical routine is
+added in Python.
 
-## Array ownership
+| Module | Role |
+| --- | --- |
+| `calculation.py`, `structure.py`, `resources.py`, `results.py`, `specifications.py` | The `Mandacaru` calculator, geometry input, per-calculation resources, native result views and the method and basis specifications. |
+| `_native.pyi` | The typed contract with the extension. |
+| `integrations/` | ASE conversion, PAW adapters, circuit execution, run reports. |
+| `analysis/` | Views of native results. |
+| `workflows/` | Quantum phase estimation, time evolution, quantum echoes. |
+| `backends/` | Device registry, circuit providers, measurement planning. |
+| `basis/`, `models/`, `pseudopotentials/` | Basis families and metadata, input recipes, PAW-LCAO and UPAW-LCAO generation and dataset layout. |
+| `circuits/`, `core/`, `integrals/`, `optimizers/` | Ansatz and pool definitions, fermion and Pauli algebra, integral helpers, the optimizer wrapper. |
+| `utils/` | The run-log protocol, profiling, bibliography, cube and XSF writers, `Viewer3D`. |
+| `cli.py`, `units.py`, `version.py`, `backend_policy.py` | The `mandacaru` command, unit constants, version, the one parser of `MANDACARU_BACKEND`. |
 
-NumPy input buffers must be aligned and contiguous with exact dtypes. The
-binding copies into budgeted Rust buffers while attached to Python, then
-releases the interpreter. A crystal input contains small JSON metadata plus a
-map of typed arrays; string keys connect those records. The buffers move into
-the native crystal where possible. Small matrix representations can require
-an additional layout conversion; this is not an end-to-end zero-copy API.
+## The PyO3 boundary
 
-JSON files are explicit persistence, rather than the runtime bulk transport.
-Every returned snapshot has independent NumPy storage. Native objects retain
-their context and shared immutable state through reference-counted ownership.
+The rules, which `_native.pyi` records and the bindings must satisfy in the same
+change:
 
-## Resource lifecycle
+- Inputs are aligned, C-contiguous NumPy arrays of the declared dtype. The binding
+  validates them and copies them into budgeted Rust buffers while it still holds the
+  interpreter, then releases it. It is not an end-to-end zero-copy API.
+- Returned arrays own independent storage. No borrowed or writable Rust view is
+  exposed, so changing or retaining a result cannot invalidate a native workspace.
+- A crystal input is small JSON metadata plus a dictionary of typed arrays, connected
+  by string keys. JSON files are persistence, not the runtime transport.
+- Native objects keep their `Context` and shared immutable state through reference
+  counting. Each calculator has its own context, lock and optional scratch directory.
+- A `Context` carries a thread limit and a byte budget. The budget covers native
+  buffers and estimated scratch; it is not a limit on the process, and the NumPy
+  copies returned to Python are outside it.
+- Units inside the boundary are Hartree and Bohr.
+- When a signature in the bindings changes, `_native.pyi` changes with it.
 
-Each calculator has its own context, lock and optional temporary directory.
-Repeated runs replace its current reference; externally retained result views
-remain valid. Closing releases the calculator's state and deletes its scratch,
-while retained results continue to own their buffers. Closing one calculator
-must not affect another calculator's resources.
+## One calculation
 
-The public configuration is fixed at construction. Cached problems preserve
-their mapping; an explicit conflicting mapping raises. Unsupported requests
-must raise instead of selecting a different model.
+`Mandacaru` validates its options in the constructor and builds the native problem
+on first use. A run takes the geometry, builds the integrals on the grid, runs the
+mean-field iteration, and for a quantum method hands the orbitals to the quantum
+solver; each step is one call across the boundary that returns an owned object.
+Properties are lazy: reading an energy or a force leaves the transformed four-index
+Hamiltonian unbuilt, and only an explicit request for it (`result.hamiltonian`, or a
+quantum method) allocates it. HF requests Coulomb factors lazily as pivoted Cholesky
+columns, never the full pair matrix; semilocal Kohn-Sham allocates no repulsion
+factors at all.
+
+Orbital selection (`molecular/active.rs`) builds the active-space Hamiltonian
+directly from the Coulomb factors, without a full source-MO tensor, and the selected
+model owns its orbital rotation and occupations. Molecular PAW adds the projector,
+augmentation and one-center terms in Rust; the Python adapter only decodes the dataset
+and supplies the radial tables.
+
+The public configuration is fixed at construction. Closing a calculator releases its
+state and scratch, while results you kept continue to own their buffers; closing one
+calculator never affects another.
+
+## Adding a method
+
+A method is not finished until all of the steps below are done; the last two are
+checked by tests.
+
+1. **Rust.** Implement it in the owning core module with tests in
+   `crates/mandacaru-core/tests/` (one file per topic), including a derivative or
+   reference check. It must reproduce an independent number, or the one it replaces,
+   from the frozen references in `test/migration/reference`.
+2. **Binding.** Expose it in the matching `mandacaru-python` module and update
+   `_native.pyi` in the same change. Rebuild the extension (`pip install -e '.[dev]'`);
+   a change under `crates/` is invisible to Python until you do.
+3. **Specification.** Add a `Capability(quantum, forces, periodic)` entry to `METHODS`
+   in `specifications.py`, and the dispatch in `calculation.py`. Reach the method
+   only through `Mandacaru(method=...)`.
+4. **Refusals.** Every combination of options the method cannot honor must raise in
+   the constructor or at the run, with a message that names the option.
+5. **Bibliography.** Register the reference in `utils/bibliography.py`; the registry
+   sweep in `test/utils/test_bibliography.py` fails without one.
+6. **Documentation.** Add the row to [the methods table](../reference/methods.md)
+   (`test/test_docs_links.py` compares the table with `METHODS`), write the guide,
+   put anything partial in [the not-yet-available table](../reference/not_yet_available.md)
+   and update the cutover page.
+7. **Example.** Add a numbered script to the matching `examples/` category and run it
+   with `scripts/check_examples.py`.
 
 ## Automated checks
 
-`scripts/check_architecture.py` checks dependencies and retired selectors in
-the supported boundary, duplicate orchestration, packaging inputs and dependency
-direction between
-math, models, basis construction and solvers. It checks grouped Rust imports as
-well as direct paths and rejects Python dependencies in either scientific crate.
-`test/architecture` checks behavior: unused integration imports blocked in a subprocess,
-lazy Hamiltonians for all six functionals, native quantum references and
-checkpoints, calculator isolation, array ownership and periodic validation.
+| Check | What it covers |
+| --- | --- |
+| `cargo test` | Numerical limits, scientific references and derivatives in the core and kernels. |
+| `python -m pytest` | The Python suite, including `test/architecture` (boundary behavior, lazy Hamiltonians, calculator isolation, array ownership) and `test/migration` (frozen references and native parity). |
+| `python scripts/check_architecture.py` | Crate dependencies, retired selectors, packaging inputs. |
+| `python scripts/check_wheel.py` | An installed wheel works outside the checkout with compilers blocked. |
+| `python scripts/check_examples.py` | Runs disposable copies of the examples and records failures, convergence and peak native allocation. Heavy examples have no default time limit; outbound connections are blocked so hardware examples cannot submit jobs. |
+| `make -C docs html SPHINXOPTS="-W"` and `test/test_docs_links.py` | The manual: warnings are errors, and every link and code sample is checked against the code. |
 
-Run the local validation scripts against a wheel installed with all required
-dependencies in a fresh environment. ASE is part of that installation. The
-import-blocking check separately verifies that numerical calls do not eagerly
-load unused SDKs or SciPy. GitHub workflows are not used.
-Rust tests check numerical limits, scientific references and derivatives. Sphinx builds with warnings as
-errors. These checks do not imply parity for all remaining standalone legacy
-modules; their migration is tracked in the [coverage audit](native_cutover.md).
-
-Public recovery also requires running `python scripts/check_examples.py`.
-It preserves every example, runs disposable copies, and records each failure
-or explicitly requested timeout. There is no default time limit for heavy
-scientific examples. The report records calculation energies, solver and SCF
-convergence, inner optimizer failures and peak native allocation separately
-from script completion. Outbound connections are blocked so hardware examples cannot
-submit remote jobs. Native tests and architecture checks alone do not certify
-that the ASE examples or the full scientific suite work.
+Passing the native tests does not certify the examples or the full scientific suite,
+and none of these checks claims parity for the remaining legacy modules.

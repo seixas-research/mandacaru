@@ -30,6 +30,7 @@ fn molecular_transfer_tracks_orbital_signs_and_preserves_the_physical_density() 
             r#"{"name":"HAO"}"#,
             "spectral",
             None,
+            Default::default(),
         )
         .unwrap();
         let old = integrals
@@ -89,14 +90,14 @@ fn molecular_transfer_tracks_orbital_signs_and_preserves_the_physical_density() 
             &context,
             &old_problem.encoding,
             &old_problem.basis,
-            first.as_slice(),
+            first.complex128().unwrap(),
         )
         .unwrap();
         let second = properties::spatial_rdms(
             &context,
             &new_problem.encoding,
             &new_problem.basis,
-            second.as_slice(),
+            second.complex128().unwrap(),
         )
         .unwrap();
         let density = |reference: &DMatrix<C64>, one: &[C64]| {
@@ -146,8 +147,15 @@ fn captured_handover_releases_the_previous_frame_before_the_next_budgeted_build(
             LengthUnit::Bohr,
         )?;
         let grid = SpatialGrid::from_geometry(&geometry, [0.6; 3], false, false)?;
-        let integrals =
-            MolecularIntegrals::new(ctx, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None)?;
+        let integrals = MolecularIntegrals::new(
+            ctx,
+            geometry,
+            grid,
+            r#"{"name":"HAO"}"#,
+            "spectral",
+            None,
+            Default::default(),
+        )?;
         let reference = integrals.mean_field("rhf", [1, 1], &Default::default())?;
         let model = reference.model(&integrals)?;
         let problem = model.problem(ctx, "jordan_wigner", true, false, true)?;

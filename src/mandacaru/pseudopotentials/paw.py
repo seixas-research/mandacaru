@@ -157,14 +157,14 @@ from ..core.augmentation import PairAugmentation
 from ..models.paw_channels import projector_blocks
 from .confinement import CONFINEMENT_DEFAULT_OPTIONS, CONFINEMENT_OPTIONS
 from .dataset import Channel, PseudoPotential, _valence_configuration
-from .partial_waves import (INNER_POINTS, Q_MAX, Q_STEP,
-                   PseudoWaves, _bessel_table, _bessel_transform_table,
+from .partial_waves import (INNER_POINTS,
+                   PseudoWaves, _bessel_table,
                    _inner_grid, _log_derivative_of_u,
-                   _pseudo_waves_record, _radial_f, _resample, _snap,
-                   _spectrum_extent, _tail_transform, _with_origin,
-                   bessel_derivatives, bessel_wavevectors, generation_points,
+                   _radial_f, _resample, _snap,
+                   _spectrum_extent, _with_origin,
+                   generation_points,
                    DEFAULT_EXTRA_L, DEFAULT_NLCC, DEFAULT_RELATIVITY,
-                   DEFAULT_XC, log_derivative_errors, matching_targets,
+                   DEFAULT_XC, log_derivative_errors,
                    defect_message, defects_record, ghost_free,
                    numerov_outward, read_defects, warn_defects,
                    optimize_pseudo_waves, polynomial_local_potential,
@@ -728,58 +728,15 @@ def smooth_partial_waves(r: np.ndarray, v_ae: np.ndarray, l: int, waves: list,
     where it should: LiH's bond length differs by 0.002 A and its binding energy
     by 0.098 eV.
     """
-    if norm_deficit is not None:
-        # The deficit scales whatever the correct norm target is, so a
-        # relativistic reference atom needs nothing extra here: the Wronskian
-        # form is already what `optimize_pseudo_waves` conserves
-        # (:func:`~.partial_waves.norm_targets`), and `norm_factor` multiplies it.
-        return optimize_pseudo_waves(r, v_ae, l, waves, energies, r_cut,
-                                     q_cut=q_cut, n_bessel=n_bessel,
-                                     norm_factor=1.0 - float(norm_deficit),
-                                     treatment=treatment, kappa=kappa,
-                                     z_eff=z_eff)
-    r_cut = _snap(r, r_cut)
-    r_in = _inner_grid(r_cut)
-    q_grid = np.arange(0.0, Q_MAX + 0.5 * Q_STEP, Q_STEP)
-    weight = 0.5 * q_grid ** 4 * (q_grid >= q_cut)
-
-    waves_in = [_resample(r, w, r_in) for w in waves]
-    norms = np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in waves_in]
-                      for a in waves_in])
-
-    qs = bessel_wavevectors(l, r_cut, n_bessel)
-    j, dj, d2j, d3j = bessel_derivatives(l, qs * r_cut)
-    A = np.array([j, qs * dj, qs ** 2 * d2j, qs ** 3 * d3j])
-    basis_in = _bessel_table(l, qs, r_in)
-    G = simpson(basis_in[:, None, :] * basis_in[None, :, :]
-                * (r_in * r_in)[None, None, :], x=r_in, axis=-1)
-    transform = _bessel_transform_table(l, qs, r_in, q_grid)          # (N, Q)
-    K = (transform * weight) @ transform.T * Q_STEP
-    # Null space of the matching rows: c = c0 + Z y.
-    _u, sigma, vt = np.linalg.svd(A)
-    rank = int(np.sum(sigma > 1e-12 * sigma.max()))
-    Z = vt[rank:].T
-    Kz = Z.T @ K @ Z + 1e-10 * np.trace(K) / K.shape[0] * (Z.T @ G @ Z)
-
-    coefficients, wavevectors, pseudo_in, residuals = [], [], [], []
-    for wave, energy in zip(waves, energies):
-        target = matching_targets(r, wave * r, v_ae, l, energy, r_cut,
-                                  treatment, kappa, z_eff)
-        c0, *_ = np.linalg.lstsq(A, target, rcond=None)
-        bound = energy < 0 and abs(wave[-1] * r[-1]) < 1e-6
-        tail = _tail_transform(l, r, wave, r_cut, bound, q_grid)
-        kvec = (transform * weight) @ tail * Q_STEP
-        k0 = float(np.sum(weight * tail * tail) * Q_STEP)
-        y = np.linalg.solve(Kz, -Z.T @ (K @ c0 + kvec))
-        c = c0 + Z @ y
-        coefficients.append(c)
-        wavevectors.append(qs)
-        pseudo_in.append(c @ basis_in)
-        residuals.append(float(c @ K @ c + 2.0 * kvec @ c + k0))
-
-    return _pseudo_waves_record(l, r_cut, energies, waves, wavevectors,
-                                coefficients, residuals, norms, pseudo_in,
-                                r_in, q_cut)
+    # The deficit scales whatever the correct norm target is, so a
+    # relativistic reference atom needs nothing extra here: the Wronskian
+    # form is already what `optimize_pseudo_waves` conserves
+    # (:func:`~.partial_waves.norm_targets`), and `norm_factor` multiplies it.
+    # Without a deficit no norm condition is imposed at all.
+    return optimize_pseudo_waves(
+        r, v_ae, l, waves, energies, r_cut, q_cut=q_cut, n_bessel=n_bessel,
+        norm_factor=None if norm_deficit is None else 1.0 - float(norm_deficit),
+        treatment=treatment, kappa=kappa, z_eff=z_eff)
 
 
 # --------------------------------------------------------------------------- #
@@ -2325,35 +2282,6 @@ def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
     """``{(atom, l, m): D_l}`` for ``nonlocal_coupling`` (in the
     projectors' basis)."""
     return _blocks(projectors, symbols, datasets, "coupling")
-
-
-def _multipole_grid_potential(radius, dx, dy, dz, r_g, L, M, potential=None,
-                              *, real: bool):
-    """``v_L(r) Y_LM`` sampled on grid offsets from one center
-    (``potential(radius, r_g, L)`` in place of the Coulomb one), in the
-    harmonics ``real`` states."""
-    from .multipoles import shape_potential
-    from ..basis._angular import spherical_harmonic
-
-    v = (shape_potential if potential is None else potential)(radius, r_g, L)
-    if int(L) == 0:
-        return v * spherical_harmonic(0, 0, 0.0, 0.0, real=real)
-    safe = np.maximum(radius, 1e-300)
-    theta = np.arccos(np.clip(dz / safe, -1.0, 1.0))
-    phi = np.arctan2(dy, dx)
-    return v * spherical_harmonic(int(L), int(M), theta, phi, real=real)
-
-
-def long_range_multipole_potential(omega: float):
-    """``potential(radius, r_g, L)`` of a compensation multipole under the
-    long-range kernel (:func:`~.onecenter.long_range_shape_potential`), in the
-    form :func:`_multipole_grid_potential` and
-    :func:`~.multipoles.multipole_coulomb_matrix` take."""
-    from .onecenter import long_range_shape_potential
-
-    def potential(radius, r_g, L):
-        return long_range_shape_potential(radius, r_g, L, float(omega))
-    return potential
 
 
 def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:

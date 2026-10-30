@@ -1,24 +1,23 @@
+(installation)=
 # Installation
 
-Mandacaru requires Python 3.14 or later. The package installs its scientific Python dependencies and quantum SDKs,
-and includes its Rust extension in a platform wheel.
+Mandacaru requires Python 3.14 or later. The numerical engine is a Rust
+extension that the install compiles, so a source install also needs a Rust
+toolchain (Rust 1.85 or later, with `cargo` on the `PATH`).
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-python -m pip install mandacaru
-```
-
-On Windows use `.venv\Scripts\activate`. Installed wheels need no compiler
-at calculation time. Building a source checkout requires Rust/Cargo:
-
-```bash
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 python -m pip install -e ".[dev]"
 ```
 
-Reinstall the editable package after changing Rust code; Python edits alone do
-not rebuild the extension. Package construction is the only compilation step.
-Force a rebuild when the package version has not changed:
+The `dev` extra adds the documentation tools (Sphinx, MyST, Furo) and
+`pytest-cov`; `.[docs]` adds only the documentation tools. Once the
+extension is built, calculations compile nothing.
+
+A change under `crates/` is not seen by Python until the extension is rebuilt;
+Python edits alone do not rebuild it. Rerun the install after changing Rust
+code, or force the rebuild when the package version has not changed:
 
 ```bash
 python -m pip install --force-reinstall --no-deps -e .
@@ -26,43 +25,57 @@ python -m pip install --force-reinstall --no-deps -e .
 uv pip install --reinstall-package mandacaru --no-deps -e .
 ```
 
-## Required Python dependencies
+Check the install:
 
-A standard installation includes NumPy, SciPy, threadpoolctl, ASE, spglib,
-Matplotlib, pandas, fastparquet, Qiskit, Qiskit IBM Runtime, Amazon Braket SDK,
-Cirq, pytest and psutil. Documentation and development tools are extras.
+```bash
+mandacaru --version
+python -c "from mandacaru import Mandacaru; print(Mandacaru(method='rhf').method)"
+```
 
-The scientific algorithms execute in Rust. Python integration packages remain
-required for the distributed user interface, examples, plotting, persistence
-and external SDK workflows. The core imports these integrations only when used.
+## Python dependencies
 
-Attach the calculator directly with `atoms.calc = Mandacaru(...)`. Standalone
-`Geometry` values are also supported. No execution-engine option is provided.
+The install pulls in NumPy, SciPy, threadpoolctl, ASE, spglib, Matplotlib,
+Qiskit, Qiskit Aer, Qiskit IBM Runtime, the Amazon Braket SDK, Cirq, pytest and
+psutil. The scientific algorithms run in Rust; the Python packages serve the ASE
+interface, plotting and the quantum SDKs, and the core imports them only when they
+are used. Aer is required for the IBM fake devices, which take their noise models
+from it.
 
-## PAW datasets
+Parquet files need no Python package. The native engine reads and writes the
+Hamiltonian caches and the pseudopotential datasets itself, so `pandas`,
+`pyarrow` and `fastparquet` are neither declared nor imported, and the `engine=`
+and `codec=` keywords that once chose between them no longer exist. Any of them
+may still be installed for your own work, for example to inspect a cache; Cirq,
+for one, pulls in `pandas`. The file rules (what raises, which codecs, what a
+new file looks like) are in [Parquet files](#native-parquet).
 
-Periodic PAW geometry assembly currently uses a Python setup adapter to the
-Rust crystal solver.
-Set `MANDACARU_PAW_PATH` to a `mandacaru-paw` checkout, or
-`MANDACARU_UPAW_PATH` to a `mandacaru-upaw` checkout. Dataset selection belongs
-to the basis specification; datasets do not ship in the base wheel.
-Molecular PAW HF, semilocal Kohn–Sham and variational calculations, and the
-stationary RHF/UHF/Kohn–Sham forces, use Rust for sampling, integral
-assembly, overlap augmentation, compensation multipoles and exact valence
-one-center interactions. Frozen-core exchange currently supports an empty core
-or a single closed 1s shell. Python still prepares the PAW basis radial tables.
-Molecular PAW screened exchange, spin-orbit projectors, GHF forces and
-multi-shell core exchange remain unavailable.
+(installation-paw)=
+## PAW-LCAO datasets
+
+No pseudopotential data ships with the package. The PAW-LCAO datasets live in
+the `mandacaru-paw` repository; clone it and tell Mandacaru where it is:
+
+```bash
+mandacaru-paw --set /path/to/mandacaru-paw   # writes MANDACARU_PAW_PATH to your shell profile
+mandacaru-paw --status                       # one row per dataset set that is reachable
+```
+
+Open a new terminal (or `source` the profile) for the variable to take effect;
+in a non-interactive shell, export `MANDACARU_PAW_PATH` yourself. A calculation
+that needs an unset library raises `LibraryPathError` naming the command that
+fixes it. The `HAO`, `NAO`, `NAO-AE` and named Gaussian bases read no data and
+need none of this. The library layout and the optional UPAW-LCAO library are in
+[PAW-LCAO bases](#paw-lcao-libraries).
 
 ## Verification
 
 ```bash
-python scripts/check_architecture.py
-python -m pytest test/architecture
-cargo test --release --manifest-path Cargo.toml --workspace
-python -m sphinx -W --keep-going -b html docs/source /tmp/mandacaru-docs
+python -m pytest test/test_docs_links.py     # the manual against the code
+python scripts/check_architecture.py         # crate and package boundaries
+cargo test --release                         # Rust tests (default workspace members)
+make -C docs html SPHINXOPTS="-W"            # the manual; warnings are errors
 ```
 
-Local scripts validate the installed wheel and the ASE adapter. A separate
-smoke check blocks integration imports to verify the native calculation boundary. No GitHub workflows are used.
-The [development guide](development/architecture.md) explains the contracts.
+The suite runs locally; the repository has no hosted workflows. Contributors
+should read [the architecture page](development/architecture.md) for the
+contracts between the Python interface, the PyO3 boundary and the Rust crates.

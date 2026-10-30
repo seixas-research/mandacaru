@@ -63,16 +63,18 @@ decays like the pseudo valence density's.
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import brentq
+
+from .. import _native
+from .native_context import context
 
 #: The partial core density is matched where ``rho_core`` falls to this
 #: multiple of the valence density.  1.0 is the crossing point, the usual
 #: choice; a larger value moves the match outward and makes the core smoother.
 DEFAULT_CROSSOVER = 1.0
 
-#: Bracket of the ``x cot x`` root, kept strictly inside ``(0, pi)`` where the
-#: function is monotone and the smooth core stays nodeless.
-_X_BRACKET = (1e-9, np.pi - 1e-9)
+
+def _array(values) -> np.ndarray:
+    return np.ascontiguousarray(values, dtype=float)
 
 
 def crossover_radius(r, core, valence, ratio: float = DEFAULT_CROSSOVER):
@@ -83,18 +85,8 @@ def crossover_radius(r, core, valence, ratio: float = DEFAULT_CROSSOVER):
     Returns ``None`` when the core never dominates -- a valence-only atom such
     as hydrogen, which needs no correction.
     """
-    r = np.asarray(r, dtype=float)
-    excess = np.asarray(core, dtype=float) - float(ratio) * np.asarray(
-        valence, dtype=float)
-    sign_change = np.nonzero((excess[:-1] > 0.0) & (excess[1:] <= 0.0))[0]
-    if sign_change.size == 0:
-        return None
-    i = int(sign_change[-1])
-    # Linear interpolation of the crossing between the bracketing nodes.
-    span = excess[i] - excess[i + 1]
-    if abs(span) < 1e-300:
-        return float(r[i])
-    return float(r[i] + (r[i + 1] - r[i]) * excess[i] / span)
+    return _native.paw_crossover_radius(context(), _array(r), _array(core),
+                                        _array(valence), float(ratio))
 
 
 def smooth_core_density(r, core, r_nlcc: float):
@@ -110,41 +102,15 @@ def smooth_core_density(r, core, r_nlcc: float):
             \frac{\rho_c'(r_{\text{nlcc}})}{\rho_c(r_{\text{nlcc}})} ,
 
     whose left side falls monotonically from 1 to :math:`-\infty` on
-    :math:`(0,\pi)`.  A decaying core makes the right side less than 1, so the
-    root exists and is unique, and keeping :math:`x < \pi` keeps
-    :math:`\sin(Br)` from reaching a node inside the matching radius.
+    :math:`(0,\pi)`, so the root exists and is unique and :math:`\sin(Br)`
+    reaches no node inside the matching radius.
 
     Returns
     -------
     (rho_tilde, A, B) : (ndarray, float, float)
     """
-    r = np.asarray(r, dtype=float)
-    core = np.asarray(core, dtype=float)
-    r_nlcc = float(r_nlcc)
-
-    index = int(np.argmin(np.abs(r - r_nlcc)))
-    r_match = float(r[index])
-    value = float(core[index])
-    if value <= 0.0:
-        raise ValueError(
-            f"the core density vanishes at r_nlcc = {r_match:.4f} Bohr, so "
-            "there is nothing to match a smooth continuation to")
-    slope = float(np.gradient(core, r, edge_order=2)[index])
-    target = 1.0 + r_match * slope / value
-    if target >= 1.0:
-        raise ValueError(
-            f"the core density is not decreasing at r_nlcc = {r_match:.4f} "
-            "Bohr, so the sin(Br)/r form has no nodeless match there")
-
-    def condition(x):
-        return x / np.tan(x) - target
-
-    x = brentq(condition, *_X_BRACKET, xtol=1e-14, rtol=1e-15)
-    B = x / r_match
-    A = value * r_match / np.sin(x)
-
-    smooth = np.where(r < r_match, A * np.sin(B * r) / r, core)
-    return smooth, float(A), float(B)
+    return _native.paw_smooth_core_density(context(), _array(r), _array(core),
+                                           float(r_nlcc))
 
 
 def partial_core_density(r, core, valence, r_nlcc=None,
@@ -156,21 +122,18 @@ def partial_core_density(r, core, valence, r_nlcc=None,
     returned density is zero, with ``details["applied"] = False`` -- the same
     answer as not asking for a core correction at all.
     """
-    r = np.asarray(r, dtype=float)
-    core = np.asarray(core, dtype=float)
-    radius = (crossover_radius(r, core, valence, ratio) if r_nlcc is None
-              else float(r_nlcc))
-    if radius is None:
-        return np.zeros_like(r), {"applied": False, "r_nlcc": None,
-                                  "reason": "the core density never exceeds "
-                                            "the valence density"}
-    smooth, A, B = smooth_core_density(r, core, radius)
-    shell = 4.0 * np.pi * r * r
-    return smooth, {
+    out = _native.paw_partial_core_density(
+        context(), _array(r), _array(core), _array(valence),
+        None if r_nlcc is None else float(r_nlcc), float(ratio))
+    if out["r_nlcc"] is None:
+        return out["density"], {"applied": False, "r_nlcc": None,
+                                "reason": "the core density never exceeds "
+                                          "the valence density"}
+    return out["density"], {
         "applied": True,
-        "r_nlcc": float(radius),
-        "amplitude": A,
-        "wavevector": B,
-        "core_electrons": float(np.trapezoid(core * shell, r)),
-        "partial_core_electrons": float(np.trapezoid(smooth * shell, r)),
+        "r_nlcc": out["r_nlcc"],
+        "amplitude": out["amplitude"],
+        "wavevector": out["wavevector"],
+        "core_electrons": out["core_electrons"],
+        "partial_core_electrons": out["partial_core_electrons"],
     }

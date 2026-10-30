@@ -177,7 +177,6 @@ pub fn sample(
         return Err(invalid("natural orbital index outside the basis"));
     }
     let ctx: &Context = &integrals.context;
-    let samples = integrals.basis.sample(ctx, grid)?;
     let g = grid.index.points();
     let _work = ctx.reserve(
         product(&[m, m, 16, 4])?
@@ -212,12 +211,14 @@ pub fn sample(
                 .sum()
         })
     };
+    // The field grid need not be the integration grid, so the orbitals are
+    // evaluated point by point; no sample stack is built.
     let mut phi = vec![0.; m];
+    let mut raw = vec![0.; m];
     for k in 0..g {
+        integrals.basis.evaluate_at(0, grid.point(k), &mut raw);
         for (p, value) in phi.iter_mut().enumerate() {
-            *value = (0..m)
-                .map(|a| integrals.lowdin[(a, p)] * samples.as_slice()[a * g + k])
-                .sum();
+            *value = (0..m).map(|a| integrals.lowdin[(a, p)] * raw[a]).sum();
         }
         let value = if quantity == "natural_orbital" {
             (0..m)

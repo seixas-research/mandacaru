@@ -118,3 +118,39 @@ def test_adapt_ground_state_handoff(mapping, tmp_path):
     propagated = time_evolve(checkpoint, hq, 0.5, steps=4, order=4)
     np.testing.assert_allclose(propagated, expm(-0.5j*hq.to_matrix()) @ psi, atol=2e-9)
 
+
+
+class TestPrecision:
+    """``precision="float32"``: complex64 states, float64 reductions and scalars."""
+
+    H = PauliSum({"YX": 0.8, "ZI": -0.5, "II": 0.2})
+    V = PauliSum({"XX": 0.7, "YI": 0.3, "II": 0.1})
+
+    def test_float32_echo_matches_float64(self):
+        psi = np.array([1, 2j, -1j, 3], complex) / np.sqrt(15)
+        wide = quantum_echoes(psi, self.H, self.V, 0.8, tau_p=-0.012, steps=8,
+                              order=4)
+        narrow = quantum_echoes(psi, self.H, self.V, 0.8, tau_p=-0.012, steps=8,
+                                order=4, precision="float32")
+        assert wide.state.dtype == np.complex128
+        assert narrow.state.dtype == np.complex64
+        np.testing.assert_allclose(narrow.state, wide.state, atol=1e-6)
+        for name in ("amplitude", "correlation"):
+            assert getattr(narrow, name) == pytest.approx(getattr(wide, name),
+                                                          abs=1e-6)
+        assert narrow.response == pytest.approx(wide.response, abs=1e-6)
+        assert isinstance(narrow.correlation, complex)
+
+    def test_float32_spectrum_series_is_float64_and_matches(self):
+        psi = np.array([1, 2j, -1j, 3], complex) / np.sqrt(15)
+        wide = QuantumEchoes(self.H, self.V).spectrum(
+            psi, time_step=0.4, num_samples=16, steps_per_sample=4)
+        narrow = QuantumEchoes(self.H, self.V, precision="float32").spectrum(
+            psi, time_step=0.4, num_samples=16, steps_per_sample=4)
+        assert narrow.correlation.dtype == np.complex128
+        np.testing.assert_allclose(narrow.correlation, wide.correlation, atol=2e-6)
+
+    @pytest.mark.parametrize("precision", ["single", "double", "Float32", None])
+    def test_any_other_precision_raises(self, precision):
+        with pytest.raises(ValueError, match="precision"):
+            QuantumEchoes(self.H, self.V, precision=precision)

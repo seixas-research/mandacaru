@@ -28,6 +28,7 @@ fn standalone_kohn_sham_and_stationary_hf_gradients_follow_the_energy() {
             r#"{"name":"HAO"}"#,
             "spectral",
             None,
+            Default::default(),
         )
         .unwrap()
     };

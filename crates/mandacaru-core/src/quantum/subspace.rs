@@ -1,12 +1,15 @@
 //! Weighted shared-unitary VQE/ADAPT; bare expectations, sorted with their states.
-use super::{evolution, optimizer, Basis, CachedProblem, SolveOptions, C64};
-use crate::{product, Buffer, Error, Reservation, Result};
+use super::amplitude::{stack, Amplitude, State};
+use super::solver::by_precision;
+use super::{evolution, optimizer, Basis, CachedProblem, SolveOptions};
+use crate::quantum::C64;
+use crate::{product, Error, Reservation, Result};
 use std::{cmp::Reverse, time::Instant};
 
 pub struct SubspaceResult {
     pub energies: Vec<f64>,
     pub parameters: Vec<f64>,
-    pub states: Buffer<C64>,
+    pub states: State,
     pub reference: f64,
     pub indices: Vec<usize>,
     pub reference_indices: Vec<usize>,
@@ -19,7 +22,7 @@ pub struct SubspaceResult {
     _memory: Reservation,
 }
 impl CachedProblem {
-    fn subspace_references(&self, count: usize) -> Result<Buffer<C64>> {
+    fn subspace_references<A: Amplitude>(&self, count: usize) -> Result<crate::Buffer<A>> {
         let ctx = &self.context;
         let sector = Basis::new(ctx, &self.encoding, true)?;
         if count == 0 || count > sector.len() {
@@ -44,7 +47,7 @@ impl CachedProblem {
             .collect();
         states.sort_unstable();
         let d = self.basis.len();
-        let mut references = ctx.allocate::<C64>(product(&[count, d])?)?;
+        let mut references = stack::<A>(ctx, count, d)?;
         for (j, (_, _, encoded)) in states.into_iter().take(count).enumerate() {
             let row = self
                 .basis
@@ -52,19 +55,19 @@ impl CachedProblem {
                 .as_slice()
                 .binary_search(&encoded)
                 .map_err(|_| Error::Invalid("subspace determinant is absent from basis".into()))?;
-            references.as_mut_slice()[j * d + row] = C64::new(1., 0.);
+            references.as_mut_slice()[j * d + row] = A::narrow(C64::new(1., 0.));
         }
         Ok(references)
     }
-    fn subspace_evaluate(
+    fn subspace_evaluate<A: Amplitude>(
         &self,
         indices: &[usize],
         parameters: &[f64],
         trotter: bool,
-        reference: &[C64],
+        reference: &[A],
     ) -> Result<evolution::Evaluation> {
         let ops: Vec<_> = indices.iter().map(|&i| &self.pool[i].operator).collect();
-        evolution::evaluate_from(
+        evolution::evaluate_from::<A>(
             &self.context,
             &self.basis,
             &self.hamiltonian,
@@ -82,8 +85,19 @@ impl CachedProblem {
         weights: &[f64],
         initial: Option<&[f64]>,
     ) -> Result<SubspaceResult> {
+        by_precision!(
+            self.precision,
+            A => self.solve_subspace_as::<A>(options, weights, initial)
+        )
+    }
+    fn solve_subspace_as<A: Amplitude>(
+        &self,
+        options: &SolveOptions,
+        weights: &[f64],
+        initial: Option<&[f64]>,
+    ) -> Result<SubspaceResult> {
         self.context.run(|| {
-            options.validate()?;
+            options.validate(self.precision)?;
             if weights.is_empty()
                 || weights.iter().any(|w| !w.is_finite() || *w <= 0.)
                 || weights.windows(2).any(|w| w[1] >= w[0])
@@ -96,7 +110,7 @@ impl CachedProblem {
             let ctx = &self.context;
             let k = weights.len();
             let d = self.basis.len();
-            let references = self.subspace_references(k)?;
+            let references = self.subspace_references::<A>(k)?;
             let max_parameters = if options.adapt {
                 product(&[
                     options.max_growth,
@@ -139,7 +153,7 @@ impl CachedProblem {
                 let mut energy = 0.;
                 let mut gradient = vec![0.; theta.len()];
                 for (j, w) in weights.iter().enumerate() {
-                    let result = self.subspace_evaluate(
+                    let result = self.subspace_evaluate::<A>(
                         indices,
                         theta,
                         if options.adapt { true } else { options.trotter },
@@ -176,29 +190,21 @@ impl CachedProblem {
             } else {
                 for growth in 0..=options.max_growth {
                     let mut gradients = ctx.allocate::<f64>(self.pool.len())?;
-                    let mut action = ctx.allocate::<C64>(d)?;
                     let mut lowest = f64::INFINITY;
                     for (j, w) in weights.iter().enumerate() {
-                        let evaluation = self.subspace_evaluate(
+                        let evaluation = self.subspace_evaluate::<A>(
                             &indices,
                             &parameters,
                             true,
                             &references.as_slice()[j * d..(j + 1) * d],
                         )?;
                         lowest = lowest.min(evaluation.energy);
-                        let hpsi = self.hamiltonian.apply(
-                            ctx,
-                            &self.basis,
-                            evaluation.state.as_slice(),
-                        )?;
-                        for (i, g) in self.pool.iter().enumerate() {
-                            g.operator.apply_into(
-                                &self.basis,
-                                evaluation.state.as_slice(),
-                                action.as_mut_slice(),
-                            );
-                            gradients.as_mut_slice()[i] +=
-                                w * 2. * evolution::inner(hpsi.as_slice(), action.as_slice()).re;
+                        for (slot, g) in gradients
+                            .as_mut_slice()
+                            .iter_mut()
+                            .zip(self.pool_gradients(&evaluation.state, false)?)
+                        {
+                            *slot += w * g;
                         }
                     }
                     let selected = gradients
@@ -252,7 +258,7 @@ impl CachedProblem {
                     let mut next_lowest = f64::INFINITY;
                     for j in 0..k {
                         next_lowest = next_lowest.min(
-                            self.subspace_evaluate(
+                            self.subspace_evaluate::<A>(
                                 &indices,
                                 &parameters,
                                 true,
@@ -268,28 +274,29 @@ impl CachedProblem {
                 }
             }
             let mut energies = Vec::new();
-            let mut states = ctx.allocate::<C64>(product(&[k, d])?)?;
+            let mut states = stack::<A>(ctx, k, d)?;
             for j in 0..k {
-                let result = self.subspace_evaluate(
+                let result = self.subspace_evaluate::<A>(
                     &indices,
                     &parameters,
                     if options.adapt { true } else { options.trotter },
                     &references.as_slice()[j * d..(j + 1) * d],
                 )?;
                 energies.push(result.energy);
-                states.as_mut_slice()[j * d..(j + 1) * d].copy_from_slice(result.state.as_slice());
+                states.as_mut_slice()[j * d..(j + 1) * d].copy_from_slice(
+                    A::view(&result.state).expect("state has the problem's precision"),
+                );
             }
             if options.adapt {
                 let mut gradients = ctx.allocate::<f64>(self.pool.len())?;
-                let mut action = ctx.allocate::<C64>(d)?;
                 for (j, w) in weights.iter().enumerate() {
-                    let state = &states.as_slice()[j * d..(j + 1) * d];
-                    let hpsi = self.hamiltonian.apply(ctx, &self.basis, state)?;
-                    for (i, g) in self.pool.iter().enumerate() {
-                        g.operator
-                            .apply_into(&self.basis, state, action.as_mut_slice());
-                        gradients.as_mut_slice()[i] +=
-                            w * 2. * evolution::inner(hpsi.as_slice(), action.as_slice()).re;
+                    let state = A::wrap(copy_row(ctx, &states.as_slice()[j * d..(j + 1) * d])?);
+                    for (slot, g) in gradients
+                        .as_mut_slice()
+                        .iter_mut()
+                        .zip(self.pool_gradients(&state, false)?)
+                    {
+                        *slot += w * g;
                     }
                 }
                 if gradients.as_slice().iter().any(|g| !g.is_finite()) {
@@ -304,7 +311,7 @@ impl CachedProblem {
             }
             let mut order: Vec<_> = (0..k).collect();
             order.sort_by(|&a, &b| energies[a].total_cmp(&energies[b]));
-            let mut sorted = ctx.allocate::<C64>(product(&[k, d])?)?;
+            let mut sorted = stack::<A>(ctx, k, d)?;
             for (j, &source) in order.iter().enumerate() {
                 sorted.as_mut_slice()[j * d..(j + 1) * d]
                     .copy_from_slice(&states.as_slice()[source * d..(source + 1) * d]);
@@ -313,7 +320,7 @@ impl CachedProblem {
             Ok(SubspaceResult {
                 energies: sorted_energies,
                 parameters,
-                states: sorted,
+                states: A::wrap(sorted),
                 reference,
                 indices,
                 reference_indices: order,
@@ -327,4 +334,11 @@ impl CachedProblem {
             })
         })
     }
+}
+
+/// A stored row copied into its own buffer (a state to screen the pool with).
+fn copy_row<A: Amplitude>(ctx: &crate::Context, row: &[A]) -> Result<crate::Buffer<A>> {
+    let mut out = ctx.allocate::<A>(row.len())?;
+    out.as_mut_slice().copy_from_slice(row);
+    Ok(out)
 }

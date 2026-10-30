@@ -1,0 +1,2017 @@
+{
+ "elements": [
+  "H",
+  "C",
+  "N",
+  "O",
+  "Si",
+  "Cu",
+  "Au"
+ ],
+ "sizes": [
+  "SZ",
+  "DZ",
+  "DZP",
+  "TZP"
+ ],
+ "max_points": 700,
+ "levels": [
+  "Ca_2",
+  "H_1",
+  "K_2",
+  "Li_1"
+ ],
+ "k_c": 5.235987755982989,
+ "cases": [
+  {
+   "tag": "b_H_SZ",
+   "symbol": "H",
+   "size": "SZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "orbital",
+     1,
+     1,
+     1500
+    ]
+   ],
+   "n_functions": 1
+  },
+  {
+   "tag": "b_H_DZ",
+   "symbol": "H",
+   "size": "DZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     1,
+     1500
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     1,
+     1500
+    ]
+   ],
+   "n_functions": 2
+  },
+  {
+   "tag": "b_H_DZP",
+   "symbol": "H",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     1,
+     1500
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     1,
+     1500
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     1500
+    ]
+   ],
+   "n_functions": 5
+  },
+  {
+   "tag": "b_H_TZP",
+   "symbol": "H",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     1,
+     1500
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     1,
+     1500
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     1,
+     1500
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     1500
+    ]
+   ],
+   "n_functions": 6
+  },
+  {
+   "tag": "b_C_SZ",
+   "symbol": "C",
+   "size": "SZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "orbital",
+     1,
+     2,
+     2250
+    ],
+    [
+     1,
+     "orbital",
+     1,
+     2,
+     2250
+    ]
+   ],
+   "n_functions": 4
+  },
+  {
+   "tag": "b_C_DZ",
+   "symbol": "C",
+   "size": "DZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2250
+    ]
+   ],
+   "n_functions": 8
+  },
+  {
+   "tag": "b_C_DZP",
+   "symbol": "C",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     2250
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "b_C_TZP",
+   "symbol": "C",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     3,
+     2,
+     2250
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     2250
+    ]
+   ],
+   "n_functions": 17
+  },
+  {
+   "tag": "b_N_SZ",
+   "symbol": "N",
+   "size": "SZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "orbital",
+     1,
+     2,
+     2625
+    ],
+    [
+     1,
+     "orbital",
+     1,
+     2,
+     2625
+    ]
+   ],
+   "n_functions": 4
+  },
+  {
+   "tag": "b_N_DZ",
+   "symbol": "N",
+   "size": "DZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2625
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2625
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2625
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2625
+    ]
+   ],
+   "n_functions": 8
+  },
+  {
+   "tag": "b_N_DZP",
+   "symbol": "N",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2625
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2625
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2625
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2625
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     2625
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "b_N_TZP",
+   "symbol": "N",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2625
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2625
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     2,
+     2625
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2625
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2625
+    ],
+    [
+     1,
+     "zeta",
+     3,
+     2,
+     2625
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     2625
+    ]
+   ],
+   "n_functions": 17
+  },
+  {
+   "tag": "b_O_SZ",
+   "symbol": "O",
+   "size": "SZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "orbital",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "orbital",
+     1,
+     2,
+     3000
+    ]
+   ],
+   "n_functions": 4
+  },
+  {
+   "tag": "b_O_DZ",
+   "symbol": "O",
+   "size": "DZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     3000
+    ]
+   ],
+   "n_functions": 8
+  },
+  {
+   "tag": "b_O_DZP",
+   "symbol": "O",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     3000
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "b_O_TZP",
+   "symbol": "O",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     3,
+     2,
+     3000
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     3000
+    ]
+   ],
+   "n_functions": 17
+  },
+  {
+   "tag": "b_Si_SZ",
+   "symbol": "Si",
+   "size": "SZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "orbital",
+     1,
+     3,
+     5250
+    ],
+    [
+     1,
+     "orbital",
+     1,
+     3,
+     5250
+    ]
+   ],
+   "n_functions": 4
+  },
+  {
+   "tag": "b_Si_DZ",
+   "symbol": "Si",
+   "size": "DZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     5250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     3,
+     5250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     5250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     3,
+     5250
+    ]
+   ],
+   "n_functions": 8
+  },
+  {
+   "tag": "b_Si_DZP",
+   "symbol": "Si",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     5250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     3,
+     5250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     5250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     3,
+     5250
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     5250
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "b_Si_TZP",
+   "symbol": "Si",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     5250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     3,
+     5250
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     3,
+     5250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     5250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     3,
+     5250
+    ],
+    [
+     1,
+     "zeta",
+     3,
+     3,
+     5250
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     5250
+    ]
+   ],
+   "n_functions": 17
+  },
+  {
+   "tag": "b_Cu_SZ",
+   "symbol": "Cu",
+   "size": "SZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "orbital",
+     1,
+     3,
+     10875
+    ],
+    [
+     0,
+     "orbital",
+     1,
+     4,
+     10875
+    ],
+    [
+     1,
+     "orbital",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "orbital",
+     1,
+     3,
+     10875
+    ]
+   ],
+   "n_functions": 10
+  },
+  {
+   "tag": "b_Cu_DZ",
+   "symbol": "Cu",
+   "size": "DZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     4,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     4,
+     10875
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     3,
+     10875
+    ]
+   ],
+   "n_functions": 16
+  },
+  {
+   "tag": "b_Cu_DZP",
+   "symbol": "Cu",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     4,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     4,
+     10875
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     3,
+     10875
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     10875
+    ]
+   ],
+   "n_functions": 19
+  },
+  {
+   "tag": "b_Cu_TZP",
+   "symbol": "Cu",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     4,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     4,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     4,
+     10875
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     3,
+     3,
+     10875
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     10875
+    ]
+   ],
+   "n_functions": 25
+  },
+  {
+   "tag": "b_Au_SZ",
+   "symbol": "Au",
+   "size": "SZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "orbital",
+     1,
+     5,
+     29625
+    ],
+    [
+     0,
+     "orbital",
+     1,
+     6,
+     29625
+    ],
+    [
+     1,
+     "orbital",
+     1,
+     5,
+     29625
+    ],
+    [
+     2,
+     "orbital",
+     1,
+     5,
+     29625
+    ]
+   ],
+   "n_functions": 10
+  },
+  {
+   "tag": "b_Au_DZ",
+   "symbol": "Au",
+   "size": "DZ",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     6,
+     29625
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     6,
+     29625
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     5,
+     29625
+    ]
+   ],
+   "n_functions": 16
+  },
+  {
+   "tag": "b_Au_DZP",
+   "symbol": "Au",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     6,
+     29625
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     6,
+     29625
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     5,
+     29625
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     29625
+    ]
+   ],
+   "n_functions": 19
+  },
+  {
+   "tag": "b_Au_TZP",
+   "symbol": "Au",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     6,
+     29625
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     6,
+     29625
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     6,
+     29625
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     5,
+     29625
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     5,
+     29625
+    ],
+    [
+     2,
+     "zeta",
+     3,
+     5,
+     29625
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     29625
+    ]
+   ],
+   "n_functions": 25
+  },
+  {
+   "tag": "nofilter_H_DZP",
+   "symbol": "H",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": null,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     1,
+     1500
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     1,
+     1500
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     1500
+    ]
+   ],
+   "n_functions": 5
+  },
+  {
+   "tag": "nofilter_O_DZP",
+   "symbol": "O",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": null,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     3000
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "nofilter_Cu_DZP",
+   "symbol": "Cu",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": null,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     4,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     4,
+     10875
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     3,
+     10875
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     10875
+    ]
+   ],
+   "n_functions": 19
+  },
+  {
+   "tag": "unconf_H_DZP",
+   "symbol": "H",
+   "size": "DZP",
+   "options": {
+    "energy_shift": null
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     1,
+     1500
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     1,
+     1500
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     1500
+    ]
+   ],
+   "n_functions": 5
+  },
+  {
+   "tag": "unconf_C_DZP",
+   "symbol": "C",
+   "size": "DZP",
+   "options": {
+    "energy_shift": null
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     2250
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "unconf_O_DZP",
+   "symbol": "O",
+   "size": "DZP",
+   "options": {
+    "energy_shift": null
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     3000
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "unconf_Cu_DZP",
+   "symbol": "Cu",
+   "size": "DZP",
+   "options": {
+    "energy_shift": null
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     4,
+     10875
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     4,
+     10875
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     3,
+     10875
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     3,
+     10875
+    ],
+    [
+     3,
+     "polarization",
+     1,
+     4,
+     10875
+    ]
+   ],
+   "n_functions": 23
+  },
+  {
+   "tag": "unconf_C_TZ2P",
+   "symbol": "C",
+   "size": "TZ2P",
+   "options": {
+    "energy_shift": null
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     3,
+     2,
+     2250
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     2250
+    ],
+    [
+     3,
+     "polarization",
+     1,
+     4,
+     2250
+    ]
+   ],
+   "n_functions": 24
+  },
+  {
+   "tag": "unconf_O_TZ2P",
+   "symbol": "O",
+   "size": "TZ2P",
+   "options": {
+    "energy_shift": null
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     3,
+     2,
+     3000
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     3000
+    ],
+    [
+     3,
+     "polarization",
+     1,
+     4,
+     3000
+    ]
+   ],
+   "n_functions": 24
+  },
+  {
+   "tag": "b_Na_DZP",
+   "symbol": "Na",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     4125
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     4125
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     3,
+     4125
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     4125
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     4125
+    ]
+   ],
+   "n_functions": 9
+  },
+  {
+   "tag": "b_Ca_DZP",
+   "symbol": "Ca",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     3,
+     7500
+    ],
+    [
+     0,
+     "zeta",
+     1,
+     4,
+     7500
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     4,
+     7500
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     3,
+     7500
+    ],
+    [
+     2,
+     "zeta",
+     1,
+     3,
+     7500
+    ],
+    [
+     2,
+     "zeta",
+     2,
+     3,
+     7500
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     7500
+    ]
+   ],
+   "n_functions": 19
+  },
+  {
+   "tag": "b_Li_DZP",
+   "symbol": "Li",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     1500
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     1500
+    ],
+    [
+     1,
+     "polarization",
+     1,
+     2,
+     1500
+    ]
+   ],
+   "n_functions": 5
+  },
+  {
+   "tag": "orbpol_O_DZP",
+   "symbol": "O",
+   "size": "DZP",
+   "options": {
+    "energy_shift": 0.1,
+    "polarization_method": "orbital"
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     3000
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     3000
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     3000
+    ]
+   ],
+   "n_functions": 13
+  },
+  {
+   "tag": "lastzeta_C_TZP",
+   "symbol": "C",
+   "size": "TZP",
+   "options": {
+    "energy_shift": 0.1,
+    "zeta_split": "last_zeta"
+   },
+   "k_c": 5.235987755982989,
+   "tables": [
+    [
+     0,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     0,
+     "zeta",
+     3,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     1,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     2,
+     2,
+     2250
+    ],
+    [
+     1,
+     "zeta",
+     3,
+     2,
+     2250
+    ],
+    [
+     2,
+     "polarization",
+     1,
+     3,
+     2250
+    ]
+   ],
+   "n_functions": 17
+  }
+ ]
+}

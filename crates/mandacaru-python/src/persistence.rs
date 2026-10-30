@@ -18,17 +18,29 @@ impl PySnapshot {
         py.detach(|| self.inner.save(Path::new(path)))
             .map_err(error)
     }
-    fn state<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, mandacaru_core::quantum::C64>> {
+    #[pyo3(signature = (path, compression = "zstd"))]
+    fn save_parquet(&self, py: Python<'_>, path: &str, compression: &str) -> PyResult<()> {
+        let codec = mandacaru_core::parquet::Codec::parse(compression).map_err(error)?;
+        py.detach(|| {
+            self.inner
+                .save_parquet(&self.context, Path::new(path), codec)
+        })
+        .map_err(error)
+    }
+    #[pyo3(signature=(*,precision="float64"))]
+    fn state<'py>(&self, py: Python<'py>, precision: &str) -> PyResult<Bound<'py, PyAny>> {
+        let precision = super::quantum::parse_precision(precision)?;
         let state = py
-            .detach(|| self.inner.state(&self.context))
+            .detach(|| self.inner.state(&self.context, precision))
             .map_err(error)?;
-        array(py, &[state.as_slice().len()], state.as_slice().to_vec())
+        let len = state.len();
+        super::quantum::state_array(py, &[len], state)
     }
     fn expectation(&self, py: Python<'_>) -> PyResult<f64> {
         py.detach(|| self.inner.expectation(&self.context))
             .map_err(error)
     }
-    #[pyo3(signature=(*,sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic"))]
+    #[pyo3(signature=(*,sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64"))]
     fn problem(
         &self,
         py: Python<'_>,
@@ -37,13 +49,16 @@ impl PySnapshot {
         include_singles: bool,
         sparse: bool,
         pool: &str,
+        precision: &str,
     ) -> PyResult<super::quantum::PyProblem> {
+        let precision = super::quantum::parse_precision(precision)?;
         let mut inner = py
             .detach(|| {
                 self.inner
                     .problem(&self.context, sector, dense, include_singles)
             })
-            .map_err(error)?;
+            .map_err(error)?
+            .with_precision(precision);
         if pool != "fermionic" {
             py.detach(|| inner.use_pool(pool, include_singles))
                 .map_err(error)?;

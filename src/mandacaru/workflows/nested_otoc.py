@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
+from .._native import state_inner, state_norm_squared
 from ..core.mapping import PauliSum
 from ..units import HARTREE_TO_EV
 from .time_evolution import (PreparedState, SuzukiTrotter, _finite_real,
@@ -36,7 +37,7 @@ class NestedOTOCResult:
     the simulation evaluates two branches, retaining the complex correlator.
     """
 
-    state: NDArray[np.complex128]
+    state: NDArray[np.complexfloating]
     correlator: complex
     measurement_expectation: float
     initial_measurement_eigenvalue: int | None
@@ -99,9 +100,15 @@ class OTOCSpectrum:
         return destination
 
 
-def _pauli_insertion(operator: PauliSum, name: str, n_qubits: int) -> SuzukiTrotter:
+#: How far ``M psi`` may sit from ``+-psi`` for ``psi`` to count as an M
+#: eigenstate (a 2-norm, in the stored dtype: complex64 rounding is ~1e-7).
+_EIGENSTATE_TOLERANCE = {"float64": 1e-12, "float32": 1e-6}
+
+
+def _pauli_insertion(operator: PauliSum, name: str, n_qubits: int,
+                     precision: str) -> SuzukiTrotter:
     """Compile a signed Pauli string and enforce the paper's involutions."""
-    compiled = SuzukiTrotter(operator)
+    compiled = SuzukiTrotter(operator, precision=precision)
     if compiled.n_qubits != n_qubits:
         raise ValueError(f"{name} and Hamiltonian qubit counts differ")
     if len(compiled._terms) != 1 or compiled._terms[0][1] not in (-1.0, 1.0):
@@ -123,6 +130,13 @@ class NestedOTOC:
     trotter_order
         Product-formula accuracy (default 2; also 1 and higher even orders).
         The separate ``otoc_order`` in run/spectrum/circuit selects k.
+    precision
+        ``"float64"`` (default) or ``"float32"``. Float32 stores the
+        propagated vectors and the final state as ``complex64`` (see
+        :class:`~mandacaru.workflows.time_evolution.SuzukiTrotter`); inner
+        products are summed in float64 in Rust, the eigenstate test of M uses
+        a 1e-6 distance instead of 1e-12, and the correlator series and
+        spectrum stay float64. Anything else raises ``ValueError``.
 
     Notes
     -----
@@ -135,13 +149,18 @@ class NestedOTOC:
     """
 
     def __init__(self, hamiltonian: PauliSum, butterfly: PauliSum,
-                 measurement: PauliSum, *, trotter_order: int = 2) -> None:
-        self._evolution = SuzukiTrotter(hamiltonian, order=trotter_order)
-        self._b = _pauli_insertion(butterfly, "butterfly", self._evolution.n_qubits)
-        self._m = _pauli_insertion(measurement, "measurement", self._evolution.n_qubits)
+                 measurement: PauliSum, *, trotter_order: int = 2,
+                 precision: str = "float64") -> None:
+        self.precision = precision
+        self._evolution = SuzukiTrotter(hamiltonian, order=trotter_order,
+                                        precision=precision)
+        self._b = _pauli_insertion(butterfly, "butterfly",
+                                   self._evolution.n_qubits, precision)
+        self._m = _pauli_insertion(measurement, "measurement",
+                                   self._evolution.n_qubits, precision)
 
-    def _sequence(self, state: NDArray[np.complex128], time: float,
-                  steps: int, k: int) -> NDArray[np.complex128]:
+    def _sequence(self, state: NDArray[np.complexfloating], time: float,
+                  steps: int, k: int) -> NDArray[np.complexfloating]:
         """Apply U_k, using the exact adjoint of each discrete forward leg."""
         for index in range(k):
             if index:
@@ -164,21 +183,23 @@ class NestedOTOC:
         time = _finite_real(time, "time")
         steps = _positive_integer(steps, "steps")
         k = _positive_integer(otoc_order, "otoc_order")
-        psi = _state_vector(initial_state, self._evolution.n_qubits)
+        psi = _state_vector(initial_state, self._evolution.n_qubits,
+                            precision=self.precision)
         m_psi = self._m._apply_operator(psi)
         eigenvalue = None
+        tolerance = _EIGENSTATE_TOLERANCE[self.precision]
         for sign in (1, -1):
-            if np.linalg.norm(m_psi - sign * psi) <= 1e-12:
+            if state_norm_squared(m_psi - sign * psi) <= tolerance**2:
                 eigenvalue = sign
                 break
         state = self._sequence(psi, time, steps, k)
         m_state = self._m._apply_operator(state)
-        measured = float(np.vdot(state, m_state).real)
+        measured = state_inner(state, m_state)[0]
         if eigenvalue is not None:
             correlator = complex(eigenvalue * measured)
         else:
             branch = self._sequence(m_psi, time, steps, k)
-            correlator = complex(np.vdot(m_state, branch))
+            correlator = complex(*state_inner(m_state, branch))
         return NestedOTOCResult(state, correlator, measured, eigenvalue, time, k)
 
     def spectrum(self, initial_state: PreparedState, *, time_step: float = 0.5,
@@ -202,7 +223,8 @@ class NestedOTOC:
             raise ValueError("time_step must be positive and num_samples at least four")
         if window not in ("hann", "none"):
             raise ValueError("window must be 'hann' or 'none'")
-        psi = _state_vector(initial_state, self._evolution.n_qubits)
+        psi = _state_vector(initial_state, self._evolution.n_qubits,
+                            precision=self.precision)
         times = np.arange(n) * dt
         correlation = np.empty(n, dtype=complex)
         for j, time in enumerate(times):

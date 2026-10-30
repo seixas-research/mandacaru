@@ -19,56 +19,35 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import numpy as np
 from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from mandacaru import Mandacaru
+from mandacaru import Mandacaru, _native
 from mandacaru.core import PauliSum
 from mandacaru.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
-                                          FILE_EXTENSION, FILE_EXTENSIONS,
-                                          FORMAT_TAG, HAMILTONIAN_FORMATS,
-                                          PARQUET_ENGINES, available_engines,
-                                          detect_format, load_hamiltonian,
-                                          resolve_engine, resolve_format,
+                                          FILE_EXTENSIONS, FORMAT_TAG,
+                                          HAMILTONIAN_FORMATS, detect_format,
+                                          load_hamiltonian, resolve_format,
                                           resolve_save_path, save_hamiltonian)
 
-# Engines exercised **in this process**.
-#
-# `pyarrow` is deliberately excluded: on CPython 3.14 with qiskit 2.5 / pyarrow
-# 25, pyarrow's Parquet writer hard-crashes (SIGSEGV) once Qiskit's transpiler
-# has run in the same interpreter -- both ship their own native runtimes -- and a
-# segfault takes the whole test session down, not just one test.  That is exactly
-# why Mandacaru defaults to `fastparquet` (see mandacaru.core.serialization).
-#
-# pyarrow is still covered, in `TestPyarrowEngineIsolated` below, by running a
-# round-trip in a *clean subprocess* where the crash cannot occur or spread.
-IN_PROCESS_ENGINES = [
-    pytest.param(name,
-                 marks=pytest.mark.skipif(name not in available_engines(),
-                                          reason=f"{name} not installed"))
-    for name in PARQUET_ENGINES if name != "pyarrow"
-]
-ENGINES = IN_PROCESS_ENGINES
-
-
-def _usable_engines() -> tuple[str, ...]:
-    """Engines safe to drive from inside the test process."""
-    return tuple(name for name in available_engines() if name != "pyarrow")
+#: Frozen foreign-writer files (fastparquet, pyarrow) and hand-made negatives.
+PARQUET_REFERENCE = Path(__file__).parents[1] / "migration/reference/parquet"
 
 
 def _run_isolated(script: str) -> subprocess.CompletedProcess:
-    """Run ``script`` in a fresh interpreter (never importing Qiskit)."""
-    return subprocess.run([sys.executable, "-c", textwrap.dedent(script)],
+    """Run ``script`` in a fresh, isolated interpreter."""
+    return subprocess.run([sys.executable, "-I", "-c", textwrap.dedent(script)],
                           capture_output=True, text=True)
 
 
 @pytest.fixture
 def h2_atoms():
     return Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
-                 cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
+                 cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=False)
 
 
 @pytest.fixture
@@ -86,22 +65,13 @@ def h2_cache(tmp_path, h2_atoms):
 # Serialization round-trip.
 # --------------------------------------------------------------------------- #
 
-def _write_raw_parquet(path, columns, key_value):
-    """Write a hand-made Parquet table (bypassing Mandacaru) for negative tests."""
-    import fastparquet
-    import pandas as pd
-    fastparquet.write(str(path), pd.DataFrame(columns),
-                      custom_metadata=key_value, write_index=False)
-
-
 class TestSerializationRoundTrip:
-    @pytest.mark.parametrize("engine", ENGINES)
-    def test_round_trip_preserves_terms(self, tmp_path, engine):
+    def test_round_trip_preserves_terms(self, tmp_path):
         pauli = PauliSum({"IIII": -0.81, "ZIII": 0.17, "XXYY": 0.045j})
         path = save_hamiltonian(tmp_path / "h.parquet", pauli,
                                 mapping="bravyi_kitaev", num_particles=(1, 1),
-                                n_spatial_orbitals=2, engine=engine)
-        record = load_hamiltonian(path, engine=engine)
+                                n_spatial_orbitals=2)
+        record = load_hamiltonian(path)
 
         assert record.mapping == "bravyi_kitaev"
         assert record.num_particles == (1, 1)
@@ -111,40 +81,61 @@ class TestSerializationRoundTrip:
         for label, coeff in pauli.terms.items():
             assert record.hamiltonian.terms[label] == pytest.approx(coeff)
 
-    @pytest.mark.parametrize("engine", ENGINES)
-    def test_file_is_a_parquet_table_of_pauli_terms(self, tmp_path, engine):
-        pandas = pytest.importorskip("pandas")
+    def test_file_is_a_parquet_table_of_pauli_terms(self, tmp_path):
         pauli = PauliSum({"IZ": 0.5, "ZI": -0.25})
-        path = save_hamiltonian(tmp_path / "h.parquet", pauli, engine=engine)
-        frame = pandas.read_parquet(path, engine=engine)
+        path = save_hamiltonian(tmp_path / "h.parquet", pauli)
+        table = _native.read_parquet(_native.Context(), path)
 
-        assert list(frame.columns) == ["pauli", "real", "imag"]
+        assert list(table["columns"]) == ["pauli", "real", "imag"]
         # Rows are sorted by Pauli string, so the file is reproducible.
-        assert list(frame["pauli"]) == ["IZ", "ZI"]
-        assert list(frame["real"]) == [0.5, -0.25]
-        assert list(frame["imag"]) == [0.0, 0.0]
+        assert table["columns"]["pauli"] == ["IZ", "ZI"]
+        assert table["columns"]["real"].tolist() == [0.5, -0.25]
+        assert table["columns"]["imag"].tolist() == [0.0, 0.0]
         assert path.endswith(".parquet")
+        with open(path, "rb") as handle:
+            data = handle.read()
+        assert data[:4] == data[-4:] == b"PAR1"
 
-    @pytest.mark.parametrize("engine", ENGINES)
-    def test_metadata_carries_the_problem_spec(self, tmp_path, engine):
+    def test_metadata_carries_the_problem_spec(self, tmp_path):
         pauli = PauliSum({"IZ": 0.5, "ZI": -0.25})
         path = save_hamiltonian(tmp_path / "h.parquet", pauli, mapping="parity",
-                                num_particles=(1, 1), n_spatial_orbitals=1,
-                                engine=engine)
-        record = load_hamiltonian(path, engine=engine)
+                                num_particles=(1, 1), n_spatial_orbitals=1)
+        record = load_hamiltonian(path)
         assert record.mapping == "parity"
         assert record.num_particles == (1, 1)
         assert record.n_spatial_orbitals == 1
         assert record.num_qubits == 2
+        footer = _native.read_parquet_metadata(_native.Context(), path)
+        assert footer["metadata"]["mandacaru.format"] == FORMAT_TAG
+        assert footer["metadata"]["mandacaru.num_qubits"] == "2"
 
-    def test_readable_by_pandas(self, tmp_path):
-        """Being plain Parquet, the cache is queryable with the usual tools."""
-        pandas = pytest.importorskip("pandas")
-        pauli = PauliSum({"IZ": 0.5, "ZI": -0.25, "XX": 0.125})
-        path = save_hamiltonian(tmp_path / "h.parquet", pauli)
-        frame = pandas.read_parquet(path, engine=_usable_engines()[0])
-        assert len(frame) == 3
-        assert set(frame["pauli"]) == {"IZ", "ZI", "XX"}
+    @pytest.mark.parametrize("compression", ["zstd", "uncompressed", "none",
+                                             "ZSTD"])
+    def test_compression_names(self, tmp_path, compression):
+        pauli = PauliSum({"IZ": 0.5, "ZI": -0.25})
+        path = save_hamiltonian(tmp_path / "h.parquet", pauli,
+                                compression=compression)
+        assert load_hamiltonian(path).hamiltonian.terms == pauli.terms
+
+    def test_an_unknown_compression_raises_and_writes_nothing(self, tmp_path):
+        with pytest.raises(ValueError, match="zstd"):
+            save_hamiltonian(tmp_path / "h.parquet", PauliSum({"IZ": 0.5}),
+                             compression="gzip")
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.parametrize("keyword", ["engine", "codec"])
+    def test_the_retired_selectors_are_gone(self, tmp_path, keyword):
+        with pytest.raises(TypeError):
+            save_hamiltonian(tmp_path / "h.parquet", PauliSum({"IZ": 0.5}),
+                             **{keyword: "fastparquet"})
+        with pytest.raises(TypeError):
+            load_hamiltonian(tmp_path / "h.parquet", **{keyword: "fastparquet"})
+
+    def test_writing_twice_gives_the_same_bytes(self, tmp_path):
+        pauli = PauliSum({"IZ": 0.5, "ZI": -0.25, "XX": 0.125j})
+        first = save_hamiltonian(tmp_path / "a.parquet", pauli)
+        second = save_hamiltonian(tmp_path / "b.parquet", pauli)
+        assert Path(first).read_bytes() == Path(second).read_bytes()
 
     def test_matrix_is_bit_identical_after_round_trip(self, tmp_path):
         rng = np.random.default_rng(3)
@@ -152,6 +143,26 @@ class TestSerializationRoundTrip:
         pauli = PauliSum({l: complex(rng.normal(), 0.0) for l in labels})
         record = load_hamiltonian(save_hamiltonian(tmp_path / "h.parquet", pauli))
         assert np.allclose(record.hamiltonian.to_matrix(), pauli.to_matrix())
+
+    @pytest.mark.parametrize("name", ["h.parquet", "h.json"])
+    def test_every_coefficient_survives_bit_for_bit(self, tmp_path, name):
+        """The coefficients go through a JSON text on the way to the file;
+        a parser that is not round-trip exact moved about one value in six
+        by one unit in the last place."""
+        rng = np.random.default_rng(20261030)
+        labels = sorted({"".join(rng.choice(list("IXYZ"), size=9))
+                         for _ in range(4000)})
+        scale = 10.0 ** rng.integers(-3, 4, size=len(labels))
+        real = rng.normal(size=len(labels)) * scale
+        imag = rng.normal(size=len(labels)) * 3.0
+        pauli = PauliSum({l: complex(r, i)
+                          for l, r, i in zip(labels, real, imag)})
+        record = load_hamiltonian(save_hamiltonian(tmp_path / name, pauli))
+        terms = record.hamiltonian.terms
+        assert sorted(terms) == labels
+        got = np.array([terms[l] for l in labels])
+        assert got.real.view(np.uint64).tolist() == real.view(np.uint64).tolist()
+        assert got.imag.view(np.uint64).tolist() == imag.view(np.uint64).tolist()
 
     def test_compression_shrinks_a_large_hamiltonian(self, tmp_path):
         """Parquet + zstd is the point of the format: many terms, small file."""
@@ -168,58 +179,77 @@ class TestSerializationRoundTrip:
         assert resolve_save_path(False) is None
         assert resolve_save_path(None) is None
         assert resolve_save_path(True) == DEFAULT_FILENAME
-        assert DEFAULT_FILENAME.endswith(FILE_EXTENSION)
+        assert DEFAULT_FILENAME.endswith(FILE_EXTENSIONS[DEFAULT_FORMAT])
         assert resolve_save_path("my/cache.parquet") == "my/cache.parquet"
         # A path without an extension gets the Parquet one.
-        assert resolve_save_path("my/cache") == "my/cache" + FILE_EXTENSION
+        assert resolve_save_path("my/cache") == "my/cache" + FILE_EXTENSIONS["parquet"]
         with pytest.raises(TypeError):
             resolve_save_path(17)
 
-    def test_resolve_engine(self):
-        assert resolve_engine("auto") in PARQUET_ENGINES
-        # 'auto' prefers fastparquet when it is installed (see the module
-        # docstring: pyarrow's Parquet writer can crash alongside Qiskit).
-        if "fastparquet" in available_engines():
-            assert resolve_engine("auto") == "fastparquet"
-        with pytest.raises(ValueError, match="unknown Parquet engine"):
-            resolve_engine("duckdb")
-
-    def test_rejects_foreign_and_future_files(self, tmp_path):
-        pytest.importorskip("fastparquet")
-        columns = {"pauli": ["IZ"], "real": [1.0], "imag": [0.0]}
-
-        alien = tmp_path / "alien.parquet"
-        _write_raw_parquet(alien, columns, {"who": "someone else"})
+    def test_rejects_foreign_and_future_files(self):
+        alien = PARQUET_REFERENCE / "negative/hamiltonian_kv_wrong_format.parquet"
         with pytest.raises(ValueError, match="not a Mandacaru"):
             load_hamiltonian(alien)
 
-        future = tmp_path / "future.parquet"
-        _write_raw_parquet(future, columns,
-                           {"mandacaru.format": FORMAT_TAG,
-                            "mandacaru.version": "99",
-                            "mandacaru.num_qubits": "2"})
-        with pytest.raises(ValueError, match="version"):
-            load_hamiltonian(future)
+        for name in ("hamiltonian_kv_version_2", "hamiltonian_kv_version_0"):
+            future = PARQUET_REFERENCE / f"negative/{name}.parquet"
+            with pytest.raises(ValueError, match="version"):
+                load_hamiltonian(future)
 
-    def test_rejects_inconsistent_pauli_length(self, tmp_path):
-        pytest.importorskip("fastparquet")
-        bad = tmp_path / "bad.parquet"
-        _write_raw_parquet(bad, {"pauli": ["IZ"], "real": [1.0], "imag": [0.0]},
-                           {"mandacaru.format": FORMAT_TAG,
-                            "mandacaru.version": "1",
-                            "mandacaru.num_qubits": "4"})
-        with pytest.raises(ValueError, match="expected 4"):
+    def test_rejects_inconsistent_pauli_length(self):
+        bad = PARQUET_REFERENCE / "negative/hamiltonian_wrong_pauli_length.parquet"
+        with pytest.raises(ValueError, match="Pauli labels must match the "
+                                             "register and coefficients must "
+                                             "be finite"):
             load_hamiltonian(bad)
 
-    def test_missing_column_is_rejected(self, tmp_path):
-        pytest.importorskip("fastparquet")
-        bad = tmp_path / "nocol.parquet"
-        _write_raw_parquet(bad, {"pauli": ["IZ"], "real": [1.0]},
-                           {"mandacaru.format": FORMAT_TAG,
-                            "mandacaru.version": "1",
-                            "mandacaru.num_qubits": "2"})
-        with pytest.raises(ValueError, match="missing the 'imag' column"):
+    def test_missing_column_is_rejected(self):
+        bad = PARQUET_REFERENCE / "negative/hamiltonian_missing_imag.parquet"
+        with pytest.raises(ValueError, match=r"is missing the 'imag' column "
+                                             r"\(found \["):
             load_hamiltonian(bad)
+
+    def test_a_register_wider_than_fifty_qubits_is_rejected(self):
+        bad = PARQUET_REFERENCE / "negative/hamiltonian_qubits_51.parquet"
+        with pytest.raises(ValueError, match="50"):
+            load_hamiltonian(bad)
+
+    def test_a_non_finite_coefficient_is_rejected(self):
+        bad = PARQUET_REFERENCE / "negative/hamiltonian_nonfinite_inf.parquet"
+        with pytest.raises(ValueError, match="finite"):
+            load_hamiltonian(bad)
+
+    def test_a_non_finite_coefficient_creates_no_file(self, tmp_path):
+        pauli = PauliSum({"IZ": 1.0})
+        pauli.terms["IZ"] = complex("inf")      # slipped past the constructor
+        with pytest.raises(ValueError, match="finite|JSON compliant"):
+            save_hamiltonian(tmp_path / "h.parquet", pauli)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_more_than_fifty_qubits_creates_no_file(self, tmp_path):
+        pauli = PauliSum({"I" * 51: 1.0})
+        with pytest.raises(ValueError, match="50"):
+            save_hamiltonian(tmp_path / "h.parquet", pauli)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_truncated_file_raises_at_every_cut(self, tmp_path):
+        path = save_hamiltonian(tmp_path / "h.parquet",
+                                PauliSum({"IZ": 0.5, "ZI": -0.25}),
+                                num_particles=(1, 1), n_spatial_orbitals=1)
+        data = Path(path).read_bytes()
+        cut = tmp_path / "cut.parquet"
+        for length in range(0, len(data), 7):
+            cut.write_bytes(data[:length])
+            with pytest.raises(ValueError):
+                load_hamiltonian(cut)
+
+    def test_mandacaru_defaults_for_a_file_with_only_the_required_keys(self):
+        record = load_hamiltonian(
+            PARQUET_REFERENCE / "hamiltonian/semantic_kv_defaults_only_required.parquet")
+        assert record.mapping == "jordan_wigner"
+        assert record.num_particles is None
+        assert record.n_spatial_orbitals is None
+        assert record.metadata == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -240,25 +270,56 @@ class TestFileFormats:
         assert record.n_spatial_orbitals == 2
         assert np.allclose(record.hamiltonian.to_matrix(), pauli.to_matrix())
 
-    def test_json_needs_no_parquet_engine(self, tmp_path):
-        """The JSON path must not import a Parquet engine at all.
-
-        This is the point of the format: it sidesteps the Qiskit/pyarrow
-        interaction described in mandacaru.core.serialization.
-        """
-        path = tmp_path / "h.json"
+    def test_no_python_parquet_package_is_needed(self, tmp_path):
+        """Parquet and JSON, a pseudopotential and a Qiskit transpile run with
+        ``pandas``, ``pyarrow`` and ``fastparquet`` unimportable, and no
+        Mandacaru module so much as asks for them."""
+        fixture = PARQUET_REFERENCE / "pseudopotential/fastparquet_zstd.parquet"
         done = _run_isolated(f"""
-            import sys
+            import importlib.abc, os, sys
+            BLOCKED = {{"pandas", "pyarrow", "fastparquet"}}
+            attempts = []
+            class Block(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname.split(".")[0] in BLOCKED:
+                        frame = sys._getframe(1)
+                        while frame and frame.f_code.co_filename.startswith(
+                                "<frozen importlib"):
+                            frame = frame.f_back
+                        attempts.append((fullname,
+                                         frame.f_globals.get("__name__")))
+                        raise ModuleNotFoundError(fullname, name=fullname)
+            sys.meta_path.insert(0, Block())
             from mandacaru.core import PauliSum
             from mandacaru.core.serialization import (save_hamiltonian,
                                                     load_hamiltonian)
+            from mandacaru.pseudopotentials.io import (load_pseudopotential,
+                                                       save_pseudopotential)
             pauli = PauliSum({{"IZ": 0.5, "ZI": -0.25}})
-            save_hamiltonian({str(path)!r}, pauli, format="json",
-                             num_particles=(1, 1), n_spatial_orbitals=1)
-            record = load_hamiltonian({str(path)!r})
-            assert record.num_particles == (1, 1)
-            for engine in ("pyarrow", "fastparquet"):
-                assert engine not in sys.modules, engine
+            for extension in (".parquet", ".json"):
+                path = save_hamiltonian(os.path.join({str(tmp_path)!r},
+                                                     "h" + extension), pauli,
+                                        num_particles=(1, 1),
+                                        n_spatial_orbitals=1)
+                record = load_hamiltonian(path)
+                assert record.num_particles == (1, 1)
+                assert record.hamiltonian.terms == pauli.terms
+            loaded = load_pseudopotential({str(fixture)!r})
+            again = save_pseudopotential(
+                loaded, os.path.join({str(tmp_path)!r}, "pp.parquet"), stride=1)
+            assert load_pseudopotential(again).symbol == loaded.symbol
+            from qiskit import QuantumCircuit, transpile
+            circuit = QuantumCircuit(2)
+            circuit.h(0)
+            circuit.cx(0, 1)
+            compiled = transpile(circuit, basis_gates=["u", "cx"],
+                                 optimization_level=1)
+            assert compiled.count_ops().get("cx") == 1
+            mandacaru = [a for a in attempts
+                         if str(a[1]).split(".")[0] == "mandacaru"]
+            assert not mandacaru, mandacaru
+            assert not [m for m in sys.modules
+                        if m.split(".")[0] in BLOCKED]
             print("ok")
         """)
         assert done.returncode == 0, done.stderr
@@ -367,20 +428,40 @@ class TestDriverFileFormats:
                            max_iterations=4).run()
         assert loaded.optimal_energy == pytest.approx(built, abs=1e-9 * HARTREE_TO_EV)
 
-    def test_default_format_is_parquet(self):
-        assert Mandacaru(method="adapt-vqe").solver.hamiltonian_format == DEFAULT_FORMAT == "parquet"
-        assert Mandacaru(method="vqe").solver.hamiltonian_format == "parquet"
+    def test_default_format_is_parquet(self, tmp_path):
+        """A loaded Hamiltonian saved to a bare name is written as Parquet."""
+        assert DEFAULT_FORMAT == "parquet"
+        source = save_hamiltonian(tmp_path / "source.parquet",
+                                  PauliSum({"IIII": -0.5, "ZIII": 0.25}),
+                                  mapping="jordan_wigner", num_particles=(1, 1),
+                                  n_spatial_orbitals=2)
+        bare = str(tmp_path / "bare")
+        Mandacaru(method="adapt-vqe", pool="fermionic", load_hamiltonian=source,
+                  save_hamiltonian=bare, trace=False, max_iterations=1).run()
+        assert detect_format(bare) == "parquet"
 
-    def test_format_selects_the_default_filename(self, tmp_path, monkeypatch,
-                                                 h2_atoms):
-        monkeypatch.chdir(tmp_path)
+    def test_format_selects_the_written_file(self, tmp_path, h2_atoms):
+        """``hamiltonian_format="json"`` writes JSON, not Parquet, from a geometry."""
+        path = str(tmp_path / "hamiltonian.json")
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
                                   basis="HAO", grid_spacing=0.4, trace=False,
-                                  max_iterations=1, save_hamiltonian=True,
+                                  max_iterations=1, save_hamiltonian=path,
                                   hamiltonian_format="json")
         h2_atoms.get_total_energy()
-        assert (tmp_path / "hamiltonian.json").is_file()
+        assert open(path, "rb").read(1) == b"{"
         assert not (tmp_path / "hamiltonian.parquet").exists()
+
+    def test_a_geometry_run_flags_a_name_that_contradicts_the_format(
+            self, tmp_path, h2_atoms):
+        """The geometry route warns like ``save_hamiltonian`` does."""
+        path = str(tmp_path / "wrong.json")
+        h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
+                                  basis="HAO", grid_spacing=0.4, trace=False,
+                                  max_iterations=1, save_hamiltonian=path,
+                                  hamiltonian_format="parquet")
+        with pytest.warns(RuntimeWarning, match="will not match"):
+            h2_atoms.get_total_energy()
+        assert open(path, "rb").read(4) == b"PAR1"
 
     def test_unknown_format_is_rejected(self):
         with pytest.raises(ValueError, match="unknown hamiltonian_format"):
@@ -440,7 +521,7 @@ class TestTaperedRecords:
                            load_hamiltonian=path, trace=False, profile=False,
                            max_iterations=4)
         result = loaded.run()
-        assert loaded.mapping == "parity_reduced" and loaded.n_qubits == 2
+        assert loaded.problem.mapping == "parity_reduced" and loaded.n_qubits == 2
         assert result.optimal_energy == pytest.approx(energy, abs=1e-9)
 
     def test_an_untapered_file_will_not_pretend(self, tmp_path, h2_atoms):
@@ -451,10 +532,10 @@ class TestTaperedRecords:
                                   save_hamiltonian=path)
         h2_atoms.get_total_energy()
         assert load_hamiltonian(path).mapping != "parity_reduced"
-        with pytest.raises(ValueError, match="untapered"):
+        with pytest.raises(ValueError, match="mapping disagrees"):
             Mandacaru(method="adapt-vqe", pool="fermionic",
                       load_hamiltonian=path, mapping="parity_reduced",
-                      trace=False)
+                      trace=False).run()
 
     def test_mapping_is_the_only_reduction_setting(self, tmp_path):
         import json
@@ -469,69 +550,6 @@ class TestTaperedRecords:
 
 
 # --------------------------------------------------------------------------- #
-# The pyarrow engine, exercised out-of-process (see IN_PROCESS_ENGINES).
-# --------------------------------------------------------------------------- #
-
-@pytest.mark.skipif("pyarrow" not in available_engines(),
-                    reason="pyarrow not installed")
-class TestPyarrowEngineIsolated:
-    def test_round_trip(self, tmp_path):
-        """pyarrow must round-trip a Hamiltonian exactly, like fastparquet."""
-        path = tmp_path / "pa.parquet"
-        done = _run_isolated(f"""
-            from mandacaru.core import PauliSum
-            from mandacaru.core.serialization import (save_hamiltonian,
-                                                    load_hamiltonian)
-            pauli = PauliSum({{"IIII": -0.81, "ZIII": 0.17, "XXYY": 0.045j}})
-            save_hamiltonian({str(path)!r}, pauli, mapping="parity",
-                             num_particles=(1, 1), n_spatial_orbitals=2,
-                             engine="pyarrow")
-            record = load_hamiltonian({str(path)!r}, engine="pyarrow")
-            assert record.mapping == "parity"
-            assert record.num_particles == (1, 1)
-            assert record.n_spatial_orbitals == 2
-            assert set(record.hamiltonian.terms) == set(pauli.terms)
-            for label, coeff in pauli.terms.items():
-                assert abs(record.hamiltonian.terms[label] - coeff) < 1e-12
-            print("ok")
-        """)
-        assert done.returncode == 0, done.stderr
-        assert "ok" in done.stdout
-        assert path.is_file()
-
-    def test_engines_are_interchangeable(self, tmp_path):
-        """A file written by one engine must be readable by the other."""
-        pytest.importorskip("fastparquet")
-        fp_path = tmp_path / "by_fastparquet.parquet"
-        pa_path = tmp_path / "by_pyarrow.parquet"
-        pauli = PauliSum({"IIII": -0.81, "ZIII": 0.17, "XXYY": 0.045j})
-        save_hamiltonian(fp_path, pauli, num_particles=(1, 1),
-                         n_spatial_orbitals=2, engine="fastparquet")
-
-        # pyarrow reads the fastparquet file, then writes its own.
-        done = _run_isolated(f"""
-            import numpy as np
-            from mandacaru.core import PauliSum
-            from mandacaru.core.serialization import (save_hamiltonian,
-                                                    load_hamiltonian)
-            record = load_hamiltonian({str(fp_path)!r}, engine="pyarrow")
-            assert record.num_particles == (1, 1)
-            assert record.n_spatial_orbitals == 2
-            save_hamiltonian({str(pa_path)!r}, record.hamiltonian,
-                             num_particles=record.num_particles,
-                             n_spatial_orbitals=record.n_spatial_orbitals,
-                             engine="pyarrow")
-            print("ok")
-        """)
-        assert done.returncode == 0, done.stderr
-
-        # ... and fastparquet reads what pyarrow wrote, recovering the operator.
-        back = load_hamiltonian(pa_path, engine="fastparquet")
-        assert back.num_particles == (1, 1)
-        assert np.allclose(back.hamiltonian.to_matrix(), pauli.to_matrix())
-
-
-# --------------------------------------------------------------------------- #
 # Driver integration.
 # --------------------------------------------------------------------------- #
 
@@ -543,7 +561,7 @@ class TestDriverSavesHamiltonian:
         assert record.mapping == "jordan_wigner"
         assert record.num_particles == (1, 1)
         assert record.n_spatial_orbitals == 2
-        assert record.metadata["driver"] == "ADAPTVQE"
+        assert record.metadata["source_engine"] == "rust"
 
     def test_saved_operator_matches_the_live_one(self, tmp_path, h2_atoms):
         path = str(tmp_path / "h2.parquet")
@@ -552,19 +570,22 @@ class TestDriverSavesHamiltonian:
                                   max_iterations=2, save_hamiltonian=path)
         h2_atoms.get_total_energy()
         saved = load_hamiltonian(path).hamiltonian
-        live = h2_atoms.calc.hamiltonian.simplify()
-        assert set(saved.terms) == set(live.terms)
-        for label, coeff in live.terms.items():
+        live = {label: complex(re, im) for label, re, im
+                in h2_atoms.calc.problem.hamiltonian_terms}
+        assert set(saved.terms) == set(live)
+        for label, coeff in live.items():
             assert saved.terms[label] == pytest.approx(coeff)
 
-    def test_save_true_uses_default_filename(self, tmp_path, monkeypatch,
+    def test_the_default_filename_is_parquet(self, tmp_path, monkeypatch,
                                              h2_atoms):
         monkeypatch.chdir(tmp_path)
         h2_atoms.calc = Mandacaru(method="adapt-vqe", pool="fermionic",
                                   basis="HAO", grid_spacing=0.4, trace=False,
-                                  max_iterations=1, save_hamiltonian=True)
+                                  max_iterations=1,
+                                  save_hamiltonian=DEFAULT_FILENAME)
         h2_atoms.get_total_energy()
         assert (tmp_path / DEFAULT_FILENAME).is_file()
+        assert detect_format(tmp_path / DEFAULT_FILENAME) == "parquet"
 
 
 class TestDriverLoadsHamiltonian:
@@ -579,25 +600,20 @@ class TestDriverLoadsHamiltonian:
     def test_loading_needs_no_geometry_and_configures_the_pool(self, h2_cache):
         path, _ = h2_cache
         loaded = Mandacaru(method="adapt-vqe", pool="ceo",
-                           load_hamiltonian=path, trace=False)
+                           load_hamiltonian=path, trace=False, max_iterations=1)
         # Direct mode without ever touching an Atoms object.
-        assert loaded.solver._configured
+        loaded.run()
         assert loaded.n_qubits == 4
         assert loaded.num_particles == (1, 1)
-        assert loaded.solver._integration_profile is None      # no integrals were run
+        assert loaded.native_reference is None                # no SCF was run
 
     def test_loading_bypasses_the_integral_engine(self, h2_cache, monkeypatch):
         """No one- or two-body integral may be computed on the load path."""
         path, _ = h2_cache
-        import mandacaru.algorithms._hamiltonian_from_atoms as builder
-        from mandacaru.integrals.engine import IntegralEngine
-
         def fail(*args, **kwargs):                      # pragma: no cover
-            raise AssertionError("the integral engine was invoked")
+            raise AssertionError("the mean-field engine was invoked")
 
-        monkeypatch.setattr(builder, "build_basis_hamiltonian", fail)
-        monkeypatch.setattr(IntegralEngine, "one_body", fail)
-        monkeypatch.setattr(IntegralEngine, "two_body", fail)
+        monkeypatch.setattr(Mandacaru, "_mean_field", fail)
 
         result = Mandacaru(method="adapt-vqe", pool="fermionic",
                            load_hamiltonian=path, trace=False,
@@ -613,21 +629,22 @@ class TestDriverLoadsHamiltonian:
         path, _ = h2_cache
         driver = Mandacaru(method="adapt-vqe", pool="fermionic",
                            load_hamiltonian=path, trace=False)
+        driver.run()
         stored = load_hamiltonian(path).hamiltonian.simplify()
-        live = driver.hamiltonian.simplify()
-        assert isinstance(driver.hamiltonian, PauliSum)
-        assert set(live.terms) == set(stored.terms)
+        live = {label: complex(re, im) for label, re, im
+                in driver.problem.hamiltonian_terms}
+        assert set(live) == set(stored.terms)
         for label, coeff in stored.terms.items():
-            assert live.terms[label] == pytest.approx(coeff)
+            assert live[label] == pytest.approx(coeff)
 
     def test_vqe_rebuilds_its_uccsd_ansatz_from_the_file(self, h2_cache):
         path, built_energy = h2_cache
         vqe = Mandacaru(method="vqe", load_hamiltonian=path, trace=False)
-        assert vqe.solver.ansatz.n_qubits == 4
-        assert vqe.solver.ansatz.num_particles == (1, 1)
         # UCCSD reaches the same ground state as the (converged) ADAPT run.
         assert vqe.run().optimal_energy == pytest.approx(
             built_energy, abs=1e-6 * HARTREE_TO_EV)
+        assert vqe.n_qubits == 4
+        assert vqe.num_particles == (1, 1)
 
     def test_save_then_load_same_path_is_not_reserialized(self, tmp_path,
                                                           h2_cache):
@@ -641,7 +658,49 @@ class TestDriverLoadsHamiltonian:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             Mandacaru(method="adapt-vqe", pool="fermionic",
-                      load_hamiltonian=str(tmp_path / "nope.parquet"))
+                      load_hamiltonian=str(tmp_path / "nope.parquet")).run()
+
+
+class TestDriverWithAFrozenCache:
+    """The load/save contract on a frozen LiH cache, which needs no geometry."""
+
+    LIH = PARQUET_REFERENCE / "hamiltonian/fastparquet_zstd_lih_cache.parquet"
+
+    def _own_copy(self, tmp_path):
+        """The frozen file re-saved by this build (a fixture written by the
+        replaced stack has other bytes, though the same content)."""
+        record = load_hamiltonian(self.LIH)
+        return save_hamiltonian(tmp_path / "lih.parquet", record.hamiltonian,
+                                mapping=record.mapping,
+                                num_particles=record.num_particles,
+                                n_spatial_orbitals=record.n_spatial_orbitals)
+
+    def test_save_then_load_same_path_is_not_reserialized(self, tmp_path):
+        """Loading and saving the same file leaves its bytes unchanged."""
+        path = self._own_copy(tmp_path)
+        before = Path(path).read_bytes()
+        Mandacaru(method="adapt-vqe", pool="fermionic", load_hamiltonian=path,
+                  save_hamiltonian=path, trace=False, max_iterations=1).run()
+        assert Path(path).read_bytes() == before
+
+    @pytest.mark.parametrize("fmt", HAMILTONIAN_FORMATS)
+    def test_a_loaded_run_saves_the_same_operator_in_either_format(
+            self, tmp_path, fmt):
+        out = str(tmp_path / f"out{FILE_EXTENSIONS[fmt]}")
+        Mandacaru(method="adapt-vqe", pool="fermionic",
+                  load_hamiltonian=self.LIH, save_hamiltonian=out,
+                  hamiltonian_format=fmt, trace=False, max_iterations=1).run()
+        assert detect_format(out) == fmt
+        assert (Path(out).read_bytes()[:4] == b"PAR1") == (fmt == "parquet")
+        saved, frozen = load_hamiltonian(out), load_hamiltonian(self.LIH)
+        assert saved.hamiltonian.terms == frozen.hamiltonian.terms
+        assert saved.num_particles == frozen.num_particles == (1, 1)
+
+    def test_a_frozen_cache_drives_a_run(self):
+        result = Mandacaru(method="adapt-vqe", pool="fermionic",
+                           load_hamiltonian=self.LIH, trace=False,
+                           max_iterations=4).run()
+        assert np.isfinite(result.optimal_energy)
 
 
 class TestZeroHamiltonianWidth:

@@ -1,5 +1,5 @@
 //! Random circuit fidelities and the binned Haar KL divergence.
-use super::{evolution, CachedProblem};
+use super::{amplitude::State, evolution, CachedProblem};
 use crate::{product, Buffer, Context, Error, Result};
 pub fn dimension(qubits: usize, particles: Option<[usize; 2]>) -> Result<usize> {
     if qubits > 62 {
@@ -80,7 +80,7 @@ impl CachedProblem {
             let mut samples = self.context.allocate::<f64>(pairs)?;
             let mut state = seed;
             let mut parameters = vec![0.; indices.len()];
-            let mut sample = || -> Result<Buffer<super::C64>> {
+            let mut sample = || -> Result<State> {
                 for theta in &mut parameters {
                     state = state.wrapping_add(0x9e3779b97f4a7c15);
                     let mut z = state;
@@ -94,11 +94,18 @@ impl CachedProblem {
             for value in samples.as_mut_slice() {
                 let a = sample()?;
                 let b = sample()?;
-                *value = evolution::inner(a.as_slice(), b.as_slice())
-                    .norm_sqr()
-                    .clamp(0., 1.);
+                *value = overlap(&a, &b)?.norm_sqr().clamp(0., 1.);
             }
             Ok(samples)
         })
     }
+}
+
+/// `<a|b>` of two states of the same precision, summed in float64.
+fn overlap(a: &State, b: &State) -> Result<super::C64> {
+    Ok(match (a, b) {
+        (State::Float64(a), State::Float64(b)) => evolution::inner(a.as_slice(), b.as_slice()),
+        (State::Float32(a), State::Float32(b)) => evolution::inner(a.as_slice(), b.as_slice()),
+        _ => return Err(Error::Invalid("states differ in precision".into())),
+    })
 }

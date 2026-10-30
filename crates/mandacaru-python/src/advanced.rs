@@ -1,16 +1,20 @@
 //! Thin boundaries for native dynamics and correlation.
-use super::{array, copy, error, Array};
+use super::quantum::{input_state, parse_precision, state_array, typed};
+use super::{array, copy, error};
 use mandacaru_core::{
+    math::storage::Precision,
     quantum::{dynamics, C64},
     Context,
 };
-use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use numpy::{PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
 
 #[pyclass(name = "Propagator", module = "mandacaru._native", frozen)]
 pub struct PyPropagator {
     context: Context,
     inner: dynamics::Propagator,
+    /// Storage precision of the states this propagator takes and returns.
+    precision: Precision,
 }
 impl PyPropagator {
     pub fn new(
@@ -18,7 +22,9 @@ impl PyPropagator {
         n: usize,
         terms: Vec<(String, f64, f64)>,
         order: usize,
+        precision: &str,
     ) -> PyResult<Self> {
+        let precision = parse_precision(precision)?;
         let terms: Vec<_> = terms
             .into_iter()
             .map(|(l, r, i)| (l, C64::new(r, i)))
@@ -26,6 +32,7 @@ impl PyPropagator {
         Ok(Self {
             context: context.clone(),
             inner: dynamics::Propagator::new(context, n, &terms, order).map_err(error)?,
+            precision,
         })
     }
 }
@@ -35,56 +42,73 @@ impl PyPropagator {
         self.inner.schedule()
     }
 
+    #[getter]
+    fn precision(&self) -> &'static str {
+        self.precision.name()
+    }
     #[pyo3(signature=(state,time,*,steps=1,inverse=false,normalized=true))]
     fn evolve<'py>(
         &self,
         py: Python<'py>,
-        state: PyReadonlyArray1<'py, C64>,
+        state: &Bound<'py, PyAny>,
         time: f64,
         steps: usize,
         inverse: bool,
         normalized: bool,
-    ) -> PyResult<Array<'py, C64>> {
-        let (state, _memory) = copy(&self.context, &state)?;
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let input = input_state(&self.context, self.precision, state)?;
+        let length = input.len();
         let out = py
             .detach(|| {
-                self.inner
-                    .evolve(&self.context, &state, time, steps, inverse, normalized)
+                typed!(input, values => {
+                    self.inner
+                        .evolve(&self.context, values, time, steps, inverse, normalized)
+                        .map(mandacaru_core::quantum::Amplitude::wrap)
+                })
             })
             .map_err(error)?;
-        array(py, &[state.len()], out.as_slice().to_vec())
+        state_array(py, &[length], out)
     }
     fn apply<'py>(
         &self,
         py: Python<'py>,
-        state: PyReadonlyArray1<'py, C64>,
-    ) -> PyResult<Array<'py, C64>> {
-        let (state, _memory) = copy(&self.context, &state)?;
+        state: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let input = input_state(&self.context, self.precision, state)?;
+        let length = input.len();
         let out = py
-            .detach(|| self.inner.apply(&self.context, &state))
+            .detach(|| {
+                typed!(input, values => {
+                    self.inner
+                        .apply(&self.context, values)
+                        .map(mandacaru_core::quantum::Amplitude::wrap)
+                })
+            })
             .map_err(error)?;
-        array(py, &[state.len()], out.as_slice().to_vec())
+        state_array(py, &[length], out)
     }
 }
 pub fn qpe<'py>(
     py: Python<'py>,
     operator: &super::quantum::PyOperator,
-    state: PyReadonlyArray1<'py, C64>,
+    state: &Bound<'py, PyAny>,
     evaluation_qubits: usize,
     window: [f64; 2],
     keep: bool,
+    precision: Precision,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let (state, _memory) = copy(&operator.context, &state)?;
+    let input = input_state(&operator.context, precision, state)?;
+    let length = input.len();
     let out = py
         .detach(|| {
-            dynamics::qpe(
+            typed!(input, values => dynamics::qpe(
                 &operator.context,
                 &operator.inner,
-                &state,
+                values,
                 evaluation_qubits,
                 window,
                 keep,
-            )
+            ))
         })
         .map_err(error)?;
     let result = PyDict::new(py);
@@ -94,10 +118,7 @@ pub fn qpe<'py>(
         array(py, &[bins], out.probabilities.as_slice().to_vec())?,
     )?;
     if let Some(amplitudes) = out.amplitudes {
-        result.set_item(
-            "amplitudes",
-            array(py, &[bins, state.len()], amplitudes.as_slice().to_vec())?,
-        )?;
+        result.set_item("amplitudes", state_array(py, &[bins, length], amplitudes)?)?;
     } else {
         result.set_item("amplitudes", py.None())?;
     }

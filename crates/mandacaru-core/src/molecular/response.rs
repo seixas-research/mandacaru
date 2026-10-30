@@ -156,6 +156,11 @@ pub fn gradient(
         internal,
         extrapolate,
     } = *options;
+    if integrals.samples.precision() != crate::math::storage::Precision::Float64 {
+        return Err(invalid(
+            "variational forces difference the energy over a finite step and require float64 orbital samples",
+        ));
+    }
     if !step.is_finite()
         || step <= 0.
         || reference.functional.is_some()

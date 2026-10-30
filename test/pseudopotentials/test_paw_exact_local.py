@@ -6,22 +6,18 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The range-separated local potential: exactness, invariance, forces.
+"""The range-separated local potential: exactness and forces.
 
 PAW-LCAO keeps only the long-range half of its local channel on the grid -- the
 potential of a Gaussian ion, which the grid resolves -- and integrates the
 short-range remainder on atom-centered spherical quadratures
 (:mod:`mandacaru.pseudopotentials.local_split`).  The two halves add up to the
-potential the all-grid form used, so the tests here are about *exactness*: the
-sphere integral is translation invariant to machine precision, its derivative
-sums to zero under a rigid translation, the split reproduces the all-grid
-energy in the fine-grid limit, and the force is still the derivative of the
-energy the solver reported.
-
-``PAWIntegrals.exact_local_potential`` is the switch that recovers the old
-all-grid behavior, which is what the comparisons here toggle.  Every
-non-PAW-LCAO basis is untouched: the hook on
-:class:`~mandacaru.core.hamiltonian.MolecularIntegrals` returns ``None``.
+potential the all-grid form used, so the tests here are about *exactness* of the
+split, and about the force being the derivative of the energy the solver
+reported.  The sphere matrices, their translation invariance and the
+comparison with the all-grid form belonged to the molecular engine that
+integrated the local potential in Python; that engine is native now
+(``paw/molecular``), and its quadratures are tested in ``crates``.
 """
 
 import numpy as np
@@ -53,16 +49,6 @@ def water(cell=8.0):
     c = cell / 2
     return Atoms("OHH", positions=[[c, c, c], [c, c + 1.0, c], [c, c, c + 1.0]],
                  cell=[cell] * 3)
-
-
-def rhf_total(integrals, n_electrons=None):
-    """RHF total energy: electronic + ion-ion + the frozen one-center constant."""
-    if n_electrons is None:
-        n_electrons = int(round(sum(d.valence_charge
-                                    for d in integrals.pseudopotentials)))
-    rhf = integrals.hartree_fock(n_electrons)
-    return (rhf.electronic_energy + integrals.nuclear_repulsion
-            + integrals.constant_energy)
 
 
 # --------------------------------------------------------------------------- #
@@ -139,53 +125,6 @@ class TestRangeSeparation:
                 table = (ls.short_range_potential(dataset, sigma, outside)
                          + erfc_tail)
                 assert np.abs(table).max() < 2e-5
-
-
-def _pulay(gradients, owners, atom, k, M):
-    """``dV^sr`` when the basis functions of ``atom`` move -- the force's formula."""
-    own = owners == atom
-    out = np.zeros((M, M), dtype=complex)
-    for G in gradients.values():
-        Gk = G[:, :, k]
-        out[own, :] += Gk[own, :]
-        out[:, own] += Gk.conj().T[:, own]
-    return out
-
-
-def _hellmann_feynman(gradients, atom, k):
-    """``dV^sr`` when ``atom``'s own sphere and potential move."""
-    Gk = gradients[atom][:, :, k]
-    return -(Gk + Gk.conj().T)
-
-
-# --------------------------------------------------------------------------- #
-# Translation invariance of the quadrature.
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# Agreement with the all-grid form.
-# --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# Everything else is untouched.
-# --------------------------------------------------------------------------- #
-
-class TestInertElsewhere:
-
-    @staticmethod
-    def _core_slab(integrals):
-        """Grid points inside the oxygen core, where the two halves differ."""
-        center = np.asarray(integrals._potentials.nuclei[0][1], dtype=float)
-        radius = np.sqrt(sum((a.ravel() - center[i]) ** 2 for i, a in
-                             enumerate((integrals.grid.X, integrals.grid.Y,
-                                        integrals.grid.Z))))
-        inside = radius < 1.0                        # Bohr, well inside r_cut
-        assert inside.sum() > 4
-        return tuple(a.ravel()[inside] for a in (integrals.grid.X,
-                                                 integrals.grid.Y,
-                                                 integrals.grid.Z))
 
 
 # --------------------------------------------------------------------------- #

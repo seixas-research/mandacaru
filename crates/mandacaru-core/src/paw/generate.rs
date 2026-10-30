@@ -2,14 +2,18 @@
 use super::{
     channel::{self, ChannelInput},
     dataset::{Dataset, DatasetChannel},
-    invalid, radial, smooth,
+    invalid,
+    pseudize::{self, Equation, NormCondition, PseudoInput},
+    radial,
+    smooth::SmoothWaves,
 };
 use crate::{
     models::{
         atom::{self, AtomOptions},
         elements::configuration,
+        relativity::Treatment,
     },
-    product, Buffer, Context, Result,
+    product, Context, Result,
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, f64::consts::PI};
@@ -148,39 +152,6 @@ impl Options {
     }
 }
 
-fn scattering(
-    ctx: &Context,
-    r: &[f64],
-    potential: &[f64],
-    l: usize,
-    energy: f64,
-    z: u8,
-    radius: f64,
-) -> Result<Buffer<f64>> {
-    let n = r.len();
-    let u = super::reference::scattering(ctx, r, potential, l, energy, z as f64)?;
-    let mut wave = ctx.allocate::<f64>(n)?;
-    for (i, _) in r.iter().enumerate() {
-        wave.as_mut_slice()[i] = u.as_slice()[i] / r[i];
-    }
-    let norm = crate::math::radial::gauss_legendre(256)?
-        .iter()
-        .map(|(x, w)| {
-            let x = 0.5 * radius * (x + 1.);
-            let value = crate::math::radial::interpolate(r, wave.as_slice(), x);
-            0.5 * radius * w * x * x * value * value
-        })
-        .sum::<f64>()
-        .sqrt();
-    if !norm.is_finite() || norm <= 0. {
-        return Err(invalid("PAW scattering wave has invalid inner norm"));
-    }
-    for x in wave.as_mut_slice() {
-        *x /= norm;
-    }
-    Ok(wave)
-}
-
 pub fn generate(ctx: &Context, z: u8, options: &Options) -> Result<Dataset> {
     let atom = atom::solve_functional(ctx, z, &options.atom, None, None, &options.functional)?;
     if !atom.converged {
@@ -258,6 +229,7 @@ pub fn generate(ctx: &Context, z: u8, options: &Options) -> Result<Dataset> {
         atom.effective.as_slice(),
         local_radius,
         options.local_shift,
+        None,
     )?;
     let mut channels = vec![];
     for (&l, indices) in &by_l {
@@ -272,45 +244,83 @@ pub fn generate(ctx: &Context, z: u8, options: &Options) -> Result<Dataset> {
         let mut energies = vec![];
         let mut occupations = vec![];
         let mut shells = vec![];
-        for (wave, &index) in indices.iter().enumerate() {
+        for (wave_index, &index) in indices.iter().enumerate() {
             let principal = atom.occupations[index].0;
-            let (u, energy) = super::reference::bound(
+            let (wave, energy) = pseudize::bound_reference(
                 ctx,
                 r,
                 atom.effective.as_slice(),
                 l,
                 atom.eigenvalues[index],
-                z as f64,
-                principal - l - 1,
+                &Equation {
+                    treatment: Treatment::None,
+                    kappa: None,
+                    z: z as f64,
+                },
+                None,
             )?;
-            for (i, _) in r.iter().enumerate() {
-                references.as_mut_slice()[wave * n + i] = u.as_slice()[i] / r[i];
+            let nodes = wave.windows(2).filter(|w| w[0] * w[1] < 0.).count();
+            if energy >= 0. || nodes != principal - l - 1 {
+                return Err(invalid(format!(
+                    "PAW reference has {nodes} nodes at {energy:.6} Ha, expected {}",
+                    principal - l - 1
+                )));
             }
+            references.as_mut_slice()[wave_index * n..(wave_index + 1) * n].copy_from_slice(&wave);
             energies.push(energy);
             occupations.push(atom.occupations[index].2);
             shells.push(atom.occupations[index].0);
         }
         if indices.len() == 1 {
             let energy = energies[0] + options.reference_gap;
-            let wave = scattering(ctx, r, atom.effective.as_slice(), l, energy, z, radius)?;
-            references.as_mut_slice()[n..2 * n].copy_from_slice(wave.as_slice());
+            let wave = pseudize::scattering_reference(
+                ctx,
+                r,
+                atom.effective.as_slice(),
+                l,
+                energy,
+                &Equation {
+                    treatment: Treatment::None,
+                    kappa: None,
+                    z: z as f64,
+                },
+                radius,
+            )?;
+            references.as_mut_slice()[n..2 * n].copy_from_slice(&wave);
             energies.push(energy);
             occupations.push(0.);
         }
-        let smooth = smooth::construct(
+        let optimized = pseudize::optimize(
             ctx,
-            &smooth::SmoothInput {
+            &PseudoInput {
                 r,
-                potential: atom.effective.as_slice(),
-                ae: references.as_slice(),
-                energies: &energies,
+                v_ae: atom.effective.as_slice(),
                 l,
-                radius,
-                count: options.bessel_count,
+                waves: references.as_slice(),
+                energies: &energies,
+                r_cut: radius,
                 q_cut: options.q_cut,
-                norm_factor: 1. - options.norm_deficit,
+                n_bessel: options.bessel_count,
+                norm: NormCondition::Factor(1. - options.norm_deficit),
+                equation: Equation {
+                    treatment: Treatment::None,
+                    kappa: None,
+                    z: z as f64,
+                },
             },
         )?;
+        let mut coefficients = ctx.allocate::<f64>(optimized.coefficients.len())?;
+        for (wave, row) in optimized.coefficients.row_iter().enumerate() {
+            for (term, value) in row.iter().enumerate() {
+                coefficients.as_mut_slice()[wave * row.len() + term] = *value;
+            }
+        }
+        let smooth = SmoothWaves {
+            wavevectors: optimized.wavevectors,
+            coefficients,
+            norms: optimized.norms,
+            residuals: optimized.residuals,
+        };
         let channel = channel::construct(
             ctx,
             &ChannelInput {

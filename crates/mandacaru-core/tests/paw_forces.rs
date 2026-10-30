@@ -120,6 +120,14 @@ fn species(ctx: &Context, arrays: &mut Arrays, functional: &str) -> Value {
     })
 }
 fn integrals(ctx: &Context, positions: &[[f64; 3]], functional: &str) -> MolecularIntegrals {
+    integrals_in(ctx, positions, functional, Precision::Float64)
+}
+fn integrals_in(
+    ctx: &Context,
+    positions: &[[f64; 3]],
+    functional: &str,
+    precision: Precision,
+) -> MolecularIntegrals {
     let geometry = Geometry::new(
         vec![1; positions.len()],
         positions.to_vec(),
@@ -175,6 +183,7 @@ fn integrals(ctx: &Context, positions: &[[f64; 3]], functional: &str) -> Molecul
         arrays,
         "spectral",
         1e-12,
+        precision,
     )
     .unwrap()
 }
@@ -414,13 +423,11 @@ fn unsupported_states_raise_instead_of_returning_forces() {
             let error = base.gradient(&state).err().unwrap().to_string();
             assert!(error.contains(name), "{error}");
         }
-        // Single-precision samples cannot carry a finite difference.
-        let single = integrals(&ctx, &H2, "lda")
-            .with_precision(Precision::Single)
-            .unwrap();
+        // Float32 samples cannot carry a finite difference.
+        let float32 = integrals_in(&ctx, &H2, "lda", Precision::Float32);
         let good = solve(&base, Method::Hf("rhf"), [1, 1]);
-        let error = single.gradient(&good).err().unwrap().to_string();
-        assert!(error.contains("double-precision"), "{error}");
+        let error = float32.gradient(&good).err().unwrap().to_string();
+        assert!(error.contains("float64"), "{error}");
         // A state from other integrals does not reproduce its energy here.
         let other = integrals(&ctx, &[[0., 0., -1.2], [0., 0., 1.2]], "lda");
         let foreign = solve(&other, Method::Hf("rhf"), [1, 1]);

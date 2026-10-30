@@ -14,3 +14,4 @@ serde_json.workspace = true
 nalgebra.workspace = true
 rustfft.workspace = true
 libm.workspace = true
+ruzstd.workspace = true

@@ -11,9 +11,14 @@ and the ghost search on a stub generator."""
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from scipy.special import spherical_jn
+
+from mandacaru import _native
 
 from mandacaru.basis.atomic_solver import solve_atom
 from mandacaru.pseudopotentials import partial_waves as pw
@@ -618,3 +623,148 @@ class TestUnevaluatedChecks:
                 p.r, -1.0 / p.r, l, e, r, 1.0))
         assert exact[1] < 1e-12 and coarse[1] < 1e-3
 
+
+REFERENCE = (Path(__file__).resolve().parents[1] / "migration" / "reference"
+             / "paw")
+
+
+def _scaled(value, reference):
+    return (np.abs(np.asarray(value) - reference).max()
+            / max(np.abs(reference).max(), 1e-300))
+
+
+@pytest.fixture(scope="module")
+def frozen():
+    """Outputs of the Python implementation, frozen before the port to Rust
+    (the native non-relativistic LDA atom at 6000 points for H, C, O, Si,
+    Cu; ``partial_waves.json`` records the inputs)."""
+    return np.load(REFERENCE / "partial_waves.npz"), json.loads(
+        (REFERENCE / "partial_waves.json").read_text())
+
+
+class TestFrozenPythonOutputs:
+    """The Rust routines reproduce the numbers the Python ones gave."""
+
+    def test_the_inner_grid_has_the_documented_size(self):
+        assert len(pw._inner_grid(1.7)) == pw.INNER_POINTS
+
+    def test_the_special_functions(self, frozen):
+        p, _ = frozen
+        x = p["bessel_x"]
+        for l in range(5):
+            for k, row in enumerate(pw.bessel_derivatives(l, x)):
+                assert _scaled(row, p[f"bessel_d{k}_{l}"]) < 1e-10
+        for l in range(4):
+            for rc, n in ((1.5, 8), (2.2, 10), (0.8, 6)):
+                assert _scaled(pw.bessel_wavevectors(l, rc, n),
+                               p[f"wavevectors_{l}_{rc}_{n}"]) < 1e-13
+            table = pw._bessel_table(l, p["bessel_table_q"],
+                                     p["bessel_table_r"])
+            assert _scaled(table, p[f"bessel_table_{l}"]) < 1e-13
+
+    @pytest.mark.parametrize("k", range(4))
+    def test_the_constrained_minimum(self, frozen, k):
+        p, _ = frozen
+        c = pw.constrained_minimum(p[f"cm_K_{k}"], p[f"cm_k_{k}"],
+                                   p[f"cm_A_{k}"], p[f"cm_b_{k}"],
+                                   p[f"cm_G_{k}"], float(p[f"cm_norm_{k}"][0]))
+        assert _scaled(c, p[f"cm_c_{k}"]) < 1e-12
+
+    @pytest.mark.parametrize("treatment", ["none", "scalar"])
+    @pytest.mark.parametrize("symbol", ["H", "C", "O", "Si", "Cu"])
+    def test_the_waves_of_an_atom(self, frozen, symbol, treatment):
+        p, meta = frozen
+        z = float(meta["elements"][symbol])
+        v = p[f"{symbol}_v"]
+        r = p[f"{symbol}_h"][0] * np.arange(1, v.size + 1)
+        t, stride = f"{symbol}_{treatment}", meta["stride"]
+        r_c = float(r[int(np.argmin(np.abs(r - 1.5)))])
+        for l in range(3):
+            for energy in (-0.5, 0.2):
+                u = pw.scattering_wave(r, v, l, energy, z, treatment)
+                assert _scaled(u[::stride], p[f"{t}_scat_{l}_{energy}"]) < 1e-11
+                assert pw.log_derivative_ae(r, v, l, energy, r_c, z,
+                                            treatment) == pytest.approx(
+                    p[f"{t}_logd_{l}_{energy}"][0], rel=1e-11)
+                assert _scaled(pw.matching_targets(r, u, v, l, energy, r_c,
+                                                   treatment, -1, z),
+                               p[f"{t}_match_{l}_{energy}"]) < 1e-11
+        for key in (k for k in p.files if k.startswith(f"{t}_bound_")
+                    and k.endswith("_u")):
+            n, l = (int(part) for part in key.split("_")[-3:-1])
+            guess = [row[2] for row in p[f"{symbol}_eig"]
+                     if int(row[0]) == n and int(row[1]) == l][0]
+            u, energy = pw.bound_state(r, v, l, guess, z, treatment=treatment)
+            assert energy == pytest.approx(p[key[:-1] + "e"][0], rel=1e-12)
+            assert _scaled(u[::stride], p[key]) < 1e-11
+
+    @pytest.mark.parametrize("treatment", ["none", "scalar"])
+    @pytest.mark.parametrize("symbol", ["H", "O", "Si", "Cu"])
+    def test_the_optimized_pseudo_waves(self, frozen, symbol, treatment):
+        """Eight Bessel functions reproduce the coefficients to 1e-9; ten
+        (norm factor 0.9, q_cut 6) are ill-conditioned -- a 1e-13 change of
+        the potential moves their coefficients by 1e-8 -- so there the smooth
+        *waves* are compared (1e-8)."""
+        p, meta = frozen
+        z = float(meta["elements"][symbol])
+        v = p[f"{symbol}_v"]
+        r = p[f"{symbol}_h"][0] * np.arange(1, v.size + 1)
+        t = f"{symbol}_{treatment}"
+        for l in range(4):
+            if f"{t}_refpair_{l}_e" not in p.files:
+                continue
+            states = p[f"{t}_ref_{l}_e"]
+            energies = list(p[f"{t}_refpair_{l}_e"])
+            r_c = float(p[f"{t}_cut_{l}"][0])
+            if states[0][2] == 0.0:
+                waves = [pw._scattering_reference(r, v, l, e, z, r_c,
+                                                  treatment) for e in energies]
+            else:
+                waves = []
+                for n, _energy, _occupation in states:
+                    guess = [row[2] for row in p[f"{symbol}_eig"]
+                             if int(row[0]) == int(n) and int(row[1]) == l][0]
+                    u, _ = pw.bound_state(r, v, l, guess, z,
+                                          treatment=treatment)
+                    waves.append(u / r)
+                if len(states) == 1:
+                    waves.append(pw._scattering_reference(
+                        r, v, l, energies[1], z, r_c, treatment))
+            assert _scaled(pw.inner_overlaps(r, waves, r_c),
+                           p[f"{t}_inner_{l}"]) < 1e-12
+            assert _scaled(pw.norm_targets(r, waves, energies, r_c, v,
+                                           treatment, -1, z),
+                           p[f"{t}_normtargets_{l}"]) < 1e-12
+            for n_bessel, q_cut, factor in ((8, 5.0, 1.0), (10, 6.0, 0.9)):
+                key = f"{t}_opt_{l}_{n_bessel}"
+                if key + "_coef" not in p.files:
+                    continue
+                out = pw.optimize_pseudo_waves(
+                    r, v, l, waves, energies, r_c, q_cut, n_bessel, factor,
+                    treatment, -1, z)
+                assert _scaled(out.wavevectors[0], p[key + "_q"][0]) < 1e-12
+                assert _scaled(out.norms, p[key + "_norms"]) < 1e-12
+                assert _scaled(out.targets, p[key + "_targets"]) < 1e-12
+                assert _scaled(out.achieved, p[key + "_achieved"]) < 1e-9
+                basis = pw._bessel_table(l, out.wavevectors[0],
+                                         pw._inner_grid(out.r_cut))
+                smooth = np.array(out.coefficients) @ basis
+                reference = p[key + "_coef"] @ basis
+                if n_bessel == 8:
+                    assert _scaled(out.coefficients, p[key + "_coef"]) < 1e-9
+                    assert _scaled(out.residual_kinetic,
+                                   p[key + "_res"]) < 1e-9
+                assert _scaled(smooth, reference) < 1e-8
+
+    @pytest.mark.parametrize("symbol", ["H", "C", "O", "Si", "Cu"])
+    def test_the_local_potential(self, frozen, symbol):
+        p, meta = frozen
+        v = p[f"{symbol}_v"]
+        r = p[f"{symbol}_h"][0] * np.arange(1, v.size + 1)
+        for r_local, shift, window in ((2.0, 0.0, None), (2.5, 0.3, None),
+                                       (1.6, 0.0, 0.15 * 1.6)):
+            r_local = pw._snap(r, r_local)
+            reference = p[f"{symbol}_vloc_{r_local:.4f}_{shift}_{window}"]
+            out = pw.polynomial_local_potential(r, v, r_local, shift, window)
+            assert _scaled(out[:reference.size], reference) < 1e-8
+            assert np.array_equal(out[reference.size:], v[reference.size:])

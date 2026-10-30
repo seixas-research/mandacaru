@@ -8,10 +8,12 @@ pub mod kernels;
 pub mod math;
 pub mod models;
 pub mod molecular;
+pub mod parquet;
 pub mod paw;
 pub mod periodic;
 pub mod persistence;
 pub mod quantum;
+pub mod snapshot_table;
 pub mod units;
 pub mod volumetric;
 

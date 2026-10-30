@@ -65,3 +65,19 @@ Phase 1; the existing Python mapped-buffer implementation remains separate.
 The binding declares `gil_used=true`. Copying input data precedes interpreter
 detachment; detached work touches only Rust-owned arrays. Full free-threaded
 NumPy aliasing and writable-view support require a separate audit.
+
+## Test-only counting allocators
+
+Three test modules install a counting `#[global_allocator]`
+(`mandacaru-core/src/parquet/codec/zstd.rs` under `#[cfg(test)]`,
+`mandacaru-core/tests/parquet_errors.rs` and `tests/parquet_memory.rs`). They
+exist to prove that the memory a decoder really allocates stays below the bytes
+reserved from the `Context`. They are never part of a library build. The
+contract: every `alloc`, `dealloc` and `realloc` is forwarded unchanged to
+`System`, so the `GlobalAlloc` obligations (layout fidelity, alignment, no
+unwinding) are `System`'s; the bookkeeping is atomic or thread-local counters
+that never allocate, and thread-locals are read with `try_with` so an allocation
+made during thread teardown is ignored instead of re-entering the allocator. A
+test that needs the process-wide counter serializes itself behind a mutex. An
+allocator that refuses growth (the emulated hard limit in `parquet_memory.rs`)
+returns a null pointer, as the trait allows.

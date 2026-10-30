@@ -1,19 +1,15 @@
-# Development history and validation
+# Engineering
 
-The [current architecture and remaining work](native_cutover.md) describe the
-active cutover. The phase records below are historical milestones; their
-coverage statements describe the implementation at the time of each phase.
+These pages are for contributors. [The architecture](architecture.md) states the
+layers, the crate dependency rule and the native boundary, and how to add a method.
+[The cutover page](native_cutover.md) is the one live status page of the move from
+Python to Rust. [The history](history.md) records how each phase closed. How to build
+and edit this manual is in [the contributing guide](../contributing_docs.md).
 
 ```{toctree}
 :maxdepth: 1
 
 architecture
-rust_migration
-rust_phase1
-rust_phase2
-rust_phase3
-rust_phase4
-rust_phase5
-rust_phase6
-rust_phase7
+native_cutover
+history
 ```

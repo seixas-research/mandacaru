@@ -136,7 +136,8 @@ fn product_adjoint_gradients_match_forward_derivatives_for_noncommuting_generato
             }
             assert!(result
                 .state
-                .as_slice()
+                .complex128()
+                .unwrap()
                 .iter()
                 .zip(&forward.as_slice()[..4])
                 .all(|(a, b)| (a - b).norm() < 1e-14));
@@ -178,7 +179,7 @@ fn subspace_weights_sorting_and_one_state_limit() {
             assert!((result.energies[1] - 0.5).abs() < 1e-11);
             let one = p.solve_subspace(&options, &[1.], None).unwrap();
             assert!((one.energies[0] - p.solve(&options, None).unwrap().energy).abs() < 1e-11);
-            let states = result.states.as_slice();
+            let states = result.states.complex128().unwrap();
             assert!(evolution::inner(&states[..2], &states[2..]).norm() < 1e-12);
         }
     }

@@ -22,16 +22,17 @@ Two file formats
 ``hamiltonian_format="parquet"`` (default)
     A compact, compressed, columnar table -- the right choice for the
     :math:`10^4`--:math:`10^6`-term Hamiltonians of a realistic active space, and
-    directly queryable from pandas / Arrow / Spark.
+    readable by any Parquet reader.
 ``hamiltonian_format="json"``
-    A plain-text, dependency-free document.  Slower and larger, but readable and
-    diffable, and it needs **no Parquet engine at all** -- which matters because
-    of the Qiskit/pyarrow interaction described under *Engines* below.
+    A plain-text document.  Slower and larger, but readable and diffable.
 
-:func:`load_hamiltonian` **detects the format automatically**: first from the
-file extension, and failing that from the file's own leading bytes (a Parquet
-file begins with the ``PAR1`` magic number, a JSON document with ``{``).  So a
-cache written either way is loaded with the same call.
+Both are read and written by the native engine (``mandacaru-core``); no Python
+Parquet package is involved.  :func:`load_hamiltonian` **detects the format
+automatically**: from the file's own leading bytes (a Parquet file begins
+with the ``PAR1`` magic number, a JSON document with ``{``), with the file
+extension as the fallback; a name that contradicts the content gives a
+``RuntimeWarning`` and the content wins.  So a cache written either way is
+loaded with the same call.
 
 Parquet layout
 --------------
@@ -48,34 +49,15 @@ The file is a table with one row per Pauli term and three columns:
 The problem metadata a driver needs to rebuild its ansatz or pool *without a
 geometry* -- the mapping, the electron count and the orbital count -- travels in
 the Parquet **key/value metadata**, so a single self-contained file fully
-specifies the problem.
+specifies the problem.  The codec is ``compression="zstd"`` (default) or
+``"uncompressed"`` (also spelled ``"none"``); the native Parquet reader also
+accepts Snappy files, and refuses any other codec.
 
 JSON layout
 -----------
 The same content as a single object: ``format`` / ``version`` / ``num_qubits`` /
 ``mapping`` / ``num_particles`` / ``n_spatial_orbitals`` / ``metadata``, plus
 ``terms`` as a list of ``[pauli_string, real, imag]`` triples.
-
-Engines
--------
-Two interchangeable Parquet engines are supported, selected by ``engine``:
-``"fastparquet"`` (the default when installed) and ``"pyarrow"``.  Both read and
-write ordinary Parquet, so files are portable between them and to any other
-Parquet reader.  ``engine`` is irrelevant to the JSON format, which uses only the
-standard library.
-
-.. warning::
-
-   ``fastparquet`` is preferred **on purpose**.  On some platforms -- reproduced
-   here on CPython 3.14 with ``qiskit`` 2.5 and ``pyarrow`` 25 -- calling
-   ``pyarrow.parquet.write_table`` in a process that has also run Qiskit's
-   ``transpile`` crashes the interpreter (both ship their own native runtimes).
-   Since Mandacaru transpiles circuits for gate-count profiling in the same
-   process that saves the Hamiltonian, the default engine avoids that
-   combination.  Set ``engine="pyarrow"`` explicitly if you prefer Arrow and your
-   environment is unaffected -- or side-step Parquet entirely with
-   ``hamiltonian_format="json"``, which has no native dependency and cannot be
-   affected.
 """
 
 from __future__ import annotations
@@ -85,7 +67,6 @@ import os
 import warnings
 from dataclasses import dataclass
 
-from .atomic import atomic_path
 from .mapping import PauliSum
 
 #: Value of the ``mandacaru.format`` metadata key identifying these files.
@@ -98,24 +79,16 @@ HAMILTONIAN_FORMATS = ("parquet", "json")
 DEFAULT_FORMAT = "parquet"
 #: Extension appended per format when a path is given without one.
 FILE_EXTENSIONS = {"parquet": ".parquet", "json": ".json"}
-#: Recognized extensions, for format detection.
 #: File extensions that name a format, and which format each one names.  An
 #: extension from this table is a statement about the file's content: the writer
 #: refuses to contradict it and the reader warns when a file does.
 EXTENSION_FORMATS = {".parquet": "parquet", ".pq": "parquet", ".json": "json"}
-_EXTENSION_FORMATS = EXTENSION_FORMATS          # historical private spelling
 #: Filename stem used when ``save_hamiltonian=True`` is given without a path.
 DEFAULT_STEM = "hamiltonian"
 #: Filename used when ``save_hamiltonian=True`` with the default format.
 DEFAULT_FILENAME = DEFAULT_STEM + FILE_EXTENSIONS[DEFAULT_FORMAT]
-#: Backwards-compatible alias for the default format's extension.
-FILE_EXTENSION = FILE_EXTENSIONS[DEFAULT_FORMAT]
 #: Magic number every Apache Parquet file starts (and ends) with.
 PARQUET_MAGIC = b"PAR1"
-#: Parquet engines understood by ``engine=``, in preference order.
-PARQUET_ENGINES = ("fastparquet", "pyarrow")
-#: Column names of the Pauli-term table.
-COLUMNS = ("pauli", "real", "imag")
 
 
 def resolve_format(fmt: str = DEFAULT_FORMAT) -> str:
@@ -128,6 +101,17 @@ def resolve_format(fmt: str = DEFAULT_FORMAT) -> str:
             f"unknown hamiltonian_format {fmt!r}; use one of "
             f"{HAMILTONIAN_FORMATS}")
     return key
+
+
+def _content_format(path) -> str | None:
+    """``"parquet"`` or ``"json"`` from the file's first bytes, else ``None``."""
+    with open(path, "rb") as fh:
+        head = fh.read(16)
+    if head.startswith(PARQUET_MAGIC):
+        return "parquet"
+    if head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{"):
+        return "json"
+    return None
 
 
 def detect_format(path) -> str:
@@ -152,18 +136,12 @@ def detect_format(path) -> str:
     """
     path = os.fspath(path)
     extension = os.path.splitext(path)[1].lower()
-    named = _EXTENSION_FORMATS.get(extension)
+    named = EXTENSION_FORMATS.get(extension)
     if not os.path.exists(path):
         if named is not None:
             return named            # a path being written, not read
         raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
-    with open(path, "rb") as fh:
-        head = fh.read(16)
-    content = None
-    if head.startswith(PARQUET_MAGIC):
-        content = "parquet"
-    elif head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{"):
-        content = "json"
+    content = _content_format(path)
     if content is not None:
         if named is not None and named != content:
             warnings.warn(
@@ -175,66 +153,9 @@ def detect_format(path) -> str:
         return named
     raise ValueError(
         f"cannot determine the format of {path!r}: it has no recognized "
-        f"extension ({', '.join(sorted(_EXTENSION_FORMATS))}) and starts with "
+        f"extension ({', '.join(sorted(EXTENSION_FORMATS))}) and starts with "
         f"neither the Parquet magic number nor '{{'.  Pass format='parquet' or "
         "format='json' explicitly.")
-
-
-# --------------------------------------------------------------------------- #
-# Engine selection.
-# --------------------------------------------------------------------------- #
-
-def available_engines() -> tuple[str, ...]:
-    """Parquet engines importable in this environment, in preference order.
-
-    .. note::
-
-       This **imports** every candidate to check it.  Importing ``pyarrow`` is
-       itself enough to destabilize Qiskit in the environments described in the
-       module warning, so :func:`resolve_engine` deliberately does *not* call
-       this -- it stops at the first engine that imports.  Use this function for
-       diagnostics, not on the hot path.
-    """
-    found = []
-    for name in PARQUET_ENGINES:
-        try:
-            __import__(name)
-        except Exception:
-            continue
-        found.append(name)
-    return tuple(found)
-
-
-def resolve_engine(engine: str = "auto") -> str:
-    """Resolve an ``engine`` spec to a concrete, importable engine name.
-
-    ``"auto"`` returns the **first** of :data:`PARQUET_ENGINES` that imports and
-    stops there -- it never touches the later ones (see the module warning: even
-    importing ``pyarrow`` can destabilize Qiskit, so a run that uses
-    ``fastparquet`` must not import it as a side effect).
-    """
-    if engine == "auto":
-        for name in PARQUET_ENGINES:
-            try:
-                __import__(name)
-            except Exception:
-                continue
-            return name
-        raise ImportError(
-            "the Hamiltonian cache is stored as Apache Parquet and needs a "
-            "Parquet engine; install one with `pip install fastparquet` "
-            "(preferred) or `pip install pyarrow`")
-    if engine not in PARQUET_ENGINES:
-        raise ValueError(
-            f"unknown Parquet engine {engine!r}; use one of {PARQUET_ENGINES} "
-            "or 'auto'")
-    try:
-        __import__(engine)
-    except ImportError as exc:
-        raise ImportError(
-            f"Parquet engine {engine!r} is not installed; "
-            f"`pip install {engine}`") from exc
-    return engine
 
 
 # --------------------------------------------------------------------------- #
@@ -288,7 +209,6 @@ def file_qubits_allowed(n_qubits, what: str) -> bool:
     """
     if n_qubits is None or int(n_qubits) <= MAX_FILE_QUBITS:
         return True
-    import warnings
     warnings.warn(f"not writing {what}: {int(n_qubits)} qubits exceed the "
                   f"{MAX_FILE_QUBITS}-qubit limit for Hamiltonian files "
                   "(mandacaru.core.serialization.MAX_FILE_QUBITS)",
@@ -322,156 +242,137 @@ def resolve_save_path(spec, fmt: str = DEFAULT_FORMAT,
 # Write.
 # --------------------------------------------------------------------------- #
 
-def save_hamiltonian(path, hamiltonian: PauliSum, *, mapping: str='jordan_wigner', num_particles=None, n_spatial_orbitals=None, metadata: dict | None=None, format: str | None=None, compression: str='zstd', resources=None, codec='auto') -> str:
+def warn_extension_mismatch(path, format, *, stacklevel=2):
+    """Warn when ``path``'s extension names a different format than ``format``.
+
+    Every route that writes a Hamiltonian file calls this, so an explicit
+    format that contradicts the file name is reported the same way whichever
+    route (a loaded Hamiltonian or a geometry run) writes it.
+    """
+    extension = os.path.splitext(os.fspath(path))[1].lower()
+    named = EXTENSION_FORMATS.get(extension)
+    if named is not None and named != format:
+        warnings.warn(f"writing {format} content to {os.fspath(path)!r}, whose extension {extension!r} says {named}; the file's name will not match what is in it", RuntimeWarning, stacklevel=stacklevel)
+
+
+def save_hamiltonian(path, hamiltonian: PauliSum, *, mapping: str = "jordan_wigner",
+                     num_particles=None, n_spatial_orbitals=None,
+                     metadata: dict | None = None, format: str | None = None,
+                     compression: str = "zstd", resources=None) -> str:
     """Write ``hamiltonian`` as Pauli terms to ``path``; return the path.
 
     Terms are sorted by Pauli string so the file is reproducible (an identical
     Hamiltonian gives an identical file) and easy to diff or query.  Negligible
-    terms are dropped via :meth:`~mandacaru.core.mapping.PauliSum.simplify`.
+    terms are dropped via :meth:`~mandacaru.core.mapping.PauliSum.simplify`.  The
+    document is validated by the native engine before any file is created, and
+    the file is replaced atomically.
 
     Parameters
     ----------
     format : {"parquet", "json"}, optional
         Output format.  Defaults to the format implied by ``path``'s extension,
-        else ``"parquet"``.  ``"json"`` needs no Parquet engine at all.
-    compression : str
+        else ``"parquet"``.
+    compression : {"zstd", "uncompressed", "none"}
         Parquet codec (``"zstd"`` by default, which compresses the highly
-        repetitive Pauli strings very effectively).  Ignored for JSON.
-    engine : str
-        Parquet writer -- ``"auto"``, ``"fastparquet"`` or ``"pyarrow"`` (see the
-        module docstring).  Ignored for JSON.
+        repetitive Pauli strings very effectively).  Ignored for JSON; any
+        other name raises ``ValueError`` for Parquet.
     """
     from .mapping import _canonical_method
     mapping = _canonical_method(mapping)
-    extension = os.path.splitext(os.fspath(path))[1].lower()
-    named = _EXTENSION_FORMATS.get(extension)
+    named = EXTENSION_FORMATS.get(os.path.splitext(os.fspath(path))[1].lower())
     if format is None:
         format = named if named is not None else DEFAULT_FORMAT
     format = resolve_format(format)
-    if named is not None and named != format:
-        warnings.warn(f"writing {format} content to {os.fspath(path)!r}, whose extension {extension!r} says {named}; the file's name will not match what is in it", RuntimeWarning, stacklevel=2)
+    warn_extension_mismatch(path, format, stacklevel=3)
     if hamiltonian.num_qubits > MAX_FILE_QUBITS:
         raise ValueError(f'refusing to write a {hamiltonian.num_qubits}-qubit Hamiltonian: Pauli-string files are limited to MAX_FILE_QUBITS = {MAX_FILE_QUBITS} qubits')
     simplified = hamiltonian.simplify()
-    items = sorted(simplified.terms.items())
-    labels = [label for label, _ in items]
-    reals = [complex(coeff).real for _, coeff in items]
-    imags = [complex(coeff).imag for _, coeff in items]
-    key_value = {'mandacaru.format': FORMAT_TAG, 'mandacaru.version': str(FORMAT_VERSION), 'mandacaru.num_qubits': str(int(simplified.num_qubits)), 'mandacaru.mapping': str(mapping), 'mandacaru.num_particles': json.dumps(None if num_particles is None else [int(num_particles[0]), int(num_particles[1])]), 'mandacaru.n_spatial_orbitals': json.dumps(None if n_spatial_orbitals is None else int(n_spatial_orbitals)), 'mandacaru.metadata': json.dumps({'energy_unit': 'Ha', **dict(metadata or {})}, default=str)}
+    payload = {
+        "format": FORMAT_TAG,
+        "version": FORMAT_VERSION,
+        "num_qubits": int(simplified.num_qubits),
+        "mapping": str(mapping),
+        "num_particles": (None if num_particles is None
+                          else [int(num_particles[0]), int(num_particles[1])]),
+        "n_spatial_orbitals": (None if n_spatial_orbitals is None
+                               else int(n_spatial_orbitals)),
+        "metadata": {"energy_unit": "Ha", **dict(metadata or {})},
+        "terms": [[label, complex(coeff).real, complex(coeff).imag]
+                  for label, coeff in sorted(simplified.terms.items())],
+    }
     path = os.fspath(path)
     from .._native import Context
-    payload = _json_payload(labels, reals, imags, key_value)
-    snapshot = Context(**dict(resources or {})).parse_snapshot(json.dumps(payload, allow_nan=False), FORMAT_TAG)
-    if format == 'json':
+    snapshot = Context(**dict(resources or {})).parse_snapshot(
+        json.dumps(payload, allow_nan=False, default=str), FORMAT_TAG)
+    if format == "json":
         snapshot.save(path)
-        return path
-    with atomic_path(path) as staging:
-        if format == 'json':
-            _write_json(staging, labels, reals, imags, key_value)
-        elif resolve_engine(codec) == 'fastparquet':
-            _write_fastparquet(staging, labels, reals, imags, key_value, compression)
-        else:
-            _write_pyarrow(staging, labels, reals, imags, key_value, compression)
+    else:
+        snapshot.save_parquet(path, compression)
     return path
-
-
-def _json_payload(labels, reals, imags, key_value):
-    return {
-        "format": key_value["mandacaru.format"],
-        "version": int(key_value["mandacaru.version"]),
-        "num_qubits": int(key_value["mandacaru.num_qubits"]),
-        "mapping": key_value["mandacaru.mapping"],
-        "num_particles": json.loads(key_value["mandacaru.num_particles"]),
-        "n_spatial_orbitals": json.loads(key_value["mandacaru.n_spatial_orbitals"]),
-        "metadata": json.loads(key_value["mandacaru.metadata"]),
-        "terms": [[label, real, imag]
-                  for label, real, imag in zip(labels, reals, imags)],
-    }
-def _write_json(path, labels, reals, imags, key_value):
-    """Write the plain-text document; no third-party dependency."""
-    payload = _json_payload(labels, reals, imags, key_value)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2)
-        fh.write("\n")
-
-
-def _write_fastparquet(path, labels, reals, imags, key_value, compression):
-    import fastparquet
-    import pandas as pd
-
-    frame = pd.DataFrame({"pauli": pd.Series(labels, dtype="object"),
-                          "real": pd.Series(reals, dtype="float64"),
-                          "imag": pd.Series(imags, dtype="float64")})
-    fastparquet.write(path, frame, compression=str(compression).upper(),
-                      custom_metadata=key_value, write_index=False)
-
-
-def _write_pyarrow(path, labels, reals, imags, key_value, compression):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    table = pa.table(
-        {"pauli": pa.array(labels, type=pa.string()),
-         "real": pa.array(reals, type=pa.float64()),
-         "imag": pa.array(imags, type=pa.float64())},
-        metadata={k.encode(): v.encode() for k, v in key_value.items()})
-    pq.write_table(table, path, compression=compression)
 
 
 # --------------------------------------------------------------------------- #
 # Read.
 # --------------------------------------------------------------------------- #
 
-def load_hamiltonian(path, format: str | None=None, *, resources=None, codec='auto') -> HamiltonianRecord:
+def _checked_format(path, format) -> str:
+    """The format of ``path``: detected, or the explicit one if the bytes agree."""
+    if format is None:
+        return detect_format(path)
+    format = resolve_format(format)
+    content = _content_format(path)
+    if content is not None and content != format:
+        raise ValueError(
+            f"{path!r} holds {content} content, but format={format!r} was "
+            "requested")
+    return format
+
+
+def _particles(value):
+    return None if value is None else (int(value[0]), int(value[1]))
+
+
+def load_hamiltonian(path, format: str | None = None, *,
+                     resources=None) -> HamiltonianRecord:
     """Read a Hamiltonian file written by :func:`save_hamiltonian`.
 
     The format is **detected automatically** (:func:`detect_format`) -- from the
     extension, else from the file's leading bytes -- so Parquet and JSON caches
-    load through the same call.  Parquet files are readable by either engine.
+    load through the same call.  The native engine decodes and validates the
+    document (tag, version, register width, Pauli strings, finite coefficients).
 
     Parameters
     ----------
-    engine : str
-        Parquet reader (``"auto"`` / ``"fastparquet"`` / ``"pyarrow"``); ignored
-        for JSON.
     format : {"parquet", "json"}, optional
-        Force the format instead of detecting it.
+        Assert the format instead of detecting it; content of the other format
+        raises ``ValueError``.
 
     Raises
     ------
     FileNotFoundError
         If ``path`` does not exist.
     ValueError
-        If the file is not a Mandacaru Hamiltonian, its schema version is newer
-        than this build understands, or its Pauli strings are inconsistent.
+        If the file is not a Mandacaru Hamiltonian, its schema version is not
+        the one this build understands, or its Pauli strings are inconsistent.
     """
     path = os.fspath(path)
     if not os.path.exists(path):
         raise FileNotFoundError(f'no such Hamiltonian file: {path!r}')
-    format = detect_format(path) if format is None else resolve_format(format)
-    if format == 'json':
-        from .._native import Context
-        snapshot = Context(**dict(resources or {})).read_snapshot(path, FORMAT_TAG)
-        columns, meta = _json_columns(json.loads(snapshot.json), path)
-    elif resolve_engine(codec) == 'fastparquet':
-        columns, meta = _read_fastparquet(path)
-    else:
-        columns, meta = _read_pyarrow(path)
-    header = _header_from_meta(path, meta)
-    for required in COLUMNS:
-        if required not in columns:
-            raise ValueError(f'{path!r} is missing the {required!r} column (found {sorted(columns)})')
-    if format != 'json':
-        from .._native import Context
-        Context(**dict(resources or {})).parse_snapshot(json.dumps(_json_payload(columns['pauli'], columns['real'], columns['imag'], meta), allow_nan=False), FORMAT_TAG)
-    n_qubits = header.num_qubits
+    _checked_format(path, format)
+    from .._native import Context
+    snapshot = Context(**dict(resources or {})).read_snapshot(path, FORMAT_TAG)
+    payload = json.loads(snapshot.json)
+    n_qubits = int(payload["num_qubits"])
     terms: dict[str, complex] = {}
-    for label, real, imag in zip(columns['pauli'], columns['real'], columns['imag']):
-        label = str(label)
-        if len(label) != n_qubits:
-            raise ValueError(f'{path!r}: Pauli string {label!r} has length {len(label)}, expected {n_qubits}')
+    for label, real, imag in payload["terms"]:
         terms[label] = terms.get(label, 0j) + complex(float(real), float(imag))
-    return HamiltonianRecord(hamiltonian=PauliSum(terms, num_qubits=n_qubits), mapping=header.mapping, num_particles=header.num_particles, n_spatial_orbitals=header.n_spatial_orbitals, metadata=header.metadata)
+    return HamiltonianRecord(
+        hamiltonian=PauliSum(terms, num_qubits=n_qubits),
+        mapping=payload["mapping"],
+        num_particles=_particles(payload["num_particles"]),
+        n_spatial_orbitals=(None if payload["n_spatial_orbitals"] is None
+                            else int(payload["n_spatial_orbitals"])),
+        metadata=payload["metadata"])
 
 
 @dataclass
@@ -495,149 +396,56 @@ class HamiltonianHeader:
         self.mapping = _canonical_method(self.mapping)
 
 
-def _header_from_meta(path, meta, n_terms=None) -> HamiltonianHeader:
-    """Validate the format tag / version and parse the key-value metadata."""
-    if meta.get("mandacaru.format") != FORMAT_TAG:
-        raise ValueError(
-            f"{path!r} is not a Mandacaru qubit-Hamiltonian Parquet file "
-            f"(expected mandacaru.format = {FORMAT_TAG!r})")
-    version = int(meta.get("mandacaru.version", 0))
-    if version > FORMAT_VERSION:
-        raise ValueError(
-            f"{path!r} uses Hamiltonian format version {version}, but this build "
-            f"understands up to {FORMAT_VERSION}")
-    num_particles = json.loads(meta.get("mandacaru.num_particles", "null"))
-    if num_particles is not None:
-        num_particles = (int(num_particles[0]), int(num_particles[1]))
-    n_orbitals = json.loads(meta.get("mandacaru.n_spatial_orbitals", "null"))
-    return HamiltonianHeader(
-        num_qubits=int(meta["mandacaru.num_qubits"]),
-        mapping=meta.get("mandacaru.mapping", "jordan_wigner"),
-        num_particles=num_particles,
-        n_spatial_orbitals=None if n_orbitals is None else int(n_orbitals),
-        metadata=json.loads(meta.get("mandacaru.metadata", "{}")),
-        n_terms=n_terms)
-
-
-def read_hamiltonian_header(path, engine: str = "auto",
-                            format: str | None = None) -> HamiltonianHeader:
+def read_hamiltonian_header(path, format: str | None = None, *,
+                            resources=None) -> HamiltonianHeader:
     """The :class:`HamiltonianHeader` of a cache file, without loading its terms.
 
-    A **Parquet** file keeps its metadata in the footer, so only that is read
-    -- the Pauli table (the part that grows with the problem) is never
-    decoded.  A **JSON** cache is a single document and has to be parsed whole
-    to reach its header; nothing is built from the terms, but the read is not
-    metadata-only, and for a very large cache Parquet is the format to use.
+    A **Parquet** file keeps its metadata in the footer, so only the trailer
+    and the footer are read -- the Pauli table (the part that grows with the
+    problem) is never decoded.  A **JSON** cache is a single document and has to
+    be parsed whole to reach its header; nothing is built from the terms, but the
+    read is not metadata-only, and for a very large cache Parquet is the format
+    to use.
     """
     path = os.fspath(path)
     if not os.path.exists(path):
         raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
-    format = detect_format(path) if format is None else resolve_format(format)
+    format = _checked_format(path, format)
+    from .._native import Context, read_parquet_metadata
+    context = Context(**dict(resources or {}))
     if format == "json":
-        columns, meta = _read_json(path)
-        return _header_from_meta(path, meta, len(columns.get("pauli", ())))
-    if resolve_engine(engine) == "fastparquet":
-        import fastparquet
-
-        parquet_file = fastparquet.ParquetFile(path)          # footer only
-        meta = {str(k): str(v)
-                for k, v in (parquet_file.key_value_metadata or {}).items()}
-        return _header_from_meta(path, meta, int(parquet_file.count()))
-    import pyarrow.parquet as pq
-
-    footer = pq.read_metadata(path)
-    meta = {k.decode(): v.decode() for k, v in (footer.metadata or {}).items()}
-    return _header_from_meta(path, meta, int(footer.num_rows))
-
-
-def _read_json(path):
-    """Read the plain-text document into the shared ``(columns, meta)`` shape."""
-    with open(path, encoding="utf-8") as fh:
-        payload = json.load(fh)
-    return _json_columns(payload, path)
-
-
-def _json_columns(payload, path):
-    if not isinstance(payload, dict):
-        raise ValueError(f"{path!r} is not a Mandacaru qubit-Hamiltonian JSON file")
-
-    tag = str(payload.get("format", ""))
-    if tag and tag != FORMAT_TAG:
-        # A different Mandacaru JSON document -- most easily the *inspection* dump
-        # of `verbose_hamiltonian`, whose term records are objects rather than
-        # triples.  Saying so beats failing later with `KeyError: 0`.
-        raise ValueError(
-            f"{path!r} is a {tag!r} document, not a Mandacaru qubit-Hamiltonian "
-            f"cache ({FORMAT_TAG!r}); `verbose_hamiltonian` writes a "
-            f"human-readable dump that cannot be loaded back -- use the file "
-            f"written by `save_hamiltonian`.")
-    if "terms" in payload and payload["terms"] and not isinstance(
-            payload["terms"][0], (list, tuple)):
-        raise ValueError(
-            f"{path!r} stores its terms as records, not [pauli, real, imag] "
-            f"triples: this is an inspection dump, not a loadable cache.")
-
-    meta = {
-        "mandacaru.format": tag,
-        "mandacaru.version": str(payload.get("version", 0)),
-        "mandacaru.num_qubits": str(payload.get("num_qubits", 0)),
-        "mandacaru.mapping": str(payload.get("mapping", "jordan_wigner")),
-        "mandacaru.num_particles": json.dumps(payload.get("num_particles")),
-        "mandacaru.n_spatial_orbitals": json.dumps(
-            payload.get("n_spatial_orbitals")),
-        "mandacaru.metadata": json.dumps(payload.get("metadata") or {}),
-    }
-    entries = payload.get("terms", [])
-    columns = {"pauli": [e[0] for e in entries],
-               "real": [float(e[1]) for e in entries],
-               "imag": [float(e[2]) for e in entries]}
-    # A term list of the wrong arity would have raised above; an empty file still
-    # needs the columns present so the shared validation reports properly.
-    return columns, meta
-
-
-def native_pandas_strings():
-    """Context manager keeping pandas off its Arrow-backed string dtype.
-
-    pandas 3 sets ``future.infer_string`` by default, so even a *fastparquet*
-    read builds its column index as a ``pyarrow`` string array -- which drags
-    pyarrow into a process that chose fastparquet precisely to avoid it.  In a
-    run that has also called Qiskit's ``transpile`` the result is not a clean
-    import error but corruption: ``UnicodeDecodeError`` or ``ArrowException:
-    Wrapping <garbage> failed`` while decoding column names.  See the module
-    warning above.
-
-    Turning the option off for the duration of the read keeps the whole path in
-    NumPy-backed object strings.  It is a no-op on pandas versions without the
-    option.
-    """
-    import pandas as pd
-
-    try:
-        return pd.option_context("future.infer_string", False)
-    except Exception:                       # pragma: no cover - older pandas
-        from contextlib import nullcontext
-        return nullcontext()
-
-
-def _read_fastparquet(path):
-    import fastparquet
-
-    parquet_file = fastparquet.ParquetFile(path)
-    meta = {str(k): str(v)
-            for k, v in (parquet_file.key_value_metadata or {}).items()}
-    with native_pandas_strings():
-        frame = parquet_file.to_pandas()
-        columns = {name: frame[name].tolist() for name in frame.columns}
-    return columns, meta
-
-
-def _read_pyarrow(path):
-    import pyarrow.parquet as pq
-
-    table = pq.read_table(path)
-    raw = table.schema.metadata or {}
-    meta = {k.decode(): v.decode() for k, v in raw.items()}
-    columns = {name: table.column(name).to_pylist()
-               for name in table.column_names}
-    return columns, meta
+        payload = json.loads(context.read_snapshot(path, FORMAT_TAG).json)
+        n_terms = len(payload["terms"])
+    else:
+        footer = read_parquet_metadata(context, path)
+        meta = footer["metadata"]
+        if meta.get("mandacaru.format") != FORMAT_TAG:
+            raise ValueError(
+                f"{path!r} is not a Mandacaru qubit-Hamiltonian Parquet file "
+                f"(expected mandacaru.format = {FORMAT_TAG!r})")
+        for key in ("mandacaru.version", "mandacaru.num_qubits"):
+            if key not in meta:
+                raise ValueError(f"{path!r} lacks the {key!r} metadata")
+        if int(meta["mandacaru.version"]) != FORMAT_VERSION:
+            raise ValueError(
+                f"{path!r} uses Hamiltonian format version "
+                f"{meta['mandacaru.version']}, but this build understands "
+                f"version {FORMAT_VERSION}")
+        payload = {
+            "num_qubits": int(meta["mandacaru.num_qubits"]),
+            "mapping": meta.get("mandacaru.mapping", "jordan_wigner"),
+            "num_particles": json.loads(
+                meta.get("mandacaru.num_particles", "null")),
+            "n_spatial_orbitals": json.loads(
+                meta.get("mandacaru.n_spatial_orbitals", "null")),
+            "metadata": json.loads(meta.get("mandacaru.metadata", "{}")),
+        }
+        n_terms = int(footer["num_rows"])
+    n_orbitals = payload["n_spatial_orbitals"]
+    return HamiltonianHeader(
+        num_qubits=int(payload["num_qubits"]),
+        mapping=payload["mapping"],
+        num_particles=_particles(payload["num_particles"]),
+        n_spatial_orbitals=None if n_orbitals is None else int(n_orbitals),
+        metadata=payload["metadata"],
+        n_terms=n_terms)

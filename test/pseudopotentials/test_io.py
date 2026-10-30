@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,6 +24,9 @@ from mandacaru.pseudopotentials.io import (DEFAULT_FORMAT, FILE_EXTENSIONS,
                                      library_elements, library_file,
                                      load_pseudopotential, resolve_format,
                                      save_pseudopotential)
+
+
+PARQUET_REFERENCE = Path(__file__).parents[1] / "migration/reference/parquet"
 
 
 @pytest.fixture(scope="module")
@@ -172,39 +176,41 @@ class TestFormatDetection:
         assert payload["atomic_number"] == 14
 
 
-class TestArrowStringIsolation:
-    """Reading Parquet must not drag pyarrow in behind fastparquet's back."""
+class TestNativeParquet:
+    """Parquet is read and written by the native engine, not by a Python package."""
 
-    def test_reads_keep_pandas_off_arrow_strings(self, silicon, tmp_path):
-        """The regression: pandas 3 defaults ``future.infer_string`` on.
+    def test_radial_tables_load_as_float64_arrays(self, silicon, tmp_path):
+        from mandacaru.pseudopotentials.io import _read_parquet
 
-        fastparquet builds its column index through pandas, so with that option
-        the index is a pyarrow string array -- pulling pyarrow into a process
-        that chose fastparquet precisely to avoid it.  After Qiskit's
-        ``transpile`` has run, decoding those column names raises
-        ``UnicodeDecodeError`` or ``ArrowException``, which broke *every*
-        pseudopotential load in a full test session.
-        """
-        pd = pytest.importorskip("pandas")
-        if not hasattr(pd.options.future, "infer_string"):
-            pytest.skip("this pandas has no infer_string option")
-
-        from mandacaru.core.serialization import native_pandas_strings
-
-        with native_pandas_strings():
-            assert pd.options.future.infer_string is False
-        # and the setting is restored afterwards
-        with native_pandas_strings():
-            pass
-        assert pd.options.future.infer_string is not None
-
-    def test_load_works_with_arrow_strings_enabled(self, silicon, tmp_path):
-        pd = pytest.importorskip("pandas")
-        if not hasattr(pd.options.future, "infer_string"):
-            pytest.skip("this pandas has no infer_string option")
         path = save_pseudopotential(silicon, tmp_path / "si.parquet")
-        with pd.option_context("future.infer_string", True):
-            assert_same(silicon, load_pseudopotential(path))
+        tables = _read_parquet(path)["radial_tables"]
+        assert tables and all(
+            isinstance(values, np.ndarray) and values.dtype == np.float64
+            for values in tables.values())
+
+    def test_saving_twice_gives_the_same_bytes(self, silicon, tmp_path):
+        first = save_pseudopotential(silicon, tmp_path / "a.parquet")
+        second = save_pseudopotential(silicon, tmp_path / "b.parquet")
+        with open(first, "rb") as one, open(second, "rb") as two:
+            assert one.read() == two.read()
+
+    def test_a_save_leaves_no_stage_file(self, silicon, tmp_path):
+        save_pseudopotential(silicon, tmp_path / "si.parquet")
+        assert [entry.name for entry in tmp_path.iterdir()] == ["si.parquet"]
+
+    def test_a_hamiltonian_file_is_not_a_pseudopotential(self):
+        with pytest.raises(ValueError, match="not a Mandacaru pseudopotential"):
+            load_pseudopotential(PARQUET_REFERENCE / "negative"
+                                 / "hamiltonian_no_kv.parquet")
+
+    def test_a_truncated_file_raises(self, silicon, tmp_path):
+        path = save_pseudopotential(silicon, tmp_path / "si.parquet")
+        with open(path, "rb") as handle:
+            data = handle.read()
+        cut = tmp_path / "cut.parquet"
+        cut.write_bytes(data[:len(data) // 2])
+        with pytest.raises(ValueError):
+            load_pseudopotential(cut)
 
 
 class TestLibrary:

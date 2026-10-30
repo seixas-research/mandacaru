@@ -81,9 +81,9 @@ impl MolecularIntegrals {
                 "PAW forces support restricted and unrestricted collinear states only",
             ));
         }
-        if self.samples.precision() != Precision::Double {
+        if self.samples.precision() != Precision::Float64 {
             return Err(invalid(
-                "PAW forces differentiate the energy and require double-precision orbital samples",
+                "PAW forces differentiate the energy and require float64 orbital samples",
             ));
         }
         if let Some(name) = state.functional.as_deref() {

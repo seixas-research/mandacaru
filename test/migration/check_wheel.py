@@ -139,10 +139,12 @@ save_hamiltonian('cached.parquet',record.hamiltonian,mapping=record.mapping,
                  num_particles=record.num_particles,n_spatial_orbitals=record.n_spatial_orbitals)
 restored=load_hamiltonian('cached.parquet')
 assert restored.hamiltonian.terms==record.hamiltonian.terms
-checkpoint_calc=Mandacaru(method='vqe',engine='rust',load_hamiltonian='cached.parquet',
+assert pathlib.Path('cached.parquet').read_bytes()[:4]==b'PAR1'
+for retired in ('pyarrow','fastparquet'):
+    assert retired not in sys.modules, retired
+checkpoint_calc=Mandacaru(method='vqe',load_hamiltonian='cached.parquet',
                          checkpoint='native-state.json',trace=False,references=False)
 checkpoint_result=checkpoint_calc.run()
-assert checkpoint_result.timings['cache_engine']=='python-parquet-adapter'
 assert abs(checkpoint_result.optimal_energy-spec['vqe_energy_ev'])<1e-7
 restarted=Mandacaru(method='vqe',engine='rust',load_hamiltonian=sys.argv[2],
                     resume='native-state.json',trace=False,references=False).run()
@@ -195,6 +197,11 @@ def main() -> None:
         wheel_metadata = wheel.read(next(n for n in names if n.endswith("/WHEEL"))).decode()
         entry_points = wheel.read(next(n for n in names if n.endswith("/entry_points.txt"))).decode()
         assert "Root-Is-Purelib: false" in wheel_metadata and "py3-none-any" not in wheel_metadata
+        requires = {line.split(":", 1)[1].split(";")[0].strip().lower()
+                    for line in metadata.splitlines() if line.startswith("Requires-Dist:")}
+        for retired in ("fastparquet", "pandas", "pyarrow"):
+            assert not any(r == retired or r.startswith(retired + (" ", ">", "<", "=", "~", "!", "[", "("))
+                           for r in requires), (retired, sorted(requires))
         assert "#gh-dark-mode-only" not in metadata and "#gh-light-mode-only" not in metadata
         assert "mandacaru-build = mandacaru.pseudopotentials.build_cli:main" in entry_points
         assert "mandacaru = mandacaru.cli:main" in entry_points

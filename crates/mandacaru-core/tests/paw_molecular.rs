@@ -63,6 +63,7 @@ fn signed_paw_corrections_stay_separate_from_positive_coulomb_cholesky() {
         .unwrap();
         let grid = SpatialGrid::from_geometry(&geometry, [1.; 3], false, false).unwrap();
         let basis = Basis::build(&ctx, &geometry, r#"{"name":"HAO"}"#).unwrap();
+        let samples = basis.sample(&ctx, &grid, Default::default()).unwrap();
         let corrections = MolecularCorrections {
             dft: None,
             external: ctx.allocate(grid.index.points()).unwrap(),
@@ -81,6 +82,7 @@ fn signed_paw_corrections_stay_separate_from_positive_coulomb_cholesky() {
             geometry,
             grid,
             basis,
+            samples,
             "spectral",
             Some(1e-10),
             Some(corrections),

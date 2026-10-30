@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, TypeAlias
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from ..core.checkpoint import WavefunctionCheckpoint
+from .._native import require_normalized_state
 from ..core.mapping import PauliSum
 
 if TYPE_CHECKING:
@@ -36,23 +37,49 @@ def _finite_real(value: float, name: str) -> float:
     return value
 
 
+#: The stored complex dtype of each precision: complex128 for ``"float64"``,
+#: complex64 for ``"float32"``. A state of the other dtype is converted once,
+#: at the entry of a workflow, never inside it.
+STATE_DTYPES = {"float64": np.dtype(np.complex128), "float32": np.dtype(np.complex64)}
+
+
+def state_dtype(precision: str) -> np.dtype:
+    """The dtype of a state stored at ``precision``; anything else is a ``ValueError``."""
+    if not isinstance(precision, str) or precision not in STATE_DTYPES:
+        raise ValueError(
+            f"precision must be 'float32' or 'float64', not {precision!r}"
+        )
+    return STATE_DTYPES[precision]
+
+
 def _state_vector(
-    initial_state: PreparedState, n_qubits: int, *, resources=None
-) -> NDArray[np.complex128]:
-    """Copy and validate a normalized full-register state or checkpoint."""
+    initial_state: PreparedState,
+    n_qubits: int,
+    *,
+    precision: str = "float64",
+    resources=None,
+) -> NDArray[np.complexfloating]:
+    """Copy and validate a normalized full-register state or checkpoint.
+
+    The copy has the dtype of ``precision``; a checkpoint is prepared directly
+    in that dtype. The norm (summed in float64) is checked in Rust against the
+    tolerance of that dtype.
+    """
+    dtype = state_dtype(precision)
     if isinstance(initial_state, (str, PathLike)):
         initial_state = WavefunctionCheckpoint.load(initial_state, resources=resources)
     if isinstance(initial_state, WavefunctionCheckpoint):
         if initial_state.n_qubits != n_qubits:
             raise ValueError("checkpoint and operator qubit counts differ")
-        initial_state = initial_state.state_vector(resources=resources)
-    state = np.array(initial_state, dtype=complex, copy=True)
+        initial_state = initial_state.state_vector(
+            precision=precision, resources=resources
+        )
+    state = np.array(initial_state, dtype=dtype, copy=True)
     if state.ndim != 1 or state.size != 2**n_qubits:
         raise ValueError(f"initial_state must have shape ({2**n_qubits},)")
     if not np.all(np.isfinite(state)):
         raise ValueError("initial_state must contain only finite amplitudes")
-    if not np.isclose(np.vdot(state, state).real, 1.0, rtol=0, atol=1e-10):
-        raise ValueError("initial_state must be normalized")
+    require_normalized_state(state)
     return state
 
 
@@ -68,6 +95,15 @@ class SuzukiTrotter:
         Default 2 (Strang splitting); 1 and all positive even orders are
         supported. Higher orders use the five-stage Suzuki recursion and cost
         roughly ``5**(order/2 - 1)`` times as much as order 2.
+    precision : {"float64", "float32"}
+        Storage of the propagated state: ``complex128`` (default) or
+        ``complex64``. Pauli coefficients, rotation angles and every sum stay
+        float64; each rotation is evaluated in float64 and rounded once into
+        the stored state. An input state is converted once, at the entry, to
+        that dtype, and the result has it. Any other value raises
+        ``ValueError``. A complex64 state is rounded at every rotation, so its
+        norm drifts from one as the propagation lengthens (measured: 3.0e-7
+        after 5 steps of an order-4 formula, 30 terms, 6 qubits).
 
     Notes
     -----
@@ -77,8 +113,15 @@ class SuzukiTrotter:
     """
 
     def __init__(
-        self, hamiltonian: PauliSum, *, order: int = 2, resources=None
+        self,
+        hamiltonian: PauliSum,
+        *,
+        order: int = 2,
+        precision: str = "float64",
+        resources=None,
     ) -> None:
+        self._dtype = state_dtype(precision)
+        self.precision = precision
         order = _positive_integer(order, "order")
         if order != 1 and order % 2:
             raise ValueError("order must be 1 or a positive even integer")
@@ -106,16 +149,19 @@ class SuzukiTrotter:
 
         self._context = Context(**dict(resources or {}))
         self._native = self._context.propagator(
-            self.n_qubits, [(l, c, 0.0) for l, c in terms], order=order
+            self.n_qubits,
+            [(l, c, 0.0) for l, c in terms],
+            order=order,
+            precision=precision,
         )
         return
 
     def _apply_operator(self, state):
-        return self._native.apply(np.ascontiguousarray(state, dtype=complex))
+        return self._native.apply(np.ascontiguousarray(state, dtype=self._dtype))
 
     def _evolve(self, state, time, steps, inverse=False):
         return self._native.evolve(
-            np.ascontiguousarray(state, dtype=complex),
+            np.ascontiguousarray(state, dtype=self._dtype),
             time,
             steps=steps,
             inverse=inverse,
@@ -129,7 +175,7 @@ class SuzukiTrotter:
         *,
         steps: int = 1,
         inverse: bool = False,
-    ) -> NDArray[np.complex128]:
+    ) -> NDArray[np.complexfloating]:
         """Return a new propagated state; the input is never modified.
 
         ``time`` is a finite signed time in atomic units and ``steps`` is the
@@ -142,7 +188,12 @@ class SuzukiTrotter:
         time = _finite_real(time, "time")
         steps = _positive_integer(steps, "steps")
         return self._evolve(
-            _state_vector(initial_state, self.n_qubits, resources=self._resources),
+            _state_vector(
+                initial_state,
+                self.n_qubits,
+                precision=self.precision,
+                resources=self._resources,
+            ),
             time,
             steps,
             inverse,
@@ -183,13 +234,16 @@ def time_evolve(
     *,
     steps: int = 1,
     order: int = 2,
+    precision: str = "float64",
     resources=None,
-) -> NDArray[np.complex128]:
+) -> NDArray[np.complexfloating]:
     """Propagate a prepared state with a Suzuki–Trotter formula (default order 2).
 
-    Energies and time are in atomic units. Reuse :class:`SuzukiTrotter` for
-    repeated calls with the same Hamiltonian to avoid recompiling its terms.
+    Energies and time are in atomic units. ``precision="float32"`` stores the
+    state as ``complex64`` (see :class:`SuzukiTrotter`). Reuse
+    :class:`SuzukiTrotter` for repeated calls with the same Hamiltonian to
+    avoid recompiling its terms.
     """
-    return SuzukiTrotter(hamiltonian, order=order, resources=resources).evolve(
-        initial_state, time, steps=steps
-    )
+    return SuzukiTrotter(
+        hamiltonian, order=order, precision=precision, resources=resources
+    ).evolve(initial_state, time, steps=steps)

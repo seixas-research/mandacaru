@@ -2,6 +2,7 @@
 use super::{CachedProblem, C64};
 use crate::{
     basis::{Basis, Radial},
+    math::storage::SampleBlocks,
     molecular::{response, transform::Model, MeanField, MolecularIntegrals},
     product, Error, Reservation, Result,
 };
@@ -107,15 +108,45 @@ fn normalized_overlap(previous: &Handover, current: &Frame<'_>) -> Result<DMatri
     let a = previous.basis.orbitals.len();
     let b = current.integrals.m();
     let _memory = ctx.reserve(product(&[a.max(b), a.max(b), 16, 12])?)?;
-    let old_samples = previous.basis.sample(ctx, grid)?;
-    let old = nalgebra::DMatrixView::from_slice(old_samples.as_slice(), points, a);
-    let samples = current.integrals.samples.read(ctx)?;
-    let new = nalgebra::DMatrixView::from_slice(&samples, points, b);
-    // Raw samples are real. All large grid contractions remain real, while
-    // the small orbital transforms retain complex phases without clipping.
-    let cross = old.transpose() * new * grid.index.dv();
-    let old_metric = old.transpose() * old * grid.index.dv();
-    let new_metric = new.transpose() * new * grid.index.dv();
+    // Raw samples are real. All large grid contractions remain real and run
+    // over point blocks (the previous orbitals evaluated per point, the
+    // current stored rows widened per block): no sample stack of either basis
+    // exists. The small orbital transforms retain complex phases without
+    // clipping.
+    let mut blocks = SampleBlocks::new(ctx, &current.integrals.samples, b, points)?;
+    let stride = blocks.stride();
+    let _old_block = ctx.reserve(product(&[stride, a, 8])?)?;
+    let mut old = DMatrix::<f64>::zeros(stride, a);
+    let mut raw = vec![0.; a];
+    let mut cross = DMatrix::<f64>::zeros(a, b);
+    let mut old_metric = DMatrix::<f64>::zeros(a, a);
+    let mut new_metric = DMatrix::<f64>::zeros(b, b);
+    for start in (0..points).step_by(stride) {
+        let count = blocks.load(start)?;
+        for i in 0..count {
+            previous
+                .basis
+                .evaluate_at(0, grid.point(start + i), &mut raw);
+            for (j, value) in raw.iter().enumerate() {
+                old[(i, j)] = *value;
+            }
+        }
+        let old_block = old.rows(0, count);
+        let new_block = nalgebra::DMatrixView::from_slice_with_strides_generic(
+            blocks.values(),
+            nalgebra::Dyn(count),
+            nalgebra::Dyn(b),
+            nalgebra::Const::<1>,
+            nalgebra::Dyn(stride),
+        );
+        cross += old_block.transpose() * new_block;
+        old_metric += old_block.transpose() * old_block;
+        new_metric += new_block.transpose() * new_block;
+    }
+    let dv = grid.index.dv();
+    let cross = cross * dv;
+    let old_metric = old_metric * dv;
+    let new_metric = new_metric * dv;
     let old_coeff = &previous.coefficients;
     let new_coeff = current.integrals.lowdin.map(|v| C64::new(v, 0.))
         * response::orbitals(current.reference, current.model)?;

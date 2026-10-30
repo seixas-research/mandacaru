@@ -115,18 +115,21 @@ def apply_exponential(generator: PauliSum, angle: float, vector) -> np.ndarray:
 PREPARATIONS = ("product", "sum")
 
 
-def prepare_state(n_qubits: int, reference_qubits, generators, parameters, preparation: str='product', *, resources=None) -> np.ndarray:
+def prepare_state(n_qubits: int, reference_qubits, generators, parameters, preparation: str='product', *, precision: str='float64', resources=None) -> np.ndarray:
     """The state a checkpoint *means*, as a full-register state vector.
 
     ``preparation="product"``: :math:`\\prod_k e^{\\theta_k A_k}|ref\\rangle`,
     which is also what a circuit provider prepares on hardware;
     ``"sum"``: :math:`e^{\\sum_k \\theta_k A_k}|ref\\rangle` (see
     :data:`PREPARATIONS`).  Independent of every driver and ansatz class.
+
+    ``precision="float32"`` stores the state as ``complex64`` (built in
+    ``complex64``, never widened); generators and parameters stay float64.
     """
     if preparation not in PREPARATIONS:
         raise ValueError(f'unknown preparation {preparation!r}; use one of {PREPARATIONS}')
     record = WavefunctionCheckpoint(n_qubits, list(reference_qubits), list(generators), parameters, preparation=preparation)
-    return record._native_snapshot(resources).state()
+    return record._native_snapshot(resources).state(precision=precision)
 
 
 # --------------------------------------------------------------------------- #
@@ -323,9 +326,12 @@ class WavefunctionCheckpoint:
         return Context(**dict(resources or {})).parse_snapshot(
             json.dumps(self.to_payload(), allow_nan=False), FORMAT_TAG)
 
-    def state_vector(self, *, resources=None) -> np.ndarray:
-        """The prepared state, in the form :attr:`preparation` names."""
-        return prepare_state(self.n_qubits, self.reference_qubits, self.generators, self.parameters, self.preparation, resources=resources)
+    def state_vector(self, *, precision: str='float64', resources=None) -> np.ndarray:
+        """The prepared state, in the form :attr:`preparation` names.
+
+        ``complex128`` for ``precision="float64"``, ``complex64`` for ``"float32"``.
+        """
+        return prepare_state(self.n_qubits, self.reference_qubits, self.generators, self.parameters, self.preparation, precision=precision, resources=resources)
 
     def circuit(self, provider=None):
         """The state-preparation circuit on an SDK (default: Qiskit).

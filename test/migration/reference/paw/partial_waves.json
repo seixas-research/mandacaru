@@ -1,0 +1,50 @@
+{
+ "elements": {
+  "H": 1,
+  "C": 6,
+  "O": 8,
+  "Si": 14,
+  "Cu": 29
+ },
+ "atom": {
+  "points": 6000,
+  "r_max": 30.0,
+  "tolerance": 1e-07,
+  "mixing": 0.25,
+  "xc": "lda",
+  "relativity": "none"
+ },
+ "cutoffs": {
+  "H": {
+   "0": 1.2
+  },
+  "C": {
+   "0": 1.5,
+   "1": 1.6
+  },
+  "O": {
+   "0": 1.3,
+   "1": 1.4
+  },
+  "Si": {
+   "0": 2.0,
+   "1": 2.2
+  },
+  "Cu": {
+   "0": 2.4,
+   "2": 1.3
+  }
+ },
+ "treatments": [
+  "none",
+  "scalar"
+ ],
+ "energy_offset": 1.0,
+ "rc_factor": 1.3,
+ "cases": [],
+ "stride": 5,
+ "note": "see keys; atoms are the native non-relativistic LDA atom at 6000 points",
+ "local_potentials": "polynomial_local_potential(r, v, snap(rl), shift, fit_window) for (2.0,0,None),(2.5,0.3,None),(1.6,0,0.15*1.6)",
+ "bound_states": "bound_state from the atom eigenvalue as guess; treatment none and scalar",
+ "optimize": "optimize_pseudo_waves(r, v, l, waves, energies, rc, q_cut, n_bessel, norm_factor) for (8,5,1.0),(10,6,0.9)"
+}

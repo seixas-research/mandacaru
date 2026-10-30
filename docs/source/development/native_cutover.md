@@ -13,7 +13,10 @@ identifying every caller and moving its numerical work first; an unsupported
 feature must never silently select an unrelated calculation.
 
 See [the implemented ownership and dependency boundaries](architecture.md) for
-the current calculator, lazy Hamiltonian and array-transfer contracts.
+the current calculator, lazy Hamiltonian and array-transfer contracts, and
+[the history](history.md) for how each phase of the migration closed. This page is
+the single live status page; features that were never ported are collected in
+[the not-yet-available table](#not-yet-available).
 
 ## Coverage audit
 
@@ -32,7 +35,7 @@ infer parity from a module name or assume that every NumPy call is an algorithm.
 | Correlation | Closed-shell MP2/FNO, local pair domains and PNOs, coupled local MP2 amplitudes, symmetry-preserving active spaces | Open-shell correlation and correlating-pair constraints |
 | Molecular result fields | Native natural orbitals, charge/reference/difference densities, orbital sampling and cube/XSF output; PAW augmentation charge accounting | Periodic field views |
 | Dynamics | Propagation, checkpoint preparation and QPE | Echo and response orchestration |
-| Persistence and providers | JSON snapshots, circuit streams, grouping and field writers | Columnar codecs, dataset codecs and job lifecycle integration |
+| Persistence and providers | JSON and Parquet snapshots (Parquet container, v1 and v2 data pages, dictionary pages, UNCOMPRESSED, Snappy and ZSTD decoding, ZSTD encoding in `mandacaru-core`; no Python Parquet package), pseudopotential Parquet datasets, circuit streams, grouping and field writers | Dataset codecs other than Parquet and job lifecycle integration; the shipped pseudopotential library was not regenerated with the native writer ([Parquet in Rust](#cutover-parquet)) |
 
 ## Functional implementation contract
 
@@ -131,7 +134,7 @@ compensation charges and core densities on the fixed grid, the one-center
 Coulomb and exchange–correlation terms, closed-1s core exchange, the local
 potential and the kinetic energy at once, so GGA and open-shell states need no
 separate term. It raises for GHF, screened exchange, nonlocal correlation,
-single-precision samples and unconverged states.
+`float32` samples and unconverged states.
 
 The ASE adapter supports free-molecule internal-direction projection and
 records its force convention in the text output. Unprojected Cartesian
@@ -146,20 +149,29 @@ the caller retains its previous result. A budget regression distinguishes these
 lifetimes explicitly.
 
 The public optimizer default is SLSQP with 2000 iterations and tolerance
-`1e-12`, restoring the original calculator preset. Default ADAPT stopping
+`1e-12`, restoring the original calculator preset. With `shots > 0` the default is
+instead the strict two-evaluation form of SPSA (`track_best=False`, maxiter 100, so
+`2 * maxiter + 1` energy evaluations, each one job on a processor), and SLSQP, BFGS,
+L-BFGS and CG are refused there because they difference a sampled energy at tiny
+steps. Default ADAPT stopping
 criteria are a maximum gradient of `1e-3` Ha and an energy change of `1e-3` eV;
 an explicitly supplied criterion dictionary enables only its specified keys.
 User-supplied budgets and tolerances are preserved.
 
-Molecular `precision="single"` retains sampled orbitals in native `float32`
+Molecular `precision="float32"` retains sampled orbitals in native `float32`
 buffers. One-body matrices, integral accumulation and FFT workspaces remain in
-double precision. Temporary accumulation views share the calculation budget and
+`float64`. Temporary accumulation views share the calculation budget and
 release their reservations on exit; displaced molecular setups retain the
 selected storage precision. The PBE/DZP water comparison differs by less than
 one micro-eV between the two storage choices. Periodic complex orbital samples
 also support compact `complex64` storage;
-Bloch matrices and SCF accumulation stay in double precision. Input snapshots
+Bloch matrices and SCF accumulation stay in `float64`. Input snapshots
 retain the selected storage precision.
+
+The periodic r²SCAN code has the same stencil pattern that the molecular code had
+before the 2026-10-29 repair (the density gradient taken from a finite-difference
+stencil while the kinetic density comes from the orbitals). It has not been examined,
+so periodic r²SCAN energies are provisional until that check is made.
 
 Periodic meta-GGA SCF computes kinetic densities from the occupied complex
 Bloch orbitals and includes the matching kinetic-potential matrix. Both density
@@ -209,6 +221,98 @@ context's workers. Workspace size also limits that partition; each worker's
 BLAS call remains single-threaded and partial matrices are reduced in a fixed
 order. Thread, memory and independent direct-contraction checks cover this path.
 
+(cutover-parquet)=
+## Parquet in Rust
+
+`fastparquet`, `pandas` and `pyarrow` are no longer declared or imported. The
+container, the Thrift footer, PLAIN and dictionary decoding, Snappy, the CRC32
+and the writer are hand-written in `mandacaru-core::parquet`; the one third-party
+crate, `ruzstd` (pinned, declared once in the workspace `Cargo.toml`), is used only
+in `parquet/codec/zstd.rs`. Python makes one native call per file. User-visible
+behavior changes of the cutover:
+
+- `engine=` and `codec=` are removed with no alias (`TypeError`); `compression=`
+  accepts `zstd`, `uncompressed` and `none`.
+- A null in a Parquet file raises `ValueError` (the old reader returned NaN). A
+  NaN in a PAW table is written as a real NaN, not as a null.
+- Format version 0 and a missing format, version or qubit count raise; a missing
+  mapping defaults to `jordan_wigner`. The key/value JSON text is compact.
+- Parquet pseudopotential saves are atomic. GZIP, Brotli and LZ4 files raise with
+  a hint to re-save with zstd.
+- The reader takes v1 and v2 data pages, dictionary pages and UNCOMPRESSED,
+  Snappy and ZSTD. New files use REQUIRED columns, PLAIN encoding and zstd at its
+  fastest level (the only one ruzstd 0.8.1 implements), so they can be larger
+  than files written with libzstd at level 3.
+- The shipped pseudopotential library was not regenerated; regenerating it needs
+  the owner's approval.
+
+The user-facing description is in [Hamiltonian caching](../guide/hamiltonian_cache.md)
+and [Parquet files](#native-parquet).
+
+## Numerical safeguards and run control
+
+**Eigensolvers.** The tridiagonal QR iteration in `math/linalg.rs` can return an
+orthonormal but inaccurate decomposition of a degenerate or clustered spectrum; one
+such result had made a PAW energy wrong by 2.2 Ha for H₂ displaced by 1e-3 Bohr. Both
+the real symmetric `real_eigen` and the complex Hermitian `eigen` (every SCF Fock
+matrix, periodic and spinor Hamiltonians) now check the result and fall back to cyclic
+Jacobi rotations. Acceptance is relative: the residual divided by the matrix norm, and
+the departure from orthogonality, must both lie below `1e-13 max(n, 10)`. The
+regression is `crates/mandacaru-core/tests/linalg.rs`.
+
+**Kohn–Sham level shift, as a retry only.** A molecular Kohn–Sham start that does
+not converge with plain DIIS is rerun with a 0.5 Ha level shift, engaged at the first
+rise in energy. This damps the flip of a degenerate open-shell electron (a diatomic
+radical's π electron). The shift is not applied to a start that converges without
+it, because an always-on shift can settle into a different stationary point than the
+plain iteration.
+
+**Run budget and shot-based runs.** SPSA has a strict form and is the default under
+`shots > 0` (see the optimizer paragraph above). A pre-flight refuses an optimization
+whose evaluation bound cannot fit the run budget (Nelder–Mead is left to the ledger;
+COBYLA is bounded by `maxiter` unless `maxfev` is given). When the budget ends a
+solve, the executor's stop message ends it at the best point reached: the result
+carries `budget_stopped`, the calculator sets `run_budget_exhausted` and issues a
+`RuntimeWarning`. A stop before any energy has been measured raises
+`RunBudgetExceeded`. `execute_circuits` defaults to true when a non-Qiskit provider
+is named.
+
+**Validation of options.** The classical methods (`rhf`, `uhf`, `ghf`, `dft`) refuse
+`shots`, `execute_circuits`, `backend_provider`, `device`, `backend_options` and
+`measurement_budget`, since there is no quantum state to measure. The molecular PAW
+path warns when the dataset was generated for a different functional. After
+`results` is cleared, `get_forces()` reruns the calculation instead of serving a
+cached result.
+
+## Open findings
+
+Recorded on 2026-10-29 in the maintainers' session log.
+
+- **Degenerate frontier shells.** The restricted SCF has no ensemble occupation. A
+  closed-shell O₂ on the exact axis converges in a few iterations to a state far above
+  the triplet (reproduced for this page: PAW-LCAO SZ, LDA, `grid_spacing=0.3`,
+  -819.798 eV against -860.362 eV for the triplet); a small tilt reaches the physical
+  state. The Python engine used a half-and-half ensemble. A strict expected-failure
+  test pins the gap. The remedy (occupations per spin after each eigensolve, stored
+  in the candidate and history, with fractional weights in the force orbital sum)
+  also has to make natural occupations and the quantum handover refuse a fractional
+  state.
+- **`frozen=[...]` that splits a degenerate block.** Which of the equal-occupation
+  orbitals are frozen is decided by round-off, so the active-space Hamiltonian is
+  not reproducible. Proposed: order orbitals within equal-occupation blocks by Fock
+  energy, or reject a list that splits a block. (Not rerun for this page.)
+- **Run log.** The blocks the code does not write are listed in
+  [the run log reference](../reference/run_log.md). `[PERFORMANCE]` is never
+  written, `[ELECTRONS]` holds three of its thirteen documented fields, and a crystal
+  calculation cannot be logged. `ansatz="hva"` on a cached Hamiltonian is rejected
+  only at `.run()`. (The last item was not rerun for this page.)
+- **Tests.** The collection errors of the older suite were reduced from 109 to 2 by
+  deleting test files whose subject modules no longer exist; two remaining modules
+  have dangling imports and no native counterpart. A full run on that date recorded
+  3,174 passed, 291 failed, 62 errors, with the failures concentrated in
+  untriaged files that probably still test the pre-cutover interface. These counts
+  are the session log's and were not remeasured here.
+
 ## Remaining cutover work
 
 The following public paths from the Python implementation are still unavailable
@@ -248,9 +352,9 @@ Its signed compensation Fock contribution and LDA/PBE/r²SCAN potentials pass
 energy-derivative checks. Multi-shell core exchange, spin-orbit projectors,
 PAW screened exchange and advanced periodic methods remain incomplete. All
 examples are retained; `scripts/check_examples.py` reports failures instead of
-filtering them out. The full scientific test suite still has collection errors
-from removed modules. Passing focused recovery tests does not resolve those
-errors or establish repository-wide parity.
+filtering them out. The full scientific test suite does not yet pass in full (see
+the open findings above). Passing focused recovery tests does not establish
+repository-wide parity.
 
 Fixed VQE supports Hamiltonian-group evolution and shared-angle first/second
 order product formulas. Sequential deflation includes overlap penalties and

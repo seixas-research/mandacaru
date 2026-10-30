@@ -37,15 +37,10 @@ from ase import Atoms
 from mandacaru import Mandacaru
 from mandacaru.basis.filtering import (DEFAULT_FILTER_METHOD, FILTER_METHODS,
                                        FILTER_NYQUIST_FRACTION,
-                                       ROLLOFF_FRACTION, bessel_matrix,
-                                       cutoff_energy_ev, cutoff_window,
-                                       filter_label, filter_radial,
-                                       filter_table,
-                                       inverse_spherical_bessel_transform,
-                                       radial_norm, residual_weight,
-                                       resolve_filter_cutoff,
-                                       spherical_bessel_transform,
-                                       support_radius, validate_filter_cutoff)
+                                       cutoff_energy_ev, filter_label,
+                                       filter_radial, filter_table,
+                                       residual_weight, resolve_filter_cutoff,
+                                       validate_filter_cutoff)
 from mandacaru.basis.multizeta import RadialTable, zeta_tables
 from mandacaru.pseudopotentials.families import PSEUDO_FAMILIES, FamilySpec
 from mandacaru.pseudopotentials.orbitals import pseudo_basis
@@ -55,6 +50,12 @@ from mandacaru.units import ANGSTROM_TO_BOHR, EV_TO_HARTREE
 #: A uniform radial grid like the pseudopotential library's (0.02 Bohr out to
 #: 30 Bohr), so the transform is exercised on the grid it really runs on.
 R_GRID = np.linspace(0.005, 30.0, 1500)
+
+
+def radial_norm(r, values):
+    """:math:`\\int R^2 r^2 dr` of a table (a test measurement, not a routine)."""
+    r, values = np.asarray(r), np.asarray(values)
+    return float(np.trapezoid(values * values * r * r, r))
 
 
 def gaussian(r, l, alpha):
@@ -103,6 +104,8 @@ class TestTransform:
     def test_round_trip(self, l):
         """Forward then inverse returns the function.
 
+        A sharp window (``rolloff=0``) at ``k_max = 10``, no real-space switch
+        and no renormalization make the filter the bare transform pair.
         ``k_max = 10`` is not laziness: the quadrature runs on the *radial*
         table (0.02 Bohr here, as in the shipped library) and ``j_l(kr)``
         has only ``2 pi / (k dr)`` points per oscillation, so the trapezoid
@@ -113,21 +116,17 @@ class TestTransform:
         Bohr^-1 (grid_spacing = 0.25-0.20), i.e. inside the 1e-4 regime.
         """
         values = gaussian(R_GRID, l, 1.0)
-        k = np.linspace(0.0, 10.0, 400)
-        matrix = bessel_matrix(l, k, R_GRID)
-        F = spherical_bessel_transform(R_GRID, values, l, k, matrix)
-        back = inverse_spherical_bessel_transform(k, F, l, R_GRID, matrix)
+        back, _info = filter_radial(R_GRID, values, l, 10.0, method="plain",
+                                    rolloff=0.0, renormalize=False)
         assert np.abs(back - values).max() < 2e-4 * np.abs(values).max()
 
     @pytest.mark.parametrize("l", [0, 1, 2])
     def test_parseval(self, l):
         """``int R^2 r^2 dr == (2/pi) int F^2 k^2 dk`` -- the identity that
-        makes "the weight above k_c" a number rather than a figure of speech."""
+        makes "the weight above k_c" a number rather than a figure of speech:
+        a Gaussian has all of its norm below a generous cutoff."""
         values = gaussian(R_GRID, l, 1.0)
-        k = np.linspace(0.0, 25.0, 900)
-        F = spherical_bessel_transform(R_GRID, values, l, k)
-        spectral = (2.0 / np.pi) * float(np.trapezoid(F * F * k * k, k))
-        assert spectral == pytest.approx(radial_norm(R_GRID, values), rel=1e-5)
+        assert abs(residual_weight(R_GRID, values, l, 10.0)) < 1e-4
 
     def test_a_band_limited_function_is_left_alone(self):
         """A smooth Gaussian already lives below the cutoff (3.3e-7 of its
@@ -194,13 +193,6 @@ class TestTransform:
         assert out[1] / out[0] == pytest.approx((R_GRID[1] / R_GRID[0]) ** l,
                                                 rel=0.01)
 
-    def test_the_cutoff_window_is_smooth_and_compact(self):
-        k = np.linspace(0.0, 10.0, 501)
-        w = cutoff_window(k, 8.0, ROLLOFF_FRACTION)
-        assert np.all(w[k <= 8.0 * (1.0 - ROLLOFF_FRACTION)] == 1.0)
-        assert np.all(w[k >= 8.0] == 0.0)
-        assert np.all(np.diff(w) <= 1e-12)          # monotonically decreasing
-
     def test_the_support_radius_finds_the_range(self):
         """``support_radius`` is where the remaining *tail norm* falls below
         1e-6, so a little amplitude survives beyond it (0.15 % of the peak on
@@ -208,7 +200,8 @@ class TestTransform:
         further 50 % out, well clear of anything that matters."""
         table = [t for t in paw_tables("O") if t.l == 0 and t.zeta == 2][0]
         r, values = np.asarray(table.r), np.asarray(table.values)
-        r_s = support_radius(r, values)
+        _out, info = filter_radial(r, values, 0, 7.5, warn=False)
+        r_s = info["support_radius"]
         assert 0.5 < r_s < 5.0
         beyond = np.abs(values[r > r_s])
         assert beyond.max() < 0.01 * np.abs(values).max()
@@ -258,6 +251,62 @@ class TestTransform:
         assert results["mask"] > 1e3 * results["switch"]
         with pytest.raises(ValueError, match="unknown filter method"):
             filter_radial(table.r, table.values, table.l, k_c, method="nope")
+
+
+class TestNativeFilter:
+    """The edges of the native filter: what it refuses, and what it hands back."""
+
+    def test_empty_and_one_point_tables_raise(self):
+        for r, v in ((np.empty(0), np.empty(0)), (np.array([0.5]), np.array([1.0]))):
+            with pytest.raises(ValueError, match="at least two nodes"):
+                filter_radial(r, v, 0, 5.0)
+            with pytest.raises(ValueError, match="at least two nodes"):
+                residual_weight(r, v, 0, 5.0)
+
+    def test_unsupported_input_raises(self):
+        values = gaussian(R_GRID, 0, 1.0)
+        with pytest.raises(ValueError, match="length"):
+            filter_radial(R_GRID, values[:-1], 0, 5.0)
+        with pytest.raises(ValueError, match="cutoff"):
+            filter_radial(R_GRID, values, 0, 0.0)
+        with pytest.raises(ValueError, match="l <="):
+            filter_radial(R_GRID, values, 12, 5.0)
+        with pytest.raises(ValueError, match="non-negative"):
+            filter_radial(R_GRID, values, -1, 5.0)
+        with pytest.raises(ValueError, match="increasing"):
+            filter_radial(R_GRID[::-1].copy(), values, 0, 5.0)
+        bad = values.copy()
+        bad[3] = np.nan
+        with pytest.raises(ValueError, match="finite"):
+            filter_radial(R_GRID, bad, 0, 5.0)
+        with pytest.raises(ValueError, match="roll-off"):
+            filter_radial(R_GRID, values, 0, 5.0, rolloff=2.0)
+        with pytest.raises(TypeError, match="unknown filter option"):
+            filter_radial(R_GRID, values, 0, 5.0, tolerance=1e-3)
+
+    def test_the_result_is_a_copy_of_the_memo(self):
+        values = gaussian(R_GRID, 1, 1.0)
+        first, info = filter_radial(R_GRID, values, 1, 6.0)
+        first[:] = 0.0
+        info["max_change"] = -1.0
+        second, again = filter_radial(R_GRID, values, 1, 6.0)
+        assert np.abs(second).max() > 0.0
+        assert again["max_change"] >= 0.0
+
+    def test_a_cached_call_warns_as_the_first_one_did(self):
+        values = gaussian(R_GRID, 0, 6.0)         # narrow: the cutoff eats it
+        with pytest.warns(RuntimeWarning, match="removed"):
+            filter_radial(R_GRID, values, 0, 2.0)
+        with pytest.warns(RuntimeWarning, match="removed"):
+            filter_radial(R_GRID, values, 0, 2.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            filter_radial(R_GRID, values, 0, 2.0, warn=False)
+
+    def test_the_methods_come_from_the_engine(self):
+        from mandacaru import _native
+        assert FILTER_METHODS == tuple(_native.RADIAL_FILTER_METHODS)
+        assert FILTER_METHODS[0] == DEFAULT_FILTER_METHOD == "switch"
 
 
 # --------------------------------------------------------------------------- #

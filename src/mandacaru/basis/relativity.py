@@ -110,7 +110,6 @@ want it.
 from __future__ import annotations
 
 import numpy as np
-from .radial_backend import tridiagonal_eigenpair
 
 #: Speed of light in atomic units -- the inverse fine-structure constant.
 #: CODATA 2022: ``1/alpha = 137.035999177(21)``.
@@ -435,56 +434,12 @@ def relativistic_exchange(treatment: str) -> bool:
     return _resolve(treatment) != "none"
 
 
-#: Points of the logarithmic grid used for a relativistic eigenvalue.  1200
-#: resolves what 64000 uniform points cannot; see :mod:`~.loggrid`.
-LOG_GRID_POINTS = 1200
-
-
-def _on_log_grid(r, potential, atomic_number, points=LOG_GRID_POINTS):
-    """``(r_log, V_log)`` -- the same potential, carried onto a log grid.
-
-    The log grid reaches decades further in than the uniform one, so ``V``
-    there cannot be interpolated; it has to be *extended*.  The Coulomb part
-    is known in closed form, so it is split off and the remainder -- the
-    screening, which is smooth and flat at the origin -- is what gets
-    interpolated, held constant inside the innermost uniform point.
-    """
-    from scipy.interpolate import CubicSpline
-    from .loggrid import log_grid
-
-    r = np.asarray(r, dtype=float)
-    Z = float(atomic_number)
-    screening = np.asarray(potential, dtype=float) + Z / r
-    r_log, _x, _dx = log_grid(float(r[-1]), max(Z, 1.0), points=int(points))
-    inner = r_log < r[0]
-    v_s = np.empty_like(r_log)
-    v_s[~inner] = CubicSpline(r, screening)(r_log[~inner])
-    v_s[inner] = screening[0]
-    return r_log, v_s - Z / r_log
-
-
-def _log_grid_state(r, potential, l, n_nodes, kappa, key, atomic_number, c,
-                    energy_guess):
-    """One state solved on a log grid, splined back onto ``r``."""
-    from scipy.interpolate import CubicSpline
-    from .loggrid import solve_radial_log
-
-    r_log, v_log = _on_log_grid(r, potential, atomic_number)
-    P_log, eps = solve_radial_log(
-        r_log, v_log, l, n_nodes, kappa=kappa, treatment=key,
-        atomic_number=atomic_number, c=c, energy_guess=energy_guess)
-    return _normalize(CubicSpline(r_log, P_log)(r), r), eps
-
-
 def solve_radial_relativistic(r, potential, l: int, n_nodes: int,
                               kappa: int | None = None,
                               treatment: str = "scalar",
                               atomic_number: float = 0.0,
-                              c: float = SPEED_OF_LIGHT,
-                              max_iterations: int = 16,
-                              energy_guess: float | None = None,
-                              derivatives=None, grid: str = "uniform"):
-    r"""Bound state of the relativistic radial equation.
+                              energy_guess: float | None = None):
+    r"""Bound state of the relativistic radial equation (native).
 
     Parameters
     ----------
@@ -497,132 +452,33 @@ def solve_radial_relativistic(r, potential, l: int, n_nodes: int,
     treatment : str
         ``"none"``, ``"scalar"`` or ``"dirac"``.
     atomic_number : float
-        The :math:`Z` of the :math:`-Z/r` part of ``potential``, so the
-        Coulomb singularity can be differentiated in closed form.
-    grid : str
-        ``"uniform"`` (the default) solves on ``r`` itself.  ``"log"`` solves
-        on a logarithmic grid and splines the result back, which is far more
-        accurate in the **eigenvalue** -- and is deliberately *not* the
-        default; see the note below.
+        The :math:`Z` of the :math:`-Z/r` part of ``potential``, so the Coulomb
+        singularity is differentiated in closed form.
+    energy_guess : float, optional
+        Seeds the mass enhancement :math:`M(\varepsilon)`; the nonrelativistic level
+        is used when omitted.
 
     Returns
     -------
     (P, eps) : (ndarray, float)
-        :math:`P = rg` normalized to :math:`\int P^2 dr = 1`, positive near
-        the origin, and the eigenvalue in Hartree.
+        :math:`P = rg` normalized to :math:`\int P^2 dr = 1`, positive near the
+        origin, and the eigenvalue in Hartree.
 
     Notes
     -----
-    With ``treatment="none"`` this reproduces
-    :func:`~mandacaru.basis.atomic_solver.solve_radial` to machine precision --
-    the same discretization, reached through the same matrix.
-
-    Relativistically a **uniform** grid cannot converge an :math:`l=0` state:
-    :math:`P \sim r^{\gamma}` with :math:`\gamma < 1` is not analytic at the
-    origin, and the error of the level scales as :math:`(Z\alpha)^2` -- the
-    size of the correction being computed.  ``grid="log"`` fixes that, and on
-    a hydrogenic atom it is five to six orders of magnitude better; the
-    non-relativistic uniform grid converges *to* the log value, which is what
-    identifies the log value as the right one.  Measured on oxygen at a fixed
-    converged potential, the uniform grid overstates the relativistic 1s shift
-    by about a factor of three (-0.064 against -0.024 Hartree) and the 2s
-    shift by about two (-0.0050 against -0.0028).
-
-    **It is still not the default, and the reason is not caution.**  An
-    accurate eigenvalue and a wave the generators can pseudize are different
-    requirements.  The PAW-LCAO construction needs a wave that
-    satisfies the radial equation *on the uniform grid* to fourth order --
-    :func:`~mandacaru.pseudopotentials.partial_waves.reference_bound_state` documents
-    what happens otherwise, a ghost 56 Hartree below the reference -- and it
-    gets it by shooting Numerov there, which is also why
-    :func:`~mandacaru.basis.atomic_solver.solve_atom` finishes on Numerov
-    (``polish``).  A log-grid wave splined onto ``r`` satisfies neither
-    discretization's equation, and switching only the atom breaks the very
-    atom-generator agreement ``polish`` exists to hold: with ``grid="log"``
-    and ``polish`` both on, oxygen's relativistic total-energy shift comes out
-    with the **wrong sign** (+0.083 instead of -0.056 Hartree), because the
-    two are fighting over the valence levels.
-
-    Using the log grid throughout therefore means moving the reference atom
-    *and* the generators' reference shoot onto it together, and regenerating
-    every dataset.  Until that is done as one deliberate change, ``"log"`` is
-    the accurate reference the uniform path is measured against, not a
-    drop-in replacement for it.
+    The solve is ``mandacaru_core::models::relativity::solve_radial``: a symmetric
+    tridiagonal eigenproblem rebuilt around the previous eigenvalue.  Relativistically a
+    **uniform** grid cannot converge an :math:`l=0` state to better than the size of the
+    correction (:math:`P \sim r^{\gamma}`, :math:`\gamma < 1`, is not analytic at the
+    origin); it overstates oxygen's 1s shift by about a factor of three.  That is the
+    accuracy the pseudopotential generators are built on, so it is kept.
     """
-    key = _resolve(treatment)
-    if key == "dirac" and kappa is None:
-        raise ValueError("treatment='dirac' needs kappa (use kappa_values(l))")
-    r = np.asarray(r, dtype=float)
-    potential = np.asarray(potential, dtype=float)
-    step = float(r[1] - r[0])
-    centrifugal = l * (l + 1) / (2.0 * r * r)
+    from .. import _native
 
-    def non_relativistic():
-        diag = 1.0 / step ** 2 + potential + centrifugal
-        off = -0.5 / step ** 2 * np.ones(r.size - 1)
-        value, vector = tridiagonal_eigenpair(diag, off, n_nodes)
-        return vector, value
-
-    if key == "none":
-        if grid == "uniform":
-            u, eps = non_relativistic()
-            return _normalize(u, r), eps
-        # A non-relativistic state is analytic at the origin, so the uniform
-        # grid already converges at fourth order and the log grid buys little.
-        # It is offered anyway because comparing across `relativity=` is only
-        # meaningful when both sides share a discretization: a "relativistic
-        # shift" measured between a uniform non-relativistic atom and a
-        # logarithmic relativistic one is a grid difference wearing a
-        # physical name.
-        return _log_grid_state(r, potential, l, n_nodes, SCALAR_KAPPA,
-                               "none", atomic_number, c, energy_guess)
-
-    if energy_guess is None:
-        # Seeding M with the non-relativistic level costs one extra inner
-        # solve; a self-consistent atom passes the previous iteration's
-        # eigenvalue instead and converges in one or two.
-        _u, eps = non_relativistic()
-    else:
-        eps = float(energy_guess)
-    if derivatives is None:
-        derivatives = potential_derivatives(r, potential, atomic_number)
-
-    k = SCALAR_KAPPA if key == "scalar" else int(kappa)
-
-    if grid == "log":
-        return _log_grid_state(r, potential, l, n_nodes, k, key,
-                               atomic_number, c, eps)
-    if grid != "uniform":
-        raise ValueError(f"grid must be 'log' or 'uniform', not {grid!r}")
-
-    vector = None
-    last_change = np.inf
-    for _ in range(max_iterations):
-        M, dM, _d2M = mass_factor(r, potential, eps, atomic_number, c,
-                                  derivatives)
-        # A = -d^2/dr^2 + bracket, then H = M^{-1/2} A M^{-1/2} with
-        # eigenvalue 2 eps and eigenvector P.
-        bracket = (2.0 * l * (l + 1) / (2.0 * r * r)
-                   + darwin_spin_orbit_term(r, potential, k, M,
-                                            atomic_number, c)
-                   + 3.0 * dM * dM / (4.0 * M * M)
-                   + 2.0 * M * potential)
-        inv_sqrt = 1.0 / np.sqrt(M)
-        diag = (2.0 / step ** 2 + bracket) * inv_sqrt * inv_sqrt
-        off = -1.0 / step ** 2 * inv_sqrt[:-1] * inv_sqrt[1:]
-        value, vector = tridiagonal_eigenpair(diag, off, n_nodes,
-                                              guess=2.0 * eps)
-        new = 0.5 * value
-        change = abs(new - eps)
-        eps = new
-        if (change <= ENERGY_TOLERANCE * max(1.0, abs(new))
-                or change >= last_change):
-            break
-        last_change = change
-    return _normalize(vector, r), eps
-
-
-def _normalize(u, r):
-    u = np.asarray(u, dtype=float)
-    u = u / np.sqrt(np.trapezoid(u * u, r))
-    return -u if u[0] < 0 else u
+    return _native.Context(threads=1).solve_radial(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(potential, dtype=float), int(l), int(n_nodes),
+        relativity=str(treatment),
+        kappa=None if kappa is None else int(kappa),
+        atomic_number=float(atomic_number),
+        energy_guess=None if energy_guess is None else float(energy_guess))

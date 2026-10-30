@@ -1,8 +1,9 @@
+(cube-files)=
 # Visualizing densities and orbitals
 
-A finished run can write its electron density, its natural orbitals and its
-correlation density to a Gaussian `.cube` file, which VESTA, VMD, XCrySDen and
-Avogadro open directly:
+A finished molecular run can write its electron density, a reference density, the
+correlation density and its natural orbitals to a Gaussian `.cube` file, which
+VESTA, VMD, XCrySDen and Avogadro open directly:
 
 ```python
 from ase import Atoms
@@ -10,9 +11,7 @@ from mandacaru import Mandacaru
 
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[7, 7, 7])
 atoms.center()
-atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis="HAO",
-                       grid_spacing=0.30)
+atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.30)
 atoms.get_potential_energy()
 
 atoms.calc.write_cube("density.cube")
@@ -20,62 +19,52 @@ atoms.calc.write_cube("difference.cube", quantity="difference_density")
 atoms.calc.write_cube("no1.cube", quantity="natural_orbital", index=1)
 ```
 
-`examples/visualization/02_h2_stretched_cube_files.py` is the worked version of this,
+`examples/visualization/02_h2_stretched_cube_files.py` is the worked version,
 writing the cube files and a difference-density slice for stretched H₂.
 
 ## What is in the file, and what is not
 
-This is the point to be precise about. The state an ADAPT-VQE or VQE run
-converges to is a **many-electron** wavefunction $|\Psi(\theta)\rangle$: a
-function of $3N$ coordinates. No volumetric file holds such a thing, and
-Mandacaru does not pretend it does.
-
-What a file *can* hold, and what these are, are the state's **one-particle
-reductions**. They follow from $|\Psi\rangle$ exactly -- no further
-approximation -- through the one-particle reduced density matrix
-$\gamma_{pq} = \langle\Psi| a^\dagger_p a_q |\Psi\rangle$, the molecular
-orbitals $\phi_p = \sum_\mu A_{\mu p}\chi_\mu$ with $A = S^{-1/2}V$, and the
-basis functions sampled on the grid:
+The state an ADAPT-VQE or VQE run converges to is a **many-electron**
+wavefunction $|\Psi(\theta)\rangle$, a function of $3N$ coordinates. No
+volumetric file holds such a thing, and Mandacaru does not pretend it does. What
+a file *can* hold are the state's **one-particle reductions**. They follow from
+$|\Psi\rangle$ exactly through the one-particle reduced density matrix
+$\gamma_{pq} = \langle\Psi| a^\dagger_p a_q |\Psi\rangle$, the molecular orbitals
+and the basis functions sampled on the grid:
 
 $$ n(\mathbf r) = \sum_{pq} \gamma_{pq}\, \phi_p^*(\mathbf r)\,\phi_q(\mathbf r). $$
 
-The same $\gamma$ the nuclear forces contract is the one drawn here, obtained
-the same way, so the picture and the gradient describe the same state.
+The same $\gamma$ that the variational forces contract is the one drawn here.
+For a mean-field run the density is the SCF density.
 
 ## The quantities
 
 | `quantity` | What it is | Units | Integrates to |
 |---|---|---|---|
-| `density` (default) | $n_\alpha + n_\beta$ | e/Bohr³ | the electron count |
-| `alpha_density` / `beta_density` | one spin channel | e/Bohr³ | $N_\alpha$ / $N_\beta$ |
-| `spin_density` | $n_\alpha - n_\beta$ | e/Bohr³ | $N_\alpha - N_\beta$ |
-| `difference_density` | $n - n_{\rm HF}$ | e/Bohr³ | zero |
-| `natural_orbital` | eigenvector `index` of $\gamma$ | Bohr^(-3/2) | — |
-| `molecular_orbital` | reference orbital `index` | Bohr^(-3/2) | — |
+| `density` (default) | $n_\alpha + n_\beta$ of the state | e/Bohr³ | the electron count |
+| `reference_density` | the same for the mean-field reference | e/Bohr³ | the electron count |
+| `difference_density` | `density` minus `reference_density` | e/Bohr³ | zero |
+| `natural_orbital` | eigenvector `index` of the spin-summed density matrix | Bohr^(-3/2) | – |
 
 Natural orbitals are ordered by **descending occupation**, so `index=0` is the
 most occupied one; the occupation is returned on the field and written into the
-file's comment line. Reference (Hartree--Fock) orbitals are ordered by energy.
-
-`spin_density` is the picture to draw for an open shell -- a doublet such as
-H₃, or the O₂ triplet of `examples/adapt_vqe/03_adapt_vqe_o2_triplet.py`. For a closed
-shell it is zero everywhere, which is a useful thing to confirm.
-
-`difference_density` is usually the most informative of the lot. Its reference
-is the Hartree--Fock determinant the ansatz starts from (the frozen core plus
-the lowest active orbital of each spin), evaluated in the *same* orbitals, so
-what it shows is exactly what the variational optimization did. For H₂ at a
-stretched bond, correlation takes density out of the bond and puts it back on
-the two atoms:
+file's comment line. `difference_density` is usually the most informative of the
+lot: its reference is the Hartree–Fock determinant the ansatz starts from,
+evaluated in the same orbitals, so it shows exactly what the variational
+optimization did. For H₂ at a stretched bond, correlation takes density out of
+the bond and puts it back on the two atoms:
 
 ```{image} ../../../examples/visualization/data/h2_cube_slice.png
 :alt: Electron density and correlation density of stretched H2
 :width: 100%
 ```
 
-## Occupations as data
+Spin-resolved densities, individual molecular orbitals, and fields of a crystal
+are not yet available ([open items](#not-yet-available)). A frozen core is refilled
+before the density is built, so an all-electron density integrates to the full
+electron count whatever the active space.
 
-The same decomposition is available without writing a file:
+## Occupations as data
 
 ```python
 orbitals = atoms.calc.natural_orbitals()
@@ -84,162 +73,98 @@ print(orbitals.coefficients)    # column i: orbital i in the atomic-orbital basi
 print(orbitals.mo_coefficients) # the same, in the molecular-orbital basis
 ```
 
-Occupations that are not 2 or 0 *are* the correlation. H₂ in the minimal HAO
-basis gives `(1.97, 0.03)` at 0.74 Å and `(1.76, 0.24)` at 1.60 Å: the
-stretched bond is half broken, and a single determinant — which would report
-`(2, 0)` at both — cannot say so.
+Occupations that are not 2 or 0 *are* the correlation: a single determinant
+would report $(2, 0)$ for stretched H₂, and the occupations of the converged
+state say the bond is half broken.
+
+## The field object
+
+`write_cube` writes and returns the path. To keep the field, ask for it and write
+it yourself, in either format:
+
+```python
+field = atoms.calc.volumetric_field("density")
+print(field.integral)              # electrons on the grid
+print(field.augmentation_charge)   # electrons not on the grid (PAW-LCAO)
+print(field.n_electrons)           # the electron count of the state
+field.write("density.xsf")         # the extension chooses cube or xsf
+```
+
+`write_cube` always writes the cube format; `field.write` follows the extension
+(`.cube` or `.xsf`). A field carries `data`, `grid`, the nuclei (`numbers`,
+`positions`, `charges`) and the `norm`.
 
 ## Grid, origin and units
 
 Everything in a cube file is in **Bohr**, and a density is in electrons per
-Bohr³. The data is written on the calculation's **own** grid -- the real-space
-box the integrals used, centered on the molecule and with the node spacing `grid_spacing`
-asked for -- and the header carries that grid's origin and its three step
-vectors, so the atoms and the data line up whatever the geometry. That matters
-because Mandacaru's grid is not the cell divided by the node count (it is
-centered on the molecule, the node count is `round(L / grid_spacing) + 1`, and a
-non-orthogonal cell gives step *vectors*, not a diagonal); a writer that
-assumed otherwise would put every nucleus in the wrong place. This is why the
-format is written by `mandacaru.utils.cube` rather than taken from ASE.
+Bohr³. The data is written on the calculation's **own** grid and the header
+carries that grid's origin and its three step vectors, so the atoms and the data
+line up. A writer that assumed the grid was the cell divided by the node count
+would put every nucleus in the wrong place; this is why the format is written by
+Mandacaru and not by ASE.
 
-Pass `grid=` to sample on a different grid -- a finer one for a smoother
-picture, a coarser one for a smaller file. The basis functions are
-**re-evaluated** there; the data is never interpolated:
+`grid_spacing=` (Å) samples on a finer or coarser grid over the same box; the
+basis functions are **re-evaluated** there and nothing is interpolated:
 
 ```python
-from mandacaru.integrals import Grid
-
-fine = Grid(center=atoms.get_positions().mean(axis=0),
-            box_size=0.0, grid_spacing=0.08, units="angstrom", cell=atoms.get_cell())
-atoms.calc.write_cube("density_fine.cube", grid=fine)
+atoms.calc.write_cube("density_fine.cube", grid_spacing=0.08)
 ```
 
 On the calculation's own grid the electron count comes out exact to machine
-precision, because that same quadrature is what defines the overlap the
-orbitals are orthonormal under. On any other grid the integral instead shows
-the difference between the two quadratures, which is a real measure of how well
-`grid_spacing` resolved the basis.
-
-A cube file is one text number per node, so size grows as $1/h^3$: a 21³ grid
-is about 120 kB, a 101³ grid about 14 MB.
+precision, because that same quadrature defines the overlap under which the
+orbitals are orthonormal; on any other grid the integral shows the difference
+between the two quadratures, a real measure of how well the calculation's
+`grid_spacing` resolved the basis. A cube file holds one number per node, so its
+size grows as $1/h^3$. Molecular fields need an isolated grid.
 
 ## Excited states
 
-`state=` selects the level. Subspace-search runs store their levels, so an
-integer index is enough; a deflation run returns them from `energy_levels()`
-and the state vector is passed directly:
+`state=` selects the level of a subspace search, which stores its levels:
 
 ```python
-atoms.calc = Mandacaru(method="subspace-vqe",
-                       basis="HAO",
-                       grid_spacing=0.30,
-                       num_states=2)
+atoms.calc = Mandacaru(method="subspace-vqe", basis="HAO",
+                       grid_spacing=0.30, num_states=2)
 atoms.get_potential_energy()
 atoms.calc.write_cube("excited.cube", state=1)
-
-# or, from a deflation run:
-levels = atoms.calc.energy_levels(3)
-atoms.calc.write_cube("second.cube", state=levels.states[2])
 ```
+
+A single-state result has one state; asking for another raises `IndexError`.
 
 ## Pseudopotentials: the smooth valence density
 
-With a PAW-LCAO or UPAW-LCAO basis the orbitals are the **smooth pseudo**
-valence orbitals, so what is written is the *pseudo valence density*. The core
-is absent by construction, and inside the augmentation spheres the smooth
-density is not the physical one.
-
-For PAW-LCAO the overlap itself is augmented, $S = \tilde S + C q C^\dagger$, so the
-smooth density does not integrate to the valence electron count:
+With a PAW-LCAO basis the orbitals are the **smooth pseudo** valence orbitals, so
+a field is the *smooth valence density*: the core is absent by construction, and
+inside the augmentation spheres the smooth density is not the physical one. The
+overlap itself is augmented, so the smooth density does not integrate to the
+valence electron count:
 
 $$ \int\tilde n\,d^3r \;+\; \underbrace{\textstyle\sum_{pq}\gamma_{pq}
    (A^\dagger C q C^\dagger A)_{pq}}_{\text{augmentation charge}}
    \;=\; N_{\rm valence}. $$
 
-Both numbers come back on the field, and the file's comment line says which one
-it holds:
-
-```python
-field = atoms.calc.write_cube("paw.cube")     # basis="PAW-LCAO"
-print(field.integral)              # what is on the grid
-print(field.augmentation_charge)   # what is not
-print(field.n_electrons)           # their sum: the valence electron count
-```
-
-For H₂ in a single-zeta PAW-LCAO basis the augmentation holds a few per cent of the
-two valence electrons; for oxygen, whose augmentation charge is an order of
-magnitude larger, it is far more. The third number is exact whatever the
-basis — it is the trace of the density matrix — so it is the one to check
-against.
-
-A molecule's all-electron density inside the augmentation spheres is **not**
-reconstructed: use an all-electron basis when the core matters. A crystal's
-`quantity="reconstructed_density"` adds, inside each sphere, the spherical
-part of the one-center correction (the density the Bader partition climbs),
-averaged over each voxel so that the file integrates to the valence count
-(see below).
-
-The nuclei are written with their **real** atomic numbers, not the valence
-charges the pseudopotential carries, so a viewer draws oxygen as oxygen; the
-valence charge goes in the charge column, where it belongs.
-
-## Crystals
-
-A periodic Kohn-Sham run (`method="dft"` on periodic atoms) writes through
-the same `write_cube` / `volumetric_field` / `natural_orbitals`, on its cell
-grid: the smooth density, the spin channels and magnetization, the
-reconstructed all-electron valence density, Bloch orbitals at any k-point
-(`quantity="bloch_orbital"`, `kpoint=`, `spin=`) and the natural orbitals of
-the spin-summed density matrix at the SCF k-points. `repeat=(n1, n2, n3)`
-tiles the cell, an orbital with its Bloch phase. The `.xsf` file is a
-periodic `CRYSTAL` with its lattice (its datagrid closed by the copy of the
-first planes, XCrySDen's convention); the cube file holds the cell's nodes
-once. `grid=` and `state=` do not apply. Details and the numbers behind them
-are in [Density functional theory](dft.md), "Cube files and natural orbitals
-of a crystal".
-
-```python
-si.calc.write_cube("si_density.xsf", repeat=(2, 2, 2))
-si.calc.write_cube("si_vbm.cube", quantity="bloch_orbital", index=3,
-                   kpoint=(0, 0, 0))
-```
-
-## Frozen core, tapered registers, sectors
-
-None of these change the picture, which is the point:
-
-* a **frozen core** is refilled before the density is built, so an
-  all-electron density is the all-electron density and integrates to the full
-  electron count;
-* a **parity-reduced** (two-qubit-tapered) register has no ladder operators of
-  its own, so its RDM comes from the tapered qubit operators -- the same route
-  the forces take -- and gives the same density to machine precision;
-* a **particle-number sector** run keeps its state on the sector, and the
-  ladder operators are applied there.
+`field.integral`, `field.augmentation_charge` and `field.n_electrons` are the
+three terms, and the cube comment line says which one the file holds. The third
+is exact whatever the basis; it is the one to check against. The nuclei are
+written with their **real** atomic numbers so a viewer draws oxygen as oxygen,
+and the valence charge goes in the charge column. A molecule's all-electron
+density inside the spheres is not reconstructed; use an all-electron basis when
+the core matters.
 
 ## Real and complex orbitals
 
-A cube file holds real numbers. Densities are real by construction (the density
-matrix is Hermitian) and Mandacaru verifies that rather than assuming it.
-
-A molecule's basis functions use **real** spherical harmonics (p is
-$p_y, p_z, p_x$; d is $d_{xy}, d_{yz}, d_{z^2}, d_{xz}, d_{x^2-y^2}$), so its
-Hartree-Fock and Kohn-Sham orbitals are real and are written as they are. A
-spin-orbit (`lda-fr`) molecule and a crystal's Bloch orbitals are genuinely
-complex. `component="auto"` (the default) removes the global phase, checks
-that the residual imaginary part is numerical noise, and writes the real part;
-if it is not noise it raises and asks you to choose `component="modulus"`,
-`"real"` or `"imag"` deliberately. Note also that the orbitals *within* a
-degenerate set are fixed only up to a rotation, so which member of a π pair
-you get is arbitrary -- as it is in any code.
+A cube file holds real numbers. Densities are real by construction. A natural
+orbital is determined up to a global phase; `component="auto"` (the default)
+removes it, checks that the residual imaginary part is numerical noise and writes
+the real part. If it is not noise the call raises and asks you to choose
+`component="modulus"`, `"real"` or `"imag"` deliberately. The orbitals *within* a
+degenerate set are fixed only up to a rotation, so which member of a π pair you
+get is arbitrary, as in any code.
 
 ## Pictures and animations in Python: `Viewer3D`
 
-Without leaving Python, `Viewer3D` draws the same quantities in three
-dimensions and writes a still `.png` or an animated `.gif`. It takes the
-solved calculator -- the field is built from the converged ansatz and its
-optimized parameters through `volumetric_field`, exactly as above -- or a
-`VolumetricField` already in hand:
+`Viewer3D` draws the same quantities in three dimensions and writes a still
+`.png` or an animated `.gif`. It takes the solved calculator, or a field already
+in hand:
 
 ```python
 from mandacaru import Camera, Viewer3D
@@ -254,112 +179,39 @@ Viewer3D(atoms.calc, quantity="natural_orbital", index=1, grid_spacing=0.12,
                                     zoom=(1.0, 1.8, 1.0))
 ```
 
-Two modes are available:
-
 | `mode` | What is drawn |
 |---|---|
-| `"scatter"` (default) | A Monte Carlo cloud of `points` points, drawn with probability $\lvert\phi\rvert^2$ for an orbital and $\lvert n\rvert$ for a density, colored cyan where the field is positive and orange where it is negative |
-| `"isosurface"` | The surfaces $f = \pm f_0$, extracted by marching tetrahedra and lit from the camera. Unless `isovalue=` is given, $f_0$ is chosen so the surface encloses a fraction `enclosed` (default 0.85) of $\int\lvert\phi\rvert^2$ or of $\int\lvert n\rvert$ |
+| `"scatter"` (default) | A Monte Carlo cloud of `points` points drawn with probability $\lvert\phi\rvert^2$ for an orbital and $\lvert n\rvert$ for a density, cyan where the field is positive and orange where it is negative |
+| `"isosurface"` | The surfaces $f = \pm f_0$, extracted by marching tetrahedra and lit from the camera. Unless `isovalue=` is given, $f_0$ encloses a fraction `enclosed` (default 0.85) of $\int\lvert\phi\rvert^2$ or of $\int\lvert n\rvert$ |
 
-Orbitals, `spin_density` and `difference_density` are drawn with both signs;
-`density` and the spin channels are non-negative and are drawn with one.
-
-`grid_spacing=` (in Angstrom) re-evaluates the basis functions on a finer grid over the
-same box, like `grid=` above: the calculation's own grid is chosen for the
-integrals, not for pictures, and is usually coarse. An isosurface takes longer
-to render as `grid_spacing` shrinks; `grid_spacing=0.10`–`0.15` is a good range for small
-molecules.
-
-### Camera paths
-
-`animate()` builds the path of the camera in three layers:
-
-- `trajectory=`: a list of `Camera(elev, azim, zoom, focus)` keyframes,
-  evenly spaced in time and joined with eased interpolation. `focus` is
-  `None` (the center of the molecule), an atom index, or a point in Angstrom.
-- `rotate=`: `"azimuth"` (default) spins the camera around the vertical
-  axis, `"elevation"` swings it over the top, `turns` times, on top of the
-  trajectory. `rotate=None` turns it off. The spin is periodic, so a looping
-  GIF has no seam.
-- `zoom=`: a number, or keyframes such as `(1, 2, 1)`, multiplied into the
-  trajectory's own zoom.
-
-```python
-# Fly from the whole molecule to atom 0, viewed from above, and back out.
-viewer.animate("fly.gif", frames=150, rotate=None, trajectory=[
-    Camera(elev=15, azim=-60),
-    Camera(elev=60, azim=30, zoom=2.5, focus=0),
-    Camera(elev=15, azim=300)])
-```
-
-`camera_path()` returns the poses `animate()` would use, which is a quick
-way to check a path before rendering it. `frames / fps` is the length of the
-animation in seconds, and the GIF size grows with `frames`, `dpi` and
-`figsize`. The background is transparent unless `background=` names a color.
+Orbitals and `difference_density` are drawn with both signs; `density` is
+non-negative. `grid_spacing=` (Å) re-evaluates the basis on a finer grid over the
+same box; an isosurface takes longer to render as it shrinks, and 0.10–0.15 is a
+good range for small molecules. `animate()` builds the camera path in three
+layers: `trajectory=` (a list of `Camera(elev, azim, zoom, focus)` keyframes,
+joined with eased interpolation; `focus` is `None`, an atom index, or a point in
+Å), `rotate=` (`"azimuth"` by default, `"elevation"`, or `None`; `turns` times,
+periodic so a looping GIF has no seam) and `zoom=` (a number or keyframes).
+`camera_path()` returns the poses `animate()` would use, and `frames / fps` is the
+animation length in seconds. The background is transparent unless `background=`
+names a color.
 
 ## Opening the files
 
-### VESTA
-
-`File ▸ Open` the `.cube` (or `.xsf`) file. VESTA reads the isosurface level
-from `Properties ▸ Isosurfaces`; useful starting values, with the data in
-e/Bohr³:
+**VESTA.** `File ▸ Open` the `.cube` or `.xsf` file; the level is under
+`Properties ▸ Isosurfaces`. Useful starting values, in e/Bohr³:
 
 | Field | Isosurface level | Notes |
 |---|---|---|
 | `density` | `0.02` – `0.05` | `0.02` is the conventional "molecular shape" contour |
-| `natural_orbital` / `molecular_orbital` | `±0.05` – `±0.10` | add both signs; VESTA colors them separately |
+| `natural_orbital` | `±0.05` – `±0.10` | add both signs; VESTA colors them separately |
 | `difference_density` | `±0.001` – `±0.005` | a correlation density is one to two orders of magnitude smaller than the density |
-| `spin_density` | `±0.005` – `±0.02` | |
 
-For a signed field, add two isosurfaces at `+v` and `-v` and give them
-different colors -- red for the positive lobe, blue for the negative one is the
-usual convention.
+For a signed field add two isosurfaces at `+v` and `-v` with different colors.
 
-### VMD
+**VMD.** `vmd -cube density.cube`, then `Graphics ▸ Representations`, set
+**Drawing Method** to `Isosurface` and enter the isovalue; add a second
+representation with the negative value for a signed field.
 
-```
-vmd -cube density.cube
-```
-
-Then `Graphics ▸ Representations`, set **Drawing Method** to `Isosurface` and
-enter the isovalue; the same values as above. For a signed field, create a
-second representation with the negative isovalue and a different
-**ColorID**. `Graphics ▸ Colors ▸ Display ▸ Background ▸ white` makes the
-result printable. To load the geometry and the field separately, `mol new
-density.cube type cube` works the same way.
-
-### XCrySDen
-
-`.xsf` is XCrySDen's native format; `write_cube("field.xsf")` writes one
-(VESTA reads it too). ASE formats XSF data with six *decimal* places rather
-than six significant digits, so values below about `1e-6` are written as zero;
-`.cube` is the more precise of the two and is the format to prefer.
-
-## The lower-level entry points
-
-`Mandacaru.write_cube` is a thin wrapper. The two pieces underneath are usable
-on their own:
-
-* {func}`mandacaru.algorithms.volumetric.volumetric_field` takes an integral
-  object and a spin-orbital RDM and returns a
-  {class}`~mandacaru.algorithms.volumetric.VolumetricField` -- no solver
-  involved, which is how it is tested;
-* {func}`mandacaru.utils.cube.write_cube` takes a field, a grid origin and
-  step, and the nuclei, and knows nothing about wavefunctions.
-
-`Mandacaru.volumetric_field(...)` returns the field without writing anything,
-which is what to use for a plot.
-
-## What is deliberately not here
-
-* **All-electron reconstruction inside a molecule's PAW spheres** -- see
-  above; a crystal's `reconstructed_density` has its spherical part.
-* **A command-line flag.** `mandacaru H2O --cube density.cube` would have to
-  duplicate the quantity, index, component and grid options; the three-line
-  Python form above is clearer and does not freeze an API into the CLI before
-  the feature has been used in anger.
-* **Spin-orbital-resolved orbitals.** The Hamiltonian uses one spatial basis
-  for both spins (RHF, or the UHF natural orbitals for an open shell), so
-  $\alpha$ and $\beta$ orbitals differ only in their occupations -- which
-  `alpha_density` / `beta_density` already show.
+**XCrySDen.** `.xsf` is its native format; the cube format is the more precise
+of the two and the one to prefer.

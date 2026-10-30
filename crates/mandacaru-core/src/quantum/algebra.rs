@@ -1,4 +1,4 @@
-use super::C64;
+use super::{amplitude::Amplitude, C64};
 use crate::{product, Buffer, Context, Error, Reservation, Result};
 use std::collections::BTreeMap;
 
@@ -225,8 +225,21 @@ impl Operator {
     }
     /// Apply without constructing a matrix. Projection is allowed only after
     /// `Basis::check_invariant` has validated a solver's Hamiltonian/generators.
-    pub fn apply_into(&self, basis: &Basis, input: &[C64], output: &mut [C64]) {
-        Self::apply_terms(&self.terms, basis, input, output)
+    /// The input is a stored state of either precision; the output row is
+    /// float64, so a many-term sum accumulates without float32 rounding.
+    pub fn apply_into<A: Amplitude>(&self, basis: &Basis, input: &[A], output: &mut [C64]) {
+        output.fill(C64::default());
+        Self::apply_terms(&self.terms, basis, input, C64::new(1., 0.), output)
+    }
+    /// `output += scale * H input`, accumulated in float64.
+    pub fn add_into<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        input: &[A],
+        scale: C64,
+        output: &mut [C64],
+    ) {
+        Self::apply_terms(&self.terms, basis, input, scale, output)
     }
     pub(super) fn identity(&self) -> C64 {
         self.terms
@@ -242,8 +255,8 @@ impl Operator {
             .map(|t| t.amplitude(ket))
             .sum()
     }
-    pub(super) fn apply_centered_into(&self, basis: &Basis, input: &[C64], output: &mut [C64]) {
-        let terms = if self
+    fn centered_terms(&self) -> &[Term] {
+        if self
             .terms
             .first()
             .is_some_and(|term| term.x == 0 && term.z == 0)
@@ -251,11 +264,42 @@ impl Operator {
             &self.terms[1..]
         } else {
             &self.terms
-        };
-        Self::apply_terms(terms, basis, input, output)
+        }
     }
-    fn apply_terms(terms: &[Term], basis: &Basis, input: &[C64], output: &mut [C64]) {
+    pub(super) fn apply_centered_into<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        input: &[A],
+        output: &mut [C64],
+    ) {
         output.fill(C64::default());
+        Self::apply_terms(
+            self.centered_terms(),
+            basis,
+            input,
+            C64::new(1., 0.),
+            output,
+        )
+    }
+    /// `output += scale * (H - identity) input`, accumulated in float64.
+    pub(super) fn add_centered_into<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        input: &[A],
+        scale: C64,
+        output: &mut [C64],
+    ) {
+        Self::apply_terms(self.centered_terms(), basis, input, scale, output)
+    }
+    /// The single scatter kernel: adds `scale * (terms input)` into a float64
+    /// row. Float64 rows are the stored rows; float32 callers narrow once.
+    fn apply_terms<A: Amplitude>(
+        terms: &[Term],
+        basis: &Basis,
+        input: &[A],
+        scale: C64,
+        output: &mut [C64],
+    ) {
         if let Some(first) = terms.first() {
             if terms.iter().all(|term| term.x == first.x) {
                 // Excitation strings share their flip mask. Sum their exact
@@ -264,12 +308,12 @@ impl Operator {
                 for (column, (&ket, &amplitude)) in
                     basis.indices.as_slice().iter().zip(input).enumerate()
                 {
-                    if amplitude == C64::default() {
+                    if amplitude == A::default() {
                         continue;
                     }
                     if let Some(row) = basis.index(ket ^ first.x) {
                         let coefficient: C64 = terms.iter().map(|term| term.amplitude(ket)).sum();
-                        output[row] += coefficient * input[column];
+                        output[row] += coefficient * (scale * input[column].widen());
                     }
                 }
                 return;
@@ -277,23 +321,24 @@ impl Operator {
         }
         if basis.full_register {
             for (ket, &amplitude) in input.iter().enumerate() {
-                if amplitude == C64::default() {
+                if amplitude == A::default() {
                     continue;
                 }
+                let weighted = scale * amplitude.widen();
                 for term in terms {
-                    output[(ket as u64 ^ term.x) as usize] +=
-                        term.amplitude(ket as u64) * amplitude;
+                    output[(ket as u64 ^ term.x) as usize] += term.amplitude(ket as u64) * weighted;
                 }
             }
             return;
         }
         for (col, &ket) in basis.indices.as_slice().iter().enumerate() {
-            if input[col] == C64::default() {
+            if input[col] == A::default() {
                 continue;
             }
+            let weighted = scale * input[col].widen();
             for t in terms {
                 if let Some(row) = basis.index(ket ^ t.x) {
-                    output[row] += t.amplitude(ket) * input[col];
+                    output[row] += t.amplitude(ket) * weighted;
                 }
             }
         }
@@ -307,22 +352,6 @@ impl Operator {
         }
         let mut out = ctx.allocate(basis.len())?;
         self.apply_into(basis, input, out.as_mut_slice());
-        Ok(out)
-    }
-    pub(super) fn apply_centered(
-        &self,
-        ctx: &Context,
-        basis: &Basis,
-        input: &[C64],
-    ) -> Result<Buffer<C64>> {
-        if self.n != basis.n
-            || input.len() != basis.len()
-            || input.iter().any(|c| !c.re.is_finite() || !c.im.is_finite())
-        {
-            return Err(invalid("state must be finite and match the operator basis"));
-        }
-        let mut out = ctx.allocate(basis.len())?;
-        self.apply_centered_into(basis, input, out.as_mut_slice());
         Ok(out)
     }
     pub fn dense(&self, ctx: &Context, basis: &Basis) -> Result<Buffer<C64>> {
@@ -609,27 +638,26 @@ fn combinations(n: usize, k: usize) -> Vec<u64> {
 }
 impl Basis {
     /// Embed a compact sector state into the user-visible qubit register.
-    pub fn expand_state(&self, ctx: &Context, state: &[C64]) -> Result<Buffer<C64>> {
-        if state.len() != self.len() || state.iter().any(|z| !z.re.is_finite() || !z.im.is_finite())
-        {
+    pub fn expand_state<A: Amplitude>(&self, ctx: &Context, state: &[A]) -> Result<Buffer<A>> {
+        if state.len() != self.len() || !super::amplitude::finite(state) {
             return Err(invalid(
                 "state must be finite and match the simulation basis",
             ));
         }
         let size = 1usize.checked_shl(self.n as u32).ok_or(Error::Overflow)?;
-        let mut out = ctx.allocate::<C64>(size)?;
+        let mut out = ctx.allocate::<A>(size)?;
         for (&index, &value) in self.indices.as_slice().iter().zip(state) {
             out.as_mut_slice()[index as usize] = value;
         }
         Ok(out)
     }
     /// A register state may enter a sector calculation only without leakage.
-    pub fn compress_state(&self, ctx: &Context, state: &[C64]) -> Result<Buffer<C64>> {
+    pub fn compress_state<A: Amplitude>(&self, ctx: &Context, state: &[A]) -> Result<Buffer<A>> {
         let size = 1usize.checked_shl(self.n as u32).ok_or(Error::Overflow)?;
-        if state.len() != size || state.iter().any(|z| !z.re.is_finite() || !z.im.is_finite()) {
+        if state.len() != size || !super::amplitude::finite(state) {
             return Err(invalid("state must be finite and match the qubit register"));
         }
-        let mut out = ctx.allocate::<C64>(self.len())?;
+        let mut out = ctx.allocate::<A>(self.len())?;
         let mut position = 0;
         let mut leakage = 0.;
         for (i, &value) in state.iter().enumerate() {
@@ -637,10 +665,10 @@ impl Basis {
                 out.as_mut_slice()[position] = value;
                 position += 1;
             } else {
-                leakage += value.norm_sqr();
+                leakage += value.widen().norm_sqr();
             }
         }
-        let norm = state.iter().map(|z| z.norm_sqr()).sum::<f64>();
+        let norm = super::amplitude::norm_squared(state);
         if !norm.is_finite() || leakage > 1e-12 * norm.max(1.) {
             return Err(invalid("state leaves the configured particle sector"));
         }

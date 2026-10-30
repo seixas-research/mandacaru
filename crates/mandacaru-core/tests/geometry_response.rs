@@ -87,6 +87,7 @@ fn native_geometry_response_matches_independently_reoptimized_total_energies() {
             r#"{"name":"HAO"}"#,
             "spectral",
             Some(1e-12),
+            Default::default(),
         )
         .unwrap();
         let reference = integrals
@@ -110,7 +111,7 @@ fn native_geometry_response_matches_independently_reoptimized_total_energies() {
             &reference,
             &model,
             &problem,
-            solved.state.as_slice(),
+            solved.state.complex128().unwrap(),
             &response::Options::default(),
         )
         .unwrap();
@@ -120,7 +121,7 @@ fn native_geometry_response_matches_independently_reoptimized_total_energies() {
             &reference,
             &model,
             &problem,
-            solved.state.as_slice(),
+            solved.state.complex128().unwrap(),
             &response::Options {
                 step: 1e-4,
                 extrapolate: false,
@@ -141,7 +142,7 @@ fn native_geometry_response_matches_independently_reoptimized_total_energies() {
             &context,
             &problem.encoding,
             &problem.basis,
-            solved.state.as_slice(),
+            solved.state.complex128().unwrap(),
         )
         .unwrap();
         assert_eq!(rdm.m, 2);

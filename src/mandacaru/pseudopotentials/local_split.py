@@ -97,14 +97,25 @@ analytically instead of through a grid sum.  The energy itself moves by
 is unchanged (split minus grid is <= 1 meV for grid_spacing <= 0.16 Angstrom on H2 and
 water).  Treat it as one term integrated exactly instead of approximately, not
 as a cure for the egg-box.
+
+What lives here now
+-------------------
+The potentials of the split, the radii that size the short-range sphere, and
+the radial and angular rules of its product quadrature.  Every number is
+computed in Rust (``paw/local_split.rs``); this module hands it the dataset's
+sampled local potential, which the dataset (a spline) evaluates itself.  The
+sphere matrices (``short_range_matrices``) belonged to the molecular engine
+that integrated the local potential this way; the native molecular path
+(``paw/molecular``) owns that now, and the crystal builds its own spheres
+(:mod:`.periodic_paw`) from the rules below.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import erf
 
-from ..integrals.sampling import sample_functions
+from .. import _native
+from .native_context import context
 
 #: Width of the Gaussian ion, in units of the grid spacing (Bohr).  At 1.4 the
 #: long-range potential's Fourier weight at the Nyquist wave-vector ``pi/h`` is
@@ -125,38 +136,14 @@ TAIL_TOLERANCE = 1e-5
 #: ``-Z/r`` by construction.
 TAIL_SCAN_MAX = 8.0
 
-#: Gauss-Legendre points per **radial panel**.  The interval is split at the
-#: dataset's local cutoff, where the pseudized polynomial joins the ionic tail
-#: and the third derivative jumps; a single panel across that junction
-#: converges algebraically instead of exponentially.
-#:
-#: The orders below are what a convergence study on the *energy* asked for --
-#: water PAW-LCAO-DZ at grid_spacing = 0.25 Angstrom (12 orbitals, the oxygen sphere holding
-#: both hydrogens), ``tr(D V^sr)`` against a 240x64x128 reference:
-#: ``20x16x32`` +2.2e-6, ``32x24x48`` +7.9e-7, ``40x32x64`` +1.8e-7,
-#: ``64x32x64`` ~3e-7, ``80x40x80`` -9.5e-8 Hartree.  Below ~32 angular points
-#: the error is angular (a neighbor's orbital seen off-center); above it the
-#: radial rule dominates.  PAW-LCAO-SZ water converges to ~1e-7 and H2 PAW-LCAO-DZP to
-#: better than 1e-9, so these are sized by the hardest case tested.
-RADIAL_POINTS = 64
-#: Gauss-Legendre points in ``cos(theta)``.
-POLAR_POINTS = 32
-#: Equispaced azimuthal points (a trapezoid rule, spectrally accurate on the
-#: periodic angle).
-AZIMUTHAL_POINTS = 64
-
 #: The crystal's short-range spheres (:meth:`~.periodic_paw.PeriodicPAW.
 #: short_range_atom`): a sweep of the *self-consistent* results (HISTORY,
-#: "Phase L: sphere quadrature sweep") showed the rule above 8x larger than
+#: "Phase L: sphere quadrature sweep") showed the molecular rule 8x larger than
 #: they need -- 32x16x32 moves displaced Si, displaced rocksalt LiH and water
 #: by <= 6e-4 meV per atom, the forces by <= 2e-3 meV/Angstrom and the
 #: eigenvalues by <= 3e-3 meV, below the 3e-7 Ha the larger rule carries
 #: against the reference -- while a crystal's build and forces, which those
 #: spheres dominate, run 2.2x faster (262k -> 33k points per atom).
-#: Molecules retain their original nodes and weights to preserve numerical
-#: results and orbital tracking. Their basis values now use the same native
-#: shell evaluator as the crystal, sharing spline interpolation among m
-#: components instead of evaluating every function separately in Python.
 #: The azimuthal count is a multiple of 12, so the rule (polar axis z,
 #: azimuths at half steps from x) maps onto itself under the rotations about
 #: z by multiples of 30 and 90 degrees and the mirrors and two-fold axes
@@ -168,31 +155,20 @@ CRYSTAL_RADIAL_POINTS = 32
 CRYSTAL_POLAR_POINTS = 16
 CRYSTAL_AZIMUTHAL_POINTS = 36
 
-#: Radial shells evaluated at once.  The basis is sampled on
-#: ``block x n_angular`` points at a time, which bounds the working set at a
-#: few MB however large the sphere or the basis is.
-SHELL_BLOCK = 8
 
-#: Step (Bohr) of the central difference that moves a basis function in
-#: :func:`short_range_gradients`, matching
-#: :data:`~mandacaru.algorithms.forces.DEFAULT_ORBITAL_DELTA`.
-DEFAULT_DELTA = 1e-3
-
-
-def grid_spacing(grid) -> float:
-    """The grid's coarsest node spacing in **Bohr**.
-
-    The lattice-vector norms of :attr:`~mandacaru.integrals.Grid.step`, so an
-    anisotropic or skewed grid is sized by its worst-resolved direction rather
-    than by ``dx`` alone.
-    """
-    step = np.asarray(grid.step, dtype=float)
-    return float(max(np.linalg.norm(step[:, i]) for i in range(3)))
+def _flat(values) -> tuple:
+    """``(contiguous 1-D float array, original shape)``."""
+    values = np.asarray(values, dtype=float)
+    return np.ascontiguousarray(values.ravel()), values.shape
 
 
 def split_width(grid) -> float:
-    """Gaussian width ``sigma`` (Bohr) of the split on this grid."""
-    return SIGMA_FACTOR * grid_spacing(grid)
+    """Gaussian width ``sigma`` (Bohr) of the split on this grid: the grid's
+    coarsest node spacing (the largest lattice-vector norm of
+    :attr:`~mandacaru.integrals.Grid.step`, so an anisotropic or skewed grid is
+    sized by its worst-resolved direction) times :data:`SIGMA_FACTOR`."""
+    return _native.paw_split_width(
+        np.ascontiguousarray(grid.step, dtype=float), SIGMA_FACTOR)
 
 
 def long_range_potential(charge: float, sigma: float, radius) -> np.ndarray:
@@ -202,36 +178,9 @@ def long_range_potential(charge: float, sigma: float, radius) -> np.ndarray:
     :math:`-Z\sqrt{2/\pi}/\sigma`; the ``r -> 0`` branch is taken explicitly
     rather than left to a ``0/0``.
     """
-    radius = np.asarray(radius, dtype=float)
-    charge = float(charge)
-    sigma = float(sigma)
-    limit = -charge * np.sqrt(2.0 / np.pi) / sigma
-    safe = np.maximum(radius, 1e-300)
-    value = -charge * erf(safe / (np.sqrt(2.0) * sigma)) / safe
-    return np.where(radius < 1e-12 * sigma, limit, value)
-
-
-def long_range_sampler(nuclei, datasets, sigma: float):
-    """The ``V(x, y, z)`` callable the integral engine samples with the split on.
-
-    ``nuclei`` are the ``(Z_ion, center)`` pairs of
-    :class:`~mandacaru.integrals.potentials.Potentials` (centers in Bohr) and
-    ``datasets`` the aligned pseudopotentials, whose ``valence_charge`` is the
-    ionic charge whose tail the Gaussian reproduces.  A drop-in replacement for
-    :meth:`~mandacaru.integrals.potentials.Potentials.pseudopotential`.
-    """
-    centers = [np.asarray(center, dtype=float) for _z, center in nuclei]
-    charges = [float(dataset.valence_charge) for dataset in datasets]
-
-    def sampler(x, y, z) -> np.ndarray:
-        out = np.zeros_like(x, dtype=float)
-        for charge, center in zip(charges, centers):
-            radius = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2
-                             + (z - center[2]) ** 2)
-            out += long_range_potential(charge, sigma, radius)
-        return out
-
-    return sampler
+    flat, shape = _flat(radius)
+    return _native.paw_long_range_potential(
+        context(), float(charge), float(sigma), flat).reshape(shape)[()]
 
 
 def short_range_potential(dataset, sigma: float, radius) -> np.ndarray:
@@ -243,31 +192,21 @@ def short_range_potential(dataset, sigma: float, radius) -> np.ndarray:
     potential the un-split calculation used, whatever the dataset's tail
     actually does (the shipped tables sit ~5e-7 Hartree off ``-Z/r``).
     """
-    radius = np.asarray(radius, dtype=float)
-    return (np.asarray(dataset.local_potential(radius), dtype=float)
-            - long_range_potential(dataset.valence_charge, sigma, radius))
-
-
-def long_range_potential_derivative(charge: float, sigma: float,
-                                    radius) -> np.ndarray:
-    r"""``d/dr`` of :func:`long_range_potential`; zero at the origin (the
-    potential is even there)."""
-    radius = np.asarray(radius, dtype=float)
-    charge, sigma = float(charge), float(sigma)
-    safe = np.maximum(radius, 1e-300)
-    a = 1.0 / (np.sqrt(2.0) * sigma)
-    value = -charge * (2.0 / np.sqrt(np.pi) * a * np.exp(-(a * safe) ** 2)
-                       / safe - erf(a * safe) / safe ** 2)
-    return np.where(radius < 1e-12 * sigma, 0.0, value)
+    flat, shape = _flat(radius)
+    sampled, _ = _flat(dataset.local_potential(flat))
+    return _native.paw_short_range_potential(
+        context(), sampled, float(dataset.valence_charge), float(sigma), flat,
+        False).reshape(shape)[()]
 
 
 def short_range_potential_derivative(dataset, sigma: float, radius) -> np.ndarray:
     """``d/dr`` of :func:`short_range_potential`, analytic (the dataset's
     spline derivative less the Gaussian ion's)."""
-    radius = np.asarray(radius, dtype=float)
-    return (np.asarray(dataset.local_potential_derivative(radius), dtype=float)
-            - long_range_potential_derivative(dataset.valence_charge, sigma,
-                                              radius))
+    flat, shape = _flat(radius)
+    sampled, _ = _flat(dataset.local_potential_derivative(flat))
+    return _native.paw_short_range_potential(
+        context(), sampled, float(dataset.valence_charge), float(sigma), flat,
+        True).reshape(shape)[()]
 
 
 def local_cutoff(dataset) -> float:
@@ -295,11 +234,10 @@ def tail_radius(dataset) -> float:
     """
     cached = getattr(dataset, "_tail_radius", None)
     if cached is None:
-        r = np.linspace(0.3, TAIL_SCAN_MAX, 7701)
-        deviation = np.abs(dataset.local_potential(r)
-                           + float(dataset.valence_charge) / r)
-        outside = np.flatnonzero(deviation > TAIL_TOLERANCE)
-        cached = float(r[outside[-1]] + 0.01) if outside.size else 0.0
+        r = _native.paw_linspace(context(), 0.3, TAIL_SCAN_MAX, 7701)
+        cached = _native.paw_tail_radius(
+            context(), r, _flat(dataset.local_potential(r))[0],
+            float(dataset.valence_charge), TAIL_TOLERANCE)
         dataset._tail_radius = cached
     return cached
 
@@ -316,8 +254,9 @@ def short_range_radius(dataset, sigma: float) -> float:
     the tail at 2.2 Bohr, past its 1.98 Bohr cutoff, a staircase of
     0.1-0.4 eV/atom below grid_spacing 0.13 Angstrom).
     """
-    return max(RADIUS_SIGMAS * float(sigma), local_cutoff(dataset),
-               tail_radius(dataset))
+    return _native.paw_short_range_radius(
+        float(sigma), RADIUS_SIGMAS, local_cutoff(dataset),
+        tail_radius(dataset))
 
 
 # --------------------------------------------------------------------------- #
@@ -331,207 +270,9 @@ def _radial_rule(radius: float, panel: float, points: int):
     kink where the pseudized polynomial meets the ionic tail falls on a panel
     boundary instead of inside one.
     """
-    x, w = np.polynomial.legendre.leggauss(int(points))
-    edges = ([0.0, float(panel), float(radius)]
-             if 0.0 < float(panel) < float(radius) else [0.0, float(radius)])
-    nodes, weights = [], []
-    for lo, hi in zip(edges[:-1], edges[1:]):
-        half = 0.5 * (hi - lo)
-        nodes.append(half * (x + 1.0) + lo)
-        weights.append(half * w)
-    r = np.concatenate(nodes)
-    return r, np.concatenate(weights) * r * r
+    return _native.paw_radial_rule(float(radius), float(panel), int(points))
 
 
 def _angular_rule(polar: int, azimuthal: int):
     """Unit directions ``(3, n)`` and their solid-angle weights ``(n,)``."""
-    t, wt = np.polynomial.legendre.leggauss(int(polar))
-    n_phi = int(azimuthal)
-    azimuth = 2.0 * np.pi * (np.arange(n_phi) + 0.5) / n_phi
-    sin_t = np.sqrt(1.0 - t * t)
-    directions = np.stack([(sin_t[:, None] * np.cos(azimuth)[None, :]).ravel(),
-                           (sin_t[:, None] * np.sin(azimuth)[None, :]).ravel(),
-                           np.repeat(t, n_phi)])
-    return directions, np.repeat(wt, n_phi) * (2.0 * np.pi / n_phi)
-
-
-_SPHERE_OFFSET_CACHE: dict = {}
-
-
-def clear_sphere_cache() -> None:
-    """Clear the cached sorted sphere chunks."""
-    _SPHERE_OFFSET_CACHE.clear()
-
-
-def _sorted_sphere_chunks(radii: np.ndarray, directions: np.ndarray,
-                          chunk_size: int):
-    key = (float(radii[0]), float(radii[-1]), int(radii.size),
-           int(directions.shape[1]), float(directions[0, 0]), int(chunk_size))
-    cached = _SPHERE_OFFSET_CACHE.get(key)
-    if cached is None:
-        ox = (radii[:, None] * directions[0][None, :]).ravel()
-        oy = (radii[:, None] * directions[1][None, :]).ravel()
-        oz = (radii[:, None] * directions[2][None, :]).ravel()
-        octant = ((oz >= 0.0).astype(int) * 4
-                  + (oy >= 0.0).astype(int) * 2
-                  + (ox >= 0.0).astype(int))
-        order = np.lexsort((np.floor(oz), np.floor(oy), np.floor(ox), octant))
-        ox_s = np.ascontiguousarray(ox[order])
-        oy_s = np.ascontiguousarray(oy[order])
-        oz_s = np.ascontiguousarray(oz[order])
-        chunks = []
-        for start in range(0, ox_s.size, int(chunk_size)):
-            stop = min(start + int(chunk_size), ox_s.size)
-            cx = ox_s[start:stop]
-            cy = oy_s[start:stop]
-            cz = oz_s[start:stop]
-            lo = np.array([cx.min(), cy.min(), cz.min()], dtype=float)
-            hi = np.array([cx.max(), cy.max(), cz.max()], dtype=float)
-            chunks.append((cx, cy, cz, order[start:stop], lo, hi))
-        cached = chunks
-        _SPHERE_OFFSET_CACHE[key] = cached
-    return cached
-
-
-def _atom_matrices(basis, center, weight, radii, directions, *,
-                   gradients: bool, delta: float, block: int,
-                   values: bool = True):
-    """``I`` (and ``G``) of one sphere, accumulated block of shells at a time."""
-    M = len(basis)
-    # Real functions (a molecule's real harmonics) give real matrices.
-    dtype = (float if all(getattr(fn, "real", False) for fn in basis)
-             else complex)
-    I = np.zeros((M, M), dtype=dtype) if values else None
-    G = np.zeros((M, M, 3), dtype=dtype) if gradients else None
-    center = np.asarray(center, dtype=float)
-    # Only functions whose support reaches this sphere contribute; the rest
-    # are exactly zero on every one of its points.  Without this every atom
-    # evaluates every basis function, which made the quadrature N^2 (26100
-    # evaluations, 32 s of a 56 s C8H18 setup).
-    extra = float(delta) if gradients else 0.0
-    reach = float(np.max(radii)) + extra
-    near = [m for m, fn in enumerate(basis)
-            if getattr(fn, "support_radius", None) is None
-            or np.linalg.norm(np.asarray(fn.center, dtype=float) - center)
-            <= fn.support_radius + reach]
-    if not near:
-        return I, G
-    basis = [basis[m] for m in near]
-    n_near = len(near)
-    I_near = np.zeros((n_near, n_near), dtype=dtype) if values else None
-    G_near = np.zeros((n_near, 3, n_near), dtype=dtype) if gradients else None
-    rel_centers = np.array([np.asarray(fn.center, dtype=float) - center
-                            for fn in basis], dtype=float)
-    reach2 = np.array([
-        np.inf if getattr(fn, "support_radius", None) is None
-        else (float(fn.support_radius) + extra) ** 2
-        for fn in basis
-    ], dtype=float)
-    chunk_size = max(16384, int(block) * int(directions.shape[1]))
-    w_flat = weight.ravel()
-    for ox, oy, oz, order_c, lo, hi in _sorted_sphere_chunks(
-            radii, directions, chunk_size):
-        gx = np.maximum(0.0, np.maximum(lo[0] - rel_centers[:, 0],
-                                        rel_centers[:, 0] - hi[0]))
-        gy = np.maximum(0.0, np.maximum(lo[1] - rel_centers[:, 1],
-                                        rel_centers[:, 1] - hi[1]))
-        gz = np.maximum(0.0, np.maximum(lo[2] - rel_centers[:, 2],
-                                        rel_centers[:, 2] - hi[2]))
-        active = np.flatnonzero(gx * gx + gy * gy + gz * gz <= reach2)
-        if not active.size:
-            continue
-        basis_c = ([basis[i] for i in active]
-                   if active.size < n_near else basis)
-        flat = (center[0] + ox, center[1] + oy, center[2] + oz)
-        w_block = w_flat[order_c]
-        if not gradients:
-            psi, _ = sample_functions(basis_c, flat)
-            contrib = (np.conj(psi) * w_block) @ psi.T
-            if active.size < n_near:
-                I_near[np.ix_(active, active)] += contrib
-            else:
-                I_near += contrib
-            continue
-        # d phi / d R_k is minus the function's gradient (as
-        # `atom_centered_projection_gradients` has it for the projectors):
-        # analytic for the tabulated functions, a step-`delta` central
-        # difference for the rest.
-        psi, gradient = sample_functions(basis_c, flat, gradients=True,
-                                         delta=float(delta))
-        n_c = len(basis_c)
-        weighted_psi_T = (psi * w_block).T
-        if values:
-            contrib_I = np.conj(psi) @ weighted_psi_T
-            if n_c < n_near:
-                I_near[np.ix_(active, active)] += contrib_I
-            else:
-                I_near += contrib_I
-        contrib_G = (np.conj(gradient).reshape(3 * n_c, -1)
-                     @ weighted_psi_T).reshape(n_c, 3, n_c)
-        if n_c < n_near:
-            for k in range(3):
-                G_near[active[:, None], k, active[None, :]] -= contrib_G[:, k, :]
-        else:
-            G_near -= contrib_G
-    block_ix = np.ix_(near, near)
-    if values:
-        I[block_ix] = I_near
-    if gradients:
-        for k in range(3):
-            G[block_ix + (k,)] = G_near[:, k, :]
-    return I, G
-
-
-def short_range_matrices(basis, centers, datasets, sigma: float, *,
-                         gradients: bool = False, delta: float = DEFAULT_DELTA,
-                         radial: int = RADIAL_POINTS, polar: int = POLAR_POINTS,
-                         azimuthal: int = AZIMUTHAL_POINTS,
-                         block: int = SHELL_BLOCK,
-                         values: bool = True):
-    r"""Per-atom short-range local matrices, by atom-centered quadrature.
-
-    Returns ``(I, G)`` with ``I[A][p, q]`` the ``(M, M)`` matrix
-
-    .. math::
-
-        I^A_{pq} = \int \tilde\phi^*_p\,\tilde\phi_q\,
-                   v^{\rm sr}_A(|\mathbf r - \mathbf R_A|)\, d^3 r
-
-    integrated over the sphere of :func:`short_range_radius` around
-    :math:`\mathbf R_A`, and -- when ``gradients`` is set -- ``G[A][p, q, k]``
-    the same integral with :math:`\phi_p` replaced by
-    :math:`\partial\phi_p/\partial R_{p,k}`, i.e. **that function's own center**
-    moving.  ``G`` is ``None`` otherwise.
-
-    Because the integral depends only on the separations of the functions from
-    the sphere's center, it is exactly translation invariant, and the two roles
-    a displacement can play are both expressed through the one array ``G``:
-    moving a basis function contributes :math:`+G`, moving the sphere (with its
-    potential) contributes :math:`-G`.  Their sum over a rigid translation of
-    everything is identically zero.
-
-    ``centers`` are in Bohr, aligned with ``datasets``; ``sigma`` is the split
-    width (:func:`split_width`).  The quadrature orders default to the module
-    constants and are arguments only so a convergence study can raise them.
-    """
-    directions, w_angular = _angular_rule(polar, azimuthal)
-    matrices, derivatives = ({} if values else None), ({} if gradients else None)
-    quad_cache = {}
-    for atom, dataset in enumerate(datasets):
-        ds_key = (id(dataset), float(sigma), int(radial), int(polar), int(azimuthal))
-        if ds_key in quad_cache:
-            radii, weight = quad_cache[ds_key]
-        else:
-            radius = short_range_radius(dataset, sigma)
-            radii, w_radial = _radial_rule(radius, local_cutoff(dataset), radial)
-            potential = short_range_potential(dataset, sigma, radii)
-            weight = (w_radial * potential)[:, None] * w_angular[None, :]
-            quad_cache[ds_key] = (radii, weight)
-        I, G = _atom_matrices(basis, centers[atom], weight, radii, directions,
-                              gradients=gradients, delta=delta, block=block,
-                              values=values)
-        if values:
-            matrices[atom] = I
-        if gradients:
-            derivatives[atom] = G
-    return matrices, derivatives
+    return _native.paw_angular_rule(int(polar), int(azimuthal))

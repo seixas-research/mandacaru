@@ -15,8 +15,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         LengthUnit::Angstrom,
     )?;
     let grid = SpatialGrid::from_geometry(&geometry, [0.35 / 0.529177210903; 3], false, false)?;
-    let integrals =
-        MolecularIntegrals::new(&ctx, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None)?;
+    let integrals = MolecularIntegrals::new(
+        &ctx,
+        geometry,
+        grid,
+        r#"{"name":"HAO"}"#,
+        "spectral",
+        None,
+        Default::default(),
+    )?;
     let reference = integrals.mean_field("rhf", [1, 1], &ScfOptions::default())?;
     let problem =
         reference

@@ -4,11 +4,19 @@
 use pyo3::prelude::*;
 mod advanced;
 mod arrays;
+mod atom;
+mod basis_confinement;
+mod basis_filter;
+mod basis_table;
 mod context;
 mod geometry;
 mod models;
 mod molecular;
+mod parquet;
 mod paw;
+mod paw_multipole;
+mod paw_onecenter;
+mod paw_pseudize;
 mod periodic;
 mod persistence;
 mod quantum;
@@ -36,7 +44,26 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         mandacaru_core::quantum::optimizer::Method::NAMES.to_vec(),
     )?;
     m.add("THREAD_POLICY_VERSION", 1)?;
+    // The smallest settings a complex64 state resolves: one definition, in Rust.
+    m.add(
+        "FLOAT32_ENERGY_FLOOR_HA",
+        mandacaru_core::quantum::amplitude::FLOAT32_FLOORS.energy,
+    )?;
+    m.add(
+        "FLOAT32_GRADIENT_FLOOR",
+        mandacaru_core::quantum::amplitude::FLOAT32_FLOORS.gradient,
+    )?;
     m.add_function(wrap_pyfunction!(quantum::optimizer_evaluation_bound, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::state_norm_squared, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::state_inner, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::require_normalized_state, m)?)?;
+    paw_multipole::register(m)?;
+    paw_onecenter::register(m)?;
+    paw_pseudize::register(m)?;
+    parquet::register(m)?;
+    basis_confinement::register(m)?;
+    basis_filter::register(m)?;
+    basis_table::register(m)?;
     m.add_class::<PyContext>()?;
     m.add_class::<persistence::PySnapshot>()?;
     m.add_class::<persistence::PyLedger>()?;

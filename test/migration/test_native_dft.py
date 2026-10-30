@@ -256,8 +256,13 @@ def test_native_radial_atom_confinement_and_nonconvergence_are_honest():
     assert actual.total_energy == pytest.approx(expected.total_energy, abs=1e-6)
     failed = solve_atom(8,  max_iterations=1, points=100)
     assert not failed.converged and failed.iterations == 1
-    for options in ({"xc": "pbe"}, {"relativity": "scalar"}, {"grid": "log"}):
-        with pytest.raises(NotImplementedError):
+    # Scalar-relativistic and PBE atoms are solved natively since Wave 1a
+    # (test/basis/test_atomic_solver.py holds their frozen parity); what is not
+    # supported raises instead of selecting another calculation.
+    for options, error in (({"xc": "tpss"}, ValueError),
+                           ({"relativity": "zora"}, ValueError),
+                           ({"grid": "log"}, TypeError)):
+        with pytest.raises(error):
             solve_atom(1,  **options)
 
 

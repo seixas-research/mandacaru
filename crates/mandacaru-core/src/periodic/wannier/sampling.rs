@@ -208,7 +208,7 @@ impl Frame {
                 }
             }
         }
-        let samples = ComplexSamples::archived_copy(ctx, values.as_slice(), Precision::Double)?;
+        let samples = ComplexSamples::archived_copy(ctx, values.as_slice(), Precision::Float64)?;
         let energies = ctx.copy_slice(
             &bands
                 .iter()

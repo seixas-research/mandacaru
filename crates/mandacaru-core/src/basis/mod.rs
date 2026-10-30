@@ -1,12 +1,17 @@
 //! Analytic HAO and Mandacaru Gaussian recipes. Unit Slater fits are immutable
 //! generated data; scaling, shell selection and sampling are native operations.
+pub mod confinement;
+pub mod diffuse;
+pub mod filter;
 pub mod nao_ae;
+pub mod pao;
 pub mod radial;
+pub mod table;
 use crate::math::SpatialGrid;
 fn invalid(message: impl Into<String>) -> crate::Error {
     crate::Error::Invalid(message.into())
 }
-use crate::{product, Buffer, Context, Geometry, Reservation, Result};
+use crate::{product, Context, Geometry, Reservation, Result};
 use serde_json::Value;
 use std::{collections::BTreeMap, f64::consts::PI};
 
@@ -504,15 +509,35 @@ impl Basis {
             _memory: guards,
         })
     }
-    pub fn sample(&self, ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
+    /// The orbitals on the grid, one row at a time: each row is evaluated in
+    /// float64 and rounded once into a stack of the requested precision, so no
+    /// whole-stack float64 copy ever exists.
+    pub fn sample(
+        &self,
+        ctx: &Context,
+        grid: &SpatialGrid,
+        precision: crate::math::storage::Precision,
+    ) -> Result<crate::math::storage::RealSamples> {
         let g = grid.index.points();
-        let mut out = ctx.allocate(product(&[self.orbitals.len(), g])?)?;
+        let mut out = crate::math::storage::RealSamples::zeros(
+            ctx,
+            precision,
+            product(&[self.orbitals.len(), g])?,
+        )?;
+        let mut row = ctx.allocate::<f64>(g)?;
         for (a, orbital) in self.orbitals.iter().enumerate() {
-            for k in 0..g {
-                out.as_mut_slice()[a * g + k] = orbital.evaluate(grid.point(k));
+            for (k, value) in row.as_mut_slice().iter_mut().enumerate() {
+                *value = orbital.evaluate(grid.point(k));
             }
+            out.fill_row(a, g, row.as_slice())?;
         }
         Ok(out)
+    }
+    /// Orbitals `first..first + out.len()` at one point.
+    pub fn evaluate_at(&self, first: usize, point: [f64; 3], out: &mut [f64]) {
+        for (value, orbital) in out.iter_mut().zip(&self.orbitals[first..]) {
+            *value = orbital.evaluate(point);
+        }
     }
 }
 impl Orbital {

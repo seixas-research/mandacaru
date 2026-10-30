@@ -164,3 +164,41 @@ def test_invalid_otoc_order(k):
 def test_invalid_sampling(options):
     with pytest.raises(ValueError):
         model().spectrum([1, 0, 0, 0], **options)
+
+
+class TestPrecision:
+    """``precision="float32"``: complex64 states, float64 reductions and scalars."""
+
+    H = PauliSum({"YX": 0.7, "ZI": -0.4, "II": 0.8})
+    B, M = PauliSum({"IZ": -1}), PauliSum({"XI": 1})
+
+    def test_float32_generic_state_matches_float64(self):
+        psi = np.array([1, 2j, -1j, 3]) / np.sqrt(15)
+        wide = NestedOTOC(self.H, self.B, self.M).run(psi, 0.7, otoc_order=2, steps=4)
+        narrow = NestedOTOC(self.H, self.B, self.M, precision="float32").run(
+            psi, 0.7, otoc_order=2, steps=4)
+        assert wide.state.dtype == np.complex128
+        assert narrow.state.dtype == np.complex64
+        assert narrow.correlator == pytest.approx(wide.correlator, abs=2e-6)
+        assert narrow.measurement_expectation == pytest.approx(
+            wide.measurement_expectation, abs=2e-6)
+        assert narrow.initial_measurement_eigenvalue is None
+
+    @pytest.mark.parametrize("index,sign", [(0, 1), (2, -1)])
+    def test_float32_recognizes_the_signed_eigenstate(self, index, sign):
+        narrow = NestedOTOC(PauliSum({"XX": 0.5}), PauliSum({"IZ": 1}),
+                            PauliSum({"ZI": 1}), precision="float32")
+        result = narrow.run(np.eye(4)[index], 0.3, otoc_order=2)
+        assert result.initial_measurement_eigenvalue == sign
+        assert result.correlator == pytest.approx(np.cos(4 * 0.3), abs=2e-6)
+
+    def test_float32_spectrum_series_is_float64(self):
+        psi = np.array([1, 2j, -1j, 3]) / np.sqrt(15)
+        spectrum = NestedOTOC(self.H, self.B, self.M, precision="float32").spectrum(
+            psi, time_step=0.3, num_samples=8)
+        assert spectrum.correlation.dtype == np.complex128
+
+    @pytest.mark.parametrize("precision", ["single", "double", "FLOAT32", None])
+    def test_any_other_precision_raises(self, precision):
+        with pytest.raises(ValueError, match="precision"):
+            NestedOTOC(self.H, self.B, self.M, precision=precision)

@@ -12,27 +12,61 @@ semilocal exchange are the one-center terms of the HSE06 hybrid
 (:class:`~mandacaru.pseudopotentials.onecenter.OneCenterHybrid`).
 """
 
+from fractions import Fraction
+from math import factorial
 from types import SimpleNamespace
+
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from mandacaru import _native
+from mandacaru.pseudopotentials.native_context import context
 from mandacaru.pseudopotentials.onecenter import (OneCenterExact,
                                                   OneCenterHybrid,
-                                                  _three_j_squared,
-                                                  angular_coupling,
                                                   core_orbitals,
                                                   exact_one_center_terms,
                                                   frozen_exchange_terms,
-                                                  long_range_radial_kernel,
-                                                  long_range_shape_potential,
                                                   one_center_coulomb,
-                                                  one_center_exchange_tensor,
-                                                  radial_coulomb)
+                                                  one_center_exchange_tensor)
 
 
 def orbital(l, m, real=True):
     return SimpleNamespace(l=l, m=m, real=real)
+
+
+# The native radial and angular kernels have no Python route; these helpers
+# only hand arrays to them.
+
+def radial_coulomb(r, rho_1, rho_2, L):
+    return _native.paw_radial_coulomb(
+        context(), *(np.ascontiguousarray(x, dtype=float).ravel()
+                     for x in (r, rho_1, rho_2)), int(L))
+
+
+def long_range_radial_kernel(r1, r2, levels, omega, points=None):
+    levels = [int(L) for L in levels]
+    kernel = _native.paw_long_range_kernel(
+        context(), np.atleast_1d(np.ascontiguousarray(r1, dtype=float)),
+        np.atleast_1d(np.ascontiguousarray(r2, dtype=float)), levels,
+        float(omega), None if points is None else int(points))
+    return {L: kernel[i] for i, L in enumerate(levels)}
+
+
+def long_range_shape_potential(radius, r_g, L, omega):
+    radius = np.asarray(radius, dtype=float)
+    return _native.paw_long_range_shape(
+        context(), np.ascontiguousarray(radius.ravel()), float(r_g), int(L),
+        float(omega)).reshape(radius.shape)[()]
+
+
+def angular_coupling(L, a, b, c, d):
+    real = bool(a.real)
+    key = np.array([[int(L), a.l, a.m, b.l, b.m, c.l, c.m, d.l, d.m]],
+                   dtype=np.int64)
+    value = _native.paw_angular_coupling(key, real)[0]
+    return float(value.real) if real else complex(value)
 
 
 class TestRadialCoulomb:
@@ -50,6 +84,19 @@ class TestRadialCoulomb:
         a, b = np.exp(-r ** 2), r * np.exp(-0.5 * r)
         assert radial_coulomb(r, a, b, L) == pytest.approx(
             radial_coulomb(r, b, a, L), rel=1e-6)
+
+
+    @pytest.mark.parametrize("n", [0, 1])
+    def test_fewer_than_two_points_raise(self, n):
+        """An empty grid panicked inside the native code (a PanicException);
+        one point has no interval to integrate.  Both are a ValueError."""
+        r = np.full(n, 0.5)
+        with pytest.raises(ValueError, match="at least two grid points"):
+            radial_coulomb(r, np.ones(n), np.ones(n), 0)
+
+    def test_two_points_are_the_smallest_grid(self):
+        assert np.isfinite(radial_coulomb(np.array([0.0, 1.0]), np.ones(2),
+                                          np.ones(2), 0))
 
 
 class TestAngularCoupling:
@@ -103,18 +150,19 @@ class TestAngularCoupling:
                 assert abs(real - total) < 1e-12
 
 
-class TestOnAPAWDataset:
-    @pytest.fixture(scope="class")
-    def oxygen(self):
-        from mandacaru.pseudopotentials import get_paw
-        from mandacaru.pseudopotentials.paw import paw_projectors
-        try:
-            dataset = get_paw("O")
-        except FileNotFoundError:
-            pytest.skip("MANDACARU_PAW_PATH is not configured")
-        projectors = paw_projectors(["O"], np.zeros((1, 3)), {"O": dataset})
-        return dataset, projectors
+@pytest.fixture(scope="module")
+def oxygen():
+    from mandacaru.pseudopotentials import get_paw
+    from mandacaru.pseudopotentials.paw import paw_projectors
+    try:
+        dataset = get_paw("O")
+    except FileNotFoundError:
+        pytest.skip("MANDACARU_PAW_PATH is not configured")
+    projectors = paw_projectors(["O"], np.zeros((1, 3)), {"O": dataset})
+    return dataset, projectors
 
+
+class TestOnAPAWDataset:
     def test_one_center_correction_is_symmetric_and_finite(self, oxygen):
         dataset, projectors = oxygen
         dW = one_center_coulomb(dataset, projectors)
@@ -323,12 +371,54 @@ class TestOneCenterExact:
     """The exact one-center terms of a Hartree-Fock PAW-LCAO Hamiltonian."""
 
     def test_three_j_symbols(self):
-        assert _three_j_squared(1, 1, 0) == pytest.approx(1 / 3)
-        assert _three_j_squared(0, 1, 1) == pytest.approx(1 / 3)
-        assert _three_j_squared(1, 1, 2) == pytest.approx(2 / 15)
-        assert _three_j_squared(2, 2, 2) == pytest.approx(2 / 35)
-        assert _three_j_squared(1, 1, 1) == 0.0          # odd sum
-        assert _three_j_squared(0, 0, 2) == 0.0          # triangle
+        three_j = _native.paw_three_j_squared
+        assert three_j(1, 1, 0) == pytest.approx(1 / 3)
+        assert three_j(0, 1, 1) == pytest.approx(1 / 3)
+        assert three_j(1, 1, 2) == pytest.approx(2 / 15)
+        assert three_j(2, 2, 2) == pytest.approx(2 / 35)
+        assert three_j(1, 1, 1) == 0.0          # odd sum
+        assert three_j(0, 0, 2) == 0.0          # triangle
+
+    @pytest.mark.parametrize("abc", [(60, 60, 60), (100, 100, 100),
+                                     (128, 128, 128), (128, 128, 2),
+                                     (64, 100, 128)])
+    def test_three_j_symbols_at_large_momenta(self, abc):
+        """Against the exact rational value; the float factorial form returned
+        0 at (60, 60, 60) and NaN at (100, 100, 100)."""
+        a, b, c = abc
+        j, g = a + b + c, (a + b + c) // 2
+        exact = (Fraction(factorial(j - 2 * a) * factorial(j - 2 * b)
+                          * factorial(j - 2 * c), factorial(j + 1))
+                 * Fraction(factorial(g), factorial(g - a) * factorial(g - b)
+                            * factorial(g - c)) ** 2)
+        value = _native.paw_three_j_squared(a, b, c)
+        assert value == pytest.approx(float(exact), rel=1e-12)
+
+    def test_the_channels_are_charged_to_the_context(self):
+        """The factors, the stack and the scratch are reserved: a context too
+        small for them raises MemoryError instead of allocating."""
+        c = np.ones((3, 4), dtype=complex)                       # 192 bytes
+        factors = [np.ones((1, 2, 2))]                           # 32 bytes
+        members = [[0, 1]]
+        for limit in (200, 300):        # the factors do not fit; the scratch does not
+            small = _native.Context(threads=1, memory_limit_bytes=limit)
+            with pytest.raises(MemoryError):
+                _native.paw_exact_channels(small, c, members, factors, True)
+            with pytest.raises(MemoryError):
+                _native.paw_exact_channel_derivatives(small, c, c, members,
+                                                      factors, True)
+        roomy = _native.Context(threads=1, memory_limit_bytes=1 << 20)
+        stack = _native.paw_exact_channels(roomy, c, members, factors, True)
+        assert stack.shape == (1, 3, 3) and stack.dtype == float
+        assert np.all(stack == 4.0)             # (1, 1) U (1, 1)^T, U all ones
+
+    def test_three_j_symbols_beyond_the_range_raise(self):
+        three_j = _native.paw_three_j_squared
+        assert three_j(128, 128, 1) == 0.0      # odd sum, inside the range
+        with pytest.raises(ValueError, match="up to 128"):
+            three_j(129, 129, 2)
+        with pytest.raises(ValueError, match="up to 128"):
+            three_j(1, 1, 10 ** 6)
 
     def test_the_factors_reproduce_the_tensor(self, water_projectors):
         """sum_k lambda_k U^k (x) U^k is Delta W, with the antisymmetric pairs
@@ -430,3 +520,183 @@ class TestTheDShellAgainstItsRadialIntegrals:
                                                    compensated, L))
         assert tensor[0, 0, 0, 0] == pytest.approx(expected, rel=2e-3)
         assert 0.05 < tensor[0, 0, 0, 0] < 0.06        # about 1.5 eV
+
+
+REFERENCE = (Path(__file__).resolve().parents[1] / "migration" / "reference"
+             / "paw" / "onecenter.npz")
+#: Native against the pre-port Python: the measured worst difference is 6e-11
+#: (the Gaussian-weighted H sphere), so 1e-9 holds with room.
+RTOL = 1e-9
+
+
+def close(value, frozen, rtol=RTOL):
+    """The largest difference, relative to the largest frozen entry."""
+    frozen = np.asarray(frozen)
+    scale = max(float(np.abs(frozen).max()), 1e-300)
+    assert float(np.abs(np.asarray(value) - frozen).max()) <= rtol * scale
+
+
+@pytest.fixture(scope="module")
+def frozen():
+    return np.load(REFERENCE)
+
+
+@pytest.fixture(scope="module")
+def datasets():
+    from mandacaru.pseudopotentials import get_paw
+    try:
+        return {symbol: get_paw(symbol) for symbol in ("O", "H", "V", "Cu")}
+    except FileNotFoundError:
+        pytest.skip("MANDACARU_PAW_PATH is not configured")
+
+
+class TestFrozenPythonOutputs:
+    """The Rust routines against the outputs of the Python they replaced
+    (``test/migration/reference/paw/onecenter.npz``; the inputs are in the JSON
+    beside it).  ``radial_coulomb`` was frozen on its SciPy branch: the C-ABI
+    kernel integrates one interval short for an odd number of points."""
+
+    @staticmethod
+    def own(dataset, symbol, basis, real=True, only=None):
+        from mandacaru.pseudopotentials.paw import paw_projectors
+        projectors = paw_projectors([symbol], np.zeros((1, 3)),
+                                    {symbol: dataset}, projector_basis=basis,
+                                    real=real)
+        return [p for p in projectors if only is None or p.l in only]
+
+    def test_the_radial_slater_integral(self, frozen):
+        grids = {"uniform_600": np.linspace(0, 6, 600),
+                 "uniform_601": np.linspace(0, 6, 601),
+                 "quadratic_500": 6 * np.linspace(0, 1, 500) ** 2,
+                 "quadratic_501": 6 * np.linspace(0, 1, 501) ** 2}
+        values = []
+        for r in grids.values():
+            a, b, c = np.exp(-r ** 2), r * np.exp(-0.5 * r), np.exp(-r) * (1 + r)
+            for L in range(4):
+                values += [radial_coulomb(r, f, s, L)
+                           for f, s in ((a, a), (a, b), (b, c))]
+        close(values, frozen["radial_coulomb"], 1e-12)
+
+    def test_the_screened_kernel_and_its_shape_potential(self, frozen):
+        r1, r2 = np.linspace(0, 1.5, 7), np.array([0.2, 0.9, 1.4, 2.5, 3.0])
+        kernels = []
+        for omega, points in ((0.11, None), (1.0, None), (20.0, None),
+                              (20.0, 64), (0.05, 24)):
+            f = long_range_radial_kernel(r1, r2, [0, 1, 2, 3], omega,
+                                         points=points)
+            kernels.append(np.stack([f[L] for L in range(4)]))
+        close(np.stack(kernels), frozen["long_range_kernel"])
+        radius = np.linspace(0, 30, 61)
+        shapes = [long_range_shape_potential(radius, r_g, L, omega)
+                  for r_g, L, omega in [(1.45, 0, 0.11), (1.45, 1, 0.11),
+                                        (1.45, 2, 1.0), (1.7, 0, 3.0)]]
+        close(np.stack(shapes), frozen["long_range_shape"])
+
+    @pytest.mark.parametrize("real", [True, False])
+    def test_the_angular_couplings(self, frozen, real):
+        keys = frozen["angular_keys"]
+        values = [angular_coupling(
+            int(k[0]), *(orbital(int(k[1 + 2 * i]), int(k[2 + 2 * i]), real)
+                         for i in range(4))) for k in keys]
+        close(values, frozen["angular_real" if real else "angular_complex"],
+              1e-12)
+
+    @pytest.mark.parametrize("name,symbol,basis,real,only", [
+        ("O_raw", "O", "raw", True, None), ("O_dual", "O", "dual", True, None),
+        ("H_raw", "H", "raw", True, None),
+        ("V_d_dual", "V", "dual", True, (2,)),
+        ("Cu_d_raw", "Cu", "raw", True, (2,)),
+        ("O_raw_complex", "O", "raw", False, None)])
+    def test_the_coulomb_tensor(self, frozen, datasets, name, symbol, basis,
+                                real, only):
+        dataset = datasets[symbol]
+        tensor = one_center_coulomb(
+            dataset, self.own(dataset, symbol, basis, real, only), basis)
+        assert np.iscomplexobj(tensor) == (not real)
+        close(tensor, frozen[f"tensor_{name}"])
+
+    @pytest.mark.parametrize("name,symbol,basis,omega", [
+        ("O_raw_w011", "O", "raw", 0.11), ("O_dual_w011", "O", "dual", 0.11),
+        ("H_raw_w5", "H", "raw", 5.0), ("O_raw_w0", "O", "raw", 0.0)])
+    def test_the_screened_exchange_tensor(self, frozen, datasets, name, symbol,
+                                          basis, omega):
+        dataset = datasets[symbol]
+        tensor = one_center_exchange_tensor(
+            dataset, self.own(dataset, symbol, basis), omega, basis)
+        close(tensor, frozen[f"exchange_{name}"])
+
+    @pytest.mark.parametrize("symbol", ["O", "H", "Cu"])
+    @pytest.mark.parametrize("basis", ["raw", "dual"])
+    def test_the_frozen_exchange_terms(self, frozen, datasets, symbol, basis):
+        constant, blocks = frozen_exchange_terms(datasets[symbol], 0.11, basis)
+        assert constant == pytest.approx(
+            float(frozen[f"frozen_{symbol}_{basis}_constant"]), rel=RTOL)
+        for l, block in blocks.items():
+            close(block, frozen[f"frozen_{symbol}_{basis}_{l}"])
+
+    @pytest.mark.parametrize("functional,symbol", [
+        ("lda", "O"), ("lda", "H"), ("lda", "V"), ("lda", "Cu"),
+        ("pbe", "O"), ("pbe", "Cu")])
+    @pytest.mark.parametrize("basis", ["raw", "dual"])
+    def test_the_core_and_the_exact_terms(self, frozen, datasets, functional,
+                                          symbol, basis):
+        """The V of a PBE dataset uses the atom solver's radial scheme (the
+        one the datasets were unscreened with), not the variational one."""
+        from mandacaru.pseudopotentials import get_paw
+        try:
+            dataset = (datasets[symbol] if functional == "lda"
+                       else get_paw(symbol, xc="pbe"))
+        except FileNotFoundError:
+            pytest.skip("the pbe-sr library is not configured")
+        tag = f"{functional}_{symbol}"
+        for n, l, _f, R in core_orbitals(dataset):
+            close(R, frozen[f"core_{tag}_{n}_{l}"])
+        terms = exact_one_center_terms(dataset, basis)
+        for l, (V, K, D0) in terms.items():
+            for name, array in (("V", V), ("K", K), ("D0", D0)):
+                close(array, frozen[f"exact_{tag}_{basis}_{name}_{l}"])
+
+    def test_the_hybrid_on_water(self, frozen, datasets):
+        from mandacaru.pseudopotentials.paw import paw_projectors
+        symbols = ["O", "H", "H"]
+        positions = np.array([[0.0, 0.0, 0.12], [0.0, 0.76, -0.48],
+                              [0.0, -0.76, -0.48]])
+        pair = {"O": datasets["O"], "H": datasets["H"]}
+        projectors = paw_projectors(symbols, positions, pair)
+        hybrid = OneCenterHybrid(projectors, [pair[s] for s in symbols],
+                                 0.11, 0.25)
+        assert hybrid.constant == pytest.approx(
+            float(frozen["hybrid_constant"]), rel=RTOL)
+        P = len(projectors)
+        spinor = frozen["hybrid_spinor_density"]
+        runs = {
+            "closed_real": hybrid.evaluate(frozen["hybrid_closed_real_density"]),
+            "closed_complex": hybrid.evaluate(frozen["hybrid_up_density"]),
+            "channels": hybrid.evaluate(frozen["hybrid_up_density"],
+                                        frozen["hybrid_down_density"]),
+            "spinor": hybrid.evaluate_spinor(
+                [[spinor[:P, :P], spinor[:P, P:]],
+                 [spinor[P:, :P], spinor[P:, P:]]])}
+        for name, terms in runs.items():
+            close([terms.energy, terms.exact_exchange, terms.semilocal],
+                  frozen[f"hybrid_{name}_energy"])
+            for s, operator in enumerate(terms.operators):
+                close(operator, frozen[f"hybrid_{name}_operator_{s}"])
+        assert runs["closed_real"].operators[0].dtype == float
+
+        exact = OneCenterExact(projectors, [pair[s] for s in symbols])
+        assert exact.rank == int(frozen["exact_rank"])
+        for k, entry in enumerate(exact.atoms[:2]):
+            for key in ("W", "V", "K", "D0", "coupling", "values"):
+                close(entry[key], frozen[f"exactclass_{k}_{key}"])
+        C, dC = frozen["exactclass_C"], frozen["exactclass_dC"]
+        G, lam = exact.channels(C)
+        close(np.einsum("k,kab,kcd->abcd", lam, G, G),
+              frozen["exactclass_contraction"])
+        dG = exact.channel_derivatives(C, dC)
+        close(2.0 * np.einsum("k,kab,kcd->abcd", lam, dG, G),
+              frozen["exactclass_derivative_contraction"])
+        for key, block in exact.coupling_blocks().items():
+            name = "exactclass_block_" + "_".join(str(x) for x in key)
+            if name in frozen.files:
+                close(block, frozen[name])

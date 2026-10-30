@@ -1,8 +1,14 @@
 //! Scientific definitions shared by solvers and language bindings.
 pub mod atom;
+pub mod configuration;
 pub mod dispersion;
 pub mod elements;
+pub mod mixing;
 pub mod nonlocal;
+pub mod numerov;
+pub mod radial_xc;
+pub mod relativity;
+pub mod selection;
 pub mod spectrum;
 pub mod spherical;
 pub mod spin_orbit;

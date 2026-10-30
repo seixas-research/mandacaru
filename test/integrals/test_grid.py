@@ -22,6 +22,18 @@ from mandacaru import Mandacaru
 from mandacaru.integrals import Grid
 
 
+class TestGridCarriesNoPrecision:
+    """The precision is the constructor's of ``Mandacaru``; a grid is geometry."""
+
+    def test_the_grid_has_no_precision_member(self):
+        g = Grid(center=[0, 0, 0], box_size=4.0, grid_spacing=0.5, units="bohr")
+        for name in ("precision", "real_dtype", "complex_dtype"):
+            assert not hasattr(g, name)
+
+    def test_a_precision_argument_is_refused(self):
+        with pytest.raises(TypeError, match="precision"):
+            Grid(center=[0, 0, 0], box_size=4.0, grid_spacing=0.5, units="bohr",
+                 precision="float32")
 
 
 class TestNonCubicGrid:

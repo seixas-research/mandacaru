@@ -20,14 +20,19 @@ g_i &={\left.\frac{\partial}{\partial\theta}
 \end{aligned}
 ```
 
-The commutator is Hermitian, so this derivative is real. Mandacaru's local
-`gradient="analytic"` option evaluates it directly from the state vector.
-On a device (`shots > 0`) there is no state vector: $[\hat H, A_i]$ is formed
-in the Pauli algebra and **measured** as an observable, the strings of every
-screened generator merged into qubit-wise-commuting bases. At the
-Hartree-Fock determinant, before the first operator, the derivative is a
-diagonal element and is computed exactly instead (see
-{ref}`adapt-on-a-device`).
+The commutator is Hermitian, so this derivative is real. Because $A_i$ is
+anti-Hermitian, $\langle\psi|A_i\hat H|\psi\rangle$ is minus the complex conjugate
+of $\langle\psi|\hat H A_i|\psi\rangle$, and the derivative can be computed as
+$g_i = 2\,\mathrm{Re}\,\langle\psi^{(n)}|\hat H A_i|\psi^{(n)}\rangle$, one
+Hamiltonian application shared by the whole pool. This is the form the state-vector
+solver evaluates, in Hartree per radian. The screening gradient it reports is the
+magnitude $|g_i|$.
+
+On a device (`shots > 0`) there is no state vector: $[\hat H, A_i]$ is formed in the
+Pauli algebra and **measured** as an observable, the strings of every screened
+generator merged into qubit-wise-commuting bases. At the Hartree-Fock determinant,
+before the first operator, the derivative is a diagonal element and is computed
+exactly instead (see [ADAPT-VQE on a device](#adapt-on-a-device)).
 
 ## Grow and optimize
 
@@ -41,10 +46,9 @@ i_* = \operatorname*{arg\,max}_i |g_i|,
   e^{\theta_n A_{i_n}}\cdots e^{\theta_1 A_{i_1}}|\mathrm{HF}\rangle.
 ```
 
-Initially, the new parameter is zero and the old parameters keep their previous
-values. With the default `quenching=True`, all parameters are then reoptimized.
-The [quenching guide](../guide/quenching.md) describes the alternative sequential
-policy.
+The new parameter starts at zero and the old parameters keep their values; then
+**all** parameters are re-optimized together, starting from those values. There is
+no option to freeze the earlier angles.
 
 The outer loop stops when
 
@@ -52,19 +56,23 @@ The outer loop stops when
 \max_i |g_i| < \varepsilon,
 ```
 
-or when the growth budget is exhausted. `convergence={"gradient": ...}`
-specifies $\varepsilon$ in the internal Hartree convention. The option also
-stops on the energy change of the last growth step,
-$|E_k - E_{k-1}| < \delta$, with `convergence={"energy": ...}` (eV;
-$E_0$ is the reference state). The default is
-`{"gradient": 1e-3, "energy": 1e-3}`. A criterion set to `None` or left out
-is not used, and when both are given both must hold: a small energy change
-alone can be a plateau the next operator leaves, and a small gradient alone a
-flat saddle. A gradient that has vanished ($< 10^{-5}$) stops the growth
-whatever the criteria: appending an operator then lowers the energy by about
-$g^2/2\kappa \sim 10^{-10}$ Ha, so a system one step makes exact does not
-grow a redundant second operator. `max_iterations` limits the number of growth steps; it is distinct
-from the inner optimizer's `maxiter`.
+or when the growth budget is exhausted. The growth budget is `max_iterations`, the
+total number of operators in the ansatz (including any restored from a checkpoint);
+it is distinct from the inner optimizer's `maxiter`. The thresholds are set with
+`convergence={"gradient": ..., "energy": ...}`:
+
+- `"gradient"` is $\varepsilon$ in Hartree per radian, compared with the largest pool
+  gradient.
+- `"energy"` is $\delta$ in eV, compared with the energy change of the last growth
+  step, $|E_k - E_{k-1}| < \delta$, where $E_0$ is the reference energy.
+- The default is `{"gradient": 1e-3, "energy": 1e-3}`. A criterion that is left out
+  or set to `None` is not used, and a dictionary you supply enables only the keys it
+  names. At least one criterion is required. When both are in use, both must hold: a
+  small energy change alone can be a plateau the next operator leaves, and a small
+  gradient alone a flat saddle. With an energy criterion in use the loop cannot stop
+  before the first growth step, because there is no energy change to compare yet.
+- Whatever the criteria, a largest gradient below $10^{-12}$ stops the growth: the
+  pool has nothing left to offer.
 
 A small gradient means the state is locally stationary along the available pool
 directions. It does not prove global optimality, sufficient pool expressivity
@@ -90,92 +98,42 @@ vanish before ADAPT-VQE starts. Nor is its determinant the exact electronic
 ground state. After the ansatz grows, single-excitation gradients can become
 non-zero.
 
-## Growth strategies
-
-Two options change *how* the ansatz grows, independently of the pool and of
-each other. Both are off by default.
-
-`tetris=True` — TETRIS-ADAPT-VQE (Anastasiou *et al.*, *Phys. Rev. Research*
-**6**, 013254, 2024). Instead of appending only the largest-gradient operator,
-append every operator whose support is disjoint from the ones already taken
-this step, in descending gradient order, until the register is covered. The
-extra operators cost **no extra measurement** — their gradients were screened
-anyway — and because they act on different qubits they compile into the same
-circuit layer. The ansatz becomes denser and shallower.
-
-`prune=True` — Pruned-ADAPT-VQE (*J. Chem. Theory Comput.* **21**, 8720, 2025).
-After each growth, remove the one operator that has become irrelevant, ranked by
-
-```{math}
-f_i = \frac{e^{-\alpha x_i}}{\theta_i^{2}}, \qquad x_i = i/N,
-```
-
-which favors small amplitudes ($1/\theta^2$) early in the ansatz
-($e^{-\alpha x}$, $\alpha = 10$) — the ones a later operator has made
-redundant. The top-ranked operator is removed only if its amplitude is below
-one tenth of the mean amplitude of the four most recent operators; recently
-added operators legitimately have small parameters, so the threshold is
-measured against them rather than being absolute. The parameters are not
-re-optimized, since the removed operator was by construction doing almost
-nothing.
-
-Measured on BeH₂ (HAO, *h* = 0.35, `qeb`, L-BFGS, gradient tolerance 10⁻⁵),
-all four variants reaching the same energy:
-
-| | operators | growth steps | CNOTs | depth | cost evaluations |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| default | 21 | 21 | 656 | 871 | 1731 |
-| `tetris=True` | 17 | 13 | 464 | 609 | 982 |
-| `prune=True` | 16 | 20 | 504 | 665 | 1647 |
-| both | 16 | 13 | 460 | 609 | 982 |
-
-On a strongly correlated linear H₄ that does not converge within the operator
-budget, pruning is the stronger of the two: 15 operators against 24 for the same
-energy, 44 % fewer CNOTs and 53 % less depth — at 2.5× the classical cost,
-because near convergence it can remove an operator the next step re-selects.
-That cycling is why the growth steps carry their own budget when pruning is on.
-
-`tetris=True` is close to free and never lengthens the circuit; `prune=True`
-trades classical evaluations for gate count. The `[OPTIMIZATION SETUP]` block
-records which ran, and `result.pruned_operators` lists what pruning removed.
-
 ## Pool choice and conserved quantities
 
-Mandacaru provides `fermionic`, `qubit`, `qeb` and `ceo` pools. Their constructions
-and implementation limits are summarized in the
-[LiH pool comparison](../tutorial/adapt_vqe_lih.md).
+The `pool` option selects one of six generator sets: `fermionic`, `qubit`, `qeb`,
+`ceo`, `ceo-ovp` and `spin-orbit`. [The LiH tutorial](../tutorial/adapt_vqe_lih.md)
+compares them on one molecule.
 
 Fermionic excitation generators preserve the specified electron counts. A
 single Pauli term extracted from an excitation need not do so; a qubit-pool
 ansatz can therefore leave the intended particle-number sector. Compare the
 final state's conserved quantities when using such a pool. A low energy in a
-different sector is not a better solution of the original molecular problem.
+different sector is not a better solution of the original molecular problem. By
+default Mandacaru restricts the state to the particle-number sector for every pool
+except `qubit` and `spin-orbit`.
+
+The `spin-orbit` pool contains both $T - T^\dagger$ and $i(T + T^\dagger)$ for
+spin-changing singles and doubles, so the ansatz can mix $\alpha$ and $\beta$
+spin. It conserves the total particle number but not the spin populations, and it
+needs the untapered register: it refuses `mapping="parity_reduced"`.
 
 The `ceo` pool follows Ramôa *et al.*, *npj Quantum Information* **11**, 86
-(2025). A set of four spin-orbitals admits more than one qubit excitation — two
-when it holds two α and two β orbitals, three when all four share a spin — and
-every one of them is built from the *same* eight Pauli strings, differing only in
-signs. Coupling them therefore costs no extra entangling structure, and their sum
-or difference needs only four of those strings, which roughly halves the compiled
-CNOT count against `qeb` (LiH: 112 against 208).
+(2025). A set of four spin-orbitals admits more than one qubit excitation, and every
+one of them is built from the same Pauli strings, differing only in signs. Coupling
+them (their sum and difference) therefore needs no extra entangling structure. Two
+consequences are worth knowing. First, `ceo` is built from **generalized**
+excitations, with source and target orbitals not restricted to be occupied and
+unoccupied in the reference, so its pool is larger than the others; the
+gradients are linear combinations of the same Pauli expectation values, so the
+measurement cost does not grow with it. Second, a growth step may add more than one
+parameter: when several of the coupled excitations have a non-zero gradient they are
+appended with independent parameters (the paper's MVP-CEO), so the parameter count
+can exceed the iteration count.
 
-Two consequences are worth knowing. First, `ceo` is the one pool built from
-**generalized** excitations: with the source and target orbitals restricted to be
-occupied and unoccupied in the reference, each set carries a single excitation and
-there is nothing to couple. The pool is correspondingly larger — 660 operators
-against QEB's 92 for a frozen-core water — although the gradients are linear
-combinations of the same Pauli expectation values, so the measurement cost is
-unchanged. Second, a growth step may add more than one parameter: when several of
-the coupled excitations have a non-zero gradient they are appended with
-independent parameters (the paper's MVP-CEO), so the parameter count can exceed
-the iteration count.
-
-The paper's specialized 9- and 13-CNOT circuit syntheses are not implemented;
-Mandacaru compiles every generator through the generic `{cx, u}` path. That has
-one consequence worth knowing: an MVP step compiles as two or three separate
-eight-string excitations and therefore *costs* gates rather than saving them.
-`ceo-ovp` is the paper's one-parameter variant (its Supplementary Sec. I) — the
-same pool, never expanded — and it is the one that delivers the reduction here.
-On the LiH curve of `examples/ibm_quantum/03_lih_dissociation_ibm_data.py` (STO-3G, 12 qubits) it
-matches `qeb` in energy with **104 CNOTs against 208**, while the adaptive `ceo`
-needs 248. Use `ceo-ovp` when the gate count is what matters.
+The `ceo-ovp` pool is the paper's one-parameter variant: the same coupled operators,
+but a growth step appends the single chosen operator and never expands it. The
+paper's specialized 9- and 13-CNOT circuit syntheses are not implemented; every
+generator is compiled through the generic path, so compare the compiled gate counts
+of the pools on your molecule (the iteration table of
+[the run log](../reference/run_log.md) reports them) rather than assuming the
+paper's savings.

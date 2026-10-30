@@ -6,7 +6,11 @@ use super::invalid;
 use crate::{
     basis::{Basis, Orbital, Radial},
     math::{
-        linalg::real_eigen, projection::PointAccumulator, radial::gauss_legendre, spline::Cubic,
+        linalg::real_eigen,
+        projection::PointAccumulator,
+        radial::gauss_legendre,
+        spline::Cubic,
+        storage::{Precision, Sample},
         SpatialGrid,
     },
     molecular::{
@@ -129,6 +133,7 @@ pub struct Setup {
     species_terms: Vec<onecenter::AtomTerms>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     ctx: &Context,
     geometry: Geometry,
@@ -137,6 +142,7 @@ pub fn build(
     mut arrays: Arrays,
     kinetic: &str,
     tolerance: f64,
+    precision: Precision,
 ) -> Result<MolecularIntegrals> {
     let metadata: serde_json::Value =
         serde_json::from_str(metadata).map_err(|e| invalid(e.to_string()))?;
@@ -229,7 +235,7 @@ pub fn build(
         basis,
         species_terms,
     });
-    setup.at_geometry(ctx, geometry, grid, kinetic, tolerance)
+    setup.at_geometry(ctx, geometry, grid, kinetic, tolerance, precision)
 }
 impl Setup {
     pub fn at_geometry(
@@ -239,6 +245,7 @@ impl Setup {
         grid: SpatialGrid,
         kinetic: &str,
         tolerance: f64,
+        precision: Precision,
     ) -> Result<MolecularIntegrals> {
         if geometry.numbers().len() != self.atoms.len()
             || self
@@ -359,45 +366,47 @@ impl Setup {
         let values = local.finish()?;
         v += DMatrix::from_column_slice(m, m, values.as_slice());
         drop(values);
-        let samples = basis.sample(ctx, &grid)?;
+        // The stack is built once, in the calculation's precision, and handed
+        // to the integrals below; the projector and its field scratch end with
+        // this block.
+        let samples = basis.sample(ctx, &grid, precision)?;
         let mut ws = vec![DMatrix::zeros(m, m); nch];
-        let mut projector = if m >= 16 {
-            Some(crate::math::projection::RealProjector::new(
-                ctx,
-                samples.as_slice(),
-                m,
-                g,
-            )?)
-        } else {
-            None
-        };
-        let mut field = ctx.allocate::<f64>(g)?;
-        for (a, ch) in multipoles.iter().enumerate() {
-            let sp = &species[atoms[ch.atom]];
-            for k in 0..g {
-                let offset =
-                    std::array::from_fn(|i| grid.point(k)[i] - geometry.positions()[ch.atom][i]);
-                let weight = potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
-                    * harmonic(ch.l, ch.m, offset)
-                    * grid.index.dv();
-                if projector.is_some() {
-                    field.as_mut_slice()[k] = weight;
-                } else {
-                    for i in 0..m {
-                        for j in 0..m {
-                            ws[a][(i, j)] += weight
-                                * samples.as_slice()[i * g + k]
-                                * samples.as_slice()[j * g + k];
+        crate::math::storage::with_rows!(samples.rows(), |stored| {
+            let mut projector = if m >= 16 {
+                Some(crate::math::projection::RealProjector::new(
+                    ctx, stored, m, g,
+                )?)
+            } else {
+                None
+            };
+            let mut field = ctx.allocate::<f64>(g)?;
+            for (a, ch) in multipoles.iter().enumerate() {
+                let sp = &species[atoms[ch.atom]];
+                for k in 0..g {
+                    let offset = std::array::from_fn(|i| {
+                        grid.point(k)[i] - geometry.positions()[ch.atom][i]
+                    });
+                    let weight = potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
+                        * harmonic(ch.l, ch.m, offset)
+                        * grid.index.dv();
+                    if projector.is_some() {
+                        field.as_mut_slice()[k] = weight;
+                    } else {
+                        for i in 0..m {
+                            for j in 0..m {
+                                ws[a][(i, j)] +=
+                                    weight * stored[i * g + k].widen() * stored[j * g + k].widen();
+                            }
                         }
                     }
                 }
+                if let Some(projector) = projector.as_mut() {
+                    ws[a]
+                        .as_mut_slice()
+                        .copy_from_slice(projector.project(field.as_slice())?);
+                }
             }
-            if let Some(projector) = projector.as_mut() {
-                ws[a]
-                    .as_mut_slice()
-                    .copy_from_slice(projector.project(field.as_slice())?);
-            }
-        }
+        });
         let mut electrostatic = PointAccumulator::new(ctx, nch, nch)?;
         let mut potentials = vec![0.; nch];
         let mut densities = vec![0.; nch];
@@ -562,6 +571,7 @@ impl Setup {
             geometry,
             grid,
             basis,
+            samples,
             kinetic,
             Some(tolerance),
             Some(corrections),

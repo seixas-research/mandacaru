@@ -34,7 +34,7 @@ def uniform_crystal(dtype):
                    linear=hold([], complex), eion=0., ion_constant=0., constant=.13,
                    reference=0., electrons=1., spins=1, functional="lda",
                    relativistic=False, permutations=[], qsym=hold([], complex),
-                   precision="single" if dtype == np.complex64 else "double")
+                   precision="float32" if dtype == np.complex64 else "float64")
     return json.dumps(payload), arrays
 
 

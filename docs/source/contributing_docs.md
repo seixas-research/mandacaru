@@ -13,9 +13,63 @@ python -m http.server 8000 --directory docs/_build/html
 Open `http://localhost:8000`. A build warning is treated as a failure both locally
 and on Read the Docs (`fail_on_warning: true` in `.readthedocs.yaml`), so a single
 unresolved cross-reference fails the whole build and the site keeps serving the
-previous version. Scientific figures are stored in `_static`; the build does
+previous version. The hosted build installs the package, which compiles the Rust
+extension, so `.readthedocs.yaml` asks for a Rust toolchain (`build.tools.rust`).
+Scientific figures are stored in `_static`; the build does
 not execute simulations. See [the LiH scan](tutorial/pes_scan.md) to regenerate
 its PNG, CSV and calculation metadata.
+
+`make -C docs html SPHINXOPTS="-W"` runs the same build. The API reference imports the
+package, so the extension must be built first (`pip install -e '.[dev]'`).
+
+## How the manual is organized
+
+Six kinds of page are kept apart, each with its own place in `docs/source/`:
+
+| Kind | Folder | What belongs there |
+| --- | --- | --- |
+| Start | `installation.md`, `start/` | Installing, and one first calculation. |
+| Guides | `guide/` | How to do one task. Every code block runs. |
+| Tutorials | `tutorial/` | One calculation followed from start to finish. |
+| Concepts | `theory/` | Why a method works and what it does not guarantee. |
+| Reference | `api.md`, `reference/` | The options (the `Mandacaru` docstring), the methods table, the command line, the run log, and the not-yet-available table. |
+| Engineering | `development/`, this page | Architecture, the one live status page, the history. |
+
+Two rules keep the pages honest.
+
+**One owner per fact.** A default or an option is stated once, in the options
+reference, and the guides link to it. A feature the program does not implement
+appears in [the not-yet-available table](reference/not_yet_available.md) with what
+raises and where it stands, never in a guide as if it were usable. When a Rust
+capability changes, update the guide that owns it, the methods table if a method
+changed, and [the cutover page](development/native_cutover.md); do not describe a
+cutover item as done before that page's coverage table says so.
+
+**Examples that run.** Every `Mandacaru(...)` call in a guide must pass options the
+constructor takes, and every `examples/` script a page names must exist.
+`test/test_docs_links.py` checks the first by parsing the code blocks and the second by
+looking for the file.
+
+## What the link test checks
+
+`python -m pytest test/test_docs_links.py` runs in milliseconds and needs no Sphinx
+build. It fails on:
+
+- a `#target` that no `(target)=` line defines, a link to a heading slug, and a link
+  to a page that does not exist (next section);
+- a keyword in a `Mandacaru(...)` call inside a Python code block that the constructor
+  does not take;
+- a dotted `mandacaru.` name in the text that does not import, in any page except the
+  historical ones (`development/history.md`, `development/native_cutover.md`), which
+  may name removed modules;
+- a row of [the methods table](reference/methods.md) that is missing, extra or
+  misspelled against the code;
+- a constructor parameter without a `name : type` entry in the `Mandacaru`
+  docstring;
+- a script path under `examples/` that is not a file.
+
+Write the name of a removed or planned feature as plain words or in a text block,
+never as a dotted package path or as a Python call.
 
 ## Linking to a section
 
@@ -25,12 +79,12 @@ section an explicit target instead, on the line above its heading, and link to
 that name from anywhere in the manual:
 
 ```markdown
-(references-bib)=
-## `references.bib`: what the run should cite
+(run-log-forces)=
+## The `[FORCES]` block
 ```
 
 ```markdown
-... the way a variational run does (see [`references.bib`](#references-bib)).
+... as the run log shows (see [the forces block](#run-log-forces)).
 ```
 
 `test/test_docs_links.py` checks this without building: it fails on a link to a

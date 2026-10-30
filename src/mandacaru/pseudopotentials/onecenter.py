@@ -45,7 +45,7 @@ dataset's frozen functional out (see the last section of this module).
 :math:`(\phi_a^*\phi_b|\phi_c^*\phi_d) - (\tilde\phi_a^*\tilde\phi_b + \hat n_{ab}
 |\tilde\phi_c^*\tilde\phi_d + \hat n_{cd})` over one sphere, assembled from the
 usual multipole expansion of :math:`1/r_{12}`: a radial double integral per
-:math:`L` (:func:`radial_coulomb`) times the angular couplings of
+:math:`L` (the native radial Slater integral) times the angular couplings of
 :mod:`mandacaru.pseudopotentials.multipoles`.
 
 The one-center exact exchange of a screened hybrid
@@ -134,7 +134,7 @@ The kernel.  :math:`\operatorname{erfc}(\omega r)/r = 1/r - \operatorname{erf}
 :math:`f_L(r, r') = \tfrac{2L+1}2\int_{-1}^1
 \operatorname{erf}(\omega R)/R\,P_L(\mu)\,d\mu`,
 :math:`R^2 = r^2 + r'^2 - 2rr'\mu`, are integrated by Gauss-Legendre in
-:math:`\mu` (:func:`long_range_radial_kernel`).  :math:`\operatorname{erf}(x)/x`
+:math:`\mu` (the native screened kernel).  :math:`\operatorname{erf}(x)/x`
 is an entire function of :math:`x^2`, hence of :math:`\mu`, so the rule
 converges exponentially (24 nodes: round-off, inside a sphere).  Inside an
 augmentation sphere :math:`\omega r \lesssim 0.3`, where the series
@@ -150,281 +150,57 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.integrate import cumulative_trapezoid, simpson
 
-try:
-    from ..integrals._backend import _LIB
-except Exception:
-    _LIB = None
+from .. import _native
+from .multipoles import partial_waves
+from .native_context import context
 
-from .multipoles import gaunt, multipole_range, partial_waves, shape_function
-
-#: Radial points of the one-center quadrature (uniform, inside the sphere).
-ONE_CENTER_POINTS = 600
-#: Gauss-Legendre nodes of the long-range kernel's angular projection, at
-#: least; the rule grows with omega times the largest radius
-#: (:data:`KERNEL_POINTS_PER_OMEGA_R`).
-KERNEL_POINTS = 24
-#: Extra nodes per unit of omega r: near mu = 1 the integrand varies on a
-#: scale ~ 1/(omega^2 r r'), which a fixed rule misses once omega r >> 1
-#: (omega = 1000: the spheres' exact exchange was -7.6e-6 Ha instead of 0).
-KERNEL_POINTS_PER_OMEGA_R = 8
-#: Gauss-Legendre nodes over a compensation shape (its long-range potential).
-SHAPE_POINTS = 48
-#: Radial step (Bohr) of the long-range compensation potential table.
-SHAPE_TABLE_STEP = 0.02
+#: Core orbitals of the re-solved reference atoms, keyed by the dataset file
+#: (``source``, ``source_sha256``): one solve per file and process.
+_CORE_ORBITALS: dict = {}
 
 
-def radial_coulomb(r: np.ndarray, rho_1: np.ndarray, rho_2: np.ndarray,
-                   L: int) -> float:
-    r"""``int int rho_1(r) rho_2(r') r_<^L / r_>^{L+1} r^2 r'^2 dr dr'``.
+# --------------------------------------------------------------------------- #
+# Dataset adapters: what the native routines are handed.
+# --------------------------------------------------------------------------- #
 
-    The radial half of the :math:`L`-th term of the multipole expansion of
-    :math:`1/r_{12}`; the angular half is a product of Gaunt coefficients.  The
-    inner integral is accumulated once so the cost is linear in the grid.
-    """
-    L = int(L)
-    r = np.asarray(r, dtype=float)
-    if _LIB is not None and hasattr(_LIB, "mandacaru_radial_coulomb"):
-        r_c = np.ascontiguousarray(r, dtype=np.float64)
-        r1_c = np.ascontiguousarray(rho_1, dtype=np.float64)
-        r2_c = np.ascontiguousarray(rho_2, dtype=np.float64)
-        return float(_LIB.mandacaru_radial_coulomb(L, int(r_c.size), r_c, r1_c, r2_c))
-
-    weight_in = rho_2 * r ** (L + 2)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        weight_out = np.where(r > 0.0, rho_2 * r ** (1 - L), 0.0)
-    below = np.concatenate([[0.0], cumulative_trapezoid(weight_in, r)])
-    above = np.concatenate([[0.0], cumulative_trapezoid(weight_out, r)])
-    above = above[-1] - above
-    with np.errstate(divide="ignore", invalid="ignore"):
-        potential = np.where(r > 0.0, below / r ** (L + 1), 0.0) + r ** L * above
-    return float(simpson(rho_1 * potential * r * r, x=r))
+def _occupations(dataset, l: int) -> list[float]:
+    """The reference atom's electrons in each partial wave of channel ``l``."""
+    channel = dataset.channels[int(l)]
+    return [float(o) for o in (getattr(channel, "occupations", None)
+                               or [channel.occupation])]
 
 
-def long_range_radial_kernel(r1, r2, levels, omega: float,
-                             points: int | None = None) -> dict:
-    r"""``{L: f_L}`` -- the multipole components of
-    :math:`\operatorname{erf}(\omega|\mathbf r - \mathbf r'|)/|\mathbf r -
-    \mathbf r'|` between the radii ``r1`` and ``r2``.
-
-    :math:`f_L(r, r') = \tfrac{2L+1}2\int_{-1}^1 \operatorname{erf}(\omega R)
-    /R\,P_L(\mu)\,d\mu`, so that the kernel is :math:`\sum_L f_L P_L(\mu)` --
-    the same normalization as :math:`r_<^L/r_>^{L+1}` in the expansion of
-    :math:`1/r_{12}`, with the same angular factors.  Returns
-    ``(len(r1), len(r2))`` arrays; ``omega = 0`` gives zeros.
-    """
-    from scipy.special import erf, eval_legendre
-
-    r1 = np.atleast_1d(np.asarray(r1, dtype=float))
-    r2 = np.atleast_1d(np.asarray(r2, dtype=float))
-    levels = [int(L) for L in levels]
-    omega = float(omega)
-    out = {L: np.zeros((r1.size, r2.size)) for L in levels}
-    if omega == 0.0 or not levels:
-        return out
-    if points is None:
-        reach = omega * max(float(np.max(r1, initial=0.0)),
-                            float(np.max(r2, initial=0.0)))
-        points = KERNEL_POINTS + int(np.ceil(KERNEL_POINTS_PER_OMEGA_R
-                                             * reach))
-    mu, w = np.polynomial.legendre.leggauss(int(points))
-    projections = np.stack([0.5 * (2 * L + 1) * w * eval_legendre(L, mu)
-                            for L in levels], axis=1)          # (n_mu, n_L)
-    limit = 2.0 * omega / np.sqrt(np.pi)
-    rows = max(1, int(2e6 // max(1, r2.size * mu.size)))
-    for start in range(0, r1.size, rows):
-        a = r1[start:start + rows]
-        R2 = (a[:, None, None] ** 2 + r2[None, :, None] ** 2
-              - 2.0 * a[:, None, None] * r2[None, :, None] * mu[None, None, :])
-        R = np.sqrt(np.clip(R2, 0.0, None))
-        x = omega * R
-        small = x < 1e-4
-        with np.errstate(divide="ignore", invalid="ignore"):
-            f = np.where(small, limit * (1.0 - x * x / 3.0),
-                         erf(x) / np.where(small, 1.0, R))
-        block = f @ projections                                  # (a, r2, n_L)
-        for i, L in enumerate(levels):
-            out[L][start:start + rows] = block[:, :, i]
-    return out
+def _channel_arrays(dataset, *, occupied: bool = False) -> dict:
+    """The keyword arguments describing a dataset's channels to the native
+    routines: momenta, all-electron and smooth waves, Vanderbilt matrices and
+    cutoffs, and (``occupied``) the occupations and projector radii."""
+    levels = sorted(dataset.channels)
+    waves = {l: partial_waves(dataset, l) for l in levels}
+    arrays = {
+        "ls": levels,
+        "ae": [np.ascontiguousarray(waves[l][0], dtype=float) for l in levels],
+        "ps": [np.ascontiguousarray(waves[l][1], dtype=float) for l in levels],
+        "vanderbilt": [np.ascontiguousarray(dataset.channels[l].vanderbilt,
+                                            dtype=float) for l in levels],
+        "r_cuts": [float(dataset.channels[l].r_cut) for l in levels]}
+    if occupied:
+        arrays["occupations"] = [np.asarray(_occupations(dataset, l),
+                                            dtype=float) for l in levels]
+        arrays["projector_radii"] = [float(dataset.projector_radius(l))
+                                     for l in levels]
+    return arrays
 
 
-_SHAPE_TABLES: dict = {}
+def _layout(projectors) -> np.ndarray:
+    """``(n, 4)`` rows ``l, m, index, real`` of a sphere's projectors."""
+    return np.array([[p.l, p.m, p.index, int(bool(p.real))]
+                     for p in projectors], dtype=np.int64).reshape(-1, 4)
 
 
-def long_range_shape_potential(radius, r_g: float, L: int,
-                               omega: float) -> np.ndarray:
-    r"""Potential of the compensation multipole :math:`g_L Y_{LM}` under the
-    long-range kernel :math:`\operatorname{erf}(\omega r)/r`, without the
-    :math:`Y_{LM}` factor -- the screened counterpart of
-    :func:`~.multipoles.shape_potential`.
-
-    :math:`v_L(r) = \tfrac{4\pi}{2L+1}\int_0^{r_g} f_L(r, s)\,g_L(s)\,s^2\,ds`
-    (:func:`long_range_radial_kernel`), Gauss-Legendre over the shape,
-    tabulated every :data:`SHAPE_TABLE_STEP` Bohr and interpolated by a cubic
-    spline (the potential is smooth on the scale :math:`1/\omega`).  The
-    table grows to the largest radius ever asked for.
-    """
-    from scipy.interpolate import CubicSpline
-
-    radius = np.asarray(radius, dtype=float)
-    L, r_g, omega = int(L), float(r_g), float(omega)
-    if omega == 0.0:
-        return np.zeros_like(radius)
-    reach = float(np.max(radius, initial=0.0)) + 1.0
-    key = (round(r_g, 12), L, omega)
-    cached = _SHAPE_TABLES.get(key)
-    if cached is None or cached[0] < reach:
-        r_max = max(reach, 2.0 * r_g, 0.0 if cached is None else cached[0])
-        table = np.arange(0.0, r_max + SHAPE_TABLE_STEP, SHAPE_TABLE_STEP)
-        x, wx = np.polynomial.legendre.leggauss(SHAPE_POINTS)
-        s = 0.5 * r_g * (x + 1.0)
-        weight = 0.5 * r_g * wx * s * s * shape_function(s, r_g, L)
-        kernel = long_range_radial_kernel(table, s, [L], omega)[L]
-        values = 4.0 * np.pi / (2 * L + 1) * (kernel @ weight)
-        cached = (float(table[-1]), CubicSpline(table, values))
-        _SHAPE_TABLES[key] = cached
-    return cached[1](radius)
-
-
-def angular_coupling(L: int, a, b, c, d):
-    r"""The angular factor multiplying :func:`radial_coulomb` for the pair
-    densities :math:`\phi_a^*\phi_b` and :math:`\phi_c^*\phi_d`, in the
-    harmonics the functions carry (their ``real``):
-
-    * real: :math:`\tfrac{4\pi}{2L+1}\sum_M G(L,M;a,b)\,G(L,M;c,d)`, from
-      :math:`\sum_M S_{LM}(1)S_{LM}(2)`, the addition theorem;
-    * complex: :math:`\tfrac{4\pi}{2L+1}\sum_M (-1)^M G(L,M;a,b)\,
-      G(L,-M;c,d)`, from :math:`\int Y_{LM}Y_{L-M}d\Omega = (-1)^M`.
-    """
-    real = bool(a.real)
-    total = 0.0 if real else 0.0 + 0.0j
-    for M in range(-int(L), int(L) + 1):
-        left = gaunt(L, M, a.l, a.m, b.l, b.m, real=real)
-        if left == 0:
-            continue
-        if real:
-            total += left * gaunt(L, M, c.l, c.m, d.l, d.m, real=True)
-        else:
-            right = gaunt(L, -M, c.l, c.m, d.l, d.m, real=False)
-            total += (-1.0) ** M * left * right
-    return total * 4.0 * np.pi / (2 * int(L) + 1)
-
-
-def _radial_tables(dataset, basis: str):
-    """``(r, {l: (ae, ps)}, r_cut)`` on a uniform sphere grid."""
-    channels = sorted(dataset.channels)
-    r_cut = max(float(dataset.channels[l].r_cut) for l in channels)
-    r = np.linspace(0.0, r_cut, ONE_CENTER_POINTS)
-    source = np.asarray(dataset.r, dtype=float)
-    tables = {}
-    for l in channels:
-        ae, ps = partial_waves(dataset, l)
-        ae_r = [np.interp(r, source, w) for w in ae]
-        ps_r = [np.interp(r, source, w) for w in ps]
-        transform = _basis_transform(dataset, l, basis)
-        if transform is not None:
-            ae_r = [sum(transform[i, k] * ae_r[k] for k in range(len(ae_r)))
-                    for i in range(len(ae_r))]
-            ps_r = [sum(transform[i, k] * ps_r[k] for k in range(len(ps_r)))
-                    for i in range(len(ps_r))]
-        tables[l] = (ae_r, ps_r)
-    return r, tables, r_cut
-
-
-def _basis_transform(dataset, l: int, basis: str):
-    r"""The matrix taking the dual partial waves to ``basis``'s, or ``None``.
-
-    In the ``"raw"`` projector basis the partial waves that multiply
-    :math:`\langle\chi_k|` are :math:`\sum_i (B^{-1})_{ki}\phi_i`
-    (:meth:`~.paw.PAWDataset.projector_set`)."""
-    if basis == "raw":
-        return np.linalg.inv(np.asarray(dataset.channels[int(l)].vanderbilt,
-                                        dtype=float))
-    if basis != "dual":
-        raise ValueError(f"unknown projector basis {basis!r}")
-    return None
-
-
-def _one_center_tensor(dataset, projectors, basis: str, omega=None,
-                       kernel=None) -> np.ndarray:
-    r"""``Delta W[a, b, c, d]`` under :math:`1/r_{12}` (``omega=None``) or
-    :math:`\operatorname{erfc}(\omega r_{12})/r_{12}`.
-
-    ``kernel`` replaces the long-range radial kernel (a callable ``(r, L) ->
-    (n, n)`` matrix), which is how the truncated series were measured against
-    the exact one.  Radial integrals and angular factors are computed once per
-    distinct radial pair and ``(l, m)`` pattern.
-    """
-    r, tables, _r_cut = _radial_tables(dataset, basis)
-    r_g = float(dataset.compensation_radius)
-    n = len(projectors)
-    levels = sorted({L for a in projectors for b in projectors
-                     for L in multipole_range(a.l, b.l)})
-    long_range = None
-    if kernel is not None:
-        long_range = {L: kernel(r, L) for L in levels}
-    elif omega is not None and float(omega) > 0.0:
-        long_range = long_range_radial_kernel(r, r, levels, float(omega))
-    weights = simpson(np.eye(r.size), x=r) * r * r if long_range else None
-
-    pair_cache: dict = {}
-
-    def pair(a, b, L):
-        key = (a.l, a.index, b.l, b.index, int(L))
-        if key not in pair_cache:
-            ae_a, ps_a = tables[a.l]
-            ae_b, ps_b = tables[b.l]
-            ae = ae_a[a.index] * ae_b[b.index]
-            ps = ps_a[a.index] * ps_b[b.index]
-            moment = float(simpson(ae * r ** (int(L) + 2), x=r)
-                           - simpson(ps * r ** (int(L) + 2), x=r))
-            compensated = ps + moment * shape_function(r, r_g, int(L))
-            pair_cache[key] = (ae, compensated)
-        return pair_cache[key]
-
-    radial_cache: dict = {}
-
-    def radial(a, b, c, d, L):
-        key = ((a.l, a.index, b.l, b.index), (c.l, c.index, d.l, d.index),
-               int(L))
-        if key not in radial_cache:
-            ae_ab, ps_ab = pair(a, b, L)
-            ae_cd, ps_cd = pair(c, d, L)
-            value = (radial_coulomb(r, ae_ab, ae_cd, L)
-                     - radial_coulomb(r, ps_ab, ps_cd, L))
-            if long_range is not None:
-                K = long_range[int(L)]
-                value -= (float((ae_ab * weights) @ K @ (ae_cd * weights))
-                          - float((ps_ab * weights) @ K @ (ps_cd * weights)))
-            radial_cache[key] = value
-        return radial_cache[key]
-
-    angular_cache: dict = {}
-
-    def angular(L, a, b, c, d):
-        key = (int(L), a.l, a.m, b.l, b.m, c.l, c.m, d.l, d.m)
-        if key not in angular_cache:
-            angular_cache[key] = angular_coupling(L, a, b, c, d)
-        return angular_cache[key]
-
-    real = all(bool(p.real) for p in projectors)
-    out = np.zeros((n, n, n, n), dtype=float if real else complex)
-    for ia, a in enumerate(projectors):
-        for ib, b in enumerate(projectors):
-            levels_ab = multipole_range(a.l, b.l)
-            for ic, c in enumerate(projectors):
-                for id_, d in enumerate(projectors):
-                    total = 0.0
-                    for L in multipole_range(c.l, d.l):
-                        if L not in levels_ab:
-                            continue
-                        factor = angular(L, a, b, c, d)
-                        if factor == 0:
-                            continue
-                        total += factor * radial(a, b, c, d, L)
-                    out[ia, ib, ic, id_] = total
-    return out
+def _members_layout(projectors) -> np.ndarray:
+    """``(n, 3)`` rows ``l, m, index`` of a sphere's projectors."""
+    return np.ascontiguousarray(_layout(projectors)[:, :3])
 
 
 def _projector_basis(projectors, basis):
@@ -433,6 +209,16 @@ def _projector_basis(projectors, basis):
     from .paw import DEFAULT_PROJECTOR_BASIS
     return str(getattr(projectors[0], "projector_basis",
                        DEFAULT_PROJECTOR_BASIS))
+
+
+def _tensor(dataset, projectors, basis: str, omega: float,
+            symmetrize: bool) -> np.ndarray:
+    return _native.paw_one_center_tensor(
+        context(), np.ascontiguousarray(dataset.r, dtype=float),
+        **_channel_arrays(dataset),
+        compensation_radius=float(dataset.compensation_radius),
+        basis_name=str(basis), layout=_layout(projectors),
+        omega=float(omega), symmetrize=bool(symmetrize))
 
 
 def one_center_coulomb(dataset, projectors, basis: str = "raw") -> np.ndarray:
@@ -449,7 +235,7 @@ def one_center_coulomb(dataset, projectors, basis: str = "raw") -> np.ndarray:
     objects in the order the integrals index them; ``basis`` must match the one
     they were built in.
     """
-    return _one_center_tensor(dataset, projectors, basis)
+    return _tensor(dataset, projectors, basis, 0.0, False)
 
 
 def one_center_exchange_tensor(dataset, projectors, omega: float,
@@ -465,7 +251,7 @@ def one_center_exchange_tensor(dataset, projectors, omega: float,
 
     Symmetrized under the exchange of the two electrons,
     :math:`[ab|cd] = [cd|ab]`: the cumulative trapezoid inside
-    :func:`radial_coulomb` breaks it at ~1e-5 relative (raw projector
+    the native radial Slater integral breaks it at ~1e-5 relative (raw projector
     basis), and the exchange operator is the derivative of the energy only
     for a symmetric tensor.
     """
@@ -477,20 +263,8 @@ def one_center_exchange_tensor(dataset, projectors, omega: float,
     cache = dataset.__dict__.setdefault("_one_center_exchange_cache", {})
     key = (omega, basis, layout)
     if key not in cache:
-        W = _one_center_tensor(dataset, projectors, basis, omega=omega)
-        cache[key] = 0.5 * (W + W.transpose(2, 3, 0, 1))
+        cache[key] = _tensor(dataset, projectors, basis, omega, True)
     return cache[key]
-
-
-def _occupations(dataset, l: int) -> list[float]:
-    """The reference atom's electrons in each partial wave of channel ``l``."""
-    channel = dataset.channels[int(l)]
-    return [float(o) for o in (getattr(channel, "occupations", None)
-                               or [channel.occupation])]
-
-
-def _radial_derivative(r, f):
-    return np.gradient(np.asarray(f, dtype=float), np.asarray(r, dtype=float))
 
 
 def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
@@ -507,54 +281,15 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
     A hybrid with fraction :math:`a` adds :math:`-a` times both
     (:class:`OneCenterHybrid`).  Cached on the dataset per ``(omega, basis)``.
     """
-    from ..basis.hse import short_range_partials
-
     omega = float(omega)
     cache = dataset.__dict__.setdefault("_frozen_exchange_cache", {})
     key = (omega, str(basis))
-    if key in cache:
-        return cache[key]
-    r = np.asarray(dataset.r, dtype=float)
-    waves = {l: partial_waves(dataset, l) for l in sorted(dataset.channels)}
-    shell = 4.0 * np.pi * r * r
-    densities = []
-    for side in (0, 1):                       # all-electron, smooth
-        n = np.zeros_like(r)
-        for l, pair in waves.items():
-            # Every occupied partial wave: two in a semicore channel.
-            for i, occupation in enumerate(_occupations(dataset, l)):
-                n += occupation * pair[side][i] ** 2 / (4.0 * np.pi)
-        densities.append(n)
-    energy, potentials = [], []
-    for n in densities:
-        slope = _radial_derivative(r, n)
-        f, df_drho, df_dsigma = short_range_partials(n, slope * slope, omega)
-        energy.append(float(np.trapezoid(f * shell, r)))
-        potentials.append((df_drho, 2.0 * df_dsigma * slope))
-    blocks, linear = {}, 0.0
-    # The partial waves are the all-electron ones outside the augmentation
-    # sphere, and a scattering reference grows there: integrate over the
-    # sphere only (as :func:`exact_one_center_terms` does for its V).
-    inside = int(np.searchsorted(r, max(dataset.projector_radius(l)
-                                        for l in waves))) + 1
-    for l, pair in waves.items():
-        size = len(pair[0])
-        V = np.zeros((size, size))
-        for side, sign in ((0, 1.0), (1, -1.0)):
-            local, gradient = potentials[side]
-            for i in range(size):
-                for j in range(size):
-                    product = pair[side][i] * pair[side][j]
-                    integrand = (local * product + gradient
-                                 * _radial_derivative(r, product)) * r * r
-                    V[i, j] += sign * float(np.trapezoid(integrand[:inside],
-                                                         r[:inside]))
-        V = 0.5 * (V + V.T)
-        linear += sum(occupation * V[i, i] for i, occupation
-                      in enumerate(_occupations(dataset, l)))
-        transform = _basis_transform(dataset, l, str(basis))
-        blocks[l] = V if transform is None else transform @ V @ transform.T
-    cache[key] = (energy[0] - energy[1] - linear, blocks)
+    if key not in cache:
+        constant, blocks = _native.paw_frozen_exchange(
+            context(), np.ascontiguousarray(dataset.r, dtype=float),
+            **_channel_arrays(dataset, occupied=True), omega=omega,
+            basis_name=str(basis))
+        cache[key] = (constant, dict(blocks))
     return cache[key]
 
 
@@ -574,6 +309,13 @@ class OneCenterTerms:
     exact_exchange: float
     semilocal: float
     operators: tuple
+
+
+def _by_atom(projectors) -> dict:
+    positions: dict = {}
+    for p, projector in enumerate(projectors):
+        positions.setdefault(int(projector.atom_index), []).append(p)
+    return positions
 
 
 class OneCenterHybrid:
@@ -597,37 +339,37 @@ class OneCenterHybrid:
     Hamiltonian gains as :math:`C\,O\,C^\dagger` (at every k for a crystal).
     The bookkeeping is in the module docstring.  :attr:`constant` is the
     per-species frozen constant :math:`-a\sum_A (X^0_A - V^A\cdot D^0_A)`,
-    already inside every :meth:`evaluate` energy.
+    already inside every :meth:`evaluate` energy.  The arithmetic runs in
+    Rust; the tensors stay there between evaluations.
     """
 
     def __init__(self, projectors, datasets, omega: float, fraction: float):
         self.omega = float(omega)
         self.fraction = float(fraction)
         self.n_projectors = len(projectors)
-        positions: dict = {}
-        for p, projector in enumerate(projectors):
-            positions.setdefault(int(projector.atom_index), []).append(p)
-        self.blocks = []
-        constant = 0.0
-        for atom, members in sorted(positions.items()):
+        members, tensors, layouts, block_ls, blocks, frozen = ([] for _ in
+                                                               range(6))
+        real_tensors = True
+        for atom, columns in sorted(_by_atom(projectors).items()):
             dataset = datasets[atom]
-            own = [projectors[p] for p in members]
+            own = [projectors[p] for p in columns]
             basis = _projector_basis(own, None)
-            W = one_center_exchange_tensor(dataset, own, self.omega, basis)
-            frozen, per_l = frozen_exchange_terms(dataset, self.omega, basis)
-            V = np.zeros((len(own), len(own)))
-            for i, a in enumerate(own):
-                for j, b in enumerate(own):
-                    if (a.l, a.m) == (b.l, b.m):
-                        V[i, j] = per_l[a.l][a.index, b.index]
-            constant += frozen
-            self.blocks.append((np.asarray(members), W, V))
+            tensor = one_center_exchange_tensor(dataset, own, self.omega,
+                                                basis)
+            constant, per_l = frozen_exchange_terms(dataset, self.omega,
+                                                    basis)
+            real_tensors = real_tensors and np.isrealobj(tensor)
+            members.append(columns)
+            tensors.append(np.ascontiguousarray(tensor, dtype=complex))
+            layouts.append(_members_layout(own))
+            block_ls.append(sorted(per_l))
+            blocks.append([per_l[l] for l in sorted(per_l)])
+            frozen.append(constant)
+        self._native = _native.OneCenterHybrid(
+            context(), members, tensors, layouts, block_ls, blocks,
+            self.n_projectors, self.fraction, frozen, real_tensors)
         #: The per-species frozen constant (Hartree), fraction included.
-        self.constant = -self.fraction * constant
-
-    def _exchange(self, D, W):
-        """``Delta K_il = sum_jk D_jk W[i, j, k, l]``."""
-        return np.einsum("jk,ijkl->il", D, W, optimize=True)
+        self.constant = self._native.constant
 
     def evaluate(self, density, density_down=None) -> OneCenterTerms:
         r"""The terms at the projected density matrix ``density``.
@@ -638,26 +380,12 @@ class OneCenterHybrid:
         spin channels, :math:`-\tfrac a2` per channel, operators
         :math:`-a\Delta K[D_\sigma] - aV` each.
         """
-        a = self.fraction
-        spins = ([np.asarray(density)] if density_down is None
-                 else [np.asarray(density), np.asarray(density_down)])
-        scale = 0.25 if density_down is None else 0.5
-        total = sum(spins)
-        dtype = np.result_type(*spins, *(W for _m, W, _V in self.blocks),
-                               float)
-        operators = [np.zeros((self.n_projectors,) * 2, dtype=dtype)
-                     for _ in spins]
-        exact = 0.0
-        linear = 0.0
-        for members, W, V in self.blocks:
-            block = np.ix_(members, members)
-            linear += float(np.real(np.sum(V * total[block].T)))
-            for s, D in enumerate(spins):
-                K = self._exchange(D[block], W)
-                exact -= scale * a * float(np.real(np.sum(D[block].T * K)))
-                operators[s][block] += -2.0 * scale * a * K - a * V
-        semilocal = self.constant - a * linear
-        return OneCenterTerms(energy=exact + semilocal, exact_exchange=exact,
+        spins = [np.asarray(density)] + (
+            [] if density_down is None else [np.asarray(density_down)])
+        energy, exact, semilocal, operators = self._native.evaluate(
+            [np.ascontiguousarray(s, dtype=complex) for s in spins],
+            all(np.isrealobj(s) for s in spins))
+        return OneCenterTerms(energy=energy, exact_exchange=exact,
                               semilocal=semilocal, operators=tuple(operators))
 
     def evaluate_spinor(self, blocks) -> OneCenterTerms:
@@ -673,66 +401,17 @@ class OneCenterHybrid:
         \Delta K[D^{\sigma\tau}])` -- the spin-channel form's when the
         off-diagonal blocks vanish.  ``operators`` holds the one ``(2P,
         2P)`` operator, alpha block first."""
-        a = self.fraction
-        D = [[np.asarray(x) for x in row] for row in blocks]
-        P = self.n_projectors
-        total = D[0][0] + D[1][1]
-        operator = np.zeros((2 * P, 2 * P), dtype=complex)
-        exact = 0.0
-        linear = 0.0
-        for members, W, V in self.blocks:
-            block = np.ix_(members, members)
-            linear += float(np.real(np.sum(V * total[block].T)))
-            for s in range(2):
-                for t in range(2):
-                    K = self._exchange(D[s][t][block], W)
-                    exact -= 0.5 * a * float(np.real(np.sum(
-                        D[t][s][block].T * K)))
-                    rows = members + s * P
-                    cols = members + t * P
-                    operator[np.ix_(rows, cols)] += -a * K - (
-                        a * V if s == t else 0.0)
-        semilocal = self.constant - a * linear
-        return OneCenterTerms(energy=exact + semilocal, exact_exchange=exact,
-                              semilocal=semilocal, operators=(operator,))
+        flat = [np.ascontiguousarray(x, dtype=complex)
+                for row in blocks for x in row]
+        energy, exact, semilocal, operators = self._native.evaluate_spinor(
+            flat)
+        return OneCenterTerms(energy=energy, exact_exchange=exact,
+                              semilocal=semilocal, operators=tuple(operators))
 
 
 # --------------------------------------------------------------------------- #
 # The exact one-center terms of a Hartree-Fock (and correlated) Hamiltonian.
 # --------------------------------------------------------------------------- #
-
-#: The one-center electron-electron treatments of a molecular PAW-LCAO
-#: Hamiltonian (:class:`~mandacaru.pseudopotentials.paw.PAWIntegrals`):
-#: ``"exact"`` -- the one-center Coulomb tensor in the two-body operator and
-#: the frozen core's exchange, what Hartree-Fock and every correlated method
-#: use; ``"frozen"`` -- the dataset's own functional, linearized at the
-#: reference atom, what a Kohn-Sham calculation uses.
-ONE_CENTER_TREATMENTS = ("exact", "frozen")
-
-#: Eigenvalues of a sphere's pair-pair matrix ``Delta W[(ab), (cd)]`` below
-#: this fraction of the largest are dropped from its factors (round-off: the
-#: matrix of a real basis has the antisymmetric pairs as an exact null space).
-ONE_CENTER_RANK_FLOOR = 1e-10
-
-#: Core orbitals of the re-solved reference atoms, keyed by the dataset file
-#: (``source``, ``source_sha256``): one solve per file and process.
-_CORE_ORBITALS: dict = {}
-
-
-def _three_j_squared(a: int, b: int, c: int) -> float:
-    r""":math:`\begin{pmatrix} a & b & c\\ 0 & 0 & 0\end{pmatrix}^2`."""
-    from math import factorial
-
-    J = a + b + c
-    if J % 2 or c < abs(a - b) or c > a + b:
-        return 0.0
-    g = J // 2
-    value = (factorial(J - 2 * a) * factorial(J - 2 * b) * factorial(J - 2 * c)
-             / factorial(J + 1))
-    value *= (factorial(g) / (factorial(g - a) * factorial(g - b)
-                              * factorial(g - c))) ** 2
-    return float(value)
-
 
 def _dataset_file_key(dataset):
     source = getattr(dataset, "source", None)
@@ -778,43 +457,23 @@ def core_orbitals(dataset) -> list:
         for orbital in dataset.semicore_subshells or ():
             orbital = (int(orbital[0]), int(orbital[1]))
             valence[orbital] = core.pop(orbital)
-        r = np.asarray(dataset.r, dtype=float)
-        r_atom = np.asarray(atom.r, dtype=float)
-        same = r_atom.shape == r.shape and np.allclose(r_atom, r)
-        result = []
-        density = np.zeros_like(r)
-        for (n, l), occupation in sorted(core.items()):
-            u = np.asarray(atom.orbitals[(n, l)], dtype=float)
-            if not same:
-                u = np.interp(r, r_atom, u)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                R = np.where(r > 0.0, u / np.where(r > 0.0, r, 1.0), 0.0)
-            if r[0] <= 0.0 and r.size > 1:
-                R[0] = R[1] if l == 0 else 0.0
-            result.append((int(n), int(l), float(occupation), R))
-            density += float(occupation) * R * R / (4.0 * np.pi)
-        stored = np.asarray(dataset.core_density, dtype=float)
-        error = float(np.trapezoid(np.abs(density - stored) * 4.0 * np.pi
-                                   * r * r, r)) if result else 0.0
+        subshells = sorted(core.items())
+        radial, error = _native.paw_core_orbitals(
+            context(), np.ascontiguousarray(dataset.r, dtype=float),
+            np.ascontiguousarray(atom.r, dtype=float),
+            [int(l) for (_n, l), _f in subshells],
+            [float(f) for _orbital, f in subshells],
+            np.ascontiguousarray(
+                [atom.orbitals[orbital] for orbital, _f in subshells],
+                dtype=float).reshape(len(subshells), np.size(atom.r)),
+            np.ascontiguousarray(dataset.core_density, dtype=float))
+        result = [(int(n), int(l), float(f), radial[i])
+                  for i, ((n, l), f) in enumerate(subshells)]
         if key is not None:
             _CORE_ORBITALS[key] = (result, error)
     dataset.__dict__["_core_orbitals"] = result
     dataset.__dict__["_core_density_error"] = error
     return result
-
-
-def _core_extent(r, orbitals, tail: float = 1e-14) -> int:
-    """Grid points that hold every core orbital to ``tail`` of its norm."""
-    if not orbitals:
-        return 0
-    last = 0
-    for _n, _l, _f, R in orbitals:
-        weight = R * R * r * r
-        cumulative = np.concatenate([[0.0], cumulative_trapezoid(weight, r)])
-        total = cumulative[-1]
-        inside = np.nonzero(cumulative >= (1.0 - tail) * total)[0]
-        last = max(last, int(inside[0]) if inside.size else r.size - 1)
-    return min(r.size, last + 2)
 
 
 def _smooth_xc_core(dataset):
@@ -848,7 +507,9 @@ def exact_one_center_terms(dataset, basis: str = "raw") -> dict:
 
     in the functional, relativistic exchange and core correction the dataset
     was unscreened with (all-electron core plus valence density, smooth
-    valence plus the smooth core of the nonlinear core correction).
+    valence plus the smooth core of the nonlinear core correction).  The
+    potentials are those of the atom solver's radial scheme (derivatives on
+    subset nodes, splined back), the scheme the datasets were generated with.
 
     ``K``: the frozen core's exchange, one spin's worth,
     :math:`K_{ij} = -\sum_c f_c\,(2l_c+1)\sum_L
@@ -856,78 +517,36 @@ def exact_one_center_terms(dataset, basis: str = "raw") -> dict:
     R^L(\phi_i R_c, R_c\phi_j)`, with :math:`f_c` the per-spin occupation of
     each of the :math:`2l_c+1` orbitals of core subshell ``c``
     (:func:`core_orbitals`) and :math:`R^L` the radial Slater integral
-    (:func:`radial_coulomb`).
+    (the native radial Slater integral).
 
     ``D0``: the reference atom's projected density matrix per ``m`` (both
     spins), the point the dataset's one-center Hartree term is linearized
     about.  Cached on the dataset per ``basis``.
     """
     cache = dataset.__dict__.setdefault("_exact_one_center_cache", {})
-    if basis in cache:
-        return cache[basis]
-    from ..basis.xc import xc_potential
-
-    r = np.asarray(dataset.r, dtype=float)
-    channels = sorted(dataset.channels)
-    waves = {l: partial_waves(dataset, l) for l in channels}
-    all_electron = np.asarray(dataset.core_density, dtype=float).copy()
-    for l in channels:
-        for i, occupation in enumerate(_occupations(dataset, l)):
-            all_electron += occupation * waves[l][0][i] ** 2 / (4.0 * np.pi)
-    smooth = (np.asarray(dataset.valence_density, dtype=float)
-              + _smooth_xc_core(dataset))
-    relativistic = bool(getattr(dataset, "relativistic_exchange", False))
-    _e, v_ae = xc_potential(r, all_electron, dataset.xc,
-                            relativistic=relativistic)
-    _e, v_ps = xc_potential(r, smooth, dataset.xc, relativistic=relativistic)
-    core = core_orbitals(dataset)
-    extent = _core_extent(r, core)
-    sphere = max(dataset.projector_radius(l) for l in channels)
-    rc = r[:extent]
-    out = {}
-    for l in channels:
-        ae, ps = waves[l]
-        size = len(ae)
-        # The difference is the sphere's: outside it the smooth waves are the
-        # all-electron ones.  A scattering reference below zero grows as
-        # exp(kappa r) there (3e14 at 30 Bohr for the copper p channel), so
-        # integrating on to r_max multiplies round-off by it.  One radius for
-        # every channel -- the dataset's largest -- because the frozen
-        # Hartree term this V replaces integrates over the same sphere.
-        inside = int(np.searchsorted(r, sphere)) + 1
-        V = np.zeros((size, size))
-        K = np.zeros((size, size))
-        for i in range(size):
-            for j in range(size):
-                V[i, j] = float(np.trapezoid(
-                    ((v_ae * ae[i] * ae[j] - v_ps * ps[i] * ps[j])
-                     * r * r)[:inside], r[:inside]))
-                total = 0.0
-                for _n, lc, occupation, R in core:
-                    per_spin = occupation / (2.0 * (2 * lc + 1))
-                    for L in range(abs(l - lc), l + lc + 1):
-                        weight = _three_j_squared(lc, L, l)
-                        if weight == 0.0:
-                            continue
-                        Rc = R[:extent]
-                        total += (per_spin * (2 * lc + 1) * weight
-                                  * radial_coulomb(rc, ae[i][:extent] * Rc,
-                                                   Rc * ae[j][:extent], L))
-                K[i, j] = -total
-        D0 = np.zeros((size, size))
-        for i, occupation in enumerate(_occupations(dataset, l)):
-            D0[i, i] = occupation / (2 * l + 1)
-        V = 0.5 * (V + V.T)
-        K = 0.5 * (K + K.T)
-        transform = _basis_transform(dataset, l, str(basis))
-        if transform is not None:
-            inverse = np.linalg.inv(transform)
-            V = transform @ V @ transform.T
-            K = transform @ K @ transform.T
-            D0 = inverse.T @ D0 @ inverse
-        out[l] = (V, K, D0)
-    cache[basis] = out
-    return out
+    if basis not in cache:
+        core = core_orbitals(dataset)
+        rows = [(int(l), float(f), R) for _n, l, f, R in core]
+        terms = _native.paw_exact_terms(
+            context(), np.ascontiguousarray(dataset.r, dtype=float),
+            **_channel_arrays(dataset, occupied=True),
+            core_density=np.ascontiguousarray(dataset.core_density,
+                                              dtype=float),
+            valence_density=np.ascontiguousarray(dataset.valence_density,
+                                                 dtype=float),
+            smooth_core=np.ascontiguousarray(_smooth_xc_core(dataset),
+                                             dtype=float),
+            functional=str(dataset.xc),
+            relativistic=bool(getattr(dataset, "relativistic_exchange",
+                                      False)),
+            core_ls=[l for l, _f, _R in rows],
+            core_occupations=[f for _l, f, _R in rows],
+            core_radial=np.ascontiguousarray(
+                [R for _l, _f, R in rows], dtype=float).reshape(
+                    len(rows), np.size(dataset.r)),
+            basis_name=str(basis))
+        cache[basis] = {l: (V, K, D0) for l, V, K, D0 in terms}
+    return cache[basis]
 
 
 class OneCenterExact:
@@ -971,9 +590,6 @@ class OneCenterExact:
     """
 
     def __init__(self, projectors, datasets):
-        positions: dict = {}
-        for p, projector in enumerate(projectors):
-            positions.setdefault(int(projector.atom_index), []).append(p)
         if any(not bool(p.real) for p in projectors):
             raise NotImplementedError(
                 "the exact one-center terms are built for real spherical "
@@ -981,38 +597,21 @@ class OneCenterExact:
                 "crystal, which has no Hartree-Fock path")
         self.n_projectors = len(projectors)
         self.atoms = []
-        for atom, members in sorted(positions.items()):
+        for atom, members in sorted(_by_atom(projectors).items()):
             dataset = datasets[atom]
             own = [projectors[p] for p in members]
             basis = _projector_basis(own, None)
             W = one_center_exchange_tensor(dataset, own, 0.0, basis)
             terms = exact_one_center_terms(dataset, basis)
-            n = len(own)
-            V = np.zeros((n, n))
-            K = np.zeros((n, n))
-            D0 = np.zeros((n, n))
-            for i, a in enumerate(own):
-                for j, b in enumerate(own):
-                    if (a.l, a.m) == (b.l, b.m):
-                        block_V, block_K, block_D = terms[a.l]
-                        V[i, j] = block_V[a.index, b.index]
-                        K[i, j] = block_K[a.index, b.index]
-                        D0[i, j] = block_D[a.index, b.index]
-            hartree = np.einsum("ijkl,kl->ij", W, D0)
-            hartree = 0.5 * (hartree + hartree.T)
-            coupling = -V - hartree + K
-            pair = W.reshape(n * n, n * n)
-            pair = 0.5 * (pair + pair.T)
-            values, vectors = np.linalg.eigh(pair)
-            floor = ONE_CENTER_RANK_FLOOR * max(float(np.abs(values).max(
-                initial=0.0)), 1e-300)
-            keep = np.abs(values) > floor
-            factors = vectors[:, keep].T.reshape(-1, n, n)
-            factors = 0.5 * (factors + factors.transpose(0, 2, 1))
+            ls = sorted(terms)
+            V, K, D0, coupling, values, factors = _native.paw_exact_atom(
+                context(), _members_layout(own), W, ls,
+                [terms[l][0] for l in ls], [terms[l][1] for l in ls],
+                [terms[l][2] for l in ls])
             self.atoms.append({"atom": atom, "members": np.asarray(members),
                                "projectors": own, "W": W, "V": V, "K": K,
                                "D0": D0, "coupling": coupling,
-                               "values": values[keep], "factors": factors})
+                               "values": values, "factors": factors})
 
     @property
     def rank(self) -> int:
@@ -1035,39 +634,28 @@ class OneCenterExact:
                     np.ix_(rows, rows)]
         return out
 
+    def _spheres(self):
+        return ([[int(m) for m in entry["members"]] for entry in self.atoms],
+                [entry["factors"] for entry in self.atoms])
+
     def channels(self, C) -> tuple:
         r"""``(G, lambda)``: the ``(k, M, M)`` factors :math:`C_A U^k C_A^T`
         of the projections ``C`` and their weights."""
         C = np.asarray(C)
-        G, values = [], []
-        for entry in self.atoms:
-            Ca = C[:, entry["members"]]
-            for U, value in zip(entry["factors"], entry["values"]):
-                G.append(Ca @ U @ Ca.T)
-                values.append(value)
-        M = C.shape[0]
-        if not G:
-            return np.zeros((0, M, M), dtype=C.dtype), np.zeros(0)
-        return np.stack(G), np.asarray(values, dtype=float)
+        members, factors = self._spheres()
+        G = _native.paw_exact_channels(
+            context(), np.ascontiguousarray(C, dtype=complex), members,
+            factors, not np.iscomplexobj(C))
+        values = [entry["values"] for entry in self.atoms]
+        return G, (np.concatenate(values) if values else np.zeros(0))
 
     def channel_derivatives(self, C, dC) -> np.ndarray:
         r"""``(k, M, M)``: :math:`dC_A U^k C_A^T + C_A U^k dC_A^T` for every
         factor of :meth:`channels` (zeros where ``dC`` does not touch the
         sphere)."""
-        C = np.asarray(C)
-        dC = np.asarray(dC)
-        M = C.shape[0]
-        out = []
-        for entry in self.atoms:
-            idx = entry["members"]
-            Ca, dCa = C[:, idx], dC[:, idx]
-            moving = bool(np.any(dCa))
-            for U in entry["factors"]:
-                if moving:
-                    left = dCa @ U @ Ca.T
-                    out.append(left + left.T)
-                else:
-                    out.append(np.zeros((M, M), dtype=np.result_type(C, dC)))
-        if not out:
-            return np.zeros((0, M, M), dtype=np.result_type(C, dC))
-        return np.stack(out)
+        C, dC = np.asarray(C), np.asarray(dC)
+        members, factors = self._spheres()
+        return _native.paw_exact_channel_derivatives(
+            context(), np.ascontiguousarray(C, dtype=complex),
+            np.ascontiguousarray(dC, dtype=complex), members, factors,
+            not (np.iscomplexobj(C) or np.iscomplexobj(dC)))

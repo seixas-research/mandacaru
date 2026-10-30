@@ -117,3 +117,45 @@ def test_invalid_operator_and_defensive_copy():
     formula = SuzukiTrotter(h)
     h.terms["X"] = 7
     np.testing.assert_allclose(formula.evolve([1, 0], 1), [np.cos(0.5), -1j*np.sin(0.5)])
+
+
+class TestPrecision:
+    """``precision="float32"`` stores a complex64 state; float64 stays the default."""
+
+    @pytest.fixture
+    def hamiltonian(self):
+        return PauliSum({"XI": 0.7, "ZY": -0.9, "IZ": 0.4, "II": 1.2})
+
+    def test_float32_state_is_complex64_and_matches_float64(self, state, hamiltonian):
+        wide = time_evolve(state, hamiltonian, 0.9, steps=4, order=4)
+        narrow = time_evolve(state, hamiltonian, 0.9, steps=4, order=4,
+                             precision="float32")
+        assert wide.dtype == np.complex128 and narrow.dtype == np.complex64
+        assert SuzukiTrotter(hamiltonian, precision="float32").precision == "float32"
+        np.testing.assert_allclose(narrow, wide, atol=1e-6)
+        assert abs(np.vdot(narrow, narrow).real - 1) < 1e-5
+
+    def test_float32_checkpoint_is_prepared_in_complex64(self, hamiltonian):
+        record = WavefunctionCheckpoint(
+            2, [0], [PauliSum({"XY": 0.5j, "YX": -0.5j})], [0.6])
+        wide = time_evolve(record, hamiltonian, 0.5, steps=2)
+        narrow = time_evolve(record, hamiltonian, 0.5, steps=2, precision="float32")
+        assert record.state_vector(precision="float32").dtype == np.complex64
+        assert narrow.dtype == np.complex64
+        np.testing.assert_allclose(narrow, wide, atol=1e-6)
+
+    @pytest.mark.parametrize("precision", ["single", "double", "Float32", "FLOAT64",
+                                           "float16", None, 32])
+    def test_any_other_precision_raises(self, precision, hamiltonian, state):
+        with pytest.raises(ValueError, match="precision"):
+            SuzukiTrotter(hamiltonian, precision=precision)
+        with pytest.raises(ValueError, match="precision"):
+            time_evolve(state, hamiltonian, 1.0, precision=precision)
+
+    def test_float32_state_must_be_normalized_to_its_own_tolerance(self, hamiltonian):
+        slightly_off = np.array([1.0 + 2e-6, 0, 0, 0])
+        time_evolve(slightly_off, hamiltonian, 0.1, precision="float32")
+        with pytest.raises(ValueError, match="normalized"):
+            time_evolve(slightly_off, hamiltonian, 0.1)
+        with pytest.raises(ValueError, match="normalized"):
+            time_evolve([1.1, 0, 0, 0], hamiltonian, 0.1, precision="float32")

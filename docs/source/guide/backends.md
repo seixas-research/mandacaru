@@ -1,4 +1,4 @@
-# Backend Providers: Qiskit, Braket and Cirq
+# Devices and circuit providers: Qiskit, Braket and Cirq
 
 Mandacaru's ansätze are products of exponentials of anti-Hermitian generators,
 
@@ -6,165 +6,124 @@ Mandacaru's ansätze are products of exponentials of anti-Hermitian generators,
 |\psi(\vec\theta)\rangle = \prod_k e^{\theta_k A_k}\,|\mathrm{HF}\rangle .
 ```
 
-The `backend_provider` argument chooses which quantum SDK **constructs** those
-circuits — and, with `execute_circuits=True`, which SDK **runs** them.
+Two options decide how those circuits are used. `backend_provider` chooses the
+quantum SDK that **builds** them and, when they are executed, **runs** them.
+`device` chooses **where** they run. `shots` chooses between an exact state
+vector (`0`) and a measured energy (`> 0`). The options reference lists them all;
+this page says how they combine.
 
-```python
-from mandacaru import Mandacaru
+## Providers
 
-Mandacaru(method="adapt-vqe",
-          basis="HAO",
-          backend_provider="qiskit")   # default
-Mandacaru(method="adapt-vqe",
-          basis="HAO",
-          backend_provider="braket")   # amazon-braket-sdk
-Mandacaru(method="adapt-vqe",
-          basis="HAO",
-          backend_provider="cirq")     # cirq
-```
+| `backend_provider` | package | aliases | executes on |
+|---|---|---|---|
+| `"qiskit"` | `qiskit` | `"ibm"`, `"ibmq"` | the local state-vector estimator, a fake backend, or IBM Runtime |
+| `"braket"` | `amazon-braket-sdk` | `"aws"`, `"amazon-braket"` | the local simulator or the AWS Braket service |
+| `"cirq"` | `cirq` | `"google"` | `cirq.Simulator`, exact only |
 
-| provider | package | executes on |
-|---|---|---|
-| `"qiskit"` | `qiskit` | `qiskit.quantum_info.Statevector` |
-| `"braket"` | `amazon-braket-sdk` | local simulator **or the AWS Braket service** |
-| `"cirq"` | `cirq` | `cirq.Simulator` |
-
----
-
-## Why the three agree exactly
-
-Each generator is a qubit `PauliSum` whose terms are $A = \sum_j i\,c_j P_j$ with
-**real** $c_j$ and **mutually commuting** Pauli strings $P_j$ — a property of the
-fermionic, qubit and QEB excitation generators in every mapping. It is
-**checked, not assumed**: a generator with two anticommuting terms is refused
-when its circuit is built, because the product below would then be a Trotter
-approximation and the circuit a different state from the one optimized. The
-one shipped case is the `ceo` pool under the parity and Bravyi–Kitaev mappings,
-whose generators sum several excitations of one support: it runs on the
-state-vector backend, and is exportable under Jordan–Wigner, where it coincides
-with `qeb`. The exponential therefore factorizes *exactly*, with no Trotter
-error:
-
-```{math}
-e^{\theta A} = \prod_j e^{i\,\theta c_j P_j},
-```
-
-and each factor is the textbook Pauli-rotation circuit: a basis change to the
-$Z$ axis, a CNOT ladder accumulating the parity onto one qubit, an
-$R_z(-2\theta c_j)$, then the ladder and basis change undone.
-
-Because the decomposition is exact, all three providers emit the *same* unitary
-from the *same* gate set (`X`, `H`, `S`, `S†`, `CNOT`, `R_z`) and must agree with
-the internal NumPy state-vector backend to machine precision. That equivalence is
-asserted in the test suite and demonstrated end-to-end on LiH:
-
-```text
-provider            E (eV)   err vs FCI   ops  cnots  depth     time
-(matrix)       -187.438634     3.65e-06     8    208    273     0.3s
-qiskit         -187.438636     1.71e-06     8    208    273     4.1s
-braket         -187.438635     2.97e-06     8    208    359    43.9s
-cirq           -187.438636     2.22e-06     8    208    358     8.9s
-```
-
-:::{note}
-**Endianness.** Mandacaru puts qubit 0 in the *most* significant position of the
-amplitude index (the leftmost Kronecker factor), matching Braket and Cirq.
-Qiskit is little-endian, so the Qiskit provider lays Mandacaru qubit `k` on Qiskit
-wire `n-1-k`. Gate counts are unaffected — relabeling is an isomorphism.
-:::
-
----
+Naming a provider never fails at import time: the SDK is imported on first use.
+`mandacaru.backends.provider_available("braket")` reports whether it is
+importable, and `mandacaru.backends.BACKEND_PROVIDERS` lists the canonical names.
+A device that belongs to one provider selects it, so `device="braket-local"` or
+`device="fake_kingston"` needs no `backend_provider`; naming a provider that
+disagrees with the device raises.
 
 ## Building versus executing
 
-`execute_circuits` decides whether circuits are only *built* (for gate-count
-profiling) or actually *run* to prepare each state:
+By default the energy is computed natively from the state vector, and circuits
+are not run. `execute_circuits` decides whether the SDK actually prepares each
+state:
+
+* `execute_circuits=None` (the default) is **True for `"braket"` and `"cirq"`**,
+  where naming the provider is a request to use it, and False for `"qiskit"`,
+  which keeps the fast native numerics unless execution is asked for.
+* Execution is also on whenever `shots > 0` or `device` is not the default
+  `"AER_simulator"`.
+* Execution forces the ordered-product form of the ansatz (`trotter=True`), since
+  a circuit is an ordered product.
+
+Circuit execution is slower and gives the same state to machine precision, so for
+a simulator it is a verification path, and for a processor the only one.
 
 ```python
-Mandacaru(method="adapt-vqe",
-          backend_provider="qiskit")   # execute_circuits=False
-Mandacaru(method="adapt-vqe",
-          backend_provider="braket")   # execute_circuits=True
-Mandacaru(method="adapt-vqe",
-          backend_provider="qiskit",
-          execute_circuits=True)                           # opt in
-Mandacaru(method="adapt-vqe",
-          backend_provider="cirq",
-          execute_circuits=False)                          # opt out
+from ase.build import molecule
+from mandacaru import Mandacaru
+
+atoms = molecule("H2")
+atoms.center(vacuum=3.0)
+for execute in (False, True):
+    atoms.calc = Mandacaru(method="vqe",
+                           basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.25,
+                           mapping="parity_reduced",
+                           backend_provider="qiskit",
+                           execute_circuits=execute)
+    print(execute, f"{atoms.get_potential_energy():.6f} eV")
 ```
 
-It defaults to `True` for `"braket"` and `"cirq"` — naming them is a request to
-use them — and `False` for `"qiskit"`, which keeps the fast NumPy state-vector
-numerics unless execution is asked for explicitly. **Circuit execution is orders
-of magnitude slower** (one simulator invocation per energy evaluation) and gives
-the same answer, so it is a verification and hardware path, not a performance
-one.
-
-Circuit *profiling* always uses the named SDK. Counts differ between providers
-because only Qiskit re-optimizes during transpilation; the unitary does not.
-
----
-
-## Using an ansatz directly
-
-The providers are also usable below the calculator level:
-
-```python
-from mandacaru.backends.providers import build_provider
-from mandacaru.circuits import AdaptAnsatz
-from mandacaru.circuits.pools import build_pool
-
-pool = build_pool("qeb", 2, (1, 1))
-provider = build_provider("cirq")
-
-ansatz = AdaptAnsatz(4, pool.occupied_orbitals, "jordan_wigner",
-                     provider=provider)
-for op in pool.operators()[:3]:
-    ansatz.append(op)
-
-psi = ansatz.state([0.31, -0.72, 0.45])    # executed as a real circuit
-circuit = provider.build(4, ansatz.reference_qubits(),
-                         ansatz.pauli_generators, [0.31, -0.72, 0.45])
-print(circuit)
-```
-
-{class}`~mandacaru.circuits.UCCSD` accepts `provider=` too, but a circuit realizes
-the **Trotter product** form, so `trotter=True` is required:
-
-```python
-from mandacaru.circuits import UCCSD
-
-UCCSD(2, (1, 1), trotter=True, provider=build_provider("braket"))
-```
-
-The VQE method does this automatically when circuit execution is on.
+Every generator is a sum of **commuting** Pauli strings with real coefficients,
+so `exp(theta A)` factorizes exactly into Pauli rotations, with no Trotter error.
+This is checked rather than assumed: a generator with two anticommuting terms is
+refused when its circuit is built. The three providers emit the same gate set
+(`X`, `H`, `S`, `S†`, `CNOT`, `Rz`) and agree on the state to machine precision.
 
 :::{note}
-A circuit can only be *initialized* in a computational basis state, so provider
-execution accepts Slater-determinant references only — which is what the
-Hartree-Fock reference and the SSVQE reference determinants are. A superposition
-reference raises a clear `ValueError`.
+**Endianness.** Mandacaru puts qubit 0 in the most significant position of the
+amplitude index, as Braket and Cirq do. Qiskit is little-endian, so the Qiskit
+provider lays Mandacaru qubit `k` on Qiskit wire `n-1-k`. Gate counts are
+unaffected.
 :::
 
----
+## Devices
 
-## Availability
+`device` is one of the registered names, any `ibm_*` or `fake_*` name, or a raw
+Braket ARN. `mandacaru.backends.available_devices()` lists the registered ones.
 
-Naming a provider never fails at import time; the SDK is imported on first use.
+| device | kind | `shots > 0` |
+|---|---|---|
+| `"AER_simulator"` (default) | ideal, noiseless | optional |
+| `fake_*` (for example `fake_kingston`, `fake_manila`) | a Qiskit Runtime fake backend: the processor's transpilation and noise model, run locally | **required** |
+| `ibm_*` (for example `ibm_kingston`), or `"ibm-quantum"` for the least busy | IBM processor via Qiskit Runtime | **required** |
+| `braket-local` | local Braket simulator | optional |
+| `braket-sv1`, `braket-dm1`, `braket-tn1` | AWS managed simulators | optional |
+| `braket-ionq-aria`, `braket-ionq-forte`, `braket-iqm-garnet`, `braket-rigetti-ankaa` | AWS QPUs | **required** |
+| `arn:aws:braket...` | any other AWS device, assumed to be a QPU | **required** |
 
-```python
-from mandacaru.backends.providers import BACKEND_PROVIDERS, provider_available
+A device that requires shots, named with `shots=0`, is refused when the
+calculator is constructed, not at submission. A comma-separated list of `ibm_*`
+names picks the least busy of them.
 
-BACKEND_PROVIDERS                 # ('qiskit', 'braket', 'cirq')
-provider_available("braket")      # True if amazon-braket-sdk is importable
-```
+**The device decides where the optimization runs.** A local device (the exact
+state vector, `braket-local`, a `fake_*` backend) simulates locally. An `ibm_*`
+device with `shots > 0` runs the *whole* optimization on the processor, one job
+per energy evaluation, and an AWS device likewise one task per measurement basis.
+Optimize locally and then re-measure is not offered. Rehearse the identical call
+on a fake backend first; see [what a measurement costs](measurement_cost.md) for
+the budgets that protect a real submission.
 
-Aliases are accepted: `"ibm"` → `qiskit`, `"aws"` / `"amazon-braket"` →
-`braket`, `"google"` → `cirq`.
+`backend_options` is a dictionary of provider constructor options.
+`shots` and `device` are set by the calculator and need not be repeated.
 
----
+* Qiskit: `instance`, `token`, `channel` (otherwise the account saved by
+  `QiskitRuntimeService.save_account` is used), `optimization_level`,
+  `estimator_options` (Runtime options), `physical_qubits`, `seed`,
+  `max_bases_per_job`, `enable_fractional_gates` and `run_budget`.
+* Braket: `s3_folder`, `poll_timeout_seconds` and `run_budget`.
+* Cirq runs exactly and refuses `shots > 0`.
 
-## Next
+An option the provider does not take raises. Pin the layout with `physical_qubits` on a processor: a
+qubit whose readout has drifted since the last calibration ruins an energy while
+its recorded error still looks fine.
 
-Running on the **AWS Braket service**, including real QPUs, needs the shot-based
-measurement path — see {doc}`aws_braket`.
+## Limits of circuit execution
+
+* Subspace methods and the architecture searches (`mcas-vqe`, `valqa`) do not
+  execute circuits and raise `NotImplementedError`.
+* Forces are not an implemented property on a circuit device, and measured
+  reduced density matrices are not available; see
+  [what is not yet available](#not-yet-available).
+* With `shots > 0`, the state retained on the result is the **ideal circuit
+  state**, not a measured device state.
+* A circuit can only be initialized in a computational-basis state, so the
+  reference is a Slater determinant.
+
+Running on Amazon Braket, including QPUs, is in [the Braket guide](aws_braket.md).

@@ -1,35 +1,35 @@
+(basis-sets)=
 # Basis sets: multiple zeta, polarization, and the named Gaussian families
 
-Every basis in Mandacaru is generated from scratch — there are no tabulated
-exponents anywhere in the package. This page covers the two ways to buy
-variational freedom: the `size` argument of the numerical atomic orbitals
-(NAO), which selects how much radial and angular freedom each valence shell
-gets, and — at the end — the standard **named Gaussian families** (Pople,
-Dunning, Karlsruhe), which are accepted by name and generated with the
-published shell structure.
+Every basis in Mandacaru is generated from scratch; no tabulated exponents are
+read. The families are:
+
+| `basis=` | Family |
+| --- | --- |
+| `"HAO"` | one analytic hydrogenic orbital per occupied subshell, the cheapest basis |
+| `"NAO"` | numerical atomic orbitals with multiple zeta and polarization (this page) |
+| `"NAO-AE"` | all-electron numerical atomic orbitals in tiers ([NAO-AE](nao_ae.md)) |
+| `"STO-3G"`, `"cc-pVDZ"`, `"def2-SVP"`, … | named Gaussian families, generated natively (below) |
+| `"PAW-LCAO"`, `"UPAW-LCAO"` | valence-only PAW bases ([PAW-LCAO bases](pseudopotentials.md)) |
 
 ```python
-atoms.calc = Mandacaru(method="vqe",
-                       basis={"name": "NAO", "size": "DZP"})
+from mandacaru import Mandacaru
+
+Mandacaru(method="rhf", basis={"name": "NAO", "size": "DZP"})
 ```
 
-## Why a single zeta is not enough
+The number of basis functions is the number of spatial orbitals, and every
+spatial orbital is two spin orbitals, hence two qubits for a quantum method.
+`estimate_qubits` counts them without computing anything ([dry run](dry_run.md)).
 
-A single-zeta (SZ) basis gives each occupied valence subshell exactly one radial
-function. That orbital can be occupied or emptied, but never *reshaped*: it has
-the width the isolated atom gave it, and bonding cannot change it. Two distinct
-freedoms are missing.
+(basis-sizes)=
+## The NAO sizes
 
-**Radial.** An atom in a molecule is not the atom in vacuum — its valence shell
-contracts under a more positive environment and expands under a more negative
-one. Describing that needs a second function of the same symmetry but a
-different width.
-
-**Angular.** A bond pulls charge off-center in a direction the shell's own
-angular momentum cannot express. A hydrogen 1s is spherical; the moment it bonds,
-the density is not. Fixing that requires $l+1$ character.
-
-## The sizes
+A single-zeta (SZ) basis gives each occupied valence subshell one radial
+function: it can be occupied or emptied but not reshaped, so bonding cannot
+change its width (**radial** freedom is missing), and a function of the shell's
+own angular momentum cannot bend into a bond (**angular** freedom is missing).
+Extra zetas supply the first, polarization shells at $l+1$ the second.
 
 | Name | Zetas | Polarization shells |
 |------|-------|---------------------|
@@ -45,235 +45,127 @@ the density is not. Fixing that requires $l+1$ character.
 | `QZP`  | 4 | 1 |
 | `QZ2P` | 4 | 2 |
 
-An explicit `(n_zeta, n_polarization)` pair works too. **`size` defaults to
-`"DZP"`** — single zeta has neither radial nor angular freedom, so it is a poor
-default for chemistry. Pass `size="SZ"` for the older minimal basis, which is
-far cheaper.
+An explicit `(n_zeta, n_polarization)` pair works too. Sizes are
+case-insensitive. **The default `size` of `"NAO"` is `"DZP"`**; that of a
+PAW-LCAO basis is `"SZ"`.
 
-Other NAO options combine freely in the same dict:
+The `NAO` dictionary accepts `size`, `r_c`, `n_grid`, `energy_shift` and
+`zeta_split`, and nothing else. `energy_shift` (eV, default 0.03) sets the
+confinement radius $r_c = \pi/\sqrt{2\,\delta E}$ with $\delta E$ in Hartree; a
+smaller shift means a longer-ranged, more diffuse orbital. `r_c` (Bohr) gives
+the radius directly; `n_grid` (default 2000) is the radial grid.
 
-```python
-basis={"name": "NAO", "size": "DZP", "energy_shift": 0.03}
-```
-
-`energy_shift` (eV, default 0.03) sets the confinement radius
-$r_c = \pi/\sqrt{2\delta E}$ in atomic units (convert the energy shift to
-Hartree to evaluate this expression); a smaller shift means a longer-ranged, more
-diffuse orbital. `zeta_split` (`"first_zeta"`, the default, or `"last_zeta"`)
-says which function each extra zeta is split from, and so where -- see *How
-the extra zetas are built* below.
-
-The cost is set by how many functions each size produces, and **every function
-becomes two spin orbitals, hence two qubits**:
+Polarization adds a whole $l+1$ shell: 3 functions for an s-valence atom, 5 for
+a p-valence atom, 7 for a d-valence one. The resulting counts:
 
 | Atom | Valence | SZ | DZ | DZP | TZP | QZP |
 |------|---------|----|----|-----|-----|-----|
 | H  | 1s    | 1 | 2  | 5  | 6  | 7  |
-| C  | 2s 2p | 4 | 8  | 13 | 17 | 21 |
-| O  | 2s 2p | 4 | 8  | 13 | 17 | 21 |
+| C, O | 2s 2p | 4 | 8  | 13 | 17 | 21 |
 | Fe | 3d 4s | 6 | 12 | 19 | 25 | 31 |
 
-Polarization is not a small addition: it adds a whole $l+1$ shell — 3 functions
-for an s-valence atom, 5 for a p-valence atom, 7 for a d-valence one. On a
-state-vector simulator `DZP` water is already out of reach; the sizes exist so
-that the basis is not the limiting approximation when the system is small enough
-to afford them.
+Diffuse functions are a third, independent control, available for the PAW-LCAO
+families only ([diffuse functions](#paw-lcao-diffuse)).
 
-Diffuse functions are a third, independent control, and only the PAW-LCAO
-and UPAW-LCAO families have it. `basis={"name": "PAW-LCAO", "size": "DZP",
-"diffuse": True}` adds one wide quasi-Gaussian shell for every angular momentum
-the atom's basis already has, up to d. Larger sizes add short-ranged zetas, so
-only this option extends the basis's reach. It is what a polarizability, an
-anion or a weak complex needs (see *Diffuse functions* in
-[Pseudopotentials](pseudopotentials.md)). It costs functions, and so qubits:
-
-| Atom (PAW-LCAO) | DZP | DZP + `diffuse` | added shells |
-|------|-----|-----------------|--------------|
-| H  | 5  | 9  | s p |
-| Li | 5  | 9  | s p |
-| C, N, O, F, Cl | 13 | 22 | s p d |
-| Fe | 15 | 24 | s p d |
-
-Every added function is two more qubits, the same as any other. The diffuse
-shells also need a larger box (7.2 Å of vacuum around hydrogen at the
-default), and an `active_space` that truncates them must rank by `"mp2"` (or
-`"natural"`), not by `"energy"`.
-
+(basis-zeta-split)=
 ## How the extra zetas are built
 
-They are *not* new eigenvalue problems. Mandacaru uses the split-valence
-construction (Artacho *et al.*, 1999). Given a radial function $R$, pick a split
-radius $r_s$, replace the orbital inside it by the smooth polynomial
-$r^l(a - b r^2)$ matched in value *and* slope at $r_s$, and keep the difference:
+The extra zetas are not new eigenvalue problems. Mandacaru uses the
+split-valence construction (Artacho *et al.*, 1999): given a radial function $R$
+and a split radius $r_s$, replace the orbital inside it by the smooth polynomial
+$r^l(a - b r^2)$ matched in value and slope at $r_s$, and keep the difference,
 
 ```{math}
 R_2(r) = \begin{cases} R(r) - r^{l}(a - b r^{2}), & r < r_s \\ 0, & r \ge r_s. \end{cases}
 ```
 
-$R_2$ is strictly shorter-ranged than $R$ and vanishes smoothly at $r_s$, so it
-is cheap to integrate and injects no discontinuity.
+$R_2$ is strictly shorter-ranged than $R$ and vanishes smoothly at $r_s$.
+*What* to split and *where* is a convention. `zeta_split` names the two schemes,
+and each carries its own parameter, so the split radii follow from `zeta_split`
+alone. This page owns the option; the PAW-LCAO families take the same key.
 
-*What* to split, and *where*, is a convention, and LCAO codes do not share
-one. `zeta_split` names the two Mandacaru offers, and each scheme carries its
-own parameter -- the split radii follow from `zeta_split` alone:
-
-| | `"first_zeta"` (**default**): tail norms | `"last_zeta"`: split norm |
+| | `"first_zeta"` (**default**) | `"last_zeta"` |
 | :--- | :--- | :--- |
-| the number is | the **norm** of the tail, $\bigl(\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr\bigr)^{1/2}$ | its **squared norm**, $\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr$ |
-| values | `(0.16, 0.3, 0.6)` for zetas 2, 3, 4 | `0.15`, halved for each further zeta |
+| the number is | the **norm** of the tail, $\bigl(\int_{r_s}^{r_c}\lvert R\rvert^2 r^2dr\bigr)^{1/2}$ | its **squared norm** |
+| default | `(0.15, 0.31, 0.54)` for zetas 2, 3, 4 | `0.15`, halved for each further zeta |
 | each zeta splits | the **first** zeta | the **previous** zeta |
 
 ```python
-basis={"name": "NAO", "size": "TZP"}                             # first_zeta
-basis={"name": "NAO", "size": "TZP", "zeta_split": "last_zeta"}  # last_zeta
+basis = {"name": "NAO", "size": "TZP"}                             # first_zeta
+basis = {"name": "NAO", "size": "TZP", "zeta_split": "last_zeta"}  # last_zeta
 ```
 
-The numbers are not comparable digit for digit: a tail norm of 0.16 is a
-squared-norm fraction of 0.0256, so `first_zeta`'s extra zetas are
-**longer-ranged**. Where each hydrogen 1s zeta ends (a₀, default
-`energy_shift`):
-
-| Zeta | `"first_zeta"` (default) | `"last_zeta"` |
-|------|-----------|------|
-| 2 | 3.58 | 2.34 |
-| 3 | 2.71 | 1.34 |
-| 4 | 1.61 | 0.87 |
-
-The same options, with the same default, apply to the pseudopotential
-families -- see [Pseudopotentials](pseudopotentials.md), which also compares the
-radii with the ones an independent LCAO basis generator produces.
-
-Polarization shells are solved in the same confining sphere at $l_{\max}+1$,
-using the lowest principal quantum number that angular momentum allows, so they
-stay compact.
-
-## What it buys, and the catch
-
-Hartree–Fock total energy of H₂ at 0.74 Å (eV), on a uniform real-space grid
-(measured with `kinetic="fd"`):
-
-| Size | Orbitals | E (grid_spacing=0.20 Å) | E (grid_spacing=0.12 Å) |
-|------|----------|--------------|--------------|
-| SZ  | 2  | −28.953922 | −29.356514 |
-| DZ  | 4  | −29.723378 | −30.221129 |
-| TZ  | 6  | −29.723405 | −30.222108 |
-| DZP | 10 | −29.742889 | −30.239850 |
-
-Double zeta is worth ~0.76 eV, polarization a little more. But the third zeta
-adds essentially nothing — and the reason is not that it is redundant.
+The two sets of numbers are not comparable digit for digit: a tail norm of
+$0.15$ is a squared-norm fraction of $0.0225$, so the extra zetas of `first_zeta`
+are longer-ranged. For `"first_zeta"`, `zeta_split` also takes a number or a
+sequence of tail norms in $(0, 1)$. The scheme is part of the model: it changes
+the energy and the equilibrium geometry. Polarization shells are solved in the
+same confining sphere at $l_{\max}+1$, using the lowest principal quantum number
+that angular momentum allows, so they stay compact.
 
 ```{warning}
-Extra zetas are short-ranged **by construction**, and Mandacaru samples every
-basis function on a uniform real-space grid. The third hydrogen zeta extends to
-0.65 Å, which is 3.2 grid points at `grid_spacing = 0.20 Å`. A function three points wide is
-not represented, it is aliased.
-
-Its contribution does grow as the grid is refined (3e-5 eV at `grid_spacing = 0.20 Å`,
-1e-3 eV at `grid_spacing = 0.12 Å`), so this is a resolution limit rather than a defect.
-On a uniform mesh, though, it is the binding constraint: **there is no point
-paying for TZ or QZ unless the grid can resolve them.** DZP is the practical
-sweet spot.
+Extra zetas are short-ranged by construction, and every basis function is
+sampled on the same uniform real-space grid. A third or fourth zeta of hydrogen
+is only a few grid points wide at ordinary spacings; a function that narrow is
+aliased, not represented. Refine `grid_spacing` before paying for `TZ` or `QZ`;
+`DZP` is the practical choice. Multiple zeta also approaches linear dependence,
+since each added function overlaps the one it was split from.
 ```
 
-Multiple zeta also risks linear dependence, since the added functions overlap the
-ones they were split from. The overlap matrix stays comfortably invertible at DZP
-(condition number ~170 for H₂), but it grows with every zeta — another reason the
-high sizes are specialist tools.
+`examples/basis_nao/01_nao_multizeta_h2.py` runs H₂ at Hartree–Fock in SZ, DZ,
+TZ and DZP; read its output for the energy ladder at the grid you choose.
 
-See `examples/basis_nao/01_nao_multizeta_h2.py`, which runs H₂ at Hartree-Fock
-in SZ, DZ, TZ and DZP. With the spectral kinetic default it gives
-−29.0951 / −29.7455 / −29.8188 / −29.7642 eV at `grid_spacing = 0.12 Å`
-(2026-10-13); with this operator the third zeta lowers the energy by
-0.07 eV at that spacing.
+(basis-gaussian-families)=
+## Named Gaussian families
 
-Every zeta and polarization shell of a PAW-LCAO or UPAW-LCAO basis is a
-radial function times a harmonic, which is what lets
-`Mandacaru(two_center="analytic")` integrate the overlap, the kinetic energy
-and the projections on the projectors without the grid (see *Analytic
-two-center integrals* in the Kohn-Sham guide). The Gaussian families below
-have no such tables and always integrate on the grid.
-
-
-## Named Gaussian families: Pople, Dunning, Karlsruhe
-
-The standard Gaussian basis-set names are accepted directly, and every one of
-them is **generated natively** the same way 6-31G(d) already is: the name is
-parsed into its *structure* — core contraction length, valence split,
-polarization, diffuse and core-correlating functions — and the exponents and
-contraction coefficients are produced for the atom at hand from the cached
-Slater-orbital fits and Slater's rules
-({mod}`mandacaru.basis.gaussian_families`). No basis-set table is read.
+The standard names are accepted directly, and each is generated natively: the
+name is parsed into its structure (core contraction length, valence split,
+polarization, diffuse and core-correlating functions) and the exponents and
+contraction coefficients are produced for the atom at hand from cached
+Slater-orbital fits. No basis-set table is read.
 
 ```python
-atoms.calc = Mandacaru(basis="cc-pVDZ")
-atoms.calc = Mandacaru(basis="6-311+G(2df,2p)")
-atoms.calc = Mandacaru(basis="def2-TZVP")
+Mandacaru(method="rhf", basis="cc-pVDZ")
+Mandacaru(method="rhf", basis="6-311+G(2df,2p)")
 ```
 
 | Family | Names |
 | :--- | :--- |
 | Minimal | `STO-3G`, `STO-4G`, `STO-5G`, `STO-6G` |
-| Pople | `3-21G`, `3-21G*`, `3-21G**`, `3-21+G`, `3-21++G`, `3-21+G*`, `3-21+G**`, `4-21G`, `4-31G`, `6-21G`, `6-31G`, `6-31G*`, `6-31+G*`, `6-31G(3df,3pd)`, `6-311G`, `6-311G*`, `6-311+G*`, `6-311+G(2df,2p)` — and any other name of the form `K-NL[M][+|++]G[*|**|(…)]` |
-| Dunning | `cc-pVDZ`, `cc-pVTZ`, `cc-pVQZ`, `cc-pV5Z`, `aug-cc-pVDZ`, `cc-pCVDZ` — and any `[aug-]cc-p[C]VXZ` |
-| Karlsruhe | `def2-SV(P)`, `def2-SVP`, `def2-SVPD`, `def2-TZVP` (also spelled `def2-TZDP`), `def2-TZVPD`, `def2-TZVPP`, `def2-TZVPPD`, `def2-QZVP`, `def2-QZVPD`, `def2-QZVPP`, `def2-QZVPPD` |
+| Pople | `3-21G`, `6-31G`, `6-31G*`, `6-31+G*`, `6-311G`, `6-311+G(2df,2p)`, and other names of the same pattern |
+| Dunning | `cc-pVDZ`, `cc-pVTZ`, `cc-pVQZ`, `cc-pV5Z`, `aug-cc-pVDZ`, `cc-pCVDZ`, and other `cc-p[C]VXZ` names |
+| Karlsruhe | `def2-SV(P)`, `def2-SVP`, `def2-SVPD`, `def2-TZVP`, `def2-TZVPD`, `def2-TZVPP`, `def2-QZVP`, and their `D`/`PP` variants |
 
 What is reproduced is the **shell structure and function count** of the
-published set — `cc-pVTZ` carbon is `[4s3p2d1f]` (30 functions), `def2-TZVP`
-carbon `[5s3p2d1f]`, `6-311+G(2df,2p)` hydrogen `[3s2p]`:
+published set: `cc-pVTZ` carbon is `[4s3p2d1f]` (30 functions), `def2-TZVP`
+carbon `[5s3p2d1f]`. The published exponents, which come from molecular energy
+optimizations, are not reproduced: Mandacaru's own are a partitioned
+Slater-orbital fit with geometrically spread polarization exponents. Treat a
+named basis as a self-contained basis *of the same size and shape* as its
+namesake, right for qubit-count planning and for comparing solvers across
+sizes, and not as a drop-in for a literature number quoted in that basis. Shells
+are spherical (5 `d`, 7 `f`), so `6-31G*` carbon has 14 functions, not the 15 of
+a Cartesian-`d` program. A named recipe takes no extra options.
 
-```python
-from mandacaru.basis import BasisSet, parse_basis_name, shell_notation
-
-bset = BasisSet.build("aug-cc-pVDZ")
-bset.notation("C")                       # '[4s3p2d]'
-len(bset.atom("C"))                      # 23
-parse_basis_name("6-31+G*").summary()
-```
-
-What is *not* reproduced are the published exponents, which come from
-molecular energy optimizations. Mandacaru's are its own: a Slater-orbital fit
-partitioned tightest-first for the contracted and split-valence functions,
-polarization exponents `f_l · ζ_val²` spread geometrically, diffuse functions
-at the atom's most diffuse exponent divided by 3.5, and tight
-(core-correlating) functions at three times the tightest valence exponent.
-Treat the result as a self-contained basis *of the same size and shape* as its
-namesake — the right thing for qubit-count planning and for comparing solvers
-across basis sizes — not as a drop-in for a literature number quoted in that
-basis.
-
-Two conventions to know. Shells are **spherical** (5 `d`, 7 `f`), so `6-31G*`
-carbon has 14 functions, not the 15 of a Cartesian-`d` program. And Pople's
-`3-21G*` puts its `d` functions on second-row atoms only, exactly as
-published, while `6-31G*` and `6-311G*` polarize every atom beyond helium.
-
-
+(basis-hao-virtual)=
 ## Virtual levels for the HAO basis
 
-`HAO` is the cheapest basis in Mandacaru: one analytic hydrogenic orbital per
-**occupied** subshell, carrying the atom's bare nuclear charge (H → 1s; Li →
-1s, 2s; C → 1s, 2s, 2p). That minimality is also its limit — a correlated
-method has almost nothing to correlate *into*. H₂ in the occupied-only HAO
-basis is 2 spatial orbitals, 4 qubits, and a single double excitation.
-
-`virtual_orbitals` buys room above the occupied set:
+`HAO` has one analytic hydrogenic orbital per **occupied** subshell, carrying the
+atom's bare nuclear charge (H → 1s; Li → 1s, 2s; C → 1s, 2s, 2p). A correlated
+method then has almost nothing to correlate *into*: H₂ is 2 spatial orbitals,
+4 qubits and a single double excitation. `virtual_orbitals` adds the $k$ lowest
+**unoccupied** subshells of each atom, in aufbau order and with the same bare
+charge; it is the only option `HAO` accepts:
 
 ```python
-atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis={"name": "HAO", "virtual_orbitals": 1},
-                       grid_spacing=0.30)
+Mandacaru(method="adapt-vqe", basis={"name": "HAO", "virtual_orbitals": 1},
+          grid_spacing=0.30)
 ```
 
-It appends the *k* lowest **unoccupied** subshells of each atom, in aufbau
-order and with the same bare Z: hydrogen gains `2s`, carbon `3s`, iron `4p`. A
-partially filled subshell counts as occupied — carbon's `2p²` is already a
-basis shell, so carbon's first virtual level is `3s`, not the empty half of
-`2p`. The default is `0`, which is the historical minimal basis exactly.
-
-**A level is a whole subshell.** `virtual_orbitals` counts levels, not
-functions, so one virtual `p` level adds three functions. Half a shell would
-break the atom's spherical symmetry and make the energy depend on how the
-molecule happens to be oriented in its box, so every appended level carries all
-its `m` components. What that costs on hydrogen:
+A partially filled subshell counts as occupied, so carbon's first virtual level
+is `3s`. A level is a whole subshell, because half a shell would break the
+atom's spherical symmetry and make the energy depend on the orientation in the
+box, so one virtual `p` level adds three functions. On hydrogen:
 
 | `virtual_orbitals` | levels added | functions per H | H₂ qubits |
 |---|---|---|---|
@@ -282,49 +174,26 @@ its `m` components. What that costs on hydrogen:
 | `2` | 2s, 2p | 5 | 20 |
 | `3` | 2s, 2p, 3s | 6 | 24 |
 
-`BasisSet.build("HAO", virtual_orbitals=k).function_count("H")` reports it for
-any element, and the [dry run](dry_run.md) reports the qubit total before
-anything is integrated.
+A smaller basis is a strict subset of the larger, so the correlated energy can
+only fall. A virtual hydrogenic orbital is **diffuse**: H `2s` has
+$\langle r\rangle = 6\,a_0$, so the cell must contain its tail or the grid clips
+it.
 
-The payoff is variational: the smaller basis is a strict subset of the larger,
-so the correlated energy must fall. H₂ at 0.74 Å in an 8 Å cell (`grid_spacing = 0.30`,
-ADAPT-VQE to its basis FCI;
-measured with `kinetic="fd"`):
-
-| `virtual_orbitals` | qubits | E (eV) | gain |
-|---|---|---|---|
-| `0` | 4 | −28.1619 | – |
-| `1` | 8 | −28.3009 | −0.139 |
-| `2` | 20 | −28.3384 | −0.177 |
-
-```{note}
-A virtual hydrogenic orbital is **diffuse** — H `2s` has ⟨r⟩ = 6 a₀ ≈ 3.2 Å —
-so the cell has to be large enough to contain it or the grid clips its tail,
-and the energies above move with the box like every other HAO number. The
-engine's resolution check warns when a function is not represented on the grid.
-```
-
+(basis-per-element)=
 ## A different basis on different elements
 
-The `basis` argument also takes a **per-element mapping**: a dict keyed by
-chemical symbol (plus an optional `"*"` default), each entry a basis spec of
-its own. The typical use is a polarized basis on the atoms whose chemistry
-matters next to a minimal one on a spectator ion — the qubit count is the sum
-over atoms, so this is how a large system is kept inside a state-vector
-budget:
+The `basis` argument also takes a **per-element mapping** of the all-electron
+families: a dictionary keyed by chemical symbol (or atomic number), plus an
+optional `"*"` default, each entry a basis specification of its own. The qubit
+count is the sum over atoms, so a polarized basis on the atoms whose chemistry
+matters and a minimal one on spectators keeps a large system inside a
+state-vector budget:
 
 ```python
 basis = {"O": {"name": "NAO", "size": "DZP"},
          "H": {"name": "NAO", "size": "DZP"},
          "*": "HAO"}                              # every other element
-atoms.calc = Mandacaru(method="adapt-vqe",
-                       basis=basis,
-                       active_space={"frozen": "auto"})
+Mandacaru(method="adapt-vqe", basis=basis)
 ```
 
-Every driver, the dry run and `BasisSet.build(mapping)` accept it; an element
-without an entry and without a `"*"` default is an error rather than a silent
-fallback, and the plane-wave family, which is not atom-centered, cannot be
-assigned to one element. With a [pseudopotential family](pseudopotentials.md)
-the same mapping selects a per-element *size* — every element must use the
-same family, since the radial functions there come from each potential.
+PAW-LCAO bases cannot appear in a mapping.

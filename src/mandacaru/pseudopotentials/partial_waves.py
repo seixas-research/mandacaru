@@ -10,11 +10,14 @@ r"""Reference waves, optimized smooth partial waves and the checks of a
 generated dataset -- the radial machinery of PAW-LCAO and UPAW-LCAO
 generation (:mod:`.paw`).
 
+Every number is computed in Rust (``mandacaru-core``, ``paw`` and ``models``;
+the extension's ``paw_*`` functions).  This module adapts datasets and arrays
+to those routines and carries the generator's control flow and wording:
+
 * **All-electron reference waves.**  Bound states and scattering states of the
-  reference atom's potential by Numerov integration (:func:`numerov_outward`,
-  :func:`bound_state`, :func:`scattering_wave`), scalar-relativistic or with a
-  Dirac :math:`\kappa`, and the reference set of a channel
-  (:func:`reference_waves`).
+  reference atom's potential by Numerov integration (:func:`bound_state`,
+  :func:`scattering_wave`), scalar-relativistic or with a Dirac
+  :math:`\kappa`, and the reference set of a channel (:func:`reference_waves`).
 * **Optimized smooth partial waves** (D. R. Hamann, Phys. Rev. B **88**,
   085117 (2013)).  Inside :math:`r_c` a smooth wave is a sum of spherical
   Bessel functions matched in value and first three derivatives to the
@@ -36,16 +39,15 @@ Written from scratch on top of Mandacaru's own radial atom
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.integrate import simpson
-from scipy.optimize import brentq
-from scipy.special import spherical_jn
 
-from .dataset import _local_derivatives, _valence_configuration
-
+from .. import _native
+from .dataset import _valence_configuration
+from .native_context import context
 
 #: Spherical Bessel functions per pseudo partial wave (Hamann's ``nbas``).
 DEFAULT_N_BESSEL = 8
@@ -161,16 +163,21 @@ EXCITED_GHOST_MARGIN = 0.1
 #: Self-consistency tolerance and density mixing of the generator's
 #: all-electron reference atom (:func:`reference_atom`).
 REFERENCE_TOLERANCE, REFERENCE_MIXING = 1e-7, 0.25
-#: Upper wave vector and spacing of the Fourier grid of the residual energy.
-Q_MAX, Q_STEP = 60.0, 0.1
 
 
-#: Points of the fine quadrature grid inside ``r_c``.
+#: Points of the fine quadrature grid inside ``r_c`` (the Rust grid's:
+#: ``len(_native.paw_inner_grid(r_c))``; ``test_partial_waves`` pins them equal).
 INNER_POINTS = 801
 
 
-#: Finest spacing (Bohr) of the tail quadrature of the residual energy.
-TAIL_SPACING = 0.00125
+def _array(values) -> np.ndarray:
+    return np.ascontiguousarray(values, dtype=float)
+
+
+def _flat(values) -> tuple:
+    """``(contiguous 1-D float array, original shape)``."""
+    values = np.asarray(values, dtype=float)
+    return np.ascontiguousarray(values.ravel()), values.shape
 
 
 def bessel_derivatives(l: int, x):
@@ -180,19 +187,13 @@ def bessel_derivatives(l: int, x):
     equation :math:`x^2 j'' + 2x j' + (x^2 - l(l+1)) j = 0`, so no numerical
     differentiation is involved.
     """
-    x = np.asarray(x, dtype=float)
-    j = spherical_jn(l, x)
-    dj = spherical_jn(l, x, derivative=True)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ll = l * (l + 1)
-        d2j = -2.0 * dj / x - (1.0 - ll / x ** 2) * j
-        d3j = (2.0 / x ** 2) * dj - (2.0 / x) * d2j \
-            - (2.0 * ll / x ** 3) * j - (1.0 - ll / x ** 2) * dj
-    return j, dj, d2j, d3j
+    flat, shape = _flat(x)
+    out = _native.paw_bessel_derivatives(context(), int(l), flat)
+    return tuple(row.reshape(shape) for row in out)
 
 
-def bessel_wavevectors(l: int, r_cut: float, n: int = DEFAULT_N_BESSEL,
-                       x_max: float = 400.0) -> np.ndarray:
+def bessel_wavevectors(l: int, r_cut: float, n: int = DEFAULT_N_BESSEL
+                       ) -> np.ndarray:
     r"""Wave vectors of the Bessel basis: the interleaved zeros of
     :math:`j_l(x)` and :math:`j_l'(x)` at :math:`x = q r_c`, in ascending order.
 
@@ -202,28 +203,11 @@ def bessel_wavevectors(l: int, r_cut: float, n: int = DEFAULT_N_BESSEL,
     the matrix of matching conditions (value and any number of derivatives)
     has full rank.  The RRKJ choice (all functions sharing the all-electron
     logarithmic derivative at :math:`r_c`) is *not* usable beyond the second
-    derivative: with :math:`q j_l'(q r_c) = L j_l(q r_c)` the free-particle
-    Bessel equation turns every derivative row into :math:`j_l(q_n r_c)`
-    times a polynomial in :math:`q_n^2`, and the third-derivative row becomes
-    a combination of the value and second-derivative rows.
+    derivative: the third-derivative row becomes a combination of the value
+    and second-derivative rows.
     """
-    def zeros(function):
-        x = np.linspace(0.1, x_max, 80001)
-        values = function(x)
-        found = []
-        for i in np.nonzero(np.sign(values[:-1]) * np.sign(values[1:]) < 0)[0]:
-            found.append(brentq(function, x[i], x[i + 1], xtol=1e-14,
-                                rtol=1e-14))
-            if len(found) >= n:
-                break
-        return found
-
-    roots = sorted(zeros(lambda x: spherical_jn(l, x))
-                   + zeros(lambda x: spherical_jn(l, x, derivative=True)))
-    if len(roots) < n:
-        raise RuntimeError(f"found only {len(roots)} Bessel wave vectors for "
-                           f"l={l}, rc={r_cut:.3f}")
-    return np.array(roots[:n]) / float(r_cut)
+    return np.array(_native.paw_bessel_wavevectors(int(l), float(r_cut),
+                                                   int(n)))
 
 
 def _with_origin(r: np.ndarray):
@@ -236,8 +220,7 @@ def numerov_outward(r0: np.ndarray, f: np.ndarray, s: np.ndarray,
     r"""Integrate :math:`u'' = f(r)\,u + s(r)` outward on a uniform grid.
 
     ``u_start = (u[start], u[start+1])`` seeds the recursion; nothing at
-    indices below ``start`` is used (so a ``-Z/r`` singularity at ``r0[0]``
-    is harmless as long as ``start >= 1``).
+    indices below ``start`` is used.
     """
     from ..basis.radial_backend import numerov_outward_kernel
 
@@ -249,177 +232,20 @@ def numerov_outward(r0: np.ndarray, f: np.ndarray, s: np.ndarray,
                                   u)
 
 
-def _numerov_inward(r0: np.ndarray, f: np.ndarray, stop: int,
-                    kappa: float) -> np.ndarray:
-    """Homogeneous inward integration from a decaying start down to ``stop``."""
-    from ..basis.radial_backend import numerov_inward_kernel
-
-    h = r0[1] - r0[0]
-    h2 = float(h * h)
-    u = np.zeros_like(r0, dtype=float)
-    n = r0.size
-    u[n - 1] = np.exp(-kappa * r0[n - 1])
-    u[n - 2] = np.exp(-kappa * r0[n - 2])
-    return numerov_inward_kernel(np.asarray(f, dtype=float), h2, int(stop), u)
-
-
 def _radial_f(r0: np.ndarray, potential0: np.ndarray, l: int,
               energy: float) -> np.ndarray:
-    """``f = 2[V + l(l+1)/2r^2 - E]`` with a finite (unused) value at r = 0."""
-    with np.errstate(divide="ignore", invalid="ignore"):
-        f = 2.0 * (potential0 + l * (l + 1) / (2.0 * r0 ** 2) - energy)
-    f[0] = 0.0
-    return np.nan_to_num(f, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def _origin_seed(r0: np.ndarray, l: int, z_eff: float, potential0=None,
-                 energy: float = 0.0, order: int = 6, exponent=None):
-    r"""Power-series start of the regular solution at the first two points.
-
-    For :math:`V = -Z/r + c_0` near the origin, :math:`u = r^{l+1}\sum_k a_k
-    r^k` with :math:`a_k\,k(k+2l+1) = -2Z a_{k-1} + 2c_0 a_{k-2}`
-    (:math:`c_0 = V(r_1) + Z/r_1 - E`).  The two-term start
-    :math:`1 - Zr/(l+1)` is not enough: its :math:`O((Zr)^2)` error admixes
-    the irregular solution and shifts the oxygen 2s eigenvalue by 2e-2 Ha on
-    a 0.005 Bohr grid; six terms leave ~1e-8.
-    """
-    c0 = 0.0 if potential0 is None else float(potential0[1] + z_eff / r0[1]
-                                              - energy)
-    a = [1.0, -z_eff / (l + 1)]
-    for k in range(2, order + 1):
-        a.append((-2.0 * z_eff * a[k - 1] + 2.0 * c0 * a[k - 2])
-                 / (k * (k + 2 * l + 1)))
-    power = float(l + 1) if exponent is None else float(exponent)
-
-    def series(x):
-        return x ** power * sum(ak * x ** k for k, ak in enumerate(a))
-    return (series(r0[1]), series(r0[2]))
-
-
-def _derivative(u: np.ndarray, h: float, index: int) -> float:
-    """Fourth-order centered first derivative at one grid index.
-
-    The stencil spans ``index - 2 .. index + 2``, so it needs
-    ``2 <= index <= len(u) - 3``.  Outside that it used to raise numpy's
-    ``IndexError: index N is out of bounds for axis 0 with size N``, which says
-    nothing about *why* an index reached the end of a radial grid -- the real
-    cause is always a channel cutoff that landed there, and finding that out
-    from the numpy message cost hours once.  So the range is checked here and
-    the error names the cause.
-    """
-    n = len(u)
-    if not 2 <= index <= n - 3:
-        raise ValueError(
-            f"the fourth-order derivative stencil needs a grid index in "
-            f"[2, {n - 3}] and was asked for {index} on a {n}-point grid.  An "
-            f"index at the edge of a radial grid means the channel cutoff was "
-            f"placed there: see `_cutoff_for`, which falls back to "
-            f"`rc_factor * (outermost peak of |r R|)` and returns a radius at "
-            f"the end of the grid when the reference wave is not localized.")
-    return (u[index - 2] - 8 * u[index - 1] + 8 * u[index + 1]
-            - u[index + 2]) / (12.0 * h)
-
-
-def _relativistic_arrays(r0, v0, l, energy, treatment, kappa, z_eff):
-    r"""``(f, sqrt(M), seed exponent)`` for the Numerov recursion.
-
-    The integrated variable is :math:`W`, and :math:`P = M^{1/2}W` is the
-    large component every caller wants -- see
-    :mod:`mandacaru.basis.relativity`.  ``treatment="none"`` returns the
-    non-relativistic ``f``, no factor and no exponent, so the relativistic
-    path is a strict generalization of the original one.
-
-    The ``r = 0`` node is prepended for the recursion and never used
-    (``start >= 1``), so the :math:`1/r^3` in :math:`M''` is harmless there.
-
-    .. note::
-
-       **The seed exponent has to be the relativistic one.**  :math:`M \to
-       Z/2c^2r` as :math:`r\to0`, so :math:`M^{-1/2}\sim r^{1/2}` and the
-       integrated variable behaves as
-
-       .. math::
-
-           W \sim r^{\gamma + 1/2},
-           \qquad \gamma = \sqrt{\kappa^2 - (Z\alpha)^2},
-
-       not as :math:`r^{l+1}`.  For the 2s channel of oxygen that is
-       :math:`r^{1.498}` against :math:`r^{1}`, and seeding the wrong power
-       put the shooting eigenvalue **9.35 mHa** away from the one the
-       self-consistent atom had -- against 1.1e-4 non-relativistically.  It
-       surfaced three steps downstream, as a PAW-LCAO ionic potential missing
-       :math:`-Z_{ion}/r` by 8e-4 Hartree, because the pseudization and the
-       SCF had ended up using different 2s waves.
-
-       The sub-leading terms of :func:`_origin_seed` stay the
-       non-relativistic ones.  They carry the screening, a correction of
-       relative order :math:`Zr`, which is not where the failure was.
-    """
-    from ..basis.relativity import _resolve, mass_factor, relativistic_f
-
-    if _resolve(treatment) == "none":
-        return _radial_f(r0, v0, l, energy), None, None
-    with np.errstate(divide="ignore", invalid="ignore"):
-        f = relativistic_f(r0, v0, l, kappa, energy, atomic_number=z_eff,
-                           treatment=treatment)
-        M, _dM, _d2M = mass_factor(r0, v0, energy, z_eff)
-    f = np.nan_to_num(f, nan=0.0, posinf=0.0, neginf=0.0)
-    f[0] = 0.0
-    M = np.nan_to_num(M, nan=1.0, posinf=1.0, neginf=1.0)
-    M[0] = M[1]
-    return f, np.sqrt(M), _relativistic_seed(r0, v0, l, kappa, treatment,
-                                            z_eff)
-
-
-def _relativistic_seed(r0, v0, l, kappa, treatment, z_eff):
-    r"""The first two nodes of :math:`W`, taken from the tridiagonal solver.
-
-    A power-series seed is the wrong tool here.  The leading exponent is
-    :math:`\gamma + 1/2` rather than :math:`l+1`, and the recursion of
-    :func:`_origin_seed` -- which carries the screening and is what makes the
-    non-relativistic seed good to 1e-8 -- is derived *for* the integer power,
-    so substituting the relativistic one into it is worse than leaving it
-    alone: oxygen's 2s shooting eigenvalue misses the self-consistent atom by
-    9.4 mHa with the integer power and 57 mHa with the fractional one.
-
-    :func:`~mandacaru.basis.relativity.solve_radial_relativistic` needs no
-    seed at all -- it is a tridiagonal eigenproblem with :math:`P(0)=0` built
-    into the discretization -- so its solution near the origin already has the
-    right power *and* the right screening.  Two nodes of it start the Numerov
-    recursion, which then refines the whole wave to fourth order.  The
-    energy dependence of those two nodes is :math:`O(arepsilon r^2)`, i.e.
-    1e-6 of the value at the first grid point, so one seed serves every trial
-    energy of the shoot.
-    """
-    from ..basis.relativity import (_resolve, mass_factor,
-                                    solve_radial_relativistic)
-
-    r = r0[1:]
-    P, _eps = solve_radial_relativistic(
-        r, v0[1:], l, 0, kappa=kappa,
-        treatment="dirac" if _resolve(treatment) == "dirac" else "scalar",
-        atomic_number=z_eff)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        M, _dM, _d2M = mass_factor(r, v0[1:], float(_eps), z_eff)
-    W = P / np.sqrt(np.maximum(M, 1e-30))
-    scale = W[1] if abs(W[1]) > 0 else 1.0
-    return (float(W[0] / scale), float(W[1] / scale))
+    """``f = 2[V + l(l+1)/2r^2 - E]`` on the grid with the origin prepended."""
+    return _native.paw_radial_f(_array(r0), _array(potential0), int(l),
+                                float(energy))
 
 
 def scattering_wave(r: np.ndarray, potential: np.ndarray, l: int,
                     energy: float, z_eff: float, treatment: str = "none",
                     kappa: int | None = None) -> np.ndarray:
     """Outward Numerov solution ``u(r)`` at ``energy`` (arbitrary scale)."""
-    r0 = _with_origin(r)
-    v0 = np.concatenate([[0.0], potential])
-    f, sqrt_M, power = _relativistic_arrays(r0, v0, l, energy, treatment,
-                                            kappa, z_eff)
-    seed = (power if power is not None
-            else _origin_seed(r0, l, z_eff, v0, energy))
-    u = numerov_outward(r0, f, np.zeros_like(r0), seed, start=1)
-    if sqrt_M is not None:
-        u = u * sqrt_M
-    return u[1:]
+    return _native.paw_scattering_wave(context(), _array(r), _array(potential),
+                                       int(l), float(energy), float(z_eff),
+                                       str(treatment), kappa)
 
 
 def bound_state(r: np.ndarray, potential: np.ndarray, l: int,
@@ -433,54 +259,9 @@ def bound_state(r: np.ndarray, potential: np.ndarray, l: int,
     ``+/- window`` around the guess (widened if necessary).  ``u`` is
     normalized to ``int u^2 dr = 1`` and positive near the origin.
     """
-    r0 = _with_origin(r)
-    v0 = np.concatenate([[0.0], potential])
-    h = r0[1] - r0[0]
-
-    def mismatch(energy):
-        f, sqrt_M, power = _relativistic_arrays(r0, v0, l, energy,
-                                                treatment, kappa, z_eff)
-        # Outermost classical turning point of the effective potential, read
-        # off the non-relativistic f.  The relativistic one carries V'' in
-        # its Darwin term, and a gradient-corrected potential puts grid-scale
-        # spikes there: PBE holmium's 4f saw isolated "allowed" points out to
-        # 4.2 Bohr, well past its real turning point at 0.84, and matching
-        # out there -- where the compact 4f has tunnelled to nothing --
-        # never bracketed.  The relativistic shift of a turning point is
-        # negligible, and the eigenvalue does not depend on where it matches.
-        turning = np.nonzero(_radial_f(r0, v0, l, energy)[10:] < 0)[0]
-        match = int(turning[-1]) + 10 if turning.size else r0.size // 2
-        match = min(max(match, 20), r0.size - 20)
-        seed = (power if power is not None
-                else _origin_seed(r0, l, z_eff, v0, energy))
-        out = numerov_outward(r0, f, np.zeros_like(r0), seed, start=1)
-        decay = np.sqrt(max(-2.0 * energy, 1e-6))
-        inn = _numerov_inward(r0, f, match - 3, decay)
-        scale = out[match] / inn[match]
-        inn = inn * scale
-        # The matching condition is on W; multiplying both branches by the
-        # same sqrt(M) afterwards leaves the logarithmic-derivative mismatch
-        # unchanged, so the eigenvalue is the relativistic one either way.
-        if sqrt_M is not None:
-            out, inn = out * sqrt_M, inn * sqrt_M
-        return ((_derivative(out, h, match) - _derivative(inn, h, match))
-                / out[match]), out, inn, match
-
-    lo, hi = energy_guess - window, energy_guess + window
-    for _ in range(12):
-        if mismatch(lo)[0] * mismatch(hi)[0] < 0:
-            break
-        lo, hi = lo - 2 * window, hi + 2 * window
-    else:
-        raise RuntimeError(f"no Numerov bound state near {energy_guess:.6f} "
-                           f"Ha for l={l}")
-    energy = brentq(lambda e: mismatch(e)[0], lo, hi, xtol=1e-13, rtol=1e-13)
-    _m, out, inn, match = mismatch(energy)
-    u = np.concatenate([out[:match], inn[match:]])
-    u = u[1:]
-    u = u / np.sqrt(np.trapezoid(u * u, r))
-    if u[:20].sum() < 0:
-        u = -u
+    u, energy = _native.paw_bound_state(
+        context(), _array(r), _array(potential), int(l), float(energy_guess),
+        float(z_eff), float(window), str(treatment), kappa)
     return u, float(energy)
 
 
@@ -489,15 +270,14 @@ def log_derivative_ae(r: np.ndarray, potential: np.ndarray, l: int,
                       treatment: str = "none",
                       kappa: int | None = None) -> float:
     r"""All-electron logarithmic derivative :math:`R'/R` at ``r_cut``."""
-    u = scattering_wave(r, potential, l, energy, z_eff, treatment, kappa)
-    return _log_derivative_of_u(r, u, r_cut)
+    return float(_native.paw_log_derivatives_ae(
+        context(), _array(r), _array(potential), int(l), [float(energy)],
+        float(r_cut), float(z_eff), str(treatment), kappa)[0])
 
 
 def _log_derivative_of_u(r, u, r_cut) -> float:
     """``R'/R = u'/u - 1/r`` at ``r_cut`` from a fourth-order stencil."""
-    h = r[1] - r[0]
-    index = int(np.argmin(np.abs(r - r_cut)))
-    return float(_derivative(u, h, index) / u[index] - 1.0 / r[index])
+    return _native.paw_log_derivative_of_u(_array(r), _array(u), float(r_cut))
 
 
 def constrained_minimum(K: np.ndarray, k: np.ndarray, A: np.ndarray,
@@ -506,91 +286,15 @@ def constrained_minimum(K: np.ndarray, k: np.ndarray, A: np.ndarray,
     r"""Minimize :math:`c^TKc + 2k^Tc` subject to :math:`Ac = b` and
     :math:`c^TGc = \text{norm}`.
 
-    The linear constraints are eliminated exactly, :math:`c = c_0 + Z y` with
-    :math:`Z` an orthonormal basis of the null space of :math:`A`.  In that
-    space the problem is a quadratic objective on an ellipsoid, whose global
-    minimizer is the stationary point :math:`(K_z - \lambda G_z) y =
-    \lambda g_z - k_z` with the multiplier below the smallest generalized
-    eigenvalue of :math:`(K_z, G_z)` (More and Sorensen); the norm is then a
-    monotonic function of :math:`\lambda` on that branch and the multiplier is
-    a one-dimensional root.  When the norm stays finite at the pole and
-    below its target (the *hard case*), :func:`_hard_case` gives the
-    minimizer.
+    The linear constraints are eliminated exactly, :math:`c = c_0 + Z y`; in
+    the null space the problem is a quadratic objective on an ellipsoid, whose
+    global minimizer is the stationary point with the multiplier below the
+    smallest generalized eigenvalue (More and Sorensen), a one-dimensional
+    root; when the norm stays finite at the pole the *hard case* applies.
     """
-    K = np.asarray(K, dtype=float)
-    G = np.asarray(G, dtype=float)
-    A = np.atleast_2d(np.asarray(A, dtype=float))
-    b = np.asarray(b, dtype=float)
-    c0, *_ = np.linalg.lstsq(A, b, rcond=None)
-    _u, sigma, vt = np.linalg.svd(A)
-    rank = int(np.sum(sigma > 1e-10 * sigma.max()))
-    Z = vt[rank:].T                                   # (n, n - rank)
-    if Z.shape[1] == 0:
-        return c0
-    Kz, Gz = Z.T @ K @ Z, Z.T @ G @ Z
-    kz, gz = Z.T @ (K @ c0 + k), Z.T @ (G @ c0)
-
-    # The pencil diagonalized once (V^T Gz V = 1, V^T Kz V = diag(mu)):
-    # y(lam) = V (V^T r) / (mu - lam) needs no solve, so it stays exact
-    # arbitrarily close to the pole.  A linear solve there did not: the Bessel
-    # basis can be nearly redundant on the null space (vanadium's PAW-LCAO d
-    # channel: Gz down to 1e-11, Kz - lam Gz at condition 3e16 and an exact
-    # zero pivot).
-    from scipy.linalg import eigh
-    values, vectors = eigh(Kz, Gz)
-    mu = float(values[0])
-
-    def solution(lam):
-        return vectors @ ((vectors.T @ (lam * gz - kz)) / (values - lam))
-
-    def residual(lam):
-        c = c0 + Z @ solution(lam)
-        return c @ G @ c - norm
-
-    hi = mu - 1e-9 * max(abs(mu), 1.0)
-    # On this branch the norm grows monotonically towards +inf as lam -> mu.
-    # Walk down until the norm falls below the target, then bracket.
-    lo = hi - 1.0
-    while residual(lo) > 0:
-        lo = hi - 2.0 * (hi - lo)
-        if hi - lo > 1e12:
-            raise RuntimeError("the linear constraints already require more "
-                               "norm than norm conservation allows")
-    if residual(hi) < 0:
-        # Extremely close to the pole: shrink towards mu until positive --
-        # unless the norm stays finite there (the hard case).
-        for _ in range(60):
-            nearer = mu - 0.5 * (mu - hi)
-            if not hi < nearer < mu:
-                break
-            hi = nearer
-            if residual(hi) > 0:
-                break
-        if residual(hi) < 0:
-            return _hard_case(K, k, G, norm, c0, Z, values, vectors, gz, kz)
-    lam = brentq(residual, lo, hi, xtol=1e-15, rtol=1e-15, maxiter=500)
-    return c0 + Z @ solution(lam)
-
-
-def _hard_case(K, k, G, norm, c0, Z, values, vectors, gz, kz) -> np.ndarray:
-    r""":func:`constrained_minimum` when the norm stays below its target all
-    the way to the pole (the right-hand side has no component along the
-    lowest eigenvector :math:`v`): :math:`\lambda = \mu`, the other
-    components as usual, plus the multiple of :math:`v` that meets the norm
-    -- of its two signs, the one with the lower objective."""
-    mu = float(values[0])
-    coefficients = vectors.T @ (mu * gz - kz)
-    coefficients[0] = 0.0
-    coefficients[1:] /= values[1:] - mu
-    base, direction = c0 + Z @ (vectors @ coefficients), Z @ vectors[:, 0]
-    # (base + t direction)^T G (base + t direction) = norm.
-    a = float(direction @ G @ direction)
-    b = 2.0 * float(direction @ G @ base)
-    c = float(base @ G @ base) - norm
-    root = np.sqrt(max(b * b - 4.0 * a * c, 0.0))
-    candidates = [base + t * direction
-                  for t in ((-b + root) / (2.0 * a), (-b - root) / (2.0 * a))]
-    return min(candidates, key=lambda x: float(x @ K @ x + 2.0 * k @ x))
+    return _native.paw_constrained_minimum(
+        _array(K), _array(k), np.atleast_2d(_array(A)), _array(b), _array(G),
+        float(norm))
 
 
 def check_reference_atom(atom, xc: str, relativity: str) -> None:
@@ -657,7 +361,7 @@ def _finite(value, pp, what: str) -> float:
     """``value`` as a float, or :class:`DiagnosticError` naming the element
     and ``what`` was evaluated (channel, energy)."""
     value = float(value)
-    if not np.isfinite(value):
+    if not math.isfinite(value):
         raise DiagnosticError(
             f"{getattr(pp, 'symbol', '?')}: {what} is {value}; a check that "
             "cannot be evaluated is a failure, not a pass")
@@ -669,8 +373,7 @@ def _snapped(pp, radius: float) -> float:
     generation grid at the library stride, while the reference atom keeps
     the full one: both logarithmic derivatives must be taken at the same
     node."""
-    r = np.asarray(pp.r, dtype=float)
-    return float(r[int(np.argmin(np.abs(r - float(radius))))])
+    return _native.paw_snap(_array(pp.r), float(radius))
 
 
 def reference_atom(pp, points: int | None = None, r_max: float = 30.0):
@@ -784,6 +487,30 @@ def defect_message(symbol: str, family: str, defects: dict) -> str:
             f"({'; '.join(parts)}).  {consequence}")
 
 
+def _core_shells(pp, atom) -> dict:
+    """The core subshells of the all-electron atom on ``pp`` that the
+    dataset leaves out of its valence."""
+    _valence, core = _valence_configuration(
+        int(pp.atomic_number), configuration=atom.occupations)
+    core = dict(core)
+    for orbital in getattr(pp, "frozen_subshells", ()):
+        core[orbital] = atom.occupations[orbital]
+    for orbital in getattr(pp, "semicore_subshells", ()):
+        core.pop(orbital, None)
+    return core
+
+
+def _ae_treatment(pp) -> str:
+    """The all-electron equation a check of ``pp`` is made with.  A Dirac
+    dataset's ordinary channels are the j average -- PAW-LCAO's partial waves
+    solve the scalar (kappa = -1) equation outright -- and its spin-orbit part
+    is a separate term these checks do not see, so their phases are compared
+    with the scalar all-electron wave."""
+    treatment = str(getattr(pp, "relativity", "none")).strip().lower()
+    return ("scalar" if treatment in ("dirac", "full", "relativistic")
+            else treatment)
+
+
 def local_potential_ghosts(pp) -> dict:
     """``{l: eps_ps - eps_ae}`` for every channel *without* projectors
     (``l`` up to one above the highest channel) in which the screened local
@@ -791,8 +518,8 @@ def local_potential_ghosts(pp) -> dict:
     states of that ``l``.
 
     Such a channel is governed by ``v_local_screened`` only, so the spectral
-    test of :func:`ghost_errors` on the constructed channels never sees it
-    -- iron's PAW-LCAO ``p`` channel held a level at -4.63 Ha against a 4p at
+    test of :func:`ghost_errors` on the constructed channels never sees it --
+    iron's PAW-LCAO ``p`` channel held a level at -4.63 Ha against a 4p at
     -0.05 Ha while every constructed channel was clean.  Both spectra are
     counted below zero in the same box, on the reference atom's uniform grid;
     the all-electron count less that ``l``'s core shells is the number of
@@ -801,40 +528,28 @@ def local_potential_ghosts(pp) -> dict:
     raises :class:`DiagnosticError` without one: an empty result means
     checked and clean, never "not evaluated".
     """
-    from scipy.linalg import eigvalsh_tridiagonal
-
     atom = _reference(pp, "the local-potential ghost check")
-    r = np.asarray(atom.r, dtype=float)
-    h = float(r[1] - r[0])
-    _valence, core = _valence_configuration(
-        int(pp.atomic_number), configuration=atom.occupations)
-    core = dict(core)
-    for orbital in getattr(pp, "frozen_subshells", ()):
-        core[orbital] = atom.occupations[orbital]
-    for orbital in getattr(pp, "semicore_subshells", ()):
-        core.pop(orbital, None)
-    off = np.full(r.size - 1, -0.5 / h ** 2)
-    smooth_v = np.interp(r, pp.r, pp.v_local_screened)
-    ae_v = np.asarray(atom.v_effective, dtype=float)
-    for v, what in ((smooth_v, "the screened local potential"),
-                    (ae_v, "the all-electron potential")):
-        if not np.all(np.isfinite(v)):
-            _finite(v[~np.isfinite(v)][0], pp, what)
+    r = _array(atom.r)
+    core = _core_shells(pp, atom)
+    smooth_v = _native.paw_interpolate_linear(r, _array(pp.r),
+                                              _array(pp.v_local_screened))
+    ae_v = _array(atom.v_effective)
 
-    def bound(v, l):
-        diag = 1.0 / h ** 2 + v + l * (l + 1) / (2.0 * r * r)
-        return eigvalsh_tridiagonal(diag, off, select="v",
-                                    select_range=(float(v.min()) - 1.0, 0.0))
+    def bound(v, what, l):
+        try:
+            return _native.paw_bound_levels(context(), r, v, l, None, 0.0)
+        except ValueError:
+            _finite(float("nan"), pp, what)
 
     out = {}
     for l in range(max(pp.channels) + 2):
         if l in pp.channels:
             continue
-        smooth = bound(smooth_v, l)
-        ae = bound(ae_v, l)
+        smooth = bound(smooth_v, "the screened local potential", l)
+        ae = bound(ae_v, "the all-electron potential", l)
         allowed = ae[sum(1 for (_n, lc) in core if lc == l):]
-        if smooth.size > allowed.size:
-            reference = float(allowed[0]) if allowed.size else 0.0
+        if len(smooth) > len(allowed):
+            reference = float(allowed[0]) if allowed else 0.0
             out[int(l)] = float(smooth[0]) - reference
     return out
 
@@ -844,24 +559,12 @@ def all_electron_count(pp, l: int, energy: float) -> int:
     channel ``l``, its core (and frozen) shells not counted: the nodes of
     the regular solution at ``energy`` (the oscillation theorem), solved with
     the treatment the dataset was built from."""
-    from ..basis.relativity import _resolve as _resolve_relativity
-
     atom = _reference(pp, "the all-electron state count")
-    treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
-    if treatment == "dirac":
-        treatment = "scalar"
-    u = scattering_wave(atom.r, atom.v_effective, int(l), float(energy),
-                        float(pp.atomic_number), treatment)
-    u = u[np.abs(u) > 1e-300]
-    _finite(u.sum(), pp, f"the l={l} all-electron wave at {energy:+.3f} Ha")
-    nodes = int(np.count_nonzero(np.diff(np.sign(u)) != 0))
-    _valence, core = _valence_configuration(
-        int(pp.atomic_number), configuration=atom.occupations)
-    core = dict(core)
-    for orbital in getattr(pp, "frozen_subshells", ()):
-        core[orbital] = atom.occupations[orbital]
-    for orbital in getattr(pp, "semicore_subshells", ()):
-        core.pop(orbital, None)
+    nodes, total = _native.paw_node_count(
+        context(), _array(atom.r), _array(atom.v_effective), int(l),
+        float(energy), float(pp.atomic_number), _ae_treatment(pp))
+    _finite(total, pp, f"the l={l} all-electron wave at {energy:+.3f} Ha")
+    core = _core_shells(pp, atom)
     return nodes - sum(1 for (_n, lc) in core if lc == int(l))
 
 
@@ -923,6 +626,49 @@ def ghost_errors(pp, levels, *, with_atom: bool = True) -> dict:
     return out
 
 
+def _occupied_references(channel) -> list[float]:
+    """The reference energies of a channel's occupied partial waves, first
+    one always included (a library channel without per-wave occupations
+    has one bound reference)."""
+    energies = [float(e) for e in channel.reference_energies]
+    occupations = getattr(channel, "occupations", None) or [1.0]
+    return [energies[0]] + [e for e, o in zip(energies[1:], occupations[1:])
+                            if o > 0.0]
+
+
+def _ae_log_derivatives(atom, pp, l, energies, r_match, treatment, cache):
+    """All-electron logarithmic derivatives at ``energies``: from ``cache``
+    (keyed by reference atom, channel, energy, matching radius and treatment)
+    where they were computed before, natively otherwise."""
+    keys = [(id(atom), l, float(e), r_match, treatment) for e in energies]
+    missing = [(e, key) for e, key in zip(energies, keys)
+               if cache is None or key not in cache]
+    fresh = {}
+    if missing:
+        values = _native.paw_log_derivatives_ae(
+            context(), _array(atom.r), _array(atom.v_effective), int(l),
+            [float(e) for e, _k in missing], float(r_match),
+            float(pp.atomic_number), treatment)
+        fresh = {key: float(v) for (_e, key), v in zip(missing, values)}
+        if cache is not None:
+            cache.update(fresh)
+    return [fresh[key] if key in fresh else cache[key] for key in keys]
+
+
+def _phase_summary(pp, label, l, energies, offsets, atom, log_derivative,
+                   r_match, treatment, cache, window):
+    """``(near, far)`` phase errors over ``energies``; a phase that is not
+    finite raises :class:`DiagnosticError`."""
+    ae = _ae_log_derivatives(atom, pp, l, energies, r_match, treatment, cache)
+    ps = [log_derivative(pp, l, energy, r_match) for energy in energies]
+    near, far, bad = _native.paw_phase_summary(
+        _array(ps), _array(ae), _array(offsets), float(window))
+    if bad is not None:
+        _finite(float("nan"), pp,
+                f"the l={l} {label} at {energies[bad]:+.3f} Ha")
+    return near, far
+
+
 def scattering_errors(pp, log_derivative,
                       ae_cache: dict[tuple, float] | None = None) -> dict:
     r"""``{l: (near, far)}``: the largest phase error
@@ -935,25 +681,17 @@ def scattering_errors(pp, log_derivative,
     scattering energy (the empty f above a frozen 4f, potassium's d
     anchored at 0 Ha) is evaluated at the positive energies of the same
     windows; such a channel without a frozen subshell was once skipped.
-    ``ae_cache`` reuses all-electron
-    logarithmic derivatives at the same channel, energy and matching radius across
-    ghost-repair attempts; it is local to one reference atom.
+    ``ae_cache`` reuses all-electron logarithmic derivatives at the same
+    channel, energy and matching radius across ghost-repair attempts; it is
+    local to one reference atom.
     """
-    from ..basis.relativity import _resolve as _resolve_relativity
-
     atom = _reference(pp, "the scattering check")
-    treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
-    # A Dirac dataset's ordinary channels are the j average -- PAW-LCAO's
-    # partial waves solve the scalar (kappa = -1) equation outright -- and
-    # its spin-orbit part is a separate term this check does not see.  So
-    # its phases are compared with the scalar all-electron wave; a Dirac
-    # log-derivative would need a kappa this per-l check does not have.
-    if treatment == "dirac":
-        treatment = "scalar"
-    window = PHASE_WINDOW
+    treatment = _ae_treatment(pp)
     # Compare where the smooth wave obeys the all-electron equation again:
     # past the projectors, which for PAW-LCAO can reach beyond r_cut.
     radius = getattr(pp, "projector_radius", None)
+    offsets = [float(o) for o in
+               _native.paw_window_offsets(RESONANCE_WINDOW, PHASE_STEP)]
     out = {}
     for l, channel in pp.channels.items():
         reference = float(channel.reference_energies[0])
@@ -962,41 +700,18 @@ def scattering_errors(pp, log_derivative,
         near = far = 0.0
         # Around every occupied reference: a semicore channel's valence
         # state (sodium's 3s) sits 2 Ha above its first reference.
-        centers = [reference] + _occupied_references(channel)[1:]
-        for center, offset in ((c, o) for c in centers for o in np.arange(
-                -RESONANCE_WINDOW, RESONANCE_WINDOW + 0.5 * PHASE_STEP,
-                PHASE_STEP)):
-            energy = center + offset
-            if reference >= 0.0 and energy <= 0.0:
+        for center in [reference] + _occupied_references(channel)[1:]:
+            kept = [(center + offset, offset) for offset in offsets
+                    if not (reference >= 0.0 and center + offset <= 0.0)]
+            if not kept:
                 continue
-            key = (id(atom), l, float(energy), r_match, treatment)
-            if ae_cache is not None and key in ae_cache:
-                l_ae = ae_cache[key]
-            else:
-                l_ae = log_derivative_ae(atom.r, atom.v_effective, l, energy,
-                                         r_match, float(pp.atomic_number),
-                                         treatment)
-                if ae_cache is not None:
-                    ae_cache[key] = l_ae
-            l_ps = log_derivative(pp, l, energy, r_match)
-            d = np.arctan(l_ps) - np.arctan(l_ae)
-            error = _finite(abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi), pp,
-                            f"the l={l} phase error at {energy:+.3f} Ha")
-            far = max(far, error)
-            if abs(offset) <= window + 1e-9:
-                near = max(near, error)
+            n, f = _phase_summary(
+                pp, "phase error", l, [e for e, _o in kept],
+                [o for _e, o in kept], atom, log_derivative, r_match,
+                treatment, ae_cache, PHASE_WINDOW)
+            near, far = max(near, n), max(far, f)
         out[int(l)] = (float(near), float(far))
     return out
-
-
-def _occupied_references(channel) -> list[float]:
-    """The reference energies of a channel's occupied partial waves, first
-    one always included (a library channel without per-wave occupations
-    has one bound reference)."""
-    energies = [float(e) for e in channel.reference_energies]
-    occupations = getattr(channel, "occupations", None) or [1.0]
-    return [energies[0]] + [e for e, o in zip(energies[1:], occupations[1:])
-                            if o > 0.0]
 
 
 def unprojected_scattering_errors(pp, log_derivative,
@@ -1012,17 +727,12 @@ def unprojected_scattering_errors(pp, log_derivative,
     the all-electron atom on ``pp`` (:func:`reference_atom` for a dataset
     read from a file); without one, or for a phase that is not finite, it
     raises :class:`DiagnosticError`.  This is the test the constructed
-    channels' own
-    (:func:`scattering_errors`) never made: aluminum repaired with a 5 Ha
-    local shift scattered d 0.84 rad off, and that alone put fcc Al at
-    4.48 Angstrom (HISTORY.md, 2026-10-06, "K21 diagnosed").
+    channels' own (:func:`scattering_errors`) never made: aluminum repaired
+    with a 5 Ha local shift scattered d 0.84 rad off, and that alone put fcc
+    Al at 4.48 Angstrom (HISTORY.md, 2026-10-06, "K21 diagnosed").
     """
-    from ..basis.relativity import _resolve as _resolve_relativity
-
     atom = _reference(pp, "the unprojected-channel scattering check")
-    treatment = _resolve_relativity(getattr(pp, "relativity", "none"))
-    if treatment == "dirac":
-        treatment = "scalar"
+    treatment = _ae_treatment(pp)
     bound = [e for channel in pp.channels.values()
              for e in _occupied_references(channel) if e < 0.0]
     if not bound:
@@ -1034,28 +744,17 @@ def unprojected_scattering_errors(pp, log_derivative,
     r_match = _snapped(pp, max(
         [float(getattr(pp, "r_cut_local", 0.0))]
         + [float(channel.r_cut) for channel in pp.channels.values()]))
+    offsets = [float(o) for o in
+               _native.paw_window_offsets(PHASE_WINDOW, PHASE_STEP)]
     out = {}
     for l in range(max(pp.channels) + 2):
         if l in pp.channels:
             continue
-        worst = 0.0
-        for offset in np.arange(-PHASE_WINDOW, PHASE_WINDOW + 0.5 * PHASE_STEP,
-                                PHASE_STEP):
-            energy = reference + offset
-            key = (id(atom), l, float(energy), r_match, treatment)
-            if ae_cache is not None and key in ae_cache:
-                l_ae = ae_cache[key]
-            else:
-                l_ae = log_derivative_ae(atom.r, atom.v_effective, l, energy,
-                                         r_match, float(pp.atomic_number),
-                                         treatment)
-                if ae_cache is not None:
-                    ae_cache[key] = l_ae
-            d = np.arctan(log_derivative(pp, l, energy, r_match)) - np.arctan(l_ae)
-            worst = max(worst, _finite(
-                abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi), pp,
-                f"the l={l} (no projectors) phase error at {energy:+.3f} Ha"))
-        out[int(l)] = float(worst)
+        _near, far = _phase_summary(
+            pp, "(no projectors) phase error", l,
+            [reference + offset for offset in offsets], offsets, atom,
+            log_derivative, r_match, treatment, ae_cache, PHASE_WINDOW)
+        out[int(l)] = float(far)
     return out
 
 
@@ -1319,62 +1018,21 @@ def ghost_free(generate, levels, log_derivative, symbol: str, options: dict,
         f"({'; '.join(tried)}).")
 
 
-def _inner_grid(r_cut: float) -> np.ndarray:
-    return np.linspace(0.0, r_cut, INNER_POINTS)
-
-
 def _resample(r: np.ndarray, values: np.ndarray, r_new: np.ndarray):
     """Cubic-spline resampling (linear interpolation would leave an O(h^2)
     error that shows up as an asymmetry of the Vanderbilt matrix)."""
-    from scipy.interpolate import CubicSpline
-    return CubicSpline(r, values)(r_new)
+    return _native.paw_resample(context(), _array(r), _array(values),
+                                _array(r_new))
+
+
+def _inner_grid(r_cut: float) -> np.ndarray:
+    """The fine quadrature grid inside ``r_cut`` (``INNER_POINTS`` nodes)."""
+    return _native.paw_inner_grid(float(r_cut))
 
 
 def _bessel_table(l: int, qs: np.ndarray, r: np.ndarray) -> np.ndarray:
     """``(len(qs), len(r))`` table of ``j_l(q_n r)``."""
-    return spherical_jn(l, np.outer(qs, r))
-
-
-def _bessel_transform_table(l: int, qs, r_in, q_grid) -> np.ndarray:
-    r"""``B[n, k] = sqrt(2/pi) int_0^rc j_l(q_n r) j_l(q_k r) r^2 dr``."""
-    basis = _bessel_table(l, qs, r_in) * r_in * r_in          # (N, R)
-    kernel = _bessel_table(l, q_grid, r_in)                    # (Q, R)
-    return np.sqrt(2.0 / np.pi) * simpson(basis[:, None, :] * kernel[None, :, :],
-                                          x=r_in, axis=-1)
-
-
-def _tail_transform(l: int, r, wave, r_cut, bound: bool, q_grid) -> np.ndarray:
-    r"""Bessel transform of the all-electron tail, from exactly ``r_cut``.
-
-    The tail is resampled with a cubic spline onto a grid four times finer
-    than the atomic one and integrated with Simpson's rule: its transform has
-    a :math:`q^{-2}` step contribution that must cancel against the inside
-    expansion's to the accuracy of the residual energy, so the two pieces
-    need the same (high) quadrature accuracy.  A scattering tail, which does
-    not decay, is tapered smoothly between :math:`3r_c` and :math:`5r_c`.
-    """
-    if bound:
-        significant = np.nonzero(np.abs(wave * r) > 1e-10)[0]
-        r_end = float(r[min(significant[-1] + 1, r.size - 1)])
-    else:
-        r_end = min(5.0 * r_cut, float(r[-1]))
-    step = min(0.25 * (r[1] - r[0]), TAIL_SPACING)
-    n = int(np.ceil((r_end - r_cut) / step)) | 1          # odd count for Simpson
-    r_tail = np.linspace(r_cut, r_end, n + 1)
-    values = _resample(r, wave, r_tail)
-    if not bound:
-        x = np.clip((r_tail - 3.0 * r_cut) / (2.0 * r_cut), 0.0, 1.0)
-        values = values * np.cos(0.5 * np.pi * x) ** 2
-    weighted = values * r_tail * r_tail
-    # In blocks of q: the full (Q, R) kernel would be hundreds of MB for a
-    # slowly decaying tail on the fine oxygen grid.
-    out = np.empty(q_grid.size)
-    block = max(1, int(2_000_000 // r_tail.size))
-    for start in range(0, q_grid.size, block):
-        kernel = _bessel_table(l, q_grid[start:start + block], r_tail)
-        out[start:start + block] = simpson(kernel * weighted[None, :],
-                                           x=r_tail, axis=-1)
-    return np.sqrt(2.0 / np.pi) * out
+    return _native.paw_bessel_table(context(), int(l), _array(qs), _array(r))
 
 
 @dataclass
@@ -1401,174 +1059,57 @@ class PseudoWaves:
     #: their difference -- 2.2e-3 Ha for oxygen, against a 1e-10 tolerance.
     targets: np.ndarray = None
 
-    @property
-    def norm_matrix_error(self) -> float:
-        """How far the smooth waves fell from the condition imposed on them."""
-        reference = self.norms if self.targets is None else self.targets
-        return float(np.max(np.abs(self.achieved - reference)))
-
-    @property
-    def relativistic_norm_shift(self) -> float:
-        """``max |targets - norms|`` -- the O(c^-2) Wronskian correction."""
-        if self.targets is None:
-            return 0.0
-        return float(np.max(np.abs(self.targets - self.norms)))
-
 
 def matching_targets(r: np.ndarray, u: np.ndarray, potential: np.ndarray,
                      l: int, energy: float, r_cut: float,
                      treatment: str = "none", kappa: int | None = None,
                      z_eff: float = 0.0) -> np.ndarray:
-    r"""``[R, R', R'', R''']`` of a partial wave at ``r_cut`` (a grid point).
+    r"""``R`` and its first three derivatives at ``r_cut`` (a grid point).
 
     ``R'`` comes from a fourth-order stencil on ``u = rR``; the second and
     third derivatives follow from the radial equation the wave actually
-    satisfies, so the targets are consistent with it to the accuracy of the
-    Numerov solution itself (a polynomial fit of the tabulated wave would
-    leave ~1e-6 inconsistencies that surface as an asymmetric :math:`B`).
-
-    In general that equation is :math:`u'' = a\,u + b\,u'` with
-
-    .. math::
-
-        a = \frac{l(l+1)}{r^2} + \frac{\kappa M'}{Mr} + 2M(V-\varepsilon),
-        \qquad b = \frac{M'}{M} ,
-
-    and the third derivative is :math:`a'u + au' + b'u' + bu''`.
-    Non-relativistically :math:`M\equiv1` kills :math:`b` and leaves
-    :math:`a = 2[V + l(l+1)/2r^2 - \varepsilon]`, which is the form this
-    function had before relativity was an option -- so the ``"none"`` path is
-    the same arithmetic it always was.
+    satisfies, :math:`u'' = a\,u + b\,u'` with
+    :math:`a = l(l+1)/r^2 + \kappa M'/(Mr) + 2M(V-\varepsilon)` and
+    :math:`b = M'/M` (:math:`M\equiv1` non-relativistically), so the targets
+    are consistent with it to the accuracy of the Numerov solution itself.
     """
-    h = r[1] - r[0]
-    k = int(np.argmin(np.abs(r - r_cut)))
-    rk, uk = r[k], u[k]
-    up = _derivative(u, h, k)
-    centrifugal = l * (l + 1) / (r * r)
-
-    from ..basis.relativity import SCALAR_KAPPA, _resolve, mass_factor
-
-    if _resolve(treatment) == "none":
-        a = centrifugal + 2.0 * (potential - energy)
-        b = np.zeros_like(r)
-    else:
-        kk = SCALAR_KAPPA if _resolve(treatment) == "scalar" else int(kappa)
-        M, dM, _d2M = mass_factor(r, potential, energy, z_eff)
-        # The spin-orbit half of the closed-form combination; the Darwin half
-        # belongs to W, not to P, so only kappa M'/(Mr) appears here.
-        a = centrifugal + kk * dM / (M * r) + 2.0 * M * (potential - energy)
-        b = dM / M
-    ap = _derivative(a, h, k)
-    bp = _derivative(b, h, k)
-    upp = a[k] * uk + b[k] * up
-    uppp = ap * uk + a[k] * up + bp * up + b[k] * upp
-    return np.array([
-        uk / rk,
-        up / rk - uk / rk ** 2,
-        upp / rk - 2.0 * up / rk ** 2 + 2.0 * uk / rk ** 3,
-        uppp / rk - 3.0 * upp / rk ** 2 + 6.0 * up / rk ** 3 - 6.0 * uk / rk ** 4,
-    ])
-
-
-def _pseudo_waves_record(l, r_cut, energies, waves, wavevectors, coefficients,
-                         residuals, norms, pseudo_in, r_in, q_cut,
-                         targets=None) -> PseudoWaves:
-    """The :class:`PseudoWaves` of a finished optimization, with the inner
-    norms the pseudo waves actually achieved (shared with the PAW-LCAO family)."""
-    achieved = np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in pseudo_in]
-                         for a in pseudo_in])
-    return PseudoWaves(l=l, r_cut=float(r_cut), energies=list(energies),
-                       waves=list(waves), wavevectors=wavevectors,
-                       coefficients=coefficients, residual_kinetic=residuals,
-                       norms=norms, achieved=achieved, q_cut=float(q_cut),
-                       targets=(norms if targets is None else targets))
+    return _native.paw_matching_targets(
+        context(), _array(r), _array(u), _array(potential), int(l),
+        float(energy), float(r_cut), str(treatment), kappa, float(z_eff))
 
 
 def inner_overlaps(r, waves, r_cut):
-    """``<phi_i|phi_j>`` inside ``r_cut``, on the refined inner grid.
-
-    The *true* all-electron overlap, whatever equation the waves solve.  PAW-LCAO's
-    overlap correction is built from this; the norm **condition** imposed on
-    the smooth waves is :func:`norm_targets`, which differs from it at
-    ``O(c^-2)`` once the waves are relativistic.
-    """
-    r_in = _inner_grid(r_cut)
-    inside = [_resample(np.asarray(r, dtype=float), w, r_in) for w in waves]
-    return np.array([[simpson(a * b * r_in * r_in, x=r_in) for b in inside]
-                     for a in inside])
+    """``<phi_i|phi_j>`` inside ``r_cut``, on the refined inner grid: the
+    *true* all-electron overlap, whatever equation the waves solve."""
+    return _native.paw_inner_overlaps(context(), _array(r),
+                                      _array(np.atleast_2d(waves)),
+                                      float(r_cut))
 
 
 def norm_targets(r, waves, energies, r_cut, v_ae=None, treatment="none",
                  kappa=None, z_eff=0.0):
     r"""The generalized-norm matrix the pseudo waves must reproduce.
 
-    Non-relativistically this is just
-    :math:`\langle\varphi_i|\varphi_j\rangle_{r<r_c}`.  It is **not** that
-    when the all-electron waves solve a relativistic equation and the pseudo
-    waves -- Bessel expansions, built to be used in a Schrodinger calculation
-    -- solve a non-relativistic one.  What the condition has to enforce is
-    that the *pseudo* system reproduce the all-electron logarithmic derivative
-    **and its energy derivative** at :math:`r_c`, and the quantity that does
-    that is a Wronskian, not an overlap:
-
-    .. math::
-
-        \langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c}
-            = -\frac{W_{ij}(r_c)}{2(\varepsilon_j - \varepsilon_i)},
-        \qquad W_{ij} = u_i u_j' - u_j u_i' .
-
-    Integrating the relativistic radial equation gives
-    :math:`W_{ij}(r_c)/M(r_c) = -2(\varepsilon_j-\varepsilon_i)
-    \int_0^{r_c} u_iu_j\,dr` in the non-relativistic limit :math:`M\to1`, so
-    the two agree exactly there -- and differ by :math:`O(c^{-2})` otherwise.
-    That difference is the whole of the asymmetry the Vanderbilt matrix shows
-    when a scalar-relativistic atom is pseudized with the non-relativistic
-    condition: 1.4e-4 Ha for oxygen, against a 1e-5 tolerance.
-
-    The **diagonal** carries the energy derivative rather than a difference of
-    two energies, and its relativistic form is
-    :math:`M(r_c)\int(2M-1)u^2/M\,dr`; it does not enter the symmetry of
-    :math:`B`, only the transferability the norm was conserved for.
+    Non-relativistically this is just the inner overlap.  When the
+    all-electron waves solve a relativistic equation and the pseudo waves
+    solve a non-relativistic one, what has to be enforced is that the *pseudo*
+    system reproduce the all-electron logarithmic derivative **and its energy
+    derivative** at :math:`r_c`, which is a Wronskian,
+    :math:`-W_{ij}(r_c)/2(\varepsilon_j-\varepsilon_i)`, off the diagonal,
+    and :math:`M(r_c)\int(2M-1)u^2/M\,dr` on it.
     """
-    from ..basis.relativity import _resolve, mass_factor
-
-    r = np.asarray(r, dtype=float)
-    r_in = _inner_grid(r_cut)
-    waves_in = [_resample(r, w, r_in) for w in waves]
-    # The base matrix keeps the refined-grid Simpson quadrature the
-    # non-relativistic construction has always used, so `treatment="none"`
-    # returns the same numbers to the last bit.
-    targets = np.array([[simpson(a * b * r_in * r_in, x=r_in)
-                         for b in waves_in] for a in waves_in])
-    if _resolve(treatment) == "none":
-        return targets
-
-    h = float(r[1] - r[0])
-    k = int(np.argmin(np.abs(r - r_cut)))
-    us = [np.asarray(w, dtype=float) * r for w in waves]
-    M_in = [_resample(r, mass_factor(r, v_ae, e, z_eff)[0], r_in)
-            for e in energies]
-    for i in range(len(us)):
-        M_at_cut = float(mass_factor(r, v_ae, energies[i], z_eff)[0][k])
-        # Diagonal: the relativistic weight of the energy-derivative identity.
-        targets[i, i] = M_at_cut * simpson(
-            (2.0 * M_in[i] - 1.0) / M_in[i] * waves_in[i] ** 2
-            * r_in * r_in, x=r_in)
-        for j in range(len(us)):
-            gap = energies[j] - energies[i]
-            if i == j or abs(gap) < 1e-12:
-                continue
-            wronskian = (us[i][k] * _derivative(us[j], h, k)
-                         - us[j][k] * _derivative(us[i], h, k))
-            targets[i, j] = -wronskian / (2.0 * gap)
-    return targets
+    return _native.paw_norm_targets(
+        context(), _array(r), _array(np.atleast_2d(waves)),
+        [float(e) for e in energies], float(r_cut),
+        _array(np.zeros_like(r) if v_ae is None else v_ae), str(treatment),
+        kappa, float(z_eff))
 
 
 def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
                           waves: list, energies: list, r_cut: float,
                           q_cut: float = DEFAULT_Q_CUT,
                           n_bessel: int = DEFAULT_N_BESSEL,
-                          norm_factor: float = 1.0,
+                          norm_factor: float | None = 1.0,
                           treatment: str = "none",
                           kappa: int | None = None,
                           z_eff: float = 0.0) -> PseudoWaves:
@@ -1583,53 +1124,27 @@ def optimize_pseudo_waves(r: np.ndarray, v_ae: np.ndarray, l: int,
 
     ``norm_factor`` scales the target inner-norm matrix,
     :math:`\langle\tilde\varphi_i|\tilde\varphi_j\rangle_{r<r_c} =
-    f\,\langle\varphi_i|\varphi_j\rangle_{r<r_c}`: 1 (the default) is
-    norm conservation; the PAW-LCAO family uses :math:`f < 1` so its overlap
-    correction :math:`(1-f)\langle\varphi_i|\varphi_j\rangle` is positive
-    definite by construction.
+    f\,\langle\varphi_i|\varphi_j\rangle_{r<r_c}`: 1 is norm conservation;
+    the PAW-LCAO family uses :math:`f < 1` so its overlap correction
+    :math:`(1-f)\langle\varphi_i|\varphi_j\rangle` is positive definite by
+    construction.  ``norm_factor=None`` imposes no norm condition at all: the
+    minimum of the residual energy in the null space of the matching
+    conditions, regularized by a tiny multiple of the metric.
     """
-    r_cut = _snap(r, r_cut)
-    r_in = _inner_grid(r_cut)
-    q_grid = np.arange(0.0, Q_MAX + 0.5 * Q_STEP, Q_STEP)
-    weight = 0.5 * q_grid ** 4 * (q_grid >= q_cut)
-
-    targets = norm_targets(r, waves, energies, r_cut, v_ae, treatment, kappa,
-                           z_eff)
-    norms = inner_overlaps(r, waves, r_cut)
-
-    coefficients, wavevectors, pseudo_in, residuals = [], [], [], []
-    for i, (wave, energy) in enumerate(zip(waves, energies)):
-        # Value and first three derivatives of R at r_c (Hamann's ncon = 4).
-        target = matching_targets(r, wave * r, v_ae, l, energy, r_cut,
-                                  treatment, kappa, z_eff)
-        qs = bessel_wavevectors(l, r_cut, n_bessel)
-        j, dj, d2j, d3j = bessel_derivatives(l, qs * r_cut)
-        A = [j, qs * dj, qs ** 2 * d2j, qs ** 3 * d3j]
-        b = list(target[:4])
-        basis_in = _bessel_table(l, qs, r_in)
-        G = simpson(basis_in[:, None, :] * basis_in[None, :, :]
-                    * (r_in * r_in)[None, None, :], x=r_in, axis=-1)
-        for k in range(i):                       # cross norms are linear
-            A.append(G @ coefficients[k])
-            b.append(float(norm_factor) * targets[i, k])
-
-        transform = _bessel_transform_table(l, qs, r_in, q_grid)   # (N, Q)
-        bound = energy < 0 and abs(wave[-1] * r[-1]) < 1e-6
-        tail = _tail_transform(l, r, wave, r_cut, bound, q_grid)
-        K = (transform * weight) @ transform.T * Q_STEP
-        kvec = (transform * weight) @ tail * Q_STEP
-        k0 = float(np.sum(weight * tail * tail) * Q_STEP)
-
-        c = constrained_minimum(K, kvec, np.array(A), np.array(b), G,
-                                float(norm_factor) * targets[i, i])
-        coefficients.append(c)
-        wavevectors.append(qs)
-        pseudo_in.append(c @ basis_in)
-        residuals.append(float(c @ K @ c + 2.0 * kvec @ c + k0))
-
-    return _pseudo_waves_record(l, r_cut, energies, waves, wavevectors,
-                                coefficients, residuals, norms, pseudo_in,
-                                r_in, q_cut, targets)
+    out = _native.paw_optimize_pseudo_waves(
+        context(), _array(r), _array(v_ae), int(l),
+        _array(np.atleast_2d(waves)), [float(e) for e in energies],
+        float(r_cut), float(q_cut), int(n_bessel),
+        None if norm_factor is None else float(norm_factor), str(treatment),
+        kappa, float(z_eff))
+    coefficients = list(out["coefficients"])
+    return PseudoWaves(
+        l=int(l), r_cut=float(out["r_cut"]), energies=list(energies),
+        waves=list(waves),
+        wavevectors=[out["wavevectors"]] * len(coefficients),
+        coefficients=coefficients,
+        residual_kinetic=list(out["residual_kinetic"]), norms=out["norms"],
+        achieved=out["achieved"], q_cut=float(q_cut), targets=out["targets"])
 
 
 #: Half-width of the fit that reads a gradient-corrected potential's
@@ -1665,33 +1180,9 @@ def polynomial_local_potential(r: np.ndarray, v_ae: np.ndarray,
     around :math:`r_{cl}`, or over +-``fit_window`` Bohr when that is wider
     (a gradient-corrected potential, :data:`GGA_LOCAL_FIT_FRACTION`).
     """
-    window = 25
-    if fit_window is not None:
-        window = max(window, int(float(fit_window) / float(r[1] - r[0])))
-    target = _local_derivatives(r, v_ae, r_local, order=4, window=window)
-    powers = np.arange(0, 12, 2)
-
-    def rows(n_powers):
-        out = []
-        for order in range(5):
-            row = []
-            for power in powers[:n_powers]:
-                if power < order:
-                    row.append(0.0)
-                    continue
-                factor = (np.prod([power - j for j in range(order)])
-                          if order else 1.0)
-                row.append(factor * r_local ** (power - order))
-            out.append(row)
-        return out
-
-    a5 = np.linalg.solve(np.array(rows(5)), target)
-    origin = a5[0] + float(shift)
-    system = np.array(rows(6) + [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
-    a = np.linalg.solve(system, np.concatenate([target, [origin]]))
-    inside = r <= r_local
-    v_in = sum(coefficient * r ** power for coefficient, power in zip(a, powers))
-    return np.where(inside, v_in, v_ae)
+    return context().paw_local_potential(
+        _array(r), _array(v_ae), float(r_local), shift=float(shift),
+        fit_window=None if fit_window is None else float(fit_window))
 
 
 def generation_points(atomic_number: int, minimum: int = 6000,
@@ -1709,7 +1200,7 @@ def generation_points(atomic_number: int, minimum: int = 6000,
 
 def _snap(r: np.ndarray, radius: float) -> float:
     """The grid node nearest to ``radius``."""
-    return float(r[int(np.argmin(np.abs(r - radius)))])
+    return _native.paw_snap(_array(r), float(radius))
 
 
 def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None,
@@ -1743,7 +1234,7 @@ def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None,
     table = ({} if defaults is None else defaults).get(symbol)
     if table is not None and l in table:
         return float(table[l])
-    peak = float(r[int(np.argmax(np.abs(radial * r)))])
+    peak = _native.paw_peak_radius(_array(r), _array(radial))
     candidate = float(rc_factor * peak)
     detail = (f"its reference state peaks at {peak:.3f} Bohr"
               + ("" if energy is None else f" with eps = {energy:.5f} Ha")
@@ -1767,30 +1258,6 @@ def _cutoff_for(symbol, l, r, radial, r_cut, rc_factor, defaults=None,
     return candidate
 
 
-def reference_bound_state(r, potential, l, n_nodes, energy_guess, z_eff,
-                          treatment, kappa):
-    r"""The valence bound state, from the solver the reference atom used.
-
-    Always the Numerov shoot (:func:`bound_state`), at whatever level of
-    theory the atom was solved with.  The pseudization needs its waves to be
-    eigenstates of the potential it was handed, and Numerov satisfies the
-    radial equation to fourth order, which the optimized pseudization needs: a
-    tridiagonal wave of the same potential left an s channel with a ghost 56
-    Hartree below the reference.
-
-    What makes this *consistent* is that the reference atom now finishes on
-    Numerov orbitals too (:func:`~mandacaru.basis.atomic_solver.solve_atom`,
-    ``polish``).  Before it did, the self-consistent field and the
-    pseudization disagreed about oxygen's relativistic 2s by 9.5 mHa -- they
-    were using two discretizations of a state whose :math:`r^{\gamma}` cusp
-    neither resolves well -- and that surfaced as a PAW-LCAO ionic potential
-    missing :math:`-Z_{ion}/r` by 8e-4 Hartree out to 11 Bohr.
-    """
-    del n_nodes                    # the energy guess selects the state
-    return bound_state(r, potential, l, energy_guess, z_eff,
-                       treatment=treatment, kappa=kappa)
-
-
 def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
                     energy_offset, defaults=None, treatment: str = "none",
                     kappa: int | None = None, extra_l: int = 0,
@@ -1811,7 +1278,11 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
     ``treatment`` and ``kappa`` select the radial equation
     (:mod:`mandacaru.basis.relativity`); ``kappa`` is required for
     ``treatment="dirac"`` and then names which :math:`j` this set of channels
-    belongs to.
+    belongs to.  The valence state is always the Numerov shoot, at the level
+    of theory the reference atom was solved with: the pseudization needs
+    waves that are eigenstates of the potential it was handed to fourth
+    order, which a tridiagonal wave of the same potential is not (it left an
+    s channel with a ghost 56 Hartree below the reference).
 
     ``extra_l`` adds that many unoccupied channels above the highest valence
     :math:`l`.  Without them those angular momenta see the local potential
@@ -1824,7 +1295,7 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
     samples these channels. ``extra_energy`` overrides the first reference
     with a positive scattering energy when a deep occupied shell was frozen.
     """
-    r, v_ae = atom.r, atom.v_effective
+    r, v_ae = _array(atom.r), _array(atom.v_effective)
 
     def kappa_of_l(l):
         """``kappa`` may be one value or a ``{l: kappa}`` map (one j branch)."""
@@ -1836,8 +1307,9 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
         guess = atom.eigenvalues[(n, l)]
         if treatment == "dirac" and atom.eigenvalues_j:
             guess = atom.eigenvalues_j.get((n, l, k), guess)
-        u, energy = reference_bound_state(r, v_ae, l, n - l - 1, guess, z_eff,
-                                          treatment, k)
+        wave, energy = _native.paw_bound_state(
+            context(), r, v_ae, int(l), float(guess), float(z_eff), 5e-3,
+            str(treatment), k, True)
         # A channel's first reference is a statement about a *bound* state, so a
         # non-negative reference energy is not a hard case to handle -- it is
         # the wrong input.  Under strict aufbau filling Ac's 5f came out at
@@ -1853,7 +1325,7 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
                 f"(eps = {energy:+.5f} Ha).  A channel cannot be built on an "
                 f"unbound reference state; the reference configuration "
                 f"is what needs changing, not the cutoff or the grid.")
-        per_l.setdefault(l, []).append((n, energy, u / r, occupancy))
+        per_l.setdefault(l, []).append((n, energy, wave, occupancy))
 
     cutoffs = {l: _snap(r, _cutoff_for(symbol, l, r, states[0][2], r_cut,
                                         rc_factor, defaults,
@@ -1873,11 +1345,9 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
                         f"{symbol} l={l}: the second reference energy "
                         f"{energy_2:+.4f} Ha is not above the bound state "
                         f"({energies[0]:+.4f} Ha)")
-            u2 = scattering_wave(r, v_ae, l, energy_2, z_eff, treatment,
-                                 kappa_of_l(l))
-            inside = r <= cutoffs[l]
-            u2 = u2 / np.sqrt(np.trapezoid(u2[inside] ** 2, r[inside]))
-            waves.append(u2 / r)
+            waves.append(_scattering_reference(
+                r, v_ae, l, energy_2, z_eff, cutoffs[l], treatment,
+                kappa_of_l(l)))
             energies.append(energy_2)
         references[l] = (waves[:2], energies[:2])
 
@@ -1886,6 +1356,15 @@ def reference_waves(symbol, atom, valence_config, z_eff, r_cut, rc_factor,
                             float(energy_offset), atom, z_eff, treatment,
                             extra_energy=extra_energy, kappa=kappa)
     return per_l, cutoffs, references
+
+
+def _scattering_reference(r, v_ae, l, energy, z_eff, radius, treatment,
+                          kappa=None):
+    """The scattering wave at ``energy`` as a radial function ``R``,
+    normalized inside ``radius``."""
+    return _native.paw_reference_waves(
+        context(), r, v_ae, int(l), float(energy), float(z_eff),
+        float(radius), str(treatment), kappa)
 
 
 def unoccupied_level(atom, l: int, n_core: int) -> float | None:
@@ -1906,11 +1385,11 @@ EXTRA_ANCHOR_ENERGIES = (0.0, 0.1, 0.25)
 
 
 def _add_extra_channels(per_l, cutoffs, references, extra_l, energy_offset,
-                        atom, z_eff, treatment, extra_energy: float | None = None,
-                        kappa=None):
+                        atom, z_eff, treatment,
+                        extra_energy: float | None = None, kappa=None):
     """Append ``extra_l`` unoccupied channels above the highest valence
     :math:`l`, both references scattering states at the widest cutoff."""
-    r, v_ae = atom.r, atom.v_effective
+    r, v_ae = _array(atom.r), _array(atom.v_effective)
     highest = max(per_l)
     # The highest occupied level: a semicore channel's first reference is
     # its semicore state (potassium's 3p at -0.69 Ha, under a 4s at -0.07).
@@ -1922,22 +1401,12 @@ def _add_extra_channels(per_l, cutoffs, references, extra_l, energy_offset,
         k = kappa.get(l) if isinstance(kappa, dict) else kappa
         energies = [anchor, anchor + energy_offset]
         cutoffs[l] = widest
-        inside = r <= widest
-        waves = []
-        for energy in energies:
-            u = scattering_wave(r, v_ae, l, energy, z_eff, treatment, k)
-            u = u / np.sqrt(np.trapezoid(u[inside] ** 2, r[inside]))
-            waves.append(u / r)
+        waves = [_scattering_reference(r, v_ae, l, energy, z_eff, widest,
+                                       treatment, k)
+                 for energy in energies]
         references[l] = (waves, energies)
         # A scattering reference contributes no valence charge.
         per_l[l] = [(l + 1, energies[0], waves[0], 0.0)]
-
-
-def _sign_changes(values: np.ndarray) -> int:
-    """Nodes of a radial function: sign changes past its round-off floor."""
-    values = np.asarray(values, dtype=float)
-    values = values[np.abs(values) > 1e-6 * np.max(np.abs(values))]
-    return int(np.count_nonzero(np.diff(np.sign(values))))
 
 
 def spurious_nodes(r: np.ndarray, pw: PseudoWaves) -> list[int]:
@@ -1951,15 +1420,9 @@ def spurious_nodes(r: np.ndarray, pw: PseudoWaves) -> list[int]:
     couplings of -1.8 to -2.7 Ha, an intruding-function miss of 0.79, and
     bcc Li 3 % too short in plane waves (HISTORY.md, 2026-10-07).
     """
-    radius = np.linspace(0.02, 1.0, 400) * float(pw.r_cut)
-    out = []
-    for i, (wave, qs, c) in enumerate(zip(pw.waves, pw.wavevectors,
-                                          pw.coefficients)):
-        smooth = c @ _bessel_table(pw.l, qs, radius)
-        all_electron = np.interp(radius, r, np.asarray(wave))
-        if _sign_changes(smooth) > _sign_changes(all_electron):
-            out.append(i)
-    return out
+    return list(_native.paw_spurious_nodes(
+        int(pw.l), float(pw.r_cut), _array(r), _array(pw.waves),
+        _array(pw.wavevectors), _array(pw.coefficients)))
 
 
 def _spectrum_extent(pp, l: int, floor: float = 1e-5,
@@ -1968,14 +1431,11 @@ def _spectrum_extent(pp, l: int, floor: float = 1e-5,
     pseudo wave has decayed to ``floor`` of its maximum (a diffuse Li 2s
     reaches 18 Bohr; a semicore channel's valence wave, not its compact
     semicore one)."""
-    r = pp.r
     channel = pp.channels[int(l)]
     occupied = len(_occupied_references(channel))
-    u = np.abs(channel.pseudo_waves[occupied - 1] * r)
-    peak = int(np.argmax(u))
-    tail = np.nonzero(u[peak:] > floor * u[peak])[0]
-    extent = float(r[peak + tail[-1]]) if tail.size else bounds[1]
-    return float(np.clip(extent, *bounds))
+    return _native.paw_spectrum_extent(
+        _array(pp.r), _array(channel.pseudo_waves[occupied - 1]),
+        float(floor), float(bounds[0]), float(bounds[1]))
 
 
 def log_derivative_errors(pp, l, energies, r_cut, pseudo_log_derivative,
@@ -1996,16 +1456,15 @@ def log_derivative_errors(pp, l, energies, r_cut, pseudo_log_derivative,
     oxygen s channel, against a 1e-3 tolerance.
     """
     ae = pp.atom
-    treatment = getattr(pp, "relativity", "none")
+    treatment = str(getattr(pp, "relativity", "none"))
     probes = list(energies)
     if midpoint:
         probes.append(0.5 * (energies[0] + energies[1]))
-    errors = {}
     r_cut = _snapped(pp, r_cut)
-    for energy in probes:
-        l_ae = log_derivative_ae(ae.r, ae.v_effective, l, energy, r_cut,
-                                 float(pp.atomic_number), treatment, kappa)
-        l_ps = pseudo_log_derivative(pp, l, energy)
-        errors[float(energy)] = (float(abs(l_ps - l_ae)), float(l_ae))
-    return errors
-
+    l_ae = _native.paw_log_derivatives_ae(
+        context(), _array(ae.r), _array(ae.v_effective), int(l),
+        [float(e) for e in probes], float(r_cut), float(pp.atomic_number),
+        treatment, kappa)
+    return {float(energy): (float(abs(pseudo_log_derivative(pp, l, energy)
+                                      - ae_value)), float(ae_value))
+            for energy, ae_value in zip(probes, l_ae)}

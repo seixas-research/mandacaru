@@ -1,10 +1,12 @@
 //! Sequential variational deflation with analytic overlap-penalty gradients.
+use super::amplitude::{inner_wide, stack, Amplitude, State};
+use super::solver::by_precision;
 use super::{evolution, optimizer, CachedProblem, SolveOptions, C64};
-use crate::{product, Buffer, Error, Reservation, Result};
+use crate::{Buffer, Error, Reservation, Result};
 use std::time::Instant;
 pub struct Levels {
     pub energies: Vec<f64>,
-    pub states: Buffer<C64>,
+    pub states: State,
     pub parameters: Vec<Vec<f64>>,
     pub success: Vec<bool>,
     pub messages: Vec<String>,
@@ -22,7 +24,20 @@ impl CachedProblem {
         beta: Option<f64>,
         seed: u64,
     ) -> Result<Levels> {
-        options.validate()?;
+        by_precision!(
+            self.precision,
+            A => self.energy_levels_as::<A>(options, count, restarts, beta, seed)
+        )
+    }
+    fn energy_levels_as<A: Amplitude>(
+        &self,
+        options: &SolveOptions,
+        count: usize,
+        restarts: usize,
+        beta: Option<f64>,
+        seed: u64,
+    ) -> Result<Levels> {
+        options.validate(self.precision)?;
         if options.adapt {
             return Err(Error::Invalid(
                 "sequential deflation currently uses a fixed ansatz".into(),
@@ -49,11 +64,11 @@ impl CachedProblem {
                 .collect();
             let n = indices.len();
             let memory = ctx.reserve(
-                product(&[count, n.max(1), 16])?
-                    .checked_add(product(&[count, 128])?)
+                crate::product(&[count, n.max(1), 16])?
+                    .checked_add(crate::product(&[count, 128])?)
                     .ok_or(Error::Overflow)?,
             )?;
-            let mut states = ctx.allocate::<C64>(product(&[count, d])?)?;
+            let mut states = stack::<A>(ctx, count, d)?;
             let mut energies = Vec::new();
             let mut parameters = Vec::new();
             let mut success = Vec::new();
@@ -62,7 +77,7 @@ impl CachedProblem {
             let reference = self.evaluate(&[], &[], true)?.energy;
             let mut random = seed;
             for level in 0..count {
-                let mut best: Option<(optimizer::Outcome, Buffer<C64>)> = None;
+                let mut best: Option<(optimizer::Outcome, Buffer<A>)> = None;
                 for restart in 0..restarts {
                     let initial: Vec<_> = (0..n)
                         .map(|_| {
@@ -81,7 +96,7 @@ impl CachedProblem {
                         .collect();
                     let out = optimizer::minimize(ctx, &initial, &options.optimizer, |theta| {
                         let sequence = self.sequence(&indices, theta)?;
-                        let data = evolution::state_from(
+                        let data = evolution::state_from::<A>(
                             ctx,
                             &self.basis,
                             &sequence.operators,
@@ -91,19 +106,21 @@ impl CachedProblem {
                             None,
                         )?;
                         let psi = &data.as_slice()[..d];
-                        let mut action = self.hamiltonian.apply(ctx, &self.basis, psi)?;
+                        let mut action = ctx.allocate::<C64>(d)?;
+                        self.hamiltonian
+                            .apply_into(&self.basis, psi, action.as_mut_slice());
                         for previous in states.as_slice()[..level * d].chunks_exact(d) {
                             let overlap = evolution::inner(previous, psi);
                             for (h, s) in action.as_mut_slice().iter_mut().zip(previous) {
-                                *h += beta * overlap * s;
+                                *h += beta * overlap * s.widen();
                             }
                         }
-                        let energy = evolution::inner(psi, action.as_slice()).re;
+                        let energy = inner_wide(psi, action.as_slice()).re;
                         let mut gradient = vec![0.; n];
                         for (i, (logical, weight)) in sequence.links.iter().enumerate() {
                             gradient[*logical] += weight
                                 * 2.
-                                * evolution::inner(
+                                * inner_wide(
                                     &data.as_slice()[(i + 1) * d..(i + 2) * d],
                                     action.as_slice(),
                                 )
@@ -114,13 +131,15 @@ impl CachedProblem {
                     evaluations += out.history.len();
                     if best.as_ref().is_none_or(|(b, _)| out.energy < b.energy) {
                         let state =
-                            self.prepare_state(&indices, &out.parameters, options.trotter)?;
+                            self.prepare_buffer::<A>(&indices, &out.parameters, options.trotter)?;
                         best = Some((out, state));
                     }
                 }
                 let (out, state) = best.unwrap();
-                let action = self.hamiltonian.apply(ctx, &self.basis, state.as_slice())?;
-                energies.push(evolution::inner(state.as_slice(), action.as_slice()).re);
+                let mut action = ctx.allocate::<C64>(d)?;
+                self.hamiltonian
+                    .apply_into(&self.basis, state.as_slice(), action.as_mut_slice());
+                energies.push(inner_wide(state.as_slice(), action.as_slice()).re);
                 parameters.push(out.parameters);
                 success.push(out.success);
                 messages.push(out.message);
@@ -128,7 +147,7 @@ impl CachedProblem {
             }
             let mut order: Vec<_> = (0..count).collect();
             order.sort_by(|&i, &j| energies[i].total_cmp(&energies[j]));
-            let mut sorted = ctx.allocate::<C64>(product(&[count, d])?)?;
+            let mut sorted = stack::<A>(ctx, count, d)?;
             for (i, &j) in order.iter().enumerate() {
                 sorted.as_mut_slice()[i * d..(i + 1) * d]
                     .copy_from_slice(&states.as_slice()[j * d..(j + 1) * d]);
@@ -138,7 +157,7 @@ impl CachedProblem {
                 parameters: order.iter().map(|&j| parameters[j].clone()).collect(),
                 success: order.iter().map(|&j| success[j]).collect(),
                 messages: order.iter().map(|&j| messages[j].clone()).collect(),
-                states: sorted,
+                states: A::wrap(sorted),
                 evaluations,
                 reference,
                 elapsed_seconds: start.elapsed().as_secs_f64(),

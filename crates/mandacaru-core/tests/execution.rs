@@ -156,10 +156,7 @@ fn fixed_ansatz_stop_keeps_the_best_completed_point_for_every_derivative_free_me
             assert_eq!(result.history.len(), stop_at - 1, "{label}");
             let lowest = energies.iter().copied().fold(f64::INFINITY, f64::min);
             assert!((result.energy - lowest).abs() < 1e-12, "{label}");
-            assert!(
-                result.state.as_slice().len() == problem.basis.len(),
-                "{label}"
-            );
+            assert!(result.state.len() == problem.basis.len(), "{label}");
         }
     }
     drop(problem);

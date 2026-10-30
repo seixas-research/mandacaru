@@ -412,6 +412,30 @@ class TestElectronsBlock:
         assert "two-body integrals" not in parse_output(out)["electrons"]
 
 
+class TestBasisPrecisionLine:
+    """The storage precision has one owner in the log: ``[BASIS]``."""
+
+    @pytest.mark.parametrize("precision", ["float64", "float32"])
+    def test_the_precision_is_written_once_in_the_basis_block(self, tmp_path, precision):
+        import re
+
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.5,
+                               precision=precision, resources={"threads": 1},
+                               txt=out)
+        atoms.get_potential_energy()
+        step = parse_output(out)
+        assert step["basis"]["precision"] == precision
+        text = open(out, encoding="utf-8").read()
+        assert len(re.findall(r"^\s*precision:", text, flags=re.M)) == 1
+        lines = text.splitlines()
+        start = lines.index("[BASIS]")
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("["))
+        assert f"precision: {precision}" in "\n".join(lines[start:end])
+
+
 class TestBasisBlock:
     """``[BASIS]``: the basis that *ran*, not the options that were typed.
 

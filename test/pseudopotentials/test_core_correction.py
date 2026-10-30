@@ -11,6 +11,8 @@ properties of the ``A sin(Br)/r`` form with ``Br_c`` kept inside ``(0, pi)``,
 and both are checked directly.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -182,3 +184,35 @@ class TestInTheGenerators:
         pp = generate_paw("H", points=3000, r_max=20.0)
         assert not pp.nlcc["applied"]
         assert "no core" in pp.nlcc["reason"]
+
+
+REFERENCE = (Path(__file__).resolve().parents[1] / "migration" / "reference"
+             / "paw" / "core_correction.npz")
+
+
+class TestFrozenPythonOutputs:
+    """The Rust routines reproduce what the Python ones gave on the shipped
+    lda-sr core and valence densities (``test/migration/reference/paw``)."""
+
+    @pytest.mark.parametrize("symbol", ["H", "C", "O", "Si", "Cu"])
+    def test_the_crossover_and_the_partial_core(self, symbol):
+        frozen = np.load(REFERENCE)
+        r, core = frozen[f"{symbol}_r"], frozen[f"{symbol}_core"]
+        valence = frozen[f"{symbol}_valence"]
+        for tag, ratio in (("crossover", 1.0), ("crossover2", 2.0)):
+            expected = frozen[f"out_{symbol}_{tag}"][0]
+            radius = crossover_radius(r, core, valence, ratio)
+            if np.isnan(expected):
+                assert radius is None
+            else:
+                assert radius == pytest.approx(expected, rel=1e-12)
+        for tag, options in (("auto", {}), ("ratio2", {"ratio": 2.0}),
+                             ("fixed", {"r_nlcc": 0.9})):
+            if f"out_{symbol}_{tag}_error" in frozen.files:
+                with pytest.raises(ValueError):
+                    partial_core_density(r, core, valence, **options)
+                continue
+            density, _details = partial_core_density(r, core, valence, **options)
+            reference = frozen[f"out_{symbol}_{tag}_rho"]
+            assert np.abs(density - reference).max() <= 1e-12 * max(
+                np.abs(reference).max(), 1e-300)

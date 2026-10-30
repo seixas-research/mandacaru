@@ -38,7 +38,7 @@ fn sequential_deflation_finds_unbiased_orthogonal_levels_with_independent_restar
             let result = p.energy_levels(&options, 2, 4, None, 11).unwrap();
             assert!((result.energies[0] + 0.5).abs() < 1e-10);
             assert!((result.energies[1] - 0.5).abs() < 1e-10);
-            let states = result.states.as_slice();
+            let states = result.states.complex128().unwrap();
             assert!(evolution::inner(&states[..2], &states[2..]).norm() < 1e-5);
             for state in states.chunks_exact(2) {
                 assert!((evolution::inner(state, state).re - 1.).abs() < 1e-12);

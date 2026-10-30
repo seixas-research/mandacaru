@@ -134,7 +134,7 @@ impl PyIntegrals {
                 ("orthonormal_samples", &self.inner.orthonormal_samples),
             ] {
                 match samples {
-                    RealSamples::Double(values) => out.set_item(
+                    RealSamples::Float64(values) => out.set_item(
                         name,
                         array(
                             py,
@@ -142,7 +142,7 @@ impl PyIntegrals {
                             values.as_slice().to_vec(),
                         )?,
                     )?,
-                    RealSamples::Single(values) => out.set_item(
+                    RealSamples::Float32(values) => out.set_item(
                         name,
                         array(
                             py,
@@ -321,6 +321,12 @@ impl PyMeanField {
         internal: bool,
         extrapolate: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
+        if problem.inner.precision != mandacaru_core::math::storage::Precision::Float64 {
+            return Err(PyValueError::new_err(
+                "quantum forces need a complex128 state: the Richardson step turns complex64 \
+                 rounding into force noise; use precision='float64'",
+            ));
+        }
         let (values, _memory) = copy(&self.integrals.context, &state)?;
         let response = py
             .detach(|| {
@@ -799,6 +805,21 @@ impl PyModel {
         })
         .map_err(error)
     }
+    #[pyo3(signature=(path,*,mapping="jordan_wigner",compression="zstd"))]
+    fn save_parquet(
+        &self,
+        py: Python<'_>,
+        path: String,
+        mapping: &str,
+        compression: &str,
+    ) -> PyResult<()> {
+        let codec = mandacaru_core::parquet::Codec::parse(compression).map_err(error)?;
+        py.detach(|| {
+            self.inner()
+                .save_parquet(&self.context, std::path::Path::new(&path), mapping, codec)
+        })
+        .map_err(error)
+    }
     #[getter]
     fn n_spatial_orbitals(&self) -> usize {
         self.inner().m
@@ -846,7 +867,7 @@ impl PyModel {
             inner,
         })
     }
-    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic"))]
+    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64"))]
     fn problem(
         &self,
         py: Python<'_>,
@@ -856,18 +877,21 @@ impl PyModel {
         include_singles: bool,
         sparse: bool,
         pool: &str,
+        precision: &str,
     ) -> PyResult<PyProblem> {
         if sparse && dense {
             return Err(PyValueError::new_err(
                 "choose either dense or sparse storage",
             ));
         }
+        let precision = super::quantum::parse_precision(precision)?;
         let mut inner = py
             .detach(|| {
                 self.inner()
                     .problem(&self.context, mapping, sector, dense, include_singles)
             })
-            .map_err(error)?;
+            .map_err(error)?
+            .with_precision(precision);
         if pool != "fermionic" {
             py.detach(|| inner.use_pool(pool, include_singles))
                 .map_err(error)?;

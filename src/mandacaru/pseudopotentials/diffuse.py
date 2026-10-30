@@ -76,12 +76,16 @@ only: a crystal is refused (:func:`refuse_crystal`).
 
 from __future__ import annotations
 
+import math
+import numbers
 import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 
+from .. import _native
 from ..units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
+from .native_context import context as _context
 
 #: Keys a ``diffuse`` recipe dict accepts.
 DIFFUSE_KEYS = ("shells", "count", "rms_ratio", "ratio", "rms_radius",
@@ -112,7 +116,7 @@ DEFAULT_RMS_RATIO = 2.5
 
 #: Ratio between successive rms radii of one channel (``count > 1``): the
 #: Gaussian families' exponent ratio 3.5 as a length.
-DEFAULT_SHELL_RATIO = float(np.sqrt(3.5))
+DEFAULT_SHELL_RATIO = math.sqrt(3.5)
 
 #: The uncut Gaussian's squared norm left beyond ``r_cut``.  1e-4 instead of
 #: the filter's 1e-6 shortens every support by 14-15 % (the box needed by as
@@ -212,7 +216,8 @@ def _shells(value):
     for item in letters:
         if isinstance(item, str) and item.strip().lower() in _L_LETTERS:
             out.add(_L_LETTERS.index(item.strip().lower()))
-        elif (isinstance(item, (int, np.integer)) and not isinstance(item, bool)
+        elif (isinstance(item, numbers.Integral)
+              and not isinstance(item, bool)
               and 0 <= int(item) <= DIFFUSE_L_LIMIT):
             out.add(int(item))
         else:
@@ -225,12 +230,10 @@ def _shells(value):
 
 
 def _positive(key, value, *, above=0.0):
-    if isinstance(value, bool) or not isinstance(value, (int, float,
-                                                         np.floating,
-                                                         np.integer)):
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise ValueError(f"diffuse {key!r} must be a number, got {value!r}")
     value = float(value)
-    if not np.isfinite(value) or value <= above:
+    if not math.isfinite(value) or value <= above:
         raise ValueError(f"diffuse {key!r} must be greater than {above:g}, "
                          f"got {value!r}")
     return value
@@ -244,7 +247,7 @@ def _recipe(spec):
         return spec
     if spec is True:
         return DEFAULT_DIFFUSE
-    if isinstance(spec, (int, np.integer)):
+    if isinstance(spec, numbers.Integral):
         count = int(spec)
         if count < 0:
             raise ValueError(f"a diffuse shell count must be >= 0, got {spec!r}")
@@ -259,7 +262,7 @@ def _recipe(spec):
         raise ValueError(f"unknown diffuse key(s) {unknown}; a recipe takes "
                          f"{list(DIFFUSE_KEYS)}")
     count = spec.get("count", 1)
-    if (isinstance(count, bool) or not isinstance(count, (int, np.integer))
+    if (isinstance(count, bool) or not isinstance(count, numbers.Integral)
             or int(count) < 1):
         raise ValueError(f"diffuse 'count' is a positive int, got {count!r}")
     cutoff_norm = _positive("cutoff_norm",
@@ -362,56 +365,25 @@ def refuse_crystal(spec) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The radial function.
+# The radial function (Rust: ``basis::diffuse``).
 # --------------------------------------------------------------------------- #
 
-def _gaussian_cut(l: int, cutoff_norm: float) -> float:
-    """``c_l`` with ``r_cut = c_l / sqrt(alpha)``: the radius leaving
-    ``cutoff_norm`` of ``r^l exp(-alpha r^2)``'s squared norm outside."""
-    from scipy.special import gammainccinv
-
-    return float(np.sqrt(0.5 * gammainccinv(l + 1.5, float(cutoff_norm))))
-
-
-def _rms(r, values) -> float:
-    density = np.asarray(values, dtype=float) ** 2 * np.asarray(r) ** 2
-    return float(np.sqrt(np.trapezoid(density * r * r, r)
-                         / np.trapezoid(density, r)))
-
-
-_UNIT_RMS: dict = {}
-
-
-def _unit_rms(l: int, cutoff_norm: float) -> float:
-    """rms radius of the cut quasi-Gaussian at ``alpha = 1`` (Bohr)."""
-    from .confinement import quasi_gaussian
-
-    key = (int(l), float(cutoff_norm))
-    if key not in _UNIT_RMS:
-        c = _gaussian_cut(l, cutoff_norm)
-        r = np.linspace(0.0, c, 20001)
-        _UNIT_RMS[key] = _rms(r, r ** l * quasi_gaussian(r, 1.0, c))
-    return _UNIT_RMS[key]
+def _array(values) -> np.ndarray:
+    return np.ascontiguousarray(values, dtype=float)
 
 
 def diffuse_parameters(l: int, rms: float, cutoff_norm: float = DEFAULT_CUTOFF_NORM
                        ) -> tuple[float, float]:
     """``(alpha, r_cut)`` (Bohr^-2, Bohr) of the cut quasi-Gaussian of
     angular momentum ``l`` whose rms radius is ``rms`` (Bohr)."""
-    alpha = (_unit_rms(l, cutoff_norm) / float(rms)) ** 2
-    return alpha, _gaussian_cut(l, cutoff_norm) / np.sqrt(alpha)
+    return _native.diffuse_parameters(int(l), float(rms), float(cutoff_norm))
 
 
 def diffuse_radial(r, l: int, rms: float,
                    cutoff_norm: float = DEFAULT_CUTOFF_NORM):
     """``(R, alpha, r_cut)``: the unit-norm diffuse shell on ``r`` (Bohr)."""
-    from .confinement import quasi_gaussian
-
-    r = np.asarray(r, dtype=float)
-    alpha, r_cut = diffuse_parameters(l, rms, cutoff_norm)
-    values = r ** l * quasi_gaussian(r, alpha, r_cut)
-    values = values / np.sqrt(np.trapezoid(values * values * r * r, r))
-    return values, alpha, r_cut
+    return _native.diffuse_radial(_array(r), int(l), float(rms),
+                                  float(cutoff_norm))
 
 
 def free_valence_rms(pp) -> dict:
@@ -420,38 +392,16 @@ def free_valence_rms(pp) -> dict:
     outermost when a channel has two), and an empty channel's bound level."""
     from .orbitals import basis_states, bound_radial
 
-    r = np.asarray(pp.r, dtype=float)
+    r = _array(pp.r)
     out: dict = {}
     for state in basis_states(pp):
         if state.semicore:
             continue
         radial = (bound_radial(pp, state.l) if state.empty
                   else pp.channels[state.l].pseudo_waves[state.index])
-        out[state.l] = max(out.get(state.l, 0.0), _rms(r, radial))
+        out[state.l] = max(out.get(state.l, 0.0),
+                           _native.diffuse_rms(r, _array(radial)))
     return out
-
-
-def _extended_grid(r, reach: float) -> np.ndarray:
-    """``r`` continued with its last spacing up to ``reach`` (Bohr)."""
-    r = np.asarray(r, dtype=float)
-    if reach <= r[-1]:
-        return r
-    h = float(r[-1] - r[-2])
-    extra = r[-1] + h * np.arange(1, int(np.ceil((reach - r[-1]) / h)) + 1)
-    return np.concatenate([r, extra])
-
-
-def _on_grid(r_new, r_old, values) -> np.ndarray:
-    """A table on ``r_old`` resampled on ``r_new``, zero past its end."""
-    from scipy.interpolate import CubicSpline
-
-    r_old = np.asarray(r_old, dtype=float)
-    values = np.asarray(values, dtype=float)
-    if r_new.size >= r_old.size and np.array_equal(r_new[:r_old.size], r_old):
-        return np.concatenate([values, np.zeros(r_new.size - r_old.size)])
-    spline = CubicSpline(r_old, values, extrapolate=False)
-    out = spline(np.clip(r_new, r_old[0], r_old[-1]))
-    return np.where((r_new > r_old[-1]) | np.isnan(out), 0.0, out)
 
 
 def diffuse_tables(symbol, pp, existing, recipe: DiffuseRecipe,
@@ -463,11 +413,14 @@ def diffuse_tables(symbol, pp, existing, recipe: DiffuseRecipe,
     values)``, final (filtered) form, in basis order.  The shells of each
     channel are built compact first, filtered (``filter_wavevector``, Bohr^-1)
     and Gram-Schmidt orthogonalized against ``existing`` and the shells
-    accepted before them; a rejected shell is recorded, not built.
+    accepted before them; a rejected shell is recorded, not built.  The radial
+    functions, the grid, the resampling and the projection are native; the
+    Fourier filter between them is :func:`~mandacaru.basis.filtering.filter_radial`.
     """
     from ..basis.filtering import filter_radial
     from ..basis.multizeta import RadialTable
 
+    context = _context()
     present = sorted({int(l) for _n, l, _r, _v in existing})
     channels = ([l for l in present if l <= PRESENT_L_MAX]
                 if recipe.shells == "present" else list(recipe.shells))
@@ -476,6 +429,7 @@ def diffuse_tables(symbol, pp, existing, recipe: DiffuseRecipe,
         raise ValueError(f"{symbol} has no valence orbital to size diffuse "
                          "shells from")
     outermost = max(reference, key=reference.get)
+    filtered = filter_wavevector is not None
 
     tables, shells = [], []
     for l in channels:
@@ -486,53 +440,32 @@ def diffuse_tables(symbol, pp, existing, recipe: DiffuseRecipe,
                  else recipe.rms_ratio * ref_rms)
         targets = [first * recipe.ratio ** k for k in range(recipe.count)]
         _alpha, widest = diffuse_parameters(l, targets[-1], recipe.cutoff_norm)
-        r = _extended_grid(pp.r, GRID_REACH * widest)
-        same = [_on_grid(r, r_old, values)
+        r = _native.diffuse_extended_grid(_array(pp.r), GRID_REACH * widest)
+        same = [_native.diffuse_on_grid(context, r, _array(r_old),
+                                        _array(values))
                 for _n, l_old, r_old, values in existing if l_old == l]
         n_next = max([n for n, l_old, _r, _v in existing if l_old == l],
                      default=l) + 1
         for k, rms in enumerate(targets):
             values, alpha, r_cut = diffuse_radial(r, l, rms,
                                                   recipe.cutoff_norm)
-            if filter_wavevector is not None:
+            if filtered:
                 values, _info = filter_radial(r, values, l,
-                                              float(filter_wavevector))
-                values = values / np.sqrt(np.trapezoid(values * values * r * r,
-                                                       r))
-            candidate = values.copy()
-            norms = [float(np.trapezoid(g * g * r * r, r)) for g in same]
-            basis = [g / np.sqrt(norm) for g, norm in zip(same, norms)
-                     if norm > 0.0]
-            # Modified Gram-Schmidt against an orthonormalized copy of the
-            # channel: the existing zetas are not orthogonal among themselves.
-            ortho = []
-            for g in basis:
-                g = g.copy()
-                for _pass in range(2):
-                    for o in ortho:
-                        g -= float(np.trapezoid(o * g * r * r, r)) * o
-                norm = float(np.trapezoid(g * g * r * r, r))
-                if norm > 1e-12:
-                    ortho.append(g / np.sqrt(norm))
-            for _pass in range(2):
-                for o in ortho:
-                    candidate -= float(np.trapezoid(o * candidate * r * r, r)) * o
-            residual = float(np.trapezoid(candidate * candidate * r * r, r))
-            accepted = residual >= LINEAR_DEPENDENCE_TOL
+                                              float(filter_wavevector),
+                                              context=context)
+            residual, accepted, candidate = _native.diffuse_orthogonalize(
+                context, r, same, _array(values), filtered,
+                LINEAR_DEPENDENCE_TOL)
             shells.append(DiffuseShell(
                 symbol=str(symbol), l=int(l), index=k, n=n_next + k,
                 reference_l=int(ref_l), reference_rms=float(ref_rms),
                 rms=float(rms), alpha=float(alpha), r_cut=float(r_cut),
-                residual=residual, accepted=bool(accepted),
+                residual=float(residual), accepted=bool(accepted),
                 r_max=float(r[-1])))
             if not accepted:
                 continue
-            candidate = candidate / np.sqrt(residual)
-            if np.trapezoid(candidate * values * r * r, r) < 0.0:
-                candidate = -candidate
-            table = RadialTable(r=r, values=candidate, n=n_next + k, l=int(l),
-                                zeta=1, diffuse=True)
-            tables.append(table)
+            tables.append(RadialTable(r=r, values=candidate, n=n_next + k,
+                                      l=int(l), zeta=1, diffuse=True))
             same.append(candidate)
     return tables, shells
 
@@ -596,57 +529,47 @@ def refuse_energy_ranking(method, n_diffuse: int, n_virtual: int,
             "keep every virtual orbital")
 
 
-def _radial_table_norm(function) -> float:
-    table = function.table
-    r = np.asarray(table.r, dtype=float)
-    values = np.asarray(table.values, dtype=float)
-    return float(np.trapezoid(values * values * r * r, r))
-
-
-def box_diagnostic(integrals, basis_fns, atom_of_orbital, symbols,
+def box_diagnostic(grid_norms, basis_fns, atom_of_orbital, symbols, grid,
                    shells: dict | None = None):
     """``(ratios, rows)`` for the diffuse functions of a molecule.
 
-    ``ratios[i]`` is basis function ``i``'s norm on the real-space grid over
-    its radial norm (``nan`` for a function that is not diffuse); a ratio
-    below ``1 - BOX_TOL`` is warned about -- the cell, which is a molecule's
-    whole box, cuts the tail.  ``rows`` are one per atom with diffuse
-    shells: its largest ``r_cut`` against the distance from the atom to the
-    nearest face of the grid, and the smallest ratio among its functions.
+    ``grid_norms[i]`` is basis function ``i``'s squared norm sampled on the
+    real-space ``grid`` (``grid.X``/``Y``/``Z``, ``step`` rows in Bohr and
+    ``shape``).  ``ratios[i]`` is that over the function's radial norm
+    (``nan`` for a function that is not diffuse); a ratio below ``1 -
+    BOX_TOL`` is warned about -- the cell, which is a molecule's whole box,
+    cuts the tail.  ``rows`` are one per atom with diffuse shells: its
+    largest ``r_cut`` against the distance from the atom to the nearest face
+    of the grid, and the smallest ratio among its functions.
     """
-    psi = integrals._engine._psi
-    grid = integrals.grid
-    ratios = np.full(len(basis_fns), np.nan)
+    ratios = [math.nan] * len(basis_fns)
     for i, fn in enumerate(basis_fns):
         if is_diffuse(fn):
-            grid_norm = float(np.real(np.vdot(psi[i], psi[i]))) * grid.dV
-            ratios[i] = grid_norm / _radial_table_norm(fn)
-    # The faces of the grid: node 0 plus the steps spanned by its nodes.
-    origin = np.array([grid.X.flat[0], grid.Y.flat[0], grid.Z.flat[0]])
-    span = np.asarray(grid.step, dtype=float) @ np.diag(
-        np.asarray(grid.shape, dtype=float) - 1.0)
-    inverse = np.linalg.inv(span)
-    widths = 1.0 / np.linalg.norm(inverse, axis=1)
-    owners = np.asarray(atom_of_orbital, dtype=int)
+            ratios[i] = float(grid_norms[i]) / _native.diffuse_radial_norm(
+                _array(fn.table.r), _array(fn.table.values))
+    origin = [float(grid.X.flat[0]), float(grid.Y.flat[0]),
+              float(grid.Z.flat[0])]
+    step = _array(grid.step).tolist()
+    shape = [int(n) for n in grid.shape]
+    owners = [int(o) for o in atom_of_orbital]
     rows = []
-    for atom in sorted({int(owners[i]) for i in np.flatnonzero(
-            np.isfinite(ratios))}):
-        mine = [i for i in np.flatnonzero(owners == atom)
-                if np.isfinite(ratios[i])]
-        center = np.asarray(basis_fns[mine[0]].center, dtype=float)
-        frac = inverse @ (center - origin)
-        face = float(np.min(np.minimum(frac, 1.0 - frac) * widths))
+    for atom in sorted({owners[i] for i, x in enumerate(ratios)
+                        if math.isfinite(x)}):
+        mine = [i for i, x in enumerate(ratios)
+                if owners[i] == atom and math.isfinite(x)]
+        face = _native.diffuse_face_distance(
+            origin, step, shape, _array(basis_fns[mine[0]].center).tolist())
         symbol = symbols[atom]
         r_cut = max((s.r_cut for s in (shells or {}).get(symbol, ())
                      if s.accepted), default=float("nan"))
-        rows.append((atom, symbol, r_cut, face, float(np.min(ratios[mine]))))
-    short = np.flatnonzero(ratios < 1.0 - BOX_TOL)
-    if short.size:
-        worst = int(short[np.argmin(ratios[short])])
+        rows.append((atom, symbol, r_cut, face, min(ratios[i] for i in mine)))
+    short = [i for i, x in enumerate(ratios) if x < 1.0 - BOX_TOL]
+    if short:
+        worst = min(short, key=ratios.__getitem__)
         warnings.warn(
-            f"the cell cuts {short.size} diffuse basis function(s): the "
+            f"the cell cuts {len(short)} diffuse basis function(s): the "
             f"worst keeps {ratios[worst]:.6f} of its norm on the grid "
-            f"(function {worst}, on atom {int(owners[worst])}).  A "
+            f"(function {worst}, on atom {owners[worst]}).  A "
             "molecule's box is its cell; enlarge the vacuum until every "
             "atom's diffuse r_cut fits inside it (the [BASIS] diffuse_box "
             "table lists r_cut against each atom's distance to the cell "

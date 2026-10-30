@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from .._native import state_inner
 from ..core.mapping import PauliSum
 from ..units import HARTREE_TO_EV
 from .time_evolution import (PreparedState, SuzukiTrotter, _finite_real,
@@ -27,7 +28,8 @@ from .time_evolution import (PreparedState, SuzukiTrotter, _finite_real,
 class QuantumEchoesResult:
     """One echo experiment in atomic units.
 
-    ``state`` is the final full-register vector, ``amplitude = <psi|echo>``
+    ``state`` is the final full-register vector (``complex64`` for
+    ``precision="float32"``), ``amplitude = <psi|echo>``
     and ``fidelity = |amplitude|²``. ``response`` is
     ``<echo|V|echo> - <psi|V|psi>`` (Hartree). ``correlation`` is
     ``<psi|V U† V U|psi>`` (Hartree²). For an exact ground state it is
@@ -36,7 +38,7 @@ class QuantumEchoesResult:
     ``perturbation_bound`` reports ``abs(tau_p) sum_P |v_P|``.
     """
 
-    state: NDArray[np.complex128]
+    state: NDArray[np.complexfloating]
     amplitude: complex
     fidelity: float
     response: float
@@ -162,6 +164,13 @@ class QuantumEchoes:
     order
         Suzuki–Trotter order for both evolutions and the kick; default 2,
         also accepts 1 or higher even orders.
+    precision
+        ``"float64"`` (default) or ``"float32"``. Float32 stores the two
+        propagated vectors and the final state as ``complex64`` (see
+        :class:`~mandacaru.workflows.time_evolution.SuzukiTrotter`); every
+        inner product (amplitude, response, correlation, elastic term) is
+        summed in float64 in Rust, and the correlation series, spectrum and
+        scalars stay float64. Anything else raises ``ValueError``.
     max_perturbation
         Strict upper bound on ``abs(tau_p) sum_P |v_P|``, default 0.1 and
         restricted to ``0 < max_perturbation <= 0.1``. This bounds
@@ -178,12 +187,16 @@ class QuantumEchoes:
     """
 
     def __init__(self, hamiltonian: PauliSum, perturbation: PauliSum, *,
-                 order: int = 2, max_perturbation: float = 0.1) -> None:
+                 order: int = 2, max_perturbation: float = 0.1,
+                 precision: str = "float64") -> None:
         limit = _finite_real(max_perturbation, "max_perturbation")
         if not 0 < limit <= 0.1:
             raise ValueError("max_perturbation must be in (0, 0.1]")
-        self._evolution = SuzukiTrotter(hamiltonian, order=order)
-        self._kick = SuzukiTrotter(perturbation, order=order)
+        self.precision = precision
+        self._evolution = SuzukiTrotter(hamiltonian, order=order,
+                                        precision=precision)
+        self._kick = SuzukiTrotter(perturbation, order=order,
+                                   precision=precision)
         if self._evolution.n_qubits != self._kick.n_qubits:
             raise ValueError("Hamiltonian and perturbation qubit counts differ")
         self.max_perturbation = limit
@@ -214,12 +227,14 @@ class QuantumEchoes:
             raise ValueError("time_step must be positive and num_samples at least four")
         if window not in ("hann", "none"):
             raise ValueError("window must be 'hann' or 'none'")
-        state = _state_vector(initial_state, self._evolution.n_qubits)
+        state = _state_vector(initial_state, self._evolution.n_qubits,
+                              precision=self.precision)
         perturbed = self._kick._apply_operator(state)
-        elastic = float(np.vdot(state, perturbed).real)**2 if remove_elastic else 0.0
+        elastic = state_inner(state, perturbed)[0]**2 if remove_elastic else 0.0
         correlation = np.empty(n, dtype=complex)
         for i in range(n):
-            correlation[i] = np.vdot(perturbed, self._kick._apply_operator(state))
+            correlation[i] = complex(*state_inner(perturbed,
+                                                  self._kick._apply_operator(state)))
             if i + 1 < n:
                 state = self._evolution._evolve(state, dt, steps)
                 perturbed = self._evolution._evolve(perturbed, dt, steps)
@@ -246,27 +261,30 @@ class QuantumEchoes:
             allowed = self.max_perturbation / self._kick.norm_bound
             raise ValueError(f"pulse is not small: |tau_p| sum|v_P| = {bound:g} "
                              f"> {self.max_perturbation:g}; use |tau_p| <= {allowed:g}")
-        psi = _state_vector(initial_state, self._evolution.n_qubits)
+        psi = _state_vector(initial_state, self._evolution.n_qubits,
+                            precision=self.precision)
         forward = self._evolution._evolve(psi, time, steps)
         kicked = self._kick._evolve(forward, tau_p, kick_steps)
         echo = self._evolution._evolve(kicked, time, steps, inverse=True)
         v_psi = self._kick._apply_operator(psi)
         vt_psi = self._evolution._evolve(
             self._kick._apply_operator(forward), time, steps, inverse=True)
-        amplitude = complex(np.vdot(psi, echo))
-        response = float((np.vdot(echo, self._kick._apply_operator(echo))
-                          - np.vdot(psi, v_psi)).real)
+        amplitude = complex(*state_inner(psi, echo))
+        response = (state_inner(echo, self._kick._apply_operator(echo))[0]
+                    - state_inner(psi, v_psi)[0])
         return QuantumEchoesResult(
             state=echo, amplitude=amplitude, fidelity=float(abs(amplitude)**2),
-            response=response, correlation=complex(np.vdot(v_psi, vt_psi)),
+            response=response, correlation=complex(*state_inner(v_psi, vt_psi)),
             time=time, tau_p=tau_p, perturbation_bound=bound)
 
 
 def quantum_echoes(initial_state: PreparedState, hamiltonian: PauliSum,
                     perturbation: PauliSum, time: float, *, tau_p: float = 1e-3,
                     steps: int = 1, order: int = 2, kick_steps: int = 1,
-                    max_perturbation: float = 0.1) -> QuantumEchoesResult:
-    """Run one echo; see :class:`QuantumEchoes` for units and pulse validation."""
+                    max_perturbation: float = 0.1,
+                    precision: str = "float64") -> QuantumEchoesResult:
+    """Run one echo; see :class:`QuantumEchoes` for units, pulse validation and ``precision``."""
     return QuantumEchoes(hamiltonian, perturbation, order=order,
-                         max_perturbation=max_perturbation).run(
+                         max_perturbation=max_perturbation,
+                         precision=precision).run(
         initial_state, time, tau_p=tau_p, steps=steps, kick_steps=kick_steps)

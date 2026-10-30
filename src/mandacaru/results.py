@@ -1,6 +1,7 @@
 """Result views over native-owned scientific states."""
 
 from __future__ import annotations
+import os
 import numpy as np
 from functools import cached_property
 from .units import HARTREE_TO_EV, BOHR_TO_ANGSTROM
@@ -337,23 +338,30 @@ class CalculationResult:
         return self.hamiltonian.operator(mapping)
 
     def save_hamiltonian(self, path, *, mapping=None, format=None):
-        mapping = self._mapping if mapping is None else mapping
-        if format == "parquet" or (format is None and str(path).endswith(".parquet")):
-            from .core.mapping import PauliSum
-            from .core.serialization import save_hamiltonian
+        """Write the molecular Hamiltonian as a native qubit-Hamiltonian file.
 
-            operator = self.hamiltonian.operator(mapping)
-            terms = {label: complex(re, im) for label, re, im in operator.terms}
-            return save_hamiltonian(
-                path,
-                PauliSum(terms, num_qubits=operator.num_qubits),
-                mapping=mapping,
-                num_particles=self.hamiltonian.num_particles,
-                n_spatial_orbitals=self.hamiltonian.n_spatial_orbitals,
-                format="parquet",
-            )
-        self.hamiltonian.save(str(path), mapping=mapping)
-        return str(path)
+        ``format`` is ``"json"`` or ``"parquet"``; ``None`` follows the path
+        (``.parquet`` and ``.pq`` write Parquet) and falls back to JSON. Both
+        formats carry the same document, including the native term groups
+        that Trotterized runs read back.
+        """
+        from .core.serialization import (EXTENSION_FORMATS, resolve_format,
+                                         warn_extension_mismatch)
+
+        mapping = self._mapping if mapping is None else mapping
+        path = os.fspath(path)
+        if format is None:
+            extension = os.path.splitext(path)[1].lower()
+            format = EXTENSION_FORMATS.get(extension, "json")
+        format = resolve_format(format)
+        warn_extension_mismatch(path, format, stacklevel=2)
+        # The native model owns the document (its term groups included) and
+        # writes it in either format directly, with no staged JSON file.
+        if format == "json":
+            self.hamiltonian.save(path, mapping=mapping)
+        else:
+            self.hamiltonian.save_parquet(path, mapping=mapping)
+        return path
 
     def as_quantum_problem(self):
         """Export native molecular orbitals and the physical many-electron Hamiltonian."""

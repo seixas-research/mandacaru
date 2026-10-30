@@ -1,6 +1,7 @@
 //! Stationary molecular gradients. No displaced SCF or Python AD callback.
 use super::{dft, invalid, MeanField, MolecularIntegrals};
 use crate::math::fft::{spectral_laplacian, Poisson};
+use crate::math::storage::{with_rows, RealSamples, Sample};
 use crate::models::xc;
 use crate::{product, quantum::C64, Buffer, Result};
 use nalgebra::DMatrix;
@@ -79,15 +80,11 @@ impl MolecularIntegrals {
                 if matches!(state.functional.as_deref(), Some("r2scan" | "r2scan+rvv10")) {
                     let gradients = dft::orbital_gradients(self)?;
                     (
-                        Some(dft::grid_kinetic(
-                            self,
-                            &state.densities,
-                            gradients.as_slice(),
-                        )?),
+                        Some(dft::grid_kinetic(self, &state.densities, &gradients)?),
                         Some(dft::grid_density_gradients(
                             self,
                             &state.densities,
-                            gradients.as_slice(),
+                            &gradients,
                         )?),
                     )
                 } else {
@@ -142,16 +139,28 @@ impl MolecularIntegrals {
                     }
                 }
             }
-            let mut dphi = ctx.allocate::<f64>(product(&[m, 3, n])?)?;
-            for a in 0..m {
-                for k in 0..n {
-                    let gradient = self.basis.orbitals[a].gradient(self.grid.point(k));
-                    for (axis, component) in gradient.iter().enumerate() {
-                        dphi.as_mut_slice()[(a * 3 + axis) * n + k] = -component;
+            // Orbital gradients are the largest stack here (3 m n values); they
+            // are stored in the calculation's precision, rounded once per row.
+            let mut dphi = RealSamples::zeros(ctx, self.precision(), product(&[m, 3, n])?)?;
+            let mut row = ctx.allocate::<f64>(n)?;
+            {
+                let mut components = ctx.allocate::<f64>(product(&[3, n])?)?;
+                for a in 0..m {
+                    for k in 0..n {
+                        let gradient = self.basis.orbitals[a].gradient(self.grid.point(k));
+                        for (axis, component) in gradient.iter().enumerate() {
+                            components.as_mut_slice()[axis * n + k] = -component;
+                        }
+                    }
+                    for axis in 0..3 {
+                        dphi.fill_row(
+                            a * 3 + axis,
+                            n,
+                            &components.as_slice()[axis * n..(axis + 1) * n],
+                        )?;
                     }
                 }
             }
-            let samples = self.samples.read(ctx)?;
             for spin in 0..2 {
                 let index = if state.method == "rhf" { 0 } else { spin };
                 let occupied = state.particles[spin];
@@ -164,10 +173,12 @@ impl MolecularIntegrals {
                 let ao =
                     &self.lowdin * DMatrix::from_fn(m, occupied, |a, i| coefficients[(a, i)].re);
                 let mut orbitals = ctx.allocate::<f64>(product(&[occupied, n])?)?;
-                for i in 0..occupied {
-                    for a in 0..m {
+                // Each stored row is widened once and accumulated in float64.
+                for a in 0..m {
+                    self.samples.widen_range(a * n, row.as_mut_slice())?;
+                    for i in 0..occupied {
                         for k in 0..n {
-                            orbitals.as_mut_slice()[i * n + k] += ao[(a, i)] * samples[a * n + k];
+                            orbitals.as_mut_slice()[i * n + k] += ao[(a, i)] * row.as_slice()[k];
                         }
                     }
                 }
@@ -248,12 +259,12 @@ impl MolecularIntegrals {
                     let eps = state.energies[index][i];
                     for a in 0..m {
                         for axis in 0..3 {
-                            let value = (0..n)
+                            let value = with_rows!(dphi.rows(), |stored| (0..n)
                                 .map(|k| {
-                                    dphi.as_slice()[(a * 3 + axis) * n + k]
+                                    stored[(a * 3 + axis) * n + k].widen()
                                         * (action.as_slice()[k] - eps * psi[k])
                                 })
-                                .sum::<f64>()
+                                .sum::<f64>())
                                 * 2.
                                 * ao[(a, i)]
                                 * dv;

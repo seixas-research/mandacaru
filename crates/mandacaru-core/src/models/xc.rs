@@ -213,6 +213,22 @@ pub(crate) fn partials_relativistic(
     }
     Ok((f.v, std::array::from_fn(|i| f.d[i])))
 }
+/// Unpolarized LDA split into its parts at total density `rho` (floored at 1e-30):
+/// `(e_x, v_x, e_c, v_c)`, the Slater exchange and Perdew-Zunger correlation energies per
+/// electron and potentials (Hartree). The same `pz` as the grid kernels, differentiated once.
+pub fn lda_terms(rho: f64) -> (f64, f64, f64, f64) {
+    let rho = rho.max(1e-30);
+    let density = Jet::variable(rho, 0);
+    let exchange = -0.75 * (3. / PI).cbrt() * density.pow(4. / 3.);
+    let rs = (3. / (4. * PI) / density).pow(1. / 3.);
+    let correlation = density * pz(rs, false);
+    (
+        exchange.v / rho,
+        exchange.d[0],
+        correlation.v / rho,
+        correlation.d[0],
+    )
+}
 /// Energy per volume and derivatives in (up, down, uu, ud, dd, tau_up, tau_down).
 /// Meta-GGA evaluation is separate from the density-only grid API: callers
 /// must supply the kinetic-energy densities rather than silently substituting.

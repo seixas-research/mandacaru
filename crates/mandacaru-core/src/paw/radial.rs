@@ -65,18 +65,26 @@ pub fn compensation_coulomb(
 }
 
 /// Smooth local continuation: match four derivatives and independently control v(0).
+/// The derivatives are read off a polynomial fit over +-25 grid points, or over
+/// +-`fit_window` Bohr when that is wider (a gradient-corrected potential).
 pub fn local_potential(
     ctx: &Context,
     r: &[f64],
     ae: &[f64],
     radius: f64,
     shift: f64,
+    fit_window: Option<f64>,
 ) -> Result<Buffer<f64>> {
     validate(r, ae)?;
     if !radius.is_finite() || radius <= r[0] || radius >= r[r.len() - 1] || !shift.is_finite() {
         return Err(invalid("invalid local PAW radius or shift"));
     }
-    let target = derivatives(r, ae, radius, 4, 25)?;
+    let window = match fit_window {
+        Some(width) if width.is_finite() && width > 0. => 25.max((width / (r[1] - r[0])) as usize),
+        Some(_) => return Err(invalid("the local-potential fit window must be positive")),
+        None => 25,
+    };
+    let target = derivatives(r, ae, radius, 4, window)?;
     let row = |derivative: usize, power: usize| {
         if power < derivative {
             0.
@@ -190,8 +198,8 @@ mod tests {
         let ctx = Context::new(Some(1), 1 << 20).unwrap();
         let r = (1..1001).map(|i| i as f64 * 0.005).collect::<Vec<_>>();
         let v = r.iter().map(|r| -3. / r).collect::<Vec<_>>();
-        let a = local_potential(&ctx, &r, &v, 1.5, 0.).unwrap();
-        let b = local_potential(&ctx, &r, &v, 1.5, 0.4).unwrap();
+        let a = local_potential(&ctx, &r, &v, 1.5, 0., None).unwrap();
+        let b = local_potential(&ctx, &r, &v, 1.5, 0.4, None).unwrap();
         assert_eq!(&a.as_slice()[300..], &v[300..]);
         for (i, _) in v.iter().enumerate().take(306).skip(290) {
             assert!((a.as_slice()[i] - v[i]).abs() < 1e-5);

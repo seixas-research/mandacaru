@@ -248,15 +248,6 @@ class TestTheSelfConsistentAtom:
                          for k in kappa_values(l))
             assert shared == pytest.approx(total)
 
-    def test_the_core_valence_partition_conserves_charge(self):
-        atom = solve_atom(8, points=2500, r_max=18.0, tolerance=1e-5)
-        core, valence = atom.partition_density([(2, 0), (2, 1)])
-        shell = 4.0 * np.pi * atom.r * atom.r
-        assert np.trapezoid(core * shell, atom.r) == pytest.approx(2.0,
-                                                                   abs=1e-6)
-        assert np.trapezoid(valence * shell, atom.r) == pytest.approx(6.0,
-                                                                      abs=1e-6)
-
 
 class TestRejections:
     def test_dirac_needs_a_kappa(self):

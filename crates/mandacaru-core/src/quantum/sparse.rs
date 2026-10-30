@@ -1,5 +1,5 @@
 //! Compressed-column storage built directly from a Pauli sum on its basis.
-use super::{Basis, Operator, C64};
+use super::{amplitude::Amplitude, Basis, Operator, C64};
 use crate::{product, Buffer, Context, Error, Result};
 use std::collections::BTreeMap;
 
@@ -69,17 +69,23 @@ impl SparseMatrix {
             values,
         })
     }
-    pub fn apply_into(&self, state: &[C64], out: &mut [C64]) {
-        self.apply_centered_into(state, out);
+    /// `out = H state`; the state is stored in either precision, the row is float64.
+    pub fn apply_into<A: Amplitude>(&self, state: &[A], out: &mut [C64]) {
+        out.fill(C64::default());
+        self.add_into(state, C64::new(1., 0.), out);
         for (value, amplitude) in out.iter_mut().zip(state) {
-            *value += self.identity * amplitude;
+            *value += self.identity * amplitude.widen();
         }
     }
-    pub(super) fn apply_centered_into(&self, state: &[C64], out: &mut [C64]) {
+    pub(super) fn apply_centered_into<A: Amplitude>(&self, state: &[A], out: &mut [C64]) {
         out.fill(C64::default());
+        self.add_into(state, C64::new(1., 0.), out);
+    }
+    fn add_into<A: Amplitude>(&self, state: &[A], scale: C64, out: &mut [C64]) {
         for (col, amplitude) in state.iter().enumerate() {
+            let weighted = scale * amplitude.widen();
             for k in self.offsets.as_slice()[col]..self.offsets.as_slice()[col + 1] {
-                out[self.rows.as_slice()[k]] += self.values.as_slice()[k] * amplitude;
+                out[self.rows.as_slice()[k]] += self.values.as_slice()[k] * weighted;
             }
         }
     }

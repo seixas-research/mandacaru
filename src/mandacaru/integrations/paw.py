@@ -45,7 +45,7 @@ def crystal_input(
     relativistic=False,
     magnetic_moments=None,
     provenance=None,
-    precision="double",
+    precision="float64",
     time_reversal=False,
 ):
     """Snapshot the density-independent PAW setup; this performs no SCF steps."""

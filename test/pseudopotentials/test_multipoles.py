@@ -10,6 +10,9 @@ diverges outside ``r_cut``; the s-d moments came out ~100x too large and the
 isolated copper atom collapsed to -16,000 Ha as the grid was refined.
 """
 
+import itertools
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -138,22 +141,72 @@ class TestRealAngularTables:
                                 assert isinstance(value, float)
                                 assert abs(value - total) < 1e-12
 
-    def test_the_multipole_coulomb_matrix(self):
-        from mandacaru.basis._angular import real_harmonic_transform
-        from mandacaru.pseudopotentials.multipoles import \
-            multipole_coulomb_matrix
 
-        levels = [(L, M) for L in range(3) for M in range(-L, L + 1)]
-        displacement = np.array([0.9, -1.4, 2.1])
-        real = multipole_coulomb_matrix(1.1, levels, 0.9, levels,
-                                        displacement, real=True)
-        complex_ = multipole_coulomb_matrix(1.1, levels, 0.9, levels,
-                                            displacement, real=False)
-        T = np.zeros((len(levels), len(levels)), dtype=complex)
-        offset = 0
-        for L in range(3):
-            T[offset:offset + 2 * L + 1, offset:offset + 2 * L + 1] = \
-                real_harmonic_transform(L)
-            offset += 2 * L + 1
-        assert np.isrealobj(real)
-        assert np.abs(T @ complex_ @ T.T - real).max() < 1e-10
+REFERENCE = (Path(__file__).resolve().parents[1] / "migration" / "reference"
+             / "paw" / "multipoles.npz")
+
+
+@pytest.fixture(scope="module")
+def frozen():
+    """Outputs of the Python implementation, frozen before the port to Rust."""
+    return np.load(REFERENCE)
+
+
+def _scaled_error(value, reference):
+    return (np.abs(np.asarray(value) - reference).max()
+            / max(np.abs(reference).max(), 1e-300))
+
+
+class TestFrozenPythonOutputs:
+    """The Rust routines reproduce the numbers the Python ones gave (the
+    shipped lda-sr datasets and fixed radii; ``test/migration/reference/paw``)."""
+
+    X = np.concatenate([[0.0, 1e-9, 1e-3], np.linspace(0.01, 6.0, 300)])
+
+    @pytest.mark.parametrize("r_g", [1.2, 2.5])
+    @pytest.mark.parametrize("L", range(5))
+    def test_the_shape_and_its_potential(self, frozen, r_g, L):
+        from mandacaru.pseudopotentials.multipoles import shape_potential
+        assert _scaled_error(shape_function(self.X, r_g, L),
+                             frozen[f"shape_{r_g}_{L}"]) < 1e-14
+        assert _scaled_error(shape_potential(self.X, r_g, L),
+                             frozen[f"shapepot_{r_g}_{L}"]) < 1e-12
+
+    @pytest.mark.parametrize("real", [True, False])
+    def test_every_gaunt_coefficient_up_to_f(self, frozen, real):
+        from mandacaru.pseudopotentials.multipoles import gaunt
+        keys, values = frozen["gaunt_keys"], frozen["gaunt_values"]
+        for (flag, *index), value in zip(keys, values):
+            if bool(flag) is real:
+                assert abs(gaunt(*map(int, index), real=real) - value) < 1e-13
+
+    def test_the_angular_rule(self, frozen):
+        from mandacaru.pseudopotentials.multipoles import angular_grid
+        for polar, azimuthal, tag in ((24, 48, "angular"), (10, 14, "angular2")):
+            theta, phi, weight = angular_grid(polar, azimuthal)
+            assert np.abs(theta - frozen[f"{tag}_theta"]).max() < 1e-14
+            assert np.abs(phi - frozen[f"{tag}_phi"]).max() < 1e-14
+            assert np.abs(weight - frozen[f"{tag}_w"]).max() < 1e-14
+
+    @pytest.mark.parametrize("symbol", ["H", "O", "Cu"])
+    def test_the_smooth_waves_and_their_moments(self, frozen, symbol):
+        dataset = get_paw(symbol)
+        q, shape = frozen["remainder_q"], frozen["remainder_shape_transform"]
+        for l in dataset.channels:
+            _ae, smooth = partial_waves(dataset, l)
+            assert _scaled_error(np.array(smooth)[:, ::7],
+                                 frozen[f"{symbol}_pw_sm_{l}"]) < 1e-11
+        for l1, l2 in itertools.product(dataset.channels, repeat=2):
+            for L in multipoles.multipole_range(l1, l2):
+                tag = f"{symbol}_{{}}_{l1}{l2}{L}"
+                assert _scaled_error(radial_moments(dataset, l1, l2, L),
+                                     frozen[tag.format("mom")]) < 1e-9
+                assert _scaled_error(radial_remainder(dataset, l1, l2, L, q, shape),
+                                     frozen[tag.format("rem")]) < 1e-10
+
+    def test_the_selection_rule_of_the_multipole_range(self, frozen):
+        for a, b, count in frozen["range_keys"]:
+            levels = multipoles.multipole_range(int(a), int(b))
+            assert len(levels) == count
+            assert all(abs(a - b) <= L <= a + b and (L + a + b) % 2 == 0
+                       for L in levels)

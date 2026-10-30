@@ -20,9 +20,20 @@ def main(argv=None):
     )
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--method", choices=METHODS, default="dft")
-    parser.add_argument("--xc", choices=FUNCTIONALS, default="lda")
+    parser.add_argument("--xc", choices=FUNCTIONALS, default=None,
+                        help="exchange-correlation functional of --method dft (default lda)")
     parser.add_argument("--basis", default="HAO")
     parser.add_argument("--grid-spacing", type=float, default=0.2)
+    parser.add_argument(
+        "--precision", choices=("float64", "float32"), default="float64",
+        help="storage precision (default float64). float32 stores float32 reals and "
+             "complex64 complex numbers for the stored sampled orbitals (with the "
+             "r2SCAN orbital gradients), the crystal Bloch orbitals and the quantum "
+             "state vector; the Poisson/FFT workspace, the Cholesky factors and "
+             "two-body model, the small matrices, the SCF iteration, the Hamiltonian "
+             "coefficients and every sum over many terms stay float64. Forces of "
+             "PAW-LCAO and quantum methods are refused under float32; settings "
+             "float32 cannot resolve raise an error")
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--memory-mb", type=int, default=512)
     parser.add_argument("--forces", action="store_true")
@@ -51,9 +62,10 @@ def main(argv=None):
         parser.error("provide geometry or a cached problem")
     with Mandacaru(
         method=options.method,
-        xc=options.xc,
+        xc=options.xc or ("lda" if options.method == "dft" else None),
         basis=options.basis,
         grid_spacing=options.grid_spacing,
+        precision=options.precision,
         resources={
             "threads": options.threads,
             "memory_limit_bytes": options.memory_mb * 1024**2,

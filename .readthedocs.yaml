@@ -4,6 +4,8 @@ build:
   os: ubuntu-22.04
   tools:
     python: "3.14"
+    # `pip install .` builds the Rust extension (build_hooks/native.py runs cargo).
+    rust: "latest"
 
 python:
   install:

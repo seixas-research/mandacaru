@@ -95,6 +95,7 @@ class TestForwardedOptions:
         assert options["load_hamiltonian"] is None
         assert options["save_hamiltonian"] is None
         assert options["load_crystal"] is None
+        assert options["precision"] == "float64"
 
     def test_every_option_given_is_forwarded(self, recorder, h2_json):
         assert main([h2_json, "--method", "dft", "--xc", "pbe", "--basis",
@@ -106,6 +107,10 @@ class TestForwardedOptions:
         assert options["resources"] == {"threads": 2,
                                         "memory_limit_bytes": 64 * 1024**2}
         assert options["save_hamiltonian"] == "h.parquet"
+
+    def test_the_precision_is_forwarded(self, recorder, h2_json):
+        assert main([h2_json, "--precision", "float32"]) == 0
+        assert recorder.instances[0].options["precision"] == "float32"
 
     def test_a_cached_problem_needs_no_geometry(self, recorder, capsys):
         assert main(["--load-hamiltonian", "h.parquet", "--method", "vqe"]) == 0
@@ -172,7 +177,10 @@ class TestRefusals:
         assert "provide geometry or a cached problem" in capsys.readouterr().err
 
     @pytest.mark.parametrize("argv", [["--method", "ccsd"], ["--xc", "nope"],
-                                      ["--threads", "many"]])
+                                      ["--threads", "many"],
+                                      ["--precision", "single"],
+                                      ["--precision", "double"],
+                                      ["--precision", "Float32"]])
     def test_an_unknown_choice_is_refused_before_any_work(self, recorder, argv,
                                                           h2_json, capsys):
         with pytest.raises(SystemExit) as raised:
@@ -197,6 +205,23 @@ class TestReport:
         assert printed == {"energy_ev": -1.0, "converged": True,
                            "method": "rhf"}
         assert json.loads(out.read_text()) == printed
+
+
+class TestHelp:
+    def test_the_help_states_what_float32_stores_and_what_stays_float64(self, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["--help"])
+        assert raised.value.code == 0
+        text = " ".join(capsys.readouterr().out.split())
+        assert "--precision {float64,float32}" in text
+        assert "complex64" in text and "stay float64" in text
+        precision_help = text.rsplit("--precision {float64,float32}", 1)[1].split("--threads")[0]
+        assert "%" not in precision_help
+        # Present tense: the Poisson workspace and the Cholesky factors are
+        # float64 in this build, so the help lists them on the float64 side.
+        stored, kept = precision_help.split(";", 1)
+        assert "Cholesky" not in stored and "Poisson" not in stored
+        assert "Cholesky" in kept and "Poisson" in kept
 
 
 class TestAgainstTheEntryPoint:

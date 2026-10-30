@@ -1,0 +1,233 @@
+{
+ "radial_coulomb": {
+  "grids": {
+   "uniform_600": "linspace(0, 6, 600)",
+   "uniform_601": "linspace(0, 6, 601)",
+   "quadratic_500": "6 linspace(0, 1, 500)^2",
+   "quadratic_501": "6 linspace(0, 1, 501)^2"
+  },
+  "densities": "a = exp(-r^2), b = r exp(-r/2), c = exp(-r)(1 + r)",
+  "order": "grid, L = 0..3, pair (a,a), (a,b), (b,c)",
+  "branch": "scipy cumulative_trapezoid + simpson (the C-ABI kernel is wrong for odd n)"
+ },
+ "long_range_kernel": {
+  "r1": "linspace(0, 1.5, 7)",
+  "r2": [
+   0.2,
+   0.9,
+   1.4,
+   2.5,
+   3.0
+  ],
+  "levels": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "cases": [
+   [
+    0.11,
+    null
+   ],
+   [
+    1.0,
+    null
+   ],
+   [
+    20.0,
+    null
+   ],
+   [
+    20.0,
+    64
+   ],
+   [
+    0.05,
+    24
+   ]
+  ]
+ },
+ "long_range_shape": {
+  "radius": "linspace(0, 30, 61)",
+  "cases": [
+   [
+    1.45,
+    0,
+    0.11
+   ],
+   [
+    1.45,
+    1,
+    0.11
+   ],
+   [
+    1.45,
+    2,
+    1.0
+   ],
+   [
+    1.7,
+    0,
+    3.0
+   ]
+  ],
+  "state": "fresh table per case"
+ },
+ "angular": {
+  "keys": "rows L, la, ma, lb, mb, lc, mc, ld, md",
+  "seed": 11
+ },
+ "datasets": "shipped lda-sr: O, H, V, Cu",
+ "tensor_cases": {
+  "O_raw": [
+   "O",
+   "raw",
+   true,
+   null
+  ],
+  "O_dual": [
+   "O",
+   "dual",
+   true,
+   null
+  ],
+  "H_raw": [
+   "H",
+   "raw",
+   true,
+   null
+  ],
+  "V_d_dual": [
+   "V",
+   "dual",
+   true,
+   [
+    2
+   ]
+  ],
+  "Cu_d_raw": [
+   "Cu",
+   "raw",
+   true,
+   [
+    2
+   ]
+  ],
+  "O_raw_complex": [
+   "O",
+   "raw",
+   false,
+   null
+  ]
+ },
+ "exchange_cases": {
+  "O_raw_w011": [
+   "O",
+   "raw",
+   0.11
+  ],
+  "O_dual_w011": [
+   "O",
+   "dual",
+   0.11
+  ],
+  "H_raw_w5": [
+   "H",
+   "raw",
+   5.0
+  ],
+  "O_raw_w0": [
+   "O",
+   "raw",
+   0.0
+  ]
+ },
+ "frozen": "omega 0.11, symbols O H Cu, bases raw and dual",
+ "core_lda_O": [
+  [
+   1,
+   0,
+   2.0
+  ]
+ ],
+ "core_lda_H": [],
+ "core_lda_V": [
+  [
+   1,
+   0,
+   2.0
+  ],
+  [
+   2,
+   0,
+   2.0
+  ],
+  [
+   2,
+   1,
+   6.0
+  ]
+ ],
+ "core_lda_Cu": [
+  [
+   1,
+   0,
+   2.0
+  ],
+  [
+   2,
+   0,
+   2.0
+  ],
+  [
+   2,
+   1,
+   6.0
+  ]
+ ],
+ "core_pbe_O": [
+  [
+   1,
+   0,
+   2.0
+  ]
+ ],
+ "core_pbe_Cu": [
+  [
+   1,
+   0,
+   2.0
+  ],
+  [
+   2,
+   0,
+   2.0
+  ],
+  [
+   2,
+   1,
+   6.0
+  ]
+ ],
+ "exact_cases": [
+  "lda_O",
+  "lda_H",
+  "lda_V",
+  "lda_Cu",
+  "pbe_O",
+  "pbe_Cu"
+ ],
+ "hybrid": {
+  "projectors": "water O,H,H at the test geometry",
+  "omega": 0.11,
+  "fraction": 0.25,
+  "seeds": "21 (hermitian up, down; closed real; spinor)"
+ },
+ "exactclass": {
+  "C": "normal(31) 5 x 24",
+  "dC": "normal(32)",
+  "contraction": "sum_k lambda_k G_k (x) G_k",
+  "derivative_contraction": "2 sum_k lambda_k dG_k (x) G_k"
+ }
+}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import warnings
-from pathlib import Path
 import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, PropertyNotImplementedError
@@ -27,6 +26,96 @@ DEFAULT_METHOD = "adapt-vqe"
 NOISE_INTOLERANT = ("SLSQP", "BFGS", "L-BFGS", "CG")
 STABLE_METHODS = tuple(METHODS)
 
+_SEARCH_METHODS = ("mcas-vqe", "valqa")
+#: Options that act only for some methods, and the methods they act for. A value
+#: other than the default on any other method raises: nothing is silently ignored.
+#: ``spin``/``unrestricted`` also suit ``uhf``, which is unrestricted by definition.
+#: ``mapping`` and ``active_space`` are not listed: the classical methods use them
+#: to export their Hamiltonian as a quantum problem.
+_METHOD_SCOPED_OPTIONS = {
+    **dict.fromkeys(
+        (
+            "seed",
+            "min_length",
+            "max_length",
+            "move_weights",
+            "temperature",
+            "length_penalty",
+            "warm_start",
+            "replace_start",
+            "proposal_temperature",
+            "proposal",
+        ),
+        _SEARCH_METHODS,
+    ),
+    **dict.fromkeys(("xc", "kpts", "smearing", "periodic_scf_options"), ("dft",)),
+    **dict.fromkeys(("spin", "unrestricted"), ("dft", "uhf")),
+    "pool": tuple(name for name, capability in METHODS.items() if capability.quantum),
+}
+
+
+def _refuse_inapplicable(method, arguments):
+    """Raise for an option given a non-default value that ``method`` would ignore."""
+    import inspect
+
+    parameters = inspect.signature(Mandacaru.__init__).parameters
+    refused = []
+    for name, methods in _METHOD_SCOPED_OPTIONS.items():
+        if method in methods:
+            continue
+        value, default = arguments[name], parameters[name].default
+        try:
+            changed = bool(value is not default and value != default)
+        except (TypeError, ValueError):
+            changed = True
+        if changed:
+            refused.append(f"{name} (for {', '.join(methods)})")
+    if refused:
+        raise ValueError(
+            f"method={method!r} does not use: {'; '.join(refused)}; "
+            "remove the option or choose a method it applies to"
+        )
+
+
+def _check_float32_floors(method, tolerance, convergence, *, adapt):
+    """Raise for a setting a complex64 state cannot resolve, naming the floor.
+
+    The floors are Rust constants (``FLOAT32_ENERGY_FLOOR_HA`` and
+    ``FLOAT32_GRADIENT_FLOOR``); the solver checks them again as defense in depth.
+    ``convergence["energy"]`` is in eV like every convergence energy of the
+    calculator; the optimizer ``tol`` is in Hartree.
+    """
+    energy_floor = _native.FLOAT32_ENERGY_FLOOR_HA
+    gradient_floor = _native.FLOAT32_GRADIENT_FLOOR
+    if tolerance is None and method != "SPSA":
+        raise ValueError(
+            "optimizer tol=None resolves to the solver default, which is below the "
+            f"float32 energy floor {energy_floor:g} Ha of the complex64 state; give "
+            "a tol at or above the floor or use precision='float64'"
+        )
+    if tolerance is not None and tolerance < energy_floor:
+        raise ValueError(
+            f"optimizer tol {tolerance:g} Ha is below the float32 energy floor "
+            f"{energy_floor:g} Ha of the complex64 state; raise it or use "
+            "precision='float64'"
+        )
+    if not adapt:
+        return
+    energy = convergence.get("energy")
+    if energy is not None and energy / _native.HARTREE_TO_EV < energy_floor:
+        raise ValueError(
+            f"convergence['energy'] {energy:g} eV is below the float32 energy floor "
+            f"{energy_floor:g} Ha ({energy_floor * _native.HARTREE_TO_EV:g} eV) of the "
+            "complex64 state; raise it or use precision='float64'"
+        )
+    gradient = convergence.get("gradient")
+    if gradient is not None and gradient < gradient_floor:
+        raise ValueError(
+            f"convergence['gradient'] {gradient:g} Ha/rad is below the float32 gradient "
+            f"floor {gradient_floor:g} Ha/rad of the complex64 state; raise it or use "
+            "precision='float64'"
+        )
+
 
 def _method_key(name):
     return str(name).lower().replace("_", "-")
@@ -45,6 +134,590 @@ class Mandacaru(ASEProperties, Calculator):
 
     Attach directly with ``atoms.calc = Mandacaru(...)``. ``run(Geometry(...))``
     also accepts standalone geometry values. Each calculator owns its resources.
+    This docstring is the options reference: every constructor parameter is
+    keyword-only (except ``method``) and is listed below in signature order.
+
+    Lengths given to the calculator are in Angstrom and energies it reports
+    through ASE are in eV; Hartree and Bohr appear only where an entry says so.
+    Results report eV unless ``atomic_units=True``.
+
+    Selecting the method. ``method`` picks the calculation and, with it, which
+    options apply. The classical mean-field methods are ``"rhf"``, ``"uhf"``,
+    ``"ghf"`` and ``"dft"``. The quantum methods are ``"vqe"`` (a fixed
+    ansatz), ``"adapt-vqe"`` (the default; the ansatz grows from an operator
+    pool), ``"subspace-vqe"`` and ``"subspace-adapt-vqe"`` (several states at
+    once), and the architecture searches ``"mcas-vqe"`` and ``"valqa"``. The
+    quantum methods start from a Hartree-Fock reference on the same geometry
+    and basis, build the second-quantized Hamiltonian, map it to qubits and
+    run the variational solver in Rust.
+
+    The option groups are: geometry and grid (``atoms``, ``grid_spacing``,
+    ``grid``, ``kinetic``, ``precision``, ``resources``); basis and
+    pseudopotentials (``basis``, ``paw_dataset``); the electronic problem
+    (``xc``, ``spin``, ``unrestricted``, ``charge``, ``n_electrons``,
+    ``scf_options``, ``cholesky_tolerance``, ``two_body``); the qubit problem
+    (``mapping``, ``active_space``, ``sector``, ``sparse``); the ansatz
+    (``pool``, ``ansatz``, ``trotter``, ``include_singles``); the optimization
+    (``optimizer``, ``convergence``, ``max_iterations``, ``gradient``); several
+    states (``num_states``, ``weights``); architecture search (``max_steps``,
+    ``min_length``, ``max_length``, ``move_weights``, ``temperature``,
+    ``length_penalty``, ``warm_start``, ``replace_start``,
+    ``screen_insertions``, ``proposal_temperature``, ``proposal``,
+    ``proposal_model``, ``record``, ``seed``); handover between geometries
+    (``transfer``, ``transfer_threshold``, ``transfer_steps``,
+    ``update_between_geometries``); circuits and hardware
+    (``execute_circuits``, ``backend_provider``, ``device``, ``shots``,
+    ``backend_options``, ``measurement_budget``); cached problems
+    (``hamiltonian``, ``n_spatial_orbitals``, ``num_particles``,
+    ``hamiltonian_format``, ``load_hamiltonian``, ``save_hamiltonian``,
+    ``native_model``, ``checkpoint``, ``resume``, ``load_crystal``,
+    ``save_crystal``); crystals (``kpts``, ``smearing``,
+    ``periodic_scf_options``, ``symmetry``); forces
+    (``project_translation``); and reporting (``atomic_units``, ``trace``,
+    ``txt``, ``profile``).
+
+    A bad value, or a combination the calculator cannot honor, raises: most
+    checks run in the constructor, a few need the geometry or the SCF and run
+    in ``run()``. An option that belongs to a different method is not always
+    refused: where the entry below says "ignored" the value is accepted and has
+    no effect. Check the method before relying on such an option.
+
+    Parameters
+    ----------
+    method : str, default "adapt-vqe"
+        One of ``"rhf"``, ``"uhf"``, ``"ghf"``, ``"dft"``, ``"vqe"``,
+        ``"adapt-vqe"``, ``"subspace-vqe"``, ``"subspace-adapt-vqe"``,
+        ``"mcas-vqe"``, ``"valqa"``. Anything else raises ``ValueError`` naming
+        the available methods. ``"ghf"`` has no forces. ``"subspace-*"`` have
+        no forces. Forces exist for the other methods on a molecule, with
+        ``kinetic="spectral"``, no circuit execution and no periodic cell.
+        ``"dft"`` is the only method that accepts a periodic geometry. The
+        classical methods refuse ``shots``, ``execute_circuits=True``,
+        ``backend_provider``, ``device``, ``backend_options`` and
+        ``measurement_budget`` (``ValueError``, since they have no quantum
+        state to measure), and they refuse ``hamiltonian``, ``load_hamiltonian``
+        and ``native_model`` (``ValueError``: a mean-field calculation needs a
+        geometry or a cached crystal).
+    atoms : ase.Atoms, optional
+        Attach the calculator to this object (``atoms.calc = self``); the same
+        as assigning ``atoms.calc`` afterwards. Positions and cell are in
+        Angstrom. A molecule needs a nonzero cell (for example
+        ``atoms.center(vacuum=3.0)``) to define the real-space box, or an
+        explicit ``grid``; otherwise ``run()`` raises ``ValueError`` ("molecular
+        integration requires a nondegenerate cell or an explicit grid"). If any
+        direction is periodic the periodic route is taken (see ``kpts``). The
+        sum of the ASE initial magnetic moments sets the number of unpaired
+        electrons (rounded to an integer); with zero moments an odd electron
+        count gives one unpaired electron.
+    hamiltonian : Fermion, PauliSum or native PauliOperator, optional
+        A Hamiltonian to minimize instead of one built from a geometry, for
+        the quantum methods, run without a geometry. It needs
+        ``n_spatial_orbitals`` and ``num_particles`` (``ValueError`` if either
+        is missing). A ``Fermion`` is taken over ``2 * n_spatial_orbitals``
+        spin-orbitals and mapped with ``mapping``; a ``PauliSum`` or a native
+        ``PauliOperator`` is used as the qubit operator directly (Hartree).
+        Mutually exclusive with ``load_hamiltonian``, ``native_model`` and
+        ``load_crystal``. Any other type raises ``TypeError`` at ``run()``.
+    n_spatial_orbitals : int, optional
+        Number of spatial orbitals of the supplied ``hamiltonian`` (the register
+        has ``2 * n_spatial_orbitals`` qubits, two fewer for
+        ``mapping="parity_reduced"``). Used together with ``hamiltonian`` (and by
+        the ``n_qubits`` property before a run); has no effect on a calculation
+        that does not supply one.
+    num_particles : tuple of int, optional
+        ``(n_alpha, n_beta)`` electron counts of the supplied ``hamiltonian``;
+        they fix the reference determinant and the particle sector. Used together
+        with ``hamiltonian`` (and by the ``num_particles`` property before a
+        run); has no effect on a calculation that does not supply one.
+    hamiltonian_format : {None, "json", "parquet"}, default None
+        File format of ``save_hamiltonian``. Any other value raises
+        ``ValueError``. For a run from a geometry, ``None`` writes the native
+        JSON snapshot unless the path ends in ``.parquet`` or ``.pq``; for a run from a
+        supplied ``hamiltonian`` or ``load_hamiltonian`` alone, ``None`` follows
+        the file extension and falls back to Parquet. Reading is by content,
+        not by name: ``load_hamiltonian`` recognizes a Parquet file by its magic
+        bytes.
+    basis : str or dict, default "HAO"
+        The basis. A name, a dict with a ``"name"`` key and options, or a
+        mapping from element (symbol, atomic number or ``"*"``) to such a name
+        or dict, to mix bases per element. Names: ``"HAO"`` (hydrogenic atomic
+        orbitals; the only option is ``virtual_orbitals``), ``"NAO"`` (options
+        ``size`` with default ``"DZP"``, ``r_c`` in Bohr, ``n_grid`` with
+        default 2000, ``energy_shift`` in eV with default 0.03, which sets the
+        default ``r_c`` as pi over the square root of twice the shift in
+        Hartree, and ``zeta_split``), ``"NAO-AE"`` (all-electron numerical
+        orbitals; options ``tier``, ``onset`` and ``width`` in Angstrom,
+        ``scale``, ``extra``, ``linear_dependence_tol``, ``tail_norm``,
+        ``points``, ``r_max``), a Gaussian recipe name such as ``"STO-3G"`` (no
+        extra options), and the pseudopotential families ``"PAW-LCAO"`` and
+        ``"UPAW-LCAO"``. An unknown name or option raises ``ValueError`` or
+        ``TypeError`` at construction. The PAW-LCAO and UPAW-LCAO dict options
+        are: ``size`` (one of SZ, SZP, DZ, DZP, DZ2P, TZ, TZP, TZ2P, QZ, QZP,
+        QZ2P, or an ``(n_zeta, n_polarization)`` pair; default ``"SZ"``);
+        ``zeta_split`` (``"first_zeta"``, the default, or ``"last_zeta"``; a
+        number or list in (0, 1) sets custom tail norms for ``"first_zeta"``);
+        ``paw_dataset`` (the dataset folder, see the parameter of the same
+        name); ``filter_cutoff`` (default ``"auto"``: a Fourier filter at the
+        Nyquist wave-vector of the grid; ``False`` or ``None`` switches it off;
+        a positive number is a kinetic-energy cutoff in eV); ``energy_shift``
+        (eV, default 0.1, confines each orbital; ``None`` keeps the free-atom
+        orbital); ``confinement_potential`` (a pair: amplitude in Hartree and
+        inner radius as a fraction of the cutoff radius, default (12.0, 0.6));
+        ``polarization_method`` (``"gaussian"`` or ``"orbital"``);
+        ``projector_basis`` (``"raw"``, the default, or ``"dual"``); and
+        ``diffuse`` (diffuse shells; molecules only, a crystal raises).
+        PAW-LCAO needs the pseudopotential library (``MANDACARU_PAW_PATH``);
+        without it the calculation raises ``LibraryPathError``. A spin-orbit
+        dataset (``lda-fr``, ``pbe-fr``) raises ``NotImplementedError`` for a
+        molecule and is supported for a crystal. A crystal accepts only
+        PAW-LCAO or UPAW-LCAO (``NotImplementedError`` at ``run()``).
+    grid_spacing : float, default 0.2
+        Real-space grid spacing in Angstrom; must be positive and finite
+        (``ValueError``). Used when no explicit ``grid`` is given. For the
+        crystal route it sets the grid of the cell.
+    precision : {"float32", "float64"}, default "float64"
+        Storage precision of the large arrays; any other value raises
+        ``ValueError``. ``"float64"`` stores float64 reals and complex128
+        complex numbers. ``"float32"`` stores float32 reals and complex64
+        complex numbers for: the stored sampled orbitals (with the r2SCAN
+        orbital gradients), the Bloch orbitals of a crystal and the state
+        vector of every quantum method. These stay float64 under both
+        values: the Poisson/FFT workspace, the Cholesky factors and the
+        two-body model, the one-body, overlap and every other small matrix, the
+        SCF and DIIS iteration, the Hamiltonian coefficients, and every sum
+        over many float32 terms.
+        The Python assembly of the crystal Bloch matrices is float64 and
+        dominates a crystal's process memory until its port to Rust. Savings
+        are not stated here: measure the context peak and the process RSS of
+        your own system. Float32 changes the numbers at the level the
+        accuracy gates measure, and a setting it cannot resolve raises
+        ``ValueError`` naming the floor instead of running: an optimizer
+        ``tol`` or an ADAPT ``convergence["energy"]`` below the energy floor
+        (``FLOAT32_ENERGY_FLOOR_HA``) and an ADAPT ``convergence["gradient"]``
+        below the gradient floor (``FLOAT32_GRADIENT_FLOOR``) of the Rust
+        extension; an optimizer ``tol`` left unset resolves to the energy floor
+        (it is ``1e-12`` in float64) and is written in the optimization setup
+        of the run log. Refused with
+        ``ValueError``: forces of a PAW-LCAO molecule and forces of a quantum
+        method (the 1e-3 Bohr finite-difference step turns float32 rounding
+        into force noise; the analytic all-electron forces of the classical
+        methods are allowed), ``load_crystal`` with a precision other than
+        the one stored in the file, and ``hamiltonian``,
+        ``load_hamiltonian`` or ``native_model`` on a circuit device
+        (``shots > 0`` or a hardware device), which holds neither orbital
+        samples nor a state vector. The precision is written once, in the
+        ``[BASIS]`` block of the run log.
+    grid : mandacaru.integrals.grid.Grid or native SpatialGrid, optional
+        An explicit real-space grid that replaces the one built from the cell
+        and ``grid_spacing``. With it the atoms need no cell. The first force
+        evaluation freezes the grid in use so that displaced geometries share
+        it.
+    resources : dict, optional
+        Per-calculator allocation, with keys ``threads`` (default chosen by the
+        native context), ``memory_limit_bytes`` (default 536870912, that is
+        512 MiB) and ``scratch_dir``. An unknown key raises ``TypeError``. A
+        calculation that needs more memory than the limit raises
+        ``MemoryError`` at ``run()``. Not allowed together with
+        ``native_model``, which carries its own context (``ValueError``).
+    xc : str, optional
+        Exchange-correlation functional, one of ``"lda"``, ``"pbe"``,
+        ``"r2scan"``, ``"hse06"``, ``"pbe+rvv10"``, ``"r2scan+rvv10"``; anything
+        else raises ``ValueError``. ``None`` means ``"lda"``. Used by
+        ``method="dft"`` only and ignored by every other method (an
+        ``"rhf"`` run with ``xc="pbe"`` is the same Hartree-Fock). It also
+        chooses the default PAW-LCAO dataset folder (``pbe-sr`` for PBE, HSE06
+        and r2SCAN, ``lda-sr`` otherwise); a dataset generated with another
+        functional triggers a warning. A crystal supports ``"lda"``,
+        ``"pbe"``, ``"r2scan"``, ``"pbe+rvv10"`` and ``"r2scan+rvv10"``;
+        ``"hse06"`` raises ``NotImplementedError`` at ``run()``. With
+        ``load_crystal`` a different ``xc`` raises ``ValueError``.
+    spin : bool, default False
+        Request an unrestricted (spin-polarized) Kohn-Sham calculation. It is
+        the same switch as ``unrestricted`` (the two are combined with "or")
+        and has an effect only for ``method="dft"`` (molecule and crystal).
+        The other methods choose open or closed shell from the electron count
+        and the initial magnetic moments, and ignore it. A non-boolean raises
+        ``TypeError``.
+    unrestricted : bool, default False
+        Same as ``spin``; either one set to ``True`` selects unrestricted
+        ``method="dft"``. A molecule with unequal alpha and beta counts is
+        unrestricted regardless. Non-boolean raises ``TypeError``.
+    charge : int, default 0
+        Total charge. The electron count is the sum of the nuclear charges (the
+        dataset valence charges for PAW-LCAO) minus ``charge``. A non-integer
+        raises ``TypeError``. ``method="rhf"`` with an odd electron count
+        raises ``ValueError`` at ``run()``; use ``"uhf"``.
+    n_electrons : int, optional
+        Total electron count, overriding the count above; ``charge`` is not
+        subtracted when this is given. A count that does not fit the basis, or
+        has the wrong parity for the initial magnetic moment, raises
+        ``ValueError`` at ``run()``. The crystal route refuses it
+        (``ValueError``): its electron count follows the datasets and
+        ``charge``.
+    scf_options : dict, optional
+        Options of the molecular Hartree-Fock or Kohn-Sham SCF: ``max_iterations``
+        (default 300), ``tolerance`` (default 1e-9), ``diis`` (default
+        ``True``) and ``guesses`` (default 3, how many staged starting guesses
+        the SCF may try). An unknown key raises ``TypeError`` at ``run()``. A crystal
+        refuses it (``ValueError``); use ``periodic_scf_options``.
+    optimizer : str or dict, optional
+        The classical optimizer of the quantum methods; the mean-field methods
+        ignore it. A string is the method name; a dict has the keys ``method``,
+        ``maxiter``, ``maxfev``, ``tol`` and ``track_best``, and any other key
+        raises ``ValueError``. The method is one of ``"SPSA"``, ``"COBYLA"``,
+        ``"Nelder-Mead"``, ``"SLSQP"``, ``"BFGS"``, ``"L-BFGS"`` and ``"CG"``,
+        and nothing else (``ValueError``). Defaults when a key is absent:
+        method ``"SLSQP"``, ``maxiter`` 2000, ``tol`` 1e-12, ``maxfev`` 5000,
+        ``track_best`` ``True``. With ``shots > 0`` the default is instead the
+        strict two-evaluation SPSA with ``maxiter`` 100, ``tol`` ``None`` and
+        ``track_best`` ``False``; it costs ``2 * maxiter + 1`` energy
+        evaluations, each a job on a processor. On a shot-based energy
+        ``"SLSQP"``, ``"BFGS"``, ``"L-BFGS"`` and ``"CG"`` are refused
+        (``ValueError``) because they difference the energy at tiny steps;
+        use ``"SPSA"`` or ``"COBYLA"``. On a shot-based fixed-ansatz run
+        whose optimizer could exceed the provider's run budget, ``run()`` raises
+        ``RunBudgetExceeded`` before any job is queued.
+    mapping : {"jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"}, optional
+        Fermion-to-qubit mapping of the quantum methods. ``None`` means
+        ``"jordan_wigner"``. ``"parity_reduced"`` removes two qubits (the
+        register has ``2 * M - 2`` qubits for ``M`` spatial orbitals) and is
+        refused by the ``"spin-orbit"`` pool at ``run()``. Anything else raises
+        ``ValueError``. With ``load_hamiltonian`` a mapping that disagrees with
+        the cached one raises ``ValueError``; a crystal raises ``ValueError``
+        for any explicit mapping. The classical methods ignore it.
+    active_space : dict, optional
+        Reduce the molecular Hamiltonian to an active space before mapping.
+        A dict with the keys: ``method`` (``"energy"``, the default, orders
+        the orbitals by SCF energy; ``"mp2"`` and ``"dlpno-mp2"`` rank by MP2
+        natural-orbital occupation and need a closed-shell Hartree-Fock
+        reference), ``orbitals`` (a count of spatial orbitals, a list of
+        orbital indices, or ``{"occupied": n, "virtual": n}``), ``frozen`` (a
+        count, a list of doubly occupied orbital indices, or ``"auto"`` for the
+        element-based frozen core, which is zero for a PAW-LCAO basis),
+        ``threshold`` (an occupation threshold in (0, 2), or ``True`` for 1e-3;
+        MP2 ranking only), and ``symmetry`` (``True`` keeps degenerate orbital
+        sets whole; closed shell only). ``correlating_pairs`` is accepted only
+        as ``False`` or ``None``: anything else raises, because that expansion
+        is not implemented. A bad key or value raises ``ValueError`` at
+        ``run()``. ``None`` keeps every orbital. A crystal refuses it, and
+        the classical methods ignore it. Occupied orbitals must be frozen or
+        active; the active space must be nonempty.
+    load_hamiltonian : path, optional
+        Read a cached qubit Hamiltonian (written by ``save_hamiltonian``, JSON
+        or Parquet) instead of building one; run it without a geometry. The
+        file fixes the mapping and the particle numbers. Quantum methods only.
+        Mutually exclusive with ``hamiltonian``, ``native_model`` and
+        ``load_crystal`` (``ValueError``).
+    save_hamiltonian : path, optional
+        Write the molecular Hamiltonian (after the active-space reduction) to
+        this path when the run starts, in the format of ``hamiltonian_format``.
+        Written by any method that has a geometry, including the classical
+        ones. A crystal refuses it (``ValueError``); use ``save_crystal``.
+    native_model : mandacaru._native.MolecularModel, optional
+        A molecular model taken from an earlier result (``result.hamiltonian``)
+        to minimize without a geometry. The calculator reuses the context of
+        the model, so ``resources`` must not be given. The type is not
+        checked at construction: anything else fails with ``AttributeError``.
+        Quantum methods only; mutually exclusive with ``hamiltonian``,
+        ``load_hamiltonian`` and ``load_crystal``.
+    checkpoint : path, optional
+        Write the final wavefunction checkpoint (ansatz indices, parameters,
+        energy and termination status) to this path at the end of a quantum
+        run. It is written once, not every few steps. ``"subspace-vqe"`` and
+        ``"subspace-adapt-vqe"`` raise ``NotImplementedError`` at ``run()``.
+        The classical methods ignore it.
+    resume : path, optional
+        Continue a fixed-ansatz or ADAPT run from a checkpoint file written
+        by ``checkpoint``. ``"subspace-*"`` methods and the architecture
+        searches raise ``NotImplementedError`` at ``run()``; ``transfer=True``
+        together with ``resume`` raises ``ValueError``.
+    transfer : bool, default False
+        Carry the optimized ansatz from the previous geometry of this
+        calculator to the next one (for relaxations and scans), accepted only if
+        its overlap confidence reaches ``transfer_threshold``. Requires
+        ``"adapt-vqe"``, ``"mcas-vqe"`` or ``"valqa"``, local native execution
+        (no circuit execution) and a fresh run without ``resume``; otherwise
+        ``ValueError``. A non-boolean raises ``TypeError``.
+    transfer_threshold : float, default 0.9
+        Confidence in [0, 1] a carried ansatz must reach to be accepted
+        (``ValueError`` outside the range). Ignored without ``transfer``.
+    transfer_steps : int, optional
+        Number of search steps spent on a carried ansatz. Needs
+        ``transfer=True`` and ``"mcas-vqe"`` or ``"valqa"``; a negative or
+        non-integer value raises ``ValueError``.
+    update_between_geometries : bool, default False
+        ``"valqa"`` only (``ValueError`` otherwise): record that the proposal
+        model is meant to be updated between geometries. The graph model is
+        carried unchanged; its training is offline.
+    pool : {"fermionic", "qubit", "qeb", "ceo", "ceo-ovp", "spin-orbit"}, default "fermionic"
+        The operator pool: fermionic excitations, qubit excitations, qubit
+        excitation-based operators, coupled exchange operators (``"ceo"`` and
+        its ``"ceo-ovp"`` variant) or spin-orbit-mixing excitations.
+        Anything else raises ``ValueError``. For ``"vqe"`` it supplies the
+        generators of the fixed ansatz. ``ansatz="hva"`` requires
+        ``"fermionic"``. The classical methods ignore it.
+    ansatz : str or dict, default "uccsd"
+        ``"uccsd"`` (the pool excitations) or ``"hva"`` (a Hamiltonian
+        variational ansatz). Anything else raises ``ValueError``. A dict must
+        carry ``"name"``; for ``"uccsd"`` it may carry nothing else. ``"hva"``
+        accepts ``layers``, ``evolution`` (``"exact"`` or ``"trotter"``),
+        ``order`` (1 or 2), ``steps`` and ``seed_angle``; another key raises
+        ``ValueError``. ``"hva"`` requires ``method="vqe"`` and
+        ``pool="fermionic"`` (``ValueError``), and turns ``sector`` off and
+        ``trotter`` on by default.
+    trotter : bool, default False
+        Apply the ansatz as an ordered product of operator exponentials, the
+        form a circuit implements, instead of the exponential of the sum of the
+        generators. The calculator turns it on regardless of this value for
+        ``ansatz="hva"``, circuit execution, ``"mcas-vqe"`` and ``"valqa"``;
+        an ADAPT ansatz is always recorded (checkpoint, final state) in
+        product form. A non-boolean raises
+        ``TypeError``.
+    include_singles : bool, default True
+        Include single excitations in the pool. A non-boolean raises
+        ``TypeError``.
+    sector : bool, optional
+        Restrict the simulation to the Hilbert-space sector with the target
+        electron numbers. ``None`` chooses automatically: on unless the pool
+        is ``"qubit"`` or ``"spin-orbit"``, or the ansatz is ``"hva"``. Any
+        value other than ``True``, ``False`` or ``None`` raises ``TypeError``.
+    sparse : bool, default False
+        Apply the Hamiltonian as a sparse matrix in the native solver. A
+        non-boolean raises ``TypeError``.
+    convergence : dict, optional
+        ADAPT stopping criteria, with keys ``gradient`` (largest pool gradient,
+        in Hartree units, default 1e-3) and ``energy`` (energy tolerance of the growth
+        loop, always in eV even with ``atomic_units=True``, default 1e-3); ``None`` as a value switches that test off. Any other key
+        raises ``ValueError``. Ignored by the fixed-ansatz methods.
+    max_iterations : int, default 50
+        Maximum number of operators an ADAPT run adds to the ansatz. This is
+        the growth limit, not the optimizer's ``maxiter``.
+    weights : sequence of float, optional
+        Weights of the states in the subspace methods, one per state, positive
+        and finite (``ValueError`` at construction) and strictly decreasing
+        (``ValueError`` from the solver at ``run()``). Default
+        ``num_states, ..., 2, 1``. Validated for every method but used only by
+        ``"subspace-vqe"`` and ``"subspace-adapt-vqe"``.
+    num_states : int, default 2
+        Number of states of the subspace methods. A value below 1 or a
+        non-integer raises ``ValueError``. Used only by ``"subspace-*"``.
+    atomic_units : bool, default False
+        Report results in Hartree and Bohr instead of eV and Angstrom. ASE
+        properties (``get_potential_energy``) remain in eV. Also sets the unit
+        of the search ``temperature`` and ``length_penalty``. A non-boolean
+        raises ``TypeError``.
+    trace : bool, default False
+        Print the structured run log to standard output. A non-boolean raises
+        ``TypeError``.
+    txt : path, optional
+        Write the structured run log to this file. Independent of ``trace``.
+    gradient : str, default "analytic"
+        Vestigial. The native solver supports only the analytic gradient, so the
+        only accepted value is ``"analytic"``; any other value raises
+        ``ValueError``.
+    profile : bool, optional
+        Whether the per-step ADAPT iteration records include circuit metrics
+        (CNOT count and depth). ``None`` computes them for registers of at
+        most 12 qubits only; ``True`` always, ``False`` never. Anything else
+        raises ``TypeError``.
+    execute_circuits : bool, optional
+        Evaluate energies by building circuits and running them through the
+        SDK provider instead of the native state-vector solver. ``None``
+        resolves to ``True`` when ``backend_provider`` names a non-Qiskit
+        provider and to ``False`` otherwise. Circuit execution is on whatever
+        this says when ``shots > 0`` or ``device`` is not ``"AER_simulator"``,
+        so ``False`` never overrides those. It removes forces; the
+        ``"subspace-*"`` methods raise ``NotImplementedError`` at ``run()``,
+        the architecture searches raise ``NotImplementedError`` at ``run()``,
+        and ``transfer`` refuses it. A non-boolean, non-``None`` value raises
+        ``TypeError``; ``True`` on a classical method raises ``ValueError``.
+    backend_provider : {"qiskit", "braket", "cirq"}, optional
+        The quantum SDK that builds and runs the circuits (aliases such as
+        ``"ibm"``, ``"aws"`` and ``"google"`` are accepted). ``None`` uses
+        the provider of ``device``, else ``"qiskit"``. An unknown name raises
+        ``ValueError``, as does a provider that disagrees with the device.
+        The Cirq provider runs exact simulation only: it refuses ``shots > 0``
+        (``ValueError``) and takes no ``backend_options``. Classical methods
+        refuse it.
+    device : str, default "AER_simulator"
+        Where the circuits run. ``"AER_simulator"`` is the local ideal
+        simulator and keeps the native state-vector numerics. Other names
+        are Braket devices (``"braket-local"``, ``"braket-sv1"``,
+        ``"braket-dm1"``, ``"braket-tn1"``, ``"braket-ionq-aria"``,
+        ``"braket-ionq-forte"``, ``"braket-iqm-garnet"``,
+        ``"braket-rigetti-ankaa"``), ``"ibm-quantum"`` (the least busy IBM
+        processor), ``"fake_<name>"`` (a local rehearsal of an IBM processor,
+        for example ``"fake_kingston"``) and ``"ibm_<name>"`` (a real IBM
+        processor). An unknown name raises ``ValueError``. A fake or real
+        processor requires ``shots > 0`` (``ValueError``). On an ``ibm_*``
+        device the optimization itself runs on the hardware, one job per
+        energy evaluation. Classical methods refuse any device other than the
+        default.
+    shots : int, default 0
+        Measurement shots per energy. ``0`` is the exact local expectation
+        value; ``> 0`` is a measured energy through the circuit provider and
+        every QPU needs it. A non-integer positive value
+        raises ``ValueError``. A negative value is refused (``ValueError``)
+        only when a circuit provider or device is configured; otherwise it is
+        accepted silently and behaves as 0. A shot-based run keeps classical memory polynomial in
+        the qubit count and, for ADAPT, measures the pool gradients on the
+        device. Classical methods refuse it. See ``optimizer`` for the
+        default optimizer and the refused ones.
+    backend_options : dict, optional
+        Keyword options of the provider; ``device`` and ``shots`` are supplied
+        by the constructor and must not be repeated. Qiskit takes ``instance``,
+        ``token``, ``channel``, ``optimization_level`` (default 3),
+        ``estimator_options``, ``physical_qubits``, ``seed``,
+        ``max_bases_per_job``, ``enable_fractional_gates`` and ``run_budget``.
+        Braket takes ``s3_folder``, ``poll_timeout_seconds`` and
+        ``run_budget``. Cirq takes none. An unknown key raises ``TypeError``.
+        ``run_budget`` is the run-wide limit on ``jobs`` and ``total_shots``;
+        it is on by default for processors (``jobs`` 250, no shot ceiling) and
+        ``False`` switches it off. Giving ``backend_options`` without a circuit
+        provider, device or ``shots`` raises ``ValueError``.
+    measurement_budget : bool or dict, optional
+        The ceilings checked before a shot-based measurement is queued, with the keys
+        ``observables`` (default 50000), ``bases`` (default 10000),
+        ``circuit_instances`` (default 2000000) and ``total_shots`` (default
+        none). ``None`` or ``True`` use the defaults, ``False`` switches the
+        checks off, and a dict overrides the keys it names (a value of
+        ``None`` disables that one check). An unknown key raises
+        ``ValueError`` at construction; exceeding a ceiling raises
+        ``ValueError`` at ``run()``. Without a circuit provider, device or
+        ``shots`` it raises ``ValueError``.
+    max_steps : int, optional
+        Length of the architecture-search chain, in edits. ``"mcas-vqe"`` and
+        ``"valqa"`` only: setting it for any other method raises
+        ``ValueError``. Those two methods default to 200.
+    min_length : int, default 0
+        Smallest ansatz length. The search starts from the empty sequence, so
+        only ``0`` is accepted (``ValueError``) by the search methods; ignored
+        by the others.
+    max_length : int, default 20
+        Largest number of operators in a searched ansatz; a positive integer
+        (``ValueError``). Ignored outside the search methods.
+    move_weights : dict, optional
+        Relative frequency of the edit moves, with keys from ``insert``,
+        ``delete``, ``replace`` and ``swap``; moves not named get weight 0.
+        ``None`` weights all four equally. Another key raises ``ValueError``.
+        Ignored outside the search methods.
+    temperature : float or dict, optional
+        Acceptance temperature of the search in the energy unit of the
+        results (eV, or Hartree with ``atomic_units=True``). A number is
+        constant; a dict with exactly ``initial`` and ``final`` anneals.
+        ``None`` anneals from 0.1 eV to 0.001 eV. Ignored outside the search
+        methods.
+    length_penalty : float, default 0.0
+        Energy penalty per operator in the search objective, in the energy unit
+        of the results. Ignored outside the search methods.
+    warm_start : bool, default True
+        Start each re-optimization from the parameters already found. A
+        non-boolean raises ``TypeError``. Ignored outside the search methods.
+    replace_start : {"zero", "inherit"}, default "zero"
+        Starting parameter of an operator introduced by a replace move: zero
+        or the replaced operator's value. Anything else raises ``ValueError``.
+        Ignored outside the search methods.
+    screen_insertions : int, default 0
+        Number of candidate insertions screened by gradient before one is
+        tried; 0 disables screening. It records its measurements, so it needs
+        a ``record`` directory (``ValueError`` without one). Used with the
+        search methods; for any other method a nonzero value raises
+        ``ValueError``.
+    proposal_temperature : float, default 0.2
+        Temperature of the gradient-weighted proposal distribution. Ignored
+        outside the search methods.
+    proposal : {"gradient", "uniform"}, default "gradient"
+        How edits are proposed; anything else raises ``ValueError`` for the
+        search methods. Ignored outside them.
+    proposal_model : path or object, optional
+        ``"valqa"`` only (``ValueError`` for any other method, including
+        ``"mcas-vqe"``): a trained proposal model, or its file. ``None`` looks
+        for the model file in the ``record`` directory and, without one, falls
+        back to gradient proposals; ``False`` disables the model.
+    record : path or bool, optional
+        Directory where the search stores its problems and edit chains as
+        training data. ``None`` uses the directory in ``MANDACARU_PROPOSAL_DATA``
+        if set; ``False`` records nothing; ``True`` is refused (``ValueError``).
+        Setting it for a method other than ``"mcas-vqe"`` or ``"valqa"``
+        raises ``ValueError``.
+    seed : int, optional
+        Seed of the search chain, a nonnegative 64-bit integer (``ValueError``
+        otherwise); ``None`` draws a fresh seed. Ignored outside the search
+        methods.
+    kinetic : {"spectral", "fd"}, default "spectral"
+        How the kinetic energy is discretized on the grid: the spectral
+        (FFT) Laplacian or finite differences. Anything else raises
+        ``ValueError`` at ``run()``. Only ``"spectral"`` supports forces
+        (``get_forces`` raises) and crystals (``ValueError``). The two
+        discretizations give different energies at a given spacing; do not mix
+        them in a comparison.
+    cholesky_tolerance : float, default 1e-10
+        Truncation tolerance of the Cholesky factorization of the two-electron
+        integrals.
+    two_body : str or dict, optional
+        Representation of the two-electron integrals. Only Cholesky factors
+        exist: ``"cholesky"`` or ``{"method": "cholesky", "tolerance": t}``,
+        where ``t`` replaces ``cholesky_tolerance``. Any other method or key
+        raises ``ValueError``. A crystal builds no two-body tensor.
+    paw_dataset : str, optional
+        Name of the PAW-LCAO or UPAW-LCAO dataset folder in the pseudopotential
+        library, for example ``"pbe-sr"``. Without it the folder follows the
+        functional (see ``xc``). Valid only with a PAW-LCAO or UPAW-LCAO basis
+        (``ValueError`` otherwise, and when the basis dict names another
+        folder).
+    project_translation : {"auto", True, False}, default "auto"
+        How the forces treat rigid translation. ``False`` returns the raw
+        negative energy gradient (the net force is then a measure of the grid
+        error). ``True`` and ``"auto"`` behave identically, and for a
+        single atom nothing is projected: otherwise the mean force is removed.
+        For the variational methods with a PAW-LCAO or UPAW-LCAO basis the
+        gradient is instead evaluated along the internal (non-rigid)
+        directions of the molecule only. Any other value raises ``ValueError``.
+    kpts : sequence of int or dict, optional
+        Brillouin-zone mesh of a periodic ``method="dft"`` calculation. A
+        sequence of three positive integers is a Monkhorst-Pack mesh; a dict
+        ``{"size": (n1, n2, n3), "gamma": bool}`` chooses whether the mesh is
+        centered on Gamma. The default is the Gamma point alone. Three positive
+        integers are required (``ValueError``); a non-periodic direction with
+        more than one k-point raises ``ValueError`` at ``run()``. Ignored for
+        molecules.
+    smearing : float, tuple or dict, optional
+        Electronic smearing of a periodic calculation. A number is a Fermi-Dirac
+        width in eV; ``(method, width)`` and ``{"method": ..., "width": ...}``
+        choose the method, one of ``"fermi-dirac"`` (also ``"fd"``, ``"fermi"``),
+        ``"gaussian"`` and ``"methfessel-paxton"`` (``"mp"``), with the width in
+        eV. A dict defaults to Fermi-Dirac at 0.1 eV; any other dict key
+        raises ``ValueError`` and an unknown method raises at ``run()``. When
+        given it overrides the smearing in ``periodic_scf_options``; when not,
+        the default is Fermi-Dirac at 0.1 eV. Ignored for molecules.
+    periodic_scf_options : dict, optional
+        Options of the periodic SCF: ``max_iterations`` (default 300),
+        ``tolerance`` (default 1e-7), ``density_tolerance`` (default 1e-5),
+        ``smearing``, ``width_ha`` (the width in Hartree), ``mixing`` (default
+        0.25) and ``history`` (default 7, the mixing history length). An unknown
+        key raises ``TypeError`` at ``run()``. Ignored for molecules.
+    symmetry : bool, default True
+        Reduce the k-mesh with the space-group operations of the cell (time
+        reversal is always used). Spinor (spin-orbit) calculations never use
+        the space-group reduction, and nonzero initial magnetic moments keep
+        the full mesh. A non-boolean raises
+        ``TypeError``. Ignored for molecules.
+    load_crystal : path, optional
+        Load a crystal setup written by ``save_crystal`` instead of building
+        it; run it without a geometry (``method="dft"`` only, otherwise
+        ``NotImplementedError``). The functional is that of the file (a
+        different explicit ``xc`` raises ``ValueError``). Mutually exclusive
+        with ``hamiltonian``, ``native_model`` and ``load_hamiltonian``.
+    save_crystal : path, optional
+        Write the periodic setup (before the SCF) to this path for reuse with
+        ``load_crystal``. Periodic calculations only.
+
+    Notes
+    -----
+    A crystal calculation (any periodic direction, or ``load_crystal``) runs
+    only with ``method="dft"`` and a PAW-LCAO or UPAW-LCAO basis. It refuses
+    ``active_space``, ``save_hamiltonian``, ``scf_options``, ``n_electrons``,
+    ``mapping`` and ``kinetic="fd"`` with ``ValueError``.
     """
 
     def __init__(
@@ -58,7 +731,7 @@ class Mandacaru(ASEProperties, Calculator):
         hamiltonian_format=None,
         basis="HAO",
         grid_spacing=0.2,
-        precision="double",
+        precision="float64",
         grid=None,
         resources=None,
         xc=None,
@@ -128,8 +801,9 @@ class Mandacaru(ASEProperties, Calculator):
     ):
         super().__init__()
         self._method, self._capabilities = resolve_method(method)
-        if precision not in ("double", "single"):
-            raise ValueError("precision must be 'double' or 'single'")
+        _refuse_inapplicable(method, locals())
+        if precision not in ("float32", "float64"):
+            raise ValueError("precision must be 'float32' or 'float64'")
         self._precision = precision
         if gradient != "analytic":
             raise ValueError("the native state-vector solver uses analytic gradients")
@@ -165,6 +839,23 @@ class Mandacaru(ASEProperties, Calculator):
                 and normalize_provider(backend_provider) != "qiskit"
             )
         self._execute_circuits = execute_circuits or shots > 0 or device != "AER_simulator"
+        if precision == "float32" and self._capabilities.quantum:
+            supplied = [
+                name
+                for name, given in (
+                    ("hamiltonian", hamiltonian is not None),
+                    ("load_hamiltonian", load_hamiltonian is not None),
+                    ("native_model", native_model is not None),
+                )
+                if given
+            ]
+            if supplied and self._execute_circuits:
+                raise ValueError(
+                    f"precision='float32' acts on the sampled orbitals and the state "
+                    f"vector; {', '.join(supplied)} on a circuit device (shots > 0, a "
+                    "hardware device or execute_circuits=True) builds neither, so it "
+                    "has nothing to store in float32: use precision='float64'"
+                )
         self._device = device
         self._shots = shots
         from .integrations.transfer import configure as configure_transfer
@@ -196,6 +887,15 @@ class Mandacaru(ASEProperties, Calculator):
             }:
                 raise ValueError("unknown HVA option")
             self._hva = {k: v for k, v in ansatz_spec.items() if k != "name"}
+            if self._hva.get("layers", 2) == 1:
+                warnings.warn(
+                    "ansatz='hva' with layers=1 cannot lower the Hartree-Fock energy: each "
+                    "Hamiltonian group acts on the real reference with an imaginary relative "
+                    "amplitude, so the energy has no first-order term. The result is exactly "
+                    "the Hartree-Fock energy; use layers >= 2.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         elif len(ansatz_spec) != 1:
             raise ValueError("uccsd accepts only its name")
         self._pool = pool
@@ -296,9 +996,11 @@ class Mandacaru(ASEProperties, Calculator):
         self._supplied_hamiltonian = hamiltonian
         self._hamiltonian_orbitals = n_spatial_orbitals
         self._hamiltonian_particles = num_particles
+        if hamiltonian_format is not None:
+            from .core.serialization import resolve_format
+
+            hamiltonian_format = resolve_format(hamiltonian_format)
         self._hamiltonian_format = hamiltonian_format
-        if hamiltonian_format not in (None, "json", "parquet"):
-            raise ValueError("hamiltonian_format must be json or parquet")
         if hamiltonian is not None:
             if (
                 load_hamiltonian is not None
@@ -363,7 +1065,19 @@ class Mandacaru(ASEProperties, Calculator):
             if isinstance(optimizer, str)
             else dict(optimizer or {})
         )
-        defaults = {"method": "SLSQP", "maxiter": 2000, "tol": 1e-12}
+        # A complex64 state is not resolved below the floors Rust owns: the
+        # optimizer tolerance left unset resolves to the energy floor (printed in
+        # the optimization setup), a value given below it raises.
+        float32_state = (
+            precision == "float32"
+            and self._capabilities.quantum
+            and not self._execute_circuits
+        )
+        defaults = {
+            "method": "SLSQP",
+            "maxiter": 2000,
+            "tol": _native.FLOAT32_ENERGY_FLOOR_HA if float32_state else 1e-12,
+        }
         if shots > 0 and requested.get("method", "SPSA") == "SPSA":
             # A measured energy: the strict two-evaluation SPSA, whose
             # 2 * maxiter + 1 evaluations are each one job on a processor.
@@ -383,6 +1097,13 @@ class Mandacaru(ASEProperties, Calculator):
             )
         if set(self._convergence) - {"gradient", "energy"}:
             raise ValueError("convergence options are gradient and energy")
+        if float32_state:
+            _check_float32_floors(
+                self._optimizer["method"],
+                self._optimizer.get("tol"),
+                self._convergence,
+                adapt=method.endswith("adapt-vqe"),
+            )
         if not self.capabilities.quantum and (
             load_hamiltonian is not None
             or native_model is not None
@@ -613,6 +1334,24 @@ class Mandacaru(ASEProperties, Calculator):
             atomic_units=self._atomic_units,
         )
 
+    def _saves_over_its_source(self):
+        """True when ``save_hamiltonian`` names the file ``load_hamiltonian`` read.
+
+        The loaded file is the richer record (it can carry the native term
+        groups a Trotterized run reads back); rewriting it from the problem
+        would clobber that, so the run leaves it as it is.
+        """
+        import os
+
+        if self._load_hamiltonian is None or not isinstance(
+            self._save_hamiltonian, (str, os.PathLike)
+        ):
+            return False
+        try:
+            return os.path.samefile(self._load_hamiltonian, self._save_hamiltonian)
+        except OSError:
+            return False
+
     def _quantum(self, reference, initial_parameters, callback=None):
         if self._supplied_hamiltonian is not None:
             source = self._supplied_hamiltonian
@@ -652,23 +1391,24 @@ class Mandacaru(ASEProperties, Calculator):
                 include_singles=self._include_singles,
                 sparse=self._sparse,
                 pool=self._pool,
+                precision=self._precision,
             )
         elif self._load_hamiltonian is not None:
-            with Path(self._load_hamiltonian).open("rb") as source:
-                columnar = source.read(4) == b"PAR1"
-            if columnar:
-                from .integrations.columnar import hamiltonian_snapshot
+            import os
 
-                snapshot = hamiltonian_snapshot(self.context, self._load_hamiltonian)
-            else:
-                snapshot = self.context.read_snapshot(
-                    str(self._load_hamiltonian), "mandacaru-qubit-hamiltonian"
+            if not os.path.exists(self._load_hamiltonian):
+                raise FileNotFoundError(
+                    f"load_hamiltonian: no such file: {os.fspath(self._load_hamiltonian)!r}"
                 )
+            snapshot = self.context.read_snapshot(
+                str(self._load_hamiltonian), "mandacaru-qubit-hamiltonian"
+            )
             self.problem = snapshot.problem(
                 sector=self._sector,
                 sparse=self._sparse,
                 include_singles=self._include_singles,
                 pool=self._pool,
+                precision=self._precision,
             )
             if (
                 self._requested_mapping is not None
@@ -688,10 +1428,15 @@ class Mandacaru(ASEProperties, Calculator):
                 sparse=self._sparse,
                 include_singles=self._include_singles,
                 pool=self._pool,
+                precision=self._precision,
             )
         if self._hva is not None:
             self.problem = self.problem.hva(**self._hva)
-        if reference is None and self._save_hamiltonian:
+        if (
+            reference is None
+            and self._save_hamiltonian
+            and not self._saves_over_its_source()
+        ):
             from .core.mapping import PauliSum
             from .core.serialization import save_hamiltonian
 
@@ -752,13 +1497,15 @@ class Mandacaru(ASEProperties, Calculator):
             if callback is not None:
                 from .analysis.states import AnsatzView
 
-                def observer(info):
+                def observe(info):
                     info = dict(info)
                     info["energy"] = info["energy_ha"] * (
                         1.0 if self._atomic_units else _native.HARTREE_TO_EV
                     )
                     info["ansatz"] = AnsatzView(self.problem, info["indices"], True)
                     callback(info)
+
+                observer = observe
 
             executor = None
             if self._execute_circuits:
@@ -856,6 +1603,13 @@ class Mandacaru(ASEProperties, Calculator):
             raise NotImplementedError("periodic screened exact exchange requires its reciprocal exchange operator")
         if self._load_crystal is not None:
             self.periodic_problem = self.context.load_crystal(str(self._load_crystal))
+            if self.periodic_problem.precision != self._precision:
+                raise ValueError(
+                    f"crystal file {str(self._load_crystal)!r} stores "
+                    f"{self.periodic_problem.precision}; construct "
+                    f"Mandacaru(precision={self.periodic_problem.precision!r}) "
+                    f"(this calculator has precision={self._precision!r})"
+                )
         else:
             from .integrations.ase import atoms_from_geometry
             from .integrations.paw import configure
@@ -995,6 +1749,26 @@ class Mandacaru(ASEProperties, Calculator):
                 raise NotImplementedError(
                     "forces require a supported molecular native calculation with spectral kinetic energy"
                 )
+            if "forces" in properties and self._precision == "float32":
+                # Refused before any SCF or cached-result lookup: the PAW and
+                # variational forces difference the energy over a 1e-3 Bohr
+                # (Richardson) step, which float32 rounding turns into force
+                # noise of several meV/A; the analytic all-electron forces of
+                # the classical methods do not difference anything.
+                kind = (
+                    "quantum-method"
+                    if self.capabilities.quantum
+                    else "PAW-LCAO"
+                    if self._basis_spec is None
+                    else None
+                )
+                if kind is not None:
+                    raise ValueError(
+                        f"precision='float32' does not support {kind} forces: they "
+                        "difference the energy over a 1e-3 Bohr step (Richardson "
+                        "extrapolation), which float32 rounding turns into force "
+                        "noise of several meV/A; use precision='float64'"
+                    )
             # Cleared ASE results never serve a property: the result is rerun.
             reusable = (
                 self.result is not None

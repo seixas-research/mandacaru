@@ -27,16 +27,27 @@ integral engine unchanged.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.interpolate import CubicSpline
 
+from .. import _native
 from ..units import to_bohr
 from ..basis._angular import sample_dtype as _dtype
 from ..basis._angular import (radial_angular_gradient, spherical_coords,
                               spherical_harmonic)
 from ..basis.base import BasisFunction
+from .native_context import context as _context
+
+
+@dataclass(frozen=True)
+class _Coefficients:
+    """Breakpoints ``x`` and cubic coefficients ``c`` ``(4, n - 1)`` of a
+    radial table, as the native sampling kernels read them."""
+
+    x: np.ndarray
+    c: np.ndarray
 
 
 class _RadialTabulated(BasisFunction):
@@ -54,8 +65,19 @@ class _RadialTabulated(BasisFunction):
         self._r = np.asarray(r, dtype=float)
         self._values = np.asarray(radial, dtype=float)
         self._r_max = float(self._r[-1])
-        self._spline = CubicSpline(self._r, self._values, extrapolate=False)
-        self._slope_spline = self._spline.derivative()
+        #: The table's piecewise-cubic coefficients, ``.x`` breakpoints and
+        #: ``.c`` of shape ``(4, n - 1)`` (highest power first), for the native
+        #: sampling kernels; the native routine also validates the table.
+        self._spline = _Coefficients(
+            self._r, _native.radial_table_coefficients(
+                _context(), self._r, self._values))
+
+    def _table(self, r, slope: bool) -> np.ndarray:
+        nodes = np.asarray(r, dtype=float)
+        out = _native.radial_table_evaluate(
+            _context(), self._r, self._values, self.l,
+            np.ascontiguousarray(nodes).ravel(), slope)
+        return out.reshape(nodes.shape)
 
     def radial(self, r) -> np.ndarray:
         """Interpolated radial function; zero beyond the tabulated range.
@@ -68,28 +90,13 @@ class _RadialTabulated(BasisFunction):
         times a direction set by round-off, and the same Bloch sum came out
         with opposite signs in two equivalent cells.
         """
-        r = np.asarray(r, dtype=float)
-        r0 = float(self._r[0])
-        values = self._spline(np.clip(r, r0, self._r_max))
-        if r0 > 0.0 and self.l > 0:
-            values = np.where(r < r0, values * (np.maximum(r, 0.0) / r0)
-                              ** self.l, values)
-        return np.where((r > self._r_max) | np.isnan(values), 0.0, values)
+        return self._table(r, False)
 
     def radial_slope(self, r) -> np.ndarray:
         """``dR/dr`` of :meth:`radial`: the spline's derivative, and the
         derivative of the power-law continuation below the first table
         point."""
-        r = np.asarray(r, dtype=float)
-        r0 = float(self._r[0])
-        slope = self._slope_spline(np.clip(r, r0, self._r_max))
-        if r0 > 0.0 and self.l > 0:
-            below = (self._spline(r0) * self.l
-                     * np.maximum(r, 0.0) ** (self.l - 1) / r0 ** self.l)
-            slope = np.where(r < r0, below, slope)
-        elif r0 > 0.0:
-            slope = np.where(r < r0, 0.0, slope)
-        return np.where((r > self._r_max) | np.isnan(slope), 0.0, slope)
+        return self._table(r, True)
 
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample the function on Cartesian coordinates (Bohr)."""
@@ -315,7 +322,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         cache_key = (pp_id, key, round(k_c, 8), digest)
         memo = cache.get(cache_key)
         if memo is None:
-            memo, _info = filter_radial(r, values, l, k_c)
+            memo, _info = filter_radial(r, values, l, k_c,
+                                        context=_context())
             cache[cache_key] = memo
         return memo
 
@@ -332,7 +340,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         cache_key = (pp_id, key, round(k_c, 8), digest)
         memo = cache.get(cache_key)
         if memo is None:
-            memo, _info = filter_table(table, k_c)
+            memo, _info = filter_table(table, k_c, context=_context())
             cache[cache_key] = memo
         return memo
 
@@ -439,7 +447,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             # For the polarization zetas the tail norms are used *unsquared*
             # (they are squared-norm fractions here, while the valence zetas
             # square them); `zeta_tables` squares what it is given.
-            norms = [np.sqrt(t) for t in (tail_norms or DEFAULT_TAIL_NORMS)]
+            norms = [math.sqrt(t) for t in (tail_norms or DEFAULT_TAIL_NORMS)]
             if tail_norms is None:
                 # zeta_split="last_zeta" was asked for: keep it for the
                 # polarization zetas too, rather than mixing conventions.
@@ -453,9 +461,7 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             n_polarization = 0                 # the loop below has nothing left
         for offset in range(n_polarization):
             l = l_max + 1 + offset
-            shape = r_table ** (offset + 1) * outermost
-            shape = shape / np.sqrt(np.trapezoid(shape * shape * r_table ** 2,
-                                                 r_table))
+            shape = _native.pao_power_shape(r_table, outermost, offset + 1)
             for table in zeta_tables(pp.r, shape, l + 1, l, 1,
                                      split):
                 table.polarization = True
@@ -501,13 +507,12 @@ _LEVEL_CACHE: dict = {}
 def _lowest_level(pp, l: int) -> float:
     entry = _LEVEL_CACHE.get((id(pp), int(l)))
     if entry is None or entry[0] is not pp:
-        from .confinement import _eigenvalue
-        from .paw import _channel_operator, _spectrum_extent
-        r_max = _spectrum_extent(pp, int(l))
-        fine = _eigenvalue(*_channel_operator(pp, int(l), r_max, 2), state=0)
-        coarse = _eigenvalue(*_channel_operator(pp, int(l), r_max, 4), state=0)
-        extrapolated = float((4.0 * fine - coarse) / 3.0)
-        entry = (pp, extrapolated)
+        from .confinement import channel_arrays
+        from .partial_waves import _spectrum_extent
+        level = _native.pao_bound_level(
+            _context(), *channel_arrays(pp, int(l)),
+            _spectrum_extent(pp, int(l)))
+        entry = (pp, float(level))
         _LEVEL_CACHE[(id(pp), int(l))] = entry
     return entry[1]
 
@@ -515,12 +520,11 @@ def _lowest_level(pp, l: int) -> float:
 def bound_radial(pp, l: int) -> np.ndarray:
     """``R(r)`` on ``pp.r`` of channel ``l``'s lowest eigenstate in the
     dataset's own operator, zero past the box it was solved in."""
-    from .paw import paw_eigenstate
-    r, u, _energy = paw_eigenstate(pp, int(l))
-    table = np.asarray(pp.r, dtype=float)
-    spline = CubicSpline(np.concatenate([[0.0], r]), np.concatenate([[0.0], u]))
-    return np.where(table < r[-1], spline(np.minimum(table, r[-1])) / table,
-                    0.0)
+    from .confinement import channel_arrays
+    from .partial_waves import _spectrum_extent
+    radial, _level = _native.pao_bound_radial(
+        _context(), *channel_arrays(pp, int(l)), _spectrum_extent(pp, int(l)))
+    return radial
 
 
 #: Empty channels that carry projectors for their scattering only: their

@@ -1,8 +1,8 @@
-"""Mixed precision (single vs double) in Kohn-Sham DFT.
+"""Mixed precision (float32 vs float64) in Kohn-Sham DFT.
 
-Using precision="single" stores sampled molecular orbitals in float32, halving
+Using precision="float32" stores sampled molecular orbitals in float32, halving
 their retained storage. Integral accumulation, Hamiltonian matrices and FFT
-workspaces use double precision. This compares the resulting SCF energies.
+workspaces use float64. This compares the resulting SCF energies.
 """
 import time
 from ase.build import molecule
@@ -17,7 +17,7 @@ print(f"{'Precision':<10} {'Energy (eV)':<16} {'Time (s)':<10} {'SCF Iters':<10}
 print("-" * 65)
 
 results = {}
-for prec in ("double", "single"):
+for prec in ("float64", "float32"):
     t0 = time.perf_counter()
     atoms.calc = Mandacaru(
         method="dft",
@@ -34,5 +34,5 @@ for prec in ("double", "single"):
     print(f"{prec:<10} {energy:<16.6f} {dt:<10.2f} {scf.n_iterations:<10}")
 
 print("-" * 65)
-delta_e = abs(results["single"] - results["double"])
+delta_e = abs(results["float32"] - results["float64"])
 print(f"Energy difference: {delta_e * 1e3:.4f} meV ({delta_e:.2e} eV)")

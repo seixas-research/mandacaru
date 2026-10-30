@@ -1,388 +1,149 @@
 # Choosing a classical optimizer
 
 Every variational run ends its inner loop in a classical minimization over the
-ansatz parameters — once for `method="vqe"`, once per growth step for
-ADAPT-VQE. The `optimizer=` argument picks it, in any of three equivalent
-spellings.
+ansatz parameters: once for `method="vqe"`, once per growth step for
+`method="adapt-vqe"`. The `optimizer=` option picks the method and its budget.
+This page says which methods exist, what the default depends on, and what
+changes when the energy is measured with `shots`. The full list of options and
+their defaults is the [options reference](#options-reference).
 
-A **method name** takes the library's budget and tolerance:
+## Spelling
+
+`optimizer=` is a method name or a dictionary. A name takes the defaults of
+the objective; a dictionary overrides only the keys it names.
 
 ```python
+from ase.build import molecule
 from mandacaru import Mandacaru
 
-calc = Mandacaru(method="adapt-vqe",
-                 basis="HAO",
-                 grid_spacing=0.30,
-                 pool="qubit",
-                 optimizer="L-BFGS")
+atoms = molecule("H2")
+atoms.center(vacuum=3.0)
+
+for optimizer in ("SLSQP",
+                  {"method": "L-BFGS", "maxiter": 500, "tol": 1e-10},
+                  {"method": "COBYLA", "maxiter": 500, "tol": 1e-8}):
+    atoms.calc = Mandacaru(method="vqe",
+                           basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.25,
+                           optimizer=optimizer)
+    energy = atoms.get_potential_energy()
+    result = atoms.calc.result
+    print(f"{energy:.6f} eV  {result.optimizer_steps} steps  "
+          f"{result.num_evaluations} evaluations")
 ```
 
-A **dict** sets them, with nothing extra to import:
+The dictionary takes exactly five keys: `method`, `maxiter`, `maxfev`, `tol` and
+`track_best`. Any other key (`options`, `seed`, a SciPy keyword) is refused
+when the calculator is constructed. On an exact objective the defaults are
+SLSQP, `maxiter=2000` and `tol=1e-12`, so `{"maxiter": 500}` is SLSQP on a
+shorter budget. Write the method, `maxiter` and `tol` out in any run that pins
+an energy, so the record says what produced it.
 
-```python
-calc = Mandacaru(method="adapt-vqe",
-                 basis="HAO",
-                 grid_spacing=0.30,
-                 pool="qubit",
-                 optimizer={"method": "L-BFGS",
-                            "maxiter": 2000,
-                            "tol": 1e-12})
-```
-
-Keys left out keep their defaults, so `{"maxiter": 500}` is the default method
-on a shorter budget. `options` and `seed` are accepted too
-({data}`~mandacaru.optimizers.optim.OPTIMIZER_KEYS`), and an unknown key is
-refused as the typo it is.
-
-The dict builds an {class}`~mandacaru.optimizers.Optimizer`; to reuse one
-configuration across runs, reuse the dict:
-
-```python
-spsa = {"method": "SPSA", "maxiter": 500, "tol": 1e-6, "options": {"a": 0.1}}
-calc = Mandacaru(method="adapt-vqe",
-                 basis="HAO",
-                 grid_spacing=0.30,
-                 pool="qubit",
-                 optimizer=spsa)
-```
-
-The names are in {data}`~mandacaru.optimizers.NAMED_OPTIMIZERS`, in three
-families:
+All seven methods run in Rust; none is dispatched to SciPy.
 
 | family | methods |
 | :--- | :--- |
 | derivative-free | `"COBYLA"`, `"Nelder-Mead"` |
-| quasi-Newton / gradient | `"SLSQP"` (the default on an exact objective, {data}`~mandacaru.optimizers.DEFAULT_OPTIMIZER`), `"BFGS"`, `"L-BFGS"`, `"CG"` — all four refused when `shots > 0` |
-| stochastic | `"SPSA"` (the default under `shots > 0`) |
+| gradient | `"SLSQP"` (the default on an exact objective), `"BFGS"`, `"L-BFGS"`, `"CG"` |
+| stochastic | `"SPSA"` (the default when `shots > 0`) |
 
-Everything but SPSA is dispatched to `scipy.optimize.minimize`; SPSA is
-implemented natively, since SciPy has no equivalent.
-
-Two of the names need a word about what they map onto. **`"L-BFGS"`** is
-limited-memory BFGS without bounds, which is exactly what SciPy's `"L-BFGS-B"`
-reduces to when no bounds are given — a variational ansatz's parameters are
-unbounded angles, so the driver never passes any. SciPy's bounded spelling is
-not offered under its own name: it was, and it ran the same code for the same
-cost, which is a second name for one thing. **`"CG"`** is SciPy's nonlinear
-conjugate gradient, in its Polak–Ribière variant.
-
-```{note}
-For `"BFGS"` and `"CG"`, SciPy reads `tol` as a **gradient norm**, not as a
-function-value change. Handing those two the default `1e-12` asks for something
-a finite-difference gradient cannot deliver — its own accuracy is about `1e-8`
-— so every line search ends in "precision loss" and the run reports
-non-convergence at every growth step while sitting exactly on the minimum.
-Mandacaru therefore passes them `sqrt(tol)`, the gradient criterion of equal
-strength (near a minimum, `f − f* ~ |g|²/2λ`). An explicit
-`options={"gtol": ...}` is left alone.
-```
-
-A bare name is shorthand for the defaults
-({data}`~mandacaru.optimizers.DEFAULT_MAXITER` = 1000 and
-{data}`~mandacaru.optimizers.DEFAULT_TOL` = `1e-12`); a run that pins an energy
-should say what it was optimized with, so the examples write both out through
-the dict and the test suite through module-level `Optimizer` constants.
-
-```{note}
-The default tolerance is **explicit and tight on purpose**. Several methods'
-SciPy defaults are far too loose for a cost measured in Hartree — Nelder-Mead's
-`xatol = fatol = 1e-4` stops the simplex four orders of magnitude above
-chemical accuracy — and every recommendation below was measured with the tight
-one. It also gives the native SPSA something to certify convergence against,
-which `tol=None` does not. Pass `tol=None` to get each method's own
-default back.
-```
+The gradient methods receive the analytic energy gradient of the ansatz
+parameters. `gradient="analytic"` is the only value the constructor accepts;
+the finite-difference and parameter-shift spellings are refused. COBYLA,
+Nelder-Mead and SPSA use no gradient.
 
 (shots-optimizer)=
-## Under `shots`, the default follows the objective
+## With `shots`, the default follows the objective
 
-`optimizer=None` — the constructor default of every driver, and of
-`mandacaru --optimizer` — is not always `"SLSQP"`. It resolves against the
-objective it is minimizing:
+With `shots > 0` the energy is a measured quantity and the default changes:
 
-* `shots = 0` (a state vector) —
-  {data}`~mandacaru.optimizers.optim.DEFAULT_OPTIMIZER`, `"SLSQP"`, as above.
-* `shots > 0` (a measured energy) —
-  {data}`~mandacaru.optimizers.optim.SHOT_OPTIMIZER`: SPSA,
-  `maxiter=100`, `tol=None`, `options={"track_best": False}` — the strict
-  two-evaluation form, `2 * maxiter + 1 = 201` energy evaluations in total,
-  each one a job on a processor. A dict without a `"method"` key inherits
-  this default too, so `optimizer={"maxiter": 50}` under `shots > 0` is SPSA
-  on a shorter budget.
+* **No `method` key:** strict SPSA with `maxiter=100`, `tol=None` and
+  `track_best=False`. Strict SPSA takes two energy evaluations per step plus
+  one at the end, so a default run makes `2 * 100 + 1 = 201` evaluations, and
+  on a processor each one is a job. A dictionary without `"method"` inherits
+  this too, so `optimizer={"maxiter": 50}` is SPSA on a shorter budget.
+* **`"SLSQP"`, `"BFGS"`, `"L-BFGS"` and `"CG"` are refused,** however they are
+  spelled. They difference the energy at tiny steps, which turns shot noise into
+  gradient noise.
+* **`"COBYLA"` keeps the exact-objective defaults** (`maxiter=2000`,
+  `tol=1e-12`), which is far more jobs than a device allows. Set `maxiter`
+  explicitly.
 
-`"SLSQP"`, `"BFGS"`, `"L-BFGS"` and `"CG"` (
-{data}`~mandacaru.optimizers.optim.NOISE_INTOLERANT`) difference the energy at
-a step of about `1.5e-8`; a shot noise of `sigma` then becomes a gradient
-noise of about `sqrt(2) * sigma / eps` — roughly `1e6` Ha/rad at
-`sigma = 0.01` Ha — so all four are refused with `shots > 0`, however they
-were spelled: use the default, or `"COBYLA"`.
+```python
+from mandacaru import Mandacaru
 
-{meth}`~mandacaru.optimizers.optim.Optimizer.max_evaluations` bounds the
-energy evaluations one run can make: `2 * maxiter + 1` for SPSA without
-`track_best` (`2 * maxiter + (maxiter + 1)` with it, the state-vector
-default), `maxiter` for COBYLA, `None` for a method that does not cap itself
-by iterations. On a processor this is what the run-wide budget checks before
-the first job is queued — see [What a hardware measurement
-costs](measurement_cost.md).
+try:
+    Mandacaru(method="vqe", shots=1000, optimizer="SLSQP")
+except ValueError as error:
+    print(error)
+```
+
+The classical methods (`rhf`, `uhf`, `ghf`, `dft`) refuse `shots`, `device`,
+`backend_provider`, `backend_options` and `measurement_budget`: they have no
+quantum state to measure.
+
+### What the run budget does to an optimizer
+
+On a processor the run-wide job and shot budget is on by default (see
+[the run budget](#run-budget)). For `method="vqe"` it is checked before the
+first job is queued:
+
+* SPSA and COBYLA have a bound on their energy evaluations, from `maxiter`.
+  If that bound times the jobs one energy needs cannot fit the budget, the run
+  is refused with `RunBudgetExceeded` before anything is submitted. COBYLA is
+  bounded by `maxiter` unless `maxfev` is given, in which case `maxfev` is the
+  bound.
+* Nelder-Mead is not pre-flighted: it has no bound from its iteration count,
+  so the budget ledger stops it where the budget ends.
+
+A run that the budget stops part-way keeps its best point. The calculator
+issues a `RuntimeWarning` and records the reason in `calc.run_budget_exhausted`
+(`None` when the budget did not stop the run).
 
 ## Steps are not evaluations
 
 Two numbers measure the classical cost, and they are not interchangeable:
 
-* **steps** — parameter updates, the optimizer's own moves;
-* **cost evaluations** — energy evaluations, which is what a QPU is billed for.
+* **steps**, the optimizer's own parameter updates;
+* **evaluations**, the energy evaluations, which is what a processor bills.
 
-A gradient-based method takes few steps and spends many evaluations on each one
-(a finite-difference gradient costs `N + 1`, plus a line search); a direct search
-takes many cheap steps. Reporting only one of them flatters one family and
-slanders the other, so a run reports both: the `steps` column of the
-`[ITERATIONS]` table is the per-growth-step count, and the summary block's
-`optimizer_steps` / `cost_evaluations` are the run's totals.
+A gradient method takes few steps and spends several evaluations on each; SPSA
+takes many steps at two evaluations each. Report both:
 
 ```python
+atoms.calc = Mandacaru(method="adapt-vqe",
+                       basis={"name": "PAW-LCAO", "size": "SZ"},
+                       grid_spacing=0.25, max_iterations=3)
+atoms.get_potential_energy()
 result = atoms.calc.result
 result.optimizer_steps                    # parameter updates, whole run
 result.num_evaluations                    # energy evaluations, whole run
-result.iterations[0].optimizer_steps      # ... and per growth step
+result.iterations[0].optimizer_steps      # per ADAPT growth step
+result.iterations[0].num_evaluations
 ```
 
-The same count is on every {class}`~mandacaru.optimizers.OptimizeResult` as
-`nit`, for a bare optimizer used outside a driver.
-
-## The exact gradient
-
-On an exact objective (`shots = 0`, the internal state vector), ADAPT-VQE
-hands the gradient methods the **exact gradient** of the energy in the ansatz
-parameters instead of letting them difference it. It comes from the adjoint
-method: one preparation of $\psi = U_N \cdots U_1 |\mathrm{HF}\rangle$ and
-$\lambda = H\psi$, then one backward sweep that undoes each
-$U_k = e^{\theta_k A_k}$ on both and reads off
-
-$$
-\frac{\partial E}{\partial\theta_k} = 2\,\mathrm{Re}\,\langle\lambda_k|A_k|\psi_k\rangle .
-$$
-
-The whole gradient costs about three state preparations, against `N + 1`
-energies for a finite difference, so the saving grows with the ansatz: water
-in PAW-LCAO-DZP on 16 qubits, 30 QEB operators, needs 482 evaluations instead
-of 4851 for the same energy, and the parameter optimization runs four to five
-times faster. Each call counts as one evaluation. The `[OPTIMIZATION SETUP]`
-block's `parameter_gradient` line says which gradient ran.
-
-`method="vqe"` uses it for the ordered-product UCCSD
-(`ansatz={"name": "uccsd", "trotter": True}`) in the particle-number sector; the
-exact-exponential UCCSD and the HVA keep the finite difference.
-
-It is used with `gradient="analytic"` (the default) and a gradient method;
-COBYLA, Nelder-Mead and SPSA use no gradient. `gradient="finite_difference"`
-or `"parameter_shift"` keeps the optimizer's own finite difference, and so does
-a shot-based objective or a circuit provider, which give no amplitudes to
-sweep back. The tables below were measured with the finite difference, which
-`gradient="finite_difference"` reproduces.
-
-## Measured: a small system
-
-LiH at 1.6 Å, HAO, `pool="qubit"`, Jordan-Wigner (6 qubits), ADAPT-VQE to
-`max_iterations=12`, every optimizer on the shipped defaults `maxiter=1000`
-and `tol=1e-12` (FCI = −162.953987 eV; `examples/classical_optimizers/01_optimizer_comparison.py`
-runs the same seven optimizers on the smaller H₂ problem; measured with `kinetic="fd"`):
-
-| optimizer | steps | evaluations | operators | E − E(FCI) (eV) | CNOTs | s | converged |
-|---|---|---|---|---|---|---|---|
-| SPSA | 11377 | 34143 | 12 | 5.4e-05 | 66 | 2.4 | no |
-| COBYLA | 4247 | 5470 | 12 | 4.8e-06 | 66 | 2.6 | yes |
-| Nelder-Mead | 3270 | 5935 | 10 | 7.2e-07 | 60 | 0.5 | yes |
-| **SLSQP** | **76** | **632** | **10** | **7.2e-07** | **60** | **0.1** | **yes** |
-| BFGS | 80 | 1066 | 10 | 7.2e-07 | 60 | 0.2 | yes |
-| L-BFGS | 85 | 844 | 10 | 7.2e-07 | 60 | 0.1 | yes |
-| CG | 137 | 2339 | 10 | 7.2e-07 | 60 | 0.3 | yes |
-
-**SLSQP wins on every axis**: the exact ground state of the qubit Hamiltonian,
-the shortest circuit anyone found, and it gets there in 76 parameter updates and
-632 energy evaluations — an order of magnitude below the direct searches.
-
-**Read the rest this way.** The whole quasi-Newton family lands on the same
-answer and the same 60-CNOT circuit within a factor of four of each other:
-**L-BFGS** costs a third more evaluations than SLSQP, **BFGS** a few hundred
-more for its dense Hessian approximation, and **CG** about three times
-SLSQP's — a conjugate gradient stores no curvature, so it needs more
-directions. **Nelder-Mead** reaches the same energy and the same circuit on 9×
-the evaluations. **COBYLA** stops two operators short of the best circuit.
-**SPSA** never
-certifies convergence on a noiseless state-vector cost (it is built for a noisy
-one) and burns its whole iteration budget at every growth step; it belongs on
-hardware, where two evaluations per gradient is the entire point.
-
-```{warning}
-This table was different at the previous `tol=1e-8`: SLSQP and L-BFGS stopped
-early, left ADAPT two extra operators and 78 CNOTs instead of 60, and never
-reported convergence. **That was the tolerance, not the method.** For SLSQP and
-COBYLA `tol` is a *function-value* criterion, so it must be tighter than a
-gradient method's to leave an equally small gradient — and ADAPT's own
-convergence test reads exactly that residual gradient. At `tol=1e-8` on
-H₂/HAO, SLSQP reaches the ground state to 1e-10 eV but leaves `max|g| = 4.6e-06`
-against a gradient convergence threshold of `1e-6`, so the growth loop never stops and
-piles up 50 redundant operators; at `1e-12` the same run converges after one
-operator in 4 steps and 9 evaluations. If you override `tol`, keep it tight.
-```
-
-## Measured: a realistic system
-
-The same comparison on water — H₂O, `basis={"name": "PAW-LCAO", "size": "SZ"}`,
-`grid_spacing=0.25`, `pool="qubit"`, Jordan-Wigner (12 qubits, a 640-operator pool, sector
-dimension 225), ADAPT-VQE to `max_iterations=40`; sector FCI = −492.521982 eV.
-No run reaches the gradient threshold here, so all seven stop on ADAPT's
-`max_iterations=40` and the comparison is at equal circuit length (measured with `kinetic="fd"`):
-
-| optimizer | steps | evaluations | E − E(FCI) (eV) | CNOTs | s | uncertified steps |
-|---|---|---|---|---|---|---|
-| SPSA | 40000 | 120040 | 1.79e-02 | 538 | 89.3 | 40 |
-| COBYLA | 17067 | 26521 | 9.68e-03 | 488 | 46.9 | 14 |
-| Nelder-Mead | 33297 | 44701 | 9.73e-03 | 508 | 44.9 | 28 |
-| **SLSQP** | **471** | **13424** | **9.64e-03** | 488 | **16.7** | **0** |
-| BFGS | 819 | 45672 | 9.64e-03 | **486** | 59.4 | 19 |
-| **L-BFGS** | **444** | 15342 | **9.64e-03** | 488 | 22.6 | **0** |
-| CG | 963 | 75309 | 9.64e-03 | 490 | 94.0 | 13 |
-
-Every gradient method reaches the same energy on effectively the same circuit —
-486 to 490 CNOTs — so again the choice is cost, and **SLSQP is cheapest on both
-currencies**: half COBYLA's evaluations, a third of Nelder-Mead's, and the
-fastest wall-clock of the seven.
-
-```{note}
-**BFGS and CG stop certifying here** (19 and 13 uncertified growth steps),
-where they certified every step on LiH. With 40 parameters the
-finite-difference gradient's own accuracy no longer reaches the `sqrt(tol)`
-gradient criterion, and the line search ends in "precision loss". The energy is
-right; the convergence flag is not. SLSQP and L-BFGS, whose `tol` is a
-function-value criterion, are unaffected — which is the practical reason to
-prefer them.
-```
-
-The same molecule with `pool="qeb"`, which *does* converge on the
-gradient threshold, as operators / evaluations / CNOTs at the same energy
-(−492.508772 eV):
-
-| optimizer | operators | evaluations | CNOTs | s | uncertified steps |
-|---|---|---|---|---|---|
-| SPSA | 40 (cap) | 120040 | 1208 | 85.9 | 40 |
-| COBYLA | 30 | 16307 | 1168 | 21.5 | 3 |
-| Nelder-Mead | 31 | 34309 | 1216 | 21.3 | 19 |
-| **SLSQP** | **30** | **4308** | **1168** | 5.6 | **0** |
-| BFGS | 30 | 12478 | 1168 | 9.7 | 6 |
-| **L-BFGS** | **30** | 4871 | **1168** | **5.5** | **0** |
-| CG | 30 | 13131 | 1168 | 10.3 | 4 |
-
-Every method but SPSA and Nelder-Mead builds the identical 30-operator,
-1168-CNOT circuit; SLSQP gets there on a quarter of COBYLA's evaluations and an
-eighth of Nelder-Mead's, four times faster in wall time.
-
-**SLSQP is the shipped default on an exact objective** because all three
-tables say the same thing:
-the best energy anyone reached, on the shortest circuit anyone built, for a
-fraction of the cost, with every inner optimization certified. What it needs in
-return is the tight `tol` — see the warning above. `L-BFGS` is the alternative,
-within 15 % of it everywhere.
-
-(line-search)=
-## The line search, and why there is no `linesearch=` option
-
-A line search is the inner 1-D minimization a gradient method runs along each
-search direction. Mandacaru does **not** expose an option for it, and this
-section is the measurement behind that decision.
-
-**Which methods have one at all:**
-
-| method | line search | knobs |
-| :--- | :--- | :--- |
-| `"SLSQP"` | internal, on the merit function | none exposed by SciPy |
-| `"BFGS"` | Wolfe | `c1`, `c2`, `xrtol` |
-| `"CG"` | Wolfe | `c1`, `c2` |
-| `"L-BFGS"` | bounded Moré–Thuente | `maxls` (default 20) |
-| `"COBYLA"` | none — trust region on a linear model | — |
-| `"Nelder-Mead"` | none — simplex reflection | — |
-| `"SPSA"` | none — a decaying gain sequence | — |
-
-The knobs that exist already reach SciPy, through the `options` key of the
-dict form:
-
-```python
-optimizer={"method": "BFGS", "maxiter": 1000, "tol": 1e-12,
-           "options": {"c1": 1e-4, "c2": 0.9}}
-```
-
-**Tuning them does not pay.** On the LiH problem of the table above, in
-evaluations to the same energy: `L-BFGS` with `maxls` at 5, 20 and 50 is
-**identical** (580 each — the line search never exhausts its budget on a cost
-this smooth); `BFGS` tightened from the default `(c1, c2) = (1e-4, 0.9)` to
-`(1e-2, 0.1)` costs **21 % more** (725 → 877); only `CG` improves, 1283 →
-1083 (−16 %), and it is still twice SLSQP's cost afterwards. There is no
-setting here that beats picking a better method.
-
-**A Mandacaru-specific exact line search is possible, and still does not pay.**
-Every pool generator satisfies `A³ = −A`, so `exp(θA)` has eigenvalues
-`1, e^{iθ}, e^{-iθ}` and the energy along a *single* parameter is exactly
-
-$$E(\theta) = a_0 + a_1\cos\theta + b_1\sin\theta
-             + a_2\cos 2\theta + b_2\sin 2\theta,$$
-
-five coefficients, so **five evaluations determine the whole curve** and its
-minimum follows in closed form. Verified on H₂ and LiH across the `qeb`,
-`qubit` and `fermionic` pools: a 5-point fit predicts 40 other angles to
-**3.6e-15 eV**.
-
-```{note}
-The first harmonic does **not** vanish in general — measured `|a₁, b₁|` is
-2.1e-02 for LiH/`qeb` and 9.7e-03 for LiH/`fermionic`, against zero for
-LiH/`qubit`. The familiar three-point Rotosolve formula assumes only the `2θ`
-harmonic and would be wrong for those pools. Five points, not three.
-```
-
-Wiring that into the growth step was measured both ways:
-
-* with `quenching=True` (the default), placing the new parameter at its exact
-  1-D optimum before the joint re-optimization is a **wash** — SLSQP pays 1–7 %
-  *more* evaluations, COBYLA saves 3–6 %, and the energy is unchanged to
-  1e-12 eV. The warm start from θ = 0 is already good, and the joint problem is
-  no easier for having one coordinate pre-placed.
-* with `quenching=False`, where a 1-D search *is* the optimization, it is
-  **worse**: same evaluation count, but −162.9526 eV against −162.9538
-  (`qubit`) and −162.9503 against −162.9540 (`qeb`). The exact solve returns the
-  *global* minimum over `[0, 2π)`, which is a greedier step than the growth loop
-  wants; the iterative search stays on the branch near zero and the following
-  operators are selected from a better state.
-
-So: the knobs that exist are reachable and not worth turning, and the exact
-line search this problem admits is neutral at best. `tol` and the choice of
-method are the levers that matter.
+An inner optimization that does not certify its own convergence is not
+silently accepted. ADAPT-VQE records it in `result.optimizer_failures` and
+issues one `RuntimeWarning` at the end of the run. Whether the run as a whole
+converged is `result.success`, and the reason it stopped is
+`result.timings["termination"]`.
 
 ## A rule of thumb
 
-* **State-vector simulation** — the `"SLSQP"` default, or any of the
-  quasi-Newton family (`"L-BFGS"`, `"BFGS"`, `"CG"`): one to
-  two orders of magnitude fewer steps and evaluations than anything else, and
-  the only ones that certified convergence at every growth step of the water
-  run. Keep `tol` tight; that is what turns them from the worst circuit in the
-  LiH table into the best.
-* **A starting point that is already stationary** — a gradient method cannot
-  leave one, and correctly reports convergence there. ADAPT never hits this
-  (its screening only ever selects an operator with a non-zero gradient), but a
-  hand-built fixed ansatz can. `"Nelder-Mead"` or `"COBYLA"` escape it.
-* **Shot-based execution** (`shots > 0`) — `"SPSA"` (the default there,
-  [above](#shots-optimizer)) or `"COBYLA"`: neither needs a derivative, and a
-  finite-difference gradient through shot noise is the worst of both worlds
-  (`"SLSQP"`, `"BFGS"`, `"L-BFGS"` and `"CG"` are refused outright). SPSA's two
-  evaluations per gradient is the whole point on hardware, and the noiseless
-  tables above cannot show it.
-* **Cost-limited runs** — read `cost_evaluations`, not `optimizer_steps`; they
-  rank the methods differently. SPSA is the extreme case: the fewest evaluations
-  per step of any method, and by far the most steps.
-* **Do not reach for the line search.** Its knobs are tunable through
-  `options=` and measure as noise; see [above](#line-search).
-* **Whatever you choose, write it out.** `optimizer={"method": ...,
-  "maxiter": ..., "tol": ...}` is what the examples and the test suite do, so a run
-  that pins an energy records what produced it.
+* **State-vector simulation:** the SLSQP default, or any other gradient method.
+  Keep `tol` tight. ADAPT-VQE's own convergence test reads the largest pool
+  gradient the inner optimizer leaves behind, so a loose `tol` can keep the
+  growth loop from stopping.
+* **A starting point that is already stationary:** a gradient method cannot
+  leave one and correctly reports convergence there. ADAPT-VQE never meets this
+  (it only selects an operator with a nonzero gradient), but a fixed ansatz can.
+  Nelder-Mead and COBYLA escape it.
+* **Shot-based execution:** SPSA (the default) or COBYLA, neither of which needs
+  a derivative.
+* **Cost-limited runs:** compare `num_evaluations`, not `optimizer_steps`. They
+  rank the methods differently.
 
-An inner optimization that does not certify its own convergence is not silently
-accepted: it is recorded in `result.optimizer_failures` and reported once as a
-`RuntimeWarning` at the end of the run, naming the growth steps involved.
+`examples/classical_optimizers/01_optimizer_comparison.py` runs all seven methods
+on the same H2 problem and prints each one's energy and evaluation count. The
+numbers depend on the basis, the grid and the tolerance, so measure on your own
+problem before choosing.

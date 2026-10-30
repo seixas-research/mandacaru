@@ -30,7 +30,7 @@ impl InputArrays {
         if let Some(key) = v.as_str() {
             let samples = match self.0.remove(key) {
                 Some(InputArray::Samples(samples)) => samples,
-                Some(InputArray::Complex(values)) => ComplexSamples::Double(values),
+                Some(InputArray::Complex(values)) => ComplexSamples::Float64(values),
                 _ => {
                     return Err(invalid(format!(
                         "missing or invalid Bloch sample array {key}"
@@ -42,7 +42,7 @@ impl InputArrays {
             }
             return samples.into_precision(ctx, precision);
         }
-        ComplexSamples::Double(complex(ctx, v, n, "Bloch samples")?).into_precision(ctx, precision)
+        ComplexSamples::Float64(complex(ctx, v, n, "Bloch samples")?).into_precision(ctx, precision)
     }
     fn real(&mut self, ctx: &Context, v: &Value, n: usize, name: &str) -> Result<Buffer<f64>> {
         if let Some(key) = v.as_str() {
@@ -280,7 +280,7 @@ impl Crystal {
             true,
         )?;
         let n = grid.index.points();
-        let precision = Precision::parse(v["precision"].as_str().unwrap_or("double"))?;
+        let precision = Precision::parse(v["precision"].as_str().unwrap_or("float64"))?;
         let m = count(&v["m"], "basis dimension")?;
         let p = count(&v["p"], "projector dimension")?;
         let channels = count(&v["channels"], "moment count")?;
@@ -508,7 +508,12 @@ impl Crystal {
             phase: arrays.complex(ctx, &v["phase"], n, "Fourier phase")?,
             kerker: arrays.real(ctx, &v["kerker"], n, "Kerker factors")?,
             ion: arrays.complex(ctx, &v["ion"], n, "ionic reciprocal density")?,
-            hats: arrays.samples(ctx, &v["hats"], product(&[channels, n])?, Precision::Double)?,
+            hats: arrays.samples(
+                ctx,
+                &v["hats"],
+                product(&[channels, n])?,
+                Precision::Float64,
+            )?,
             uion: arrays.complex(ctx, &v["uion"], channels, "compact ion couplings")?,
             linear: arrays.complex(ctx, &v["linear"], channels, "short-range moment couplings")?,
             eion: number(&v["eion"], "ionic energy")?,

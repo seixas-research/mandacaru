@@ -1,5 +1,6 @@
 //! Cached quantum problems. All energies are Hartree; qubit zero is the MSB.
 pub mod algebra;
+pub mod amplitude;
 pub mod deflation;
 pub mod dynamics;
 pub mod evolution;
@@ -15,5 +16,6 @@ pub mod sparse;
 pub mod subspace;
 pub mod transfer;
 pub use algebra::{Basis, Encoding, Operator};
+pub use amplitude::{Amplitude, Floors, State};
 pub use num_complex::Complex64 as C64;
 pub use solver::{CachedProblem, SolveOptions, SolveResult};

@@ -29,6 +29,7 @@ fn full_domains_and_zero_pno_cutoff_recover_canonical_mp2_energy_and_density() {
             r#"{"name":"HAO"}"#,
             "spectral",
             Some(1e-10),
+            Default::default(),
         )
         .unwrap();
         let reference = integrals

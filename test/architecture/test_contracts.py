@@ -139,7 +139,7 @@ def test_native_calculation_avoids_unrelated_integration_imports_and_scratch(tmp
 import importlib.abc, sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'scipy','jax','qiskit','braket','cirq','matplotlib','pandas','threadpoolctl'}:
+        if fullname.split('.')[0] in {'scipy','jax','qiskit','braket','cirq','matplotlib','pandas','pyarrow','fastparquet','threadpoolctl'}:
             raise AssertionError('optional import: '+fullname)
 sys.meta_path.insert(0,Block())
 import numpy as np
@@ -159,6 +159,43 @@ for basis in ['HAO','STO-3G']:
     )
     assert completed.returncode == 0, completed.stderr
     assert not (tmp_path / ".mandacaru").exists()
+
+
+def test_parquet_and_json_caches_need_no_python_parquet_package(tmp_path):
+    """Hamiltonian and pseudopotential files round-trip with ``pandas``,
+    ``pyarrow`` and ``fastparquet`` unimportable.  (The pseudopotential codec
+    still imports SciPy, so only the retired packages are blocked here.)"""
+    fixture = (Path(__file__).parents[1]
+               / "migration/reference/parquet/pseudopotential/fastparquet_zstd.parquet")
+    script = """
+import importlib.abc, sys
+class Block(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'pandas','pyarrow','fastparquet'}:
+            raise AssertionError('retired Parquet package: '+fullname)
+sys.meta_path.insert(0,Block())
+from mandacaru.core import PauliSum
+from mandacaru.core.serialization import load_hamiltonian, save_hamiltonian
+from mandacaru.pseudopotentials.io import load_pseudopotential, save_pseudopotential
+pauli=PauliSum({'IZ':.5,'ZI':-.25,'XX':.125j})
+for extension in ('.parquet','.json'):
+    path=save_hamiltonian('h'+extension,pauli,num_particles=(1,1),n_spatial_orbitals=1)
+    record=load_hamiltonian(path)
+    assert record.hamiltonian.terms==pauli.terms and record.num_particles==(1,1)
+loaded=load_pseudopotential(sys.argv[1])
+again=save_pseudopotential(loaded,'pp.parquet',stride=1)
+assert load_pseudopotential(again).symbol==loaded.symbol
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(fixture)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    with open(tmp_path / "h.parquet", "rb") as source:
+        assert source.read(4) == b"PAR1"
 
 
 def typed_crystal():

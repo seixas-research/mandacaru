@@ -81,8 +81,13 @@ def write_calculation(driver, result, geometry):
                 cell=geometry.cell,
                 pbc=geometry.pbc,
             )
+        # The one owner of the precision: no other block repeats it.
         log.write_basis(
-            {"name": str(driver.basis), "spatial_orbitals": result.n_spatial_orbitals}
+            {
+                "name": str(driver.basis),
+                "precision": driver._precision,
+                "spatial_orbitals": result.n_spatial_orbitals,
+            }
         )
         log.write_electrons(
             {
@@ -126,6 +131,13 @@ def write_calculation(driver, result, geometry):
                 extra={
                     "pool": driver._pool,
                     "pool_size": len(driver.problem.pool_labels),
+                    **(
+                        {"optimizer_tolerance": f"{driver._optimizer['tol']:g} Ha"}
+                        if driver._precision == "float32"
+                        and driver._optimizer.get("tol") is not None
+                        and not driver._execute_circuits
+                        else {}
+                    ),
                     "device": driver._device,
                     **(
                         {}

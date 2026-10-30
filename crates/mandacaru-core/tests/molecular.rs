@@ -18,7 +18,16 @@ fn integrals(ctx: &Context) -> MolecularIntegrals {
     let geometry = geometry();
     let grid =
         SpatialGrid::from_geometry(&geometry, [0.35 / 0.529177210903; 3], false, false).unwrap();
-    MolecularIntegrals::new(ctx, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None).unwrap()
+    MolecularIntegrals::new(
+        ctx,
+        geometry,
+        grid,
+        r#"{"name":"HAO"}"#,
+        "spectral",
+        None,
+        Default::default(),
+    )
+    .unwrap()
 }
 #[test]
 fn displaced_coulomb_factors_follow_reference_pivots_and_match_independent_columns() {
@@ -34,6 +43,7 @@ fn displaced_coulomb_factors_follow_reference_pivots_and_match_independent_colum
             r#"{"name":"HAO","virtual_orbitals":1}"#,
             "spectral",
             Some(1e-2),
+            Default::default(),
         )
         .unwrap();
         let original = reference.eri().unwrap();
@@ -63,7 +73,7 @@ fn displaced_coulomb_factors_follow_reference_pivots_and_match_independent_colum
             let exact = pair_integrals(
                 &ctx,
                 &rebuilt.grid,
-                &rebuilt.orthonormal_samples.read(&ctx).unwrap(),
+                rebuilt.orthonormal_samples.rows().float64().unwrap(),
                 m,
             )
             .unwrap();
@@ -164,7 +174,7 @@ fn lowdin_orbitals_and_eri_obey_independent_symmetries() {
     let integrals = integrals(&ctx);
     let m = integrals.m();
     let g = integrals.grid.index.points();
-    let phi = integrals.orthonormal_samples.read(&ctx).unwrap();
+    let phi = integrals.orthonormal_samples.rows().float64().unwrap();
     for p in 0..m {
         for q in 0..m {
             let overlap: f64 = (0..g).map(|k| phi[p * g + k] * phi[q * g + k]).sum::<f64>()
@@ -211,6 +221,7 @@ fn frozen_core_and_cholesky_keep_the_reference_energy() {
         r#"{"name":"HAO"}"#,
         "spectral",
         Some(1e-11),
+        Default::default(),
     )
     .unwrap();
     let result = chol.mean_field("rhf", [1, 1], &Default::default()).unwrap();
@@ -229,6 +240,7 @@ fn selected_models_keep_their_rotation_and_release_budget_after_the_reference_is
             r#"{"name":"HAO","virtual_orbitals":1}"#,
             "spectral",
             Some(1e-10),
+            Default::default(),
         )
         .unwrap();
         let reference = integrals
@@ -365,7 +377,15 @@ fn errors_and_budget_exhaustion_release_molecular_storage() {
     let geometry = geometry();
     let grid = SpatialGrid::from_geometry(&geometry, [0.5; 3], false, false).unwrap();
     assert!(matches!(
-        MolecularIntegrals::new(&tiny, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None),
+        MolecularIntegrals::new(
+            &tiny,
+            geometry,
+            grid,
+            r#"{"name":"HAO"}"#,
+            "spectral",
+            None,
+            Default::default()
+        ),
         Err(Error::Budget { .. })
     ));
     assert_eq!(tiny.memory_used(), 0);
@@ -427,7 +447,7 @@ fn column_cholesky_matches_independently_built_coulomb_pairs() {
     let exact = mandacaru_core::molecular::integrals::pair_integrals(
         &ctx,
         &integrals.grid,
-        &integrals.orthonormal_samples.read(&ctx).unwrap(),
+        integrals.orthonormal_samples.rows().float64().unwrap(),
         integrals.m(),
     )
     .unwrap();

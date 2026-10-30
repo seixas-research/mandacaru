@@ -786,14 +786,14 @@ class PeriodicPAW:
                  grid, kpoints, weights, coupling, overlap_blocks,
                  multipole_blocks, filter_wavevector=None, symmetry=None,
                  spin_orbit_projectors=None, spin_orbit_blocks=None,
-                 native_context=None, precision="double"):
+                 native_context=None, precision="float64"):
         from ..models.paw_channels import assemble_block_matrix
         from .local_split import split_width
 
         self.basis = list(basis)
         self._native_context = native_context
-        if precision not in ("double", "single"):
-            raise ValueError("precision must be double or single")
+        if precision not in ("float32", "float64"):
+            raise ValueError("precision must be 'float32' or 'float64'")
         self.precision = precision
         self.atom_of_orbital = list(atom_of_orbital)
         self.projectors = list(projectors)
@@ -912,7 +912,7 @@ class PeriodicPAW:
                              + C @ self.D_ion @ C.conj().T)
                     out.append(KPointMatrices(
                         k=np.asarray(k, float), weight=float(weight),
-                        psi=psi.astype(np.complex64) if self.precision == "single" else psi,
+                        psi=psi.astype(np.complex64) if self.precision == "float32" else psi,
                         overlap=0.5 * (S + S.conj().T),
                         fixed=0.5 * (fixed + fixed.conj().T), projections=C,
                         spin_orbit=SO_wide[shift + i]))
@@ -2015,7 +2015,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
                   family: str = "paw-lcao", grid=None, ghosts=(),
                   symmetry: bool = True, full_mesh: bool = False,
                   spin_orbit: bool = False, filter_pin=None, native_context=None,
-                  precision="double"):
+                  precision="float64"):
     r"""``(crystal, context)`` for a periodic ``atoms`` with a PAW-LCAO basis.
 
     The basis, projectors and dataset blocks are the molecular builder's

@@ -73,6 +73,12 @@ impl<T> Buffer<T> {
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.data
     }
+    /// The storage and its budget reservation, separated so the storage can
+    /// move into an owner (an array handed to Python) without a copy while
+    /// the caller keeps the bytes charged for as long as it holds the guard.
+    pub fn into_parts(self) -> (Vec<T>, Reservation) {
+        (self.data, self._reservation)
+    }
 }
 
 impl Context {

@@ -37,7 +37,7 @@ kpts_scf = {"size": (3, 3, 3), "gamma": True}
 grid_spacing = 0.25
 path = "ZGFZL"
 npoints = 30
-precision="single"
+precision="float32"
 
 # 2. Run WITHOUT Spin-Orbit Coupling ('pbe-sr') -> Normal Insulator
 print("Running PBE WITHOUT Spin-Orbit Coupling (pbe-sr)...")

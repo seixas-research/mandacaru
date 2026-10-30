@@ -342,3 +342,194 @@ def test_rdms_of_complex_states_are_encoding_independent(tmp_path, mapping, sect
     assert np.max(np.abs(one.imag)) > .01
     assert np.allclose(one, reference_one, atol=1e-13)
     assert np.allclose(two, reference_two, atol=1e-13)
+
+
+# -- complex64 states (precision="float32") --------------------------------------------------
+# Hamiltonian coefficients, parameters and every reduction stay float64; only the stored state is
+# complex64. The pairs below use ONE Hamiltonian in both precisions, so they isolate the state.
+
+def hubbard_problem(ctx, n, precision, *, sector=True):
+    """Half-filled Hubbard chain (t=1, U=2), 2n qubits, fermionic pool."""
+    terms = []
+    for spin in range(2):
+        for i in range(n - 1):
+            a, b = i + spin * n, i + 1 + spin * n
+            terms += [([(a, True), (b, False)], -1., 0.), ([(b, True), (a, False)], -1., 0.)]
+    terms += [([(i, True), (i, False), (i + n, True), (i + n, False)], 2., 0.) for i in range(n)]
+    operator = ctx.fermion_operator(2 * n, [n // 2, n // 2], terms, mapping="jordan_wigner")
+    return ctx.quantum_problem(operator, n, [n // 2, n // 2], mapping="jordan_wigner", sector=sector,
+                               include_singles=True, precision=precision)
+
+
+def test_float32_problem_stores_complex64_and_refuses_the_other_dtype():
+    ctx = _native.Context()
+    low, high = hubbard_problem(ctx, 4, "float32"), hubbard_problem(ctx, 4, "float64")
+    assert (low.precision, high.precision) == ("float32", "float64")
+    theta = np.random.default_rng(3).normal(scale=.3, size=6)
+    a, b = high.evaluate(theta, indices=list(range(6))), low.evaluate(theta, indices=list(range(6)))
+    assert a["state"].dtype == np.complex128 and b["state"].dtype == np.complex64
+    assert b["energy_ha"] == pytest.approx(a["energy_ha"], abs=2e-6)
+    assert np.allclose(b["gradient"], a["gradient"], atol=2e-6)
+    assert np.allclose(b["state"], a["state"], atol=1e-6)
+    # The full-register state keeps its dtype through expand_state and state().
+    assert low.state(theta, indices=list(range(6))).dtype == np.complex64
+    assert low.expand_state(b["state"]).dtype == np.complex64
+    # RDMs are float64 results; their input must be the problem's dtype, never cast silently.
+    one, two = low.rdms(b["state"])
+    reference_one, reference_two = high.rdms(a["state"])
+    assert one.dtype == np.complex128 and np.allclose(one, reference_one, atol=2e-6)
+    assert np.allclose(two, reference_two, atol=2e-6)
+    with pytest.raises(TypeError, match="complex128.*precision='float32'.*complex64"):
+        low.rdms(a["state"])
+    with pytest.raises(TypeError, match="complex64.*precision='float64'.*complex128"):
+        high.rdms(b["state"])
+    with pytest.raises(TypeError, match="precision='float32'"):
+        low.expand_state(a["state"])
+    with pytest.raises(ValueError, match="precision"):
+        hubbard_problem(ctx, 4, "single")
+
+
+@pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+def test_public_h2_float32_solve_matches_the_float64_energy(method):
+    energies = {}
+    for precision in ("float64", "float32"):
+        calc = Mandacaru(method=method, load_hamiltonian=FIXTURE, precision=precision, trace=False,
+                         resources={"threads": 1}, optimizer={"method": "BFGS", "tol": 1e-6},
+                         convergence={"gradient": 1e-5, "energy": 1e-4})
+        result = calc.run()
+        assert (result.success if method == "vqe" else result.converged)
+        energies[precision] = result.optimal_energy
+        assert result.state().dtype == (np.complex64 if precision == "float32" else np.complex128)
+    assert energies["float32"] == pytest.approx(energies["float64"], abs=5e-4)
+    assert energies["float32"] == pytest.approx(-25.871895455446612, abs=1e-6)
+
+
+def test_float32_refuses_settings_its_state_cannot_resolve():
+    ctx = _native.Context()
+    low, high = hubbard_problem(ctx, 3, "float32"), hubbard_problem(ctx, 3, "float64")
+    floor = _native.FLOAT32_ENERGY_FLOOR_HA
+    with pytest.raises(ValueError, match=r"float32 state floor"):
+        low.solve(tolerance=floor / 10)
+    with pytest.raises(ValueError, match="float32 state floor"):
+        low.solve(tolerance=None)
+    with pytest.raises(ValueError, match="gradient threshold.*float32 state floor"):
+        low.solve(adapt=True, gradient_tolerance=_native.FLOAT32_GRADIENT_FLOOR / 10, tolerance=floor)
+    with pytest.raises(ValueError, match="energy threshold.*float32 state floor"):
+        low.solve(adapt=True, gradient_tolerance=1e-3, energy_tolerance=floor / 10, tolerance=floor)
+    with pytest.raises(ValueError, match="float32 state floor"):
+        low.energy_levels(tolerance=floor / 10)
+    with pytest.raises(ValueError, match="float32 state floor"):
+        low.solve_subspace([2., 1.], tolerance=floor / 10)
+    # The same settings are legal in float64, and at the floor in float32.
+    assert high.solve(tolerance=floor / 10)["success"] in (True, False)
+    assert low.solve(tolerance=floor, max_iterations=5)["state"].dtype == np.complex64
+
+
+def test_float32_adapt_and_subspace_reach_the_float64_energy_on_one_hamiltonian():
+    ctx = _native.Context()
+    options = dict(adapt=True, trotter=True, max_growth=6, gradient_tolerance=1e-4, tolerance=1e-6)
+    low, high = hubbard_problem(ctx, 4, "float32"), hubbard_problem(ctx, 4, "float64")
+    a, b = high.solve(**options), low.solve(**options)
+    # The chain's pool has exactly degenerate gradients: rounding may pick another member of a
+    # tie, so the energy and the length of the ansatz are compared, not its labels.
+    assert b["state"].dtype == np.complex64 and len(b["indices"]) == len(a["indices"])
+    assert b["energy_ha"] == pytest.approx(a["energy_ha"], abs=5e-6)
+    assert b["final_max_gradient"] == pytest.approx(a["final_max_gradient"], rel=1e-4)
+    small_low, small_high = hubbard_problem(ctx, 3, "float32"), hubbard_problem(ctx, 3, "float64")
+    sub = dict(weights=[2., 1.], adapt=False, trotter=True, tolerance=1e-6, max_iterations=300)
+    s64, s32 = small_high.solve_subspace(**sub), small_low.solve_subspace(**sub)
+    assert s32["states"].dtype == np.complex64
+    assert np.allclose(s32["energies_ha"], s64["energies_ha"], atol=5e-5)
+    levels = small_low.energy_levels(num_states=2, restarts=1, tolerance=1e-6, optimizer="BFGS")
+    assert levels["states"].dtype == np.complex64
+    reference = small_high.energy_levels(num_states=2, restarts=1)
+    assert levels["energies_ha"][0] == pytest.approx(reference["energies_ha"][0], abs=2e-4)
+
+
+def test_propagator_and_qpe_follow_their_declared_precision():
+    ctx = _native.Context()
+    terms = [("XXI", .7, 0.), ("IYY", -.4, 0.), ("ZIZ", .3, 0.), ("III", .2, 0.)]
+    state = np.zeros(8, dtype=complex)
+    state[1], state[6] = .6, .8j
+    exact = ctx.propagator(3, terms)
+    low = ctx.propagator(3, terms, precision="float32")
+    assert (exact.precision, low.precision) == ("float64", "float32")
+    out = low.evolve(state.astype(np.complex64), .9, steps=6)
+    assert out.dtype == np.complex64
+    assert np.allclose(out, exact.evolve(state, .9, steps=6), atol=5e-6)
+    assert low.apply(state.astype(np.complex64)).dtype == np.complex64
+    with pytest.raises(TypeError, match="precision='float32'"):
+        low.evolve(state, .9)
+    operator = ctx.pauli_operator(3, terms)
+    reference = operator.qpe(state, 4, [-1.5, 1.5])
+    result = operator.qpe(state.astype(np.complex64), 4, [-1.5, 1.5], precision="float32")
+    assert result["amplitudes"].dtype == np.complex64 and reference["amplitudes"].dtype == np.complex128
+    assert np.allclose(result["probabilities"], reference["probabilities"], atol=5e-6)
+    with pytest.raises(TypeError, match="precision='float32'"):
+        operator.qpe(state, 4, [-1.5, 1.5], precision="float32")
+
+
+def test_float32_state_budget_succeeds_where_float64_runs_out_of_memory():
+    """With the limit at 0.75 of the float64 peak, float64 raises MemoryError and float32 matches its energy."""
+    megabyte = 1024 ** 2
+
+    def evaluate(precision, limit):
+        ctx = _native.Context(threads=1, memory_limit_bytes=limit)
+        problem = hubbard_problem(ctx, 8, precision, sector=False)     # 16 qubits, full register
+        value = problem.evaluate([.1] * 4, trotter=False, indices=[0, 1, 2, 3])
+        return value["energy_ha"], ctx.memory_peak_bytes
+
+    energy64, peak64 = evaluate("float64", 512 * megabyte)
+    limit = int(.75 * peak64)
+    with pytest.raises(MemoryError):
+        evaluate("float64", limit)
+    energy32, peak32 = evaluate("float32", limit)
+    assert peak32 <= limit
+    assert energy32 == pytest.approx(energy64, abs=5e-4)
+
+
+FROZEN_QUANTUM = Path(__file__).parent / "reference/precision/quantum_energies.json"
+
+
+@pytest.mark.parametrize("case_id", ["q/NAO/H2/DZ/adapt-vqe", "q/NAO/H2/DZ/vqe", "q/NAO/LiH/DZ/vqe"])
+def test_float64_quantum_energies_equal_the_frozen_precision_baseline(case_id):
+    from ase.build import molecule
+
+    frozen = next(c for c in json.loads(FROZEN_QUANTUM.read_text())["cases"] if c["case"]["id"] == case_id)
+    spec = frozen["case"]
+    atoms = molecule(spec["mol"])
+    atoms.center(vacuum=3.0)
+    options = dict(method=spec["method"], basis={"name": spec["family"], "size": spec["size"]},
+                   grid_spacing=spec["h"], optimizer={"method": "BFGS", "maxiter": 300, "tol": spec["opt_tol"]},
+                   resources={"threads": 2}, trace=False)
+    if spec["method"].startswith("adapt"):
+        options.update(convergence={"gradient": spec["grad"], "energy": None}, max_iterations=spec["max_ops"])
+    atoms.calc = Mandacaru(**options)
+    atoms.get_potential_energy()
+    assert atoms.calc.result.energy_hartree == pytest.approx(frozen["float64"]["E_Ha"], abs=1e-10)
+
+
+def test_state_reductions_sum_in_float64_for_either_dtype():
+    """The native reductions the workflows use: float64 sums, dtype-matched inputs."""
+    rng = np.random.default_rng(3)
+    a = rng.normal(size=1 << 12) + 1j * rng.normal(size=1 << 12)
+    b = rng.normal(size=1 << 12) + 1j * rng.normal(size=1 << 12)
+    assert _native.state_norm_squared(a) == pytest.approx(np.vdot(a, a).real, rel=1e-13)
+    assert complex(*_native.state_inner(a, b)) == pytest.approx(np.vdot(a, b), rel=1e-12)
+    a32, b32 = a.astype(np.complex64), b.astype(np.complex64)
+    exact = np.vdot(a32.astype(complex), b32.astype(complex))
+    assert complex(*_native.state_inner(a32, b32)) == pytest.approx(exact, rel=1e-12)
+    with pytest.raises(TypeError, match="same complex dtype"):
+        _native.state_inner(a, b32)
+    with pytest.raises(TypeError, match="complex64 or complex128"):
+        _native.state_norm_squared(a.real)
+    with pytest.raises(ValueError, match="same length"):
+        _native.state_inner(a, b[:-1])
+
+
+def test_normalization_tolerance_belongs_to_the_dtype():
+    state = np.zeros(8, complex)
+    state[0] = 1 + 2e-6
+    _native.require_normalized_state(state.astype(np.complex64))
+    with pytest.raises(ValueError, match="normalized"):
+        _native.require_normalized_state(state)

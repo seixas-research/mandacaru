@@ -56,8 +56,13 @@ from ..core import matrix_free
 from ..core.checkpoint import WavefunctionCheckpoint, prepare_state
 from ..core.mapping import PauliSum
 from ..units import energy_unit_label, from_hartree, to_hartree
+from .._native import state_norm_squared
+from .time_evolution import state_dtype
 
 DENSE_LIMIT_QUBITS = 12
+#: Bytes of one stored amplitude: complex128 for float64, complex64 for float32.
+AMPLITUDE_BYTES = {"float64": 16, "float32": 8}
+#: Bytes of one entry of the dense unitary of a small system (always complex128).
 COMPLEX_BYTES = 16
 WORKING_SET_FACTOR = 3
 MEMORY_POLICIES = ("abort", "prompt", "ignore")
@@ -116,19 +121,25 @@ def _human(n_bytes: int) -> str:
 
 
 def qpe_memory_estimate(
-    n_system: int, n_evaluation: int, dense: bool | None = None
+    n_system: int,
+    n_evaluation: int,
+    dense: bool | None = None,
+    precision: str = "float64",
 ) -> QPEMemoryEstimate:
     """Size a QPE simulation **before** allocating anything.
 
     ``dense`` says whether the Hamiltonian will be diagonalized densely
     (``None``: the module's own rule, :data:`DENSE_LIMIT_QUBITS`).
+    ``precision`` sets the bytes of one stored amplitude (16 for ``"float64"``,
+    8 for ``"float32"``); the dense unitary of a small system stays complex128.
     """
+    state_dtype(precision)
     n, t = (int(n_system), int(n_evaluation))
     if n < 1 or t < 1:
         raise ValueError("need at least one system and one evaluation qubit")
     if dense is None:
         dense = n <= DENSE_LIMIT_QUBITS
-    statevector = COMPLEX_BYTES * 2 ** (n + t)
+    statevector = AMPLITUDE_BYTES[precision] * 2 ** (n + t)
     unitary = COMPLEX_BYTES * 4**n if dense else 0
     return QPEMemoryEstimate(
         n_system=n,
@@ -242,7 +253,7 @@ class QPEResult:
         if index is None:
             index = int(np.argmax(self.probabilities))
         row = self._amplitudes[int(index)]
-        norm = np.linalg.norm(row)
+        norm = float(np.sqrt(state_norm_squared(row)))
         if norm == 0:
             raise ValueError(f"evaluation bin {index} has zero probability")
         return row / norm
@@ -318,6 +329,13 @@ class QuantumPhaseEstimation:
     keep_amplitudes : bool
         Keep the post-measurement system states on the result
         (:meth:`QPEResult.collapsed_state`); costs one ``2^(n+t)`` vector.
+    precision : {"float64", "float32"}
+        Storage of the ``2^(n+t)`` simulated state: ``complex128`` (default)
+        or ``complex64``. The Hamiltonian coefficients, the evaluation phases,
+        the energies, the FFT lines and every probability sum stay float64;
+        the dense eigendecomposition of a small system (``n <= 12``) is
+        float64 as well. The memory estimate counts 8 bytes per stored
+        amplitude for ``"float32"``. Anything else raises ``ValueError``.
     verbose : bool
         Print the memory estimate and the result summary.
     """
@@ -332,8 +350,11 @@ class QuantumPhaseEstimation:
         atomic_units: bool = False,
         keep_amplitudes: bool = True,
         verbose: bool = True,
+        precision: str = "float64",
         resources=None,
     ):
+        self._dtype = state_dtype(precision)
+        self.precision = precision
         self._resources = dict(resources or {})
         self._context = None
         from .._native import Context
@@ -391,7 +412,9 @@ class QuantumPhaseEstimation:
                 )
             if not checkpoint.is_product:
                 return (
-                    checkpoint.state_vector(resources=self._resources),
+                    checkpoint.state_vector(
+                        precision=self.precision, resources=self._resources
+                    ),
                     checkpoint.n_qubits,
                     hamiltonian,
                     None,
@@ -410,7 +433,7 @@ class QuantumPhaseEstimation:
                 self.hamiltonian,
                 (int(n), list(ref), list(gens), theta),
             )
-        psi = np.asarray(initial_state, dtype=complex).ravel()
+        psi = np.asarray(initial_state, dtype=self._dtype).ravel()
         n = int(round(np.log2(psi.size)))
         if 2**n != psi.size:
             raise ValueError(f"a state vector needs 2^n amplitudes, got {psi.size}")
@@ -418,7 +441,7 @@ class QuantumPhaseEstimation:
             raise ValueError(
                 "pass hamiltonian= when the initial state is a state vector"
             )
-        norm = np.linalg.norm(psi)
+        norm = float(np.sqrt(state_norm_squared(psi)))
         if norm == 0:
             raise ValueError("the initial state is zero")
         return (psi / norm, n, self.hamiltonian, None)
@@ -442,7 +465,9 @@ class QuantumPhaseEstimation:
 
     def memory_estimate(self, n_system_qubits: int) -> QPEMemoryEstimate:
         """The estimate :meth:`run` will check for this register size."""
-        return qpe_memory_estimate(n_system_qubits, self.n_evaluation_qubits)
+        return qpe_memory_estimate(
+            n_system_qubits, self.n_evaluation_qubits, precision=self.precision
+        )
 
     def run(self, initial_state) -> QPEResult:
         """Simulate QPE from ``initial_state`` and return the distribution.
@@ -459,13 +484,15 @@ class QuantumPhaseEstimation:
             )
         t = self.n_evaluation_qubits
         dense = n <= DENSE_LIMIT_QUBITS
-        estimate = qpe_memory_estimate(n, t, dense=dense)
+        estimate = qpe_memory_estimate(n, t, dense=dense, precision=self.precision)
         self.memory_estimate_result = estimate
         check_memory(
             estimate, self.memory_policy, self.memory_fraction, verbose=self.verbose
         )
         if psi is None:
-            psi = prepare_state(*problem, resources=self._resources)
+            psi = prepare_state(
+                *problem, precision=self.precision, resources=self._resources
+            )
         lo, hi = self._window(hamiltonian)
         width = hi - lo
         N = 2**t
@@ -478,10 +505,11 @@ class QuantumPhaseEstimation:
             ],
         )
         native = operator.qpe(
-            np.ascontiguousarray(psi, dtype=complex),
+            np.ascontiguousarray(psi, dtype=self._dtype),
             t,
             (lo, hi),
             keep_amplitudes=self.keep_amplitudes,
+            precision=self.precision,
         )
         exact = (
             None

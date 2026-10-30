@@ -28,7 +28,7 @@ pub(super) fn input_arrays(
     let precision = match precision {
         Some(p) => p,
         None => {
-            Precision::parse(metadata["precision"].as_str().unwrap_or("double")).map_err(error)?
+            Precision::parse(metadata["precision"].as_str().unwrap_or("float64")).map_err(error)?
         }
     };
     let raw = metadata
@@ -52,7 +52,7 @@ pub(super) fn input_arrays(
             };
             let bytes = product(&[
                 length,
-                if precision == Precision::Single {
+                if precision == Precision::Float32 {
                     8
                 } else {
                     16
@@ -75,7 +75,11 @@ pub(super) fn input_arrays(
             if sample_keys.contains(key.as_str()) || metadata["hats"].as_str() == Some(key.as_str())
             {
                 let is_hat = metadata["hats"].as_str() == Some(key.as_str());
-                let precision = if is_hat { Precision::Double } else { precision };
+                let precision = if is_hat {
+                    Precision::Float64
+                } else {
+                    precision
+                };
                 let archive = if is_hat {
                     product(&[array.len(), 16]).map_err(error)? > ctx.memory_limit() / 8
                 } else {
@@ -100,7 +104,7 @@ pub(super) fn input_arrays(
                 ));
             }
             InputArray::Samples(
-                ComplexSamples::copy_single(ctx, array.as_slice()?, precision, archive)
+                ComplexSamples::copy_float32(ctx, array.as_slice()?, precision, archive)
                     .map_err(error)?,
             )
         } else if let Ok(array) = value.extract::<PyReadonlyArrayDyn<'_, u64>>() {

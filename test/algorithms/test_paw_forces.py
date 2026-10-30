@@ -63,6 +63,22 @@ def calculator(grid_spacing, basis=BASIS):
                      convergence={"gradient": 1e-5}, profile=False)
 
 
+@pytest.mark.parametrize("method", ["rhf", "dft"])
+def test_float32_refuses_paw_forces_before_the_scf(method, monkeypatch):
+    """The refusal sits in ``calculate``: no integral build, SCF or result exists."""
+    atoms = dimer("H2", 0.75, 8.0)
+    calc = Mandacaru(method=method, basis=BASIS, grid_spacing=0.25, precision="float32",
+                     resources={"threads": 1})
+    atoms.calc = calc
+    ran = []
+    monkeypatch.setattr(calc, "run", lambda *args, **kwargs: ran.append("run"))
+    monkeypatch.setattr(calc, "_mean_field", lambda *args, **kwargs: ran.append("scf"))
+    with pytest.raises(ValueError, match="PAW-LCAO forces.*1e-3 Bohr"):
+        atoms.get_forces()
+    assert ran == []
+    assert calc.result is None and calc.integrals is None and calc.results == {}
+
+
 def bond_force(forces):
     """Force on atom 0 along the bond (+ = toward atom 1)."""
     return float((forces[0, 2] - forces[1, 2]) / 2)

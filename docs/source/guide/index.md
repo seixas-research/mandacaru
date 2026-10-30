@@ -1,34 +1,58 @@
-# How-To Guides
+# Guides
 
-Start with [native calculations](native_engine.md) and [Kohn–Sham DFT](dft.md).
-The guides below explain basis choices, results, external services and more
-specialized workflows. Check the native coverage table before using a feature
-from an older example: some scientific paths still await the Rust cutover.
+Each guide does one task. They assume a working installation and the
+[first calculation](../start/first_calculation.md). Options and defaults are in
+[the options reference](#options-reference); features the program does not have yet
+are in [the not-yet-available table](#not-yet-available), and no guide describes them
+as usable.
+
+## Mean field and density functional theory
 
 ```{toctree}
 :maxdepth: 1
-run_output
-visualization
-charges
+
+native_engine
+dft
+pseudopotentials
 basis_sets
 nao_ae
-pseudopotentials
-active_space
-tapering
 open_shell
-mean_field_hva
-dft
-target_space
-interaction_energy
+```
+
+## Forces, properties and visualization
+
+```{toctree}
+:maxdepth: 1
+
+forces_relaxation
+charges
 polarizability
+interaction_energy
 dry_run
-scalability
-hamiltonian_cache
-backends
-aws_braket
-measurement_cost
+visualization
+```
+
+## Variational quantum algorithms
+
+```{toctree}
+:maxdepth: 1
+
 optimizers
-quenching
+active_space
+mean_field_hva
+target_space
+hamiltonian_cache
 checkpoints_qpe
 quantum_echoes
+```
+
+## Hardware, cost and scale
+
+```{toctree}
+:maxdepth: 1
+
+measurement_cost
+backends
+aws_braket
+scalability
 ```

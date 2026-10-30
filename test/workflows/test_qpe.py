@@ -252,3 +252,51 @@ class TestMemoryCheck:
     def test_unknown_policy(self):
         with pytest.raises(ValueError, match="memory_policy"):
             QuantumPhaseEstimation(memory_policy="hope")
+
+
+class TestPrecision:
+    """``precision="float32"`` simulates the ``2^(n+t)`` register in complex64."""
+
+    def test_float32_reads_the_same_energy_from_complex64_amplitudes(
+            self, h2_checkpoint):
+        wide = QuantumPhaseEstimation(n_evaluation_qubits=8, atomic_units=True,
+                                      verbose=False).run(h2_checkpoint)
+        narrow = QuantumPhaseEstimation(n_evaluation_qubits=8, atomic_units=True,
+                                        verbose=False,
+                                        precision="float32").run(h2_checkpoint)
+        assert wide._amplitudes.dtype == np.complex128
+        assert narrow._amplitudes.dtype == np.complex64
+        assert narrow.collapsed_state().dtype == np.complex64
+        assert narrow.energy == wide.energy
+        np.testing.assert_allclose(narrow.probabilities, wide.probabilities,
+                                   atol=1e-6)
+        assert narrow.probabilities.sum() == pytest.approx(1.0, abs=1e-6)
+
+    def test_float32_from_a_state_vector_and_a_preparation_tuple(self, h2_checkpoint):
+        h = h2_checkpoint.hamiltonian
+        qpe = QuantumPhaseEstimation(h, n_evaluation_qubits=6, verbose=False,
+                                     precision="float32")
+        from_vector = qpe.run(np.asarray(h2_checkpoint.state_vector(),
+                                         dtype=np.complex128))
+        from_tuple = qpe.run((h2_checkpoint.n_qubits,
+                              h2_checkpoint.reference_qubits,
+                              h2_checkpoint.generators, h2_checkpoint.parameters))
+        assert from_vector._amplitudes.dtype == np.complex64
+        assert from_tuple._amplitudes.dtype == np.complex64
+        np.testing.assert_allclose(from_tuple.probabilities,
+                                   from_vector.probabilities, atol=1e-6)
+
+    def test_the_estimate_counts_eight_bytes_per_stored_amplitude(self):
+        wide = qpe_memory_estimate(4, 10)
+        narrow = qpe_memory_estimate(4, 10, precision="float32")
+        assert narrow.statevector_bytes * 2 == wide.statevector_bytes
+        assert narrow.unitary_bytes == wide.unitary_bytes
+        assert QuantumPhaseEstimation(
+            precision="float32").memory_estimate(4).statevector_bytes == 8 * 2 ** 12
+
+    @pytest.mark.parametrize("precision", ["single", "double", "FLOAT32", None])
+    def test_any_other_precision_raises(self, precision):
+        with pytest.raises(ValueError, match="precision"):
+            QuantumPhaseEstimation(precision=precision)
+        with pytest.raises(ValueError, match="precision"):
+            qpe_memory_estimate(4, 10, precision=precision)

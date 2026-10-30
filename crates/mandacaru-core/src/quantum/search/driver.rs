@@ -7,7 +7,7 @@ use super::learning::{
 use crate::{
     math::random::Rng,
     product,
-    quantum::{evolution, optimizer, CachedProblem, SolveResult, C64},
+    quantum::{optimizer, CachedProblem, SolveResult},
     Context, Error, Reservation, Result,
 };
 use serde_json::{json, Value};
@@ -162,25 +162,7 @@ impl Evaluator<'_> {
             )
         };
         let state = self.problem.prepare_state(&sequence, &parameters, true)?;
-        let hpsi = self.problem.hamiltonian.apply_centered(
-            &self.problem.context,
-            &self.problem.basis,
-            state.as_slice(),
-        )?;
-        let mut action = self
-            .problem
-            .context
-            .allocate::<C64>(self.problem.basis.len())?;
-        let gradients: Vec<_> = self
-            .problem
-            .pool
-            .iter()
-            .map(|g| {
-                g.operator
-                    .apply_into(&self.problem.basis, state.as_slice(), action.as_mut_slice());
-                2. * evolution::inner(hpsi.as_slice(), action.as_slice()).re
-            })
-            .collect();
+        let gradients = self.problem.pool_gradients(&state, true)?;
         self.screenings += 1;
         let mut probabilities = if self.options.uniform {
             vec![1. / gradients.len() as f64; gradients.len()]

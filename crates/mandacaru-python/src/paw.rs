@@ -11,11 +11,14 @@ pub fn local<'py>(
     potential: PyReadonlyArray1<'py, f64>,
     radius: f64,
     shift: f64,
+    fit_window: Option<f64>,
 ) -> PyResult<Array<'py, f64>> {
     let (r, _r) = copy(&context.inner, &r)?;
     let (potential, _v) = copy(&context.inner, &potential)?;
     let out = py
-        .detach(|| radial::local_potential(&context.inner, &r, &potential, radius, shift))
+        .detach(|| {
+            radial::local_potential(&context.inner, &r, &potential, radius, shift, fit_window)
+        })
         .map_err(error)?;
     array(py, &[r.len()], out.as_slice().to_vec())
 }

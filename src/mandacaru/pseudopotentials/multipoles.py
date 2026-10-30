@@ -35,14 +35,15 @@ What is here
 * :func:`shape_function` / :func:`shape_potential` -- the radial shape
   :math:`g_L` and its Coulomb potential, for any :math:`L`;
 * :func:`gaunt` -- the angular coupling
-  :math:`\int Y^*_{LM} Y^*_{l_1m_1} Y_{l_2m_2}\,d\Omega`, by quadrature, so no
-  Wigner-symbol dependency is needed, for real harmonics (a molecule) or
-  complex ones (a crystal);
+  :math:`\int Y^*_{LM} Y^*_{l_1m_1} Y_{l_2m_2}\,d\Omega`, by quadrature, for
+  real harmonics (a molecule) or complex ones (a crystal);
 * :func:`radial_moments` -- :math:`\Delta^{(L)}_{ij} = \int (R_iR_j -
   \tilde R_i\tilde R_j)\,r^{L+2}\,dr` between any two partial waves of a
-  dataset, reconstructed from what the dataset already stores;
-* :func:`multipole_coulomb_matrix` -- the interaction of every pair of
-  compensation multipoles on two centers, in one vectorized quadrature.
+  dataset, reconstructed from what the dataset already stores.
+
+Every number is computed in Rust (:mod:`mandacaru.pseudopotentials`' native
+extension, ``paw_*``); this module adapts datasets and arrays to those
+routines and carries no numerics of its own.
 
 Conventions are fixed so that the :math:`L = 0` term reproduces the previous
 monopole-only code exactly: :math:`g_L` is normalized to
@@ -56,479 +57,121 @@ from __future__ import annotations
 from functools import lru_cache
 
 import numpy as np
-from scipy.integrate import simpson
 
-from ..basis._angular import spherical_harmonic
+from .. import _native
+from .native_context import context
 
-#: Angular quadrature orders.  A product Gauss-Legendre (polar) x uniform
-#: (azimuthal) rule is *exact* for a product of three spherical harmonics once
-#: it integrates degree ``L + l1 + l2``; these cover l up to 3 (f) with margin.
+#: Angular quadrature orders (the Rust rule's: exact for three harmonics up to
+#: l = 3 with margin).
 GAUNT_POLAR_POINTS = 24
 GAUNT_AZIMUTHAL_POINTS = 48
-#: Radial points of the compensation-overlap quadrature.
-MULTIPOLE_RADIAL_POINTS = 400
-#: Below this the two centers are treated as coincident.
-COINCIDENT_TOLERANCE = 1e-10
 
 
-# --------------------------------------------------------------------------- #
-# Radial shape and its potential.
-# --------------------------------------------------------------------------- #
-
-@lru_cache(maxsize=256)
-def shape_norm(r_g: float, L: int) -> float:
-    r"""``1 / int_0^{r_g} r^{2L+2} (1 - r^2/r_g^2)^3 dr`` -- the factor that
-    normalizes :func:`shape_function` to unit multipole moment.
-
-    The integral is elementary:
-    :math:`r_g^{2L+3}\big[\tfrac1{2L+3} - \tfrac3{2L+5} + \tfrac3{2L+7}
-    - \tfrac1{2L+9}\big]`.
-    """
-    L = int(L)
-    bracket = (1.0 / (2 * L + 3) - 3.0 / (2 * L + 5)
-               + 3.0 / (2 * L + 7) - 1.0 / (2 * L + 9))
-    return 1.0 / (float(r_g) ** (2 * L + 3) * bracket)
+def _flat(values) -> tuple:
+    """``(contiguous 1-D float array, original shape)``."""
+    values = np.asarray(values, dtype=float)
+    return np.ascontiguousarray(values.ravel()), values.shape
 
 
 def shape_function(radius, r_g: float, L: int = 0) -> np.ndarray:
-    r"""``g_L(r) = N_L r^L (1 - r^2/r_g^2)^3`` inside ``r_g``, zero beyond.
-
-    Normalized to :math:`\int_0^{r_g} g_L(r)\,r^{L+2}\,dr = 1`, i.e. the
-    charge distribution :math:`g_L Y_{LM}` has unit :math:`LM` multipole
-    moment.  At ``L = 0`` this is :math:`4\pi` times the old unit-charge
-    monopole shape.
-    """
-    radius = np.asarray(radius, dtype=float)
-    x = radius / float(r_g)
-    inside = x < 1.0
-    out = np.zeros_like(radius)
-    out[inside] = (shape_norm(r_g, L) * radius[inside] ** int(L)
-                   * (1.0 - x[inside] ** 2) ** 3)
-    return out
+    r"""``g_L(r) = N_L r^L (1 - r^2/r_g^2)^3`` inside ``r_g``, zero beyond,
+    normalized to :math:`\int_0^{r_g} g_L(r)\,r^{L+2}\,dr = 1`."""
+    flat, shape = _flat(radius)
+    return _native.paw_shape_function(context(), flat, float(r_g),
+                                      int(L)).reshape(shape)[()]
 
 
 def shape_potential(radius, r_g: float, L: int = 0) -> np.ndarray:
-    r"""Coulomb potential of ``g_L(r) Y_LM``, without the ``Y_LM`` factor.
-
-    .. math::
-
-        v_L(r) = \frac{4\pi}{2L+1}\Big[
-            r^{-(L+1)}\!\int_0^r g_L s^{L+2} ds
-          + r^{L}\!\int_r^\infty g_L s^{1-L} ds \Big],
-
-    which is :math:`\frac{4\pi}{2L+1} r^{-(L+1)}` outside ``r_g`` (the shape
-    carries unit moment) and finite at the origin.  Both radial integrals are
-    polynomials, so they are evaluated in closed form.
-    """
-    radius = np.asarray(radius, dtype=float)
-    scalar = radius.ndim == 0
-    radius = np.atleast_1d(radius)
-    L = int(L)
-    r_g = float(r_g)
-    prefactor = 4.0 * np.pi / (2 * L + 1)
-    safe = np.maximum(radius, 1e-300)
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        if L == 0:
-            result = prefactor / safe
-        elif L == 1:
-            inv = 1.0 / safe
-            result = prefactor * (inv * inv)
-        elif L == 2:
-            inv = 1.0 / safe
-            result = prefactor * (inv * inv * inv)
-        else:
-            result = prefactor / safe ** (L + 1)
-    inside = radius < r_g
-    if not np.any(inside):
-        return result[0] if scalar else result
-
-    r_in = radius[inside]
-    xin = np.clip(r_in / r_g, 0.0, None)
-    norm = shape_norm(r_g, L)
-
-    # int_0^r g_L s^{L+2} ds = N_L r_g^{2L+3} sum_k C_k x^{2L+3+2k}/(2L+3+2k)
-    coefficients = ((0, 1.0), (1, -3.0), (2, 3.0), (3, -1.0))
-    inner_charge = np.zeros_like(r_in)
-    tail = np.zeros_like(r_in)
-    for k, c in coefficients:
-        power = 2 * L + 3 + 2 * k
-        inner_charge += c * xin ** power / power
-        # int_r^{r_g} g_L s^{1-L} ds = N_L r_g^{2-2L+...}; exponent 2 + 2k
-        exponent = 2 * k + 2
-        tail += c * (1.0 - xin ** exponent) / exponent
-    # int_0^r g_L s^{L+2} ds and int_r^{r_g} g_L s^{1-L} ds = N_L r_g^2 (...)
-    inner_charge *= norm * r_g ** (2 * L + 3)
-    tail *= norm * r_g ** 2
-
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        near = prefactor * (np.where(r_in > 0.0,
-                                     inner_charge / np.maximum(r_in, 1e-300)
-                                     ** (L + 1), 0.0)
-                            + r_in ** L * tail)
-    if L == 0:
-        # At the origin only the tail survives and is finite.
-        near = np.where(r_in <= 0.0, prefactor * tail, near)
-    result[inside] = near
-    return result[0] if scalar else result
+    r"""Coulomb potential of ``g_L(r) Y_LM`` without the ``Y_LM`` factor,
+    :math:`\frac{4\pi}{2L+1} r^{-(L+1)}` outside ``r_g``."""
+    flat, shape = _flat(radius)
+    return _native.paw_shape_potential(context(), flat, float(r_g),
+                                       int(L)).reshape(shape)[()]
 
 
-# --------------------------------------------------------------------------- #
-# Angular coupling.
-# --------------------------------------------------------------------------- #
-
-_ANGULAR_GRID_CACHE: dict = {}
-
-
-def _angular_grid(polar: int = GAUNT_POLAR_POINTS,
-                  azimuthal: int = GAUNT_AZIMUTHAL_POINTS):
-    """``(theta, phi, weights)`` of a product rule normalized to ``int dOmega``."""
-    key = (int(polar), int(azimuthal))
-    cached = _ANGULAR_GRID_CACHE.get(key)
-    if cached is not None:
-        return cached
-    mu, wmu = np.polynomial.legendre.leggauss(int(polar))
-    phi = 2.0 * np.pi * (np.arange(int(azimuthal)) + 0.5) / int(azimuthal)
-    wphi = 2.0 * np.pi / int(azimuthal)
-    theta = np.arccos(mu)
-    T, P = np.meshgrid(theta, phi, indexing="ij")
-    W = np.outer(wmu, np.full(int(azimuthal), wphi))
-    out = (T.ravel(), P.ravel(), W.ravel())
-    _ANGULAR_GRID_CACHE[key] = out
-    return out
+@lru_cache(maxsize=16)
+def angular_grid(polar: int = GAUNT_POLAR_POINTS,
+                 azimuthal: int = GAUNT_AZIMUTHAL_POINTS):
+    """``(theta, phi, weights)`` of a Gauss-Legendre x uniform product rule
+    normalized to ``int dOmega``."""
+    grid = _native.paw_angular_grid(int(polar), int(azimuthal))
+    for array in grid:
+        array.flags.writeable = False
+    return grid
 
 
-_GAUNT_CACHE: dict = {}
+@lru_cache(maxsize=None)
+def _gaunt(real: bool, L: int, M: int, l1: int, m1: int, l2: int, m2: int):
+    key = np.array([[L, M, l1, m1, l2, m2]], dtype=np.int64)
+    value = _native.paw_gaunt(context(), key, bool(real))[0]
+    return float(value.real) if real else complex(value)
 
 
 def gaunt(L: int, M: int, l1: int, m1: int, l2: int, m2: int, *,
           real: bool):
-    r"""``int Y*_{LM} Y*_{l1 m1} Y_{l2 m2} dOmega`` in the convention
-    ``real`` states: a float for the real harmonics
-    (:math:`\int S_{LM}S_{l_1m_1}S_{l_2m_2}`), complex for the complex ones.
-
-    The angular factor of the multipole moment of the pair density
-    :math:`\phi^*_1\phi_2`.  Evaluated by a product quadrature that is exact
-    for these integrands, which keeps the module free of any Wigner-symbol
-    dependency.  Zero unless the triangle/parity rules of the three momenta
-    are met, and, for complex harmonics, unless ``M = m2 - m1``; those cases
-    short-circuit.
-    """
-    L, M, l1, m1, l2, m2 = (int(L), int(M), int(l1), int(m1), int(l2), int(m2))
-    zero = 0.0 if real else 0.0 + 0.0j
-    if not real and M != m2 - m1:
-        return zero
-    if L < abs(l1 - l2) or L > l1 + l2 or (L + l1 + l2) % 2:
-        return zero
-    key = (bool(real), L, M, l1, m1, l2, m2)
-    cached = _GAUNT_CACHE.get(key)
-    if cached is not None:
-        return cached
-    theta, phi, weights = _angular_grid()
-    if real:
-        value = float(np.sum(weights
-                             * spherical_harmonic(L, M, theta, phi, real=True)
-                             * spherical_harmonic(l1, m1, theta, phi,
-                                                  real=True)
-                             * spherical_harmonic(l2, m2, theta, phi,
-                                                  real=True)))
-    else:
-        value = complex(np.sum(
-            weights
-            * np.conj(spherical_harmonic(L, M, theta, phi, real=False))
-            * np.conj(spherical_harmonic(l1, m1, theta, phi, real=False))
-            * spherical_harmonic(l2, m2, theta, phi, real=False)))
-    if abs(value) < 1e-12:
-        value = zero
-    _GAUNT_CACHE[key] = value
-    return value
+    r"""``int Y*_{LM} Y*_{l1 m1} Y_{l2 m2} dOmega`` in the convention ``real``
+    states: a float for the real harmonics, complex for the complex ones.
+    Zero unless the triangle and parity rules are met and, for complex
+    harmonics, ``M = m2 - m1``."""
+    return _gaunt(bool(real), int(L), int(M), int(l1), int(m1), int(l2),
+                  int(m2))
 
 
 def multipole_range(l1: int, l2: int) -> list[int]:
     """The ``L`` a pair of waves with these momenta can carry."""
-    return [L for L in range(abs(int(l1) - int(l2)), int(l1) + int(l2) + 1)
-            if (L + int(l1) + int(l2)) % 2 == 0]
+    return list(_native.paw_multipole_range(int(l1), int(l2)))
 
 
-# --------------------------------------------------------------------------- #
-# Radial moments of a dataset's partial waves.
-# --------------------------------------------------------------------------- #
+def _channel_arrays(dataset, l: int):
+    channel = dataset.channels[int(l)]
+    ae = np.ascontiguousarray([np.asarray(w, dtype=float)
+                               for w in channel.ae_waves])
+    return channel, ae
+
 
 def partial_waves(dataset, l: int):
     """``(all-electron R_i, smooth R~_i)`` of channel ``l`` on ``dataset.r``.
 
-    The smooth waves are rebuilt from the Bessel expansion the dataset stores,
-    so nothing has to be regenerated; :func:`radial_moments` at ``L = 0``
-    reproduces the stored ``overlap_correction`` to ~1e-8, which is the check
-    that the reconstruction is faithful.
-
-    The Bessel expansion describes the smooth wave only inside the channel's
-    own ``r_cut``; beyond it the smooth wave *is* the all-electron one (they
-    are matched there in value and three derivatives), and that is what is
-    returned.  The expansion itself diverges outside: copper's 3d, cut at
-    0.77 Bohr, reaches -35 at 1.5 Bohr.  Every integral over a sphere wider
-    than the channel -- a cross moment with the 2.78-Bohr s channel, the
-    one-center Coulomb tables -- read that divergence until 2026-09-27, and
-    the s-d moments of the 3d elements came out ~100x too large.
+    The smooth waves are rebuilt from the Bessel expansion the dataset stores
+    inside the channel's ``r_cut``; beyond it they *are* the all-electron ones
+    (matched there in value and three derivatives), which is what the
+    expansion itself, divergent outside, must never be read as.
     """
-    from .partial_waves import _bessel_table
+    channel, ae = _channel_arrays(dataset, l)
+    smooth = _native.paw_smooth_waves(
+        context(), int(l), np.ascontiguousarray(dataset.r, dtype=float),
+        float(channel.r_cut), ae,
+        np.ascontiguousarray(channel.wave_coefficients, dtype=float),
+        np.ascontiguousarray(channel.wavevectors, dtype=float))
+    return list(ae), list(smooth)
 
-    channel = dataset.channels[int(l)]
-    r = np.asarray(dataset.r, dtype=float)
-    inside = r <= float(channel.r_cut)
-    ae = [np.asarray(w, dtype=float) for w in channel.ae_waves]
-    smooth = [np.where(inside,
-                       np.asarray(c, dtype=float)
-                       @ _bessel_table(int(l), np.asarray(q, dtype=float), r),
-                       wave)
-              for c, q, wave in zip(channel.wave_coefficients,
-                                    channel.wavevectors, ae)]
-    return ae, smooth
+
+def _pair(dataset, l1: int, l2: int):
+    ae1, ps1 = partial_waves(dataset, l1)
+    ae2, ps2 = partial_waves(dataset, l2)
+    r_cut = max(float(dataset.channels[int(l1)].r_cut),
+                float(dataset.channels[int(l2)].r_cut))
+    return (np.ascontiguousarray(dataset.r, dtype=float), r_cut,
+            np.array(ae1), np.array(ps1), np.array(ae2), np.array(ps2))
 
 
 def radial_moments(dataset, l1: int, l2: int, L: int) -> np.ndarray:
     r"""``Delta^{(L)}_{ij} = int (R_i R_j - R~_i R~_j) r^{L+2} dr`` over the
     augmentation sphere, for waves ``i`` of channel ``l1`` and ``j`` of ``l2``.
-
-    At ``l1 == l2`` and ``L == 0`` this is the stored ``overlap_correction``
-    :math:`q_{ij}`; every other ``L`` is a moment the monopole-only code threw
-    away.
-    """
-    r = np.asarray(dataset.r, dtype=float)
-    ae1, ps1 = partial_waves(dataset, l1)
-    ae2, ps2 = partial_waves(dataset, l2)
-    r_cut = max(float(dataset.channels[int(l1)].r_cut),
-                float(dataset.channels[int(l2)].r_cut))
-    inside = r <= r_cut
-    weight = r[inside] ** (int(L) + 2)
-    moments = np.zeros((len(ae1), len(ae2)))
-    for i in range(len(ae1)):
-        for j in range(len(ae2)):
-            integrand = (ae1[i][inside] * ae2[j][inside]
-                         - ps1[i][inside] * ps2[j][inside]) * weight
-            moments[i, j] = float(simpson(integrand, x=r[inside]))
-    return moments
+    At ``l1 == l2`` and ``L == 0`` this is the stored ``overlap_correction``."""
+    return _native.paw_radial_moments(context(), int(L), *_pair(dataset, l1, l2))
 
 
 def radial_remainder(dataset, l1: int, l2: int, L: int, q,
                      shape_transform) -> np.ndarray:
-    r"""``E^{(L)}_{ij}(q)``, ``(len(q), n1, n2)``: what the compensation
-    charge leaves of the augmentation density at wavevector ``q``,
-
-    .. math::
-
-        E^{(L)}_{ij}(q) = \int (R_iR_j - \tilde R_i\tilde R_j)\,j_L(qr)\,
-        r^2\,dr - \Delta^{(L)}_{ij}\,\hat g_L(q),
-
-    the Fourier-Bessel transform of the all-electron minus smooth pair
-    density over the augmentation sphere, less the compensation shape that
-    carries its multipole moment :math:`\Delta^{(L)}_{ij}`
-    (:func:`radial_moments`).  ``shape_transform`` is
-    :math:`\hat g_L(q)` on ``q`` (the transform the crystal uses for the
-    compensation charge).  It vanishes at :math:`q = 0` for ``L = 0`` and as
-    :math:`q^{L+2}` beyond, because the moments agree; in the dual
-    projector basis the waves are the dataset's own.
-    """
-    from scipy.special import spherical_jn
-
-    q = np.asarray(q, dtype=float)
-    r = np.asarray(dataset.r, dtype=float)
-    ae1, ps1 = partial_waves(dataset, l1)
-    ae2, ps2 = partial_waves(dataset, l2)
-    r_cut = max(float(dataset.channels[int(l1)].r_cut),
-                float(dataset.channels[int(l2)].r_cut))
-    inside = r <= r_cut
-    radius = r[inside]
-    bessel = spherical_jn(int(L), np.outer(q, radius))
-    delta = dataset.multipole_moments(l1, l2, L, "dual")
-    out = np.zeros((q.size, len(ae1), len(ae2)))
-    for i in range(len(ae1)):
-        for j in range(len(ae2)):
-            density = (ae1[i][inside] * ae2[j][inside]
-                       - ps1[i][inside] * ps2[j][inside]) * radius ** 2
-            out[:, i, j] = simpson(bessel * density[None, :], x=radius,
-                                   axis=-1)
-    return out - delta[None] * np.asarray(shape_transform)[:, None, None]
-
-
-# --------------------------------------------------------------------------- #
-# Compensation-compensation Coulomb.
-# --------------------------------------------------------------------------- #
-
-
-def _harmonics(channels, theta, phi, *, real: bool) -> np.ndarray:
-    """``(n_channels, n_points)`` table of ``Y_LM`` on given directions."""
-    return np.stack([spherical_harmonic(L, M, theta, phi, real=real)
-                     for L, M in channels])
-
-
-def multipole_potentials_cartesian(dx, dy, dz, radius, r_g: float, channels,
-                                   potential=None, *, real: bool) -> dict:
-    """All ``{(L, M): v_L(r) Y_LM}`` at Cartesian offsets ``(dx, dy, dz)``."""
-    channels = [(int(L), int(M)) for L, M in channels]
-    if not channels:
-        return {}
-    unique_L = sorted({L for L, _M in channels})
-    kernel = shape_potential if potential is None else potential
-    r_g = float(r_g)
-    radials = {L: kernel(radius, r_g, L) for L in unique_L}
-    c00 = 1.0 / np.sqrt(4.0 * np.pi)
-    max_L = unique_L[-1]
-    if max_L == 0:
-        val0 = radials[0] * (c00 if real else complex(c00))
-        return {(0, 0): val0}
-
-    inv_r = 1.0 / np.maximum(radius, 1e-300)
-    u = np.clip(dz * inv_r, -1.0, 1.0)
-    max_order = max(abs(M) for _L, M in channels)
-    if max_order > 0:
-        nonzero = radius > 0.0
-        ux = np.where(nonzero, dx * inv_r, 1.0)
-        uy = np.where(nonzero, dy * inv_r, 0.0)
-        w_powers = [None] * (max_order + 1)
-        w_powers[1] = (ux, uy)
-        for m in range(2, max_order + 1):
-            cx, cy = w_powers[m - 1]
-            w_powers[m] = (cx * ux - cy * uy, cy * ux + cx * uy)
-
-    by_order: dict[int, set[int]] = {}
-    for L, M in channels:
-        by_order.setdefault(abs(M), set()).add(L)
-
-    q_table: dict[tuple[int, int], np.ndarray | float] = {}
-    for order, degrees in by_order.items():
-        top_l = max(degrees)
-        q0 = c00
-        for k in range(1, order + 1):
-            q0 *= -np.sqrt((2.0 * k + 1.0) / (2.0 * k))
-        if order in degrees:
-            q_table[(order, order)] = q0
-        if top_l > order:
-            q1 = (np.sqrt(2.0 * order + 3.0) * q0) * u
-            if (order + 1) in degrees:
-                q_table[(order + 1, order)] = q1
-            q_prev, q_curr = q0, q1
-            for degree in range(order + 2, top_l + 1):
-                a = np.sqrt((4.0 * degree * degree - 1.0)
-                            / (degree * degree - order * order))
-                b = np.sqrt(((degree - 1.0) ** 2 - order * order)
-                            / (4.0 * (degree - 1.0) ** 2 - 1.0))
-                q_prev, q_curr = q_curr, a * (u * q_curr - b * q_prev)
-                if degree in degrees:
-                    q_table[(degree, order)] = q_curr
-
-    sqrt2 = np.sqrt(2.0)
-    out = {}
-    for L, M in channels:
-        if (L, M) in out:
-            continue
-        order = abs(M)
-        rad_q = radials[L] * q_table[(L, order)]
-        if order == 0:
-            out[(L, 0)] = rad_q if real else rad_q.astype(complex)
-        elif real:
-            sign = sqrt2 * ((-1) ** order)
-            cx, cy = w_powers[order]
-            out[(L, M)] = (sign * rad_q) * (cx if M > 0 else cy)
-        else:
-            cx, cy = w_powers[order]
-            if M > 0:
-                out[(L, M)] = rad_q * (cx + 1j * cy)
-            else:
-                out[(L, M)] = ((-1) ** order * rad_q) * (cx - 1j * cy)
-    return out
-
-
-@lru_cache(maxsize=32)
-def _radial_grid(points: int):
-    x, wx = np.polynomial.legendre.leggauss(int(points))
-    x.flags.writeable = False
-    wx.flags.writeable = False
-    return x, wx
-
-
-@lru_cache(maxsize=16)
-def _unit_directions_cached(polar_points: int, azimuthal_points: int):
-    theta, phi, wang = _angular_grid()
-    sin_t = np.sin(theta)
-    direction = np.stack([sin_t * np.cos(phi), sin_t * np.sin(phi),
-                          np.cos(theta)], axis=1)
-    for arr in (theta, phi, wang, direction):
-        arr.flags.writeable = False
-    return theta, phi, wang, direction
-
-
-def _unit_directions():
-    return _unit_directions_cached(GAUNT_POLAR_POINTS, GAUNT_AZIMUTHAL_POINTS)
-
-
-@lru_cache(maxsize=64)
-def _weighted_b_densities_cached(r_b: float, channels_b: tuple, points: int,
-                                 real: bool, polar_points: int,
-                                 azimuthal_points: int):
-    theta, phi, wang, direction = _unit_directions_cached(
-        polar_points, azimuthal_points)
-    x, wx = _radial_grid(points)
-    rp = 0.5 * float(r_b) * (x + 1.0)
-    wr = 0.5 * float(r_b) * wx
-    y_b = _harmonics(channels_b, theta, phi, real=real)         # (nb, nang)
-    g_b = np.stack([shape_function(rp, r_b, L) for L, _M in channels_b])
-    weight = (wr * rp * rp)[:, None] * wang[None, :]            # (nr, nang)
-    weighted_b = (g_b[:, :, None] * y_b[:, None, :]
-                  * weight[None, :, :]).reshape(len(channels_b), -1)
-    offsets_b = np.ascontiguousarray(
-        (rp[:, None, None] * direction[None, :, :]).reshape(-1, 3),
-        dtype=float)
-    r2_b = np.repeat(rp * rp, direction.shape[0])
-    for arr in (offsets_b, r2_b, weighted_b):
-        arr.flags.writeable = False
-    return offsets_b, r2_b, weighted_b
-
-
-def _weighted_b_densities(r_b: float, channels_b: tuple, points: int,
-                          real: bool):
-    return _weighted_b_densities_cached(
-        float(r_b), channels_b, int(points), bool(real),
-        GAUNT_POLAR_POINTS, GAUNT_AZIMUTHAL_POINTS)
-
-
-def multipole_coulomb_matrix(r_a: float, channels_a, r_b: float, channels_b,
-                             displacement, points: int = 50,
-                             potential=None, *, real: bool) -> np.ndarray:
-    r"""All ``int int g_A,LM(1) g_B,L'M'(2)/r_12`` at once.
-
-    Returns ``(len(channels_a), len(channels_b))``.  The per-pair form would
-    repeat the same quadrature hundreds of times -- and the force needs the
-    derivative with respect to each Cartesian component of ``displacement``,
-    which multiplies that by six -- so the points, the distances and the
-    harmonics are built once and every pair is one contraction against them.
-
-    ``displacement`` is :math:`\mathbf R_B - \mathbf R_A`.  Unlike the
-    monopole case the answer depends on the *direction* as well as the
-    distance, which is exactly what the missing dipole terms describe.
-
-    ``potential(radius, r_g, L)`` replaces the Coulomb potential of the A
-    shapes (:func:`shape_potential`) -- a screened hybrid passes the
-    long-range one, :func:`~.onecenter.long_range_shape_potential`.  The
-    channels' harmonics are real or complex as ``real`` states (a real matrix
-    for real ones).
-    """
-    displacement = np.asarray(displacement, dtype=float)
-    channels_a = [(int(L), int(M)) for L, M in channels_a]
-    channels_b = tuple((int(L), int(M)) for L, M in channels_b)
-    if not channels_a or not channels_b:
-        return np.zeros((len(channels_a), len(channels_b)),
-                        dtype=float if real else complex)
-    offsets_b, r2_b, weighted_b = _weighted_b_densities(
-        r_b, channels_b, points, real)
-    dx = displacement[0] + offsets_b[:, 0]
-    dy = displacement[1] + offsets_b[:, 1]
-    dz = displacement[2] + offsets_b[:, 2]
-    d2 = float(displacement @ displacement)
-    dist = np.sqrt(np.maximum(d2 + r2_b + 2.0 * (offsets_b @ displacement),
-                              0.0))
-
-    pots = multipole_potentials_cartesian(
-        dx, dy, dz, dist, r_a, channels_a, potential=potential, real=real)
-    v_a = np.stack([pots[ch] for ch in channels_a])
-
-    return v_a @ weighted_b.T
+    r"""``E^{(L)}_{ij}(q)``, ``(len(q), n1, n2)``: the Fourier-Bessel transform
+    of the all-electron minus smooth pair density over the augmentation
+    sphere, less the compensation shape that carries its multipole moment
+    :math:`\Delta^{(L)}_{ij}` in the dual projector basis.
+    ``shape_transform`` is :math:`\hat g_L(q)` on ``q``."""
+    return _native.paw_radial_remainder(
+        context(), int(L), *_pair(dataset, l1, l2),
+        np.ascontiguousarray(q, dtype=float),
+        np.ascontiguousarray(dataset.multipole_moments(l1, l2, L, "dual"),
+                             dtype=float),
+        np.ascontiguousarray(shape_transform, dtype=float))

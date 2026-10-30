@@ -21,9 +21,9 @@ One file per element, in either of two interchangeable formats
 (:data:`PSEUDO_FORMATS`).  **Parquet** (``<symbol>.parquet``) is the default and
 what the libraries use -- the radial tables are thousands of floats per
 element and columnar compression matters across the whole periodic table.
-**JSON** (``<symbol>.json``) is the same content as plain text, needs no Parquet
-engine, and is what to write when a dataset has to be inspected, plotted or
-diffed by hand.  :func:`load_pseudopotential` auto-detects which it was given
+**JSON** (``<symbol>.json``) is the same content as plain text and is what to
+write when a dataset has to be inspected, plotted or diffed by hand.  Both are
+read and written by the native engine; no Python Parquet package is involved.  :func:`load_pseudopotential` auto-detects which it was given
 (extension first, then magic bytes), so the two are drop-in equivalents.
 
 Every file carries ``"format": "mandacaru-pseudopotential"``, the schema
@@ -171,7 +171,7 @@ def _table(values, stride=1):
 
 
 def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
-                         format: str | None = None, engine: str = "auto") -> str:
+                         format: str | None = None) -> str:
     """Write ``pp`` to ``path`` (values rounded to :data:`DIGITS` significant
     figures); return the path.
 
@@ -180,10 +180,6 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
     format : {"parquet", "json"}, optional
         Defaults to the format implied by ``path``'s extension, else
         :data:`DEFAULT_FORMAT` (Parquet: ~5x smaller for these tables).
-    engine : str
-        Parquet engine (``"auto"`` / ``"fastparquet"`` / ``"pyarrow"``); ignored
-        for JSON.  See :mod:`mandacaru.core.serialization` for why fastparquet
-        leads.
     stride : int
         Keep every ``stride``-th radial point.  The default of 1 writes the
         tables as given, so save-load-save is idempotent; a library is
@@ -211,7 +207,7 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
     payload = {"format": FORMAT_TAG, "version": FORMAT_VERSION,
                "family": stored,
                **_codec(layout).to_payload(pp, stride)}
-    return _write_payload(path, payload, format, engine)
+    return _write_payload(path, payload, format)
 
 
 def _defects_record(defects):
@@ -229,7 +225,7 @@ def _warn_defects(dataset, family):
     warn_defects(dataset, family)
 
 
-def _write_payload(path, payload, format, engine) -> str:
+def _write_payload(path, payload, format) -> str:
     path = os.fspath(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if format == "json":
@@ -237,7 +233,7 @@ def _write_payload(path, payload, format, engine) -> str:
             json.dump(payload, handle)
             handle.write("\n")
     else:
-        _write_parquet(path, payload, engine)
+        _write_parquet(path, payload)
     return path
 
 
@@ -246,52 +242,42 @@ def _radial_columns(payload):
     return dict(payload["radial_tables"])
 
 
-def _write_parquet(path, payload, engine):
+def _write_parquet(path, payload):
     """Radial tables as columns; everything scalar as key/value metadata."""
-    from ..core.serialization import native_pandas_strings, resolve_engine
+    from .. import _native
+    from .native_context import context
 
-    columns = _radial_columns(payload)
+    columns = {name: np.ascontiguousarray(values, dtype=np.float64)
+               for name, values in _radial_columns(payload).items()}
     scalars = {k: v for k, v in payload.items() if k != "radial_tables"}
     metadata = {"mandacaru.pseudopotential": json.dumps(scalars)}
-
-    if resolve_engine(engine) == "fastparquet":
-        import fastparquet
-        import pandas as pd
-        with native_pandas_strings():
-            fastparquet.write(path, pd.DataFrame(columns), compression="ZSTD",
-                              custom_metadata=metadata, write_index=False)
-    else:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-        table = pa.table(columns,
-                         metadata={k.encode(): v.encode()
-                                   for k, v in metadata.items()})
-        pq.write_table(table, path, compression="zstd")
+    _native.write_parquet(context(), path, columns, metadata)
 
 
-def _read_parquet(path, engine):
+@lru_cache(maxsize=1)
+def _reader_context():
+    """The context library files are read with: default threads, so the
+    columns of a large atom decode in parallel (the shared radial context is
+    single-threaded because dataset builds parallelize across processes)."""
+    from .. import _native
+
+    return _native.Context()
+
+
+def _read_parquet(path):
     """Reassemble the JSON-shaped payload from a Parquet file."""
-    from ..core.serialization import native_pandas_strings, resolve_engine
+    from .. import _native
 
-    if resolve_engine(engine) == "fastparquet":
-        import fastparquet
-        parquet_file = fastparquet.ParquetFile(path)
-        raw = {str(k): str(v)
-               for k, v in (parquet_file.key_value_metadata or {}).items()}
-        with native_pandas_strings():
-            frame = parquet_file.to_pandas()
-            columns = {name: frame[name].tolist() for name in frame.columns}
-    else:
-        import pyarrow.parquet as pq
-        table = pq.read_table(path)
-        raw = {k.decode(): v.decode()
-               for k, v in (table.schema.metadata or {}).items()}
-        columns = {name: table.column(name).to_pylist()
-                   for name in table.column_names}
-
+    table = _native.read_parquet(_reader_context(), path)
+    raw = table["metadata"]
     if "mandacaru.pseudopotential" not in raw:
         raise ValueError(
             f"{path!r} is not a Mandacaru pseudopotential Parquet file")
+    columns = table["columns"]
+    for name, values in columns.items():
+        if not isinstance(values, np.ndarray):
+            raise ValueError(
+                f"{path!r}: radial table {name!r} is not a float64 column")
     payload = json.loads(raw["mandacaru.pseudopotential"])
     payload["radial_tables"] = columns
     return payload
@@ -299,12 +285,12 @@ def _read_parquet(path, engine):
 
 @lru_cache(maxsize=128)
 def _load_pseudopotential_cached(path: str, mtime_ns: int,
-                                 format: str | None, engine: str) -> PseudoPotential:
+                                 format: str | None) -> PseudoPotential:
     if format == "json":
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
     else:
-        payload = _read_parquet(path, engine)
+        payload = _read_parquet(path)
     if payload.get("format") != FORMAT_TAG:
         raise ValueError(f"{path!r} is not a Mandacaru pseudopotential file")
     if int(payload.get("version", 0)) > FORMAT_VERSION:
@@ -327,8 +313,7 @@ def _load_pseudopotential_cached(path: str, mtime_ns: int,
     return _codec(family).from_payload({**payload, "family": family})
 
 
-def load_pseudopotential(path, format: str | None = None,
-                         engine: str = "auto") -> PseudoPotential:
+def load_pseudopotential(path, format: str | None = None) -> PseudoPotential:
     """Read a pseudopotential written by :func:`save_pseudopotential`.
 
     The format is **detected automatically** (:func:`detect_format`), so Parquet
@@ -343,7 +328,7 @@ def load_pseudopotential(path, format: str | None = None,
     format = detect_format(path) if format is None else resolve_format(format)
     real_path = os.path.realpath(path)
     mtime_ns = os.stat(real_path).st_mtime_ns
-    return _load_pseudopotential_cached(real_path, mtime_ns, format, engine)
+    return _load_pseudopotential_cached(real_path, mtime_ns, format)
 
 
 # --------------------------------------------------------------------------- #

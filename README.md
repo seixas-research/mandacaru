@@ -25,9 +25,10 @@ There is no Python calculation engine or execution-engine selector.
 ## Install and run
 
 Mandacaru requires Python 3.14 and installs its scientific Python stack and
-quantum SDK integrations, including ASE, SciPy, Matplotlib, Parquet support,
-Qiskit, Braket and Cirq. Platform wheels include the native extension. Building
-from source also requires Rust/Cargo.
+quantum SDK integrations, including ASE, SciPy, Matplotlib, Qiskit, Braket and
+Cirq. Parquet files are read and written by the native extension and need no
+Python package. Platform wheels include the native extension. Building from
+source also requires Rust/Cargo.
 
 ```bash
 python -m pip install mandacaru
@@ -37,23 +38,22 @@ python -m pip install mandacaru
 from ase import Atoms
 from mandacaru import Mandacaru
 
-atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[5, 5, 5])
+atoms = Atoms("H2",
+              positions=[[0, 0, 0],
+                         [0, 0, 0.74]],
+              cell=[10, 10, 10])
+
 atoms.center()
-with Mandacaru(method="dft", xc="pbe", basis="HAO", grid_spacing=.35,
-               resources={"threads": 2}) as calculation:
-    atoms.calc = calculation
-    print(atoms.get_potential_energy())  # eV
-    print(atoms.get_forces())            # eV/angstrom
+
+atoms.calc = Mandacaru(method="dft",
+                       xc="pbe",
+                       basis="HAO",
+                       grid_spacing=0.20,
+                       resources={"threads": 2})
+
+print(atoms.get_potential_energy())  # eV
+print(atoms.get_forces())            # eV/angstrom
 ```
-
-
-Attach the calculator directly with `atoms.calc = Mandacaru(...)` for ASE
-calculations. Standalone geometry values are also accepted. Required integration
-packages are imported only by the Python features that use them.
-
-Four-index Hamiltonians are built only when explicitly requested through
-`result.hamiltonian`, Hamiltonian export or a quantum calculation. HF and
-screened hybrid exchange use native Cholesky factors.
 
 ## Source layout
 
@@ -68,7 +68,7 @@ screened hybrid exchange use native Cholesky factors.
 | `scripts` | Local architectural and installation checks |
 | `docs` | Sphinx manual |
 
-There are no Rust sources inside the Python package. No GitHub workflows are used.
+There are no Rust sources inside the Python package.
 
 ## Local checks
 

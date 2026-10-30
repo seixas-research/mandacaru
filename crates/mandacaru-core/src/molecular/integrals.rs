@@ -2,7 +2,7 @@ use super::{invalid, SpatialGrid};
 use crate::basis::Basis;
 use crate::math::fft::{spectral_laplacian, Poisson};
 use crate::math::linalg::real_eigen;
-use crate::math::storage::{Precision, RealSamples};
+use crate::math::storage::{with_rows, Precision, RealSamples, Sample, SampleBlocks};
 use crate::quantum::C64;
 use crate::{product, Buffer, Context, Geometry, Reservation, Result};
 use nalgebra::DMatrix;
@@ -192,15 +192,20 @@ pub struct MolecularIntegrals {
     pub paw_setup: Option<Arc<crate::paw::molecular::Setup>>,
     _matrices: Reservation,
 }
-pub fn pair_integrals(ctx: &Context, grid: &SpatialGrid, samples: &[f64], m: usize) -> Result<Eri> {
+pub fn pair_integrals<T: Sample>(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    samples: &[T],
+    m: usize,
+) -> Result<Eri> {
     pair_integrals_with_solver(ctx, grid, samples, m, &mut Poisson::isolated(ctx, grid)?)
 }
 /// Pivoted Cholesky using individual Coulomb columns. Neither the pair matrix
 /// nor a four-index tensor is allocated, including during factorization.
-pub(super) fn cholesky_from_grid(
+pub(super) fn cholesky_from_grid<T: Sample>(
     ctx: &Context,
     grid: &SpatialGrid,
-    samples: &[f64],
+    samples: &[T],
     m: usize,
     tolerance: f64,
     solver: &mut Poisson,
@@ -247,7 +252,8 @@ pub(super) fn cholesky_from_grid(
     if fixed_pivots.is_none() {
         for (i, &(a, b)) in indices.iter().enumerate() {
             for k in 0..g {
-                rho.as_mut_slice()[k] = C64::new(samples[a * g + k] * samples[b * g + k], 0.);
+                rho.as_mut_slice()[k] =
+                    C64::new(samples[a * g + k].widen() * samples[b * g + k].widen(), 0.);
             }
             diagonal.as_mut_slice()[i] = solver.quadratic_form(rho.as_slice())?;
         }
@@ -273,7 +279,8 @@ pub(super) fn cholesky_from_grid(
         pivots.as_mut_slice()[columns.len()] = pivot;
         let (a, b) = indices[pivot];
         for k in 0..g {
-            rho.as_mut_slice()[k] = C64::new(samples[a * g + k] * samples[b * g + k], 0.);
+            rho.as_mut_slice()[k] =
+                C64::new(samples[a * g + k].widen() * samples[b * g + k].widen(), 0.);
         }
         solver.solve_into(rho.as_slice(), potential.as_mut_slice())?;
         if fixed_pivots.is_some() {
@@ -318,7 +325,9 @@ pub(super) fn cholesky_from_grid(
                 || {
                     (0..g)
                         .map(|k| {
-                            samples[p * g + k] * samples[q * g + k] * potential.as_slice()[k].re
+                            samples[p * g + k].widen()
+                                * samples[q * g + k].widen()
+                                * potential.as_slice()[k].re
                         })
                         .sum::<f64>()
                 },
@@ -369,10 +378,10 @@ pub(super) fn cholesky_from_grid(
         pivots,
     })
 }
-pub(super) fn pair_integrals_with_solver(
+pub(super) fn pair_integrals_with_solver<T: Sample>(
     ctx: &Context,
     grid: &SpatialGrid,
-    samples: &[f64],
+    samples: &[T],
     m: usize,
     poisson: &mut Poisson,
 ) -> Result<Eri> {
@@ -388,7 +397,8 @@ pub(super) fn pair_integrals_with_solver(
         for d in 0..=b {
             let bd = pair(b, d);
             for k in 0..g {
-                density.as_mut_slice()[k] = C64::new(samples[b * g + k] * samples[d * g + k], 0.);
+                density.as_mut_slice()[k] =
+                    C64::new(samples[b * g + k].widen() * samples[d * g + k].widen(), 0.);
             }
             poisson.solve_into(density.as_slice(), potential.as_mut_slice())?;
             for a in 0..m {
@@ -399,7 +409,9 @@ pub(super) fn pair_integrals_with_solver(
                     }
                     let integral: f64 = (0..g)
                         .map(|k| {
-                            samples[a * g + k] * samples[c * g + k] * potential.as_slice()[k].re
+                            samples[a * g + k].widen()
+                                * samples[c * g + k].widen()
+                                * potential.as_slice()[k].re
                         })
                         .sum();
                     values.as_mut_slice()[pair(ac, bd)] = integral * grid.index.dv();
@@ -408,6 +420,150 @@ pub(super) fn pair_integrals_with_solver(
         }
     }
     Ok(Eri::Packed { m, values })
+}
+fn laplacian_of(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    kinetic: &str,
+    field: &[f64],
+) -> Result<Buffer<f64>> {
+    if kinetic == "spectral" {
+        spectral_laplacian(ctx, grid, field)
+    } else {
+        crate::kernels::laplacian(ctx, &grid.index, 1, field)
+    }
+}
+/// Kinetic matrix `t[a * m + b] = -1/2 <psi_a, laplacian psi_b>` of exact
+/// float64 orbitals for a float32 stack, whose stored rows would put a
+/// rounding error of 1e-7 relative on each side. Laplacian rows are resident
+/// one third of the orbitals at a time (about 2.7 stack-lengths of float64 per
+/// third), and the other side is re-evaluated in point blocks. Pairs with the
+/// row group at or below the Laplacian group are computed once and mirrored.
+fn exact_kinetic(
+    ctx: &Context,
+    basis: &Basis,
+    grid: &SpatialGrid,
+    kinetic: &str,
+    t: &mut [f64],
+) -> Result<()> {
+    let m = basis.orbitals.len();
+    let g = grid.index.points();
+    let group = m.div_ceil(3).max(1);
+    let stride = g.min(SampleBlocks::BLOCK);
+    let mut laplacians = ctx.allocate::<f64>(product(&[group, g])?)?;
+    let mut row = ctx.allocate::<f64>(g)?;
+    let mut block = ctx.allocate::<f64>(product(&[group, stride])?)?;
+    let mut raw = vec![0.; group];
+    for b0 in (0..m).step_by(group) {
+        let nb = group.min(m - b0);
+        for j in 0..nb {
+            for (k, value) in row.as_mut_slice().iter_mut().enumerate() {
+                *value = basis.orbitals[b0 + j].evaluate(grid.point(k));
+            }
+            let lap = laplacian_of(ctx, grid, kinetic, row.as_slice())?;
+            laplacians.as_mut_slice()[j * g..(j + 1) * g].copy_from_slice(lap.as_slice());
+        }
+        for a0 in (0..=b0).step_by(group) {
+            let na = group.min(m - a0);
+            for start in (0..g).step_by(stride) {
+                let count = stride.min(g - start);
+                for i in 0..count {
+                    basis.evaluate_at(a0, grid.point(start + i), &mut raw[..na]);
+                    for (a, value) in raw[..na].iter().enumerate() {
+                        block.as_mut_slice()[a * stride + i] = *value;
+                    }
+                }
+                for a in 0..na {
+                    let left = &block.as_slice()[a * stride..a * stride + count];
+                    for j in 0..nb {
+                        let right = &laplacians.as_slice()[j * g + start..j * g + start + count];
+                        let mut sum = t[(a0 + a) * m + b0 + j];
+                        for i in 0..count {
+                            sum += left[i] * right[i];
+                        }
+                        t[(a0 + a) * m + b0 + j] = sum;
+                    }
+                }
+            }
+        }
+    }
+    let scale = -0.5 * grid.index.dv();
+    for (a, b) in (0..m).flat_map(|a| (0..m).map(move |b| (a, b))) {
+        if a / group <= b / group {
+            t[a * m + b] *= scale;
+        }
+    }
+    // Mirror the pairs that were evaluated with the left orbital in an
+    // earlier group than the Laplacian row.
+    for a in 0..m {
+        for b in 0..m {
+            if a / group < b / group {
+                t[b * m + a] = t[a * m + b];
+            }
+        }
+    }
+    Ok(())
+}
+/// The exact float64 values of all orbitals on a block of grid points. A
+/// float64 stack IS the exact value, so its block is widened from storage; a
+/// float32 stack has already been rounded, so the block is re-evaluated from
+/// the orbitals. Everything that must not inherit rounding noise (overlap,
+/// potential, the orthonormal rows) reads this, never the stored float32 rows.
+struct ExactBlocks<'a> {
+    basis: &'a Basis,
+    grid: &'a SpatialGrid,
+    stride: usize,
+    points: usize,
+    raw: Vec<f64>,
+    source: ExactSource<'a>,
+}
+enum ExactSource<'a> {
+    Stored(SampleBlocks<'a>),
+    Evaluated(Buffer<f64>),
+}
+impl<'a> ExactBlocks<'a> {
+    fn new(
+        ctx: &Context,
+        basis: &'a Basis,
+        grid: &'a SpatialGrid,
+        samples: &'a RealSamples,
+    ) -> Result<Self> {
+        let (m, points) = (basis.orbitals.len(), grid.index.points());
+        let stride = points.min(SampleBlocks::BLOCK);
+        let source = match samples.precision() {
+            Precision::Float64 => ExactSource::Stored(SampleBlocks::new(ctx, samples, m, points)?),
+            Precision::Float32 => ExactSource::Evaluated(ctx.allocate(product(&[m, stride])?)?),
+        };
+        Ok(Self {
+            basis,
+            grid,
+            stride,
+            points,
+            raw: vec![0.; m],
+            source,
+        })
+    }
+    /// Orbital `a` of the loaded block is at `a * stride`; returns the point
+    /// count and all values.
+    fn load(&mut self, start: usize) -> Result<(usize, &[f64])> {
+        let count = self.stride.min(self.points - start);
+        match &mut self.source {
+            ExactSource::Stored(blocks) => {
+                blocks.load(start)?;
+                Ok((count, blocks.values()))
+            }
+            ExactSource::Evaluated(block) => {
+                for i in 0..count {
+                    self.basis
+                        .evaluate_at(0, self.grid.point(start + i), &mut self.raw);
+                    for (a, value) in self.raw.iter().enumerate() {
+                        block.as_mut_slice()[a * self.stride + i] = *value;
+                    }
+                }
+                Ok((count, block.as_slice()))
+            }
+        }
+    }
 }
 impl MolecularIntegrals {
     /// Rebuild on the same fixed integration grid with the same basis recipe
@@ -420,15 +576,14 @@ impl MolecularIntegrals {
         }
         self.context.run(|| {
             if let Some(setup) = &self.paw_setup {
-                return setup
-                    .at_geometry(
-                        &self.context,
-                        geometry,
-                        self.grid.clone(),
-                        &self.kinetic_method,
-                        self.cholesky_tolerance,
-                    )?
-                    .with_precision(self.samples.precision());
+                return setup.at_geometry(
+                    &self.context,
+                    geometry,
+                    self.grid.clone(),
+                    &self.kinetic_method,
+                    self.cholesky_tolerance,
+                    self.precision(),
+                );
             }
             if self.corrections.is_some() {
                 return Err(invalid(
@@ -440,16 +595,17 @@ impl MolecularIntegrals {
                 orbital.center = geometry.positions()[orbital.atom];
             }
             let basis = Basis::from_orbitals(&self.context, orbitals)?;
+            let samples = basis.sample(&self.context, &self.grid, self.precision())?;
             Self::from_basis(
                 &self.context,
                 geometry,
                 self.grid.clone(),
                 basis,
+                samples,
                 &self.kinetic_method,
                 Some(self.cholesky_tolerance),
                 None,
-            )?
-            .with_precision(self.samples.precision())
+            )
         })
     }
     pub fn has_eri(&self) -> bool {
@@ -476,15 +632,17 @@ impl MolecularIntegrals {
             return Ok(value.clone());
         }
         let mut solver = Poisson::isolated(&self.context, &self.grid)?;
-        let base = Arc::new(cholesky_from_grid(
-            &self.context,
-            &self.grid,
-            &self.orthonormal_samples.read(&self.context)?,
-            self.m(),
-            self.cholesky_tolerance,
-            &mut solver,
-            self.fixed_pivots.as_ref().map(|p| p.as_slice()),
-        )?);
+        let base = Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {
+            cholesky_from_grid(
+                &self.context,
+                &self.grid,
+                samples,
+                self.m(),
+                self.cholesky_tolerance,
+                &mut solver,
+                self.fixed_pivots.as_ref().map(|p| p.as_slice()),
+            )?
+        }));
         let factors = if let Some(correction) = self.corrections.as_ref() {
             Arc::new(Eri::Augmented {
                 m: self.m(),
@@ -538,6 +696,8 @@ impl MolecularIntegrals {
         }
         Ok(particles)
     }
+    /// The precision is fixed at construction: the orbital stacks are built
+    /// directly in it and never exist in float64 beside it.
     pub fn new(
         ctx: &Context,
         geometry: Geometry,
@@ -545,15 +705,21 @@ impl MolecularIntegrals {
         basis_spec: &str,
         kinetic: &str,
         cholesky: Option<f64>,
+        precision: Precision,
     ) -> Result<Self> {
         let basis = Basis::build(ctx, &geometry, basis_spec)?;
-        Self::from_basis(ctx, geometry, grid, basis, kinetic, cholesky, None)
+        let samples = basis.sample(ctx, &grid, precision)?;
+        Self::from_basis(ctx, geometry, grid, basis, samples, kinetic, cholesky, None)
     }
+    /// Integrals from a basis and its raw orbital samples on `grid`; the
+    /// samples' precision is the calculation's precision.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_basis(
         ctx: &Context,
         geometry: Geometry,
         grid: SpatialGrid,
         basis: Basis,
+        samples: RealSamples,
         kinetic: &str,
         cholesky: Option<f64>,
         mut corrections: Option<MolecularCorrections>,
@@ -588,7 +754,10 @@ impl MolecularIntegrals {
             }
         }
         let matrices = ctx.reserve(product(&[m, m, 8, 12])?)?;
-        let samples = basis.sample(ctx, &grid)?;
+        if samples.len() != product(&[m, g])? {
+            return Err(invalid("orbital samples must match the basis and grid"));
+        }
+        let precision = samples.precision();
         let mut overlap = ctx.allocate::<f64>(product(&[m, m])?)?;
         let mut t = ctx.allocate::<f64>(product(&[m, m])?)?;
         let mut v = ctx.allocate::<f64>(product(&[m, m])?)?;
@@ -614,26 +783,67 @@ impl MolecularIntegrals {
                 })
                 .sum();
         }
-        for b in 0..m {
-            let row = &samples.as_slice()[b * g..(b + 1) * g];
-            let lap = if kinetic == "spectral" {
-                spectral_laplacian(ctx, &grid, row)?
-            } else {
-                crate::kernels::laplacian(ctx, &grid.index, 1, row)?
-            };
+        // Matrix elements are contracted from the EXACT float64 orbital values,
+        // not from rounded stored rows: the nuclear potential weights a few
+        // points so heavily that rounding noise in stored values would move the
+        // spectrum by 1e-6 Ha. A float64 stack IS the exact value; a float32
+        // stack re-evaluates the orbitals, so the stack is only ever read to
+        // build the orthonormal rows. Overlap and potential run over point
+        // blocks (all orbitals of a block at once), the kinetic matrix over
+        // rows (the Laplacian is a whole-row operation).
+        let mut exact = ExactBlocks::new(ctx, &basis, &grid, &samples)?;
+        let stride = exact.stride;
+        for start in (0..g).step_by(stride) {
+            let (count, phi) = exact.load(start)?;
+            let ext = &external.as_slice()[start..start + count];
             for a in 0..m {
-                let mut s = 0.;
-                let mut kinetic = 0.;
-                let mut potential = 0.;
-                for (k, &psi) in samples.as_slice()[a * g..(a + 1) * g].iter().enumerate() {
-                    s += psi * row[k];
-                    kinetic += psi * lap.as_slice()[k];
-                    potential += psi * row[k] * external.as_slice()[k];
+                let left = &phi[a * stride..a * stride + count];
+                for b in a..m {
+                    let right = &phi[b * stride..b * stride + count];
+                    let mut s = overlap.as_slice()[a * m + b];
+                    let mut potential = v.as_slice()[a * m + b];
+                    for i in 0..count {
+                        s += left[i] * right[i];
+                        potential += left[i] * right[i] * ext[i];
+                    }
+                    overlap.as_mut_slice()[a * m + b] = s;
+                    v.as_mut_slice()[a * m + b] = potential;
                 }
-                overlap.as_mut_slice()[a * m + b] = s * grid.index.dv();
-                t.as_mut_slice()[a * m + b] = -0.5 * kinetic * grid.index.dv();
-                v.as_mut_slice()[a * m + b] = potential * grid.index.dv();
-                if let Some(c) = &corrections {
+            }
+        }
+        match precision {
+            // A float64 stack is exact: one resident Laplacian row at a time.
+            Precision::Float64 => {
+                let mut row = ctx.allocate::<f64>(g)?;
+                for b in 0..m {
+                    samples.widen_range(b * g, row.as_mut_slice())?;
+                    let lap = laplacian_of(ctx, &grid, kinetic, row.as_slice())?;
+                    with_rows!(samples.rows(), |stored| {
+                        for a in 0..m {
+                            let mut sum = 0.;
+                            for (k, &psi) in stored[a * g..(a + 1) * g].iter().enumerate() {
+                                sum += psi.widen() * lap.as_slice()[k];
+                            }
+                            t.as_mut_slice()[a * m + b] = -0.5 * sum * grid.index.dv();
+                        }
+                    });
+                }
+            }
+            Precision::Float32 => exact_kinetic(ctx, &basis, &grid, kinetic, t.as_mut_slice())?,
+        }
+        for a in 0..m {
+            for b in a..m {
+                let s = overlap.as_slice()[a * m + b] * grid.index.dv();
+                let potential = v.as_slice()[a * m + b] * grid.index.dv();
+                overlap.as_mut_slice()[a * m + b] = s;
+                overlap.as_mut_slice()[b * m + a] = s;
+                v.as_mut_slice()[a * m + b] = potential;
+                v.as_mut_slice()[b * m + a] = potential;
+            }
+        }
+        if let Some(c) = &corrections {
+            for a in 0..m {
+                for b in 0..m {
                     overlap.as_mut_slice()[a * m + b] += c.overlap[(a, b)];
                     v.as_mut_slice()[a * m + b] += c.potential[(a, b)];
                 }
@@ -679,23 +889,45 @@ impl MolecularIntegrals {
                 one.as_mut_slice()[a * m + b] = h[(a, b)];
             }
         }
-        let mut orthonormal_samples = ctx.allocate::<f64>(product(&[m, g])?)?;
-        if m >= 16 {
-            let _packing = ctx.reserve(product(&[m, 256, 16])?)?;
-            let input = nalgebra::DMatrixView::from_slice(samples.as_slice(), g, m);
-            let mut output =
-                nalgebra::DMatrixViewMut::from_slice(orthonormal_samples.as_mut_slice(), g, m);
-            output.gemm(1., &input, &lowdin, 0.);
-        } else {
-            for p in 0..m {
-                for a in 0..m {
-                    for k in 0..g {
-                        orthonormal_samples.as_mut_slice()[p * g + k] +=
-                            lowdin[(a, p)] * samples.as_slice()[a * g + k];
+        // Orthonormal rows by point blocks: widen a raw block to float64,
+        // multiply by the Lowdin matrix there and round the block once into
+        // the second stack. Only O(m B) float64 scratch exists.
+        let mut orthonormal_samples = RealSamples::zeros(ctx, precision, product(&[m, g])?)?;
+        {
+            let stride = exact.stride;
+            let mut block = ctx.allocate::<f64>(product(&[m, stride])?)?;
+            let _packing = if m >= 16 {
+                Some(ctx.reserve(product(&[m, 256, 16])?)?)
+            } else {
+                None
+            };
+            for start in (0..g).step_by(stride) {
+                let (count, raw) = exact.load(start)?;
+                if m >= 16 {
+                    let input = nalgebra::DMatrixView::from_slice(raw, stride, m);
+                    let mut output =
+                        nalgebra::DMatrixViewMut::from_slice(block.as_mut_slice(), stride, m);
+                    output.gemm(1., &input, &lowdin, 0.);
+                } else {
+                    block.as_mut_slice().fill(0.);
+                    for p in 0..m {
+                        for a in 0..m {
+                            for k in 0..count {
+                                block.as_mut_slice()[p * stride + k] +=
+                                    lowdin[(a, p)] * raw[a * stride + k];
+                            }
+                        }
                     }
+                }
+                for p in 0..m {
+                    orthonormal_samples.fill_range(
+                        p * g + start,
+                        &block.as_slice()[p * stride..p * stride + count],
+                    )?;
                 }
             }
         }
+        drop(exact);
         let cholesky_tolerance = cholesky.unwrap_or(1e-10);
         if !cholesky_tolerance.is_finite() || cholesky_tolerance <= 0. {
             return Err(invalid("Cholesky tolerance must be finite and positive"));
@@ -731,8 +963,8 @@ impl MolecularIntegrals {
             geometry,
             grid,
             basis,
-            samples: samples.into(),
-            orthonormal_samples: orthonormal_samples.into(),
+            samples,
+            orthonormal_samples,
             overlap,
             kinetic: t,
             potential: v,
@@ -750,17 +982,9 @@ impl MolecularIntegrals {
             _matrices: matrices,
         })
     }
-    pub fn with_precision(mut self, precision: Precision) -> Result<Self> {
-        if self.has_eri() {
-            return Err(invalid(
-                "sample precision must be selected before Coulomb factorization",
-            ));
-        }
-        self.samples = self.samples.into_precision(&self.context, precision)?;
-        self.orthonormal_samples = self
-            .orthonormal_samples
-            .into_precision(&self.context, precision)?;
-        Ok(self)
+    /// Precision of the stored orbital stacks.
+    pub fn precision(&self) -> Precision {
+        self.samples.precision()
     }
     pub fn m(&self) -> usize {
         self.basis.orbitals.len()

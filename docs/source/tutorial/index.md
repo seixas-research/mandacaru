@@ -1,7 +1,9 @@
 # Tutorials
 
-Follow the first three tutorials for native VQE and ADAPT on LiH, followed by
-a short molecular DFT geometry scan. All calculations run in Rust; there is no engine selector.
+A tutorial follows one calculation from start to finish. Begin with the first three:
+VQE and ADAPT-VQE on LiH, then a short molecular scan. The others are worked examples
+of specialized methods; each states its limits where the program does not do
+everything the method allows (see [what is not available yet](#not-yet-available)).
 
 ```{toctree}
 :maxdepth: 1
@@ -11,10 +13,6 @@ adapt_vqe_lih
 pes_scan
 ```
 
-The additional tutorials describe specialized workflows. Some still depend on
-features awaiting migration; consult the [native coverage](../guide/native_engine.md)
-before using them. They are retained as method references during the cutover.
-
 ```{toctree}
 :maxdepth: 1
 
@@ -23,5 +21,4 @@ energy_levels
 subspace_vqe
 mcas_vqe
 valqa
-bloch_crystals
 ```

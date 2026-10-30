@@ -1,6 +1,6 @@
 //! Execution context and dispatch to Python-independent scientific operations.
 use super::{
-    advanced, array, complex, complex_array, copy, error, models, molecular, paw, periodic,
+    advanced, array, atom, complex, complex_array, copy, error, models, molecular, paw, periodic,
     persistence, quantum, Array, PyGeometry, PyGrid, PySpatialGrid, Workspace,
 };
 use mandacaru_core::periodic::{
@@ -202,7 +202,7 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[axis.len()], out.as_slice().to_vec())
     }
-    #[pyo3(signature=(operator,n_spatial_orbitals,num_particles,*,mapping="jordan_wigner",sector=true,include_singles=true,sparse=false,pool="fermionic"))]
+    #[pyo3(signature=(operator,n_spatial_orbitals,num_particles,*,mapping="jordan_wigner",sector=true,include_singles=true,sparse=false,pool="fermionic",precision="float64"))]
     fn quantum_problem(
         &self,
         py: Python<'_>,
@@ -214,7 +214,9 @@ impl PyContext {
         include_singles: bool,
         sparse: bool,
         pool: &str,
+        precision: &str,
     ) -> PyResult<quantum::PyProblem> {
+        let precision = quantum::parse_precision(precision)?;
         let inner = py
             .detach(|| {
                 let modes = n_spatial_orbitals.checked_mul(2).ok_or(Error::Overflow)?;
@@ -228,7 +230,8 @@ impl PyContext {
                     sector,
                     false,
                     include_singles,
-                )?;
+                )?
+                .with_precision(precision);
                 if pool != "fermionic" {
                     problem.use_pool(pool, include_singles)?;
                 }
@@ -740,7 +743,7 @@ impl PyContext {
         Ok(out)
     }
 
-    #[pyo3(signature=(atomic_number,*,points=4000,r_max=25.,max_iterations=200,tolerance=1e-6,mixing=0.3,configuration=None,confinement=None,functional="lda"))]
+    #[pyo3(signature=(atomic_number,*,points=4000,r_max=25.,max_iterations=200,tolerance=1e-6,mixing=0.3,configuration=None,confinement=None,functional="lda",relativity="none",polish=12))]
     fn solve_atom<'py>(
         &self,
         py: Python<'py>,
@@ -753,11 +756,15 @@ impl PyContext {
         configuration: Option<Vec<(usize, usize, f64)>>,
         confinement: Option<PyReadonlyArray1<'py, f64>>,
         functional: &str,
+        relativity: &str,
+        polish: usize,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let wall = confinement
-            .as_ref()
-            .map(|v| copy(&self.inner, v))
-            .transpose()?;
+        let model = mandacaru_core::models::atom::AtomModel {
+            functional: functional.to_string(),
+            relativity: mandacaru_core::models::relativity::Treatment::parse(relativity)
+                .map_err(error)?,
+            polish,
+        };
         let options = mandacaru_core::models::atom::AtomOptions {
             points,
             r_max,
@@ -765,52 +772,68 @@ impl PyContext {
             tolerance,
             mixing,
         };
-        let atom = py
-            .detach(|| {
-                mandacaru_core::models::atom::solve_functional(
-                    &self.inner,
-                    atomic_number,
-                    &options,
-                    configuration.as_deref(),
-                    wall.as_ref().map(|v| v.0.as_slice()),
-                    functional,
-                )
-            })
-            .map_err(error)?;
-        let out = PyDict::new(py);
-        out.set_item("atomic_number", atomic_number)?;
-        out.set_item("r", array(py, &[points], atom.r.as_slice().to_vec())?)?;
-        out.set_item(
-            "density",
-            array(py, &[points], atom.density.as_slice().to_vec())?,
-        )?;
-        out.set_item(
-            "v_effective",
-            array(py, &[points], atom.effective.as_slice().to_vec())?,
-        )?;
-        out.set_item(
-            "v_hartree",
-            array(py, &[points], atom.hartree.as_slice().to_vec())?,
-        )?;
-        out.set_item("v_xc", array(py, &[points], atom.xc.as_slice().to_vec())?)?;
-        let orbitals = PyDict::new(py);
-        let eigenvalues = PyDict::new(py);
-        let occupations = PyDict::new(py);
-        for (i, &(n, l, q)) in atom.occupations.iter().enumerate() {
-            orbitals.set_item(
-                (n, l),
-                array(py, &[points], atom.orbitals[i].as_slice().to_vec())?,
-            )?;
-            eigenvalues.set_item((n, l), atom.eigenvalues[i])?;
-            occupations.set_item((n, l), q)?;
-        }
-        out.set_item("orbitals", orbitals)?;
-        out.set_item("eigenvalues", eigenvalues)?;
-        out.set_item("occupations", occupations)?;
-        out.set_item("total_energy", atom.energy)?;
-        out.set_item("converged", atom.converged)?;
-        out.set_item("iterations", atom.iterations)?;
-        Ok(out)
+        atom::solve(
+            self,
+            py,
+            atomic_number,
+            options,
+            model,
+            configuration,
+            confinement,
+        )
+    }
+    #[pyo3(signature=(atomic_number,*,functional="lda",relativity="none",r_max=25.,points=None))]
+    fn relaxed_configuration(
+        &self,
+        py: Python<'_>,
+        atomic_number: u8,
+        functional: &str,
+        relativity: &str,
+        r_max: f64,
+        points: Option<usize>,
+    ) -> PyResult<Vec<(usize, usize, f64)>> {
+        atom::relaxed_configuration(
+            self,
+            py,
+            atomic_number,
+            functional,
+            relativity,
+            r_max,
+            points,
+        )
+    }
+    #[pyo3(signature=(r,potential,l,n_nodes,*,relativity="none",kappa=None,atomic_number=0.,energy_guess=None))]
+    fn solve_radial<'py>(
+        &self,
+        py: Python<'py>,
+        r: PyReadonlyArray1<'py, f64>,
+        potential: PyReadonlyArray1<'py, f64>,
+        l: usize,
+        n_nodes: usize,
+        relativity: &str,
+        kappa: Option<i32>,
+        atomic_number: f64,
+        energy_guess: Option<f64>,
+    ) -> PyResult<(Array<'py, f64>, f64)> {
+        atom::solve_radial(
+            self,
+            py,
+            r,
+            potential,
+            l,
+            n_nodes,
+            relativity,
+            kappa,
+            atomic_number,
+            energy_guess,
+        )
+    }
+    fn lda_terms<'py>(
+        &self,
+        py: Python<'py>,
+        density: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Array<'py, f64>> {
+        atom::lda_terms(self, py, density)
     }
     #[pyo3(signature=(n,l,charge,radius_bohr,*,intervals=2000))]
     fn confined_radial<'py>(
@@ -938,7 +961,7 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[m, points.len() / 3], out.as_slice().to_vec())
     }
-    #[pyo3(signature=(geometry,*,basis_spec="{\"name\":\"HAO\"}",spacing_bohr=0.37794522492515404,grid=None,kinetic="spectral",cholesky_tolerance=None,precision="double"))]
+    #[pyo3(signature=(geometry,*,basis_spec="{\"name\":\"HAO\"}",spacing_bohr=0.37794522492515404,grid=None,kinetic="spectral",cholesky_tolerance=None,precision="float64"))]
     #[allow(clippy::too_many_arguments)]
     fn molecular_integrals(
         &self,
@@ -973,15 +996,15 @@ impl PyContext {
                     basis_spec,
                     kinetic,
                     cholesky_tolerance,
-                )?
-                .with_precision(precision)
+                    precision,
+                )
             })
             .map_err(error)?;
         Ok(molecular::PyIntegrals {
             inner: std::sync::Arc::new(inner),
         })
     }
-    #[pyo3(signature=(geometry,grid,metadata,arrays,*,kinetic="spectral",cholesky_tolerance=1e-10,precision="double"))]
+    #[pyo3(signature=(geometry,grid,metadata,arrays,*,kinetic="spectral",cholesky_tolerance=1e-10,precision="float64"))]
     #[allow(clippy::too_many_arguments)]
     fn paw_molecular_integrals(
         &self,
@@ -1016,8 +1039,8 @@ impl PyContext {
                     tables,
                     kinetic,
                     cholesky_tolerance,
-                )?
-                .with_precision(precision)
+                    precision,
+                )
             })
             .map_err(error)?;
         Ok(molecular::PyIntegrals {
@@ -1043,15 +1066,16 @@ impl PyContext {
     ) -> PyResult<quantum::PyOperator> {
         py.detach(|| quantum::operator(&self.inner, num_qubits, terms))
     }
-    #[pyo3(signature=(num_qubits,terms,*,order=2))]
+    #[pyo3(signature=(num_qubits,terms,*,order=2,precision="float64"))]
     fn propagator(
         &self,
         py: Python<'_>,
         num_qubits: usize,
         terms: Vec<(String, f64, f64)>,
         order: usize,
+        precision: &str,
     ) -> PyResult<advanced::PyPropagator> {
-        py.detach(|| advanced::PyPropagator::new(&self.inner, num_qubits, terms, order))
+        py.detach(|| advanced::PyPropagator::new(&self.inner, num_qubits, terms, order, precision))
     }
     fn mp2<'py>(
         &self,
@@ -1105,7 +1129,7 @@ impl PyContext {
     ) -> PyResult<quantum::PyOperator> {
         py.detach(|| quantum::fermion(&self.inner, n_modes, num_particles, mapping, terms))
     }
-    #[pyo3(signature=(path,*,sector=true,dense=false,include_singles=true,sparse=false))]
+    #[pyo3(signature=(path,*,sector=true,dense=false,include_singles=true,sparse=false,precision="float64"))]
     fn load_hamiltonian(
         &self,
         py: Python<'_>,
@@ -1114,7 +1138,9 @@ impl PyContext {
         dense: bool,
         include_singles: bool,
         sparse: bool,
+        precision: &str,
     ) -> PyResult<quantum::PyProblem> {
+        let precision = quantum::parse_precision(precision)?;
         if sparse && dense {
             return Err(PyValueError::new_err(
                 "choose either dense or sparse storage",
@@ -1129,6 +1155,7 @@ impl PyContext {
                     dense,
                     include_singles,
                 )
+                .map(|problem| problem.with_precision(precision))
             })
             .map_err(error)?;
         if sparse {
@@ -1287,7 +1314,7 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[k.len()], result.as_slice().to_vec())
     }
-    #[pyo3(signature=(r, potential, radius, *, shift=0.))]
+    #[pyo3(signature=(r, potential, radius, *, shift=0., fit_window=None))]
     fn paw_local_potential<'py>(
         &self,
         py: Python<'py>,
@@ -1295,8 +1322,9 @@ impl PyContext {
         potential: PyReadonlyArray1<'py, f64>,
         radius: f64,
         shift: f64,
+        fit_window: Option<f64>,
     ) -> PyResult<Array<'py, f64>> {
-        paw::local(self, py, r, potential, radius, shift)
+        paw::local(self, py, r, potential, radius, shift, fit_window)
     }
     fn radial_hartree<'py>(
         &self,

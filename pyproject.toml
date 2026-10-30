@@ -18,8 +18,6 @@ dependencies = [
     'ase>=3.29',
     'spglib',
     'matplotlib',
-    'fastparquet',
-    'pandas',
     'qiskit',
     'qiskit-aer',
     'qiskit-ibm-runtime',
@@ -41,7 +39,7 @@ classifiers = [
 [project.optional-dependencies]
 docs = ['sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 coverage = ['pytest-cov']
-dev = ['pytest-cov', 'pyarrow', 'sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
+dev = ['pytest-cov', 'sphinx>=8,<10', 'myst-parser>=4,<6', 'furo>=2024.8.6']
 
 [tool.pytest.ini_options]
 # The full scientific suite and the independent architecture checks live in test/.

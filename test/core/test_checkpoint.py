@@ -138,6 +138,15 @@ class TestRecord:
             exact = expm(0.7 * gen.to_matrix()) @ ref
             assert np.allclose(psi, exact, atol=1e-12)
 
+    def test_float32_prepares_a_complex64_state(self):
+        gen = PauliSum({"XX": 0.3j, "ZI": 0.2j})
+        wide = prepare_state(2, [0], [gen], [0.7])
+        narrow = prepare_state(2, [0], [gen], [0.7], precision="float32")
+        assert wide.dtype == np.complex128 and narrow.dtype == np.complex64
+        assert np.allclose(narrow, wide, atol=1e-6)
+        with pytest.raises(ValueError, match="precision"):
+            prepare_state(2, [0], [gen], [0.7], precision="single")
+
     def test_inconsistent_records_are_refused(self):
         with pytest.raises(ValueError, match="parameters"):
             WavefunctionCheckpoint(2, [0], [PauliSum({"XY": 1j})], [])

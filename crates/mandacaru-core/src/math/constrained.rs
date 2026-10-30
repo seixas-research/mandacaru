@@ -35,56 +35,34 @@ pub fn minimum(
             "invalid constrained quadratic dimensions or values",
         ));
     }
-    // Orthogonalize the constraint rows and their right-hand sides together.
-    let mut rows: Vec<V<f64>> = vec![];
-    let mut targets: Vec<f64> = vec![];
-    for i in 0..a.nrows() {
-        let mut row = a.row(i).transpose().into_owned();
-        let scale = row.norm();
-        if scale == 0. {
-            if b[i].abs() > 1e-12 {
-                return Err(invalid("inconsistent zero constraint"));
-            } else {
-                continue;
-            }
-        }
-        row /= scale;
-        let mut target = b[i] / scale;
-        for _ in 0..2 {
-            for (prior, rhs) in rows.iter().zip(&targets) {
-                let projection = prior.dot(&row);
-                row -= prior * projection;
-                target -= rhs * projection;
-            }
-        }
-        let length = row.norm();
-        if length < 1e-11 {
-            if target.abs() > 1e-9 {
-                return Err(invalid("inconsistent linear constraints"));
-            }
-        } else {
-            rows.push(row / length);
-            targets.push(target / length);
-        }
+    // Eliminate the linear constraints exactly: c = c0 + Z y, with c0 the
+    // minimum-norm solution of A c = b and Z an orthonormal basis of null(A).
+    let (rows, columns) = a.shape();
+    let size = rows.max(columns);
+    let mut padded = M::zeros(size, columns);
+    padded.rows_mut(0, rows).copy_from(a);
+    let svd = padded.svd(true, true);
+    let (u, vt, sigma) = (svd.u.unwrap(), svd.v_t.unwrap(), svd.singular_values);
+    let top = sigma.max();
+    if top == 0. && b.iter().any(|v| v.abs() > 1e-12) {
+        return Err(invalid("inconsistent zero constraint"));
     }
+    let mut rhs = V::zeros(size);
+    rhs.rows_mut(0, rows).copy_from(b);
+    let projection = u.transpose() * rhs;
     let mut origin = V::zeros(n);
-    for (row, target) in rows.iter().zip(&targets) {
-        origin += row * *target;
-    }
-    let mut null = vec![];
-    for axis in 0..n {
-        let mut direction = V::zeros(n);
-        direction[axis] = 1.;
-        for _ in 0..2 {
-            for row in rows.iter().chain(null.iter()) {
-                direction -= row * row.dot(&direction);
-            }
-        }
-        let length = direction.norm();
-        if length > 1e-9 {
-            null.push(direction / length);
+    for i in 0..sigma.len() {
+        if sigma[i] > f64::EPSILON * size as f64 * top {
+            origin += vt.row(i).transpose() * (projection[i] / sigma[i]);
         }
     }
+    let rank = (0..sigma.len()).filter(|&i| sigma[i] > 1e-10 * top).count();
+    let mut order = (0..sigma.len()).collect::<Vec<_>>();
+    order.sort_by(|&x, &y| sigma[y].total_cmp(&sigma[x]));
+    let null = order[rank..]
+        .iter()
+        .map(|&i| vt.row(i).transpose())
+        .collect::<Vec<_>>();
     if null.is_empty() {
         if (origin.dot(&(g * &origin)) - norm).abs() > 1e-9 * norm.max(1.) {
             return Err(invalid(
@@ -94,35 +72,37 @@ pub fn minimum(
         return Ok(origin);
     }
     let z = M::from_columns(&null);
-    let gz = z.transpose() * g * &z;
-    let (gv, gu) = super::linalg::real_eigen(gz)?;
-    if gv[0] <= 0. {
-        return Err(invalid(
-            "norm metric is not positive definite on the constraint null space",
-        ));
-    }
-    let whitening = &gu
-        * M::from_diagonal(&V::from_iterator(
-            gv.len(),
-            gv.iter().map(|v| 1. / v.sqrt()),
-        ));
     let kz = z.transpose() * k * &z;
-    let (values, vectors) = super::linalg::real_eigen(whitening.transpose() * kz * &whitening)?;
-    let transform = &z * whitening * vectors;
-    let gp = transform.transpose() * g * &origin;
-    let kp = transform.transpose() * (k * &origin + linear);
+    let gz = z.transpose() * g * &z;
+    let kp = z.transpose() * (k * &origin + linear);
+    let gp = z.transpose() * (g * &origin);
+    // The pencil (Kz, Gz) diagonalized once, V^T Gz V = 1 and V^T Kz V = diag(mu), so
+    // y(lambda) = V (V^T r) / (mu - lambda) needs no solve and stays exact arbitrarily
+    // close to the pole, where a linear solve of Kz - lambda Gz is singular.
+    let cholesky = gz.clone().cholesky().ok_or_else(|| {
+        invalid("norm metric is not positive definite on the constraint null space")
+    })?;
+    let l = cholesky.l();
+    let l_inverse = l
+        .solve_lower_triangular(&M::identity(l.nrows(), l.nrows()))
+        .ok_or_else(|| invalid("singular norm metric"))?;
+    // Rounding makes the reduced matrix slightly asymmetric; the symmetric part is what
+    // the eigensolver is asked about.
+    let reduced = &l_inverse * &kz * l_inverse.transpose();
+    let (values, w) = super::linalg::real_eigen(0.5 * (&reduced + reduced.transpose()))?;
+    let vectors = l_inverse.transpose() * w;
     let solution = |lambda: f64| -> V<f64> {
-        &origin
-            + &transform
-                * V::from_iterator(
-                    values.len(),
-                    values
-                        .iter()
-                        .enumerate()
-                        .map(|(i, mu)| (lambda * gp[i] - kp[i]) / (mu - lambda)),
-                )
+        let coefficients = vectors.transpose() * (gp.clone() * lambda - &kp);
+        let scaled = V::from_iterator(
+            values.len(),
+            coefficients
+                .iter()
+                .zip(&values)
+                .map(|(c, mu)| c / (mu - lambda)),
+        );
+        &origin + &z * (&vectors * scaled)
     };
-    let residual = |lambda| {
+    let residual = |lambda: f64| {
         let c = solution(lambda);
         c.dot(&(g * &c)) - norm
     };
@@ -131,38 +111,41 @@ pub fn minimum(
     let mut lo = hi - 1.;
     while residual(lo) > 0. {
         lo = hi - 2. * (hi - lo);
-        if hi - lo > 1e14 {
+        if hi - lo > 1e12 {
             return Err(invalid(
                 "linear constraints require more norm than requested",
             ));
         }
     }
-    for _ in 0..60 {
-        if residual(hi) >= 0. {
-            break;
-        }
-        let nearer = mu - 0.5 * (mu - hi);
-        if nearer <= hi || nearer >= mu {
-            break;
-        }
-        hi = nearer;
-    }
-    let out = if residual(hi) < 0. {
-        // At the smallest eigenvalue, complete the norm along its eigenspace.
-        let mut coefficients = V::zeros(values.len());
-        let tol = 1e-10 * mu.abs().max(1.);
-        for i in 0..values.len() {
-            if values[i] - mu > tol {
-                coefficients[i] = (mu * gp[i] - kp[i]) / (values[i] - mu);
+    // Close to the pole the norm grows without bound; unless it stays finite there
+    // and below its target (the hard case).
+    if residual(hi) < 0. {
+        for _ in 0..60 {
+            let nearer = mu - 0.5 * (mu - hi);
+            if !(hi < nearer && nearer < mu) {
+                break;
+            }
+            hi = nearer;
+            if residual(hi) > 0. {
+                break;
             }
         }
-        let base = &origin + &transform * coefficients;
-        let direction = transform.column(0).into_owned();
+    }
+    let out = if residual(hi) < 0. {
+        // Lambda at the pole, the other components as usual, plus the multiple of the lowest
+        // eigenvector that meets the norm (of its two signs, the lower objective).
+        let mut coefficients = vectors.transpose() * (gp.clone() * mu - &kp);
+        coefficients[0] = 0.;
+        for i in 1..coefficients.len() {
+            coefficients[i] /= values[i] - mu;
+        }
+        let base = &origin + &z * (&vectors * coefficients);
+        let direction = &z * vectors.column(0);
         let aa = direction.dot(&(g * &direction));
         let bb = 2. * direction.dot(&(g * &base));
         let cc = base.dot(&(g * &base)) - norm;
         let discriminant = bb * bb - 4. * aa * cc;
-        if discriminant < -1e-9 {
+        if discriminant < -1e-9 * bb.abs().max(1.) {
             return Err(invalid("fixed norm has no feasible solution"));
         }
         let root = discriminant.max(0.).sqrt();
@@ -175,18 +158,8 @@ pub fn minimum(
             minus
         }
     } else {
-        for _ in 0..500 {
-            let middle = 0.5 * (lo + hi);
-            if middle == lo || middle == hi {
-                break;
-            }
-            if residual(middle) > 0. {
-                hi = middle;
-            } else {
-                lo = middle;
-            }
-        }
-        solution(0.5 * (lo + hi))
+        let lambda = super::roots::brent(|x| Ok(residual(x)), lo, hi, 1e-15, 1e-15, 500)?;
+        solution(lambda)
     };
     if out.iter().any(|v| !v.is_finite())
         || (a * &out - b).amax() > 1e-7 * b.amax().max(1.)

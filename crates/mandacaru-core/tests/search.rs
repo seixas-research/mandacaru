@@ -146,10 +146,14 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
             .contains("no eigenstate convergence certificate"));
         let action = problem
             .hamiltonian
-            .apply(&context, &problem.basis, first.solution.state.as_slice())
+            .apply(
+                &context,
+                &problem.basis,
+                first.solution.state.complex128().unwrap(),
+            )
             .unwrap();
         let expected = mandacaru_core::quantum::evolution::inner(
-            first.solution.state.as_slice(),
+            first.solution.state.complex128().unwrap(),
             action.as_slice(),
         )
         .re;

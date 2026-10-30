@@ -1,314 +1,116 @@
 # Running on Amazon Braket (and real QPUs)
 
-The `"braket"` provider can target the **AWS Braket service** — the managed
-simulators (SV1, DM1, TN1) and the real QPUs (IonQ, IQM, Rigetti) — not just the
+The `"braket"` provider can target the **AWS Braket service**: the managed
+simulators (SV1, DM1, TN1) and the real QPUs (IonQ, IQM, Rigetti), not just the
 local simulator.
-
-Doing so requires one change of protocol, because of a hard constraint:
 
 :::{important}
 **A QPU never returns a state vector.** Braket rejects the `StateVector` result
 type whenever `shots > 0`, and *every* QPU requires `shots > 0`. The exact
 state-vector path that makes simulation fast therefore **cannot run on
-hardware**.
-
-The energy has to be *measured* instead:
+hardware**. The energy has to be *measured* instead,
 
 ```{math}
-\langle H\rangle = \sum_j c_j \langle P_j\rangle,
+\langle H\rangle = \sum_j c_j \langle P_j\rangle ,
 ```
 
 with each $\langle P_j\rangle$ estimated from shots in that Pauli's own
 eigenbasis.
 :::
 
-Mandacaru implements that path. Pass `shots > 0` and the calculator switches from
-amplitudes to measurements automatically.
-
----
+Pass `shots > 0` and the calculator switches from amplitudes to measurements.
 
 ## Quick start
 
+The local simulator runs the same protocol as a QPU, with no account and no
+charge. `examples/aws_braket/01_vqe_h2_braket_local.py` is this script:
+
 ```python
-from ase import Atoms
+from ase.build import molecule
 from mandacaru import Mandacaru
 
-atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
-              cell=[[6, 0, 0], [0, 6, 0], [0, 0, 6]], pbc=True)
-
-# Local Braket simulator, shot-based (identical protocol to a QPU).
-atoms.calc = Mandacaru(method="vqe",
-                       basis="HAO",
-                       grid_spacing=0.35,
-                       device="braket-local",
-                       shots=8192)
-atoms.get_total_energy()
-
-# The AWS managed simulator.
-atoms.calc = Mandacaru(method="vqe",
-                       basis="HAO",
-                       grid_spacing=0.35,
-                       device="braket-sv1",
-                       shots=8192)
-
-# A real trapped-ion QPU.
-atoms.calc = Mandacaru(method="vqe",
-                       basis="HAO",
-                       grid_spacing=0.35,
-                       device="braket-ionq-aria",
-                       shots=8192)
+atoms = molecule("H2")
+atoms.center(vacuum=3.0)
+for shots in (0, 1000, 10000):
+    atoms.calc = Mandacaru(method="vqe",
+                           basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.25,
+                           mapping="parity_reduced",
+                           device="braket-local",
+                           shots=shots,
+                           optimizer={"method": "COBYLA", "maxiter": 60,
+                                      "tol": 1e-4})
+    energy = atoms.get_potential_energy()
+    print(f"shots = {shots:6d}  E = {energy:.4f} eV")
 ```
 
-Naming a Braket device selects the `braket` provider automatically, so
-`backend_provider` is optional. Anything beyond `device=` and `shots=` is
-unchanged — the whole calculator API is identical.
+`shots=0` reads the exact state vector, which only a simulator offers. To submit
+to the managed simulator or a QPU, change only the device: `"braket-sv1"`,
+`"braket-ionq-aria"`, and so on. Naming a Braket device selects the `braket`
+provider, so `backend_provider` is optional, and the rest of the calculator is
+unchanged.
 
 :::{warning}
 AWS devices need configured credentials (`aws configure`) and **bill your
-account** per quantum task. Estimate the cost first (see *Cost* below).
+account** per quantum task. Size the run first (see *Cost* below).
 :::
 
----
-
-## How the energy is measured
-
-Measuring one Pauli term per circuit is correct but ruinous — a modest active
-space has $10^2$–$10^4$ terms. Mandacaru instead partitions the Hamiltonian into
-**qubit-wise commuting (QWC)** groups: two Pauli strings are QWC when, on every
-qubit where both act non-trivially, they carry the *same* Pauli. A QWC set is
-measurable by a single circuit — rotate each qubit once into the basis its group
-prescribes, measure everything, and read every term's expectation value out of
-the same bit-strings.
-
-```python
-from mandacaru.backends.measurement import qubit_wise_commuting_groups
-
-groups, identity = qubit_wise_commuting_groups(hamiltonian)
-len(groups)      # circuits per energy evaluation
-```
-
-On LiH this collapses **118 Pauli terms into 29 measurement circuits**; on H₂,
-14 terms into 5. The identity term needs no measurement and is added as a
-constant.
-
-The estimate converges as $1/\sqrt{\text{shots}}$:
-
-```text
-   shots          E (eV)   error (eV)   1-sigma (eV)
-     500    -25.530589    -1.08e-02      1.80e+00
-    5000    -25.585892    -6.61e-02      5.69e-01
-   50000    -25.498090    +2.17e-02      1.80e-01
-   exact    -25.519749
-```
-
----
-
-## IBM Quantum hardware (Qiskit Runtime)
-
-On IBM processors the energy is the expectation value returned by the Qiskit
-Runtime **Estimator**: the Hamiltonian becomes a `SparsePauliOp` observable,
-the ansatz circuit is transpiled to the processor and the observable mapped to
-its layout, and one job returns $\langle H\rangle$ with its standard error.
-Three device spellings cover the workflow, from rehearsal to the real machine:
-
-```python
-from mandacaru.backends.providers import QiskitProvider
-
-QiskitProvider(shots=4096)                          # local estimator, sampled
-QiskitProvider(device="fake_kingston", shots=4096)  # that processor's fake backend, locally
-QiskitProvider(device="ibm_kingston,ibm_fez,ibm_marrakesh", shots=4096)  # least busy of these
-```
-
-Credentials come from `QiskitRuntimeService.save_account(...)` run once, or
-from `QiskitProvider(instance=..., token=..., channel=...)`.
-
-**The device decides where the optimization runs.** A local device (the exact
-state vector, `braket-local`, a `fake_*` backend) simulates locally, whatever
-`shots` says. Naming an `ibm_*` processor with `shots > 0` runs the *whole*
-optimization on it, one job per energy evaluation:
-
-```python
-atoms.calc = Mandacaru(method="vqe",
-                       ansatz="uccsd",
-                       basis="HAO",
-                       device="ibm_kingston",
-                       shots=4096)
-atoms.get_total_energy()          # every energy evaluation is a Runtime job
-```
-
-`method="adapt-vqe"` does the same, and measures its pool gradients there
-too: one gradient step per growth step, in as many jobs as the measurement
-budget packs it into, counted by the same run budget (see
-[ADAPT-VQE on a device](#adapt-on-a-device)).
-
-`optimizer=None` (the default) follows the objective there too: under
-`shots > 0` it is SPSA (100 steps, two evaluations each plus one final one --
-201 in total -- `tol=None`, since a step size certifies nothing under shot
-noise), and `"SLSQP"`, `"BFGS"`, `"L-BFGS"` and `"CG"` are refused outright,
-however they are spelled -- differencing the energy at a step of about
-`1.5e-8` turns shot noise into gradient noise. Use the default or
-`optimizer="COBYLA"`; see [Choosing a classical optimizer](#shots-optimizer).
-
-An `ibm_*` device (like a Braket QPU or managed simulator) also submits within
-a run-wide budget by default -- 250 jobs; a `total_shots` limit is opt-in --
-and refuses an
-optimization that cannot fit it before the first job is queued, naming the
-optimizer's own bound on its evaluations as the count that did not fit; pass
-`backend_options={"run_budget": {...}}` to change it, or `False` to switch it
-off (never needed locally, where it is already off). **Rehearse first**: run
-the identical call with `device="fake_kingston"` (or `"fake_fez"`,
-`"fake_marrakesh"`) -- the same transpilation, the same noise model, no queue
-and no bill -- before pointing it at the real processor. See
-[What a hardware measurement costs](measurement_cost.md) for the budget and
-the mitigation options.
-
-**Measuring only the final state** is still there for when the optimization
-itself should not touch the budget: optimize on the local state vector (or a
-fake backend), then measure just the optimized state on hardware --
-
-```python
-from mandacaru.algorithms.base import measure_energies
-
-atoms.calc = Mandacaru(method="adapt-vqe",
-                       pool="ceo",
-                       basis="GTO")
-atoms.get_total_energy()                                  # local
-provider = QiskitProvider(device="ibm_kingston", shots=4096)
-e_hw = atoms.calc.solver.measured_energy(provider)        # one job
-e_curve = measure_energies(solvers, provider)             # many geometries, one job
-```
-
-or, through the calculator, `measurement_provider=`, which also measures the
-reduced density matrices a force request needs (see
-[What a hardware measurement costs](measurement_cost.md)).
-`examples/ibm_quantum/01_vqe_h2_ibm.py` runs the whole optimization on an IBM
-device (a fake backend by default),
-`examples/ibm_quantum/05_adapt_h2_measured_gradients.py` an ADAPT-VQE whose
-pool gradients are measured too (on `fake_manila`: without `qiskit-aer` a fake
-backend runs on Qiskit's `BasicSimulator`, at most 24 qubits, and a circuit
-transpiled to a 156-qubit processor spans all of its wires), and
-`examples/aws_braket/01_vqe_h2_braket_local.py` does the same on a Braket device.
-
-**Keep the circuit small.** Hardware noise, not shot noise, limited the first
-LiH and H₂ runs (14 eV off for 92 CZ gates; a few tenths of an eV for 17). For
-molecules with a closed-shell reference the parity mapping's two-qubit
-reduction removes two qubits and their gates at no cost in physics:
-
-```python
-Mandacaru(method="adapt-vqe",
-          pool="fermionic",
-          mapping="parity_reduced",
-          basis="HAO")     # H2 on 2 qubits
-```
-
 ## Registered devices
-
-```python
-from mandacaru.backends.hardware import describe_devices, device_arn
-
-for device in describe_devices():
-    print(device.name, device.simulator, device.arn)
-```
 
 | device | kind | shots | ARN |
 |---|---|---|---|
 | `braket-local` | simulator | optional | *(local)* |
 | `braket-sv1` | simulator | optional | `arn:aws:braket:::device/quantum-simulator/amazon/sv1` |
-| `braket-dm1` | simulator | optional | `…/quantum-simulator/amazon/dm1` |
-| `braket-tn1` | simulator | optional | `…/quantum-simulator/amazon/tn1` |
+| `braket-dm1` | simulator | optional | `arn:aws:braket:::device/quantum-simulator/amazon/dm1` |
+| `braket-tn1` | simulator | optional | `arn:aws:braket:::device/quantum-simulator/amazon/tn1` |
 | `braket-ionq-aria` | QPU | **required** | `arn:aws:braket:us-east-1::device/qpu/ionq/Aria-1` |
-| `braket-ionq-forte` | QPU | **required** | `…/qpu/ionq/Forte-1` |
+| `braket-ionq-forte` | QPU | **required** | `arn:aws:braket:us-east-1::device/qpu/ionq/Forte-1` |
 | `braket-iqm-garnet` | QPU | **required** | `arn:aws:braket:eu-north-1::device/qpu/iqm/Garnet` |
 | `braket-rigetti-ankaa` | QPU | **required** | `arn:aws:braket:us-west-1::device/qpu/rigetti/Ankaa-3` |
 
 A **raw ARN** is accepted too, so a device released after this version can still
-be named:
+be named, and is treated as a QPU (shot-based and billed). Naming a QPU without
+`shots` is refused when the calculator is constructed, with the message
+`this device requires shots > 0`, rather than at submission time.
 
-```python
-Mandacaru(method="vqe",
-          basis="HAO",
-          device="arn:aws:braket:eu-west-2::device/qpu/vendor/New-1",
-          shots=4096)
-```
+## How the energy is measured
 
-Naming a QPU **without** `shots` is refused up front, when the solver is built,
-rather than at submission time:
+Measuring one Pauli term per circuit is correct but ruinous: a modest active
+space has $10^2$ to $10^4$ terms. Mandacaru partitions the Hamiltonian into
+**qubit-wise commuting (QWC)** groups. Two Pauli strings are QWC when, on every
+qubit where both act non-trivially, they carry the same Pauli, so a group is
+measurable by one circuit: rotate each qubit once into the basis the group
+prescribes, measure everything, and read every term's expectation value out of
+the same bit-strings. The identity term needs no measurement.
 
-```pycon
->>> Mandacaru(method="adapt-vqe",
-...         device="braket-ionq-aria").run()
-ValueError: device 'braket-ionq-aria' is real quantum hardware, which cannot
-return a state vector: pass shots > 0 (e.g. shots=8192) so the energy is
-estimated from measurements.
-```
+One energy evaluation costs **one quantum task per group**, all queued before
+any is awaited. For `method="adapt-vqe"` the same provider measures the pool
+gradients as commutator expectation values, in the same grouped form; see
+[ADAPT-VQE on a device](#adapt-on-a-device). The estimate converges as
+$1/\sqrt{\text{shots}}$, and its standard error is bounded by
+$\left(\sum_{P\neq I}|c_P|\right)/\sqrt{\text{shots}}$ per group. That bound is
+why hardware VQE needs a small circuit and a noise-tolerant optimizer, not a
+defect of the implementation.
 
----
-
-## Gate set
-
-Mandacaru emits only `X`, `H`, `S`, `Si`, `CNot` and `Rz` — all Braket-native and
-available on every Braket QPU (the device's own compiler maps them to its native
-basis).
-
----
+Mandacaru emits only `X`, `H`, `S`, `S†`, `CNOT` and `Rz`, all Braket-native;
+the device's own compiler maps them to its native basis.
 
 ## Cost
 
-A hardware run is billed per quantum task, and one energy evaluation costs one
-task per QWC group. Plan before submitting:
+A hardware run is billed per quantum task. Size the grouping and the noise
+bound locally, before submitting, as in
+[What a hardware measurement costs](measurement_cost.md), whose grouping
+function (`mandacaru.backends.qubit_wise_commuting_groups`) is the one the
+provider uses. Then bound the run:
 
-```python
-from mandacaru.backends.measurement import shot_noise_estimate
-from mandacaru.backends.providers import build_provider
-from mandacaru.units import from_hartree
+* A Braket QPU or managed simulator carries a **run-wide budget** by default:
+  250 tasks, no shot ceiling. An optimization whose evaluation bound cannot fit
+  it is refused before the first task is queued ([the run budget](#run-budget)).
+  Change it with `backend_options={"run_budget": {...}}`.
+* Use a noise-tolerant optimizer: SPSA (the default with `shots > 0`) or COBYLA.
+  The gradient methods are refused ([choosing an optimizer](#shots-optimizer)).
+* Keep the circuit small: `mapping="parity_reduced"` removes two qubits for a
+  closed-shell molecule at no cost in physics.
 
-provider = build_provider("braket", shots=8192)
-groups = provider.measurement_groups(hamiltonian)
-
-print(f"{len(groups)} tasks per energy evaluation")
-# The estimate is in the Hamiltonian's own unit (Hartree); report it in eV.
-print(f"+/- {from_hartree(shot_noise_estimate(hamiltonian, 8192), 'eV'):.2e} eV "
-      "at 8192 shots")
-```
-
-The standard error is bounded by $\left(\sum_j |c_j|\right)/\sqrt{\text{shots}}$
-— the coefficient 1-norm estimate. For H₂ that 1-norm is 40 eV (1.48 Ha), so
-chemical accuracy (0.043 eV = 1.6 mHa) needs $\sim\!8.5\times10^5$ shots per
-group in the worst case.
-That bound is *why* hardware VQE needs error mitigation and smarter estimators;
-it is not a defect of the implementation.
-
----
-
-## ADAPT-VQE on a device
-
-:::{admonition} Every quantity is measured
-:class: note
-
-With `shots > 0` a run builds no state vector. `method="vqe"` measures every
-cost evaluation; `method="adapt-vqe"` measures its energies **and** its pool
-gradients -- each `<psi|[H, A_k]|psi>` from Pauli expectation values, grouped
-into qubit-wise-commuting bases and packed into jobs within
-`measurement_budget=` -- except at the reference determinant, where they are
-exact and classical. The cost of one gradient step and the `screening=`
-option are in {doc}`measurement_cost`.
-:::
-
-`BraketProvider` measures many expectation values of one state
-(`expectation_values`): one quantum task per qubit-wise-commuting basis, all
-queued before any is awaited. That is what the measured pool gradients use,
-and what a force request measures through the reduced density matrices with
-`measurement_provider=`.
-
----
-
-## Verifying compatibility
-
-`examples/aws_braket/01_vqe_h2_braket_local.py` runs a VQE of H₂ locally on the
-`braket-local` device — no AWS account, no charges — with `shots` set to 0
-(the exact state vector, which only a simulator offers), 1000 and 10000 (the
-path a QPU takes). Set `DEVICE` in the script to a QPU name to submit it:
-
-```bash
-python examples/aws_braket/01_vqe_h2_braket_local.py
-```
+Forces are not an implemented property on a circuit device, so a Braket run
+gives energies; see [what is not yet available](#not-yet-available).

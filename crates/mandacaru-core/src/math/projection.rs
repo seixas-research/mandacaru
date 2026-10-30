@@ -1,5 +1,6 @@
 //! Bounded tiled projection of a local field into a real orbital basis.
 use super::gemm::{self, MatrixMut, MatrixRef};
+use super::storage::Sample;
 use crate::{finite, product, Buffer, Context, Error, Reservation, Result};
 use nalgebra::DMatrix;
 use num_complex::Complex64 as C64;
@@ -87,9 +88,9 @@ impl PointAccumulator {
     }
 }
 
-pub struct RealProjector<'a> {
+pub struct RealProjector<'a, T: Sample = f64> {
     context: Context,
-    samples: &'a [f64],
+    samples: &'a [T],
     orbitals: usize,
     points: usize,
     tile: usize,
@@ -102,9 +103,8 @@ struct RealWorkspace {
     matrix: Buffer<f64>,
     _packing: Reservation,
 }
-#[derive(Clone, Copy)]
-struct RealTile<'a> {
-    samples: &'a [f64],
+struct RealTile<'a, T> {
+    samples: &'a [T],
     field: &'a [f64],
     orbitals: usize,
     points: usize,
@@ -112,8 +112,16 @@ struct RealTile<'a> {
     begin: usize,
     end: usize,
 }
+impl<T> Clone for RealTile<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for RealTile<'_, T> {}
 impl RealWorkspace {
-    fn compute(&mut self, input: RealTile<'_>) -> Result<()> {
+    /// The samples stay in their stored precision; each tile widens its own
+    /// values to float64 for the products.
+    fn compute<T: Sample>(&mut self, input: RealTile<'_, T>) -> Result<()> {
         let RealTile {
             samples,
             field,
@@ -128,7 +136,7 @@ impl RealWorkspace {
             let count = tile.min(end - start);
             for a in 0..m {
                 for k in 0..count {
-                    let value = samples[a * points + start + k];
+                    let value = samples[a * points + start + k].widen();
                     self.left.as_mut_slice()[k * m + a] = value;
                     self.right.as_mut_slice()[a * tile + k] = value * field[start + k];
                 }
@@ -365,14 +373,18 @@ pub fn hermitian_density(
     }
     Ok(density)
 }
-impl<'a> RealProjector<'a> {
-    pub fn new(ctx: &Context, samples: &'a [f64], orbitals: usize, points: usize) -> Result<Self> {
+impl<'a, T: Sample> RealProjector<'a, T> {
+    pub fn new(ctx: &Context, samples: &'a [T], orbitals: usize, points: usize) -> Result<Self> {
         if orbitals == 0 || points == 0 || samples.len() != product(&[orbitals, points])? {
             return Err(Error::Invalid(
                 "orbital samples have inconsistent projection dimensions".into(),
             ));
         }
-        finite(samples, "orbital samples")?;
+        if samples.iter().any(|v| !v.widen().is_finite()) {
+            return Err(Error::Invalid(
+                "orbital samples must contain only finite values".into(),
+            ));
+        }
         let tile = points.min(2048);
         let matrix = ctx.allocate(product(&[orbitals, orbitals])?)?;
         let per_worker = product(&[orbitals, tile, 32])?
