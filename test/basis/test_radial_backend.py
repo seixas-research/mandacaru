@@ -3,9 +3,9 @@ import numpy as np
 import pytest
 from scipy.linalg import eigh_tridiagonal
 
+from mandacaru import backend_policy
 from mandacaru.basis.radial_backend import (numerov_inward_kernel,
                                             numerov_outward_kernel,
-                                            radial_backend_status,
                                             tridiagonal_eigenpair)
 
 
@@ -102,8 +102,11 @@ class TestNumerov:
 @pytest.mark.parametrize("value", ["numpy", "python", "rust", "fortran"])
 def test_obsolete_backend_environment_cannot_select_a_python_engine(monkeypatch, value):
     monkeypatch.setenv("MANDACARU_BACKEND", value)
-    uses_native, message = radial_backend_status()
-    assert uses_native and "Rust" in message
+    if value == "rust":
+        assert backend_policy.backend_preference() == "rust"
+    else:
+        with pytest.raises(ValueError, match="requires Rust"):
+            backend_policy.backend_preference()
     diag, off = _radial_matrix(n=800)
     value, _v = tridiagonal_eigenpair(diag, off, 0)
     values, _vs = eigh_tridiagonal(diag, off, select="i", select_range=(0, 0))

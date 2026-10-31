@@ -107,7 +107,7 @@ replacement = '](https://github.com/seixas-research/mandacaru/blob/main/LICENSE)
 [tool.hatch.build.targets.wheel]
 packages = ["src/mandacaru"]
 exclude = ["**/target/**", "**/build/**", "**/__pycache__/**",
-           "**/*.dylib", "**/*.dll", "**/*.so", "**/csrc/**"]
+           "**/*.dylib", "**/*.dll", "**/*.so"]
 # No pseudopotential data ships in the wheel: the PAW-LCAO library lives in
 # the mandacaru-paw repository, found through MANDACARU_PAW_PATH.
 
@@ -120,4 +120,4 @@ only-include = ["src/mandacaru", "crates", "build_hooks", "Cargo.toml", "Cargo.l
                 "pyproject.toml", "README.md", "LICENSE",
                 "test/migration/reference/h2_hamiltonian.json", "test/migration/phase5/si_crystal.json"]
 exclude = ["**/target/**", "**/build/**", "**/__pycache__/**",
-           "**/*.dylib", "**/*.dll", "**/*.so", "**/csrc/**"]
+           "**/*.dylib", "**/*.dll", "**/*.so"]

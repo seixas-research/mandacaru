@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import json
+import time
 import warnings
+import weakref
 import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, PropertyNotImplementedError
 from .integrations.ase_properties import ASEProperties
 
-from . import _native
+from . import _native, hubbard
 from .resources import CalculationResources
 from .results import CalculationResult
 from .specifications import (
@@ -48,7 +52,9 @@ _METHOD_SCOPED_OPTIONS = {
         ),
         _SEARCH_METHODS,
     ),
-    **dict.fromkeys(("xc", "kpts", "smearing", "periodic_scf_options"), ("dft",)),
+    **dict.fromkeys(
+        ("xc", "kpts", "smearing", "periodic_scf_options", "hubbard_u"), ("dft",)
+    ),
     **dict.fromkeys(("spin", "unrestricted"), ("dft", "uhf")),
     "pool": tuple(name for name, capability in METHODS.items() if capability.quantum),
 }
@@ -115,6 +121,13 @@ def _check_float32_floors(method, tolerance, convergence, *, adapt):
             f"floor {gradient_floor:g} Ha/rad of the complex64 state; raise it or use "
             "precision='float64'"
         )
+
+
+def _close_log_at_exit(reference):
+    """The ``atexit`` body: it holds the calculator weakly, so it keeps nothing alive."""
+    calculator = reference()
+    if calculator is not None:
+        calculator._write_summary_at_exit()
 
 
 def _method_key(name):
@@ -702,6 +715,27 @@ class Mandacaru(ASEProperties, Calculator):
         the space-group reduction, and nonzero initial magnetic moments keep
         the full mesh. A non-boolean raises
         ``TypeError``. Ignored for molecules.
+    hubbard_u : dict, optional
+        The on-site DFT+U correction (simplified rotationally invariant form of
+        Dudarev et al., fully localized double counting) of a periodic
+        ``method="dft"`` calculation: ``{"Ni": {"l": "d", "U": 6.0, "J": 0.0}}``
+        names, per element, the correlated shell (``"d"`` or ``"f"``) and its
+        ``U`` and ``J`` in eV (``J`` defaults to 0; ``U_eff = U - J``) and, optionally, the
+        functional ``"form"`` (``"dudarev-fll"``, the only one and the default). The
+        occupation matrix of the shell is the PAW partial-wave projection, so a
+        filled shell has an occupation below 1 (Ni 3d 0.95). Refused with
+        ``ValueError``: a malformed mapping, an unknown element, a shell other
+        than ``d`` or ``f``, a negative or non-finite energy, ``J`` above
+        ``U``, ``precision="float32"``, a molecule (no periodic direction), an
+        element missing from the geometry, a dataset without the shell, and a
+        crystal whose k-mesh is reduced by symmetry (use ``symmetry=False``
+        for a nonmagnetic crystal; nonzero initial magnetic moments already keep
+        the full mesh). ``NotImplementedError``: a screened hybrid functional
+        and a spin-orbit dataset. Other methods raise ``ValueError``. With
+        ``load_crystal`` the file owns the correction: leave the option out, or
+        give the file's own values (a different mapping raises
+        ``ValueError``). The result carries ``hubbard_energy`` and the
+        per-shell ``hubbard`` occupation matrices.
     load_crystal : path, optional
         Load a crystal setup written by ``save_crystal`` instead of building
         it; run it without a geometry (``method="dft"`` only, otherwise
@@ -796,6 +830,7 @@ class Mandacaru(ASEProperties, Calculator):
         smearing=None,
         periodic_scf_options=None,
         symmetry=True,
+        hubbard_u=None,
         load_crystal=None,
         save_crystal=None,
     ):
@@ -946,12 +981,10 @@ class Mandacaru(ASEProperties, Calculator):
 
         basis = deepcopy(basis)
         self._basis = basis
-        self._basis_spec = (
-            None
-            if (basis if isinstance(basis, str) else basis.get("name"))
-            in ("PAW-LCAO", "UPAW-LCAO")
-            else basis_specification(basis)
-        )
+        from .pseudopotentials.families import lookup_family
+
+        family = lookup_family(basis if isinstance(basis, str) else basis.get("name"))
+        self._basis_spec = None if family is not None else basis_specification(basis)
         if paw_dataset is not None:
             if self._basis_spec is not None:
                 raise ValueError("paw_dataset applies to a PAW-LCAO or UPAW-LCAO basis")
@@ -961,6 +994,11 @@ class Mandacaru(ASEProperties, Calculator):
             selected["paw_dataset"] = paw_dataset
             basis = selected
             self._basis = basis
+        if family is not None:
+            family.validate_options(
+                {} if isinstance(basis, str)
+                else {key: value for key, value in basis.items() if key != "name"}
+            )
         self._requested_xc = xc
         self._xc = "lda" if xc is None else xc
         self._unrestricted = spin or unrestricted
@@ -985,6 +1023,7 @@ class Mandacaru(ASEProperties, Calculator):
                 )
             cholesky_tolerance = representation.get("tolerance", cholesky_tolerance)
         self._cholesky_tolerance = cholesky_tolerance
+        self._two_body_requested = two_body is not None
         self._load_hamiltonian = load_hamiltonian
         self._save_hamiltonian = save_hamiltonian
         if (
@@ -1122,6 +1161,12 @@ class Mandacaru(ASEProperties, Calculator):
         self.result = None
         self.results = {}
         self.checkpoint = None
+        #: What the run log states about the run: the checkpoint it resumed
+        #: from, the recipe of its PAW basis, the seconds of its stages.
+        self._resume_lineage = None
+        self._basis_report = None
+        self._stages = {}
+        self._exit_hook_armed = False
         self._load_crystal = load_crystal
         self._save_crystal = save_crystal
         self._kpts_spec = (
@@ -1136,6 +1181,9 @@ class Mandacaru(ASEProperties, Calculator):
             raise ValueError("kpts needs three positive integer mesh sizes")
         self._periodic_options = dict(periodic_scf_options or {})
         self._periodic_symmetry = symmetry
+        self._hubbard_u = hubbard.validate(hubbard_u, xc=self._xc, precision=precision)
+        if atoms is not None:
+            hubbard.require_crystal(self._hubbard_u, atoms.pbc)
         self._periodic_basis = basis
         self._periodic_two_body_requested = False
         self._requested_mapping = mapping
@@ -1283,47 +1331,42 @@ class Mandacaru(ASEProperties, Calculator):
             path, format="cube"
         )
 
-    def _mean_field(self, geometry):
-        if (self._basis_spec is None and self.integrals is not None
-                and self._force_grid is not None and self._geometry is not None
-                and geometry.numbers == self._geometry.numbers
-                and np.array_equal(geometry.cell, self._geometry.cell)):
-            self.integrals = self.integrals.at_geometry(geometry.native())
-        elif self._basis_spec is None:
-            from .integrations.paw_molecular import build
+    @contextlib.contextmanager
+    def _stage(self, name):
+        """Add the seconds of the wrapped block to the run log's stage ``name``."""
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self._stages[name] = self._stages.get(name, 0.0) + time.perf_counter() - start
 
-            self.integrals = build(self, geometry)
-        else:
-            self.integrals = self.context.molecular_integrals(
-                geometry.native(),
-                basis_spec=json.dumps(self._basis_spec),
-                spacing_bohr=self._grid_spacing * ANGSTROM_TO_BOHR,
-                grid=self._grid(geometry),
-                kinetic=self._kinetic,
-                cholesky_tolerance=self._cholesky_tolerance,
-                precision=self._precision,
-            )
+    def _mean_field(self, geometry):
+        with self._stage("integration: molecular integrals"):
+            self.integrals = self._molecular_integrals(geometry)
         particles = self.integrals.particles(
             charge=self._charge,
             n_electrons=self._n_electrons,
             magnetic_moment=float(np.sum(geometry.magnetic_moments)),
         )
-        if self.method == "dft":
-            self.native_reference = self.integrals.kohn_sham(
-                self.xc,
-                particles,
-                unrestricted=self._unrestricted or particles[0] != particles[1],
-                **self._scf_options,
-            )
-        else:
-            kind = (
-                self.method
-                if self.method in ("rhf", "uhf", "ghf")
-                else ("rhf" if particles[0] == particles[1] else "uhf")
-            )
-            self.native_reference = self.integrals.mean_field(
-                kind, particles, **self._scf_options
-            )
+        # The native integrals are lazy: the two-body integrals are built by the
+        # first call that needs them, which is this one.
+        with self._stage("mean-field SCF (builds the two-body integrals)"):
+            if self.method == "dft":
+                self.native_reference = self.integrals.kohn_sham(
+                    self.xc,
+                    particles,
+                    unrestricted=self._unrestricted or particles[0] != particles[1],
+                    **self._scf_options,
+                )
+            else:
+                kind = (
+                    self.method
+                    if self.method in ("rhf", "uhf", "ghf")
+                    else ("rhf" if particles[0] == particles[1] else "uhf")
+                )
+                self.native_reference = self.integrals.mean_field(
+                    kind, particles, **self._scf_options
+                )
         return CalculationResult(
             method=self.method,
             context=self.context,
@@ -1332,6 +1375,26 @@ class Mandacaru(ASEProperties, Calculator):
             mapping=self._mapping,
             active_space=self._active_spec,
             atomic_units=self._atomic_units,
+        )
+
+    def _molecular_integrals(self, geometry):
+        if (self._basis_spec is None and self.integrals is not None
+                and self._force_grid is not None and self._geometry is not None
+                and geometry.numbers == self._geometry.numbers
+                and np.array_equal(geometry.cell, self._geometry.cell)):
+            return self.integrals.at_geometry(geometry.native())
+        if self._basis_spec is None:
+            from .integrations.paw_molecular import build
+
+            return build(self, geometry)
+        return self.context.molecular_integrals(
+            geometry.native(),
+            basis_spec=json.dumps(self._basis_spec),
+            spacing_bohr=self._grid_spacing * ANGSTROM_TO_BOHR,
+            grid=self._grid(geometry),
+            kinetic=self._kinetic,
+            cholesky_tolerance=self._cholesky_tolerance,
+            precision=self._precision,
         )
 
     def _saves_over_its_source(self):
@@ -1482,9 +1545,10 @@ class Mandacaru(ASEProperties, Calculator):
                 raise NotImplementedError(
                     "subspace checkpoint restart is not implemented"
                 )
-            raw = self.problem.solve_subspace(
-                [2.0, 1.0] if self._weights is None else self._weights, **opts
-            )
+            with self._stage("parameter optimization"):
+                raw = self.problem.solve_subspace(
+                    [2.0, 1.0] if self._weights is None else self._weights, **opts
+                )
         else:
             resumed = (
                 None
@@ -1520,12 +1584,17 @@ class Mandacaru(ASEProperties, Calculator):
                     raise ValueError("growth callbacks apply to ADAPT, not architecture edits")
                 from .integrations.search import run
 
-                raw = run(self, initial_parameters)
+                with self._stage("parameter optimization"):
+                    raw = run(self, initial_parameters)
             else:
                 self.run_budget_exhausted = None
+                self._resume_lineage = (
+                    None if resumed is None else _native.snapshot_lineage(resumed)
+                )
                 try:
-                    raw = self.problem.solve(resume=resumed, callback=observer,
-                                             executor=executor, **opts)
+                    with self._stage("parameter optimization"):
+                        raw = self.problem.solve(resume=resumed, callback=observer,
+                                                 executor=executor, **opts)
                 except RuntimeError as exc:
                     if executor is not None and executor.stopped is not None:
                         # The budget ended the run before any energy existed.
@@ -1610,6 +1679,7 @@ class Mandacaru(ASEProperties, Calculator):
                     f"Mandacaru(precision={self.periodic_problem.precision!r}) "
                     f"(this calculator has precision={self._precision!r})"
                 )
+            hubbard.check_loaded(self._hubbard_u, self.periodic_problem)
         else:
             from .integrations.ase import atoms_from_geometry
             from .integrations.paw import configure
@@ -1633,7 +1703,23 @@ class Mandacaru(ASEProperties, Calculator):
             atomic_units=self._atomic_units,
         )
 
-    def run(self, geometry=None, *, initial_parameters=None, callback=None):
+    def run(self, geometry=None, *, initial_parameters=None, callback=None,
+            log_expressivity=False):
+        """Run the calculation and return its result.
+
+        ``log_expressivity=True`` adds the ``expr`` column to the run log's
+        iteration table: the Kullback-Leibler distance of the grown ansatz's
+        fidelity distribution from the Haar one. It samples state fidelities at
+        every row, so it is a diagnostic that is off unless asked for, and it
+        applies to ``adapt-vqe`` without shots.
+        """
+        if type(log_expressivity) is not bool:
+            raise ValueError(f"log_expressivity must be True or False, got {log_expressivity!r}")
+        if log_expressivity and (self.method != "adapt-vqe" or self._shots):
+            raise ValueError(
+                "log_expressivity samples the state fidelities of the grown ansatz: it needs "
+                "method='adapt-vqe' without shots"
+            )
         with self.resources.lock:
             if self.resources.closed:
                 raise RuntimeError("calculator is closed")
@@ -1649,9 +1735,11 @@ class Mandacaru(ASEProperties, Calculator):
             self.native_reference = None
             self.results = {}
             self.problem = None
+            self._resume_lineage = None
             if (value is not None and any(value.pbc)) or self._load_crystal is not None:
                 result = self._periodic(value)
             elif value is not None:
+                hubbard.require_crystal(self._hubbard_u, value.pbc)
                 reference = self._mean_field(value)
                 if not reference.success:
                     raise RuntimeError("native SCF did not converge")
@@ -1691,7 +1779,7 @@ class Mandacaru(ASEProperties, Calculator):
             if self.trace or self.txt is not None:
                 from .integrations.reporting import write_calculation
 
-                write_calculation(self, result, value)
+                write_calculation(self, result, value, log_expressivity=log_expressivity)
             return result
 
     def energy_levels(self, num_states=2, *, restarts=4, beta=None, seed=0):
@@ -1729,6 +1817,8 @@ class Mandacaru(ASEProperties, Calculator):
         with self.resources.lock:
             if self.resources.closed:
                 raise RuntimeError("calculator is closed")
+            started = time.perf_counter()
+            self._stages = {}
             source = (
                 atoms
                 if atoms is not None
@@ -1787,13 +1877,53 @@ class Mandacaru(ASEProperties, Calculator):
             if "forces" in properties:
                 project = self._project_translation is not False and len(geometry.numbers) > 1
                 internal = project and self.capabilities.quantum and self._basis_spec is None
-                self.results["forces"] = result.forces(
-                    internal=internal,
-                    project_translation=project)
+                with self._stage("nuclear gradient (forces)"):
+                    self.results["forces"] = result.forces(
+                        internal=internal,
+                        project_translation=project)
                 from .integrations.reporting import write_forces
 
                 write_forces(self, result, geometry, internal=internal, translated=project)
+                self._arm_exit_hook()
+            if self.trace or self.txt is not None:
+                from .integrations.reporting import write_performance
+
+                write_performance(self, result, time.perf_counter() - started,
+                                  solver_ran=not reusable)
             return result
+
+    def _arm_exit_hook(self):
+        """Close the log of a trajectory at interpreter exit, once.
+
+        ASE never tells a calculator that a relaxation is over: the optimizer
+        just stops calling it. Exit is the one signal that always arrives, so
+        the hook is armed by the first forces that are logged. It holds the
+        calculator weakly.
+        """
+        if not self._exit_hook_armed and (self.trace or self.txt is not None):
+            self._exit_hook_armed = True
+            atexit.register(_close_log_at_exit, weakref.ref(self))
+
+    def _write_summary_at_exit(self):
+        """The ``atexit`` body: close the log **without** claiming success.
+
+        Exit handlers also run after an unhandled exception, so reaching this
+        point says only that the process ended, not that the relaxation
+        finished or converged. The footer therefore states that completion was
+        never signaled; only ``write_optimization_summary(optimizer=...)`` can
+        say ``converged``, because only its caller has the optimizer's verdict.
+        It never raises: a log that cannot be closed must not turn a finished
+        calculation into a failed one.
+        """
+        try:
+            steps = len(getattr(self, "_optimization_history", ()))
+            self.write_optimization_summary(status=(
+                f"completion not signaled: the process exited after {steps} geometry "
+                "step(s), which does not establish that the optimization finished or "
+                "converged (call write_optimization_summary(optimizer=...) to record "
+                "the verdict)"))
+        except Exception:
+            pass
 
     def write_optimization_summary(self, atoms=None, fmax=None, optimizer=None, force=False, status=None):
         """Record the geometry history and ASE optimizer's completion verdict."""

@@ -74,7 +74,38 @@ pub enum Eri {
         pivots: Buffer<usize>,
     },
 }
+/// How a two-body factorization is stored, for a log: the representation, the
+/// rank of the augmentation correction when there is one, and for a Cholesky
+/// base its rank and the largest unused diagonal (`None` when the pivots were
+/// fixed and the diagonal was not scanned).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EriReport {
+    pub representation: &'static str,
+    pub augmentation_rank: Option<usize>,
+    pub cholesky: Option<(usize, Option<f64>)>,
+}
 impl Eri {
+    pub fn report(&self) -> EriReport {
+        match self {
+            Self::Augmented {
+                base, correction, ..
+            } => EriReport {
+                representation: "cholesky+augmentation",
+                augmentation_rank: Some(correction.factors.len()),
+                cholesky: base.report().cholesky,
+            },
+            Self::Packed { .. } => EriReport {
+                representation: "packed",
+                augmentation_rank: None,
+                cholesky: None,
+            },
+            Self::Cholesky { rank, residual, .. } => EriReport {
+                representation: "cholesky",
+                augmentation_rank: None,
+                cholesky: Some((*rank, *residual)),
+            },
+        }
+    }
     pub fn pivots(&self) -> Option<&[usize]> {
         match self {
             Self::Cholesky { rank, pivots, .. } => Some(&pivots.as_slice()[..*rank]),

@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mandacaru-build",
         description="Generate PAW-LCAO or UPAW-LCAO datasets "
-                    "natively, with the radial kernels in C.",
+                    "natively, with the packaged Rust radial kernels.",
         epilog="examples:\n"
                "  mandacaru-build --pp PAW --relativistic --xc LDA --element Fe\n"
                "  mandacaru-build --pp PAW --dirac --element Fe Cu --workers 2\n"
@@ -202,7 +202,6 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
         save_pseudopotential
     from .partial_waves import GhostStateWarning, ghost_errors, \
         scattering_errors
-    from ..basis.radial_backend import radial_backend_status
 
     started = time.perf_counter()
     spectrum, log_derivative = _levels_and_phase(family)
@@ -250,14 +249,13 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
                        f"{time.perf_counter() - started:.1f} s  "
                        f"{type(error).__name__}: {error}")
     elapsed = time.perf_counter() - started
-    uses_c, _message = radial_backend_status()
     lines = [f"{symbol:>2}  {pp!r}"]
     if getattr(pp, "defects", None):
         from .partial_waves import defect_message
         lines = [f"{symbol:>2}  FLAGGED  "
                  + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
-    lines.append(f"    {elapsed:.1f} s, {'C' if uses_c else 'Python'} radial "
-                 f"kernels -> {path} (read back: levels within "
+    lines.append(f"    {elapsed:.1f} s, Rust radial kernels -> {path} "
+                 f"(read back: levels within "
                  f"{RELOAD_LEVEL_TOLERANCE:g} Ha of the generated dataset)")
     for l, channel in sorted(loaded.channels.items()):
         first, _second = spectra[l]
@@ -308,12 +306,10 @@ def main(argv=None) -> int:
         print(f"mandacaru-build: {error}", file=sys.stderr)
         return 2
 
-    from ..basis.radial_backend import radial_backend_status
-    uses_c, message = radial_backend_status()
     print(f"mandacaru-build: {family}, {args.xc.upper()}, "
           f"relativity={relativity}, ghosts={ghosts}, "
           f"{len(symbols)} element(s), {args.workers} worker(s)")
-    print(f"radial kernels: {message}")
+    print("radial kernels: packaged Rust radial kernels")
     print(f"writing to {paw_dataset}\n", flush=True)
 
     failures = flagged = 0

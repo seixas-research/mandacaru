@@ -208,4 +208,4 @@ def test_packaged_extension_also_exports_the_legacy_abi():
     assert lib.mandacaru_backend_abi_version() == _native.ABI_VERSION == 1
     assert lib.mandacaru_thread_policy_version() == _native.THREAD_POLICY_VERSION == 1
     _backend._bind(lib)
-    assert ctypes.sizeof(lib.mandacaru_kb_project.argtypes[4]) == 8
+    assert ctypes.sizeof(lib.mandacaru_bloch_shell.argtypes[3]) == 8

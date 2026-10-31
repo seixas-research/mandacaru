@@ -23,8 +23,9 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru import Mandacaru
+from mandacaru import Mandacaru, _native
 from mandacaru.optimizers import DEFAULT_OPTIMIZER
+from mandacaru.units import HARTREE_TO_EV
 from mandacaru.utils import Logger, parse_output
 import os
 from mandacaru.core.mapping import PauliSum
@@ -358,8 +359,10 @@ class TestElectronsBlock:
         assert block["qubits"] == str(calc.n_qubits) == "4"
         assert block["electrons (alpha, beta)"] == str(calc.num_particles)
         assert block["spatial orbitals"] == "2"
+        # The native problem owns the terms: the calculator has no `.hamiltonian`
+        # of its own (the removed Python engine held a PauliSum there).
         assert block["Hamiltonian"] == \
-            f"{len(calc.hamiltonian.simplify().terms)} Pauli terms"
+            f"{len(calc.problem.hamiltonian_terms)} Pauli terms"
 
     def test_the_problem_is_not_repeated_in_the_setup_block(self, run):
         # [ELECTRONS] owns the problem; [OPTIMIZATION SETUP] owns the optimizer
@@ -395,16 +398,18 @@ class TestElectronsBlock:
         block = parsed["electrons"]
         keys = list(block)
         assert keys[keys.index("kinetic operator") + 1] == "two-body integrals"
-        factors = atoms.calc.solver._gradient_context["integrals"]._cholesky
+        # The factors are the native integrals' own: rank and residual are read
+        # from their report (`calc.solver` is the variational view and a mean-field
+        # run has none; the Python engine's `_gradient_context` is gone).
+        factors = _native.integrals_report(atoms.calc.integrals)
+        rank, residual = factors["cholesky_rank"], factors["cholesky_residual"]
         line = block["two-body integrals"]
-        assert line == factors.summary()
         assert line.startswith("Cholesky factors, tolerance 1.000e-06 Ha, "
-                               f"rank {factors.rank} (")
-        assert f"largest residual diagonal {factors.max_residual:.3e} Ha" \
-            in line
+                               f"rank {rank} (")
+        assert f"largest residual diagonal {residual:.3e} Ha" in line
         # One owner: no other block repeats the rank or the tolerance.
         text = open(out, encoding="utf-8").read()
-        assert text.count(f"rank {factors.rank}") == 1
+        assert text.count(f"rank {rank}") == 1
         assert text.count("1.000e-06 Ha") == 1
 
     def test_the_dense_run_has_no_two_body_line(self, run):
@@ -478,8 +483,13 @@ class TestBasisBlock:
         # The first_zeta scheme is the default, and the line names it rather
         # than printing a bare number: a tail *norm* and a squared-norm
         # fraction are not comparable.
+        # The default norms are the library's (`DEFAULT_TAIL_NORMS`, changed to
+        # 0.15, 0.31, 0.54 on 2026-10-25); the literal 0.16, 0.3, 0.6 this line
+        # pinned was already stale before the native cutover.
+        from mandacaru.models.radial import resolve_split_scheme
+        norms = ", ".join(f"{t:g}" for t in resolve_split_scheme(None)[1])
         assert block["zeta_split"].startswith(
-            "first_zeta: tail norms 0.16, 0.3, 0.6 (norm")
+            f"first_zeta: tail norms {norms} (norm")
         # The shell follows the confinement: the Gaussian when confined.
         assert block["polarization_method"].startswith("gaussian")
         assert block["energy_shift"] == "0.1 eV"
@@ -768,12 +778,42 @@ class TestPerformanceBlock:
 
     def test_resources_are_recorded(self, relaxation):
         performance = parse_output(relaxation)["performance"]
-        assert performance["integration_backend"] in ("C (OpenMP)", "NumPy")
+        assert performance["integration_backend"].startswith("Rust")
         assert isinstance(performance["cpu_count"], int)
         assert performance["peak_memory_MiB"] > 0
         # There is no distributed parallelism, and the block says so rather
         # than leaving it to be inferred.
         assert "not used" in performance["mpi"]
+
+    def test_a_direct_run_writes_no_performance_block(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        atoms = h2()
+        calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+                         pool="fermionic", max_iterations=2, profile=False, txt=out)
+        calc.run(atoms)
+        text = open(out, encoding="utf-8").read()
+        assert "[VARIATIONAL QUANTUM SUMMARY]" in text and "[PERFORMANCE]" not in text
+
+    def test_forces_on_a_cached_result_get_a_block_of_their_own(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        atoms = h2()
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+                               pool="fermionic", max_iterations=2, profile=False, txt=out)
+        atoms.get_potential_energy()
+        atoms.get_forces()
+        text = open(out, encoding="utf-8").read()
+        first, second = text.split("[PERFORMANCE]")[1:]
+        # The solve is in the first block, the nuclear gradient only in the second:
+        # the forces never land after a block that does not account for them.
+        assert "nuclear gradient" not in first and "parameter optimization" in first
+        assert "nuclear gradient" in second and "parameter optimization" not in second
+        assert "solver_wall_time_s" in first and "solver_wall_time_s" not in second
+        assert text.index("[FORCES]") < text.rindex("[PERFORMANCE]")
+
+    def test_the_solver_time_is_the_native_one(self, relaxation):
+        performance = parse_output(relaxation)["performance"]
+        assert performance["solver_wall_time_s"] >= 0.0
+        assert performance["solver_wall_time_s"] <= performance["wall_time_s"] + 1e-4
 
     def test_no_qpu_keys_without_a_processor(self, relaxation):
         # Nothing ran on hardware, so nothing is claimed for it.
@@ -1110,6 +1150,40 @@ class TestCompletionIsNotAssumed:
         # explaining that reaching exit does not establish one.
         assert not status.startswith(("converged", "NOT converged", "finished"))
 
+    def test_the_exit_hook_never_raises(self, tmp_path, monkeypatch):
+        out = str(tmp_path / "output.txt")
+        atoms = h2()
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+                               pool="fermionic", max_iterations=2, profile=False,
+                               convergence={"gradient": 1e-3}, txt=out)
+        atoms.get_forces()
+        atoms.positions[1, 2] += 0.03
+        atoms.get_forces()
+
+        import mandacaru.utils.logging as logging_module
+
+        def explode(*args, **kwargs):
+            raise OSError("disk full")
+        monkeypatch.setattr(logging_module, "append_optimization_summary", explode)
+        # A finished calculation is not turned into a failed one by its log.
+        atoms.calc._write_summary_at_exit()
+
+    def test_the_hook_holds_the_calculator_weakly(self, tmp_path):
+        import gc
+        import weakref
+
+        atoms = h2()
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+                               pool="fermionic", max_iterations=2, profile=False,
+                               txt=str(tmp_path / "output.txt"))
+        atoms.get_forces()
+        reference = weakref.ref(atoms.calc)
+        atoms.calc.close()
+        atoms.calc = None
+        atoms._calc = None
+        gc.collect()
+        assert reference() is None
+
     def test_an_empty_trajectory_is_not_forced(self, tmp_path):
         calc = Mandacaru(method="adapt-vqe", basis="HAO",
                          txt=str(tmp_path / "output.txt"))
@@ -1215,10 +1289,145 @@ class TestGradientProvenance:
         setup = parse_output(out)["setup"]
         assert setup["resumed_from"] == state
         assert int(setup["restored_operators"]) == 1
+        # The native resume raises on any mismatch of the Hamiltonian, so the
+        # line does not say "no check was made": here "True" means *checked*.
         assert setup["resume_same_hamiltonian"] == "True"
         # The lineage, not a separate line, says what the run started from.
         assert int(setup["restored_parameters"]) >= 1
         assert "initial_ansatz" not in setup
+
+
+class TestWhatTheNativeResultSays:
+    """Every number the restored blocks show is read from the native result."""
+
+    @pytest.fixture(scope="class")
+    def quantum(self, tmp_path_factory):
+        out = str(tmp_path_factory.mktemp("native") / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
+                               pool="fermionic", max_iterations=2,
+                               convergence={"gradient": 1e-3}, txt=out)
+        atoms.get_potential_energy()
+        return out, atoms.calc
+
+    def test_the_scf_blocks_precede_the_quantum_problem_they_start_from(self, quantum):
+        out, _calc = quantum
+        text = open(out, encoding="utf-8").read()
+        assert text.index("[ELECTRONS]") < text.index("[SCF SETUP]") \
+            < text.index("[SCF ITERATIONS]") < text.index("[OPTIMIZATION SETUP]")
+
+    def test_the_last_scf_row_is_the_native_electronic_energy(self, quantum):
+        from mandacaru.units import HARTREE_TO_EV
+
+        out, calc = quantum
+        rows = parse_output(out)["scf_iterations"]
+        snapshot = calc.native_reference.snapshot()
+        assert len(rows) == len(snapshot["history"])
+        assert rows[-1]["electronic_energy_eV"] == pytest.approx(
+            snapshot["electronic_energy"] * HARTREE_TO_EV, abs=1e-9)
+        # The history carries no clock, and the table does not invent one.
+        assert "time" not in rows[0]
+
+    def test_the_scf_setup_states_what_it_stops_on(self, quantum):
+        out, _calc = quantum
+        setup = parse_output(out)["setup"]
+        assert setup["scf_method"].startswith("restricted Hartree-Fock")
+        assert int(setup["scf_max_iterations"]) == 300
+        assert setup["scf_acceleration"] == "DIIS"
+
+    def test_the_thresholds_are_stated_and_the_met_one_is_starred(self, quantum):
+        out, _calc = quantum
+        parsed = parse_output(out)
+        assert parsed["setup"]["convergence"] == "gradient"
+        assert float(parsed["setup"]["convergence_gradient"]) == 1e-3
+        assert "convergence_marker" in parsed["setup"]
+        # The loop stopped because the last screening gradient met its threshold.
+        assert parsed["summary"]["gradient_met"] is True
+
+    def test_the_pool_class_is_the_native_pool_kind(self, quantum):
+        out, _calc = quantum
+        assert parse_output(out)["setup"]["pool_class"] == _native.pool_kind("fermionic")
+
+    def test_the_termination_reason_is_the_native_message(self, quantum):
+        out, calc = quantum
+        assert parse_output(out)["summary"]["termination"] == \
+            calc.result.timings["termination"]
+
+    def test_the_reference_energy_has_one_owner(self, quantum):
+        out, _calc = quantum
+        text = open(out, encoding="utf-8").read()
+        assert text.count("reference_energy_eV") == 1
+        assert "reference_energy_eV" in parse_output(out)["setup"]
+        assert "reference_energy_eV" not in parse_output(out)["summary"]
+
+    def test_the_orbital_count_is_not_said_in_two_blocks(self, quantum):
+        out, _calc = quantum
+        parsed = parse_output(out)
+        assert "spatial_orbitals" not in parsed["basis"]
+        assert parsed["basis"]["basis_functions"] == "2"
+        assert parsed["electrons"]["spatial orbitals"] == "2"
+
+    def test_a_classical_run_describes_no_register_it_did_not_build(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
+                      cell=[6.0, 6.0, 6.0])
+        atoms.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.35, txt=out)
+        atoms.get_potential_energy()
+        parsed = parse_output(out)
+        for key in ("mapping", "reference state", "Z2 tapering", "Hamiltonian", "qubits"):
+            assert key not in parsed["electrons"]
+        assert parsed["scf_iterations"] and parsed["summary"]["converged"] == "True"
+        assert "operator_details" not in parsed["electrons"]
+
+
+class TestAResumedRunLineage:
+    def test_the_first_row_is_measured_from_the_restored_energy(self, tmp_path):
+        state = str(tmp_path / "state.json")
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("LiH", positions=[[3, 3, 2.2], [3, 3, 3.8]], cell=[7.0] * 3)
+        options = dict(method="adapt-vqe", basis="HAO", grid_spacing=0.4, pool="fermionic",
+                       active_space={"frozen": "auto", "orbitals": 2}, profile=False)
+        Mandacaru(checkpoint=state, max_iterations=1, **options).run(atoms)
+        snapshot = _native.Context(threads=1).read_snapshot(
+            state, "mandacaru-wavefunction-checkpoint")
+        restored = _native.snapshot_lineage(snapshot)["energy_ha"] * HARTREE_TO_EV
+        Mandacaru(resume=state, txt=out, max_iterations=3, **options).run(atoms)
+        parsed = parse_output(out)
+        assert float(parsed["setup"]["restored_energy_eV"]) == pytest.approx(restored, abs=1e-9)
+        first = parsed["iterations"][0]
+        assert first["energy"] - first["delta_energy"] == pytest.approx(restored, abs=1e-8)
+
+
+class TestExpressivityColumn:
+    """``run(log_expressivity=True)`` adds ``expr``; off, the column is absent."""
+
+    @staticmethod
+    def _log(tmp_path, **options):
+        out = str(tmp_path / "output.txt")
+        Mandacaru(method="adapt-vqe", hamiltonian=PauliSum({"ZIII": 1.0, "XXII": 0.2}),
+                  pool="fermionic", txt=out, max_iterations=2, **DIRECT).run(**options)
+        return out
+
+    def test_it_is_off_unless_asked_for(self, tmp_path):
+        row = parse_output(self._log(tmp_path))["iterations"][0]
+        assert "expr" not in row["columns"] and row["expressivity_E"] == "-"
+
+    def test_asked_for_it_is_a_nonnegative_number_per_row(self, tmp_path):
+        rows = parse_output(self._log(tmp_path, log_expressivity=True))["iterations"]
+        assert rows and all("expr" in row["columns"] for row in rows)
+        assert all(float(row["expressivity_E"]) >= 0.0 for row in rows)
+
+    @pytest.mark.parametrize("bad", ["auto", 1, 0, None])
+    def test_it_is_a_plain_boolean(self, tmp_path, bad):
+        with pytest.raises(ValueError, match="log_expressivity"):
+            self._log(tmp_path, log_expressivity=bad)
+
+    def test_a_measured_run_does_not_sample_state_fidelities(self):
+        calc = Mandacaru(method="adapt-vqe", hamiltonian=PauliSum({"ZIII": 1.0}),
+                         pool="fermionic", shots=100, optimizer="SPSA", **DIRECT)
+        with pytest.raises(ValueError, match="without shots"):
+            calc.run(log_expressivity=True)
 
 
 # --------------------------------------------------------------------------- #

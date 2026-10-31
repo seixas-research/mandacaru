@@ -20,15 +20,26 @@ the single live status page; features that were never ported are collected in
 
 ## Coverage audit
 
-`test/migration/audit_native.py` inventories Python numerical call sites.
-`test/migration/native_cutover/audit.json` is the generated review artifact.
-Array conversions are excluded from its candidate list. The audit does not
-infer parity from a module name or assume that every NumPy call is an algorithm.
+`scripts/numerics_budget.py` counts, for every module of `src/mandacaru`, the
+Python that still does numerical work: NumPy and SciPy calls outside array
+hand-off, `@`, `math` calls, builtin reductions, loops and comprehensions over
+data, dynamic access to numerical modules and imports outside the allowlist. It
+reads the syntax tree, so docstrings, comments and strings score zero and an
+alias, a from-import or a function-local import is still counted.
+`test/architecture/python_numerics_budget.toml` is the allowlist: one row per
+module with its measured counts, and a wave and a `dies` date for every row
+that still holds numerics. A row can only be lowered; a module without a row in
+the zero tier (`pseudopotentials`, `basis`, `integrals`, `models`, the PAW
+integrations, `core/symmetry.py`, `core/spin_orbit.py`) is budgeted at zero.
+`python scripts/check_architecture.py` runs the comparison and warns 30 days
+before a `dies` date, and `python scripts/numerics_budget.py --ratchet` records
+a port by lowering the row. The coverage table below says which native routine
+replaces which numerical Python; it does not infer parity from a module name.
 
 | Area | Current native coverage | Work before removing numerical Python |
 | --- | --- | --- |
 | Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, semilocal molecular PAW Kohn–Sham, stationary all-electron forces, stationary PAW-LCAO RHF/UHF/semilocal-KS forces, variational molecular PAW forces and real/radial bases | PAW screened exchange and multi-shell core exchange; PAW forces for screened exchange and nonlocal correlation |
-| Periodic calculations | LDA/PBE/meta-GGA/nonlocal iterations, two-component LDA/PBE spinor SCF and bands, spectra and Ewald primitives | Geometry assembly, screened exchange and electronic response |
+| Periodic calculations | LDA/PBE/meta-GGA/nonlocal iterations, two-component LDA/PBE spinor SCF and bands, spectra, Ewald primitives and DFT+U (Dudarev, fully localized limit, scalar-relativistic collinear crystals on a full k mesh) | Geometry assembly, screened exchange, electronic response, and forces, stress and a density symmetrizer for DFT+U |
 | Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, MCAS-VQE/VALQA, graph proposals and SDK execution | GHF-to-quantum handoff and optional GP/ranker proposal models |
 | Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods and their forces; empty/closed-1s cores | Basis recipe preparation, multi-shell cores, screened exchange and spin-orbit terms |
 | Radial PAW spectrum | Generalized separable eigenpairs, overlap normalization, confined and free channel spectra | Remaining dataset construction and basis recipes |
@@ -301,11 +312,18 @@ Recorded on 2026-10-29 in the maintainers' session log.
   orbitals are frozen is decided by round-off, so the active-space Hamiltonian is
   not reproducible. Proposed: order orbitals within equal-occupation blocks by Fock
   energy, or reject a list that splits a block. (Not rerun for this page.)
-- **Run log.** The blocks the code does not write are listed in
-  [the run log reference](../reference/run_log.md). `[PERFORMANCE]` is never
-  written, `[ELECTRONS]` holds three of its thirteen documented fields, and a crystal
-  calculation cannot be logged. `ansatz="hva"` on a cached Hamiltonian is rejected
-  only at `.run()`. (The last item was not rerun for this page.)
+- **Run log.** The calculator writes `[PERFORMANCE]`, the thirteen-field
+  `[ELECTRONS]` block, `[SCF SETUP]` and `[SCF ITERATIONS]`, the termination reason,
+  the lineage of a resumed run, the resolved `[BASIS]` and the initial magnetic
+  moments again, each value read from a native result and formatted in Python. What
+  the code still does not write is listed in
+  [the run log reference](../reference/run_log.md): the `[MEASUREMENT]` and echo
+  helper blocks, the tetris, pruning and screening lines, a `time` column for the SCF
+  iterations and per-stage native clocks (the native solve is one lumped stage,
+  `parameter optimization`), and the logs of a crystal calculation, which cannot be
+  logged. The log is written when the run ends, not while it runs.
+  `ansatz="hva"` on a cached Hamiltonian is rejected only at `.run()`. (The last item
+  was not rerun for this page.)
 - **Tests.** The collection errors of the older suite were reduced from 109 to 2 by
   deleting test files whose subject modules no longer exist; two remaining modules
   have dangling imports and no native counterpart. A full run on that date recorded
@@ -328,7 +346,7 @@ or disconnected from their native replacements:
 | Electronic response | Wannier construction, constrained RPA and downfolding |
 | Circuit execution | Multi-reference SDK execution and continuation of device runs |
 | Geometry workflows | Remaining ethanol relaxation verification and periodic force/stress response |
-| Monitoring and analysis | Complete live SCF logging and migration of older standalone analysis interfaces |
+| Monitoring and analysis | Live SCF logging while the run proceeds (the iteration history is logged when the run ends, without a clock) and migration of older standalone analysis interfaces |
 
 Some helper modules and native primitives for these features remain in the
 tree. Their presence does not make the ASE calculation path operational.

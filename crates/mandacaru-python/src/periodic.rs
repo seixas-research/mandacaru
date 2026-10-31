@@ -156,6 +156,16 @@ impl PyCrystal {
     fn time_reversal(&self) -> bool {
         self.inner.time_reversal
     }
+    /// The DFT+U shells the crystal carries, `(atom, symbol, l, u_ha, j_ha)`; `None` without.
+    #[getter]
+    fn hubbard(&self) -> Option<Vec<(usize, String, usize, f64, f64)>> {
+        super::hubbard::definition(&self.inner)
+    }
+    /// Raises unless the `hubbard_u` option (JSON text) agrees with the DFT+U table this crystal
+    /// carries; the file owns the correction.
+    fn check_hubbard_u(&self, spec: &str) -> PyResult<()> {
+        super::hubbard::check_loaded(spec, &self.inner)
+    }
     #[getter]
     fn n_orbitals(&self) -> usize {
         self.inner.m
@@ -217,6 +227,10 @@ impl PyPeriodicResult {
     #[getter]
     fn spin_orbit_energy(&self) -> Option<f64> {
         self.inner.spin_orbit_energy
+    }
+    #[getter]
+    fn hubbard_energy(&self) -> Option<f64> {
+        self.inner.hubbard_energy
     }
     #[getter]
     fn n_iterations(&self) -> usize {
@@ -295,6 +309,10 @@ impl PyPeriodicResult {
         out.set_item("spinor", c.spinor)?;
         out.set_item("time_reversal", c.time_reversal)?;
         out.set_item("spin_orbit_energy", r.spin_orbit_energy)?;
+        if let Some(view) = super::hubbard::view(py, c, r)? {
+            out.set_item("hubbard_energy", r.hubbard_energy)?;
+            out.set_item("hubbard", view)?;
+        }
         out.set_item("converged", r.converged)?;
         out.set_item("n_iterations", r.history.len())?;
         out.set_item("precision", c.precision.name())?;
@@ -384,6 +402,9 @@ impl PyPeriodicResult {
             .zip(r.terms)
         {
             terms.set_item(*name, value)?;
+        }
+        if let Some(energy) = r.hubbard_energy {
+            terms.set_item("hubbard", energy)?;
         }
         out.set_item("terms", terms)?;
         out.set_item(
@@ -499,7 +520,7 @@ impl PyPeriodicResult {
                 let n = c.grid.index.points();
                 for s in 0..c.spins {
                     for p in &points {
-                        let (e, _, y) = mandacaru_core::periodic::solver::diagonalize(
+                        let (e, _, y) = mandacaru_core::periodic::solver::diagonalize_with(
                             c,
                             p,
                             if c.spinor {
@@ -512,6 +533,8 @@ impl PyPeriodicResult {
                                 .kinetic_potential
                                 .as_ref()
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
+                            // The converged DFT+U operator of this spin channel.
+                            self.inner.hubbard.as_ref().map(|h| &h.operators[s]),
                         )?;
                         eps.extend(e.iter().map(|e| e + c.reference));
                         for a in 0..c.bands() {

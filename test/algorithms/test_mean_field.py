@@ -173,6 +173,8 @@ def test_search_controls_are_refused_outside_the_search_methods(method, option):
     ("adapt-vqe", {"spin": True}),
     ("rhf", {"kpts": (2, 1, 1)}), ("adapt-vqe", {"smearing": 0.1}),
     ("vqe", {"periodic_scf_options": {"mixing": 0.2}}),
+    ("rhf", {"hubbard_u": {"Ni": {"l": "d", "U": 3.0}}}),
+    ("adapt-vqe", {"hubbard_u": {"Ni": {"l": "d", "U": 3.0}}}),
     ("rhf", {"pool": "qeb"}), ("dft", {"pool": "ceo"})])
 def test_options_of_another_method_are_refused(method, option):
     with pytest.raises(ValueError, match="does not use"):
@@ -184,6 +186,7 @@ def test_options_a_method_uses_are_accepted():
     Mandacaru(method="dft", xc="pbe", spin=True, trace=False)
     Mandacaru(method="uhf", spin=True, trace=False)
     Mandacaru(method="dft", kpts=(2, 2, 1), smearing=0.1, trace=False)
+    Mandacaru(method="dft", hubbard_u={"Ni": {"l": "d", "U": 3.0}}, trace=False)
     Mandacaru(method="mcas-vqe", seed=3, max_length=8, temperature=0.05, trace=False)
     Mandacaru(method="vqe", pool="qeb", trace=False)
     # a default value is never "given": naming it changes nothing
@@ -237,7 +240,8 @@ def test_scf_writes_the_shared_run_log(method, tmp_path, capsys):
         assert block not in text
 
     parsed = parse_output(path)
-    assert parsed["electrons"]["num_particles"] == "(1, 1)"
+    # The [ELECTRONS] block's thirteen-field layout names the counts this way.
+    assert parsed["electrons"]["electrons (alpha, beta)"] == "(1, 1)"
     summary = parsed["summary"]
     assert summary["converged"] == "True"
     assert float(summary["energy_eV"]) == pytest.approx(energy_ev, abs=1e-9)

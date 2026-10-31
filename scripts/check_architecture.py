@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 import re
+import runpy
+import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,8 +73,58 @@ def cargo_dependencies(manifest):
     }
 
 
-def check():
+def numerics_gate():
+    """The numerics gate of ``scripts/numerics_budget.py`` (one source of truth)."""
+    return runpy.run_path(str(ROOT / "scripts/numerics_budget.py"))
+
+
+def check_numerics():
+    """Python numerics against ``test/architecture/python_numerics_budget.toml``."""
+    gate = numerics_gate()
+    return gate["check_budget"](gate["measure_package"](PACKAGE), gate["load_budget"]())
+
+
+def check_numerics_dates(today=None):
+    """Warn 30 days before a budget ``dies`` and fail past it.
+
+    Kept out of ``check()`` so the test suite stays reproducible: only the
+    command line (``python scripts/check_architecture.py``) enforces dates.
+    """
+    gate = numerics_gate()
+    warnings, failures = gate["date_findings"](gate["load_budget"](), today)
+    for line in warnings:
+        print(f"warning: numerics budget: {line}", file=sys.stderr)
+    return [f"numerics budget: {line}" for line in failures]
+
+
+FOREIGN_SOURCE_SUFFIXES = (".c", ".h", ".cpp", ".f90")
+LIBRARY_SUFFIXES = (".so", ".dylib", ".dll")
+SKIPPED_DIRECTORIES = ("target", "__pycache__")
+
+
+def foreign_residue(package):
+    """C/C++/Fortran sources and shared libraries other than ``_native`` under ``package``.
+
+    The numerical engine is the Rust extension; a foreign source or a second
+    library beside it is the old compiled route that the cutover retired.
+    ``target`` (cargo output) and ``__pycache__`` are skipped.
+    """
     failures = []
+    for path in sorted(Path(package).rglob("*")):
+        relative = path.relative_to(package)
+        if not path.is_file() or set(relative.parts) & set(SKIPPED_DIRECTORIES):
+            continue
+        name = path.name.lower()
+        if name.endswith(FOREIGN_SOURCE_SUFFIXES):
+            failures.append(f"{relative}: foreign source under the package")
+        elif name.endswith(LIBRARY_SUFFIXES) and not name.startswith("_native"):
+            failures.append(f"{relative}: shared library other than the _native extension")
+    return failures
+
+
+def check(dates=False):
+    failures = []
+    failures.extend(foreign_residue(PACKAGE))
     for filename in BOUNDARY:
         tree = ast.parse((PACKAGE / filename).read_text())
         for node in ast.walk(tree):
@@ -261,10 +313,13 @@ def check():
             failures.append(
                 f"calculator contains process-global or compiler operation: {forbidden}"
             )
+    failures.extend(check_numerics())
+    if dates:
+        failures.extend(check_numerics_dates())
     if failures:
         raise SystemExit("\n".join(failures))
     print("Architecture checks passed")
 
 
 if __name__ == "__main__":
-    check()
+    check(dates=True)

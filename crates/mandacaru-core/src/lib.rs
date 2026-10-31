@@ -27,6 +27,9 @@ pub use units::LengthUnit;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     Invalid(String),
+    /// A well-formed request for something the engine does not implement: the caller
+    /// raises it, never substitutes another calculation.
+    Unsupported(String),
     Overflow,
     Budget {
         requested: usize,
@@ -43,7 +46,10 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(message) | Self::Kernel(message) | Self::Interrupted(message) => {
+            Self::Invalid(message)
+            | Self::Unsupported(message)
+            | Self::Kernel(message)
+            | Self::Interrupted(message) => {
                 f.write_str(message)
             }
             Self::Overflow => f.write_str("array shape or byte count exceeds addressable size"),

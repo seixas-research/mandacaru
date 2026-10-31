@@ -85,6 +85,17 @@ fn value_bytes(value: &Value) -> usize {
         }),
     }
 }
+/// The run a checkpoint was written by: its method and Hartree energy (when
+/// recorded), the number of ansatz operators and free parameters it holds, and
+/// its status object as JSON text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lineage {
+    pub method: Option<String>,
+    pub energy: Option<f64>,
+    pub operators: usize,
+    pub parameters: usize,
+    pub status: Option<String>,
+}
 pub struct Document {
     pub(crate) payload: Value,
     _memory: Reservation,
@@ -305,6 +316,38 @@ impl Document {
     }
     pub fn text(&self) -> Result<String> {
         serde_json::to_string(&self.payload).map_err(|e| invalid(e.to_string()))
+    }
+    /// What a checkpoint records about the run that wrote it, for a log to say
+    /// what a resumed run was restored from. A Hamiltonian snapshot has no
+    /// lineage and is refused. Nothing is copied but the status text.
+    pub fn lineage(&self) -> Result<Lineage> {
+        let p = &self.payload;
+        if p["format"] != CHECKPOINT {
+            return Err(invalid("lineage requires a checkpoint"));
+        }
+        let operators = p["operators"]
+            .as_array()
+            .ok_or_else(|| invalid("checkpoint requires operators"))?
+            .len();
+        // A fixed Hamiltonian-variational ansatz stores its expanded stages as
+        // operators; its free parameters are the logical ones in the metadata.
+        let parameters = match p["metadata"]["hva"]["parameters"].as_array() {
+            Some(logical) => logical.len(),
+            None => operators,
+        };
+        let status = match p.get("status") {
+            Some(value) if !value.is_null() => {
+                Some(serde_json::to_string(value).map_err(|e| invalid(e.to_string()))?)
+            }
+            _ => None,
+        };
+        Ok(Lineage {
+            method: p["method"].as_str().map(str::to_owned),
+            energy: p.get("energy").and_then(Value::as_f64),
+            operators,
+            parameters,
+            status,
+        })
     }
     pub fn save(&self, path: &Path) -> Result<()> {
         atomic_write(path, |out| {

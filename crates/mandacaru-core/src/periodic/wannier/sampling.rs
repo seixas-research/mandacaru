@@ -7,7 +7,7 @@ use crate::{
         storage::{ComplexSamples, Precision},
         SpatialGrid,
     },
-    periodic::{solver::diagonalize, Crystal, KPoint, PeriodicResult},
+    periodic::{solver::diagonalize_with, Crystal, KPoint, PeriodicResult},
     product,
     quantum::C64,
     Buffer, Context, Reservation, Result,
@@ -165,7 +165,7 @@ impl Frame {
         let n = c.grid.index.points();
         let components = if c.spinor { 2 } else { 1 };
         let _work = ctx.reserve(product(&[c.bands(), c.bands(), 16, 16])?)?;
-        let (e, coefficients, _) = diagonalize(
+        let (e, coefficients, _) = diagonalize_with(
             c,
             point,
             if c.spinor {
@@ -178,6 +178,8 @@ impl Frame {
                 .kinetic_potential
                 .as_ref()
                 .map(|v| &v.as_slice()[spin * n..(spin + 1) * n]),
+            // The converged DFT+U operator of this spin channel.
+            result.hubbard.as_ref().map(|h| &h.operators[spin]),
         )?;
         let memory = ctx.reserve(product(&[c.bands() + components * c.p, bands.len(), 16])?)?;
         let coefficients =

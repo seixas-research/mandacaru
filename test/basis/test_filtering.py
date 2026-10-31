@@ -10,8 +10,8 @@ r"""Fourier filtering of the pseudopotential basis (:mod:`mandacaru.basis.filter
 
 Four things are pinned here, in this order:
 
-1. **the transform** -- the spherical Bessel pair round-trips, Parseval holds,
-   an already band-limited function is left alone, a filtered one really has
+1. **the transform** -- the spherical Bessel pair round-trips, the weight above
+   :math:`k_c` of a Gaussian is its closed form, an already band-limited function is left alone, a filtered one really has
    no weight above :math:`k_c`, the norm is preserved and the :math:`r^l`
    behavior at the origin survives (the property whose loss broke the forces
    once already in the polarization shell);
@@ -28,6 +28,7 @@ Everything that runs a solver goes through ``Mandacaru(method=...)``.
 
 from __future__ import annotations
 
+import math
 import warnings
 
 import numpy as np
@@ -121,12 +122,30 @@ class TestTransform:
         assert np.abs(back - values).max() < 2e-4 * np.abs(values).max()
 
     @pytest.mark.parametrize("l", [0, 1, 2])
-    def test_parseval(self, l):
-        """``int R^2 r^2 dr == (2/pi) int F^2 k^2 dk`` -- the identity that
-        makes "the weight above k_c" a number rather than a figure of speech:
-        a Gaussian has all of its norm below a generous cutoff."""
-        values = gaussian(R_GRID, l, 1.0)
-        assert abs(residual_weight(R_GRID, values, l, 10.0)) < 1e-4
+    @pytest.mark.parametrize("k_c", [2.0, 3.0, 4.0])
+    def test_the_band_weight_of_a_gaussian_is_its_closed_form(self, l, k_c):
+        r"""The weight above :math:`k_c` of :math:`r^l e^{-\alpha r^2}`.
+
+        Its transform is :math:`F_l(k) \propto k^l e^{-k^2/4\alpha}`, so with
+        Parseval's :math:`\int R^2 r^2 dr = (2/\pi) \int F^2 k^2 dk` the fraction
+        above :math:`k_c` is the regularized upper incomplete gamma function
+        :math:`Q(l + 3/2, k_c^2 / 2\alpha)`, built here from the recurrence
+        :math:`Q(s + 1, x) = Q(s, x) + x^s e^{-x} / \Gamma(s + 1)` from
+        :math:`Q(1/2, x) = \mathrm{erfc}\sqrt{x}`."""
+        alpha = 1.0
+        x = k_c * k_c / (2.0 * alpha)
+        closed = math.erfc(math.sqrt(x))
+        for s in range(l + 1):
+            closed += x ** (s + 0.5) * math.exp(-x) / math.gamma(s + 1.5)
+        assert closed > 1e-3                       # a number worth matching
+        r = np.linspace(0.0, 30.0, 3001)
+        values = gaussian(r, l, alpha)
+        # The error is the wave-vector quadrature, not the radial mesh: 6.6e-6 at
+        # the default oversampling (8), 4.1e-7 at 32 (worst of this grid of cases).
+        default = residual_weight(r, values, l, k_c)
+        fine = residual_weight(r, values, l, k_c, oversample=32)
+        assert abs(default - closed) < 1e-5
+        assert abs(fine - closed) < 1e-6
 
     def test_a_band_limited_function_is_left_alone(self):
         """A smooth Gaussian already lives below the cutoff (3.3e-7 of its
@@ -292,6 +311,21 @@ class TestNativeFilter:
         second, again = filter_radial(R_GRID, values, 1, 6.0)
         assert np.abs(second).max() > 0.0
         assert again["max_change"] >= 0.0
+
+    def test_the_memo_is_bounded_and_drops_the_least_recently_used(self, monkeypatch):
+        from mandacaru.basis import filtering
+        monkeypatch.setattr(filtering, "FILTERED_CACHE_SIZE", 3)
+        monkeypatch.setattr(filtering, "_FILTERED", filtering.OrderedDict())
+        values = gaussian(R_GRID, 0, 1.0)
+        for k_c in (5.0, 6.0, 7.0):
+            filter_radial(R_GRID, values, 0, k_c)
+        filter_radial(R_GRID, values, 0, 5.0)          # 5.0 is now the newest
+        filter_radial(R_GRID, values, 0, 8.0)          # evicts 6.0, the oldest
+        keys = [key[2] for key in filtering._FILTERED]
+        assert keys == [7.0, 5.0, 8.0]
+        for k_c in range(9, 30):
+            filter_radial(R_GRID, values, 0, float(k_c))
+        assert len(filtering._FILTERED) == 3
 
     def test_a_cached_call_warns_as_the_first_one_did(self):
         values = gaussian(R_GRID, 0, 6.0)         # narrow: the cutoff eats it

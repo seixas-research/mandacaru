@@ -3,7 +3,7 @@
 //! [`super::onecenter`] and the frozen one-body pieces of
 //! [`super::onecenter_terms`].
 use super::invalid;
-use crate::{math::linalg::real_eigen, product, Buffer, Context, Result};
+use crate::{math::linalg::real_eigen, product, Buffer, Context, Error, Reservation, Result};
 use nalgebra::DMatrix;
 use num_complex::Complex64;
 
@@ -249,6 +249,10 @@ impl Hybrid {
 }
 
 /// The exact one-center terms of one sphere of a molecular Hamiltonian.
+///
+/// The `coupling`, `values` and `factors` stay charged to the [`Context`] that built
+/// them for as long as this value lives; `v`, `k` and `d0` are moved in, so the
+/// caller owns their charge.
 pub struct ExactAtom {
     pub v: DMatrix<f64>,
     pub k: DMatrix<f64>,
@@ -258,39 +262,81 @@ pub struct ExactAtom {
     /// Weights of the low-rank factors of `Delta W[(ab), (cd)] = sum_k lambda_k U^k_ab U^k_cd`.
     pub values: Vec<f64>,
     pub factors: Vec<DMatrix<f64>>,
+    _charge: Vec<Reservation>,
+}
+
+/// Matrices of `n^2 x n^2` doubles that [`exact_atom`] reserves for the pair-matrix
+/// eigenproblem, counting the input. The peak is in the accuracy check of
+/// [`real_eigen`] (the pair matrix, the solver's working copies, the eigenvectors, the
+/// residual `A V - V diag` with its factors, and `V^T V - 1`). The real heap was
+/// measured with a counting allocator in `tests/paw_onecenter_memory.rs`: 7.0 to
+/// 7.2 such matrices for `n` from 4 to 10, so eight leaves one spare for a change in
+/// the solver's temporaries; that test fails if the real heap exceeds the reservation.
+pub const PAIR_EIGEN_MATRICES: usize = 8;
+
+/// The bytes [`exact_atom`] holds at its peak for `n` projectors, `m = n^2`:
+/// `8 (m + 8 m^2 + 4 m)`, i.e. the coupling, the eigenproblem's matrices
+/// ([`PAIR_EIGEN_MATRICES`]), and four vectors of length `m` (eigenvalues, their
+/// order, the sorted copy and a spare). The pair matrix is `n^4` doubles, so the bound grows as `n^4`;
+/// an `n` too large for the [`Context`] is refused with the memory error before the
+/// matrix exists, and one whose byte count overflows with [`Error::Overflow`].
+pub fn exact_atom_peak_bytes(n: usize) -> Result<usize> {
+    let m = product(&[n, n])?;
+    let quad = product(&[m, m])?;
+    product(&[PAIR_EIGEN_MATRICES, quad, 8])?
+        .checked_add(product(&[5, m, 8])?)
+        .ok_or(Error::Overflow)
 }
 
 /// `tensor` is the real `n^4` exchange tensor with `omega = 0`; `v`, `k`, `d0` the
-/// layout-expanded one-body pieces.
+/// layout-expanded `n x n` one-body pieces (their charge is the caller's).
+///
+/// Memory is reserved from `ctx` before each allocation: the coupling (`8 n^2`
+/// bytes), then the eigenproblem's working set (`8 (8 n^4 + 4 n^2)`, see
+/// [`exact_atom_peak_bytes`]), which shrinks to the eigenvectors and eigenvalues
+/// once the problem is solved, then the kept factors (`8 r (n^2 + 1)` for `r`
+/// factors above the rank floor). The peak is [`exact_atom_peak_bytes`]; after the
+/// call `ctx` is charged `8 (n^2 + r (n^2 + 1))` bytes until the result is dropped.
 pub fn exact_atom(
+    ctx: &Context,
     n: usize,
     tensor: &[f64],
     v: DMatrix<f64>,
     k: DMatrix<f64>,
     d0: DMatrix<f64>,
 ) -> Result<ExactAtom> {
-    if tensor.len() != n * n * n * n {
+    let m = product(&[n, n])?;
+    let quad = product(&[m, m])?;
+    if tensor.len() != quad {
         return Err(invalid(
             "the one-center tensor does not match the projectors",
         ));
     }
-    let mut hartree = DMatrix::<f64>::zeros(n, n);
-    for i in 0..n {
-        for j in 0..n {
-            hartree[(i, j)] = (0..n * n)
-                .map(|kl| tensor[(i * n + j) * n * n + kl] * d0[(kl / n, kl % n)])
-                .sum();
-        }
+    if [&v, &k, &d0].iter().any(|b| b.shape() != (n, n)) {
+        return Err(invalid("the one-body blocks must each be n x n"));
     }
-    let hartree = (&hartree + hartree.transpose()) * 0.5;
-    let coupling = -&v - hartree + &k;
-    let pair = DMatrix::from_fn(n * n, n * n, |ab, cd| {
-        0.5 * (tensor[ab * n * n + cd] + tensor[cd * n * n + ab])
+    let coupling_charge = ctx.reserve(product(&[m, 8])?)?;
+    let mut work = ctx.reserve(exact_atom_peak_bytes(n)? - coupling_charge.bytes())?;
+    // The symmetrized Hartree term, built entry by entry: no n x n scratch.
+    let hartree = |i: usize, j: usize| -> f64 {
+        (0..m)
+            .map(|kl| tensor[(i * n + j) * m + kl] * d0[(kl / n, kl % n)])
+            .sum()
+    };
+    let coupling = DMatrix::from_fn(n, n, |i, j| {
+        -v[(i, j)] - (hartree(i, j) + hartree(j, i)) * 0.5 + k[(i, j)]
+    });
+    let pair = DMatrix::from_fn(m, m, |ab, cd| {
+        0.5 * (tensor[ab * m + cd] + tensor[cd * m + ab])
     });
     let (values, vectors) = real_eigen(pair)?;
+    // Only the eigenvectors and the eigenvalues outlive the solver.
+    work.shrink_to(product(&[quad + m, 8])?)?;
     let largest = values.iter().fold(0_f64, |m, v| m.max(v.abs())).max(1e-300);
     let floor = ONE_CENTER_RANK_FLOOR * largest;
-    let (mut kept, mut factors) = (Vec::new(), Vec::new());
+    let rank = values.iter().filter(|value| value.abs() > floor).count();
+    let factors_charge = ctx.reserve(product(&[rank, m + 1, 8])?)?;
+    let (mut kept, mut factors) = (Vec::with_capacity(rank), Vec::with_capacity(rank));
     for (index, value) in values.iter().enumerate() {
         if value.abs() > floor {
             kept.push(*value);
@@ -299,6 +345,8 @@ pub fn exact_atom(
             }));
         }
     }
+    drop(vectors);
+    drop(work);
     Ok(ExactAtom {
         v,
         k,
@@ -306,6 +354,7 @@ pub fn exact_atom(
         coupling,
         values: kept,
         factors,
+        _charge: vec![coupling_charge, factors_charge],
     })
 }
 

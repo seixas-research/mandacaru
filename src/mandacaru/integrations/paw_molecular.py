@@ -57,14 +57,14 @@ def build(driver, geometry):
     cutoff = resolve_filter_cutoff(
         options.get("filter_cutoff"), max(np.linalg.norm(grid.step_bohr, axis=0))
     )
-    confinement = {}
+    driver._basis_report = report = dict(confinement={}, polarization={}, options=options, cutoff=cutoff, species=species)
     functions, owners = pseudo_basis(
         symbols,
         geometry.positions,
         species,
         units=geometry.units,
         filter_wavevector=cutoff,
-        **pseudo_basis_arguments(family, options, confinement=confinement),
+        **pseudo_basis_arguments(family, options, confinement=report["confinement"], polarization=report["polarization"]),
     )
     arrays = {}
 

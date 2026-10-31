@@ -5,12 +5,12 @@ use mandacaru_core::paw::onecenter::{
     one_center_tensor, Basis, Channel, Couplings, Projector, Sphere,
 };
 use mandacaru_core::paw::onecenter_hybrid::{
-    exact_atom, exact_channel_derivatives, exact_channels, expand_blocks, ChannelData,
-    ChannelStack, Factors, Hybrid, HybridAtom,
+    exact_atom, exact_atom_peak_bytes, exact_channel_derivatives, exact_channels, expand_blocks,
+    ChannelData, ChannelStack, Factors, Hybrid, HybridAtom,
 };
 use mandacaru_core::paw::onecenter_radial::{
     legendre, long_range_radial_kernel, long_range_shape_potential, radial_coulomb,
-    three_j_squared, MAX_THREE_J,
+    three_j_squared, MAX_RADIAL_L, MAX_THREE_J,
 };
 use mandacaru_core::paw::onecenter_terms::{
     core_extent, core_orbital_tables, exact_one_center_terms, frozen_exchange_terms, CoreOrbital,
@@ -73,6 +73,36 @@ fn the_slater_integral_refuses_fewer_than_two_points() {
     // Two points is the smallest supported grid (a trapezoid).
     let value = radial_coulomb(&[0., 1.], &[1., 1.], &[1., 1.], 0).unwrap();
     assert!(value.is_finite());
+}
+
+#[test]
+fn the_slater_integral_refuses_a_multipole_beyond_its_range() {
+    // `L as i32` once wrapped: 2^32 returned the L = 0 value and 2^32 + 2 the L = 2 value.
+    let r = linspace(0., 6., 601);
+    let rho = r.iter().map(|r| (-r * r).exp()).collect::<Vec<_>>();
+    let at = |l: usize| radial_coulomb(&r, &rho, &rho, l);
+    assert_eq!(MAX_RADIAL_L, 64);
+    // The edges of the range are computed...
+    for l in [0, 1, MAX_RADIAL_L - 1, MAX_RADIAL_L] {
+        assert!(at(l).unwrap().is_finite(), "L = {l}");
+    }
+    // ...and everything above is refused with the invalid-input error, never wrapped.
+    let wraps = [0, 2, 3].map(|k| (1usize << 32) + k);
+    for l in [
+        MAX_RADIAL_L + 1,
+        1 << 31,
+        wraps[0],
+        wraps[1],
+        wraps[2],
+        usize::MAX,
+    ] {
+        match at(l) {
+            Err(mandacaru_core::Error::Invalid(message)) => {
+                assert!(message.contains("up to 64"), "{message}");
+            }
+            other => panic!("L = {l}: expected Error::Invalid, got {other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -656,7 +686,15 @@ fn the_exact_factors_rebuild_the_tensor_and_the_channels_are_the_derivative() {
     let blocks = [(0, &ones), (1, &ones)];
     let zero = DMatrix::zeros(n, n);
     let d0 = expand_blocks(&layout, &blocks).unwrap();
-    let atom = exact_atom(n, &tensor, zero.clone(), zero.clone(), d0.clone()).unwrap();
+    let atom = exact_atom(
+        &context(),
+        n,
+        &tensor,
+        zero.clone(),
+        zero.clone(),
+        d0.clone(),
+    )
+    .unwrap();
     // sum_k lambda_k U^k (x) U^k is the tensor.
     for ab in 0..n * n {
         for cd in 0..n * n {
@@ -680,7 +718,7 @@ fn the_exact_factors_rebuild_the_tensor_and_the_channels_are_the_derivative() {
             assert!((atom.coupling[(i, j)] + 0.5 * (h(i, j) + h(j, i))).abs() < 1e-13);
         }
     }
-    assert!(exact_atom(n, &tensor[..10], zero.clone(), zero.clone(), d0).is_err());
+    assert!(exact_atom(&context(), n, &tensor[..10], zero.clone(), zero.clone(), d0).is_err());
 
     // Channels of two spheres, and their derivative along dC.
     let (rows, width) = (4, 6);
@@ -799,6 +837,84 @@ fn the_hybrid_evaluation_reserves_what_it_allocates() {
     }
 }
 
+#[test]
+fn the_exact_atom_reserves_the_pair_matrix_and_its_solver() {
+    let n = 3;
+    let (m, tensor) = (n * n, symmetric_tensor(n, 7));
+    let layout = [(0, 0, 0), (1, 0, 0), (1, 1, 0)];
+    let ones = DMatrix::from_row_slice(1, 1, &[1.]);
+    let d0 = expand_blocks(&layout, &[(0, &ones), (1, &ones)]).unwrap();
+    let zero = DMatrix::zeros(n, n);
+    let build = |ctx: &Context| exact_atom(ctx, n, &tensor, zero.clone(), zero.clone(), d0.clone());
+
+    // The peak is the documented formula: the coupling, eight n^2 x n^2 matrices of the
+    // solver and four vectors of length n^2.
+    let peak = 8 * (8 * m * m + 5 * m);
+    assert_eq!(exact_atom_peak_bytes(n).unwrap(), peak);
+    let ctx = context();
+    let atom = build(&ctx).unwrap();
+    assert_eq!(ctx.memory_peak(), peak);
+    // What stays charged is the coupling, the weights and the factors.
+    let rank = atom.values.len();
+    assert!(rank > 0 && atom.factors.len() == rank);
+    assert_eq!(ctx.memory_used(), 8 * (m + rank * (m + 1)));
+    drop(atom);
+    assert_eq!(ctx.memory_used(), 0);
+
+    // One byte under the peak, and a budget that holds the coupling but not the
+    // solver, are refused with the memory error and keep nothing.
+    for limit in [peak - 1, 8 * m + 1, 8 * m - 1, 8] {
+        let small = Context::new(Some(1), limit).unwrap();
+        assert!(
+            matches!(build(&small), Err(mandacaru_core::Error::Budget { .. })),
+            "limit {limit}"
+        );
+        assert_eq!(small.memory_used(), 0);
+        assert!(small.memory_peak() <= limit);
+    }
+    // Exactly the peak is enough.
+    let exact = Context::new(Some(1), peak).unwrap();
+    assert!(build(&exact).is_ok());
+
+    // A huge n is refused before anything is built: its byte count overflows, or the
+    // budget cannot hold it; a tensor of the wrong size is an input error.
+    assert!(matches!(
+        exact_atom_peak_bytes(usize::MAX),
+        Err(mandacaru_core::Error::Overflow)
+    ));
+    for huge in [1usize << 20, usize::MAX] {
+        assert!(matches!(
+            exact_atom(&ctx, huge, &[], zero.clone(), zero.clone(), d0.clone()),
+            Err(mandacaru_core::Error::Overflow)
+        ));
+    }
+    assert!(matches!(
+        exact_atom(
+            &ctx,
+            40_000,
+            &tensor,
+            zero.clone(),
+            zero.clone(),
+            d0.clone()
+        ),
+        Err(mandacaru_core::Error::Invalid(_))
+    ));
+    let wide = 24;
+    let big = vec![0.; wide * wide * wide * wide];
+    let tiny = Context::new(Some(1), 1 << 20).unwrap();
+    let blocks = DMatrix::zeros(wide, wide);
+    assert!(matches!(
+        exact_atom(&tiny, wide, &big, blocks.clone(), blocks.clone(), blocks),
+        Err(mandacaru_core::Error::Budget { .. })
+    ));
+    assert_eq!(tiny.memory_used(), 0);
+    // The one-body blocks must be n x n: a mismatch is an error, not a panic.
+    assert!(matches!(
+        exact_atom(&ctx, n, &tensor, DMatrix::zeros(2, 2), zero.clone(), d0),
+        Err(mandacaru_core::Error::Invalid(_))
+    ));
+}
+
 fn spins_bytes(spins: usize, p: usize) -> usize {
     spins * p * p * 16
 }
@@ -811,7 +927,7 @@ fn the_exact_channels_reserve_the_stack_and_the_scratch() {
     let ones = DMatrix::from_row_slice(1, 1, &[1.]);
     let d0 = expand_blocks(&layout, &[(0, &ones), (1, &ones)]).unwrap();
     let zero = DMatrix::zeros(n, n);
-    let atom = exact_atom(n, &tensor, zero.clone(), zero, d0).unwrap();
+    let atom = exact_atom(&context(), n, &tensor, zero.clone(), zero, d0).unwrap();
     let (rows, width) = (4, 6);
     let c = random_hermitian(6, 5)[..rows * width].to_vec();
     let dc = random_hermitian(6, 6)[..rows * width].to_vec();

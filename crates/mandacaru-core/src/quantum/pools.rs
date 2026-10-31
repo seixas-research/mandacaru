@@ -73,6 +73,28 @@ fn spin_orbit_pair(
     Ok([real, imaginary])
 }
 
+/// Every pool `build` accepts and what it generates, in one table.
+const KINDS: [(&str, &str); 6] = [
+    ("fermionic", "fermionic excitations"),
+    ("spin-orbit", "spin-orbit generalized excitations"),
+    ("qubit", "individual Pauli strings"),
+    ("qeb", "qubit excitations"),
+    ("ceo", "coupled exchange operators"),
+    (
+        "ceo-ovp",
+        "coupled exchange operators, one parameter per growth step",
+    ),
+];
+/// What the pool called `name` generates, for a run log. Raises for a name
+/// `build` does not accept, so a log never describes a pool that was not built.
+pub fn kind(name: &str) -> Result<&'static str> {
+    KINDS
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(_, label)| *label)
+        .ok_or_else(|| Error::Invalid("unknown ADAPT operator pool".into()))
+}
+
 pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> Result<Pool> {
     let mut operators = Vec::new();
     let mut screenable = Vec::new();

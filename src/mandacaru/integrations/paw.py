@@ -47,6 +47,8 @@ def crystal_input(
     provenance=None,
     precision="float64",
     time_reversal=False,
+    unrestricted=False,
+    hubbard=None,
 ):
     """Snapshot the density-independent PAW setup; this performs no SCF steps."""
     if functional not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"):
@@ -146,10 +148,9 @@ def crystal_input(
         constant=float(constant),
         reference=float(2 * np.pi * c.sigma**2 * np.sum(c.charges) / c.volume),
         electrons=float(electrons),
-        spins=2
-        if not c.has_spin_orbit and magnetic_moments is not None and np.any(np.asarray(magnetic_moments) != 0.0)
-        else 1,
+        spins=2 if not c.has_spin_orbit and (unrestricted or (magnetic_moments is not None and np.any(np.asarray(magnetic_moments) != 0.0))) else 1,
         spinor=c.has_spin_orbit,
+        hubbard=hubbard,
         time_reversal=bool(time_reversal),
         functional=functional,
         precision=precision,
@@ -173,6 +174,7 @@ def configure(driver, atoms):
     from ..pseudopotentials.periodic_paw import build_crystal, spin_orbit_symbols
     from ..integrals.exchange_correlation import core_correction_offset
     from ..models.datasets import _datasets_relativistic, _warn_functional_mismatch
+    from .. import hubbard
 
     if driver._load_crystal is not None:
         raise ValueError(
@@ -246,6 +248,8 @@ def configure(driver, atoms):
         magnetic_moments=moments,
         precision=driver._precision,
         time_reversal=time_reversal,
+        unrestricted=driver._unrestricted,
+        hubbard=hubbard.table(driver._hubbard_u, driver.context, crystal, moments),
         provenance=dict(
             mesh_size=list(context["kpts_size"]),
             mesh_gamma=context["kpts_gamma"],
@@ -268,10 +272,6 @@ def configure(driver, atoms):
     )
     # Explicitly retain the adapter for off-mesh PAW matrices only. The Rust
     # solver retains no callback or reference to this Python object.
-    if driver._unrestricted and not spinor:
-        options = json.loads(metadata)
-        options["spins"] = 2
-        metadata = json.dumps(options)
     driver._crystal_adapter, driver._crystal_metadata = crystal, context
     driver.periodic_problem = driver.context.periodic_problem(metadata, arrays)
     # This adapter owns recipes for new k-points. The SCF mesh and its samples

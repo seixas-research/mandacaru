@@ -252,3 +252,17 @@ fn coupled_exchange_growth_expands_live_members_with_independent_parameters() {
     assert!(result.indices.iter().any(|&i| !problem.pool_screenable[i]));
     assert!(result.parameters.len() > result.iterations.len());
 }
+
+#[test]
+fn every_pool_that_builds_has_a_kind_and_an_unknown_name_has_neither() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let encoding = Encoding::new("jordan_wigner", 6, [1, 1]).unwrap();
+    let mut labels = std::collections::BTreeSet::new();
+    for name in ["fermionic", "spin-orbit", "qubit", "qeb", "ceo", "ceo-ovp"] {
+        pools::build(&ctx, &encoding, name, true).unwrap();
+        assert!(labels.insert(pools::kind(name).unwrap()), "{name}");
+    }
+    assert!(pools::kind("uccsd").is_err());
+    assert!(pools::build(&ctx, &encoding, "uccsd", true).is_err());
+    assert_eq!(ctx.memory_used(), 0);
+}

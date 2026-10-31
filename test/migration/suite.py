@@ -95,7 +95,7 @@ def run(args) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--backend", choices=("numpy", "rust", "c", "auto"), default="auto")
+    parser.add_argument("--backend", choices=("rust",), default="rust")
     parser.add_argument("--threads", type=positive, default=1)
     parser.add_argument("--timeout", type=positive, default=1200)
     parser.add_argument("--markers", default="not slow")

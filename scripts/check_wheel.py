@@ -1,11 +1,20 @@
-"""Exercise an installed wheel with compilers and integration imports blocked."""
+"""Check a wheel's contents, then exercise it installed with compilers and integration imports blocked.
+
+python scripts/check_wheel.py WHEEL --python VENV/bin/python
+"""
 
 import argparse
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
+SOURCE_SUFFIXES = (".c", ".h", ".cpp", ".f90")
+BINARY_SUFFIXES = (".so", ".dylib", ".dll", ".pyd")
+RETIRED_REQUIREMENTS = ("fastparquet", "pandas", "pyarrow")
+RETIRED_FILES = ("mandacaru/basis/r2scan.py",)
 SMOKE = r"""
 import importlib.abc, importlib.metadata, json, pathlib, subprocess, sys
 class NoOptionalImports(importlib.abc.MetaPathFinder):
@@ -53,10 +62,62 @@ print(json.dumps({'version':mandacaru.__version__,'extension':_native.__file__,
 """
 
 
+def project_scripts() -> dict[str, str]:
+    """The console scripts ``pyproject.toml`` declares: the one list the wheel must match."""
+    return tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["scripts"]
+
+
+def content_problems(names, metadata, wheel_metadata, entry_points, scripts) -> list[str]:
+    """Everything wrong with a wheel's file list and ``dist-info`` text (empty when sound)."""
+    problems = []
+    binaries = [n for n in names if n.endswith(BINARY_SUFFIXES)]
+    if len(binaries) != 1 or not binaries[0].startswith("mandacaru/_native"):
+        problems.append(f"want exactly one binary, mandacaru/_native*; found {binaries}")
+    foreign = [n for n in names
+               if n.endswith(SOURCE_SUFFIXES) or "libmandacaru_integrals" in n
+               or "csrc" in n.split("/")]
+    if foreign:
+        problems.append(f"C/C++/Fortran sources, the retired integral library or csrc shipped: {foreign}")
+    if "Root-Is-Purelib: false" not in wheel_metadata or "py3-none-any" in wheel_metadata:
+        problems.append("the wheel must be a platform wheel (Root-Is-Purelib: false, no py3-none-any)")
+    requires = {line.split(":", 1)[1].split(";")[0].strip().lower()
+                for line in metadata.splitlines() if line.startswith("Requires-Dist:")}
+    for retired in RETIRED_REQUIREMENTS:
+        if any(r == retired or r.startswith(tuple(retired + mark for mark in " ><=~![("))
+               for r in requires):
+            problems.append(f"retired requirement {retired}: {sorted(requires)}")
+    if "#gh-dark-mode-only" in metadata or "#gh-light-mode-only" in metadata:
+        problems.append("the description still carries GitHub-only logo markup")
+    for name, target in scripts.items():
+        if f"{name} = {target}" not in entry_points:
+            problems.append(f"entry point missing: {name} = {target}")
+    stray = [n for n in names if {"target", "__pycache__"} & set(n.split("/"))]
+    if stray:
+        problems.append(f"build products in the wheel: {stray[:5]}")
+    problems += [f"retired file shipped: {n}" for n in RETIRED_FILES if n in names]
+    return problems
+
+
+def wheel_problems(wheel: Path) -> list[str]:
+    """Read ``wheel`` and return its content problems."""
+    with ZipFile(wheel) as archive:
+        names = archive.namelist()
+
+        def text(suffix):
+            return archive.read(next(n for n in names if n.endswith(suffix))).decode()
+
+        return content_problems(names, text("/METADATA"), text("/WHEEL"),
+                                text("/entry_points.txt"), project_scripts())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("wheel", type=Path)
     parser.add_argument("--python", type=Path, required=True)
     options = parser.parse_args()
+    problems = wheel_problems(options.wheel)
+    if problems:
+        raise SystemExit("wheel contents:\n  " + "\n  ".join(problems))
     with tempfile.TemporaryDirectory(prefix="mandacaru-wheel-") as temporary:
         subprocess.run(
             [

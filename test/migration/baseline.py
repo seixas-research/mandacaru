@@ -248,16 +248,24 @@ def calculate(case: dict) -> dict:
             "diagnostics": {"num_evaluations": int(result.num_evaluations), **diagnostics}}
 
 
+def backend_record(status) -> dict:
+    """The ``native_backend`` block of one sample, from a ``BackendStatus``."""
+    native = Path(status.path) if status.path else None
+    return {"available": status.available, "message": status.message,
+            "threads": status.n_threads,
+            "library_sha256": fingerprint(native) if native else None}
+
+
 def worker(case_id: str, output: Path) -> int:
     # Import before the compute timer; process_wall_s separately includes imports.
     import numpy
     from mandacaru import Mandacaru
-    from mandacaru.integrals import ensure_backend
+    from mandacaru.integrals._backend import ensure_backend
     case = next(c for c in cases() if c["id"] == case_id)
     start = time.perf_counter()
     sample = {}
     try:
-        status = ensure_backend(build=False)
+        ensure_backend()
         start = time.perf_counter()
         sample = calculate(case)
         sample["status"] = "ok" if all(sample["checks"].values()) else "failed"
@@ -269,12 +277,8 @@ def worker(case_id: str, output: Path) -> int:
     sample.update(peak_rss_bytes=int(usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)),
                   user_cpu_s=usage.ru_utime, system_cpu_s=usage.ru_stime,
                   environment=environment())
-    from mandacaru.integrals import check_backend
-    status = check_backend()
-    native = Path(status.path) if status.path else None
-    sample["native_backend"] = {"available": status.available, "message": status.message,
-                                "is_rust": status.is_rust, "threads": status.n_threads,
-                                "library_sha256": fingerprint(native) if native else None}
+    from mandacaru.integrals._backend import check_backend
+    sample["native_backend"] = backend_record(check_backend())
     try:
         write_json(output, sample)
     except ValueError:
@@ -408,7 +412,7 @@ def main() -> int:
     export.add_argument("--output", type=Path, required=True)
     capture = commands.add_parser("run")
     capture.add_argument("--output", type=Path, required=True)
-    capture.add_argument("--backend", choices=("numpy", "rust", "c", "auto"), default="numpy")
+    capture.add_argument("--backend", choices=("rust",), default="rust")
     capture.add_argument("--threads", type=positive, default=1)
     capture.add_argument("--repeat", type=positive, default=3)
     capture.add_argument("--timeout", type=positive, default=180)

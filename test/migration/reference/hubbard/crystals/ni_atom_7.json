@@ -1,0 +1,306 @@
+{
+ "schema_version": 1,
+ "representation": "periodic-paw-snapshot",
+ "energy_unit": "Ha",
+ "length_unit": "bohr",
+ "grid": {
+  "shape": [
+   28,
+   28,
+   28
+  ],
+  "origin": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "step": [
+   0.4724315311564425,
+   0.0,
+   0.0,
+   0.0,
+   0.4724315311564425,
+   0.0,
+   0.0,
+   0.0,
+   0.4724315311564425
+  ]
+ },
+ "m": 10,
+ "p": 18,
+ "channels": 25,
+ "channel_labels": [
+  [
+   0,
+   0,
+   0
+  ],
+  [
+   0,
+   1,
+   -1
+  ],
+  [
+   0,
+   1,
+   0
+  ],
+  [
+   0,
+   1,
+   1
+  ],
+  [
+   0,
+   2,
+   -2
+  ],
+  [
+   0,
+   2,
+   -1
+  ],
+  [
+   0,
+   2,
+   0
+  ],
+  [
+   0,
+   2,
+   1
+  ],
+  [
+   0,
+   2,
+   2
+  ],
+  [
+   0,
+   3,
+   -3
+  ],
+  [
+   0,
+   3,
+   -2
+  ],
+  [
+   0,
+   3,
+   -1
+  ],
+  [
+   0,
+   3,
+   0
+  ],
+  [
+   0,
+   3,
+   1
+  ],
+  [
+   0,
+   3,
+   2
+  ],
+  [
+   0,
+   3,
+   3
+  ],
+  [
+   0,
+   4,
+   -4
+  ],
+  [
+   0,
+   4,
+   -3
+  ],
+  [
+   0,
+   4,
+   -2
+  ],
+  [
+   0,
+   4,
+   -1
+  ],
+  [
+   0,
+   4,
+   0
+  ],
+  [
+   0,
+   4,
+   1
+  ],
+  [
+   0,
+   4,
+   2
+  ],
+  [
+   0,
+   4,
+   3
+  ],
+  [
+   0,
+   4,
+   4
+  ]
+ ],
+ "kpoints": [
+  {
+   "k": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "fractional": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "weight": 1.0,
+   "psi": "k0.psi",
+   "overlap": "k0.overlap",
+   "fixed": "k0.fixed",
+   "projections": "k0.projections"
+  }
+ ],
+ "blocks": "blocks",
+ "core": "core",
+ "initial": "initial",
+ "initial_m": "initial_m",
+ "initial_q": "initial_q",
+ "kernel": "kernel",
+ "xc_wave": "xc_wave",
+ "phase": "phase",
+ "kerker": "kerker",
+ "ion": "ion",
+ "hats": "hats",
+ "u": "u",
+ "uion": "uion",
+ "linear": "linear",
+ "eion": 103.82618950666875,
+ "ion_constant": -138.18890222644842,
+ "constant": -27.40574204937809,
+ "reference": 0.02137447591997145,
+ "electrons": 18.0,
+ "spins": 2,
+ "spinor": false,
+ "time_reversal": false,
+ "functional": "lda",
+ "precision": "float64",
+ "relativistic": true,
+ "permutations": "permutations",
+ "permutation_count": 0,
+ "qsym": "qsym",
+ "provenance": {
+  "mesh_size": [
+   1,
+   1,
+   1
+  ],
+  "mesh_gamma": true,
+  "family": "paw-lcao",
+  "dataset_sources": [
+   {
+    "symbol": "Ni",
+    "sha256": "7ddac3df6239476222cafb3fb770af24f135c473ff2b5ecc77a2e99725424653",
+    "file": "Ni.parquet"
+   }
+  ],
+  "geometry": {
+   "numbers": [
+    28
+   ],
+   "positions_angstrom": [
+    [
+     3.4999999999999996,
+     3.4999999999999996,
+     3.4999999999999996
+    ]
+   ],
+   "cell_angstrom": [
+    [
+     6.999999999999999,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     6.999999999999999,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     6.999999999999999
+    ]
+   ],
+   "pbc": [
+    true,
+    true,
+    true
+   ]
+  },
+  "setup_engine": "python-paw-adapter"
+ },
+ "hubbard": {
+  "form": "dudarev-fll",
+  "shells": [
+   {
+    "atom": 0,
+    "symbol": "Ni",
+    "l": 2,
+    "u": 0.0,
+    "j": 0.0,
+    "projectors": [
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17
+    ],
+    "weights": [
+     -0.8393327331562533,
+     0.45387224647735247
+    ],
+    "projector_basis": "raw",
+    "seed": {
+     "n_electrons": 8.0,
+     "moment": 2.0
+    }
+   }
+  ]
+ },
+ "fixture": {
+  "generator": "test/migration/export_hubbard_crystal.py",
+  "case": "ni_atom_7",
+  "width_ev": 0.02,
+  "symmetry": false,
+  "spin": true,
+  "h_angstrom": 0.25,
+  "size": "SZ",
+  "symbols": [
+   "Ni"
+  ],
+  "initial_moments": [
+   2.0
+  ],
+  "note": "U = 0 in the file; the tests set U. Energies are Hartree, lengths Bohr."
+ }
+}

@@ -1,0 +1,79 @@
+{
+ "stamps": {
+  "stage": "stamps",
+  "returncode": 0,
+  "wall_s": 0.26,
+  "max_rss_MB": 49.7,
+  "peak_footprint_MB": 30.8
+ },
+ "counts": {
+  "stage": "counts",
+  "returncode": 0,
+  "wall_s": 0.76,
+  "max_rss_MB": 110.9,
+  "peak_footprint_MB": 82.6
+ },
+ "kzk_table": {
+  "stage": "kzk_table",
+  "returncode": 0,
+  "wall_s": 0.38,
+  "max_rss_MB": 74.1,
+  "peak_footprint_MB": 51.8
+ },
+ "kzk_density": {
+  "stage": "kzk_density",
+  "returncode": 0,
+  "wall_s": 0.5,
+  "max_rss_MB": 88.2,
+  "peak_footprint_MB": 55.1
+ },
+ "kzk_heg": {
+  "stage": "kzk_heg",
+  "returncode": 0,
+  "wall_s": 0.53,
+  "max_rss_MB": 331.4,
+  "peak_footprint_MB": 96.8
+ },
+ "voxel": {
+  "stage": "voxel",
+  "returncode": 0,
+  "wall_s": 0.42,
+  "max_rss_MB": 75.8,
+  "peak_footprint_MB": 53.7
+ },
+ "madelung": {
+  "stage": "madelung",
+  "returncode": 0,
+  "wall_s": 0.42,
+  "max_rss_MB": 70.3,
+  "peak_footprint_MB": 48.3
+ },
+ "ws_kernel": {
+  "stage": "ws_kernel",
+  "returncode": 0,
+  "wall_s": 2.49,
+  "max_rss_MB": 262.4,
+  "peak_footprint_MB": 121.0
+ },
+ "mpc_n1": {
+  "stage": "mpc_n1",
+  "returncode": 0,
+  "wall_s": 1.96,
+  "max_rss_MB": 381.6,
+  "peak_footprint_MB": 151.3
+ },
+ "ccmh_synth": {
+  "stage": "ccmh_synth",
+  "returncode": 0,
+  "wall_s": 0.48,
+  "max_rss_MB": 93.6,
+  "peak_footprint_MB": 60.2
+ },
+ "ccmh_index": {
+  "stage": "ccmh_index",
+  "returncode": 0,
+  "wall_s": 0.22,
+  "max_rss_MB": 50.4,
+  "peak_footprint_MB": 32.6
+ }
+}

@@ -98,6 +98,20 @@ class TestRadialCoulomb:
         assert np.isfinite(radial_coulomb(np.array([0.0, 1.0]), np.ones(2),
                                           np.ones(2), 0))
 
+    def test_a_multipole_beyond_the_range_raises(self):
+        """``L`` went through ``as i32``: 2**32 returned the L = 0 value and
+        2**32 + 2 the L = 2 value.  Past 64 it is a ValueError, a negative one
+        an OverflowError at the binding; 0 and 64 are computed."""
+        r = np.linspace(0.0, 6.0, 601)
+        rho = np.exp(-r ** 2)
+        for L in (0, 64):
+            assert np.isfinite(radial_coulomb(r, rho, rho, L))
+        for L in (65, 2 ** 31, 2 ** 32, 2 ** 32 + 2, 2 ** 63):
+            with pytest.raises(ValueError, match="up to 64"):
+                radial_coulomb(r, rho, rho, L)
+        with pytest.raises(OverflowError):
+            radial_coulomb(r, rho, rho, -1)
+
 
 class TestAngularCoupling:
     def test_s_densities_carry_only_the_monopole(self):
@@ -412,6 +426,33 @@ class TestOneCenterExact:
         assert stack.shape == (1, 3, 3) and stack.dtype == float
         assert np.all(stack == 4.0)             # (1, 1) U (1, 1)^T, U all ones
 
+    def test_the_exact_atom_is_charged_to_the_context(self):
+        """The ``n^2 x n^2`` pair matrix, its eigenvectors and the returned
+        arrays are reserved: a context too small for them raises MemoryError
+        and a roomy one returns the factors.  For ``n = 3`` the reservation
+        peaks at 8 (8 n^4 + 5 n^2) = 5,544 bytes beside the copies of the input."""
+        n = 3
+        layout = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]])
+        tensor = np.random.default_rng(7).normal(size=(n, n, n, n))
+        for axes in ((1, 0, 2, 3), (0, 1, 3, 2), (2, 3, 0, 1)):
+            tensor = tensor + tensor.transpose(axes)        # the symmetries of W
+        tensor = np.ascontiguousarray(tensor)
+        ones = [np.ones((1, 1)), np.ones((1, 1))]
+        zero = [np.zeros((1, 1)), np.zeros((1, 1))]
+        arguments = (layout, tensor, [0, 1], zero, zero, ones)
+        for limit in (500, 4_000, 5_000):
+            small = _native.Context(threads=1, memory_limit_bytes=limit)
+            with pytest.raises(MemoryError):
+                _native.paw_exact_atom(small, *arguments)
+        roomy = _native.Context(threads=1, memory_limit_bytes=1 << 20)
+        _, _, d0, coupling, values, factors = _native.paw_exact_atom(
+            roomy, *arguments)
+        assert d0.shape == coupling.shape == (n, n)
+        assert factors.shape == (values.size, n, n) and values.size > 0
+        # the pair matrix of the tensor is rebuilt from the factors
+        rebuilt = np.einsum("k,kab,kcd->abcd", values, factors, factors)
+        assert np.allclose(rebuilt, tensor, atol=1e-12)
+
     def test_three_j_symbols_beyond_the_range_raise(self):
         three_j = _native.paw_three_j_squared
         assert three_j(128, 128, 1) == 0.0      # odd sum, inside the range
@@ -553,8 +594,12 @@ def datasets():
 class TestFrozenPythonOutputs:
     """The Rust routines against the outputs of the Python they replaced
     (``test/migration/reference/paw/onecenter.npz``; the inputs are in the JSON
-    beside it).  ``radial_coulomb`` was frozen on its SciPy branch: the C-ABI
-    kernel integrates one interval short for an odd number of points."""
+    beside it).  ``radial_coulomb`` was frozen on its SciPy branch, which applies
+    the true local steps of the grid.  The C-ABI kernel it replaced uses one
+    step, ``h = r[1] - r[0]``, for the whole grid while the stored radial table
+    is rounded to twelve decimals (its steps differ from the mean by up to
+    1.5e-7 relative), which moves the integral by about 1e-9; its missing last
+    interval for an odd number of points matters 100 times less (4e-12)."""
 
     @staticmethod
     def own(dataset, symbol, basis, real=True, only=None):

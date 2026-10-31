@@ -2,6 +2,9 @@
 pub mod analysis;
 pub mod ewald;
 pub mod fields;
+pub mod finite_size;
+pub mod hubbard;
+pub mod hubbard_table;
 pub mod input;
 pub mod screening;
 pub mod solver;

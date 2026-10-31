@@ -126,6 +126,75 @@ fn both_native_solvers_resume_their_owned_snapshots() {
 }
 
 #[test]
+fn a_checkpoint_states_its_lineage_and_a_hamiltonian_snapshot_has_none() {
+    let ctx = context();
+    {
+        let h = Operator::new(
+            &ctx,
+            4,
+            &[
+                ("ZIII".into(), C64::new(0.3, 0.)),
+                ("XXII".into(), C64::new(0.2, 0.)),
+                ("YYII".into(), C64::new(0.2, 0.)),
+            ],
+        )
+        .unwrap();
+        let problem = CachedProblem::new(
+            &ctx,
+            Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
+            h,
+            true,
+            false,
+            true,
+        )
+        .unwrap();
+        let options = SolveOptions {
+            adapt: true,
+            ..Default::default()
+        };
+        let result = problem.solve(&options, None).unwrap();
+        assert!(!result.indices.is_empty());
+        let doc = persistence::checkpoint(
+            &ctx,
+            &problem,
+            &result.indices,
+            &result.parameters,
+            true,
+            "adapt-vqe",
+            json!({"complete":true}),
+            result.energy,
+        )
+        .unwrap();
+        let lineage = doc.lineage().unwrap();
+        assert_eq!(lineage.method.as_deref(), Some("adapt-vqe"));
+        assert_eq!(lineage.energy, Some(result.energy));
+        assert_eq!(lineage.operators, result.indices.len());
+        assert_eq!(lineage.parameters, result.parameters.len());
+        let status: serde_json::Value =
+            serde_json::from_str(lineage.status.as_deref().unwrap()).unwrap();
+        assert_eq!(status, json!({"complete":true}));
+        // A checkpoint without recorded energy or status says so.
+        let bare = json!({"format":CHECKPOINT,"version":2,"energy_unit":"Ha","n_qubits":1,"reference_qubits":[],"mapping":"jordan_wigner","preparation":"product","operators":[],"hamiltonian":{"num_qubits":1,"terms":[["Z",1.,0.]]}});
+        let bare = Document::parse(&ctx, &bare.to_string(), CHECKPOINT).unwrap();
+        let lineage = bare.lineage().unwrap();
+        assert_eq!(
+            (
+                lineage.method,
+                lineage.energy,
+                lineage.operators,
+                lineage.status
+            ),
+            (None, None, 0, None)
+        );
+        let terms = json!({"format":persistence::HAMILTONIAN,"version":1,"num_qubits":1,"terms":[["Z",1.,0.]]});
+        let hamiltonian =
+            Document::parse(&ctx, &terms.to_string(), persistence::HAMILTONIAN).unwrap();
+        assert!(hamiltonian.lineage().is_err());
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
 fn quotas_reject_before_accounting_and_keep_failed_jobs_charged() {
     let ctx = context();
     {

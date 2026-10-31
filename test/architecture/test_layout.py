@@ -41,3 +41,22 @@ def test_crate_dependency_detection_includes_target_and_build_dependencies():
         "pyo3-build-config",
         "mandacaru-core",
     }
+
+
+def test_foreign_residue_flags_a_c_source_or_a_second_library(tmp_path):
+    package = tmp_path / "mandacaru"
+    (package / "integrals" / "csrc").mkdir(parents=True)
+    (package / "target" / "release").mkdir(parents=True)
+    (package / "_native.cpython-314-darwin.so").write_bytes(b"")
+    (package / "target" / "release" / "lib_native.so").write_bytes(b"")
+    (package / "integrals" / "grid.py").write_text("")
+    assert CHECKS["foreign_residue"](package) == []
+    (package / "integrals" / "csrc" / "kernels.C").write_text("")
+    (package / "integrals" / "libmandacaru_integrals.dylib").write_bytes(b"")
+    (package / "basis.f90").write_text("")
+    assert CHECKS["foreign_residue"](package) == [
+        "basis.f90: foreign source under the package",
+        "integrals/csrc/kernels.C: foreign source under the package",
+        "integrals/libmandacaru_integrals.dylib: shared library other than "
+        "the _native extension",
+    ]

@@ -122,6 +122,8 @@ pub struct Crystal {
     pub relativistic: bool,
     pub permutations: Vec<Vec<usize>>,
     pub qsym: Buffer<C64>,
+    /// DFT+U shells, when the snapshot carries a `hubbard` object.
+    pub hubbard: Option<super::hubbard::Spec>,
     source: String,
     _memory: Reservation,
 }
@@ -459,10 +461,21 @@ impl Crystal {
                 .ok_or_else(|| invalid("missing functional"))?,
         )?;
         if definition.screened_exchange.is_some() {
-            return Err(invalid(
-                "periodic screened exact exchange requires its reciprocal exchange operator",
-            ));
+            return Err(invalid(if v["hubbard"].is_null() {
+                "periodic screened exact exchange requires its reciprocal exchange operator"
+            } else {
+                "periodic screened exact exchange requires its reciprocal exchange operator, \
+                 and DFT+U is not available with hybrid functionals"
+            }));
         }
+        let hubbard = super::hubbard::Spec::parse(
+            &v["hubbard"],
+            p,
+            spins,
+            spinor,
+            precision,
+            permutations.len(),
+        )?;
         let functional = definition.name.to_string();
         let core_tau = if definition.requires_tau {
             let values = arrays.real(ctx, &v["core_tau"], n, "core kinetic density")?;
@@ -530,6 +543,7 @@ impl Crystal {
                 product(&[channels, channels])?,
                 "moment symmetrization",
             )?,
+            hubbard,
             source: source.to_string(),
             _memory: memory,
         };
@@ -596,6 +610,9 @@ impl Crystal {
             value[key] = serde_json::json!(buffer.as_slice());
         }
         value["permutations"] = serde_json::json!(self.permutations);
+        if let Some(hubbard) = &self.hubbard {
+            value["hubbard"] = hubbard.to_json();
+        }
         for (row, point) in value["kpoints"]
             .as_array_mut()
             .ok_or_else(|| invalid("missing kpoint metadata"))?

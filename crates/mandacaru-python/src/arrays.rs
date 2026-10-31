@@ -5,7 +5,9 @@ use numpy::{
     Complex64, IntoPyArray, PyArrayDyn, PyArrayMethods, PyReadonlyArray, PyUntypedArrayMethods,
 };
 use pyo3::{
-    exceptions::{PyMemoryError, PyOverflowError, PyRuntimeError, PyValueError},
+    exceptions::{
+        PyMemoryError, PyNotImplementedError, PyOverflowError, PyRuntimeError, PyValueError,
+    },
     prelude::*,
 };
 pub(crate) type Array<'py, T> = Bound<'py, PyArrayDyn<T>>;
@@ -13,6 +15,7 @@ pub(crate) type NativeComplex = mandacaru_core::Complex64;
 pub(crate) fn error(error: Error) -> PyErr {
     match error {
         Error::Invalid(_) => PyValueError::new_err(error.to_string()),
+        Error::Unsupported(_) => PyNotImplementedError::new_err(error.to_string()),
         Error::Overflow => PyOverflowError::new_err(error.to_string()),
         Error::Budget { .. } | Error::Allocation => PyMemoryError::new_err(error.to_string()),
         Error::Kernel(_) | Error::Interrupted(_) => PyRuntimeError::new_err(error.to_string()),

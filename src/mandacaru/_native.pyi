@@ -203,6 +203,52 @@ def paw_spurious_nodes(l: int, r_cut: float, r: NDArray[np.float64], ae: NDArray
 def paw_spectrum_extent(r: NDArray[np.float64], wave: NDArray[np.float64], floor: float, lower: float, upper: float) -> float: ...
 def radial_table_evaluate(context: Context, r: NDArray[np.float64], values: NDArray[np.float64], l: int, nodes: NDArray[np.float64], slope: bool) -> NDArray[np.float64]: ...
 def radial_table_coefficients(context: Context, r: NDArray[np.float64], values: NDArray[np.float64]) -> NDArray[np.float64]: ...
+class IntegralsReport(TypedDict):
+    representation: str | None
+    augmentation_rank: int | None
+    cholesky_rank: int | None
+    cholesky_residual: float | None
+    n_orbitals: int
+    atom_of_orbital: list[int]
+
+class SnapshotLineage(TypedDict):
+    method: str | None
+    energy_ha: float | None
+    num_operators: int
+    num_parameters: int
+    status: str | None
+
+def problem_term_count(problem: QuantumProblem) -> int:
+    """Number of Pauli terms of the qubit Hamiltonian, without copying the terms."""
+def integrals_report(integrals: MolecularIntegrals) -> IntegralsReport:
+    """How the two-body integrals are stored, without the matrices of ``snapshot``.
+
+    Never builds the integrals: representation, ranks and residual are ``None``
+    until they exist (and the ranks for a representation without them).
+    """
+def snapshot_lineage(snapshot: Snapshot) -> SnapshotLineage:
+    """What a checkpoint was written by; ``status`` is JSON text. Raises for a Hamiltonian snapshot."""
+def pool_kind(name: str) -> str:
+    """What the ADAPT pool ``name`` generates. Raises for a name the solver does not build."""
+def hubbard_validate(spec: str, xc: str, precision: str) -> None:
+    """Check the ``hubbard_u`` option, given as the JSON text of the user's mapping (energies in eV).
+
+    Raises ``ValueError`` for a malformed mapping (element, shell letter, ``U``, ``J``, ``form``;
+    ``J`` above ``U``; a boolean, string or non-finite number) and for ``precision != "float64"``,
+    and ``NotImplementedError`` for a screened hybrid functional ``xc``. Every message names
+    ``hubbard_u``.
+    """
+def hubbard_table(context: Context, spec: str, spin_orbit: bool, symbols: list[str], bases: list[str], labels: NDArray[np.int64], species_of_atom: list[int], species: list[tuple[NDArray[np.float64], dict[int, tuple[NDArray[np.float64], NDArray[np.float64], float, NDArray[np.float64]]]]], moments: NDArray[np.float64]) -> str:
+    """The ``hubbard`` object of a crystal snapshot, as JSON text, for the option ``spec``.
+
+    ``labels`` is ``projectors x 4`` (atom, ``l``, ``m``, radial index of each global projector
+    position) with ``symbols`` and ``bases`` (``"raw"`` or ``"dual"``) beside it. ``species_of_atom``
+    indexes ``species`` for each atom; a species is ``(r, {l: (ae, vanderbilt, r_cut, occupations)})``
+    with ``ae`` shaped ``waves x grid`` and one occupation per wave. ``moments`` holds each atom's
+    initial magnetic moment. Raises ``ValueError`` for an element the system lacks, a dataset
+    without the requested channel and incomplete labels, and ``NotImplementedError`` for a
+    spin-orbit crystal.
+    """
 RADIAL_FILTER_METHODS: list[str]
 def radial_filter(context: Context, r: NDArray[np.float64], values: NDArray[np.float64], l: int, k_c: float, method: str | None = None, rolloff: float | None = None, oversample: int | None = None, renormalize: bool = True, switch_margin: float | None = None) -> tuple[NDArray[np.float64], tuple[float, float, float, float, bool, float, float]]: ...
 def radial_band_weight(context: Context, r: NDArray[np.float64], values: NDArray[np.float64], l: int, k_c: float, oversample: int | None = None) -> float: ...
@@ -438,6 +484,11 @@ class PeriodicProblem:
     def spins(self) -> int: ...
     @property
     def n_orbitals(self) -> int: ...
+    @property
+    def hubbard(self) -> list[tuple[int, str, int, float, float]] | None:
+        """The DFT+U shells as ``(atom, symbol, l, U_Ha, J_Ha)``; ``None`` without a ``hubbard`` object."""
+    def check_hubbard_u(self, spec: str) -> None:
+        """Raise ``ValueError`` unless the ``hubbard_u`` option (JSON text) agrees with the DFT+U shells this crystal carries."""
     def save(self, path: str) -> None: ...
     def solve(self, *, max_iterations: int = 300, tolerance: float = 1e-7, density_tolerance: float = 1e-5, smearing: str = "fermi-dirac", width_ha: float = ..., mixing: float = .25, history: int = 7) -> PeriodicResult: ...
 
@@ -447,6 +498,9 @@ class PeriodicResult:
     def n_iterations(self) -> int: ...
     @property
     def spin_orbit_energy(self) -> float | None: ...
+    @property
+    def hubbard_energy(self) -> float | None:
+        """``E_U`` in Hartree, already inside the energy; ``None`` without a ``hubbard`` object."""
     @property
     def converged(self) -> bool: ...
     def snapshot(self, *, include_matrices: bool = True) -> dict: ...

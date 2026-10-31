@@ -139,7 +139,9 @@ basis exactly.  The measured prices and benefits are in
 from __future__ import annotations
 
 import hashlib
+import threading
 import warnings
+from collections import OrderedDict
 from dataclasses import replace
 
 import numpy as np
@@ -352,10 +354,17 @@ def residual_weight(r, values, l: int, k_c: float, oversample=None, *,
         oversample)
 
 
-#: ``key -> (filtered, info)``: a radial table's filter is a pure function of
-#: the table and the options, and every crystal build (a strained cell for the
-#: stress, each relaxation step) asked for the same ones again.
-_FILTERED: dict = {}
+#: ``key -> (filtered, info, warning)``: a radial table's filter is a pure
+#: function of the table and the options, and every crystal build (a strained
+#: cell for the stress, each relaxation step) asked for the same ones again.
+#: A least-recently-used cache of at most :data:`FILTERED_CACHE_SIZE` entries.
+#: An entry is one filtered table (8 bytes per radial node) plus a short
+#: ``info`` dict: the longest mesh of the PAW-LCAO library, 29,625 nodes, is
+#: 237 kB, so the cache never holds more than 256 x 237 kB = 61 MB, and about
+#: 6 MB at the usual 3,000 nodes.
+FILTERED_CACHE_SIZE = 256
+_FILTERED: OrderedDict = OrderedDict()
+_FILTERED_LOCK = threading.Lock()
 
 
 def filter_radial(r, values, l: int, k_c: float, *, context=None, **options):
@@ -380,7 +389,10 @@ def filter_radial(r, values, l: int, k_c: float, *, context=None, **options):
     digest.update(values.tobytes())
     key = (digest.hexdigest(), l, k_c,
            tuple(sorted((k, v) for k, v in options.items() if k != "warn")))
-    cached = _FILTERED.get(key)
+    with _FILTERED_LOCK:
+        cached = _FILTERED.get(key)
+        if cached is not None:
+            _FILTERED.move_to_end(key)
     if cached is None:
         unknown = set(options) - {"method", "rolloff", "oversample",
                                   "renormalize", "switch_margin", "warn"}
@@ -412,7 +424,10 @@ def filter_radial(r, values, l: int, k_c: float, *, context=None, **options):
                 "function: at that cutoff the filter is replacing the basis, "
                 "not smoothing it.  Raise the cutoff (or the grid resolution).")
         cached = (filtered, info, message)
-        _FILTERED[key] = cached
+        with _FILTERED_LOCK:
+            _FILTERED[key] = cached
+            while len(_FILTERED) > FILTERED_CACHE_SIZE:
+                _FILTERED.popitem(last=False)
     if cached[2] is not None and options.get("warn", True):
         warnings.warn(cached[2], RuntimeWarning, stacklevel=2)
     return cached[0].copy(), dict(cached[1])

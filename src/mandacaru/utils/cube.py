@@ -54,16 +54,6 @@ import os
 
 import numpy as np
 
-from ..core.atomic import atomic_path
-from ..units import BOHR_TO_ANGSTROM
-
-#: Values per line in the data block of a cube file (the conventional layout).
-CUBE_VALUES_PER_LINE = 6
-
-#: Per-value format of the cube data block: the de-facto standard ``%13.5E``.
-#: Five significant digits is what every reader expects and is the precision a
-#: round trip through the file preserves.
-CUBE_VALUE_FORMAT = "%13.5E"
 
 #: The second comment line.  ``ase.io.cube.read_cube`` parses this exact
 #: sentence to learn the axis order, so it is written verbatim.
@@ -112,28 +102,6 @@ def _checked_field(data, origin, step, numbers, positions):
         raise ValueError(f"{len(numbers)} atomic numbers but "
                          f"{len(positions)} positions")
     return data, origin, step, numbers, positions
-
-
-def _data_lines(data) -> list[str]:
-    """The cube data block: ``z`` fastest, six values per line, new line per scan.
-
-    A fresh line is started at the end of every ``z`` scan, which is the layout
-    the format describes.  Readers only need whitespace-separated numbers, but
-    matching the convention keeps the files diff-friendly and keeps the line
-    length bounded for any grid.
-    """
-    nz = data.shape[2]
-    per_line = CUBE_VALUES_PER_LINE
-    # Two line lengths occur -- a full one and the tail of each scan -- so both
-    # format strings are built once here rather than once per row.
-    formats = {length: CUBE_VALUE_FORMAT * length
-               for length in {per_line, nz % per_line or per_line}}
-    lines: list[str] = []
-    for scan in data.reshape(-1, nz):
-        for start in range(0, nz, per_line):
-            chunk = scan[start:start + per_line]
-            lines.append(formats[len(chunk)] % tuple(chunk))
-    return lines
 
 
 def write_cube(path, data, origin, step, numbers, positions, comment: str='', charges=None, *, resources=None) -> str:

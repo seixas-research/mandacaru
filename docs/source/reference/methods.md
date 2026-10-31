@@ -14,7 +14,7 @@ do not carry.
 | `rhf` | Restricted Hartree-Fock on the real-space grid | no | yes | no | Needs equal alpha and beta populations; an open-shell system raises `ValueError`. |
 | `uhf` | Unrestricted Hartree-Fock | no | yes | no | Spin populations come from the electron count and the initial magnetic moments. |
 | `ghf` | Generalized (complex spinor) Hartree-Fock | no | no | no | `get_forces()` raises `PropertyNotImplementedError`. |
-| `dft` | Kohn-Sham density functional theory | no | yes | yes | Functionals are `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10` and `r2scan+rvv10`. A geometry with a periodic axis runs the crystal solver (see below); `spin=True` or `unrestricted=True` separates the spin channels at equal populations. |
+| `dft` | Kohn-Sham density functional theory | no | yes | yes | Functionals are `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10` and `r2scan+rvv10`. A geometry with a periodic axis runs the crystal solver (see below); `spin=True` or `unrestricted=True` separates the spin channels at equal populations. `hubbard_u=` adds the on-site DFT+U correction to a crystal ([DFT+U](../guide/dft_u.md)). |
 | `vqe` | Variational quantum eigensolver with a fixed ansatz | yes | yes | no | UCCSD by default, or `ansatz={"name": "hva", ...}`. The only method with `energy_levels()`. |
 | `adapt-vqe` | ADAPT-VQE: the ansatz grows from an operator pool | yes | yes | no | The default method. Pools are `fermionic`, `qubit`, `qeb`, `ceo`, `ceo-ovp` and `spin-orbit`. |
 | `subspace-vqe` | Shared-unitary VQE for the lowest `num_states` states | yes | no | no | Levels are bare expectations, not Ritz values of the final subspace. |
@@ -45,7 +45,10 @@ or `execute_circuits=True`). Otherwise it raises `PropertyNotImplementedError` o
 `dft`, with `lda`, `pbe`, `r2scan`, `pbe+rvv10` or `r2scan+rvv10`. Every other
 method raises `NotImplementedError` ("periodic geometry calculations currently
 provide native DFT"), and so does `hse06`. Periodic forces and stress are not
-implemented; see [what is not available yet](#not-yet-available).
+implemented, with or without `hubbard_u`; see [what is not available yet](#not-yet-available).
+`hubbard_u` is accepted for a crystal only: a molecule raises `ValueError`, and a
+screened hybrid or a spin-orbit dataset raises `NotImplementedError`
+(the full list is in [DFT+U](../guide/dft_u.md)).
 
 **Quantum options on classical methods.** `rhf`, `uhf`, `ghf` and `dft` refuse
 `shots`, `execute_circuits`, `backend_provider`, `device`, `backend_options` and
@@ -57,7 +60,7 @@ on another method, so nothing is silently ignored:
 
 | Options | Used by |
 | --- | --- |
-| `xc`, `kpts`, `smearing`, `periodic_scf_options` | `dft` |
+| `xc`, `kpts`, `smearing`, `periodic_scf_options`, `hubbard_u` | `dft` |
 | `spin`, `unrestricted` | `dft` and `uhf` |
 | `pool` | the quantum methods |
 | `seed`, `min_length`, `max_length`, `move_weights`, `temperature`, `length_penalty`, `warm_start`, `replace_start`, `proposal_temperature`, `proposal` | `mcas-vqe` and `valqa` |

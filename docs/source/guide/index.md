@@ -13,6 +13,7 @@ as usable.
 
 native_engine
 dft
+dft_u
 pseudopotentials
 basis_sets
 nao_ae

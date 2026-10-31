@@ -19,6 +19,7 @@ pub mod pao;
 pub mod pseudize;
 pub mod pseudize_tables;
 pub mod radial;
+pub mod shell;
 pub mod smooth;
 pub mod spectrum;
 

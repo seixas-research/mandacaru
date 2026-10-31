@@ -565,11 +565,11 @@ class Logger:
         starting point** with the energy threshold in its unit, and last the
         run's **lineage** (``lineage``; what a resumed run was restored from).
 
-        ``convergence`` is a
-        :class:`~mandacaru.algorithms.convergence.Convergence`;
-        its energy threshold is given in eV; ``energy_scale`` converts
-        Hartree into ``energy_unit``, so the threshold is written in the unit
-        of the ``dE`` column (as given, for an eV log).
+        ``convergence`` is the calculator's dict: ``"gradient"`` in Hartree per
+        radian and ``"energy"`` in eV, either absent or ``None`` for a criterion
+        that is not used.  ``energy_scale`` converts Hartree into
+        ``energy_unit``, so the energy threshold is written in the unit of the
+        ``dE`` column.
         """
         # The first iteration's dE is measured from here: the reference state,
         # or the restored ansatz of a resumed run (``start_energy``).
@@ -582,14 +582,14 @@ class Logger:
         if convergence is not None:
             # Which criteria stop the growth; each threshold is written once,
             # beside the unit it is read in.
-            used = [name for name, value in convergence.as_dict().items()
-                    if value is not None]
+            used = [name for name in ("gradient", "energy")
+                    if convergence.get(name) is not None]
             self._emit_body(f"convergence: {' and '.join(used)}"
                             + (" (both required)" if len(used) > 1 else ""))
             self._thresholds = {
-                "grad": convergence.gradient,
-                "dE": (None if convergence.energy is None
-                       else convergence.energy_hartree * energy_scale)}
+                "grad": convergence.get("gradient"),
+                "dE": (None if convergence.get("energy") is None
+                       else convergence["energy"] / HARTREE_TO_EV * energy_scale)}
             marked = [heading for key, heading in (("grad", "|grad|"),
                                                    ("dE", "dE"))
                       if self._thresholds[key] is not None]
@@ -603,8 +603,8 @@ class Logger:
             self._emit_body(f"gradient_method: {gradient_method}")
         if gradient_formula is not None:
             self._emit_body(f"gradient_formula: {gradient_formula}")
-        if convergence is not None and convergence.gradient is not None:
-            self._emit_body(f"convergence_gradient: {convergence.gradient:g}")
+        if self._thresholds["grad"] is not None:
+            self._emit_body(f"convergence_gradient: {self._thresholds['grad']:g}")
         if gradient_units is not None:
             self._emit_body(f"gradient_units: {gradient_units}")
 
@@ -616,9 +616,9 @@ class Logger:
         # reference energy in it.  The reference state itself is the
         # [ELECTRONS] block's; a resumed run's starting ansatz is the lineage's.
         self._emit_body(f"energy_unit: {energy_unit}")
-        if convergence is not None and convergence.energy is not None:
+        if self._thresholds["dE"] is not None:
             self._emit_body(f"convergence_energy_{energy_unit}: "
-                            f"{convergence.energy_hartree * energy_scale:g}")
+                            f"{self._thresholds['dE']:g}")
         self._emit_body(
             f"reference_energy_{energy_unit}: {reference_energy:.10f}")
 
@@ -787,7 +787,7 @@ class Logger:
             threshold = self._thresholds.get(key)
             if threshold is not None:
                 # The same strict test the loop applies
-                # (Convergence.reached); a dash never meets it.
+                # (the solver's gradient_ok / energy_ok); a dash never meets it.
                 # Screening and its threshold remain in Hartree; only the
                 # table's displayed gradient is converted to eV.
                 criterion = abs(grads[selected_index]) if key == "grad" else value
@@ -901,7 +901,6 @@ class Logger:
     def write_summary(self, converged: bool | None, optimal_energy: float,
                       num_operators: int | None = None,
                       energy_unit: str = "eV",
-                      reference_energy: float | None = None,
                       correlation_energy: float | None = None,
                       num_parameters: int | None = None,
                       final_max_gradient: float | None = None,
@@ -920,6 +919,10 @@ class Logger:
         single-qubit gates, total gates, depth), plus the classical-optimizer
         effort -- everything describing the final variational state.
 
+        The reference energy is not repeated here: ``[OPTIMIZATION SETUP]`` owns
+        it (``reference_energy_<unit>``), and ``correlation_energy`` is the
+        difference from it.
+
         The grown ansatz's *operator sequence* is not repeated here: the
         ``[ITERATIONS]`` table above already names the operator each step
         selected, in order, and it is on ``result.operators`` for a caller that
@@ -935,9 +938,6 @@ class Logger:
         # written: [OPTIMIZATION SETUP] owns the optimizer, and a fact stated in
         # two blocks is a fact that can disagree with itself.
         self._emit_body(f"optimal_energy_{energy_unit}: {optimal_energy:.10f}")
-        if reference_energy is not None:
-            self._emit_body(f"reference_energy_{energy_unit}: "
-                            f"{reference_energy:.10f}")
         if correlation_energy is not None:
             self._emit_body(f"correlation_energy_{energy_unit}: "
                             f"{correlation_energy:.10f}")
@@ -995,11 +995,18 @@ class Logger:
         self._emit(_BANNER if framed else "")
 
     def start_scf_iterations(self, energy_unit: str, *, spin: bool = False,
-                              energy_name: str = "electronic_energy") -> None:
-        """Open a self-consistency table before writing live iteration rows."""
+                              energy_name: str = "electronic_energy",
+                              timed: bool = True) -> None:
+        """Open a self-consistency table before writing live iteration rows.
+
+        ``timed`` adds the clock column; the saved history of a finished SCF
+        carries no clock, and a column of invented times is worse than none.
+        """
         self._scf_spin = spin
-        columns = [("iter", 5), ("time (HH:MM:SS)", 14), (f"{energy_name} ({energy_unit})", 20),
-                   (f"dE ({energy_unit})", 18), ("residual", 12)]
+        self._scf_timed = timed
+        columns = [("iter", 5)] + ([("time (HH:MM:SS)", 14)] if timed else []) + [
+            (f"{energy_name} ({energy_unit})", 20),
+            (f"dE ({energy_unit})", 18), ("residual", 12)]
         if spin:
             columns.append(("moment (muB)", 11))
         self._scf_columns = [(name, max(width, len(name))) for name, width in columns]
@@ -1009,7 +1016,7 @@ class Logger:
 
     def write_scf_iteration(self, row) -> None:
         """Write and flush one completed self-consistency iteration."""
-        cells = [f"{row['iter']:d}", row["clock_time"],
+        cells = [f"{row['iter']:d}"] + ([row["clock_time"]] if self._scf_timed else []) + [
                  f"{row['energy']:.10f}",
                  "-" if row["dE"] is None else f"{row['dE']:+.10f}",
                  f"{row['residual']:.3e}"]
@@ -1029,7 +1036,8 @@ class Logger:
         if rows:
             self.start_scf_iterations(energy_unit,
                                       spin=any("moment" in row for row in rows),
-                                      energy_name=energy_name)
+                                      energy_name=energy_name,
+                                      timed=all("clock_time" in row for row in rows))
             for row in rows:
                 self.write_scf_iteration(row)
             self.finish_scf_iterations()
@@ -1183,6 +1191,11 @@ def _force_block_lines(symbols: Sequence[str], forces, hellmann_feynman=None,
     return lines + _indent(norm_keys) + [_BANNER]
 
 
+def _printed(seconds) -> float:
+    """``seconds`` as the log prints it (four decimals), as a number again."""
+    return float(f"{float(seconds):.4f}")
+
+
 def _performance_block_lines(stages=None, wall_time_s=None, resources=None,
                              step: int | None = None,
                              extra: dict | None = None) -> list[str]:
@@ -1201,16 +1214,19 @@ def _performance_block_lines(stages=None, wall_time_s=None, resources=None,
     if stages:
         rows = []
         width = max(len(str(name)) for name in stages)
+        # Every figure is printed to four decimals, so the total is the sum of
+        # the printed values: a reader who adds the column gets the total.
+        stages = {name: _printed(seconds) for name, seconds in stages.items()}
         for name, seconds in stages.items():
-            rows.append(f"{str(name):<{width}s} {float(seconds):12.4f}")
-        total = float(sum(float(v) for v in stages.values()))
+            rows.append(f"{str(name):<{width}s} {seconds:12.4f}")
+        total = _printed(sum(stages.values()))
         rows += ["-" * (width + 13),
                  f"{'sum of timed stages':<{width}s} {total:12.4f}"]
         lines += _indent(["stages (wall-clock seconds):"]) + _indent(rows, 2)
         if wall_time_s is not None:
             # What the timed stages do not account for: Hamiltonian
             # construction, the fermion-to-qubit mapping, materialization.
-            lines += _indent([f"untimed_s: {float(wall_time_s) - total:.4f}"])
+            lines += _indent([f"untimed_s: {_printed(wall_time_s) - total:.4f}"])
     if wall_time_s is not None:
         lines += _indent([f"wall_time_s: {float(wall_time_s):.4f}"])
     # The solver's own share of the step sits with the step's wall time, not
@@ -1648,7 +1664,7 @@ _RELAXATION_COUNTS = ("geometry_steps",)
 
 #: ``[PERFORMANCE]`` keys that are counts rather than measurements, so they read
 #: back as ``int``.
-_PERFORMANCE_COUNTS = ("step", "openmp_threads", "cpu_count", "qpu_jobs",
+_PERFORMANCE_COUNTS = ("step", "threads", "openmp_threads", "cpu_count", "qpu_jobs",
                        "qpu_submissions")
 
 #: Section markers of the protocol, mapped to the key they fill (the step

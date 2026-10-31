@@ -1,0 +1,223 @@
+# Python numerics budget, read by scripts/numerics_budget.py and by
+# test/architecture/test_python_numerics.py. Hard and soft counters are exact:
+# a budget above the measurement is stale, below it a regression. After a port
+# lower the row (python scripts/numerics_budget.py --ratchet); only the owner
+# raises a number or moves a `dies` later, by committing it.
+#
+# Zero tier (pseudopotentials/ basis/ integrals/ models/ integrations/paw*
+# core/symmetry.py core/spin_orbit.py): a module without a row is budgeted at
+# zero on every counter, sloc included. A row is dated (wave, dies) while it has
+# any hard counter or policy to port; an undated row names a closed category
+# (validation, hand-off, unit, result-view, log-table) and shows no hard counter.
+# Tiers A and Q (everything else) are ratchet-only: growth stops, no date.
+# Counters: np scipy matmul meth math ctypes dyn dloops dcomp bi imp (hard);
+# aloops acomp arith arithmax sloc (soft, zero tier). Omitted means 0.
+# [[exception]] entries waive the counters of one function; their counts must
+# match the measurement exactly and are subtracted from the module row.
+
+[tier_total]
+zero_sloc = 11386
+
+[module]
+"analysis/correlation.py" = { np = 2 }
+"analysis/excitations.py" = { np = 1 }
+"analysis/expressibility.py" = { np = 1 }
+"analysis/fields.py" = { np = 1, matmul = 1 }
+"analysis/proposals.py" = { dloops = 2 }
+"backends/factorization.py" = { np = 58, matmul = 10, meth = 12, dloops = 6 }
+"backends/gradient_measurement.py" = { np = 24, scipy = 1, matmul = 2, meth = 3, dloops = 5 }
+"backends/measurement.py" = { np = 6, dloops = 3, dcomp = 6 }
+"backends/providers.py" = { np = 10, matmul = 2, dyn = 1, dloops = 5, dcomp = 6 }
+"basis/__init__.py" = { sloc = 61, category = "hand-off" }
+"basis/_angular.py" = { np = 35, dloops = 4, dcomp = 2, bi = 2, aloops = 3, acomp = 1, arith = 107, arithmax = 54, sloc = 122, wave = "BF", dies = "2027-07-16" }
+"basis/_config.py" = { dloops = 3, bi = 6, sloc = 91, wave = "BF", dies = "2027-07-16" }
+"basis/atomic_solver.py" = { np = 1, bi = 2, arith = 3, arithmax = 2, sloc = 94, wave = "W4", dies = "2027-07-16" }
+"basis/base.py" = { np = 4, meth = 1, bi = 2, aloops = 4, arith = 16, arithmax = 5, sloc = 110, wave = "BF", dies = "2027-07-16" }
+"basis/factory.py" = { bi = 3, acomp = 1, arith = 1, arithmax = 1, sloc = 348, wave = "BF", dies = "2027-07-16" }
+"basis/filtering.py" = { np = 1, bi = 3, arith = 6, arithmax = 3, sloc = 144, wave = "W4", dies = "2027-07-16" }
+"basis/gaussian.py" = { np = 3, scipy = 1, matmul = 2, meth = 1, bi = 1, arith = 15, arithmax = 5, sloc = 47, wave = "BF", dies = "2027-07-16" }
+"basis/gaussian_families.py" = { np = 1, meth = 3, dloops = 5, dcomp = 5, bi = 12, aloops = 1, acomp = 2, arith = 14, arithmax = 6, sloc = 126, wave = "BF", dies = "2027-07-16" }
+"basis/hao.py" = { np = 8, scipy = 1, dloops = 1, bi = 2, aloops = 1, arith = 35, arithmax = 14, sloc = 90, wave = "BF", dies = "2027-07-16" }
+"basis/hse.py" = { np = 1, sloc = 10, wave = "W4", dies = "2027-07-16" }
+"basis/loggrid.py" = { np = 26, dloops = 3, bi = 11, arith = 128, arithmax = 64, sloc = 162, wave = "BF", dies = "2027-07-16" }
+"basis/multizeta.py" = { np = 16, scipy = 2, dloops = 2, bi = 4, arith = 32, arithmax = 13, sloc = 159, wave = "BF", dies = "2027-07-16" }
+"basis/nao.py" = { np = 8, scipy = 1, bi = 1, arith = 24, arithmax = 18, sloc = 76, wave = "BF", dies = "2027-07-16" }
+"basis/nao_ae.py" = { np = 13, scipy = 1, dloops = 6, bi = 6, aloops = 2, arith = 31, arithmax = 5, sloc = 240, wave = "BF", dies = "2027-07-16" }
+"basis/pople.py" = { dloops = 1, bi = 2, arith = 4, arithmax = 2, sloc = 41, wave = "BF", dies = "2027-07-16" }
+"basis/radial_backend.py" = { np = 2, sloc = 33, wave = "W4", dies = "2027-07-16" }
+"basis/relativity.py" = { np = 12, meth = 1, bi = 9, arith = 62, arithmax = 11, sloc = 140, wave = "W4", dies = "2027-07-16" }
+"basis/sto_ng.py" = { np = 14, scipy = 2, matmul = 1, dloops = 1, bi = 2, arith = 31, arithmax = 10, sloc = 92, wave = "BF", dies = "2027-07-16" }
+"basis/xc.py" = { np = 33, scipy = 1, meth = 1, arith = 207, arithmax = 90, sloc = 207, wave = "W4", dies = "2027-07-16" }
+"basis/xc_spin.py" = { np = 2, arith = 6, arithmax = 6, sloc = 27, wave = "W4", dies = "2027-07-16" }
+"calculation.py" = { np = 2 }
+"circuits/pools.py" = { math = 4, dloops = 3, dcomp = 1 }
+"core/augmentation.py" = { np = 1, matmul = 2, meth = 1, dloops = 1 }
+"core/ccmh.py" = { np = 23, scipy = 1, matmul = 2, meth = 8, dloops = 4, dcomp = 2 }
+"core/checkpoint.py" = { np = 7, scipy = 1, matmul = 4, dcomp = 2 }
+"core/dipole.py" = { np = 4, matmul = 1, meth = 1 }
+"core/ewald.py" = { np = 62, scipy = 1, matmul = 13, meth = 1, dloops = 10, dcomp = 1 }
+"core/kzk.py" = { np = 14, meth = 5 }
+"core/mapping.py" = { np = 18, matmul = 4, meth = 1, dloops = 10, dcomp = 4 }
+"core/matrix_free.py" = { np = 9, scipy = 2, matmul = 1, dloops = 4 }
+"core/mpc.py" = { np = 23, scipy = 1, matmul = 3, dloops = 3, dcomp = 1 }
+"core/pauli_algebra.py" = { np = 14, meth = 4, dloops = 3, dcomp = 1 }
+"core/sector.py" = { np = 31, scipy = 1, matmul = 2, meth = 2, math = 9, dloops = 5 }
+"core/serialization.py" = { dcomp = 1 }
+"core/spin_orbit.py" = { np = 2, dloops = 2, bi = 3, arith = 2, arithmax = 1, sloc = 59, wave = "3b", dies = "2027-05-07" }
+"core/symmetry.py" = { np = 5, matmul = 1, dloops = 2, arith = 1, arithmax = 1, sloc = 143, wave = "3b", dies = "2027-05-07", allow_imports = ["spglib"] }
+"core/tapering.py" = { np = 5, matmul = 3, dloops = 5, dcomp = 1 }
+"integrals/__init__.py" = { sloc = 2, category = "hand-off" }
+"integrals/_backend.py" = { np = 15, matmul = 1, ctypes = 1, bi = 1, sloc = 237, wave = "W4", dies = "2027-07-16", allow_imports = ["psutil"] }
+"integrals/exchange_correlation.py" = { np = 62, scipy = 2, matmul = 6, meth = 7, dloops = 7, dcomp = 4, bi = 1, arith = 94, arithmax = 25, sloc = 388, wave = "W4", dies = "2027-07-16" }
+"integrals/grid.py" = { np = 34, matmul = 5, dcomp = 5, bi = 10, aloops = 2, acomp = 1, arith = 18, arithmax = 6, sloc = 170, wave = "W4", dies = "2027-07-16" }
+"integrals/packed.py" = { np = 33, scipy = 1, matmul = 4, meth = 3, dloops = 8, bi = 9, aloops = 1, arith = 30, arithmax = 5, sloc = 237, wave = "W4", dies = "2027-07-16" }
+"integrals/reciprocal.py" = { np = 81, scipy = 1, matmul = 18, dloops = 7, dcomp = 10, bi = 2, arith = 53, arithmax = 9, sloc = 245, wave = "3b", dies = "2027-05-07" }
+"integrals/sampling.py" = { np = 6, dloops = 3, dcomp = 2, bi = 4, aloops = 2, arith = 7, arithmax = 4, sloc = 178, wave = "W4", dies = "2027-07-16" }
+"integrals/vv10.py" = { arith = 1, arithmax = 1, sloc = 27, category = "hand-off" }
+"integrations/ase_properties.py" = { np = 1, meth = 2 }
+"integrations/paw.py" = { np = 6, matmul = 1, dloops = 1, dcomp = 1, bi = 1, aloops = 3, arith = 12, arithmax = 11, sloc = 265, wave = "3b", dies = "2027-05-07" }
+"integrations/paw_molecular.py" = { np = 2, dloops = 2, bi = 3, arith = 1, arithmax = 1, sloc = 164, wave = "W4", dies = "2027-07-16" }
+"integrations/reporting.py" = { np = 2, meth = 3 }
+"integrations/wannier.py" = { np = 1, dloops = 1 }
+"models/basis.py" = { arith = 2, arithmax = 2, sloc = 293, category = "validation" }
+"models/datasets.py" = { sloc = 32, category = "validation" }
+"models/elements.py" = { sloc = 3, category = "hand-off" }
+"models/paw_channels.py" = { np = 2, dloops = 2, dcomp = 1, bi = 4, sloc = 49, wave = "3b", dies = "2027-05-07" }
+"models/radial.py" = { sloc = 69, category = "validation" }
+"models/setup.py" = { sloc = 22, category = "hand-off" }
+"optimizers/optim.py" = { np = 3, scipy = 1, dloops = 1 }
+"pseudopotentials/__init__.py" = { sloc = 16, category = "hand-off" }
+"pseudopotentials/build_cli.py" = { np = 2, meth = 1, dloops = 3, dcomp = 1, bi = 6, arith = 1, arithmax = 1, sloc = 239, wave = "W4", dies = "2027-07-16", allow_imports = ["threadpoolctl"] }
+"pseudopotentials/confinement.py" = { dloops = 1, dcomp = 1, bi = 4, arith = 2, arithmax = 1, sloc = 284, wave = "W4-A-py", dies = "2027-03-26" }
+"pseudopotentials/core_correction.py" = { sloc = 30, category = "hand-off" }
+"pseudopotentials/dataset.py" = { np = 8, bi = 2, aloops = 1, arith = 3, arithmax = 2, sloc = 69, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/diffuse.py" = { math = 1, dloops = 3, dcomp = 1, bi = 13, aloops = 3, acomp = 2, arith = 10, arithmax = 4, sloc = 342, wave = "W4", dies = "2027-07-16" }
+"pseudopotentials/environment.py" = { sloc = 189, category = "hand-off" }
+"pseudopotentials/families.py" = { sloc = 173, category = "validation" }
+"pseudopotentials/io.py" = { sloc = 227, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/library_cli.py" = { acomp = 1, arith = 2, arithmax = 1, sloc = 180, category = "hand-off" }
+"pseudopotentials/local_split.py" = { bi = 1, sloc = 57, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/multipoles.py" = { bi = 1, sloc = 66, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/native_context.py" = { sloc = 6, category = "hand-off" }
+"pseudopotentials/onecenter.py" = { np = 1, dloops = 4, dcomp = 1, bi = 9, sloc = 264, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/orbitals.py" = { math = 1, dloops = 3, dcomp = 1, bi = 7, arith = 3, arithmax = 2, sloc = 300, wave = "3b", dies = "2027-05-07" }
+"pseudopotentials/partial_waves.py" = { dloops = 7, dcomp = 10, bi = 37, aloops = 1, acomp = 2, arith = 12, arithmax = 3, sloc = 737, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/paw.py" = { np = 91, scipy = 8, matmul = 18, meth = 9, dloops = 21, dcomp = 9, bi = 31, aloops = 10, acomp = 17, arith = 232, arithmax = 31, sloc = 1813, wave = "3a/3b", dies = "2027-05-07" }
+"pseudopotentials/periodic_paw.py" = { np = 167, scipy = 4, matmul = 37, meth = 27, dloops = 45, dcomp = 9, bi = 29, aloops = 12, acomp = 4, arith = 217, arithmax = 16, sloc = 1391, wave = "3b", dies = "2027-05-07" }
+"results.py" = { np = 1 }
+"specifications.py" = { math = 2 }
+"utils/banner.py" = { dyn = 3 }
+"utils/bxsf.py" = { np = 1 }
+"utils/logging.py" = { np = 15, meth = 4, dloops = 8, dcomp = 3 }
+"utils/viewer.py" = { np = 42, matmul = 2, meth = 8, dloops = 2 }
+"workflows/nested_otoc.py" = { np = 8, dloops = 1 }
+"workflows/qpe.py" = { np = 10, dcomp = 2 }
+"workflows/quantum_echoes.py" = { np = 9, scipy = 1 }
+"workflows/time_evolution.py" = { dloops = 1, dcomp = 1 }
+
+[[exception]]
+module = "basis/__init__.py"
+function = "__dir__"
+bi = 1
+category = "hand-off"
+reason = "sorted() lists the lazy export names"
+
+[[exception]]
+module = "models/basis.py"
+function = "_parse_dunning"
+bi = 1
+category = "validation"
+reason = "caps the contraction depth of a requested basis name"
+
+[[exception]]
+module = "models/datasets.py"
+function = "_warn_functional_mismatch"
+bi = 1
+category = "validation"
+reason = "sorts functional names for the warning text"
+
+[[exception]]
+module = "models/radial.py"
+function = "resolve_zeta"
+bi = 1
+category = "validation"
+reason = "sorts the zeta names for the error text"
+
+[[exception]]
+module = "pseudopotentials/__init__.py"
+function = "__dir__"
+bi = 1
+category = "hand-off"
+reason = "sorted() lists the lazy export names"
+
+[[exception]]
+module = "pseudopotentials/environment.py"
+function = "_family"
+bi = 1
+category = "validation"
+reason = "sorts variable names for the error text"
+
+[[exception]]
+module = "pseudopotentials/environment.py"
+function = "_folders"
+bi = 1
+category = "hand-off"
+reason = "sorted directory listing"
+
+[[exception]]
+module = "pseudopotentials/environment.py"
+function = "dataset_count"
+bi = 1
+category = "hand-off"
+reason = "counts the files of a folder"
+
+[[exception]]
+module = "pseudopotentials/families.py"
+function = "FamilySpec.__post_init__"
+bi = 1
+category = "validation"
+reason = "sorts unknown option names for the error text"
+
+[[exception]]
+module = "pseudopotentials/families.py"
+function = "FamilySpec.validate_options"
+bi = 1
+category = "validation"
+reason = "sorts unknown option names for the error text"
+
+[[exception]]
+module = "pseudopotentials/families.py"
+function = "family_names"
+bi = 2
+category = "hand-off"
+reason = "sorted family and alias names for messages"
+
+[[exception]]
+module = "pseudopotentials/io.py"
+function = "_load_pseudopotential_cached"
+bi = 1
+category = "validation"
+reason = "sorts the table families for the error text"
+
+[[exception]]
+module = "pseudopotentials/io.py"
+function = "available_elements"
+bi = 1
+category = "hand-off"
+reason = "sorted list of the elements found on disk"
+
+[[exception]]
+module = "pseudopotentials/library_cli.py"
+function = "render_table"
+dcomp = 1
+bi = 1
+category = "log-table"
+reason = "column widths of a printed table"
+
+[[exception]]
+module = "pseudopotentials/library_cli.py"
+function = "main"
+dloops = 1
+bi = 2
+category = "hand-off"
+reason = "the exit status is the largest status over the library families"

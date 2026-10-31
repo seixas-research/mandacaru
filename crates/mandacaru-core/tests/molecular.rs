@@ -466,3 +466,23 @@ fn column_cholesky_matches_independently_built_coulomb_pairs() {
         }
     }
 }
+
+#[test]
+fn the_factorization_report_describes_the_cholesky_pivots_it_holds() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    {
+        let integrals = integrals(&ctx);
+        assert!(!integrals.has_eri());
+        let eri = integrals.eri().unwrap();
+        let report = eri.report();
+        assert_eq!(report.representation, "cholesky");
+        assert_eq!(report.augmentation_rank, None);
+        let (rank, residual) = report.cholesky.unwrap();
+        assert!(rank > 0 && rank <= integrals.m() * (integrals.m() + 1) / 2);
+        assert_eq!(rank, eri.pivots().unwrap().len());
+        // The adaptive factorization scans the unused diagonal, and stopped
+        // at its tolerance.
+        assert!(residual.unwrap() >= 0.);
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}

@@ -10,7 +10,7 @@
 
 The Python front-end owns the grid: it defines the sampling points, the per-axis
 spacing and the volume element, then hands the flat coordinate arrays (and the
-grid geometry) to the C backend (``csrc/mandacaru_integrals.c``).
+grid geometry) to the packaged Rust extension.
 
 Grid shapes supported, in increasing generality:
 
@@ -333,7 +333,7 @@ class Grid:
         return np.linalg.inv(G)
 
     def flat_coords(self):
-        """Contiguous flat ``(x, y, z)`` coordinate vectors for the C backend."""
+        """Contiguous flat ``(x, y, z)`` coordinate vectors for the native kernels."""
         return (np.ascontiguousarray(self.X.reshape(-1)),
                 np.ascontiguousarray(self.Y.reshape(-1)),
                 np.ascontiguousarray(self.Z.reshape(-1)))

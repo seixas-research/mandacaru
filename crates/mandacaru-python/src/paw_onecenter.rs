@@ -587,13 +587,29 @@ fn paw_exact_atom<'py>(
     let n = layout.len();
     let (tensor, _a) = copy(ctx, &tensor)?;
     let mut keep = Vec::new();
+    // The three layout-expanded `n x n` blocks the core takes over.
+    let blocks = product(&[3, n, n, std::mem::size_of::<f64>()]).map_err(error)?;
+    let _expanded = ctx.reserve(blocks).map_err(error)?;
     let v = expand(&layout, &blocks_in(ctx, &ls, &v_blocks, &mut keep)?)?;
     let k = expand(&layout, &blocks_in(ctx, &ls, &k_blocks, &mut keep)?)?;
     let d0 = expand(&layout, &blocks_in(ctx, &ls, &d0_blocks, &mut keep)?)?;
     let atom: ExactAtom = py
-        .detach(|| hybrid::exact_atom(n, &tensor, v, k, d0))
+        .detach(|| hybrid::exact_atom(ctx, n, &tensor, v, k, d0))
         .map_err(error)?;
     let rank = atom.values.len();
+    // The returned arrays are collected beside the atom: `v`, `k`, `d0` and the
+    // coupling (`n^2` each), the values, and the `rank` factors.
+    let outputs = product(&[4, n, n])
+        .and_then(|matrices| {
+            let factors = product(&[rank, n, n])?;
+            matrices
+                .checked_add(factors)
+                .and_then(|sum| sum.checked_add(rank))
+                .ok_or(mandacaru_core::Error::Overflow)
+        })
+        .and_then(|doubles| product(&[doubles, std::mem::size_of::<f64>()]))
+        .map_err(error)?;
+    let _outputs = ctx.reserve(outputs).map_err(error)?;
     let factors = atom
         .factors
         .iter()

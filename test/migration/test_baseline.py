@@ -3,6 +3,7 @@
 import copy
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -91,11 +92,11 @@ def test_controlled_environment_cannot_inherit_an_alternate_library_or_record_st
     monkeypatch.setenv("MANDACARU_INTEGRALS_LIB", "/other/library")
     monkeypatch.setenv("MANDACARU_PROPOSAL_DATA", "/user/training")
     monkeypatch.setenv("OMP_NUM_THREADS", "24")
-    env = baseline.controlled_env("numpy", 2, tmp_path)
+    env = baseline.controlled_env("rust", 2, tmp_path)
     assert "MANDACARU_INTEGRALS_LIB" not in env
     assert "MANDACARU_PROPOSAL_DATA" not in env
     assert all(env[key] == "2" for key in baseline.THREAD_ENV)
-    assert env["MANDACARU_BACKEND"] == "numpy"
+    assert env["MANDACARU_BACKEND"] == "rust"
 
 
 def test_source_fingerprint_tracks_content_and_excludes_build_products(tmp_path):
@@ -126,6 +127,19 @@ def test_capability_index_and_workloads_have_valid_references():
             assert (baseline.ROOT / path).is_file(), path
 
 
+LIVE_BACKEND_KEYS = {"available", "message", "threads", "library_sha256"}
+
+
+def test_a_sample_records_the_native_backend_the_runner_writes_today():
+    from mandacaru.integrals._backend import check_backend
+    status = check_backend()
+    record = baseline.backend_record(status)
+    assert set(record) == LIVE_BACKEND_KEYS and "is_rust" not in record
+    assert record["available"] is True and record["threads"] == status.n_threads >= 1
+    assert record["message"] == status.message
+    assert record["library_sha256"] == baseline.fingerprint(Path(status.path))
+
+
 def test_checked_reference_corpus_is_complete_and_internally_consistent():
     reference = baseline.HERE / "reference"
     numpy = baseline.read_json(reference / "numpy.json")
@@ -140,6 +154,11 @@ def test_checked_reference_corpus_is_complete_and_internally_consistent():
         for case in report_data["cases"].values():
             assert len(case["samples"]) == 3
             for sample in case["samples"]:
+                # ``is_rust`` is a RETIRED key, kept only because these two files are frozen
+                # records of the two routes that existed when they were captured (numpy.json
+                # is the removed NumPy route, rust.json the Rust one). ``baseline.py`` no
+                # longer writes it; do not edit a frozen reference to drop it.
+                assert set(sample["native_backend"]) == LIVE_BACKEND_KEYS | {"is_rust"}
                 assert sample["native_backend"]["is_rust"] is native
                 assert sample["environment"]["source_sha256"] == inventory_record["source_sha256"]
     comparison = baseline.read_json(reference / "comparison.json")

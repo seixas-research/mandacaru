@@ -2,7 +2,6 @@
 import numpy as np
 import pytest
 
-from mandacaru.integrals import _backend
 from mandacaru.integrals.sampling import sample_functions
 
 
@@ -22,12 +21,7 @@ def functions(real):
 
 
 @pytest.mark.parametrize("real", [True, False])
-@pytest.mark.parametrize("native", [True, False])
-def test_values_and_gradients_match_individual_evaluation(real, native, monkeypatch):
-    if native and not _backend.HAS_C_BACKEND:
-        pytest.skip("native integral backend unavailable")
-    if not native:
-        monkeypatch.setattr(_backend, "HAS_C_BACKEND", False)
+def test_values_and_gradients_match_individual_evaluation(real):
     basis = functions(real)
     random = np.random.default_rng(4).normal(size=(3, 131))
     points = tuple(np.r_[0.0, random[i], 20.0] for i in range(3))

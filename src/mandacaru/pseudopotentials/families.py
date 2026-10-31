@@ -29,10 +29,9 @@ The registry :data:`PSEUDO_FAMILIES` maps a family name to its
 **argument of any driver**, exactly like an all-electron family:
 ``basis="PAW-LCAO"``, ``basis={"name": "PAW-LCAO", "size": "DZP"}``, or a per-element
 mapping ``{"O": {"name": "PAW-LCAO", "size": "DZP"}, "H": "PAW-LCAO"}``.  The drivers
-only ever see the spec: :func:`mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis`
-recognizes a registered family name (:func:`lookup_family`) and
-:func:`~mandacaru.algorithms._hamiltonian_from_atoms._pseudopotential_hamiltonian`
-dispatches to ``spec.build``.  A new family is added with
+only ever see the spec: :class:`~mandacaru.Mandacaru` recognizes a registered family name
+(:func:`lookup_family`) and checks the basis dict against it
+(:meth:`FamilySpec.validate_options`) in its constructor.  A new family is added with
 :func:`register_family` and never needs the driver edited -- its name becomes
 a basis name.
 
@@ -96,9 +95,8 @@ class FamilySpec:
         ``build(atoms, grid, grid_spacing, charge, spin, options, kinetic, *,
         active_space=None, hamiltonian=True)`` returning the driver
         5-tuple ``(hamiltonian, num_particles, n_spatial_orbitals,
-        integration_profile, context)`` -- exactly what
-        :func:`~mandacaru.algorithms._hamiltonian_from_atoms.build_basis_hamiltonian`
-        returns for the all-electron path (with ``hamiltonian=False``, the
+        integration_profile, context)`` -- the same tuple
+        the all-electron path returns (with ``hamiltonian=False``, the
         integrals only and ``None`` in place of the operator).  The keywords
         are always passed, so a builder must accept them (``**kwargs`` forwarded to
         :func:`build_valence_hamiltonian` is enough, and is what every built-in
@@ -158,6 +156,107 @@ class FamilySpec:
         merged.update(options or {})
         return merged
 
+    def validate_options(self, options=None) -> None:
+        """Refuse a basis dict this family cannot honor; return ``None``.
+
+        ``options`` is the user's basis dict without its ``"name"``.  A key
+        outside :attr:`options` raises ``ValueError`` naming it and listing
+        the valid ones; each value then goes through the validator its
+        option owns (:data:`OPTION_VALIDATORS`).  Cheap by construction: it
+        reads no dataset and builds no basis, so the ``Mandacaru``
+        constructor can call it.
+        """
+        options = dict(options or {})
+        unknown = sorted(str(key) for key in options if key not in self.options)
+        if unknown:
+            raise ValueError(
+                f"unknown option(s) {unknown} for the {self.label} basis; "
+                f"valid options: {list(self.options)}")
+        for key, value in options.items():
+            if key not in OPTION_VALIDATORS:
+                raise ValueError(
+                    f"option {key!r} of the {self.label} family has no "
+                    "validator in OPTION_VALIDATORS")
+            OPTION_VALIDATORS[key](value)
+
+
+def _check_size(value):
+    from ..models.radial import resolve_zeta
+
+    if isinstance(value, dict):
+        if not value:
+            raise ValueError("a size mapping needs at least one element or '*'")
+        for entry in value.values():
+            resolve_zeta(entry)
+    else:
+        resolve_zeta(value)
+
+
+def _check_zeta_split(value):
+    from ..models.radial import validate_zeta_split
+
+    validate_zeta_split(value)
+
+
+def _check_paw_dataset(value):
+    import os
+
+    if value is not None and not isinstance(value, (str, os.PathLike)):
+        raise ValueError(
+            f"paw_dataset is a folder name or path, got {value!r}")
+
+
+def _check_filter_cutoff(value):
+    from ..basis.filtering import validate_filter_cutoff
+
+    validate_filter_cutoff(value)
+
+
+def _check_projector_basis(value):
+    if value not in ("raw", "dual"):
+        raise ValueError(f"projector_basis must be 'raw' or 'dual', got {value!r}")
+
+
+def _check_energy_shift(value):
+    from .confinement import validate_energy_shift
+
+    validate_energy_shift(value)
+
+
+def _check_confinement_potential(value):
+    from .confinement import validate_confinement_potential
+
+    validate_confinement_potential(value)
+
+
+def _check_polarization_method(value):
+    from .confinement import validate_polarization_method
+
+    validate_polarization_method(value)
+
+
+def _check_diffuse(value):
+    from .diffuse import validate_diffuse
+
+    validate_diffuse(value)
+
+
+#: The validator each basis option owns, ``option -> callable(value)``; a
+#: family's :attr:`FamilySpec.options` selects which of them apply.  Each
+#: validates what the builder will later normalize and raises ``ValueError``,
+#: so a typo fails at construction instead of mid-run.  A new option is
+#: declared in a family's ``options`` and given its validator here.
+OPTION_VALIDATORS: dict[str, Callable] = {
+    "size": _check_size,
+    "zeta_split": _check_zeta_split,
+    "paw_dataset": _check_paw_dataset,
+    "filter_cutoff": _check_filter_cutoff,
+    "projector_basis": _check_projector_basis,
+    "energy_shift": _check_energy_shift,
+    "confinement_potential": _check_confinement_potential,
+    "polarization_method": _check_polarization_method,
+    "diffuse": _check_diffuse,
+}
 
 #: Registry ``name -> FamilySpec`` (canonical names only; see :func:`resolve_family`).
 PSEUDO_FAMILIES: dict[str, FamilySpec] = {}
@@ -219,8 +318,8 @@ def lookup_family(name) -> FamilySpec | None:
     Case-insensitive, aliases accepted (``"PAW-LCAO"``, ``"unitary-paw-lcao"``);
     anything that is not a registered family name -- ``"HAO"``, ``"cc-pVTZ"``,
     a per-element mapping -- gives ``None``.  This is how
-    :func:`~mandacaru.algorithms._hamiltonian_from_atoms.resolve_basis` tells a
-    pseudopotential basis from an all-electron one.
+    :class:`~mandacaru.Mandacaru` tells a pseudopotential basis from an
+    all-electron one.
     """
     if isinstance(name, FamilySpec):
         return name

@@ -3,6 +3,8 @@ pub mod atom;
 pub mod configuration;
 pub mod dispersion;
 pub mod elements;
+pub mod hubbard;
+pub mod hubbard_request;
 pub mod mixing;
 pub mod nonlocal;
 pub mod numerov;

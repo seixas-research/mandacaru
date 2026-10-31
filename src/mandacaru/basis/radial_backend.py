@@ -5,10 +5,6 @@ import numpy as np
 from .. import _native
 
 
-def radial_backend_status():
-    return True, "packaged Rust radial kernels"
-
-
 def tridiagonal_eigenpair(diag, off, k, guess=None, *, context=None):
     """Return the ordered eigenpair; the native solver chooses its own bracket."""
     ctx = _native.Context(threads=1) if context is None else context

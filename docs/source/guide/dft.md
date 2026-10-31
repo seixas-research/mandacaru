@@ -119,6 +119,8 @@ A periodic structure (`pbc=True` on the atoms) runs the periodic engine: `lda`,
 through a Python adapter. Forces and stress of crystals, screened exchange and
 spinor meta-GGA are not yet available ([open items](#not-yet-available)); see
 [Native calculations](native_engine.md) before choosing a crystal workflow.
+The on-site Hubbard correction of a `d` or `f` shell (`hubbard_u`, DFT+U) is an
+option of this periodic path and has [its own guide](dft_u.md).
 
 ## Dispersion correction
 

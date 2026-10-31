@@ -67,6 +67,43 @@ class CalculationResult:
         raise ValueError("energy units must be Ha or eV")
 
     @property
+    def hubbard_energy(self):
+        """The on-site DFT+U energy in the result's energy unit; ``None`` without DFT+U."""
+        value = self._raw.get("hubbard_energy")
+        if value is None or self.energy_unit == "Ha":
+            return value
+        return value * HARTREE_TO_EV
+
+    #: The energies of a DFT+U shell: the key of the result view and of the native view.
+    _HUBBARD_ENERGIES = (("U", "u"), ("J", "j"), ("U_eff", "u_eff"), ("energy", "energy"))
+
+    @property
+    def hubbard(self):
+        """The DFT+U shells of a periodic run, one dictionary per atom, or ``None``.
+
+        ``atom``, ``symbol``, ``l`` (``"d"`` or ``"f"``), ``U``, ``J``, ``U_eff`` and the shell's
+        ``energy`` in the result's energy unit, and the occupation matrices ``n``
+        (``spins x (2l+1) x (2l+1)``, Hermitian, in the basis of complex harmonics ordered
+        ``m = -l..l``) with their ``trace`` per spin. ``n`` is the PAW partial-wave
+        projection: a filled shell has an occupation below 1.
+        """
+        shells = self._raw.get("hubbard")
+        if shells is None:
+            return None
+        scale = 1.0 if self.energy_unit == "Ha" else HARTREE_TO_EV
+        return [
+            dict(
+                atom=s["atom"],
+                symbol=s["symbol"],
+                l=s["shell"],
+                **{name: s[f"{key}_ha"] * scale for name, key in self._HUBBARD_ENERGIES},
+                trace=np.array(s["trace"]),
+                n=s["n"].copy(),
+            )
+            for s in shells
+        ]
+
+    @property
     def free_energy_ev(self):
         return self._raw.get("free_energy", self.energy_hartree) * HARTREE_TO_EV
 

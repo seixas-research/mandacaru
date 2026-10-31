@@ -68,9 +68,10 @@ NumPy aliasing and writable-view support require a separate audit.
 
 ## Test-only counting allocators
 
-Three test modules install a counting `#[global_allocator]`
+Four test modules install a counting `#[global_allocator]`
 (`mandacaru-core/src/parquet/codec/zstd.rs` under `#[cfg(test)]`,
-`mandacaru-core/tests/parquet_errors.rs` and `tests/parquet_memory.rs`). They
+`mandacaru-core/tests/parquet_errors.rs`, `tests/parquet_memory.rs` and
+`tests/paw_onecenter_memory.rs`). They
 exist to prove that the memory a decoder really allocates stays below the bytes
 reserved from the `Context`. They are never part of a library build. The
 contract: every `alloc`, `dealloc` and `realloc` is forwarded unchanged to
@@ -81,3 +82,8 @@ made during thread teardown is ignored instead of re-entering the allocator. A
 test that needs the process-wide counter serializes itself behind a mutex. An
 allocator that refuses growth (the emulated hard limit in `parquet_memory.rs`)
 returns a null pointer, as the trait allows.
+
+`paw_onecenter_memory.rs` measures the heap of `exact_atom` against its
+reservation with thread-local counters only, so it holds one test (a second
+test in the binary would share the harness's baseline); it is a separate file
+because a `#[global_allocator]` owns its whole test binary.

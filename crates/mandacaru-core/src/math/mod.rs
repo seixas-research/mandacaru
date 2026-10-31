@@ -19,6 +19,7 @@ pub mod special;
 pub mod spline;
 pub mod storage;
 pub mod symmetry;
+pub mod wigner_seitz;
 
 pub use grid::SpatialGrid;
 

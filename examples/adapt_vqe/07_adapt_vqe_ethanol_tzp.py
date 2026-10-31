@@ -51,8 +51,10 @@ with open(os.path.join(DATA, "ethanol_adapt_vqe.csv"), "w", newline="") as f:
         writer.writerow([n, it.operator_label, f"{it.max_gradient:.8f}",
                          f"{it.energy:.8f}", it.num_parameters, it.cnot_count])
 
-space = parse_output(LOG)["active_space"]
-print(f"Active space: {space['spatial_orbitals']}")
+blocks = parse_output(LOG)
+print(f"Active space: {blocks['electrons']['spatial orbitals']} of "
+      f"{blocks['basis']['basis_functions']} orbitals "
+      f"({blocks['active_space']['frozen_orbitals']} frozen)")
 print(f"Hartree-Fock energy: {result.reference_energy:.6f} eV")
 print(f"ADAPT-VQE energy:    {energy:.6f} eV on {atoms.calc.n_qubits} qubits")
 print(f"Correlation energy:  {result.correlation_energy:.4f} eV "

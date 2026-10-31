@@ -2063,7 +2063,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
 
     # Sampling uses the packaged Rust kernels; calculation startup never compiles code.
     from ..integrals import _backend
-    _backend.warn_fallback(_backend.ensure_backend())
+    _backend.ensure_backend()
 
     options = resolve_family(family).resolved_options(dict(options or {}))
     from .diffuse import refuse_crystal

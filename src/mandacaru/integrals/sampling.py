@@ -27,18 +27,6 @@ def radial_spline(function):
     return function._native_radial_spline[1]
 
 
-_TRANSFORM_CACHE: dict = {}
-
-
-def _real_transform(l: int) -> np.ndarray:
-    cached = _TRANSFORM_CACHE.get(l)
-    if cached is None:
-        from ..basis._angular import real_harmonic_transform
-        cached = real_harmonic_transform(l)
-        _TRANSFORM_CACHE[l] = cached
-    return cached
-
-
 def _center_node_indices(points, center, cache: dict) -> np.ndarray:
     hit = cache.get(center)
     if hit is None:

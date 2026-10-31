@@ -8,7 +8,7 @@
   },
   "densities": "a = exp(-r^2), b = r exp(-r/2), c = exp(-r)(1 + r)",
   "order": "grid, L = 0..3, pair (a,a), (a,b), (b,c)",
-  "branch": "scipy cumulative_trapezoid + simpson (the C-ABI kernel is wrong for odd n)"
+  "branch": "scipy cumulative_trapezoid + simpson (true local steps; the replaced C-ABI kernel used the single step r[1] - r[0] on a grid rounded to twelve decimals)"
  },
  "long_range_kernel": {
   "r1": "linspace(0, 1.5, 7)",

@@ -1,0 +1,174 @@
+{
+"note":"pytest with ONLY mandacaru.algorithms.pseudo_forces.spatial_rdms and mandacaru.integrals.{poisson,fft} stubbed (restored 241d688^ text); every other failure is natural",
+"files":{
+"test/core/test_mpc.py":{
+"functions":21,
+"collected_items":28,
+"outcomes":{
+"passed":18,
+"failed":2,
+"error":8
+},
+"not_passed":{
+"TestTheTruncatedKernel::test_the_solver_matches_the_periodic_one_s_interface":{
+"outcome":"failed",
+"reason":"E   ModuleNotFoundError: No module named 'mandacaru.integrals.buffers'"
+},
+"TestTheHoleIsContractedCorrectly::test_the_hole_holds_exactly_one_electron":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSecondTensorIsComparable::test_the_periodic_rebuild_reproduces_the_hamiltonian_s_tensor":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSecondTensorIsComparable::test_the_truncated_tensor_differs_but_keeps_the_symmetries":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSecondTensorIsComparable::test_the_mo_rotation_must_exist":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheCorrectionOnARun::test_the_scopes_are_kept_apart":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheCorrectionOnARun::test_the_energy_it_carries_is_the_reported_one":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheCorrectionOnARun::test_the_summary_names_both_scopes":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheCorrectionOnARun::test_in_units_converts_every_energy":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheCorrectionOnARun::test_a_molecular_method_is_refused":{
+"outcome":"failed",
+"reason":"E   TypeError: 'Optimizer' object is not iterable"
+}
+}
+},
+"test/core/test_kzk.py":{
+"functions":27,
+"collected_items":33,
+"outcomes":{
+"passed":27,
+"error":6
+},
+"not_passed":{
+"TestOnARun::test_it_is_selectable":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestOnARun::test_the_density_holds_the_right_electron_count":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestOnARun::test_it_flags_a_non_cubic_cell":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestOnARun::test_the_summary_names_the_assumptions":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestOnARun::test_all_three_schemes_are_reachable":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestOnARun::test_an_unknown_scheme_names_all_three":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+}
+}
+},
+"test/core/test_ccmh.py":{
+"functions":18,
+"collected_items":18,
+"outcomes":{
+"error":14,
+"passed":4
+},
+"not_passed":{
+"TestTheStructureFactor::test_the_transform_chain_matches_the_hamiltonian":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheStructureFactor::test_it_is_real_and_non_negative":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheStructureFactor::test_it_matches_direct_operator_algebra":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheStructureFactor::test_a_finite_basis_decays_at_large_k":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheStructureFactor::test_it_normalizes_on_the_electron_count":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheStructureFactor::test_gamma_is_excluded":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheStructureFactor::test_shells_group_symmetry_equivalent_vectors":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheQuadraticRegimeIsChecked::test_a_chain_in_vacuum_is_flagged":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheCorrectionRecord::test_the_summary_names_both_limits":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSchemesAreBothReachable::test_mpc_is_the_current_default":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSchemesAreBothReachable::test_ccmh_is_selectable":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSchemesAreBothReachable::test_they_disagree_which_is_the_point":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSchemesAreBothReachable::test_an_unknown_scheme_is_refused_by_name":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+},
+"TestTheSchemesAreBothReachable::test_both_carry_the_same_reported_energy":{
+"outcome":"error",
+"reason":"E   ValueError: unsupported native method 'bloch-adapt-vqe'; available: rhf, uhf, ghf, dft, vqe, adapt-vqe, subspace-vqe, subspace-adapt-vqe, mcas-vqe, valqa"
+}
+}
+}
+},
+"_stamp":{
+"old_sources_sha256":{
+"core/kzk.py":"02acabf4e12a4e45fc12ea330d4527a143370a0c06c457f58772dfebdfa9ebea",
+"core/mpc.py":"022689094a67bac97a083364596d966f4d3c1eee067971800407612bc0fec4de",
+"core/ccmh.py":"339dce99f3809174561df92b837de11abf8a9b2d4223984af4fd98e1bbc48e06",
+"units.py":"717f9493c4fbad6c07147eefe8803b8bfebbfa27d65988afb7737c046f5c5e07",
+"basis/atomic_solver.py":"afd2b4b3f7e672d4ca5c87bbd87f5e7d09cf81d16b4857ed9bc473769a609e3a",
+"integrals/poisson.py":"a1a4bb1e7aeaaca46674ac60ee2410f9bb8260fa14694e7abe1003f948ca674d",
+"integrals/fft.py":"6e72de1ff538b7648aa1d0893f19937fea5b2ac7a5f1c8e0e1b3ede7ff8a7d30"
+},
+"src_rev":"89052afdd0e193a0f96dd01025e1f5c09a511593",
+"dep_rev":"a0fd3b5c4c8ecb46ff61efe00ba7a04a8a621690",
+"extension_sha256":"523cf1f748065adb967fdc1ef457df19ce1523ee1175effdaf4ed82447a171e6",
+"python":"3.14.7",
+"numpy":"2.5.3",
+"scipy":"1.18.1",
+"script":"test/migration/freeze_finite_size.py"
+}
+}

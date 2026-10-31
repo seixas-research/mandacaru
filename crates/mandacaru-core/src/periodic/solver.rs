@@ -70,6 +70,10 @@ pub struct PeriodicResult {
     pub terms: [f64; 5],
     pub magnetization: f64,
     pub spin_orbit_energy: Option<f64>,
+    /// `E_U` (Hartree, already inside `energy`); `Some` only when the snapshot has a `hubbard` object.
+    pub hubbard_energy: Option<f64>,
+    /// Shell occupations and operators of a DFT+U run.
+    pub hubbard: Option<super::hubbard::Report>,
     pub options: Options,
     _memory: Reservation,
 }
@@ -361,17 +365,38 @@ pub fn diagonalize(
     w: &[C64],
     kinetic_potential: Option<&[f64]>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    // A DFT+U operator is not part of (v, w): this entry point would silently drop it.
+    if c.hubbard.as_ref().is_some_and(|h| h.is_active()) {
+        return Err(invalid(
+            "diagonalize without the DFT+U operator of a DFT+U crystal; use diagonalize_with",
+        ));
+    }
+    diagonalize_with(c, data, v, w, kinetic_potential, None)
+}
+/// [`diagonalize`] with the optional `p x p` DFT+U operator of this spin channel, added to the
+/// moment operator before the `C O C^dagger` product.
+pub fn diagonalize_with(
+    c: &Crystal,
+    data: &KPoint,
+    v: &[f64],
+    w: &[C64],
+    kinetic_potential: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
     if c.spinor {
         return super::spinor::diagonalize(c, data, v, w);
     }
     let m = c.m;
     let p = c.p;
     let n = c.grid.index.points();
-    let operator = Matrix::from_fn(p, p, |i, j| {
+    let mut operator = Matrix::from_fn(p, p, |i, j| {
         (0..c.channels)
             .map(|a| w[a] * c.blocks.as_slice()[(a * p + i) * p + j])
             .sum()
     });
+    if let Some(extra) = hubbard {
+        operator += extra;
+    }
     let mut field = c.context.allocate::<f64>(n)?;
     if v.len() != n {
         return Err(invalid("local periodic potential must match the grid"));
@@ -549,6 +574,7 @@ impl Mixer {
         output: Vec<C64>,
         options: &Options,
         warmup: bool,
+        unit_from: usize,
     ) -> Result<Vec<C64>> {
         let residual = output
             .iter()
@@ -583,8 +609,9 @@ impl Mixer {
                         .enumerate()
                         .map(|(k, (a, b))| {
                             (a.conj() * b).re
-                                * if k < c.grid.index.points() * c.field_channels()
-                                    || k >= c.grid.index.points() * c.field_channels() + c.channels
+                                * if (k < c.grid.index.points() * c.field_channels()
+                                    || k >= c.grid.index.points() * c.field_channels() + c.channels)
+                                    && k < unit_from
                                 {
                                     c.grid.index.dv()
                                 } else {
@@ -647,6 +674,12 @@ impl Crystal {
         let nk = c.points.len();
         let m = c.bands();
         let meta = crate::models::functional(&c.functional)?.requires_tau;
+        let hub = c.hubbard.as_ref();
+        let active = hub.is_some_and(|h| h.is_active());
+        let hub_bytes = match hub {
+            Some(h) => h.bytes(c)?,
+            None => 0,
+        };
         if c.spinor && c.functional != "lda" && c.functional != "pbe" {
             return Err(invalid("periodic spinor XC currently requires LDA or PBE"));
         }
@@ -668,7 +701,9 @@ impl Crystal {
             ));
         }
         ctx.run(|| {
-            let retained = product(&[options.max_iterations, 128])?;
+            let retained = product(&[options.max_iterations, 128])?
+                .checked_add(hub_bytes)
+                .ok_or(crate::Error::Overflow)?;
             let archive_matrices = product(&[c.spins, nk, m, m, 32])? > ctx.memory_limit() / 8;
             let mut memory = ctx.reserve(
                 retained
@@ -710,6 +745,11 @@ impl Crystal {
             let mut previous = None;
             let mut history = vec![];
             let mut mixer = Mixer { history: vec![] };
+            // DFT+U: the shell occupations that define the operator are part of the mixed state.
+            let mut hub_in = match hub {
+                Some(h) if active => h.seed(c.spins)?,
+                _ => vec![],
+            };
             for iteration in 1..=options.max_iterations {
                 let LocalPotential {
                     local: v,
@@ -722,11 +762,15 @@ impl Crystal {
                     q.as_slice(),
                     tau.as_ref().map(|t| t.as_slice()),
                 )?;
+                let hub_operators = match hub {
+                    Some(h) if active => Some(h.operators(c, &hub_in)?),
+                    _ => None,
+                };
                 let mut eigenvalues = vec![];
                 let mut coefficients = vec![];
                 for s in 0..c.spins {
                     for data in &c.points {
-                        let (eps, coeff, _) = diagonalize(
+                        let (eps, coeff, _) = diagonalize_with(
                             c,
                             data,
                             if c.spinor {
@@ -738,6 +782,7 @@ impl Crystal {
                             kinetic_potential
                                 .as_ref()
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
+                            hub_operators.as_ref().map(|o| &o[s]),
                         )?;
                         eigenvalues.push(eps);
                         coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
@@ -779,6 +824,14 @@ impl Crystal {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let (output, qout) = density(c, &matrices)?;
+                let hub_out = match hub {
+                    Some(h) if active => Some(h.occupations(c, &matrices)?),
+                    _ => None,
+                };
+                let hub_energy = match (hub, &hub_out) {
+                    (Some(h), Some(n)) => h.energy(c, n)?,
+                    _ => 0.,
+                };
                 let tauout = if meta {
                     Some(super::fields::kinetic_density(c, &matrices)?)
                 } else {
@@ -792,7 +845,7 @@ impl Crystal {
                     qout.as_slice(),
                     tauout.as_ref().map(|t| t.as_slice()),
                 )?;
-                let energy = terms.iter().sum::<f64>();
+                let energy = terms.iter().sum::<f64>() + hub_energy;
                 let entropy = -options.width
                     * degeneracy
                     * eigenvalues
@@ -806,18 +859,27 @@ impl Crystal {
                         })
                         .sum::<f64>();
                 let free = energy + entropy;
-                let x = pack(
+                let mut x = pack(
                     c,
                     rho.as_slice(),
                     q.as_slice(),
                     tau.as_ref().map(|t| t.as_slice()),
                 );
-                let y = pack(
+                let mut y = pack(
                     c,
                     output.as_slice(),
                     qout.as_slice(),
                     tauout.as_ref().map(|t| t.as_slice()),
                 );
+                let unit_from = if hub_out.is_some() {
+                    x.len()
+                } else {
+                    usize::MAX
+                };
+                if let Some(out) = &hub_out {
+                    x.extend(super::hubbard::flatten(&hub_in));
+                    y.extend(super::hubbard::flatten(out));
+                }
                 let kinetic_residual = tau.as_ref().zip(tauout.as_ref()).map_or(0., |(a, b)| {
                     a.as_slice()
                         .iter()
@@ -838,6 +900,14 @@ impl Crystal {
                     .zip(qout.as_slice())
                     .map(|(a, b)| (a - b).norm())
                     .fold(0f64, f64::max);
+                let moment_residual = hub_out.as_ref().map_or(moment_residual, |out| {
+                    hub_in
+                        .iter()
+                        .zip(out)
+                        .flat_map(|(a, b)| a.iter().zip(b))
+                        .map(|(a, b)| (a - b).norm())
+                        .fold(moment_residual, f64::max)
+                });
                 let magnetization = if c.spinor {
                     super::spinor::magnetic_moment(c, &matrices)?
                 } else if c.spins == 2 {
@@ -876,6 +946,20 @@ impl Crystal {
                     } else {
                         None
                     };
+                    let hubbard = match hub {
+                        Some(h) => {
+                            let (n, operators) = match (hub_out, hub_operators) {
+                                (Some(n), Some(o)) => (n, o),
+                                _ => {
+                                    let n = h.occupations(c, &matrices)?;
+                                    let o = h.operators(c, &n)?;
+                                    (n, o)
+                                }
+                            };
+                            Some(h.report(n, operators))
+                        }
+                        None => None,
+                    };
                     return Ok(PeriodicResult {
                         energy,
                         free_energy: free,
@@ -900,12 +984,21 @@ impl Crystal {
                         terms: [terms[0], terms[1], terms[2], terms[3], entropy],
                         magnetization,
                         spin_orbit_energy,
+                        hubbard_energy: hubbard.as_ref().map(|_| hub_energy),
+                        hubbard,
                         options: options.clone(),
                         _memory: memory,
                     });
                 }
-                let next =
-                    mixer.next(c, &mut fft, x, y, options, c.spins == 2 && iteration <= 12)?;
+                let next = mixer.next(
+                    c,
+                    &mut fft,
+                    x,
+                    y,
+                    options,
+                    c.spins == 2 && iteration <= 12,
+                    unit_from,
+                )?;
                 unpack(
                     c,
                     &next,
@@ -913,6 +1006,9 @@ impl Crystal {
                     q.as_mut_slice(),
                     tau.as_mut().map(|t| t.as_mut_slice()),
                 );
+                if unit_from != usize::MAX {
+                    super::hubbard::restore(&mut hub_in, &next[unit_from..]);
+                }
                 previous = Some(free);
             }
             unreachable!()

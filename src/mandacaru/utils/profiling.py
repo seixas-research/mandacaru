@@ -11,15 +11,15 @@
 The variational drivers (:class:`~mandacaru.algorithms.vqe.VQE`,
 :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`) and the real-space integral
 engine record how long each stage takes, the peak process memory, and how many
-cores the C backend used, then surface them in the standard-output summary.
+cores the native backend used, then surface them in the standard-output summary.
 
 * **Time** -- wall-clock seconds via :func:`time.perf_counter`, accumulated per
   named stage (a stage can be timed repeatedly, e.g. once per ADAPT iteration).
 * **Memory** -- the process peak resident set size (RSS) via
   :func:`resource.getrusage`; a whole-process high-water mark, so it includes the
-  memory the C backend allocates (grid fields, ERI tensor), not just NumPy.
-* **Cores** -- the number of OpenMP threads the C integral backend runs with
-  (``None`` when the C library is not built and the NumPy fallback is used).
+  memory the native kernels allocate (grid fields, ERI tensor), not just NumPy arrays.
+* **Cores** -- the number of threads the Rust integral kernels run with
+  (``None`` when the count was not recorded).
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def current_memory_mb() -> float:
 def cpu_count() -> int | None:
     """Logical CPUs visible to this process (``None`` if undetectable).
 
-    What the machine offers, against which the C backend's OpenMP thread count
+    What the machine offers, against which the Rust kernels' thread count
     (:func:`backend_cores`) says how much is actually used.
     """
     try:
@@ -98,7 +98,7 @@ def cpu_count() -> int | None:
 
 
 def backend_cores() -> int | None:
-    """Thread count of the native integral backend, or ``None`` (NumPy path)."""
+    """Thread count of the native integral backend, or ``None`` when it cannot be read."""
     try:
         from ..integrals import _backend
         return _backend.num_threads()
@@ -107,12 +107,12 @@ def backend_cores() -> int | None:
 
 
 def backend_label() -> str:
-    """Label of the active native backend (Rust or C or NumPy)."""
+    """Label of the active native backend (``"Rust (N threads)"``), or ``"unavailable"``."""
     try:
         from ..integrals import _backend
         return _backend.check_backend().label
     except Exception:
-        return "NumPy"
+        return "unavailable"
 
 
 class Timings:
@@ -192,7 +192,7 @@ class Timings:
     def resources(self) -> dict:
         """The machine context for a performance report.
 
-        ``threads`` / ``openmp_threads`` is what the native integral backend
+        ``threads`` is what the native integral backend
         actually used and ``cpu_count`` what the machine offers; ``mpi`` records
         that there is no distributed parallelism at all (Mandacaru is a single process --
         shared-memory threads inside the native kernels), which is worth stating
@@ -224,8 +224,8 @@ class Timings:
         if self.wall_time is not None:
             lines.append(f"{indent}{'total wall time':<{width}s} "
                          f"{self.wall_time:>10.4f} s")
-        cores = "n/a (NumPy fallback)" if self.n_cores is None else str(self.n_cores)
-        backend = self.backend or ("C (OpenMP)" if self.n_cores else "NumPy")
+        cores = "n/a (not recorded)" if self.n_cores is None else str(self.n_cores)
+        backend = self.backend or "unavailable"
         lines.append("Resources:")
         lines.append(f"{indent}{'integration backend':<{width}s} {backend}")
         lines.append(f"{indent}{'cores (OpenMP threads)':<{width}s} {cores}")

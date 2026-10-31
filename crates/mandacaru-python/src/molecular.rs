@@ -155,30 +155,14 @@ impl PyIntegrals {
         }
         out.set_item("has_eri", self.inner.has_eri())?;
         if self.inner.has_eri() {
-            match self.inner.eri().map_err(error)?.as_ref() {
-                mandacaru_core::molecular::integrals::Eri::Augmented {
-                    base, correction, ..
-                } => {
-                    out.set_item("representation", "cholesky+augmentation")?;
-                    out.set_item("augmentation_rank", correction.factors.len())?;
-                    if let mandacaru_core::molecular::integrals::Eri::Cholesky {
-                        rank,
-                        residual,
-                        ..
-                    } = base.as_ref()
-                    {
-                        out.set_item("cholesky_rank", rank)?;
-                        out.set_item("cholesky_residual", residual)?;
-                    }
-                }
-                mandacaru_core::molecular::integrals::Eri::Packed { .. } => {
-                    out.set_item("representation", "packed")?
-                }
-                mandacaru_core::molecular::integrals::Eri::Cholesky { rank, residual, .. } => {
-                    out.set_item("representation", "cholesky")?;
-                    out.set_item("cholesky_rank", rank)?;
-                    out.set_item("cholesky_residual", residual)?;
-                }
+            let report = self.inner.eri().map_err(error)?.report();
+            out.set_item("representation", report.representation)?;
+            if let Some(rank) = report.augmentation_rank {
+                out.set_item("augmentation_rank", rank)?;
+            }
+            if let Some((rank, residual)) = report.cholesky {
+                out.set_item("cholesky_rank", rank)?;
+                out.set_item("cholesky_residual", residual)?;
             }
         }
         Ok(out)

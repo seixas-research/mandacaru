@@ -26,9 +26,21 @@ pub const MAX_KERNEL_POINTS: usize = 4096;
 /// Radial step (Bohr) of the long-range compensation potential table.
 pub const SHAPE_TABLE_STEP: f64 = 0.02;
 
+/// The largest multipole `L` of [`radial_coulomb`]. The integrand carries `r^(L+2)`
+/// and `r^(-L)`, which stay finite in `f64` for radii of tens of Bohr up to this
+/// order (the PAW one-center sums use `L` below 12); a larger one is refused, not
+/// wrapped into a smaller one by an integer conversion.
+pub const MAX_RADIAL_L: usize = 64;
+
 /// `int int rho_1(r) rho_2(r') r_<^L / r_>^(L+1) r^2 r'^2 dr dr'`: the inner
 /// integral is accumulated once (cumulative trapezoid), the outer one is Simpson.
+/// `L` is at most [`MAX_RADIAL_L`].
 pub fn radial_coulomb(r: &[f64], rho_1: &[f64], rho_2: &[f64], l: usize) -> Result<f64> {
+    if l > MAX_RADIAL_L {
+        return Err(invalid(format!(
+            "the radial Coulomb integral is computed for L up to {MAX_RADIAL_L}, got {l}"
+        )));
+    }
     let n = r.len();
     if rho_1.len() != n || rho_2.len() != n {
         return Err(invalid("radial Coulomb arrays differ in length"));
