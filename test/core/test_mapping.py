@@ -305,12 +305,33 @@ def _spatial(m, seed, complex_eri):
     return h, eri
 
 
+def spin_block_integrals(h, eri, h_spin=None):
+    h = np.asarray(h)
+    eri = np.asarray(eri)
+    M = h.shape[0]
+    n_so = 2 * M
+    dtype = np.result_type(h, eri, float)
+    h_so = np.zeros((n_so, n_so), dtype=np.result_type(dtype, *(
+        () if h_spin is None else (np.asarray(h_spin),))))
+    g_so = np.zeros((n_so,) * 4, dtype=dtype)
+    for sigma in range(2):
+        a = slice(sigma * M, (sigma + 1) * M)
+        h_so[a, a] = h
+        for tau in range(2):
+            b = slice(tau * M, (tau + 1) * M)
+            g_so[a, b, a, b] = eri
+    if h_spin is not None:
+        h_spin = np.asarray(h_spin)
+        if h_spin.shape != (n_so, n_so):
+            raise ValueError(f"h_spin must be ({n_so}, {n_so})")
+        h_so = h_so + h_spin
+    return h_so, g_so
+
+
 class TestSpatialIntegrals:
     @pytest.mark.parametrize("complex_eri", [False, True])
     def test_terms_and_their_order_match_the_spin_blocked_tensor(
             self, complex_eri):
-        from mandacaru.core.hamiltonian import spin_block_integrals
-
         h, eri = _spatial(4, seed=5, complex_eri=complex_eri)
         reference = Fermion.from_integrals(*spin_block_integrals(h, eri))
         built = Fermion.from_spatial_integrals(h, eri)
@@ -322,8 +343,6 @@ class TestSpatialIntegrals:
                 == reference.map_to_qubits("jordan_wigner").terms)
 
     def test_a_spin_orbit_term_enters_the_one_body_block(self):
-        from mandacaru.core.hamiltonian import spin_block_integrals
-
         h, eri = _spatial(3, seed=6, complex_eri=False)
         rng = np.random.default_rng(7)
         h_spin = rng.standard_normal((6, 6)) + 1j * rng.standard_normal((6, 6))

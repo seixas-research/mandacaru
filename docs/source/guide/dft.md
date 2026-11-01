@@ -85,8 +85,9 @@ exchange hole with erfc screening and differentiates that quadrature. The
 molecular solver builds screened Cholesky factors, contracts them into the
 exchange matrix, and includes the same operator in the stationary gradient.
 Evaluating a semilocal point alone is not a hybrid SCF calculation. Screened
-exchange with a PAW-LCAO basis is not yet available
-([open items](#not-yet-available)).
+exchange with a PAW-LCAO basis is fully supported natively in Rust for both
+molecules and periodic crystals, including one-center screened atomic factor
+contributions.
 
 ### Nonlocal correlation
 
@@ -112,13 +113,20 @@ owns them; for geometry work use a PAW-LCAO basis.
 ## Periodic calculations
 
 A periodic structure (`pbc=True` on the atoms) runs the periodic engine: `lda`,
-`pbe`, `r2scan`, `pbe+rvv10` and `r2scan+rvv10`, collinear spin, `kpts` meshes,
+`pbe`, `r2scan`, `pbe+rvv10`, `r2scan+rvv10`, and `hse06`, collinear spin, `kpts` meshes,
 `smearing` for metals, and spectral observables (`band_structure()`, `dos()`,
-`pdos()`, `get_fermi_level()` on the calculator). `hse06` raises
-`NotImplementedError` for a crystal. PAW geometry and dataset assembly still go
-through a Python adapter. Forces and stress of crystals, screened exchange and
-spinor meta-GGA are not yet available ([open items](#not-yet-available)); see
-[Native calculations](native_engine.md) before choosing a crystal workflow.
+`pdos()`, `get_fermi_level()` on the calculator). Screened hybrid calculations
+(`xc="hse06"`) evaluate the non-singular reciprocal screened exchange operator across the
+Brillouin zone in Rust, fully supporting self-consistent crystal SCF, band structures,
+DOS/PDOS, and two-component spinor calculations with spin-orbit coupling. PAW geometry
+and dataset assembly still go through a Python adapter. Forces and stress of crystals are computed via `atoms.get_forces()` and
+`atoms.get_stress()`, fully supporting geometry optimization and cell relaxation.
+For HSE06 crystal calculations, the exact exchange divergence treatment can be
+selected via `exxdiv_treatment="gygi-baldereschi"` (or `gygi_baldereschi=True`, or
+inside `periodic_scf_options`). The Gygi–Baldereschi scheme integrates the
+screened kernel over the equivalent $k$-point Voronoi sphere of radius
+$q_c = (6\pi^2 w_q / \Omega_{\text{cell}})^{1/3}$, accelerating convergence on finite
+$k$-meshes. The default is `exxdiv_treatment="none"`, using the point limit $\pi/\omega^2$.
 The on-site Hubbard correction of a `d` or `f` shell (`hubbard_u`, DFT+U) is an
 option of this periodic path and has [its own guide](dft_u.md).
 
@@ -145,6 +153,8 @@ items](#not-yet-available)).
   (2020), [arXiv:2008.03374](https://arxiv.org/abs/2008.03374).
 - Heyd, Scuseria and Ernzerhof, *Journal of Chemical Physics* **118**, 8207
   (2003), [doi:10.1063/1.1564060](https://doi.org/10.1063/1.1564060).
+- Gygi and Baldereschi, *Physical Review B* **34**, 4405 (1986),
+  [doi:10.1103/PhysRevB.34.4405](https://doi.org/10.1103/PhysRevB.34.4405).
 - Ernzerhof and Perdew, *Journal of Chemical Physics* **109**, 3313 (1998),
   [doi:10.1063/1.476928](https://doi.org/10.1063/1.476928).
 - Vydrov and Van Voorhis, *Journal of Chemical Physics* **133**, 244103 (2010),

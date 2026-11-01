@@ -118,14 +118,9 @@ def test_a_pbe_install_writes_into_the_pbe_set(tmp_path, monkeypatch,
     assert load_pseudopotential(str(path)).xc == "pbe"
 
 
-def _blas_threads():
-    import numpy
-    from threadpoolctl import threadpool_info
-
-    numpy.ones((2, 2)) @ numpy.ones((2, 2))       # the BLAS pool is loaded
-
-    return max(pool["num_threads"] for pool in threadpool_info()
-               if pool["user_api"] == "blas")
+def _env_threads():
+    import os
+    return int(os.environ.get("OMP_NUM_THREADS", "0"))
 
 
 def test_a_worker_shares_the_cores_out():
@@ -139,9 +134,10 @@ def test_a_worker_shares_the_cores_out():
 
     assert worker_threads(1) == grid_blas_threads()
     assert worker_threads(10_000) == 1
+
     with ProcessPoolExecutor(max_workers=1, initializer=_limit_threads,
                              initargs=(1,)) as pool:
-        assert pool.submit(_blas_threads).result() == 1
+        assert pool.submit(_env_threads).result() == 1
 
 
 

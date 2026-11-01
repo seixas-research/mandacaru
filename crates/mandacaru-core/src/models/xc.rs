@@ -460,10 +460,10 @@ fn hybrid_partials(
     omega: f64,
     fraction: f64,
 ) -> Result<(f64, [f64; 7])> {
-    if relativistic || [0, 1, 2, 4].iter().any(|&i| values[i] < 0.) {
-        return Err(invalid("hse06 needs nonnegative spin densities and diagonal gradients, without relativistic exchange"));
+    if [0, 1, 2, 4].iter().any(|&i| values[i] < 0.) {
+        return Err(invalid("hse06 needs nonnegative spin densities and diagonal gradients"));
     }
-    let (energy, d) = partials_relativistic("pbe", std::array::from_fn(|i| values[i]), false)?;
+    let (energy, d) = partials_relativistic("pbe", std::array::from_fn(|i| values[i]), relativistic)?;
     let mut result = Jet {
         v: energy,
         d: std::array::from_fn(|i| if i < 5 { d[i] } else { 0. }),

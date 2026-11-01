@@ -32,6 +32,13 @@ struct Reference<'a> {
     chi: &'a [f64],
 }
 
+/// The reference orbital of a channel: its first partial wave with a positive occupation, or
+/// `None` for a channel whose reference atom holds no electron there. The one rule behind
+/// [`weights`] and the geometry check of the DFT+U table.
+pub fn reference_wave(occupations: &[f64]) -> Option<usize> {
+    occupations.iter().position(|f| *f > 0.)
+}
+
 fn reference<'a>(
     channel: &'a Channel<'_>,
     r: &[f64],
@@ -75,7 +82,7 @@ fn reference<'a>(
     }
     // The first occupied wave is the reference orbital. A channel with none has no
     // bound orbital to project on: raise, never substitute wave 0.
-    let occupied = occupations.iter().position(|f| *f > 0.).ok_or_else(|| {
+    let occupied = reference_wave(occupations).ok_or_else(|| {
         invalid("PAW shell: the channel has no occupied reference wave to project on")
     })?;
     Ok(Reference {

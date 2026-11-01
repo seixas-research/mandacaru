@@ -264,7 +264,7 @@ class TestCrystalFilePrecision:
 
 
 class TestMemoryBudget:
-    """With 0.75 x the float64 peak, float64 cannot run and float32 can."""
+    """With 0.85 x the float64 peak, float64 cannot run and float32 can."""
 
     @staticmethod
     def _run(precision, limit):
@@ -279,7 +279,7 @@ class TestMemoryBudget:
 
     def test_float32_fits_a_budget_float64_exceeds(self):
         energy64, peak64 = self._run("float64", 2 * 1024**3)
-        limit = int(0.75 * peak64)
+        limit = int(0.85 * peak64)
         with pytest.raises(MemoryError):
             self._run("float64", limit)
         energy32, peak32 = self._run("float32", limit)

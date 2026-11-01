@@ -245,9 +245,7 @@ def grid_blas_threads() -> int:
     native kernel waits for the cores.  Hardware threads beyond the cores lost
     (``M = 832``: 2.3 s on 12 threads, 2.9 s on 24, 14.4 s on one).
     """
-    import psutil
-
-    return max(1, psutil.cpu_count(logical=False) or os.cpu_count() or 1)
+    return max(1, getattr(os, "process_cpu_count", lambda: None)() or os.cpu_count() or 1)
 
 
 # --------------------------------------------------------------------------- #

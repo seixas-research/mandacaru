@@ -48,7 +48,7 @@ and `method`. With `--forces` it gains `forces_ev_per_angstrom`, one row per ato
 | `--basis` | `HAO` | `basis`, as a name only (`HAO`, `PAW-LCAO`, a Gaussian recipe such as `STO-3G`). A basis with options needs the Python interface. |
 | `--grid-spacing` | `0.2` | `grid_spacing`, in angstrom. |
 | `--threads` | automatic | `resources["threads"]`. |
-| `--memory-mb` | `512` | The calculation's memory budget in mebibytes (`resources["memory_limit_bytes"]`). |
+| `--memory-mb` | `32768` | The calculation's memory budget in mebibytes (`resources["memory_limit_bytes"]`). |
 | `--forces` | off | Also compute forces (`calculate` with the `forces` property). |
 | `--load-hamiltonian FILE` | none | `load_hamiltonian`: solve a cached qubit Hamiltonian; no geometry is needed. |
 | `--save-hamiltonian FILE` | none | `save_hamiltonian`: write the Hamiltonian the run builds. |

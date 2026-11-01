@@ -8,10 +8,9 @@
 
 """Space groups and the irreducible Brillouin zone: :mod:`mandacaru.core.symmetry`.
 
-spglib supplies the symmetry *operations*; the mesh reduction is done here, in
-Mandacaru's own ``[-1/2, 1/2)`` Gamma-centered convention.  These tests pin that
-split -- the reduction has to be right for lattices spglib would describe with a
-different grid convention, and it has to refuse to merge points that are not
+Symmetry operations are found natively; the mesh reduction is done in
+Mandacaru's own ``[-1/2, 1/2)`` Gamma-centered convention.  These tests pin
+that behavior -- the reduction has to refuse to merge points that are not
 actually in the mesh.
 
 Nothing here builds a Hamiltonian, so the file costs a fraction of a second.
@@ -82,36 +81,7 @@ class TestTheSpaceGroup:
         assert "P4/mmm" in crystal_symmetry(square()).summary()
 
 
-class TestSpglibIsConfiguredToRaise:
-    """``require_spglib`` turns off spglib's legacy error handling.
-
-    With ``spglib.error.OLD_ERROR_HANDLING`` left at its default ``True``,
-    spglib stashes a failure in a module-level string, returns a sentinel, and
-    emits a ``DeprecationWarning`` on **every** call -- which made three
-    symmetry lookups produce three warnings.  spglib says the flag will be
-    removed, so Mandacaru opts in once, at the single point where spglib is
-    imported.
-    """
-
-    def test_no_deprecation_warning_per_call(self):
-        import warnings
-
-        atoms = square()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            for _ in range(3):
-                crystal_symmetry(atoms)
-        deprecations = [record for record in caught
-                        if issubclass(record.category, DeprecationWarning)]
-        assert deprecations == []
-
-    def test_the_flag_is_off_after_importing(self):
-        from mandacaru.core.symmetry import require_spglib
-
-        require_spglib()
-        from spglib import error as spglib_error
-        assert spglib_error.OLD_ERROR_HANDLING is False
-
+class TestSymmetryErrors:
     def test_a_failure_raises_instead_of_returning_a_sentinel(self):
         """A degenerate cell must fail loudly, not come back as ``None``."""
         atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],

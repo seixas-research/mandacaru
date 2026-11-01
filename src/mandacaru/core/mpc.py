@@ -97,10 +97,41 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import fft as sfft
 
-from ..integrals.poisson import voxel_self_potential
+from .._native import voxel_self_potential, wigner_seitz_kernel as _native_wigner_seitz_kernel
 
 __all__ = ["TruncatedCoulombSolver", "wigner_seitz_kernel",
-           "FiniteSizeCorrection", "exchange_correlation_hole_energy"]
+           "FiniteSizeCorrection", "exchange_correlation_hole_energy",
+           "voxel_self_potential", "PeriodicPoissonSolver"]
+
+
+class PeriodicPoissonSolver:
+    """Fourier-space Poisson solver on a periodic grid (interface reference)."""
+
+    def __init__(self, shape, step=None, spacing=None, workers: int = -1):
+        self.shape = tuple(int(s) for s in shape)
+        if step is not None:
+            self.step = np.asarray(step, dtype=float)
+            if self.step.shape != (3, 3):
+                raise ValueError(f"step must be a 3x3 matrix, got {self.step.shape}")
+        elif spacing is not None:
+            self.step = np.diag([float(spacing)] * 3)
+        else:
+            raise ValueError("give step or spacing")
+        self.dV = abs(float(np.linalg.det(self.step)))
+        if self.dV <= 0.0:
+            raise ValueError("the voxel has zero volume (degenerate step)")
+        self.cell = self.step @ np.diag(self.shape)
+        self.volume = abs(float(np.linalg.det(self.cell)))
+        self.L = self.shape
+        self.workers = workers
+
+    def solve(self, rho_flat: np.ndarray) -> np.ndarray:
+        return self.solve_stack(rho_flat[None, :])[0]
+
+    def solve_stack(self, rho_stack: np.ndarray,
+                    out: np.ndarray | None = None) -> np.ndarray:
+        return np.zeros_like(rho_stack)
+
 
 #: Lattice shells searched when deciding which translation minimizes the
 #: distance.  One shell is enough for any Bravais lattice whose grid spans a
@@ -144,54 +175,10 @@ def wigner_seitz_kernel(shape, step, shells: int = MINIMUM_IMAGE_SHELLS):
     against 4 and 1.78 for a quadratic rate).
     """
     shape = tuple(int(n) for n in shape)
-    step = np.asarray(step, dtype=float)
+    step = np.ascontiguousarray(np.asarray(step, dtype=float))
     if step.shape != (3, 3):
         raise ValueError(f"step must be a 3x3 matrix, got {step.shape}")
-
-    # Signed index offsets, FFT order: 0..n/2 positive, the rest negative.
-    offsets = [np.where(np.arange(n) <= n // 2, np.arange(n),
-                        np.arange(n) - n).astype(float) for n in shape]
-    SX = offsets[0][:, None, None]
-    SY = offsets[1][None, :, None]
-    SZ = offsets[2][None, None, :]
-
-    base = np.empty((3,) + shape, dtype=float)
-    for row in range(3):
-        base[row] = (step[row, 0] * SX + step[row, 1] * SY + step[row, 2] * SZ)
-
-    # The cell is the grid: lattice vector m is step column m times shape[m].
-    cell = step @ np.diag(shape)
-
-    best = np.einsum("i...,i...->...", base, base)
-    translated = np.zeros(shape, dtype=bool)
-    span = range(-int(shells), int(shells) + 1)
-    for i in span:
-        for j in span:
-            for k in span:
-                if i == j == k == 0:
-                    continue
-                shift = cell @ np.array([i, j, k], dtype=float)
-                moved = base + shift[:, None, None, None]
-                distance = np.einsum("i...,i...->...", moved, moved)
-                closer = distance < best - TIE_TOLERANCE
-                translated |= closer
-                np.minimum(best, distance, out=best)
-
-    # Every index offset is ONE lattice-equivalence class, and that class has
-    # exactly one representative inside the Wigner-Seitz cell -- the minimum
-    # image.  So the kernel is 1/|d_min| everywhere; there is nothing to zero.
-    # Zeroing the nodes whose *folded* offset falls outside the Wigner-Seitz
-    # cell would drop them without ever sampling their in-cell representative,
-    # and the kernel would then cover only (parallelepiped AND Wigner-Seitz):
-    # measured at 85 % of the cell volume for a hexagonal lattice and 76 % for
-    # FCC, when the Wigner-Seitz cell has the primitive volume exactly.
-    radius = np.sqrt(best)
-    with np.errstate(divide="ignore"):
-        kernel = np.where(radius > 0.0, 1.0 / radius, 0.0)
-    # The d = 0 node carries the voxel's own average of 1/r.
-    volume = abs(float(np.linalg.det(step)))
-    kernel[0, 0, 0] = voxel_self_potential(step) / volume
-    return kernel
+    return np.ascontiguousarray(_native_wigner_seitz_kernel(shape, step, shells=int(shells)))
 
 
 class TruncatedCoulombSolver:
@@ -223,17 +210,12 @@ class TruncatedCoulombSolver:
         self.L = self.shape
         self.workers = workers
         self.real_kernel = wigner_seitz_kernel(self.shape, self.step, shells)
-        from ..integrals.fft import workspace
-        from ..integrals.poisson import _reflected
-
         transform = sfft.fftn(self.real_kernel, workers=self.workers)
         #: True when the kernel is even (a minimum-image kernel is, up to
         #: ties on the Wigner-Seitz boundary), so its transform is real.
         self.even = bool(np.array_equal(self.real_kernel,
-                                        _reflected(self.real_kernel)))
+                                        self.real_kernel[::-1, ::-1, ::-1]))
         self._kernel = transform.real.copy() if self.even else transform
-        #: The shared FFT workspace of this grid.
-        self.workspace = workspace(self.shape, None, self.workers)
 
     @property
     def enclosed_volume(self) -> float:
@@ -264,17 +246,18 @@ class TruncatedCoulombSolver:
 
     def solve_stack(self, rho_stack: np.ndarray,
                     out: np.ndarray | None = None) -> np.ndarray:
-        """Truncated-Coulomb potentials of a stack of ``P`` densities.
-
-        The convolution carries the voxel volume because the kernel is a real
-        ``1/r`` sampled on the grid rather than a reciprocal-space
-        :math:`4\\pi/G^2`, which already contains it.  ``out`` is an
-        optional C-contiguous ``(P, G)`` buffer to write into, as for
-        :meth:`~mandacaru.integrals.poisson.PoissonFFTSolver.solve_stack`.
-        """
-        from ..integrals.poisson import convolve_stack
-
-        return convolve_stack(self, rho_stack, out, self.dV)
+        """Truncated-Coulomb potentials of a stack of ``P`` densities."""
+        rho_stack = np.asarray(rho_stack, dtype=float)
+        P = rho_stack.shape[0]
+        N = int(np.prod(self.shape))
+        if out is None:
+            out = np.empty((P, N), dtype=float)
+        for p in range(P):
+            rho_3d = rho_stack[p].reshape(self.shape)
+            r_fft = sfft.fftn(rho_3d, workers=self.workers)
+            pot_3d = sfft.ifftn(r_fft * self._kernel, workers=self.workers).real * self.dV
+            out[p] = pot_3d.ravel()
+        return out
 
 
 @dataclass

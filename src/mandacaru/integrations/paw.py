@@ -51,8 +51,8 @@ def crystal_input(
     hubbard=None,
 ):
     """Snapshot the density-independent PAW setup; this performs no SCF steps."""
-    if functional not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"):
-        raise NotImplementedError("periodic screened exact exchange requires its reciprocal exchange operator")
+    if functional not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10", "hse06"):
+        raise NotImplementedError(f"periodic calculation does not support functional {functional!r}")
     from ..integrals import reciprocal as rc, exchange_correlation as xc
 
     c = crystal
@@ -148,7 +148,7 @@ def crystal_input(
         constant=float(constant),
         reference=float(2 * np.pi * c.sigma**2 * np.sum(c.charges) / c.volume),
         electrons=float(electrons),
-        spins=2 if not c.has_spin_orbit and (unrestricted or (magnetic_moments is not None and np.any(np.asarray(magnetic_moments) != 0.0))) else 1,
+        spins=2 if not c.has_spin_orbit and unrestricted else 1,
         spinor=c.has_spin_orbit,
         hubbard=hubbard,
         time_reversal=bool(time_reversal),
@@ -175,6 +175,7 @@ def configure(driver, atoms):
     from ..integrals.exchange_correlation import core_correction_offset
     from ..models.datasets import _datasets_relativistic, _warn_functional_mismatch
     from .. import hubbard
+    from ..structure import initial_moments
 
     if driver._load_crystal is not None:
         raise ValueError(
@@ -198,11 +199,6 @@ def configure(driver, atoms):
         raise ValueError("periodic PAW electron counts follow the datasets and charge")
     if driver._requested_mapping is not None:
         raise ValueError("a periodic Kohn-Sham problem has no qubit mapping")
-    moments = np.asarray(atoms.get_initial_magnetic_moments(), dtype=float)
-    if moments.ndim != 1:
-        raise NotImplementedError(
-            "native periodic SCF supports collinear initial moments"
-        )
     name, options = resolve_basis(driver._periodic_basis)
     family = pseudopotential_family(name)
     if family is None or family.name not in ("paw-lcao", "upaw-lcao"):
@@ -211,6 +207,7 @@ def configure(driver, atoms):
         )
     options = dict(options)
     spinor = bool(spin_orbit_symbols(atoms, options, family.name))
+    moments = initial_moments(atoms, spinor=spinor, unrestricted=driver._unrestricted)
     time_reversal = spinor and not driver._unrestricted and not np.any(moments)
     for axis, periodic in enumerate(atoms.pbc):
         size = (

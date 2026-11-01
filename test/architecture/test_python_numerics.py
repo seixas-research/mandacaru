@@ -302,13 +302,12 @@ def test_a_function_keeps_its_own_counters():
         ("import pandas", "pandas"),
         ("import pyarrow.parquet", "pyarrow.parquet"),
         ("import sympy", "sympy"),
-        ("import spglib", "spglib"),
-        ("def f():\n    import spglib", "spglib"),
+        ("import requests", "requests"),
+        ("def f():\n    import requests", "requests"),
         ("from qiskit.quantum_info import Operator", "qiskit.quantum_info"),
         ("from ase.neighborlist import neighbor_list", "ase.neighborlist"),
         ("from ase import geometry", "ase.geometry"),
         ("import ase.spacegroup", "ase.spacegroup"),
-        ("import requests", "requests"),
     ],
 )
 def test_the_zero_tier_import_allowlist(source, target):
@@ -487,7 +486,7 @@ def test_a_dated_exception_may_waive_np_but_never_dyn_or_an_import_in_the_zero_t
     found = waiver_case(tmp_path, DYN_IN_VALIDATE, "dyn", **dated)
     assert any("dyn is never waivable in the zero tier" in line for line in found)
     assert any("dyn 1 > budget 0" in line for line in found)
-    found = waiver_case(tmp_path, "def validate(x):\n    import spglib\n    return 1\n", "imp", **dated)
+    found = waiver_case(tmp_path, "def validate(x):\n    import requests\n    return 1\n", "imp", **dated)
     assert any("imp is never waivable in the zero tier" in line for line in found)
 
 
@@ -499,13 +498,13 @@ def test_the_closed_category_waivers_of_the_seed_are_all_scalar_helpers():
 
 
 def test_an_allowed_import_is_named_by_its_row_and_must_be_used(tmp_path):
-    files = {"core/symmetry.py": "import spglib\nx = 1\n"}
+    files = {"core/symmetry.py": "import psutil\nx = 1\n"}
     row = {"sloc": 2, "imp": 0, "wave": "3b", "dies": "2027-05-07"}
     assert any("imp 1 > budget 0" in line for line in failures(
         tmp_path, files, modules={"core/symmetry.py": {k: v for k, v in row.items() if k != "imp"}}, zero_sloc=2))
-    allowed = {**row, "allow_imports": ["spglib"]}
+    allowed = {**row, "allow_imports": ["psutil"]}
     assert failures(tmp_path, files, modules={"core/symmetry.py": allowed}, zero_sloc=2) == []
-    unused = {**row, "allow_imports": ["spglib", "scipy.spatial"]}
+    unused = {**row, "allow_imports": ["psutil", "scipy.spatial"]}
     found = failures(tmp_path, files, modules={"core/symmetry.py": unused}, zero_sloc=2)
     assert any("scipy.spatial" in line for line in found)
 
@@ -571,7 +570,7 @@ def test_every_date_in_the_budget_is_at_least_a_stage_away():
 def committed():
     return budget(
         modules={"basis/a.py": {"np": 3, "sloc": 10, "wave": "3a", "dies": "2027-03-26",
-                                "allow_imports": ["spglib"]}},
+                                "allow_imports": ["requests"]}},
         exceptions=[{"module": "basis/a.py", "function": "f", "bi": 2, "category": "validation",
                      "reason": "x", "dies": "2027-03-26"}],
         zero_sloc=10,
@@ -606,7 +605,7 @@ def test_a_budget_no_looser_than_head_passes():
         (lambda b: b["exception"][0].pop("dies"), "dies 2027-03-26 was removed"),
         (lambda b: b["exception"][0].update(category="hand-off"), "category changed ('validation' -> 'hand-off')"),
         (lambda b: b["exception"][0].update(wave="W4"), "wave changed (None -> 'W4')"),
-        (lambda b: b["module"]["basis/a.py"].update(allow_imports=["spglib", "psutil"]), "gained psutil"),
+        (lambda b: b["module"]["basis/a.py"].update(allow_imports=["requests", "psutil"]), "gained psutil"),
         (lambda b: b["module"].update({"basis/b.py": {"sloc": 1, "category": "hand-off"}}), "row added"),
         (lambda b: b["exception"][0].update(bi=3), "waived bi rose from 2 to 3"),
         (lambda b: b["exception"][0].update(dies="2027-05-01"), "dies moved later"),

@@ -346,16 +346,41 @@ impl MolecularIntegrals {
     pub(super) fn kohn_sham_energy(&self, functional: &str, d: &[Matrix]) -> Result<f64> {
         let definition = crate::models::functional(functional)?;
         let m = self.m();
-        if definition.screened_exchange.is_some()
-            || d.is_empty()
+        if d.is_empty()
             || d.len() > 2
             || d.iter().any(|d| d.shape() != (m, m))
         {
             return Err(invalid(
-                "Kohn-Sham energy needs one or two spin densities and no screened exchange",
+                "Kohn-Sham energy needs one or two spin densities",
             ));
         }
-        let mut poisson = Poisson::isolated(&self.context, &self.grid)?;
+        let ctx = &self.context;
+        let screened = if let Some((omega, _)) = definition.screened_exchange {
+            let mut solver = Poisson::screened(ctx, &self.grid, omega)?;
+            let base = std::sync::Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {
+                super::integrals::cholesky_from_grid(
+                    ctx,
+                    &self.grid,
+                    samples,
+                    m,
+                    1e-12,
+                    &mut solver,
+                    None,
+                )
+            })?);
+            Some(if let Some(corrections) = self.corrections.as_ref() {
+                std::sync::Arc::new(super::integrals::Eri::Augmented {
+                    m,
+                    base,
+                    correction: corrections.pairs.clone(),
+                })
+            } else {
+                base
+            })
+        } else {
+            None
+        };
+        let mut poisson = Poisson::isolated(ctx, &self.grid)?;
         let gradients = if definition.requires_tau {
             Some(orbital_gradients(self)?)
         } else {
@@ -368,7 +393,7 @@ impl MolecularIntegrals {
             functional,
             &mut poisson,
             gradients.as_ref(),
-            None,
+            screened.as_deref(),
         )?
         .energy)
     }
@@ -385,17 +410,12 @@ impl MolecularIntegrals {
             ));
         }
         let definition = crate::models::functional(functional)?;
-        if self.corrections.is_some() && definition.screened_exchange.is_some() {
-            return Err(invalid(
-                "PAW screened exact exchange requires augmented short-range pair integrals",
-            ));
-        }
         self.context.run(|| {
             let m = self.m();
             let ctx = &self.context;
             let screened = if let Some((omega, _)) = definition.screened_exchange {
                 let mut solver = Poisson::screened(ctx, &self.grid, omega)?;
-                Some(with_rows!(self.orthonormal_samples.rows(), |samples| {
+                let base = std::sync::Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {
                     super::integrals::cholesky_from_grid(
                         ctx,
                         &self.grid,
@@ -404,8 +424,17 @@ impl MolecularIntegrals {
                         1e-12,
                         &mut solver,
                         None,
-                    )?
-                }))
+                    )
+                })?);
+                Some(if let Some(corrections) = self.corrections.as_ref() {
+                    std::sync::Arc::new(super::integrals::Eri::Augmented {
+                        m,
+                        base,
+                        correction: corrections.pairs.clone(),
+                    })
+                } else {
+                    base
+                })
             } else {
                 None
             };
@@ -456,7 +485,7 @@ impl MolecularIntegrals {
                     functional,
                     &mut poisson,
                     orbital_gradients.as_ref(),
-                    screened.as_ref(),
+                    screened.as_deref(),
                 )?
                 .f;
                 starts.push(
@@ -521,7 +550,7 @@ impl MolecularIntegrals {
                             functional,
                             &mut poisson,
                             orbital_gradients.as_ref(),
-                            screened.as_ref(),
+                            screened.as_deref(),
                         )?;
                         if retry
                             && previous.is_some_and(|p: f64| value.energy > p + 1e-10)
@@ -581,7 +610,7 @@ impl MolecularIntegrals {
                     functional,
                     &mut poisson,
                     orbital_gradients.as_ref(),
-                    screened.as_ref(),
+                    screened.as_deref(),
                 )?;
                 let energies = value
                     .f

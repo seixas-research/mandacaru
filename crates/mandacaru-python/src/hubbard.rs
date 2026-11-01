@@ -7,11 +7,12 @@ use mandacaru_core::{
     models::{hubbard::shell_letter, hubbard_request::Request},
     periodic::{
         hubbard_table::{
-            build, check_loaded as check_table, ChannelData, Layout, Projector, Species,
+            build, check_datasets, check_loaded as check_table, ChannelData, Dataset, Layout,
+            Projector, Species,
         },
         Crystal, PeriodicResult,
     },
-    product, Reservation,
+    product, Error, Reservation,
 };
 use numpy::{Complex64, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{
@@ -30,10 +31,11 @@ type ChannelArrays<'py> = (
     f64,
     PyReadonlyArray1<'py, f64>,
 );
-/// The radial grid of a species and its channels by `l`.
+/// The radial grid of a species, its channels by `l` and the file the dataset came from.
 type SpeciesArrays<'py> = (
     PyReadonlyArray1<'py, f64>,
     HashMap<usize, ChannelArrays<'py>>,
+    String,
 );
 
 /// Validates the `hubbard_u` option (its JSON text, energies in eV) against the functional and
@@ -44,6 +46,54 @@ fn hubbard_validate(spec: &str, xc: &str, precision: &str) -> PyResult<()> {
     Request::parse(spec)
         .and_then(|request| request.require_scope(xc, precision))
         .map_err(error)
+}
+
+/// Refuses, before any crystal exists, what the elements and their datasets already rule out:
+/// a spin-orbit dataset, an element the option names that the system lacks, a dataset without
+/// the requested channel, a channel with no occupied reference wave. `symbols`, `sources` (the
+/// dataset files) and `occupations` (by `l`, one number per partial wave) hold one entry per
+/// distinct element.
+#[pyfunction]
+fn hubbard_check_atoms<'py>(
+    context: PyRef<'_, PyContext>,
+    spec: &str,
+    spin_orbit: bool,
+    symbols: Vec<String>,
+    sources: Vec<String>,
+    occupations: Vec<HashMap<usize, PyReadonlyArray1<'py, f64>>>,
+) -> PyResult<()> {
+    let ctx = &context.inner;
+    let request = Request::parse(spec).map_err(error)?;
+    if sources.len() != symbols.len() || occupations.len() != symbols.len() {
+        return Err(PyValueError::new_err(
+            "hubbard_u: one dataset file and one occupation table per element are needed",
+        ));
+    }
+    let mut holds: Vec<Reservation> = Vec::new();
+    let mut owned: Vec<BTreeMap<usize, Vec<f64>>> = Vec::new();
+    owned
+        .try_reserve_exact(occupations.len())
+        .map_err(|_| error(Error::Allocation))?;
+    for channels in &occupations {
+        let mut by_l = BTreeMap::new();
+        for (l, values) in channels {
+            let (values, hold) = copy(ctx, values)?;
+            holds.push(hold);
+            by_l.insert(*l, values);
+        }
+        owned.push(by_l);
+    }
+    let datasets: Vec<Dataset<'_>> = symbols
+        .iter()
+        .zip(&sources)
+        .zip(&owned)
+        .map(|((symbol, source), by_l)| Dataset {
+            symbol,
+            source,
+            occupations: by_l.iter().map(|(l, v)| (*l, v.as_slice())).collect(),
+        })
+        .collect();
+    check_datasets(&request, spin_orbit, &datasets).map_err(error)
 }
 
 /// The `hubbard` object of a crystal snapshot, as JSON text, for the option `spec`.
@@ -94,7 +144,7 @@ fn hubbard_table<'py>(
         .collect::<PyResult<Vec<_>>>()?;
     let mut holds: Vec<Reservation> = Vec::new();
     let mut owned = Vec::with_capacity(species.len());
-    for (r, channels) in &species {
+    for (r, channels, source) in &species {
         let (grid, hold) = copy(ctx, r)?;
         holds.push(hold);
         let mut by_l = BTreeMap::new();
@@ -123,6 +173,7 @@ fn hubbard_table<'py>(
         owned.push(Species {
             r: grid,
             channels: by_l,
+            source: source.clone(),
         });
     }
     let (moments, _moments) = copy(ctx, &moments)?;
@@ -159,8 +210,9 @@ pub(crate) fn definition(crystal: &Crystal) -> Option<Vec<(usize, String, usize,
 }
 
 /// One dictionary per shell of a converged DFT+U run: the definition (`atom`, `symbol`, `l`,
-/// `shell` letter, `u_ha`, `j_ha`, `u_eff_ha`), the occupation matrices `n` (`spins x (2l+1) x (2l+1)`, complex), their
-/// traces, and `energy_ha`, the shell's `E_U`. `None` for a run without `hubbard`.
+/// `shell` letter, `u_ha`, `j_ha`, `u_eff_ha`), the occupation matrices `n` (complex,
+/// `spins x (2l+1) x (2l+1)`), their traces, and `energy_ha`, the shell's `E_U`. `None` for a
+/// run without `hubbard`.
 pub(crate) fn view<'py>(
     py: Python<'py>,
     crystal: &Crystal,
@@ -175,12 +227,21 @@ pub(crate) fn view<'py>(
     let out = PyList::empty(py);
     for (index, shell) in spec.shells.iter().enumerate() {
         let p = shell.size();
-        let mut values = Vec::with_capacity(crystal.spins * p * p);
+        let count = product(&[crystal.spins, p, p]).map_err(error)?;
+        // The matrices (16 bytes per entry) and the traces are reserved before they are built.
+        let matrices = product(&[count, 16]).map_err(error)?;
+        let trace_bytes = product(&[crystal.spins, 8]).map_err(error)?;
+        let bytes = matrices.checked_add(trace_bytes).ok_or(Error::Overflow);
+        let _hold = crystal
+            .context
+            .reserve(bytes.map_err(error)?)
+            .map_err(error)?;
+        let mut values = Vec::with_capacity(count);
         let mut traces = Vec::with_capacity(crystal.spins);
         for spin in 0..crystal.spins {
             let n = report.occupation(spin, index);
             traces.push((0..p).map(|a| n[a * p + a].re).sum::<f64>());
-            values.extend_from_slice(n);
+            values.extend(n.iter().map(|z| Complex64::new(z.re, z.im)));
         }
         let item = PyDict::new(py);
         item.set_item("atom", shell.atom)?;
@@ -192,12 +253,7 @@ pub(crate) fn view<'py>(
         item.set_item("u_eff_ha", shell.u_eff())?;
         item.set_item("energy_ha", energies[index])?;
         item.set_item("trace", traces)?;
-        let _hold = crystal
-            .context
-            .reserve(product(&[values.len(), 16]).map_err(error)?)
-            .map_err(error)?;
-        let n = values.iter().map(|z| Complex64::new(z.re, z.im)).collect();
-        item.set_item("n", array(py, &[crystal.spins, p, p], n)?)?;
+        item.set_item("n", array(py, &[crystal.spins, p, p], values)?)?;
         out.append(item)?;
     }
     Ok(Some(out))
@@ -205,6 +261,7 @@ pub(crate) fn view<'py>(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hubbard_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(hubbard_check_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(hubbard_table, m)?)?;
     Ok(())
 }

@@ -88,11 +88,6 @@ impl MolecularIntegrals {
         }
         if let Some(name) = state.functional.as_deref() {
             let definition = crate::models::functional(name)?;
-            if definition.screened_exchange.is_some() {
-                return Err(invalid(format!(
-                    "PAW forces are not implemented for the screened exact exchange of {name}"
-                )));
-            }
             if definition.nonlocal_b.is_some() {
                 return Err(invalid(format!(
                     "PAW forces are not implemented for the nonlocal correlation of {name}"

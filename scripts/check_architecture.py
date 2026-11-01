@@ -152,16 +152,13 @@ def check(dates=False):
     required = {
         "numpy",
         "scipy",
-        "threadpoolctl",
         "ase",
-        "spglib",
         "matplotlib",
         "qiskit",
         "qiskit-ibm-runtime",
         "amazon-braket-sdk",
         "cirq",
         "pytest",
-        "psutil",
     }
     declared = {
         re.split(r"[<>=!~;\[]", item)[0].strip().lower()

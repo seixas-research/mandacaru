@@ -34,9 +34,9 @@ python -c "from mandacaru import Mandacaru; print(Mandacaru(method='rhf').method
 
 ## Python dependencies
 
-The install pulls in NumPy, SciPy, threadpoolctl, ASE, spglib, Matplotlib,
-Qiskit, Qiskit Aer, Qiskit IBM Runtime, the Amazon Braket SDK, Cirq, pytest and
-psutil. The scientific algorithms run in Rust; the Python packages serve the ASE
+The install pulls in NumPy, SciPy, ASE, Matplotlib,
+Qiskit, Qiskit Aer, Qiskit IBM Runtime, the Amazon Braket SDK, Cirq and pytest.
+The scientific algorithms run in Rust; the Python packages serve the ASE
 interface, plotting and the quantum SDKs, and the core imports them only when they
 are used. Aer is required for the IBM fake devices, which take their noise models
 from it.

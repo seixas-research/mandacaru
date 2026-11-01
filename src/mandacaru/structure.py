@@ -83,3 +83,23 @@ def geometry_value(value):
     raise TypeError(
         "geometry must be a Geometry, native Geometry, or an object implementing the geometry protocol"
     )
+
+
+def initial_moments(atoms, *, spinor, unrestricted):
+    """The collinear initial magnetic moments of a crystal, one number per atom.
+
+    A scalar-relativistic crystal polarizes only when asked (``spin=True`` or
+    ``unrestricted=True``): a nonzero moment with neither is a contradiction and raises, never
+    a silent switch of the calculation. A spin-orbit crystal takes its moments as the start of
+    the noncollinear magnetization and needs neither option.
+    """
+    moments = np.asarray(atoms.get_initial_magnetic_moments(), dtype=float)
+    if moments.ndim != 1:
+        raise NotImplementedError("native periodic SCF supports collinear initial moments")
+    if any(moments) and not (spinor or unrestricted):
+        raise ValueError(
+            "the atoms carry nonzero initial magnetic moments but spin=False and "
+            "unrestricted=False ask for no spin polarization; give spin=True (or "
+            "unrestricted=True), or zero the moments"
+        )
+    return moments

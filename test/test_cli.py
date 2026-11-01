@@ -91,7 +91,7 @@ class TestForwardedOptions:
         assert options["method"] == "dft" and options["xc"] == "lda"
         assert options["basis"] == "HAO" and options["grid_spacing"] == 0.2
         assert options["resources"] == {"threads": None,
-                                        "memory_limit_bytes": 512 * 1024**2}
+                                        "memory_limit_bytes": 32768 * 1024**2}
         assert options["load_hamiltonian"] is None
         assert options["save_hamiltonian"] is None
         assert options["load_crystal"] is None

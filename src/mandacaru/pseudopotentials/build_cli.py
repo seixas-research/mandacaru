@@ -186,14 +186,9 @@ def worker_threads(workers: int) -> int:
 
 
 def _limit_threads(threads: int) -> None:
-    """Pool initializer: cap a worker's BLAS and OpenMP pools at ``threads``
-    -- the environment for pools not loaded yet, threadpoolctl for those
-    already loaded."""
-    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    """Pool initializer: cap a worker's BLAS and OpenMP pools at ``threads``."""
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_NUM_THREADS"):
         os.environ[name] = str(threads)
-    from threadpoolctl import threadpool_limits
-
-    threadpool_limits(threads)
 
 
 def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,

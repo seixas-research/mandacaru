@@ -29,12 +29,14 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms.pseudo_forces import spatial_rdms
-from mandacaru.core.mpc import (FiniteSizeCorrection, TruncatedCoulombSolver,
-                                exchange_correlation_hole_energy,
-                                wigner_seitz_kernel)
-from mandacaru.integrals.poisson import (PeriodicPoissonSolver,
-                                         voxel_self_potential)
+from mandacaru.core.mpc import (
+    FiniteSizeCorrection,
+    PeriodicPoissonSolver,
+    TruncatedCoulombSolver,
+    exchange_correlation_hole_energy,
+    voxel_self_potential,
+    wigner_seitz_kernel,
+)
 from mandacaru.optimizers import Optimizer
 
 SLSQP = Optimizer(method="SLSQP", maxiter=1000, tol=1e-12)
@@ -60,6 +62,7 @@ def step_of(cell, n):
 @pytest.fixture(scope="module")
 def solved_chain():
     """A solved 4-qubit periodic H chain, shared by the state-level tests."""
+    pytest.importorskip("mandacaru.algorithms.pseudo_forces")
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=np.diag([2.0, 10.0, 10.0]), pbc=[True, False, False])
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",

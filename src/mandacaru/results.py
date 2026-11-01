@@ -25,6 +25,7 @@ class CalculationResult:
         solver=None,
         model=None,
         profile=None,
+        dispersion=None,
     ):
         self.method = method
         self.solver = solver
@@ -40,6 +41,12 @@ class CalculationResult:
         self._mapping = mapping
         self._active_space = active_space
         self.energy_unit = "Ha" if atomic_units else "eV"
+        self._dispersion = dispersion
+
+    @property
+    def dispersion(self):
+        """Native dispersion correction result dict, or None if no dispersion was applied."""
+        return self._dispersion
 
     @property
     def success(self):
@@ -52,12 +59,16 @@ class CalculationResult:
     @property
     def energy_hartree(self):
         if self._reference is not None and self._problem is None:
-            return self._raw["electronic_energy"] + self._raw["nuclear_repulsion"]
-        if "energies_ha" in self._raw:
-            return float(self._raw["energies_ha"][0])
-        return self._raw.get(
-            "energy_ha", self._raw.get("extrapolated_energy", self._raw.get("energy"))
-        )
+            base = self._raw["electronic_energy"] + self._raw["nuclear_repulsion"]
+        elif "energies_ha" in self._raw:
+            base = float(self._raw["energies_ha"][0])
+        else:
+            base = self._raw.get(
+                "energy_ha", self._raw.get("extrapolated_energy", self._raw.get("energy"))
+            )
+        if self._dispersion is not None:
+            base += self._dispersion.get("energy_ha", 0.0)
+        return base
 
     def in_units(self, units):
         if units == "Ha":
@@ -105,7 +116,10 @@ class CalculationResult:
 
     @property
     def free_energy_ev(self):
-        return self._raw.get("free_energy", self.energy_hartree) * HARTREE_TO_EV
+        base = self._raw.get("free_energy", self.energy_hartree)
+        if self._dispersion is not None and "free_energy" in self._raw:
+            base += self._dispersion.get("energy_ha", 0.0)
+        return base * HARTREE_TO_EV
 
     @property
     def optimal_energy(self):
@@ -222,6 +236,10 @@ class CalculationResult:
     @property
     def proposal_reason(self):
         return self._raw.get("proposal_reason")
+
+    @property
+    def exxdiv_treatment(self):
+        return self._raw.get("exxdiv_treatment", "none")
 
     @property
     def transfer(self):
@@ -531,6 +549,11 @@ class CalculationResult:
                 for key, value in self._gradient_cache[cache_key].items()
             }
         elif self._reference is None:
+            if "forces" in self._raw:
+                forces = np.array(self._raw["forces"], copy=True)
+                if self._dispersion is not None and "forces_ev_angstrom" in self._dispersion:
+                    forces = forces + self._dispersion["forces_ev_angstrom"]
+                return forces
             raise ValueError("stationary forces require a native mean-field state")
         else:
             stationary = self._reference.gradient()
@@ -541,15 +564,32 @@ class CalculationResult:
             }
         if project_translation and not internal:
             gradient = self.context.remove_force_translation(np.ascontiguousarray(gradient))
-        return -gradient * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)
+        forces = -gradient * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)
+        if self._dispersion is not None and "forces_ev_angstrom" in self._dispersion:
+            forces = forces + self._dispersion["forces_ev_angstrom"]
+        return forces
+
+    def stress(self, voigt=True):
+        """Stress tensor in eV/Angstrom^3 (Voigt (6,) by default, or 3x3 if voigt=False)."""
+        if "stress" in self._raw:
+            val = np.array(self._raw["stress"], copy=True)
+            if not voigt and val.shape == (6,):
+                from ase.stress import voigt_6_to_full_3x3_stress
+                return voigt_6_to_full_3x3_stress(val)
+            return val
+        raise ValueError("stress tensor requires a periodic crystal calculation")
 
     def snapshot(self, *, include_hamiltonian=False):
         if self._reference is not None and self._problem is None:
-            return self._reference.snapshot(include_hamiltonian=include_hamiltonian)
-        return {
-            k: np.array(v, copy=True) if isinstance(v, np.ndarray) else v
-            for k, v in self._raw.items()
-        }
+            raw = self._reference.snapshot(include_hamiltonian=include_hamiltonian)
+        else:
+            raw = {
+                k: np.array(v, copy=True) if isinstance(v, np.ndarray) else v
+                for k, v in self._raw.items()
+            }
+        if self._dispersion is not None:
+            raw["dispersion"] = self._dispersion
+        return raw
 
     def state(self):
         if "state" in self._raw:

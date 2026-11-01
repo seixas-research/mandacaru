@@ -248,12 +248,42 @@ pub fn kpoint_arrays(
         spin_orbit,
     })
 }
+/// What `serde_json` can take to parse `source` into a [`Value`] tree, read off the text.
+///
+/// Every array element and object member is one node, and each separator or opening bracket
+/// ends or starts one, so the node count is at most the count of `,`, `[` and `{` plus the
+/// root. A node is charged three `Value`s: the array holding it doubles its capacity, and for
+/// a moment the old and the new buffer both exist. An object member also holds a key and a
+/// tree entry, charged [`MEMBER_BYTES`] on top (counted by `:`), and the strings hold at most
+/// the text itself. A separator inside a string raises the bound and never lowers it.
+///
+/// This is a bound from the structure of the text, not a multiple of its length. The densest
+/// possible text (one-digit numbers) costs 48 bytes per text byte here, more than the flat 32 it
+/// replaces, so a pathological file is charged more and refused sooner; a real crystal file of
+/// 19-character numbers costs about 9 (NiO 348 MB for 39.5 MB of text, against 1263 MB), which
+/// is what the counting-allocator test of `tests/periodic_load_memory.rs` pins against the heap.
+fn tree_bytes(source: &str) -> Result<usize> {
+    const MEMBER_BYTES: usize = 192;
+    let (mut nodes, mut members) = (1usize, 0usize);
+    for byte in source.bytes() {
+        match byte {
+            b',' | b'[' | b'{' => nodes += 1,
+            b':' => members += 1,
+            _ => {}
+        }
+    }
+    product(&[nodes, 3 * std::mem::size_of::<Value>()])?
+        .checked_add(product(&[members, MEMBER_BYTES])?)
+        .and_then(|bytes| bytes.checked_add(source.len()))
+        .ok_or(crate::Error::Overflow)
+}
+
 impl Crystal {
     pub fn from_json(ctx: &Context, source: &str) -> Result<Self> {
         Self::from_arrays(ctx, source, InputArrays::default())
     }
     pub fn from_arrays(ctx: &Context, source: &str, mut arrays: InputArrays) -> Result<Self> {
-        let _parse = ctx.reserve(product(&[source.len(), 32])?)?;
+        let _parse = ctx.reserve(tree_bytes(source)?)?;
         let v: Value = serde_json::from_str(source)
             .map_err(|e| invalid(format!("invalid crystal JSON: {e}")))?;
         if v["schema_version"] != 1
@@ -460,13 +490,10 @@ impl Crystal {
                 .as_str()
                 .ok_or_else(|| invalid("missing functional"))?,
         )?;
-        if definition.screened_exchange.is_some() {
-            return Err(invalid(if v["hubbard"].is_null() {
-                "periodic screened exact exchange requires its reciprocal exchange operator"
-            } else {
-                "periodic screened exact exchange requires its reciprocal exchange operator, \
-                 and DFT+U is not available with hybrid functionals"
-            }));
+        if definition.screened_exchange.is_some() && !v["hubbard"].is_null() {
+            return Err(invalid(
+                "DFT+U is not available with hybrid functionals",
+            ));
         }
         let hubbard = super::hubbard::Spec::parse(
             &v["hubbard"],

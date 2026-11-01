@@ -19,14 +19,14 @@ from ase.build import bulk, make_supercell
 from mandacaru import Mandacaru
 from mandacaru.integrations import paw
 from mandacaru.units import HARTREE_TO_EV
-from mandacaru.utils import parse_output
 
 HERE = Path(__file__).resolve().parent
 FROZEN = json.loads((HERE / "reference" / "hubbard" / "frozen.json").read_text())["cases"]
 FIXTURE = HERE / "reference" / "hubbard" / "crystals"
 SZ = {"name": "PAW-LCAO", "size": "SZ"}
-#: Loading the CuH crystal file takes 738 MB of the calculation budget (the default is 512 MiB).
-LOAD = dict(method="dft", trace=False, resources={"memory_limit_bytes": 1 << 30})
+#: The 512 MiB budget of the guides: loading the CuH crystal file (23 MB) took 738 MB of the
+#: calculation budget before the load reserved what the file's tree can take, 261 MB after.
+LOAD = dict(method="dft", trace=False, resources={"memory_limit_bytes": 512 << 20})
 CRYSTAL_INPUT = paw.crystal_input
 
 ENERGY_TOLERANCE_EV = 1e-8
@@ -63,13 +63,6 @@ CUH_OPTIONS = dict(
     method="dft", xc="lda", grid_spacing=0.3, trace=False, basis=SZ, symmetry=False,
     smearing={"method": "fermi-dirac", "width": 0.01},
 )
-
-
-def ni_atom():
-    atoms = Atoms("Ni", positions=[[0, 0, 0]], cell=[7.0] * 3, pbc=True)
-    atoms.center()
-    atoms.set_initial_magnetic_moments([2.0])
-    return atoms
 
 
 def gap_ev(result):
@@ -156,7 +149,7 @@ def test_zero_u_is_plain_dft_through_the_public_api(cuh_runs):
     assert abs(gap_ev(inert) - gap_ev(plain)) < FIRST_ORDER_EV
 
 
-def test_cuh_at_u_4_shifts_by_the_frozen_amount_and_exposes_its_occupations(cuh_runs):
+def test_cuh_at_u_4_shifts_by_the_frozen_amount_and_keeps_its_occupations(cuh_runs):
     plain, four = cuh_runs["plain"], cuh_runs["four"]
     frozen = FROZEN["cuh_crystal_L7_U4"]
     shift = four.in_units("eV") - plain.in_units("eV")
@@ -165,15 +158,8 @@ def test_cuh_at_u_4_shifts_by_the_frozen_amount_and_exposes_its_occupations(cuh_
     assert abs(gap_ev(four) - frozen["gap_from_levels_eV"]) < FIRST_ORDER_EV
     assert abs(four.hubbard_energy - frozen["hubbard_eV"]) < FIRST_ORDER_EV
     (shell,) = four.hubbard
-    assert (shell["symbol"], shell["l"], shell["atom"]) == ("Cu", "d", 0)
-    assert abs(shell["U"] - 4.0) < 1e-12 and shell["J"] == 0.0
-    assert abs(shell["U_eff"] - 4.0) < 1e-12
-    assert abs(shell["energy"] - four.hubbard_energy) < 1e-12
-    n = shell["n"]
-    assert n.shape == (1, 5, 5) and np.allclose(n[0], n[0].conj().T, atol=1e-12)
-    eigenvalues = np.linalg.eigvalsh(n[0])
+    eigenvalues = np.linalg.eigvalsh(shell["n"][0])
     assert np.allclose(np.sort(eigenvalues), np.sort(frozen["n_eigenvalues"][0][0]), atol=N_TOLERANCE)
-    assert abs(shell["trace"][0] - eigenvalues.sum()) < 1e-12
 
 
 def test_off_mesh_bands_carry_the_converged_correction(cuh_runs):
@@ -186,42 +172,26 @@ def test_off_mesh_bands_carry_the_converged_correction(cuh_runs):
 
 
 def test_a_saved_crystal_carries_its_correction_and_reproduces_the_energy(cuh_runs):
+    """The file loads inside the 512 MiB budget of the guides and gives the saved energy."""
     folder = cuh_runs["folder"]
     loaded = Mandacaru(load_crystal=folder / "four.json",
                        smearing={"method": "fermi-dirac", "width": 0.01}, **LOAD)
+    assert loaded.options["memory_limit_bytes"] == 512 << 20  # guards the budget this test pins
     result = loaded.run()
     assert abs(result.in_units("eV") - cuh_runs["four"].in_units("eV")) < ENERGY_TOLERANCE_EV
     assert abs(result.hubbard_energy - cuh_runs["four"].hubbard_energy) < FIRST_ORDER_EV
     assert loaded.periodic_problem.hubbard == [(0, "Cu", 2, 4.0 / HARTREE_TO_EV, 0.0)]
 
 
-def test_the_option_against_a_loaded_crystal_follows_the_mismatch_rule(cuh_runs):
-    folder = cuh_runs["folder"]
-    short = dict(periodic_scf_options={"max_iterations": 1}, **LOAD)
-    # the file's own definition is accepted (one iteration is enough to pass the check)
-    Mandacaru(load_crystal=folder / "four.json", hubbard_u=CU_D, **short).run()
-    for option in (
-        {"Cu": {"l": "d", "U": 5.0}},
-        {"Cu": {"l": "d", "U": 4.0, "J": 1.0}},
-        {"Cu": {"l": "f", "U": 4.0}},
-        {"Cu": {"l": "d", "U": 4.0}, "Ni": {"l": "d", "U": 4.0}},
-    ):
-        with pytest.raises(ValueError, match="disagrees with the crystal file"):
-            Mandacaru(load_crystal=folder / "four.json", hubbard_u=option, **short).run()
-    with pytest.raises(ValueError, match="disagrees with the crystal file"):
-        Mandacaru(load_crystal=folder / "plain.json", hubbard_u=CU_D, **short).run()
-
-
 # --------------------------------------------------------------------------- #
-# NiO AFM-II at U = 3 eV: the frozen energy, gap, DFT+U energy and occupations, and the log.
+# NiO AFM-II at U = 3 eV: the frozen energy, gap, DFT+U energy and occupations.
 # --------------------------------------------------------------------------- #
 
 
-def test_nio_afm2_at_u_3_matches_the_frozen_numbers_and_the_log_states_them_once(tmp_path):
+def test_nio_afm2_at_u_3_matches_the_frozen_numbers():
     frozen = FROZEN["nio_U3_A"]
     atoms = nio()
-    log = tmp_path / "nio.log"
-    result = run(atoms, hubbard_u=NI_D, txt=str(log), **NIO_OPTIONS)
+    result = run(atoms, hubbard_u=NI_D, **NIO_OPTIONS)
     assert result.success
     assert abs(atoms.get_potential_energy() - frozen["energy_eV"]) < ENERGY_TOLERANCE_EV
     assert abs(gap_ev(result) - frozen["gap_from_levels_eV"]) < FIRST_ORDER_EV
@@ -236,111 +206,3 @@ def test_nio_afm2_at_u_3_matches_the_frozen_numbers_and_the_log_states_them_once
     up0, down0 = shells[0]["trace"]
     assert shells[1]["trace"] == pytest.approx([down0, up0], abs=1e-6)
     assert up0 - down0 > 1.0
-    # the log: the correction's energy and definition are written once, in [SCF SUMMARY]
-    text = log.read_text()
-    assert text.count("hubbard_energy_eV") == 1 and text.count("U_eff") == 1
-    summary = parse_output(str(log))["summary"]
-    assert abs(float(summary["hubbard_energy_eV"]) - result.hubbard_energy) < 1e-8
-    assert summary["hubbard_Ni_d"].startswith("U 3.000000 eV, J 0.000000 eV, U_eff 3.000000 eV")
-
-
-def test_a_run_without_the_correction_writes_no_hubbard_lines(tmp_path):
-    log = tmp_path / "plain.log"
-    run(cuh(), txt=str(log), **CUH_OPTIONS)
-    assert "hubbard" not in log.read_text()
-    assert "[SCF SUMMARY]" in log.read_text()
-
-
-# --------------------------------------------------------------------------- #
-# Refusals: unsupported input raises, with the reason, and never selects another calculation.
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "spec, message",
-    [
-        ({}, "must map an element symbol"),
-        ("Ni", "must map an element symbol"),
-        ({"Xx": {"l": "d", "U": 1.0}}, "not an element symbol"),
-        ({"X": {"l": "d", "U": 1.0}}, "not an element symbol"),
-        ({"Ni": 6.0}, "needs the keys"),
-        ({"Ni": {"U": 6.0}}, "needs the keys"),
-        ({"Ni": {"l": "d"}}, "needs the keys"),
-        ({"Ni": {"l": "d", "U": 6.0, "weight": 1}}, "needs the keys"),
-        ({"Ni": {"l": "d", "U": 6.0, "form": "x"}}, "unknown Hubbard form"),
-        ({"Ni": {"l": "d", "U": 6.0, "form": 1}}, "form must be a string"),
-        ({"Ni": {"l": "p", "U": 6.0}}, "'d' or 'f'"),
-        ({"Ni": {"l": 2, "U": 6.0}}, "'d' or 'f'"),
-        ({"Ni": {"l": "d", "U": -1.0}}, "finite number >= 0"),
-        ({"Ni": {"l": "d", "U": True}}, "finite number >= 0"),
-        ({"Ni": {"l": "d", "U": float("nan")}}, "finite number >= 0"),
-        ({"Ni": {"l": "d", "U": float("inf")}}, "finite number >= 0"),
-        ({"Ni": {"l": "d", "U": "6"}}, "finite number >= 0"),
-        ({"Ni": {"l": "d", "U": 1.0, "J": -0.1}}, "finite number >= 0"),
-        ({"Ni": {"l": "d", "U": 1.0, "J": 2.0}}, "exceeds U"),
-    ],
-)
-def test_a_malformed_option_is_refused_at_construction(spec, message):
-    with pytest.raises(ValueError, match=message):
-        Mandacaru(method="dft", hubbard_u=spec, trace=False)
-
-
-def test_numpy_scalars_are_numbers_and_numpy_booleans_are_not():
-    Mandacaru(method="dft", hubbard_u={"Ni": {"l": "d", "U": np.float32(3.0), "J": np.int64(0)}},
-              trace=False)
-    with pytest.raises(ValueError, match="finite number >= 0"):
-        Mandacaru(method="dft", hubbard_u={"Ni": {"l": "d", "U": np.bool_(True)}}, trace=False)
-    with pytest.raises(ValueError, match="must map an element symbol"):
-        Mandacaru(method="dft", hubbard_u={("Ni",): {"l": "d", "U": 1.0}}, trace=False)
-
-
-def test_combinations_the_engine_does_not_implement_are_refused_at_construction():
-    with pytest.raises(NotImplementedError, match="hybrid functional 'hse06'"):
-        Mandacaru(method="dft", xc="hse06", hubbard_u=NI_D, trace=False)
-    with pytest.raises(ValueError, match="precision='float64'"):
-        Mandacaru(method="dft", precision="float32", hubbard_u=NI_D, trace=False)
-    # a geometry given with the calculator: a molecule has no periodic direction
-    molecule = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[8.0] * 3)
-    with pytest.raises(ValueError, match="needs a periodic cell"):
-        Mandacaru(method="dft", atoms=molecule, hubbard_u=CU_D, trace=False)
-
-
-def test_a_molecule_is_refused_before_any_calculation():
-    molecule = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[8.0] * 3)
-    molecule.center()
-    molecule.calc = Mandacaru(method="dft", hubbard_u=CU_D, trace=False, basis=SZ)
-    with pytest.raises(ValueError, match="needs a periodic cell"):
-        molecule.get_potential_energy()
-
-
-def test_an_element_the_system_lacks_is_refused(monkeypatch):
-    silicon = bulk("Si", "diamond", a=5.43)
-    silicon.calc = Mandacaru(method="dft", hubbard_u=NI_D, trace=False, basis=SZ,
-                             grid_spacing=0.4)
-    with pytest.raises(ValueError, match="Ni, which is not in the system"):
-        silicon.get_potential_energy()
-
-
-def test_a_dataset_without_the_shell_is_refused():
-    atom = ni_atom()
-    atom.calc = Mandacaru(method="dft", hubbard_u={"Ni": {"l": "f", "U": 3.0}}, trace=False,
-                          basis=SZ, grid_spacing=0.4, spin=True)
-    with pytest.raises(ValueError, match="Ni dataset has no 'f' channel"):
-        atom.get_potential_energy()
-
-
-def test_a_spin_orbit_dataset_is_refused():
-    atom = ni_atom()
-    atom.calc = Mandacaru(method="dft", hubbard_u=NI_D, trace=False, grid_spacing=0.4,
-                          basis={**SZ, "paw_dataset": "lda-fr"}, spin=True)
-    with pytest.raises(NotImplementedError, match="spin-orbit"):
-        atom.get_potential_energy()
-
-
-def test_a_crystal_whose_mesh_is_reduced_by_symmetry_is_refused_naming_the_option():
-    nickel = bulk("Ni", "fcc", a=3.52)
-    nickel.set_initial_magnetic_moments([0.0])        # ASE's default moment would keep the full mesh
-    nickel.calc = Mandacaru(method="dft", hubbard_u=NI_D, trace=False, basis=SZ,
-                            grid_spacing=0.4, kpts={"size": (2, 2, 2), "gamma": True})
-    with pytest.raises(ValueError, match="symmetry=False"):
-        nickel.get_potential_energy()

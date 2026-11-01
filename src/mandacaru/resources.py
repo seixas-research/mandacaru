@@ -12,7 +12,7 @@ class CalculationResources:
         self,
         *,
         threads=None,
-        memory_limit_bytes=512 * 1024**2,
+        memory_limit_bytes=32 * 1024**3,
         scratch_dir=None,
         context=None,
     ):

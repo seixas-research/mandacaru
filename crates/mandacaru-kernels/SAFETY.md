@@ -68,10 +68,10 @@ NumPy aliasing and writable-view support require a separate audit.
 
 ## Test-only counting allocators
 
-Four test modules install a counting `#[global_allocator]`
+Five test modules install a counting `#[global_allocator]`
 (`mandacaru-core/src/parquet/codec/zstd.rs` under `#[cfg(test)]`,
-`mandacaru-core/tests/parquet_errors.rs`, `tests/parquet_memory.rs` and
-`tests/paw_onecenter_memory.rs`). They
+`mandacaru-core/tests/parquet_errors.rs`, `tests/parquet_memory.rs`,
+`tests/paw_onecenter_memory.rs` and `tests/periodic_load_memory.rs`). They
 exist to prove that the memory a decoder really allocates stays below the bytes
 reserved from the `Context`. They are never part of a library build. The
 contract: every `alloc`, `dealloc` and `realloc` is forwarded unchanged to
@@ -87,3 +87,5 @@ returns a null pointer, as the trait allows.
 reservation with thread-local counters only, so it holds one test (a second
 test in the binary would share the harness's baseline); it is a separate file
 because a `#[global_allocator]` owns its whole test binary.
+`periodic_load_memory.rs` does the same for `Crystal::load` (the heap of a saved crystal
+against the reservation of the load), under the same one-test rule.

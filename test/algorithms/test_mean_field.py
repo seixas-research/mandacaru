@@ -186,7 +186,8 @@ def test_options_a_method_uses_are_accepted():
     Mandacaru(method="dft", xc="pbe", spin=True, trace=False)
     Mandacaru(method="uhf", spin=True, trace=False)
     Mandacaru(method="dft", kpts=(2, 2, 1), smearing=0.1, trace=False)
-    Mandacaru(method="dft", hubbard_u={"Ni": {"l": "d", "U": 3.0}}, trace=False)
+    Mandacaru(method="dft", hubbard_u={"Ni": {"l": "d", "U": 3.0}}, trace=False,
+              basis={"name": "PAW-LCAO", "size": "SZ"})
     Mandacaru(method="mcas-vqe", seed=3, max_length=8, temperature=0.05, trace=False)
     Mandacaru(method="vqe", pool="qeb", trace=False)
     # a default value is never "given": naming it changes nothing
@@ -298,3 +299,43 @@ class TestTheDeterminantDensity:
         for block, count in ((gamma[:M, :M], 7.0), (gamma[M:, M:], 5.0)):
             assert np.allclose(block @ block, block, atol=1e-10)
             assert np.trace(block).real == pytest.approx(count)
+
+
+class TestInitialMomentsOfACrystal:
+    """A crystal polarizes when asked, never because its atoms carry a moment."""
+
+    @staticmethod
+    def hydrogen():
+        atom = Atoms("H", positions=[[2.0, 2.0, 2.0]], cell=[4.0] * 3, pbc=True)
+        atom.set_initial_magnetic_moments([1.0])
+        return atom
+
+    @pytest.mark.parametrize("option", [{}, {"spin": False}, {"unrestricted": False}])
+    def test_a_moment_without_spin_polarization_is_a_contradiction(self, option):
+        atom = self.hydrogen()
+        atom.calc = Mandacaru(method="dft", trace=False, grid_spacing=0.7,
+                              basis={"name": "PAW-LCAO", "size": "SZ"}, **option)
+        with pytest.raises(ValueError, match=r"spin=True.*unrestricted=True"):
+            atom.get_potential_energy()
+
+    def test_the_check_passes_when_polarization_is_asked_or_the_dataset_is_spinor(self):
+        from mandacaru.structure import initial_moments
+
+        atom = self.hydrogen()
+        for spinor, unrestricted in ((False, True), (True, False), (True, True)):
+            moments = initial_moments(atom, spinor=spinor, unrestricted=unrestricted)
+            assert moments.tolist() == [1.0]
+        atom.set_initial_magnetic_moments([0.0])
+        assert initial_moments(atom, spinor=False, unrestricted=False).tolist() == [0.0]
+        with pytest.raises(ValueError, match="spin=False"):
+            atom.set_initial_magnetic_moments([0.5])
+            initial_moments(atom, spinor=False, unrestricted=False)
+
+    def test_noncollinear_moments_are_still_refused(self):
+        from mandacaru.structure import initial_moments
+
+        atom = self.hydrogen()
+        atom.set_initial_magnetic_moments(None)  # ASE refuses a new shape beside the old one
+        atom.set_initial_magnetic_moments([[0.0, 0.0, 1.0]])
+        with pytest.raises(NotImplementedError, match="collinear"):
+            initial_moments(atom, spinor=True, unrestricted=True)

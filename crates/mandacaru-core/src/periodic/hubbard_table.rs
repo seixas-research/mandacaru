@@ -21,7 +21,10 @@ use crate::{
     },
     Context, Error, Result,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+};
 
 /// One channel of the reference atom of a species, as the dataset stores it.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +44,8 @@ pub struct ChannelData {
 pub struct Species {
     pub r: Vec<f64>,
     pub channels: BTreeMap<usize, ChannelData>,
+    /// The file the dataset was read from (empty for a dataset that has none).
+    pub source: String,
 }
 
 /// The label of one projector of the crystal, in the crystal's projector order.
@@ -68,6 +73,116 @@ pub struct Layout<'a> {
     pub spin_orbit: bool,
 }
 
+/// What the geometry check needs of one element's dataset: the file it came from and the
+/// reference occupations of each channel.
+pub struct Dataset<'a> {
+    pub symbol: &'a str,
+    pub source: &'a str,
+    pub occupations: BTreeMap<usize, &'a [f64]>,
+}
+
+impl<'a> Dataset<'a> {
+    pub fn of(symbol: &'a str, species: &'a Species) -> Self {
+        Self {
+            symbol,
+            source: &species.source,
+            occupations: species
+                .channels
+                .iter()
+                .map(|(l, channel)| (*l, channel.occupations.as_slice()))
+                .collect(),
+        }
+    }
+
+    /// The dataset set (the folder of the dataset file, for example `lda-sr`).
+    fn set(&self) -> String {
+        dataset_set(self.source)
+    }
+}
+
+/// The dataset set a dataset file belongs to: the name of its folder, or `unknown` for a
+/// dataset that has no file (for example one generated in memory).
+fn dataset_set(source: &str) -> String {
+    Path::new(source)
+        .parent()
+        .and_then(Path::file_name)
+        .map_or_else(
+            || "unknown".into(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+}
+
+/// The refusals that need only the elements, their datasets and the kind of calculation, not
+/// the crystal's projectors: [`build`] runs them first, and the calculator runs them at
+/// construction when the atoms are known, before any crystal is assembled.
+///
+/// A spin-orbit crystal, an element of the option that no dataset covers, a dataset without
+/// the requested channel and a channel whose reference atom holds no electron (no bound
+/// orbital to project on: Ba 5d, Au 5f in `lda-sr`) raise, naming the element, the shell and
+/// the dataset set.
+pub fn check_datasets(request: &Request, spin_orbit: bool, datasets: &[Dataset<'_>]) -> Result<()> {
+    if spin_orbit {
+        return Err(Error::Unsupported(
+            "hubbard_u with a spin-orbit (fully relativistic) dataset: DFT+U is implemented for \
+             scalar-relativistic datasets only"
+                .into(),
+        ));
+    }
+    let missing: Vec<&str> = request
+        .entries
+        .iter()
+        .filter(|e| datasets.iter().all(|d| d.symbol != e.symbol))
+        .map(|e| e.symbol.as_str())
+        .collect();
+    if !missing.is_empty() {
+        return Err(invalid(format!(
+            "hubbard_u names {}, which is not in the system",
+            missing.join(", ")
+        )));
+    }
+    for entry in &request.entries {
+        for dataset in datasets.iter().filter(|d| d.symbol == entry.symbol) {
+            let Some(occupations) = dataset.occupations.get(&entry.l) else {
+                return Err(invalid(format!(
+                    "hubbard_u: the {} dataset has no '{}' channel (dataset set {})",
+                    entry.symbol,
+                    entry.letter(),
+                    dataset.set()
+                )));
+            };
+            if shell::reference_wave(occupations).is_none() {
+                return Err(invalid(format!(
+                    "hubbard_u: the '{}' shell of {} has no occupied reference wave in the {} \
+                     dataset set (its reference atom holds no electron there, so there is no \
+                     bound orbital to project on); use another shell, another element or \
+                     another dataset set",
+                    entry.letter(),
+                    entry.symbol,
+                    dataset.set()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One dataset per element of the crystal, in order of first appearance.
+fn datasets_of<'a>(layout: &'a Layout<'a>) -> Result<Vec<Dataset<'a>>> {
+    let mut out: Vec<Dataset<'a>> = Vec::new();
+    for p in layout.projectors {
+        if out.iter().any(|d| d.symbol == p.symbol) {
+            continue;
+        }
+        let species = layout
+            .species_of_atom
+            .get(p.atom)
+            .and_then(|i| layout.species.get(*i))
+            .ok_or_else(|| invalid(format!("hubbard_u: atom {} has no dataset", p.atom)))?;
+        out.push(Dataset::of(&p.symbol, species));
+    }
+    Ok(out)
+}
+
 /// The first projector of an atom's shell and the projectors by `(m, radial index)`.
 struct Slots {
     atom: usize,
@@ -77,26 +192,8 @@ struct Slots {
 
 /// Builds the table of `layout` for `request`.
 pub fn build(ctx: &Context, request: &Request, layout: &Layout<'_>) -> Result<Spec> {
-    if layout.spin_orbit {
-        return Err(Error::Unsupported(
-            "hubbard_u with a spin-orbit (fully relativistic) dataset: DFT+U is implemented for \
-             scalar-relativistic datasets only"
-                .into(),
-        ));
-    }
     let projectors = layout.projectors;
-    let missing: Vec<&str> = request
-        .entries
-        .iter()
-        .filter(|e| projectors.iter().all(|p| p.symbol != e.symbol))
-        .map(|e| e.symbol.as_str())
-        .collect();
-    if !missing.is_empty() {
-        return Err(invalid(format!(
-            "hubbard_u names {}, which is not in the system",
-            missing.join(", ")
-        )));
-    }
+    check_datasets(request, layout.spin_orbit, &datasets_of(layout)?)?;
     // The shells in order of the first projector of each atom, as the crystal lists them.
     let mut shells: Vec<Slots> = Vec::new();
     let mut at: HashMap<usize, usize> = HashMap::new();
@@ -139,13 +236,6 @@ pub fn build(ctx: &Context, request: &Request, layout: &Layout<'_>) -> Result<Sp
             .entry(&first.symbol)
             .ok_or_else(|| invalid("hubbard_u: a projector names an element the option lacks"))?;
         let (atom, l, basis) = (slots.atom, entry.l, first.basis.as_str());
-        let no_channel = || {
-            invalid(format!(
-                "hubbard_u: the {} dataset has no '{}' channel",
-                entry.symbol,
-                entry.letter()
-            ))
-        };
         let species_index = *layout
             .species_of_atom
             .get(atom)
@@ -154,6 +244,23 @@ pub fn build(ctx: &Context, request: &Request, layout: &Layout<'_>) -> Result<Sp
             .species
             .get(species_index)
             .ok_or_else(|| invalid(format!("hubbard_u: atom {atom} has no dataset")))?;
+        let set = dataset_set(&species.source);
+        let no_channel = || {
+            invalid(format!(
+                "hubbard_u: the {} dataset has no '{}' channel (dataset set {set})",
+                entry.symbol,
+                entry.letter()
+            ))
+        };
+        // A refusal of the weights names the element, the shell and the dataset set.
+        let named = |error: Error| match error {
+            Error::Invalid(message) => invalid(format!(
+                "hubbard_u: the '{}' shell of {} in the {set} dataset set: {message}",
+                entry.letter(),
+                entry.symbol
+            )),
+            other => other,
+        };
         let channel = species.channels.get(&l).ok_or_else(no_channel)?;
         let key = (species_index, l, basis);
         if !cache.contains_key(&key) {
@@ -171,8 +278,9 @@ pub fn build(ctx: &Context, request: &Request, layout: &Layout<'_>) -> Result<Sp
                 &species.r,
                 &channel.occupations,
                 Basis::parse(basis)?,
-            )?;
-            let electrons = shell::reference_electrons(&channel.occupations)?;
+            )
+            .map_err(named)?;
+            let electrons = shell::reference_electrons(&channel.occupations).map_err(named)?;
             cache.insert(key, (weights, electrons));
         }
         let (weights, electrons) = &cache[&key];

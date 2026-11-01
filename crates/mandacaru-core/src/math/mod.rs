@@ -7,6 +7,7 @@ pub mod fft;
 pub mod gemm;
 pub mod grid;
 pub mod index;
+pub mod lattice;
 pub mod linalg;
 pub mod projection;
 pub mod radial;

@@ -524,6 +524,18 @@ _ALGORITHMS = [
 }""", "exact exchange in the projector augmented-wave method: the "
          "one-center correction of a PAW-LCAO hybrid",
          verified=False, topics=("xc", "hybrid", "paw")),
+    _ref("Tkatchenko2009", """
+@article{Tkatchenko2009,
+  author  = {Tkatchenko, Alexandre and Scheffler, Matthias},
+  title   = {Accurate Molecular Van Der Waals Interactions from Ground-State
+             Electron Density and Free-Atom Reference Data},
+  journal = {Phys. Rev. Lett.},
+  volume  = {102},
+  pages   = {073005},
+  year    = {2009},
+  doi     = {10.1103/PhysRevLett.102.073005}
+}""", "the Tkatchenko-Scheffler dispersion method (vdw='ts')", verified=True,
+         topics=("dispersion",)),
     _ref("Caldeweyher2019", """
 @article{Caldeweyher2019,
   author  = {Caldeweyher, Eike and Ehlert, Sebastian and Hansen, Andreas and
@@ -1318,15 +1330,6 @@ _BASES = [
   doi     = {10.1007/BF02783624}
 }""", "the spectral representation `get_spectral_function` evaluates",
          verified=False, topics=("periodic", "spectral")),
-    _ref("Togo2018", """
-@article{Togo2018,
-  author  = {Togo, Atsushi and Tanaka, Isao},
-  title   = {Spglib: a software library for crystal symmetry search},
-  journal = {arXiv:1808.01590},
-  year    = {2018},
-  doi     = {10.48550/arXiv.1808.01590}
-}""", "the space-group search behind the irreducible Brillouin zone",
-         verified=False, topics=("periodic", "symmetry")),
     _ref("Ewald1921", """
 @article{Ewald1921,
   author  = {Ewald, P. P.},

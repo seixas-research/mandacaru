@@ -17,7 +17,7 @@ use crate::{
 };
 use nalgebra::{DMatrix, DVector};
 type Matrix = DMatrix<C64>;
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Options {
     pub max_iterations: usize,
     pub tolerance: f64,
@@ -26,6 +26,7 @@ pub struct Options {
     pub width: f64,
     pub mixing: f64,
     pub history: usize,
+    pub exxdiv_treatment: super::screened_exchange::ExxDivTreatment,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -37,6 +38,7 @@ impl Default for Options {
             width: 0.1 / 27.211386245988,
             mixing: 0.25,
             history: 7,
+            exxdiv_treatment: super::screened_exchange::ExxDivTreatment::None,
         }
     }
 }
@@ -383,8 +385,21 @@ pub fn diagonalize_with(
     kinetic_potential: Option<&[f64]>,
     hubbard: Option<&Matrix>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    diagonalize_with_exchange(c, data, v, w, kinetic_potential, hubbard, None)
+}
+
+/// [`diagonalize_with`] with an optional exact exchange matrix K(k), added as -0.25 K(k).
+pub fn diagonalize_with_exchange(
+    c: &Crystal,
+    data: &KPoint,
+    v: &[f64],
+    w: &[C64],
+    kinetic_potential: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
     if c.spinor {
-        return super::spinor::diagonalize(c, data, v, w);
+        return super::spinor::diagonalize_with_exchange(c, data, v, w, exchange);
     }
     let m = c.m;
     let p = c.p;
@@ -420,6 +435,9 @@ pub fn diagonalize_with(
                 h[(a, b)] += operator.as_slice()[a + b * m];
             }
         }
+    }
+    if let Some(k) = exchange {
+        h -= k * C64::new(0.25, 0.);
     }
     let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
     let (eps, y) = eigen(data.lowdin.adjoint() * h * &data.lowdin)?;
@@ -680,8 +698,8 @@ impl Crystal {
             Some(h) => h.bytes(c)?,
             None => 0,
         };
-        if c.spinor && c.functional != "lda" && c.functional != "pbe" {
-            return Err(invalid("periodic spinor XC currently requires LDA or PBE"));
+        if c.spinor && c.functional != "lda" && c.functional != "pbe" && c.functional != "hse06" {
+            return Err(invalid("periodic spinor XC currently requires LDA, PBE or HSE06"));
         }
         if options.max_iterations == 0
             || options.history == 0
@@ -750,6 +768,9 @@ impl Crystal {
                 Some(h) if active => h.seed(c.spins)?,
                 _ => vec![],
             };
+            let is_hybrid = c.functional == "hse06";
+            let mut exchange_operators: Option<Vec<Matrix>> = None;
+            let mut exchange_energy = 0.0;
             for iteration in 1..=options.max_iterations {
                 let LocalPotential {
                     local: v,
@@ -769,8 +790,8 @@ impl Crystal {
                 let mut eigenvalues = vec![];
                 let mut coefficients = vec![];
                 for s in 0..c.spins {
-                    for data in &c.points {
-                        let (eps, coeff, _) = diagonalize_with(
+                    for (k_idx, data) in c.points.iter().enumerate() {
+                        let (eps, coeff, _) = diagonalize_with_exchange(
                             c,
                             data,
                             if c.spinor {
@@ -783,6 +804,7 @@ impl Crystal {
                                 .as_ref()
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
                             hub_operators.as_ref().map(|o| &o[s]),
+                            exchange_operators.as_ref().map(|ops| &ops[s * c.points.len() + k_idx]),
                         )?;
                         eigenvalues.push(eps);
                         coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
@@ -837,7 +859,17 @@ impl Crystal {
                 } else {
                     None
                 };
-                let terms = energy(
+                if is_hybrid {
+                    let (ops, exx) = super::screened_exchange::exchange_operators(
+                        c,
+                        &matrices,
+                        0.11,
+                        options.exxdiv_treatment,
+                    )?;
+                    exchange_operators = Some(ops);
+                    exchange_energy = exx;
+                }
+                let mut terms = energy(
                     c,
                     &mut fft,
                     &matrices,
@@ -845,6 +877,9 @@ impl Crystal {
                     qout.as_slice(),
                     tauout.as_ref().map(|t| t.as_slice()),
                 )?;
+                if is_hybrid {
+                    terms[2] += exchange_energy;
+                }
                 let energy = terms.iter().sum::<f64>() + hub_energy;
                 let entropy = -options.width
                     * degeneracy

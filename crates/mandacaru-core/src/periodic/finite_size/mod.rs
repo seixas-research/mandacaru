@@ -1,9 +1,20 @@
 //! Finite-size corrections for supercell calculations (Hartree atomic units).
 //!
-//! `kzk` is the Kwee-Zhang-Krakauer size-dependent LDA: a functional of the density
-//! alone. It has no public entry point yet; the wiring package (FS-5) adds it.
-//! The Wigner-Seitz kernel, MPC and CCMH belong to later packages.
+//! Includes:
+//! - `kzk`: The Kwee-Zhang-Krakauer size-dependent LDA (density functional).
+//! - `mpc`: The Model Periodic Coulomb scheme with Madelung double-counting correction.
+//! - `ccmh`: The Chiesa-Ceperley-Martin-Holzmann structure factor extrapolation.
+
+pub mod ccmh;
 pub mod kzk;
+pub mod mpc;
+
+pub use ccmh::{
+    ccmh_extrapolate, structure_factor_from_rdms, Ccmh, CcmhShell, StructureFactor,
+    DEFAULT_SHELLS, QUADRATIC_REGIME_SPREAD,
+};
+pub use kzk::{kzk, Fit, Kzk, Vacuum, DENSITY_FLOOR, HARTREE_PER_RYDBERG};
+pub use mpc::{mpc_from_hole_energies, mpc_hole_contraction, verify_hole_trace, Mpc};
 
 use crate::{Error, Result};
 

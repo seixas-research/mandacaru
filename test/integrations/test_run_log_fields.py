@@ -191,3 +191,38 @@ class TestTheStateVectorBackend:
 
     def test_a_measured_run_holds_no_state_vector(self):
         assert fields.backend_text(driver(_shots=100), self.problem).startswith("none (shots > 0")
+
+
+class TestTheHubbardLines:
+    """The DFT+U lines of ``[SCF SUMMARY]``, read from stand-ins of a converged result."""
+
+    @staticmethod
+    def shell(symbol="Ni", l="d", **values):
+        return {"symbol": symbol, "l": l, "U": 6.0, "J": 1.0, "U_eff": 5.0, **values}
+
+    def test_a_run_without_the_correction_writes_nothing(self):
+        assert fields.hubbard(SimpleNamespace(hubbard=None)) == {}
+
+    def test_the_energy_and_the_definition_are_written_in_the_result_unit(self):
+        result = SimpleNamespace(hubbard=[self.shell()], hubbard_energy=0.25, energy_unit="eV")
+        assert fields.hubbard(result) == {
+            "hubbard_energy_eV": 0.25,
+            "hubbard_Ni_d": "U 6.000000 eV, J 1.000000 eV, U_eff 5.000000 eV",
+        }
+
+    def test_u_eff_is_read_from_the_result_not_recomputed(self):
+        """The effective U is the engine's: a view that says 4.5 is written as 4.5 even
+        though U - J is 5.0, so the log can never disagree with the engine."""
+        result = SimpleNamespace(
+            hubbard=[self.shell(U_eff=4.5)], hubbard_energy=0.0, energy_unit="Ha"
+        )
+        assert fields.hubbard(result)["hubbard_Ni_d"].endswith("U_eff 4.500000 Ha")
+
+    def test_an_element_with_several_atoms_is_written_once(self):
+        result = SimpleNamespace(
+            hubbard=[self.shell(), self.shell(), self.shell("O", "p", U=1.0, J=0.0, U_eff=1.0)],
+            hubbard_energy=1.0,
+            energy_unit="eV",
+        )
+        keys = list(fields.hubbard(result))
+        assert keys == ["hubbard_energy_eV", "hubbard_Ni_d", "hubbard_O_p"]

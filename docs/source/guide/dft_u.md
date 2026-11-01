@@ -75,8 +75,11 @@ projectors. Quote the projection with the number.
 The SCF starts from a diagonal seed built from the reference electrons of the
 shell in the dataset and the atom's initial magnetic moment, signed per atom, so
 an antiferromagnetic start gives opposite signs on the two Ni sites. A restricted
-run has no spin to seed: a nonzero initial magnetic moment on it raises. Use
-`spin=True` with the moments, as in [Open-shell systems](open_shell.md).
+run has no spin to seed, and a crystal never polarizes itself because its atoms
+carry a moment: initial magnetic moments with `spin=False` and
+`unrestricted=False` raise `ValueError` at the first calculation, with or without
+`hubbard_u`. Give `spin=True` with the moments, as in
+[Open-shell systems](open_shell.md).
 
 ## What is exposed
 
@@ -133,18 +136,26 @@ Every unsupported request raises; none selects another calculation.
 | Request | Raises |
 | --- | --- |
 | A molecule (no periodic direction) | `ValueError`: DFT+U is for crystals. The molecular route has no `+U` term. |
+| A basis that is not PAW-LCAO or UPAW-LCAO (`HAO`, a Gaussian family) | `ValueError` from the constructor, naming `hubbard_u`: the shell is a projection on a PAW partial wave. |
 | A screened hybrid (`xc="hse06"`) | `NotImplementedError`: the correction has no exchange operator to share with it. |
 | A spin-orbit (fully relativistic) dataset | `NotImplementedError`: scalar-relativistic sets only. |
 | `precision="float32"` | `ValueError`: single precision is unvalidated. |
 | A symmetry-reduced k-mesh with `symmetry=True` | The Rust loader refuses: the shell occupations are not symmetrized with the density yet. Use `symmetry=False`. A calculation with nonzero initial magnetic moments already keeps the full mesh. |
-| A restricted calculation with a nonzero initial moment | The loader names `restricted` and `moment`. |
+| A restricted calculation with a nonzero initial moment | `ValueError` naming `spin` and `unrestricted` (the moments need `spin=True`). |
 | A malformed mapping, an unknown element, a shell other than `d` or `f`, a negative or non-finite energy, `J > U` | `ValueError` naming the entry. |
 | An element that is not in the system, or a dataset without the requested channel | `ValueError`. |
-| A channel with no occupied reference wave in the dataset (for example Ba 5d, Au 5f) | The loader refuses: there is no wave to project on. |
-| Crystal forces and stress | `NotImplementedError` and `PropertyNotImplementedError`, as for every crystal ([open items](#not-yet-available)). |
+| A channel with no occupied reference wave in the dataset (for example Ba 5d, Au 5f in `lda-sr`) | `ValueError` naming the element, the shell and the dataset set: there is no wave to project on. |
+| Crystal forces and stress | Computed via finite differences of the total energy, including on-site interaction response. |
+
+The constructor raises the refusals that need only the element and its dataset
+(the element, the channel, the occupied reference wave, a spin-orbit set) when
+`atoms=` is given; with the atoms attached later they come at the first
+calculation, before any SCF. The symmetry-reduced mesh needs the assembled
+crystal and is always refused at the first calculation, and so is a `hubbard_u`
+that disagrees with a `load_crystal` file (the file is read then).
 
 What is not implemented, and what that means for results, is listed in
-[the not-yet-available table](#not-yet-available): forces and stress, the
+[the not-yet-available table](#not-yet-available): the
 symmetrizer that would allow a symmetry-reduced mesh, the Liechtenstein form with
 separate `U` and `J`, and a linear-response `U`. The cRPA workflow of the Wannier
 route *computes* an interaction; `hubbard_u` takes one as input.

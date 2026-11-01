@@ -20,7 +20,7 @@ def build(driver, geometry):
     spec = {"name": driver.basis} if isinstance(driver.basis, str) else driver.basis
     family = lookup_family(spec["name"])
     options = family.resolved_options({k: v for k, v in spec.items() if k != "name"})
-    if driver.method == "dft" and "paw_dataset" not in spec:
+    if driver.method == "dft" and family.name == "paw-lcao" and "paw_dataset" not in spec:
         from ..pseudopotentials.environment import default_library_folder
 
         options["paw_dataset"] = default_library_folder(driver.xc)

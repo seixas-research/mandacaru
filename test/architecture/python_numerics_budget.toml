@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 11386
+zero_sloc = 11352
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -52,22 +52,22 @@ zero_sloc = 11386
 "calculation.py" = { np = 2 }
 "circuits/pools.py" = { math = 4, dloops = 3, dcomp = 1 }
 "core/augmentation.py" = { np = 1, matmul = 2, meth = 1, dloops = 1 }
-"core/ccmh.py" = { np = 23, scipy = 1, matmul = 2, meth = 8, dloops = 4, dcomp = 2 }
+"core/ccmh.py" = { np = 21, scipy = 1, matmul = 2, meth = 4, dloops = 4, dcomp = 2 }
 "core/checkpoint.py" = { np = 7, scipy = 1, matmul = 4, dcomp = 2 }
 "core/dipole.py" = { np = 4, matmul = 1, meth = 1 }
 "core/ewald.py" = { np = 62, scipy = 1, matmul = 13, meth = 1, dloops = 10, dcomp = 1 }
 "core/kzk.py" = { np = 14, meth = 5 }
 "core/mapping.py" = { np = 18, matmul = 4, meth = 1, dloops = 10, dcomp = 4 }
 "core/matrix_free.py" = { np = 9, scipy = 2, matmul = 1, dloops = 4 }
-"core/mpc.py" = { np = 23, scipy = 1, matmul = 3, dloops = 3, dcomp = 1 }
+"core/mpc.py" = { np = 17, scipy = 1, matmul = 2 }
 "core/pauli_algebra.py" = { np = 14, meth = 4, dloops = 3, dcomp = 1 }
 "core/sector.py" = { np = 31, scipy = 1, matmul = 2, meth = 2, math = 9, dloops = 5 }
 "core/serialization.py" = { dcomp = 1 }
 "core/spin_orbit.py" = { np = 2, dloops = 2, bi = 3, arith = 2, arithmax = 1, sloc = 59, wave = "3b", dies = "2027-05-07" }
-"core/symmetry.py" = { np = 5, matmul = 1, dloops = 2, arith = 1, arithmax = 1, sloc = 143, wave = "3b", dies = "2027-05-07", allow_imports = ["spglib"] }
+"core/symmetry.py" = { np = 3, matmul = 1, dloops = 2, arith = 1, arithmax = 1, sloc = 115, wave = "3b", dies = "2027-05-07" }
 "core/tapering.py" = { np = 5, matmul = 3, dloops = 5, dcomp = 1 }
 "integrals/__init__.py" = { sloc = 2, category = "hand-off" }
-"integrals/_backend.py" = { np = 15, matmul = 1, ctypes = 1, bi = 1, sloc = 237, wave = "W4", dies = "2027-07-16", allow_imports = ["psutil"] }
+"integrals/_backend.py" = { np = 15, matmul = 1, ctypes = 1, bi = 1, sloc = 236, wave = "W4", dies = "2027-07-16" }
 "integrals/exchange_correlation.py" = { np = 62, scipy = 2, matmul = 6, meth = 7, dloops = 7, dcomp = 4, bi = 1, arith = 94, arithmax = 25, sloc = 388, wave = "W4", dies = "2027-07-16" }
 "integrals/grid.py" = { np = 34, matmul = 5, dcomp = 5, bi = 10, aloops = 2, acomp = 1, arith = 18, arithmax = 6, sloc = 170, wave = "W4", dies = "2027-07-16" }
 "integrals/packed.py" = { np = 33, scipy = 1, matmul = 4, meth = 3, dloops = 8, bi = 9, aloops = 1, arith = 30, arithmax = 5, sloc = 237, wave = "W4", dies = "2027-07-16" }
@@ -75,7 +75,7 @@ zero_sloc = 11386
 "integrals/sampling.py" = { np = 6, dloops = 3, dcomp = 2, bi = 4, aloops = 2, arith = 7, arithmax = 4, sloc = 178, wave = "W4", dies = "2027-07-16" }
 "integrals/vv10.py" = { arith = 1, arithmax = 1, sloc = 27, category = "hand-off" }
 "integrations/ase_properties.py" = { np = 1, meth = 2 }
-"integrations/paw.py" = { np = 6, matmul = 1, dloops = 1, dcomp = 1, bi = 1, aloops = 3, arith = 12, arithmax = 11, sloc = 265, wave = "3b", dies = "2027-05-07" }
+"integrations/paw.py" = { np = 6, matmul = 1, dloops = 1, dcomp = 1, bi = 1, aloops = 3, arith = 12, arithmax = 11, sloc = 262, wave = "3b", dies = "2027-05-07" }
 "integrations/paw_molecular.py" = { np = 2, dloops = 2, bi = 3, arith = 1, arithmax = 1, sloc = 164, wave = "W4", dies = "2027-07-16" }
 "integrations/reporting.py" = { np = 2, meth = 3 }
 "integrations/wannier.py" = { np = 1, dloops = 1 }
@@ -87,7 +87,7 @@ zero_sloc = 11386
 "models/setup.py" = { sloc = 22, category = "hand-off" }
 "optimizers/optim.py" = { np = 3, scipy = 1, dloops = 1 }
 "pseudopotentials/__init__.py" = { sloc = 16, category = "hand-off" }
-"pseudopotentials/build_cli.py" = { np = 2, meth = 1, dloops = 3, dcomp = 1, bi = 6, arith = 1, arithmax = 1, sloc = 239, wave = "W4", dies = "2027-07-16", allow_imports = ["threadpoolctl"] }
+"pseudopotentials/build_cli.py" = { np = 2, meth = 1, dloops = 3, dcomp = 1, bi = 6, arith = 1, arithmax = 1, sloc = 237, wave = "W4", dies = "2027-07-16" }
 "pseudopotentials/confinement.py" = { dloops = 1, dcomp = 1, bi = 4, arith = 2, arithmax = 1, sloc = 284, wave = "W4-A-py", dies = "2027-03-26" }
 "pseudopotentials/core_correction.py" = { sloc = 30, category = "hand-off" }
 "pseudopotentials/dataset.py" = { np = 8, bi = 2, aloops = 1, arith = 3, arithmax = 2, sloc = 69, wave = "3a", dies = "2027-03-26" }

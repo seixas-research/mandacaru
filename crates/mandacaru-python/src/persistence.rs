@@ -1,4 +1,4 @@
-use super::{array, error, Array};
+use super::error;
 use mandacaru_core::{persistence::Document, Context};
 use pyo3::{prelude::*, types::PyDict};
 use std::{path::Path, sync::Mutex};

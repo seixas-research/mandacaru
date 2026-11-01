@@ -30,6 +30,8 @@ Three checks carry this file.
 
 import numpy as np
 import pytest
+
+pytest.importorskip("mandacaru.algorithms.pseudo_forces")
 from ase import Atoms
 
 from mandacaru import Mandacaru

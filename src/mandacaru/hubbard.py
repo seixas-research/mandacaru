@@ -50,6 +50,66 @@ def require_crystal(spec, pbc):
         )
 
 
+def paw_basis(spec, basis):
+    """The ``(family, options)`` of the PAW basis that ``hubbard_u`` needs, or ``None`` for no
+    option.
+
+    The Hubbard shell is the projection on a PAW partial wave of the dataset, so a basis with
+    no dataset (``HAO``, Gaussian families, per-element bases) cannot carry the option.
+    """
+    if spec is None:
+        return None
+    from .models.setup import pseudopotential_family, resolve_basis
+
+    name, options = resolve_basis(basis)
+    family = pseudopotential_family(name)
+    if family is None or family.name not in ("paw-lcao", "upaw-lcao"):
+        raise ValueError(
+            "hubbard_u needs a PAW-LCAO or UPAW-LCAO basis: the correlated shell is the "
+            f"projection on a PAW partial wave of the dataset, and basis {name!r} has none; "
+            "give basis='PAW-LCAO' (or 'UPAW-LCAO')"
+        )
+    return family.name, dict(options)
+
+
+def _channels(dataset):
+    """The reference occupations of each channel of ``dataset``, one number per partial wave."""
+    from .pseudopotentials.onecenter import _occupations
+
+    return {
+        int(l): np.asarray(_occupations(dataset, l), dtype=float) for l in dataset.channels
+    }
+
+
+def check_atoms(spec, context, atoms, paw):
+    """Refuse at construction what the elements and their datasets already rule out.
+
+    Loads the dataset of each distinct element (cached, and read again by the calculation) and
+    hands its file and reference occupations to Rust, which refuses a spin-orbit dataset, an
+    element the option names that ``atoms`` lacks, a dataset without the shell and a shell
+    with no occupied reference wave. What needs the assembled crystal (a k mesh reduced by
+    symmetry) is refused at the first calculation, before any SCF.
+    """
+    if spec is None or paw is None or not any(atoms.pbc):
+        return
+    from .pseudopotentials.families import resolve_family
+    from .pseudopotentials.paw import get_paw, get_upaw
+
+    family, options = paw
+    folder = resolve_family(family).resolved_options(options).get("paw_dataset")
+    load = get_upaw if family == "upaw-lcao" else get_paw
+    symbols = sorted(set(atoms.get_chemical_symbols()))
+    datasets = [load(symbol, folder) for symbol in symbols]
+    _native.hubbard_check_atoms(
+        context,
+        spec,
+        any(getattr(dataset, "has_spin_orbit", False) for dataset in datasets),
+        symbols,
+        [str(getattr(dataset, "source", "")) for dataset in datasets],
+        [_channels(dataset) for dataset in datasets],
+    )
+
+
 def table(spec, context, crystal, moments):
     """The ``hubbard`` object of the snapshot of ``crystal`` for the option ``spec``.
 
@@ -59,13 +119,12 @@ def table(spec, context, crystal, moments):
     """
     if spec is None:
         return None
-    from .pseudopotentials.onecenter import _occupations
-
     projectors = crystal.projectors
     slot, species, of_atom = {}, [], []
     for dataset in crystal.datasets:
         if id(dataset) not in slot:
             slot[id(dataset)] = len(species)
+            occupations = _channels(dataset)
             species.append(
                 (
                     np.ascontiguousarray(dataset.r, dtype=float),
@@ -74,10 +133,11 @@ def table(spec, context, crystal, moments):
                             np.ascontiguousarray(channel.ae_waves, dtype=float),
                             np.ascontiguousarray(channel.vanderbilt, dtype=float),
                             float(channel.r_cut),
-                            np.asarray(_occupations(dataset, l), dtype=float),
+                            occupations[int(l)],
                         )
                         for l, channel in dataset.channels.items()
                     },
+                    str(getattr(dataset, "source", "")),
                 )
             )
         of_atom.append(slot[id(dataset)])

@@ -32,7 +32,7 @@ relax: a converged optimizer is not evidence that the model has a minimum.
 | `vqe`, `adapt-vqe`, `mcas-vqe`, `valqa` on the local state-vector simulator | [displaced energies of the converged state](#forces-variational) |
 | `ghf`, `subspace-vqe`, `subspace-adapt-vqe` | not available |
 | any run with `shots > 0` or a device other than `AER_simulator` | not available |
-| periodic structures | not available (`NotImplementedError`) |
+| `dft` on periodic structures (crystals) | finite difference of total energy; stress tensor via `get_stress()` |
 
 Forces require the default `kinetic="spectral"`. Asking for forces where they are not available raises ASE's
 `PropertyNotImplementedError` or `NotImplementedError`. An SCF that does not
@@ -42,7 +42,7 @@ listed in the [methods table](#methods-table).
 (forces-paw-lcao)=
 ## PAW-LCAO forces for Hartree–Fock and Kohn–Sham states
 
-For `method="rhf"`, `"uhf"` or `"dft"` (LDA, PBE, r²SCAN) on a PAW-LCAO basis
+For `method="rhf"`, `"uhf"` or `"dft"` (LDA, PBE, r²SCAN, HSE06) on a PAW-LCAO basis
 the force comes from the converged state without a displaced SCF:
 
 ```python
@@ -139,8 +139,7 @@ resolve.
 PAW-LCAO mean-field forces raise for:
 
 - generalized (`ghf`) states, and anything that is not real and collinear;
-- screened exact exchange (`xc="hse06"`) and nonlocal correlation
-  (`"pbe+rvv10"`, `"r2scan+rvv10"`) on a PAW-LCAO basis;
+- nonlocal correlation (`"pbe+rvv10"`, `"r2scan+rvv10"`) on a PAW-LCAO basis;
 - `precision="float32"`, because the difference needs `float64` samples;
 - a state that does not reproduce its own energy on the rebuilt integrals.
 

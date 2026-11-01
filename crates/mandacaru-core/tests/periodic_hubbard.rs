@@ -288,6 +288,89 @@ fn the_hellmann_feynman_identity_holds_by_richardson_and_an_inconsistent_pair_fa
     assert!(wrong > 1e-5, "the negative control must fail the identity");
 }
 
+/// A Hermitian `p x p` direction in the projector space, different for each spin and entry.
+fn direction(p: usize, spin: usize) -> DMatrix<C64> {
+    let raw = DMatrix::from_fn(p, p, |a, b| {
+        let phase = 0.37 * (a as f64 + 1.) + 0.61 * (b as f64 + 1.) + 1.3 * spin as f64;
+        C64::new(phase.sin(), phase.cos() * 0.5)
+    });
+    (&raw + raw.adjoint()) * C64::new(0.5, 0.)
+}
+
+/// The operator `O^sigma` that the SCF adds to the Hamiltonian is the derivative of `E_U` along
+/// the density: `Re Tr[O^sigma dR^sigma]` equals the central difference of `E_U(n(R + h dR))`
+/// with `n = W^T R W` of each shell, whatever the density. This tests the potential in isolation,
+/// at the converged NiO occupations and through the production assembly `W V W^T`, against the
+/// energy function alone (`E_U` is quadratic in `n`, so the central difference is exact). The
+/// Hellmann-Feynman test above perturbs the pair (E, V) together and cannot see a wrong V.
+fn operator_error(
+    c: &Crystal,
+    n: &[Vec<C64>],
+    operators: &[nalgebra::DMatrix<C64>],
+    swap_spins: bool,
+) -> f64 {
+    let spec = c.hubbard.as_ref().unwrap();
+    let shells = spec.shells.len();
+    let directions: Vec<_> = (0..c.spins).map(|s| direction(c.p, s)).collect();
+    let moved = |h: f64| {
+        let mut out = n.to_vec();
+        for (spin, delta) in directions.iter().enumerate() {
+            for (index, shell) in spec.shells.iter().enumerate() {
+                let (p, w) = (shell.size(), shell.weights.len());
+                for a in 0..p {
+                    for b in 0..p {
+                        let mut dn = C64::default();
+                        for i in 0..w {
+                            for j in 0..w {
+                                dn += delta
+                                    [(shell.projectors[a * w + i], shell.projectors[b * w + j])]
+                                    * (shell.weights[i] * shell.weights[j]);
+                            }
+                        }
+                        out[spin * shells + index][a * p + b] += dn * h;
+                    }
+                }
+            }
+        }
+        out
+    };
+    let h = 1e-2;
+    let fd = (spec.energy(c, &moved(h)).unwrap() - spec.energy(c, &moved(-h)).unwrap()) / (2. * h);
+    let predicted: f64 = directions
+        .iter()
+        .enumerate()
+        .map(|(spin, delta)| {
+            let o = &operators[if swap_spins { c.spins - 1 - spin } else { spin }];
+            (0..c.p)
+                .flat_map(|a| (0..c.p).map(move |b| (a, b)))
+                .map(|(a, b)| (o[(a, b)] * delta[(b, a)]).re)
+                .sum::<f64>()
+        })
+        .sum();
+    (fd - predicted).abs() / predicted.abs().max(1e-30)
+}
+
+#[test]
+fn the_operator_is_the_derivative_of_e_u_along_the_density_and_a_wrong_operator_fails() {
+    let ctx = context();
+    let mut c = load(&ctx, "nio_afm2");
+    with_u(&mut c, 3.);
+    let state = solve(&c, 0.05);
+    let n = &state.hubbard.as_ref().unwrap().occupations;
+    let spec = c.hubbard.as_ref().unwrap();
+    let operators = spec.operators(&c, n).unwrap();
+    let good = operator_error(&c, n, &operators, false);
+    println!("operator against dE_U/dR: relative error {good:.2e}");
+    assert!(good < 1e-8, "{good:e}");
+    // Negative controls: each plausible mistake in V must fail the same check.
+    let scaled: Vec<_> = operators.iter().map(|o| o * C64::new(1.01, 0.)).collect();
+    let wrong_scale = operator_error(&c, n, &scaled, false);
+    let wrong_spin = operator_error(&c, n, &operators, true);
+    println!("V x 1.01: {wrong_scale:.2e}; spin channels swapped: {wrong_spin:.2e}");
+    assert!(wrong_scale > 1e-3, "{wrong_scale:e}");
+    assert!(wrong_spin > 1e-3, "{wrong_spin:e}");
+}
+
 #[test]
 fn restricted_and_unrestricted_agree_at_zero_moment() {
     let ctx = context();

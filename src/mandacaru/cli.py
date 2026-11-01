@@ -35,7 +35,7 @@ def main(argv=None):
              "PAW-LCAO and quantum methods are refused under float32; settings "
              "float32 cannot resolve raise an error")
     parser.add_argument("--threads", type=int, default=None)
-    parser.add_argument("--memory-mb", type=int, default=512)
+    parser.add_argument("--memory-mb", type=int, default=32768)
     parser.add_argument("--forces", action="store_true")
     parser.add_argument("--load-hamiltonian")
     parser.add_argument("--save-hamiltonian")

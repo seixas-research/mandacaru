@@ -94,6 +94,8 @@ factor.
 
 from __future__ import annotations
 
+from .._native import ccmh_extrapolate as _native_ccmh_extrapolate
+
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -350,24 +352,21 @@ def ccmh_correction(structure: StructureFactor, *, volume, n_cells: int = 1,
     k, s = structure.shells(shells)
     if k.size == 0:
         raise ValueError("no reciprocal-lattice shells to extrapolate from")
-    ratio = s / k ** 2
-    if k.size == 1:
-        value = float(ratio[0])
-    else:
-        slope, intercept = np.polyfit(k ** 2, ratio, 1)
-        value = float(intercept)
-
-    # Is the quadratic regime actually resolved?  S(k)/k^2 must be flat there.
-    spread = 0.0
-    if ratio.size > 1 and abs(ratio.mean()) > 0:
-        spread = float((ratio.max() - ratio.min()) / abs(ratio.mean()))
+    raw = _native_ccmh_extrapolate(
+        np.ascontiguousarray(k, dtype=float),
+        np.ascontiguousarray(s, dtype=float),
+        float(volume),
+        int(n_cells),
+        structure.n_electrons,
+    )
+    spread = raw["quadratic_spread"]
     if spread > QUADRATIC_REGIME_SPREAD:
         import warnings
 
         warnings.warn(
             f"the CCMH extrapolation is outside the quadratic regime: "
             f"S(k)/k^2 varies by {spread:.0%} across the {k.size} fitted "
-            f"shells ({np.array2string(ratio, precision=3)}), so S(k) has not "
+            f"shells ({np.array2string(s / k ** 2, precision=3)}), so S(k) has not "
             f"reached its small-k form where the smallest reciprocal-lattice "
             f"vector sits (|k| = {k[0]:.4f} Bohr^-1, S = {s[0]:.4f}).  The "
             "correction below is an extrapolation of a trend that has not "
@@ -378,19 +377,15 @@ def ccmh_correction(structure: StructureFactor, *, volume, n_cells: int = 1,
             "number as a diagnostic only.",
             RuntimeWarning, stacklevel=2)
 
-    volume = float(volume)
-    density = structure.n_electrons / volume
-    omega_p = float(np.sqrt(4.0 * np.pi * density))
-    correction = 4.0 * np.pi * value / (2.0 * volume)
     return CCMHCorrection(
-        correction=correction,
-        limit=value,
+        correction=raw["correction_per_electron"],
+        limit=raw["limit"],
         quadratic_spread=spread,
-        rpa_limit=1.0 / (2.0 * omega_p),
-        plasma_frequency=omega_p,
-        density=density,
-        volume=volume,
-        n_cells=int(n_cells),
+        rpa_limit=raw["rpa_limit"],
+        plasma_frequency=raw["plasma_frequency"],
+        density=raw["density"],
+        volume=raw["volume"],
+        n_cells=raw["n_cells"],
         n_electrons=structure.n_electrons,
         energy_per_cell=(None if energy_per_cell is None
                          else float(energy_per_cell)),

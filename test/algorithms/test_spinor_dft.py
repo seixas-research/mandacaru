@@ -134,9 +134,16 @@ class TestASpinOrbitCrystal:
     def test_the_valence_top_splits_off_a_kramers_pair(self, spinor_silicon):
         """At Gamma the p-like valence top (the scalar triplet) is the
         quartet Gamma8 above the pair Gamma7: 58 meV for this coarse SZ
-        silicon (DZP h 0.15 A: HISTORY "Phase P step 2")."""
+        silicon (DZP h 0.15 A: HISTORY "Phase P step 2").
+
+        The pair is degenerate to rounding (1e-10). The quartet is not exact:
+        the basis leaves a splitting of 1.02e-5 eV, a deterministic property
+        of this SZ basis (it does not move with the SCF tolerances or with the
+        grid spacing, and it ranges from 4.4e-6 to 1.6e-5 eV as the filter
+        cutoff goes from 120 to 400 eV), 0.02 % of the 58 meV gap. 2e-5 is
+        twice the measured value."""
         top = np.sort(spinor_silicon.calc.get_eigenvalues(kpt=0))[2:8]
-        assert np.ptp(top[2:]) < 1e-5 and np.ptp(top[:2]) < 1e-10
+        assert np.ptp(top[2:]) < 2e-5 and np.ptp(top[:2]) < 1e-10
         assert 0.04 < top[2] - top[1] < 0.08
 
     def test_the_spectra_count_one_electron_per_band(self, spinor_silicon):
@@ -146,12 +153,23 @@ class TestASpinOrbitCrystal:
         _e, pdos = calc.pdos(width=0.05, energies=energies)
         assert np.allclose(sum(pdos.values()), dos, atol=1e-10)
 
-    def test_what_it_cannot_do_is_refused(self, spinor_silicon):
+    def test_spinor_hse06_converges_with_kramers_pairs(self):
+        """Diamond Si with HSE06 and spin-orbit coupling (pbe-fr)."""
+        atoms = _silicon(xc="hse06", paw_dataset="pbe-fr")
+        calc = atoms.calc
+        assert calc.result.success
+        gamma = calc.get_eigenvalues(kpt=0)
+        assert np.allclose(gamma[0::2], gamma[1::2], atol=1e-8)
+
+    def test_spinor_crystal_forces_and_stress(self, spinor_silicon):
         calc = spinor_silicon.calc
-        with pytest.raises(NotImplementedError, match="not implemented"):
-            calc.get_forces(spinor_silicon)
-        with pytest.raises(NotImplementedError, match="not implemented"):
-            calc.get_stress(spinor_silicon)
+        forces = calc.get_forces(spinor_silicon)
+        assert forces.shape == (2, 3)
+        assert np.allclose(forces, 0.0, atol=1e-6)
+        stress = calc.get_stress(spinor_silicon)
+        assert stress.shape == (6,)
+        # Shear components are zero by cubic symmetry
+        assert np.allclose(stress[3:], 0.0, atol=1e-5)
 
     def test_wannier_functions_with_the_term(self, spinor_silicon):
         """The SOC crystal's valence: eight spinor functions whose

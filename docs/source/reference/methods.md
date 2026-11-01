@@ -33,7 +33,7 @@ or `execute_circuits=True`). Otherwise it raises `PropertyNotImplementedError` o
 - All-electron HF and Kohn-Sham: analytic stationary forces on the frozen grid.
 - PAW-LCAO RHF, UHF and semilocal Kohn-Sham (`lda`, `pbe`, `r2scan`): the force is
   a Richardson difference of the total energy at fixed orbital-frame densities.
-  GHF, `hse06`, rVV10 functionals, `precision="float32"` and an unconverged state
+  GHF, rVV10 functionals, `precision="float32"` and an unconverged state
   raise.
 - The quantum methods (`vqe`, `adapt-vqe`, `mcas-vqe`, `valqa`): spin-summed
   reduced density matrices of the variational state contract displaced reduced
@@ -42,10 +42,10 @@ or `execute_circuits=True`). Otherwise it raises `PropertyNotImplementedError` o
   `PropertyNotImplementedError`.
 
 **Periodic.** A geometry with a periodic axis (or `load_crystal=`) is solved only by
-`dft`, with `lda`, `pbe`, `r2scan`, `pbe+rvv10` or `r2scan+rvv10`. Every other
+`dft`, with `lda`, `pbe`, `r2scan`, `pbe+rvv10`, `r2scan+rvv10` or `hse06`. Every other
 method raises `NotImplementedError` ("periodic geometry calculations currently
-provide native DFT"), and so does `hse06`. Periodic forces and stress are not
-implemented, with or without `hubbard_u`; see [what is not available yet](#not-yet-available).
+provide native DFT"). Periodic forces and stress are supported for crystals
+via `atoms.get_forces()` and `atoms.get_stress()`.
 `hubbard_u` is accepted for a crystal only: a molecule raises `ValueError`, and a
 screened hybrid or a spin-orbit dataset raises `NotImplementedError`
 (the full list is in [DFT+U](../guide/dft_u.md)).
@@ -60,7 +60,7 @@ on another method, so nothing is silently ignored:
 
 | Options | Used by |
 | --- | --- |
-| `xc`, `kpts`, `smearing`, `periodic_scf_options`, `hubbard_u` | `dft` |
+| `xc`, `kpts`, `smearing`, `periodic_scf_options`, `hubbard_u`, `exxdiv_treatment`, `gygi_baldereschi` | `dft` |
 | `spin`, `unrestricted` | `dft` and `uhf` |
 | `pool` | the quantum methods |
 | `seed`, `min_length`, `max_length`, `move_weights`, `temperature`, `length_penalty`, `warm_start`, `replace_start`, `proposal_temperature`, `proposal` | `mcas-vqe` and `valqa` |

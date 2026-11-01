@@ -1,4 +1,4 @@
-from typing import Callable, Sequence, TypedDict
+from typing import Any, Callable, Sequence, TypedDict
 import numpy as np
 from numpy.typing import NDArray
 
@@ -71,6 +71,7 @@ class Context:
     def exchange_hole(self, variables: NDArray[np.float64], *, omega: float = 0.11) -> NDArray[np.float64]: ...
     def hybrid_points(self, variables: NDArray[np.float64], *, omega: float = 0.11, exact_fraction: float = 0.25) -> NDArray[np.float64]: ...
     def nonlocal_correlation(self, grid: SpatialGrid, density: NDArray[np.float64], sigma: NDArray[np.float64], *, b: float = 11.95, c: float = 0.0093, q_min: float = 1e-4, q_cut: float = 0.5, nodes: int = 16, padding: int = 2) -> dict: ...
+    def tkatchenko_scheffler(self, geometry: Geometry, functional: str, volume_ratios: NDArray[np.float64] | None = None, s_r: float | None = None, r_max_angstrom: float | None = None, l_decay_angstrom: float | None = None) -> dict[str, Any]: ...
     def read_snapshot(self, path: str, kind: str) -> Snapshot: ...
     def parse_snapshot(self, text: str, kind: str) -> Snapshot: ...
     def qwc_groups(self, labels: Sequence[str], weights: Sequence[float] | None = None) -> list[tuple[str, list[int]]]: ...
@@ -79,7 +80,7 @@ class Context:
     def run_ledger(self, *, jobs: int | None = None, total_shots: int | None = None) -> RunLedger: ...
     def write_field(self, path: str, data: NDArray[np.float64], origin: Sequence[float], step: Sequence[Sequence[float]], numbers: Sequence[int], positions: Sequence[Sequence[float]], *, format: str = "cube", charges: Sequence[float] | None = None, cell: Sequence[Sequence[float]] | None = None, periodic: bool = False, comment: str = "") -> None: ...
     def write_bands(self, path: str, energies: NDArray[np.float64], reciprocal_cell: Sequence[Sequence[float]], fermi_level: float, *, comment: str = "Mandacaru band energies") -> None: ...
-    def __init__(self, threads: int | None = None, memory_limit_bytes: int = 536870912) -> None: ...
+    def __init__(self, threads: int | None = None, memory_limit_bytes: int = 34359738368) -> None: ...
     @property
     def threads(self) -> int: ...
     @property
@@ -238,13 +239,22 @@ def hubbard_validate(spec: str, xc: str, precision: str) -> None:
     and ``NotImplementedError`` for a screened hybrid functional ``xc``. Every message names
     ``hubbard_u``.
     """
-def hubbard_table(context: Context, spec: str, spin_orbit: bool, symbols: list[str], bases: list[str], labels: NDArray[np.int64], species_of_atom: list[int], species: list[tuple[NDArray[np.float64], dict[int, tuple[NDArray[np.float64], NDArray[np.float64], float, NDArray[np.float64]]]]], moments: NDArray[np.float64]) -> str:
+def hubbard_check_atoms(context: Context, spec: str, spin_orbit: bool, symbols: list[str], sources: list[str], occupations: list[dict[int, NDArray[np.float64]]]) -> None:
+    """Refuse, before any crystal exists, what the elements and their datasets already rule out.
+
+    ``symbols``, ``sources`` (the dataset files) and ``occupations`` (by ``l``, one number per
+    partial wave) hold one entry per distinct element of the system. Raises ``ValueError`` for an
+    element of the option that the system lacks, a dataset without the requested channel and a
+    channel with no occupied reference wave (the message names the element, the shell and the
+    dataset set), and ``NotImplementedError`` for ``spin_orbit``.
+    """
+def hubbard_table(context: Context, spec: str, spin_orbit: bool, symbols: list[str], bases: list[str], labels: NDArray[np.int64], species_of_atom: list[int], species: list[tuple[NDArray[np.float64], dict[int, tuple[NDArray[np.float64], NDArray[np.float64], float, NDArray[np.float64]]], str]], moments: NDArray[np.float64]) -> str:
     """The ``hubbard`` object of a crystal snapshot, as JSON text, for the option ``spec``.
 
     ``labels`` is ``projectors x 4`` (atom, ``l``, ``m``, radial index of each global projector
     position) with ``symbols`` and ``bases`` (``"raw"`` or ``"dual"``) beside it. ``species_of_atom``
-    indexes ``species`` for each atom; a species is ``(r, {l: (ae, vanderbilt, r_cut, occupations)})``
-    with ``ae`` shaped ``waves x grid`` and one occupation per wave. ``moments`` holds each atom's
+    indexes ``species`` for each atom; a species is ``(r, {l: (ae, vanderbilt, r_cut, occupations)},
+    source)`` with ``ae`` shaped ``waves x grid``, one occupation per wave and the dataset file. ``moments`` holds each atom's
     initial magnetic moment. Raises ``ValueError`` for an element the system lacks, a dataset
     without the requested channel and incomplete labels, and ``NotImplementedError`` for a
     spin-orbit crystal.
@@ -490,12 +500,14 @@ class PeriodicProblem:
     def check_hubbard_u(self, spec: str) -> None:
         """Raise ``ValueError`` unless the ``hubbard_u`` option (JSON text) agrees with the DFT+U shells this crystal carries."""
     def save(self, path: str) -> None: ...
-    def solve(self, *, max_iterations: int = 300, tolerance: float = 1e-7, density_tolerance: float = 1e-5, smearing: str = "fermi-dirac", width_ha: float = ..., mixing: float = .25, history: int = 7) -> PeriodicResult: ...
+    def solve(self, *, max_iterations: int = 300, tolerance: float = 1e-7, density_tolerance: float = 1e-5, smearing: str = "fermi-dirac", width_ha: float = ..., mixing: float = .25, history: int = 7, exxdiv_treatment: str = "none") -> PeriodicResult: ...
 
 class PeriodicResult:
     def wannier_setup(self, metadata_json: str) -> WannierSetup: ...
     @property
     def n_iterations(self) -> int: ...
+    @property
+    def exxdiv_treatment(self) -> str: ...
     @property
     def spin_orbit_energy(self) -> float | None: ...
     @property
@@ -517,3 +529,49 @@ class WannierResult:
     def n_spins(self) -> int: ...
     def snapshot(self, *, spin: int = 0) -> dict: ...
     def interpolate(self, fractional_kpoints: NDArray[np.float64], *, spin: int = 0) -> NDArray[np.float64]: ...
+
+def crystal_symmetry(
+    cell: NDArray[np.float64],
+    positions: NDArray[np.float64],
+    numbers: NDArray[np.int64],
+    symprec: float = 1e-5,
+    context: Context | None = None,
+) -> dict[str, Any]: ...
+
+def kzk_correction(
+    density: NDArray[np.float64],
+    dv: float,
+    cell: NDArray[np.float64],
+    n_cells: int = 1,
+    floor: float = 1e-12,
+    max_vacuum_fraction: float = 0.05,
+) -> dict[str, Any]: ...
+
+def mpc_correction(
+    hole_model: float,
+    hole_periodic: float,
+    v_madelung: float,
+    n_electrons: float,
+    n_cells: int = 1,
+    volume: float | None = None,
+    cell: NDArray[np.float64] | None = None,
+) -> dict[str, Any]: ...
+
+def ccmh_extrapolate(
+    k_shells: NDArray[np.float64],
+    s_shells: NDArray[np.float64],
+    volume: float,
+    n_cells: int = 1,
+    n_electrons: float | None = None,
+) -> dict[str, Any]: ...
+
+def voxel_self_potential(step: NDArray[np.float64]) -> float: ...
+
+def wigner_seitz_kernel(
+    shape: Sequence[int],
+    step: NDArray[np.float64],
+    shells: int = 2,
+    context: Context | None = None,
+) -> NDArray[np.float64]: ...
+
+

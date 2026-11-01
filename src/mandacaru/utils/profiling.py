@@ -71,15 +71,13 @@ def current_memory_mb() -> float:
 
     The companion of :func:`peak_memory_mb`, which is a monotonic high-water
     mark: after a stage that allocated and freed a large tensor the peak stays
-    up while this comes back down, so a per-step report needs both.  Needs
-    ``psutil``; ``nan`` without it.
+    up while this comes back down, so a per-step report needs both.
     """
     try:
-        import psutil
-    except ImportError:
-        return float("nan")
-    try:
-        return float(psutil.Process().memory_info().rss) / (1024.0 ** 2)
+        import resource
+        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        scale = 1.0 if sys.platform == "darwin" else 1024.0
+        return float(ru) * scale / (1024.0 ** 2)
     except Exception:
         return float("nan")
 

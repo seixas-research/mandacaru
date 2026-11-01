@@ -53,7 +53,17 @@ _METHOD_SCOPED_OPTIONS = {
         _SEARCH_METHODS,
     ),
     **dict.fromkeys(
-        ("xc", "kpts", "smearing", "periodic_scf_options", "hubbard_u"), ("dft",)
+        (
+            "xc",
+            "vdw",
+            "kpts",
+            "smearing",
+            "periodic_scf_options",
+            "hubbard_u",
+            "exxdiv_treatment",
+            "gygi_baldereschi",
+        ),
+        ("dft",),
     ),
     **dict.fromkeys(("spin", "unrestricted"), ("dft", "uhf")),
     "pool": tuple(name for name, capability in METHODS.items() if capability.quantum),
@@ -327,8 +337,8 @@ class Mandacaru(ASEProperties, Calculator):
         it.
     resources : dict, optional
         Per-calculator allocation, with keys ``threads`` (default chosen by the
-        native context), ``memory_limit_bytes`` (default 536870912, that is
-        512 MiB) and ``scratch_dir``. An unknown key raises ``TypeError``. A
+        native context), ``memory_limit_bytes`` (default 34359738368, that is
+        32 GiB) and ``scratch_dir``. An unknown key raises ``TypeError``. A
         calculation that needs more memory than the limit raises
         ``MemoryError`` at ``run()``. Not allowed together with
         ``native_model``, which carries its own context (``ValueError``).
@@ -344,13 +354,24 @@ class Mandacaru(ASEProperties, Calculator):
         ``"pbe"``, ``"r2scan"``, ``"pbe+rvv10"`` and ``"r2scan+rvv10"``;
         ``"hse06"`` raises ``NotImplementedError`` at ``run()``. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
+    vdw : str or bool, optional
+        Van der Waals dispersion correction, one of ``"rvv10"``, ``"ts"``
+        (Tkatchenko-Scheffler method), or ``"d4"``. For ``"rvv10"``, it is
+        appended to the exchange-correlation functional for supported
+        functionals (e.g. ``xc="r2scan", vdw="rvv10"`` becomes
+        ``"r2scan+rvv10"``). Used by ``method="dft"`` only.
     spin : bool, default False
         Request an unrestricted (spin-polarized) Kohn-Sham calculation. It is
         the same switch as ``unrestricted`` (the two are combined with "or")
         and has an effect only for ``method="dft"`` (molecule and crystal).
         The other methods choose open or closed shell from the electron count
         and the initial magnetic moments, and ignore it. A non-boolean raises
-        ``TypeError``.
+        ``TypeError``. A scalar-relativistic crystal with a nonzero initial
+        magnetic moment needs ``spin=True`` (or ``unrestricted=True``): the
+        default asks for no spin polarization, and a calculation never
+        polarizes itself behind that request, so the contradiction raises
+        ``ValueError`` at the first calculation (a spin-orbit dataset takes its
+        moments as the noncollinear start and needs neither).
     unrestricted : bool, default False
         Same as ``spin``; either one set to ``True`` selects unrestricted
         ``method="dft"``. A molecule with unequal alpha and beta counts is
@@ -726,16 +747,23 @@ class Mandacaru(ASEProperties, Calculator):
         filled shell has an occupation below 1 (Ni 3d 0.95). Refused with
         ``ValueError``: a malformed mapping, an unknown element, a shell other
         than ``d`` or ``f``, a negative or non-finite energy, ``J`` above
-        ``U``, ``precision="float32"``, a molecule (no periodic direction), an
-        element missing from the geometry, a dataset without the shell, and a
-        crystal whose k-mesh is reduced by symmetry (use ``symmetry=False``
-        for a nonmagnetic crystal; nonzero initial magnetic moments already keep
-        the full mesh). ``NotImplementedError``: a screened hybrid functional
-        and a spin-orbit dataset. Other methods raise ``ValueError``. With
+        ``U``, ``precision="float32"``, a molecule (no periodic direction), a
+        basis that is not PAW-LCAO or UPAW-LCAO (the shell is a projection on a
+        PAW partial wave), an element missing from the geometry, a dataset
+        without the shell or whose reference atom holds no electron in it
+        (Ba ``d``, Au ``f`` in ``lda-sr``), and a crystal whose k-mesh is
+        reduced by symmetry (use ``symmetry=False`` for a nonmagnetic crystal;
+        nonzero initial magnetic moments already keep the full mesh).
+        ``NotImplementedError``: a screened hybrid functional and a spin-orbit
+        dataset. Other methods raise ``ValueError``. The refusals that need
+        the geometry (element, dataset, spin-orbit) are raised by the
+        constructor when ``atoms`` is given and at the first calculation
+        otherwise, always before any SCF; the symmetry refusal needs the
+        assembled crystal and is raised at the first calculation. With
         ``load_crystal`` the file owns the correction: leave the option out, or
-        give the file's own values (a different mapping raises
-        ``ValueError``). The result carries ``hubbard_energy`` and the
-        per-shell ``hubbard`` occupation matrices.
+        give the file's own values (a different mapping raises ``ValueError``
+        at the first calculation, when the file is read). The result carries
+        ``hubbard_energy`` and the per-shell ``hubbard`` occupation matrices.
     load_crystal : path, optional
         Load a crystal setup written by ``save_crystal`` instead of building
         it; run it without a geometry (``method="dft"`` only, otherwise
@@ -769,6 +797,7 @@ class Mandacaru(ASEProperties, Calculator):
         grid=None,
         resources=None,
         xc=None,
+        vdw=None,
         spin=False,
         unrestricted=False,
         charge=0,
@@ -833,6 +862,8 @@ class Mandacaru(ASEProperties, Calculator):
         hubbard_u=None,
         load_crystal=None,
         save_crystal=None,
+        exxdiv_treatment="none",
+        gygi_baldereschi=None,
     ):
         super().__init__()
         self._method, self._capabilities = resolve_method(method)
@@ -899,6 +930,43 @@ class Mandacaru(ASEProperties, Calculator):
                            transfer_steps=transfer_steps, update_between_geometries=update_between_geometries,
                            resume=resume)
         self._profile = profile
+        if xc is not None:
+            if not isinstance(xc, str):
+                raise TypeError(f"xc must be a string or None, not {type(xc).__name__}")
+
+        vdw_norm = None
+        if vdw is not None:
+            if not isinstance(vdw, (str, bool)):
+                raise TypeError("vdw must be a string, boolean, or None")
+            if isinstance(vdw, bool):
+                vdw_norm = "rvv10" if vdw else None
+            else:
+                vdw_norm = vdw.strip().lower()
+
+            if vdw_norm is not None:
+                if vdw_norm in ("rvv10", "ts", "d4"):
+                    if vdw_norm == "rvv10":
+                        base_xc = "pbe" if xc is None else xc.strip().lower()
+                        if not base_xc.endswith("+rvv10"):
+                            if base_xc in ("pbe", "r2scan"):
+                                xc = f"{base_xc}+rvv10"
+                            else:
+                                raise ValueError(
+                                    f"vdw='rvv10' can only be combined with 'pbe' or 'r2scan', not {xc!r}"
+                                )
+                    elif vdw_norm == "ts":
+                        base_xc = "lda" if xc is None else xc.strip().lower()
+                        if base_xc.endswith("+rvv10"):
+                            raise ValueError("cannot combine vdw='ts' with an rvv10 functional")
+                    elif vdw_norm == "d4":
+                        raise NotImplementedError(
+                            "the D4 dispersion correction is not yet implemented; use vdw='rvv10' or xc='r2scan+rvv10'"
+                        )
+                else:
+                    raise ValueError(f"unknown vdw choice {vdw!r}; supported vdw options are 'rvv10', 'ts', 'd4'")
+        elif xc is not None and xc.strip().lower().endswith("+rvv10"):
+            vdw_norm = "rvv10"
+
         if xc is not None and xc not in FUNCTIONALS:
             raise ValueError(f"expected a canonical XC name in {FUNCTIONALS}")
         if mapping is not None and mapping not in MAPPINGS:
@@ -999,6 +1067,7 @@ class Mandacaru(ASEProperties, Calculator):
                 {} if isinstance(basis, str)
                 else {key: value for key, value in basis.items() if key != "name"}
             )
+        self._vdw = vdw_norm
         self._requested_xc = xc
         self._xc = "lda" if xc is None else xc
         self._unrestricted = spin or unrestricted
@@ -1102,7 +1171,21 @@ class Mandacaru(ASEProperties, Calculator):
         requested = (
             dict(method=optimizer)
             if isinstance(optimizer, str)
-            else dict(optimizer or {})
+            else (
+                {
+                    k: v
+                    for k, v in {
+                        "method": optimizer.method,
+                        "maxiter": optimizer.maxiter,
+                        "tol": optimizer.tol,
+                        **getattr(optimizer, "options", {}),
+                    }.items()
+                    if k in {"method", "maxiter", "maxfev", "tol", "track_best"}
+                    and v is not None
+                }
+                if hasattr(optimizer, "method") and not isinstance(optimizer, dict)
+                else dict(optimizer or {})
+            )
         )
         # A complex64 state is not resolved below the floors Rust owns: the
         # optimizer tolerance left unset resolves to the energy floor (printed in
@@ -1180,10 +1263,22 @@ class Mandacaru(ASEProperties, Calculator):
         if len(size) != 3 or any(type(n) is not int or n < 1 for n in size):
             raise ValueError("kpts needs three positive integer mesh sizes")
         self._periodic_options = dict(periodic_scf_options or {})
+        if "exxdiv_treatment" not in self._periodic_options:
+            if self._periodic_options.get("gygi_baldereschi") is True or gygi_baldereschi is True:
+                self._periodic_options["exxdiv_treatment"] = "gygi-baldereschi"
+            elif exxdiv_treatment != "none":
+                self._periodic_options["exxdiv_treatment"] = exxdiv_treatment
+            else:
+                self._periodic_options["exxdiv_treatment"] = "none"
+        self._periodic_options.pop("gygi_baldereschi", None)
         self._periodic_symmetry = symmetry
         self._hubbard_u = hubbard.validate(hubbard_u, xc=self._xc, precision=precision)
         if atoms is not None:
             hubbard.require_crystal(self._hubbard_u, atoms.pbc)
+        # A crystal file owns its basis; otherwise the option needs a PAW dataset.
+        paw = None if load_crystal is not None else hubbard.paw_basis(self._hubbard_u, basis)
+        if atoms is not None:
+            hubbard.check_atoms(self._hubbard_u, self.context, atoms, paw)
         self._periodic_basis = basis
         self._periodic_two_body_requested = False
         self._requested_mapping = mapping
@@ -1230,6 +1325,10 @@ class Mandacaru(ASEProperties, Calculator):
         return self._xc
 
     @property
+    def vdw(self):
+        return self._vdw
+
+    @property
     def basis(self):
         import copy
 
@@ -1240,12 +1339,12 @@ class Mandacaru(ASEProperties, Calculator):
         values = ["energy", "free_energy"]
         if self.method == "dft":
             values.append("magmom")
+            values.append("stress")
         if (
             self.capabilities.forces
             and not self._execute_circuits
             and self._kinetic == "spectral"
             and self._load_crystal is None
-            and not (self._geometry is not None and any(self._geometry.pbc))
         ):
             values.append("forces")
         return values
@@ -1331,6 +1430,60 @@ class Mandacaru(ASEProperties, Calculator):
             path, format="cube"
         )
 
+    def finite_size_correction(self, scheme="kzk", *, state=None, shells=None):
+        r"""Diagnostic finite-size corrections for periodic supercell calculations.
+
+        Parameters
+        ----------
+        scheme : {"kzk", "mpc", "ccmh"}, default "kzk"
+            Which correction scheme to evaluate:
+            - ``"kzk"``: Kwee-Zhang-Krakauer size-dependent LDA functional.
+            - ``"mpc"``: Model Periodic Coulomb hole correction with Madelung double-counting fix.
+            - ``"ccmh"``: Chiesa-Ceperley-Martin-Holzmann structure factor extrapolation.
+        state : array_like, optional
+            State vector to evaluate from (if supported by method).
+        shells : int, optional
+            Lattice or reciprocal shells to use.
+
+        Returns
+        -------
+        KZKCorrection, FiniteSizeCorrection, or CCMHCorrection
+        """
+        scheme = str(scheme).strip().lower()
+        if scheme not in ("mpc", "ccmh", "kzk"):
+            raise ValueError(
+                f"unknown finite-size scheme {scheme!r}; choose 'mpc' (model "
+                "periodic Coulomb), 'ccmh' (Chiesa-Ceperley-Martin-Holzmann) "
+                "or 'kzk' (Kwee-Zhang-Krakauer)."
+            )
+        geom = self._geometry
+        if geom is None and hasattr(self, "atoms") and self.atoms is not None:
+            from .structure import geometry_value
+            geom = geometry_value(self.atoms)
+
+        is_periodic = False
+        if geom is not None and any(geom.pbc):
+            is_periodic = True
+        elif hasattr(self, "atoms") and self.atoms is not None and any(self.atoms.pbc):
+            is_periodic = True
+
+        if not is_periodic:
+            raise ValueError(
+                f"method {self._method!r} is not periodic, so its electrons "
+                "have no images and there is no exchange-correlation hole "
+                "self-interaction to remove. The correction is defined "
+                "against the periodic Coulomb kernel; a molecule is already "
+                "computed with the isolated one."
+            )
+        if self._method == "dft":
+            raise ValueError(
+                "finite-size corrections are diagnostics for many-body states and "
+                "are not supported for method='dft' (whose supercell error is k-point sampling)."
+            )
+        raise NotImplementedError(
+            f"finite-size correction for {self._method!r} is waiting for correlated periodic solver"
+        )
+
     @contextlib.contextmanager
     def _stage(self, name):
         """Add the seconds of the wrapped block to the run log's stage ``name``."""
@@ -1367,6 +1520,11 @@ class Mandacaru(ASEProperties, Calculator):
                 self.native_reference = self.integrals.mean_field(
                     kind, particles, **self._scf_options
                 )
+        dispersion = (
+            self.context.tkatchenko_scheffler(geometry.native(), self.xc)
+            if self._vdw == "ts"
+            else None
+        )
         return CalculationResult(
             method=self.method,
             context=self.context,
@@ -1375,6 +1533,7 @@ class Mandacaru(ASEProperties, Calculator):
             mapping=self._mapping,
             active_space=self._active_spec,
             atomic_units=self._atomic_units,
+            dispersion=dispersion,
         )
 
     def _molecular_integrals(self, geometry):
@@ -1668,8 +1827,8 @@ class Mandacaru(ASEProperties, Calculator):
             raise NotImplementedError(
                 "periodic geometry calculations currently provide native DFT"
             )
-        if self.xc not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"):
-            raise NotImplementedError("periodic screened exact exchange requires its reciprocal exchange operator")
+        if self.xc not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10", "hse06"):
+            raise NotImplementedError(f"periodic calculation does not support functional {self.xc!r}")
         if self._load_crystal is not None:
             self.periodic_problem = self.context.load_crystal(str(self._load_crystal))
             if self.periodic_problem.precision != self._precision:
@@ -1694,6 +1853,11 @@ class Mandacaru(ASEProperties, Calculator):
         if self._save_crystal:
             self.periodic_problem.save(str(self._save_crystal))
         periodic = self.periodic_problem.solve(**self._periodic_options)
+        dispersion = (
+            self.context.tkatchenko_scheffler(geometry.native(), self.xc)
+            if self._vdw == "ts"
+            else None
+        )
         return CalculationResult(
             method="dft",
             context=self.context,
@@ -1701,6 +1865,7 @@ class Mandacaru(ASEProperties, Calculator):
             periodic=periodic,
             crystal=self.periodic_problem,
             atomic_units=self._atomic_units,
+            dispersion=dispersion,
         )
 
     def run(self, geometry=None, *, initial_parameters=None, callback=None,
@@ -1833,11 +1998,14 @@ class Mandacaru(ASEProperties, Calculator):
                 Calculator.calculate(self, source, properties, system_changes)
             if "forces" in properties and (
                 not self.capabilities.forces
-                or any(geometry.pbc)
-                or self._kinetic != "spectral"
+                or (not any(geometry.pbc) and self._kinetic != "spectral")
             ):
                 raise NotImplementedError(
-                    "forces require a supported molecular native calculation with spectral kinetic energy"
+                    "forces require a supported native calculation with spectral kinetic energy"
+                )
+            if "stress" in properties and not any(geometry.pbc):
+                raise PropertyNotImplementedError(
+                    "stress is only available for periodic structures"
                 )
             if "forces" in properties and self._precision == "float32":
                 # Refused before any SCF or cached-result lookup: the PAW and
@@ -1875,16 +2043,40 @@ class Mandacaru(ASEProperties, Calculator):
                 )
             result = self.result if reusable else self.run(geometry)
             if "forces" in properties:
-                project = self._project_translation is not False and len(geometry.numbers) > 1
-                internal = project and self.capabilities.quantum and self._basis_spec is None
-                with self._stage("nuclear gradient (forces)"):
-                    self.results["forces"] = result.forces(
-                        internal=internal,
-                        project_translation=project)
-                from .integrations.reporting import write_forces
+                is_periodic = (geometry is not None and any(geometry.pbc)) or (
+                    hasattr(self, "atoms") and self.atoms is not None and any(self.atoms.pbc)
+                )
+                if is_periodic:
+                    with self._stage("nuclear gradient (forces)"):
+                        from ase.calculators.fd import calculate_numerical_forces
+                        target_atoms = atoms if atoms is not None else self._attached_atoms
+                        forces = calculate_numerical_forces(target_atoms, eps=1e-3)
+                        self.results["forces"] = forces
+                        if hasattr(result, "_raw") and isinstance(result._raw, dict):
+                            result._raw["forces"] = forces
+                        if self.result is not None and hasattr(self.result, "_raw") and isinstance(self.result._raw, dict):
+                            self.result._raw["forces"] = forces
+                else:
+                    project = self._project_translation is not False and len(geometry.numbers) > 1
+                    internal = project and self.capabilities.quantum and self._basis_spec is None
+                    with self._stage("nuclear gradient (forces)"):
+                        self.results["forces"] = result.forces(
+                            internal=internal,
+                            project_translation=project)
+                    from .integrations.reporting import write_forces
 
-                write_forces(self, result, geometry, internal=internal, translated=project)
+                    write_forces(self, result, geometry, internal=internal, translated=project)
                 self._arm_exit_hook()
+            if "stress" in properties:
+                with self._stage("stress tensor"):
+                    from ase.calculators.fd import calculate_numerical_stress
+                    target_atoms = atoms if atoms is not None else self._attached_atoms
+                    stress = calculate_numerical_stress(target_atoms, eps=1e-3, voigt=True)
+                    self.results["stress"] = stress
+                    if hasattr(result, "_raw") and isinstance(result._raw, dict):
+                        result._raw["stress"] = stress
+                    if self.result is not None and hasattr(self.result, "_raw") and isinstance(self.result._raw, dict):
+                        self.result._raw["stress"] = stress
             if self.trace or self.txt is not None:
                 from .integrations.reporting import write_performance
 
@@ -1962,6 +2154,13 @@ class Mandacaru(ASEProperties, Calculator):
 
     def get_forces(self, atoms=None):
         return self.get_property("forces", atoms)
+
+    def get_stress(self, atoms=None, voigt=True):
+        val = self.get_property("stress", atoms)
+        if not voigt and hasattr(val, "shape") and val.shape == (6,):
+            from ase.stress import voigt_6_to_full_3x3_stress
+            return voigt_6_to_full_3x3_stress(val)
+        return val
 
     def reset(self):
         with self.resources.lock:

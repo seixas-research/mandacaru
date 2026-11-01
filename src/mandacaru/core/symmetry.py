@@ -8,22 +8,13 @@
 
 r"""Crystal symmetry, and the irreducible Brillouin zone it implies.
 
-The space group is found with `spglib <https://spglib.readthedocs.io>`_, which
-is the one thing here that is not generated natively: recognizing a space group
-from a cell and a basis is a well-posed combinatorial problem with a canonical
-implementation, and re-deriving it would add a class of silent errors for no
-physics.  What spglib supplies is the **symmetry operations**; the Brillouin
-zone reduction below is then done on Mandacaru's own mesh, in Mandacaru's own
-fractional convention.
+The space group and its symmetry operations are found natively in Rust.
+The Brillouin zone reduction below is then done on Mandacaru's own mesh, in
+Mandacaru's own fractional convention.
 
-That split is deliberate.  spglib also offers ``get_ir_reciprocal_mesh``, but
-it carries its own grid-address convention (integer addresses folded to
-``[0, 1)``, shifts expressed in half-grid units), and mapping that back onto
-the ``[-1/2, 1/2)`` Gamma-centered mesh
-:func:`~mandacaru.algorithms._hamiltonian_from_atoms.monkhorst_pack_kpts`
-builds is exactly the kind of off-by-a-convention step that produces a plot
-that looks plausible and is wrong.  Reducing our own array with spglib's
-rotations has no such step: every k-point that comes out is one that went in.
+That split is deliberate. Symmetry detection supplies the **symmetry
+operations**; reducing our own array with those rotations ensures every k-point
+that comes out is one that went in.
 
 What the reduction is
 ---------------------
@@ -67,57 +58,21 @@ from dataclasses import dataclass, field
 import numpy as np
 
 __all__ = ["SymmetryInfo", "IrreducibleZone", "crystal_symmetry",
-           "irreducible_kpoints", "require_spglib"]
+           "irreducible_kpoints"]
 
-#: Default distance tolerance handed to spglib, in Angstrom.  spglib's own
-#: default is 1e-5; a looser value merges sites that a relaxation left slightly
-#: off their ideal positions, which is usually what is wanted for a *relaxed*
-#: geometry and never what is wanted for a pinned test.
+#: Default distance tolerance handed to symmetry search, in Angstrom.
 DEFAULT_SYMPREC = 1e-5
 
 #: Fractional coordinates are compared after folding to ``[-1/2, 1/2)``; two
 #: k-points closer than this are the same point.
 KPOINT_TOLERANCE = 1e-8
 
-_SYMMETRY_CACHE: dict = {}
 _IRREDUCIBLE_CACHE: dict = {}
-
-
-def require_spglib():
-    """Import spglib, configured to raise rather than signal, or explain how
-    to get it.
-
-    It is a hard dependency of the package, so the ImportError branch only
-    fires in an environment assembled by hand.
-
-    ``spglib.error.OLD_ERROR_HANDLING`` defaults to ``True``, which keeps the
-    legacy behavior of stashing a failure in a module-level string and
-    returning a sentinel -- and emits a ``DeprecationWarning`` on **every**
-    call while it does.  spglib says the flag will be removed, so the forward
-    path is to turn it off once, here, at the single point where spglib is
-    imported: errors then arrive as exceptions, which is what the callers
-    below already expect, and the per-call warning stops.
-    """
-    try:
-        import spglib
-    except ImportError as error:                          # pragma: no cover
-        raise ImportError(
-            "crystal symmetry needs spglib, which Mandacaru lists as a "
-            "dependency: install it with `pip install spglib`, or reinstall "
-            "the package with `pip install -e '.[dev]'`.") from error
-
-    try:
-        from spglib import error as _spglib_error
-    except ImportError:                                   # pragma: no cover
-        return spglib                                     # older spglib
-    if getattr(_spglib_error, "OLD_ERROR_HANDLING", False):
-        _spglib_error.OLD_ERROR_HANDLING = False
-    return spglib
 
 
 @dataclass
 class SymmetryInfo:
-    """The space group of a periodic geometry, as spglib reports it.
+    """The space group of a periodic geometry, as reported natively.
 
     Attributes
     ----------
@@ -134,8 +89,11 @@ class SymmetryInfo:
         Fractional translation parts.  Carried for completeness; they do not
         move a k-point.
     symprec : float
-        The tolerance the operations were found with.  Recorded because the
-        answer genuinely depends on it.
+        The tolerance the operations were requested with.
+    symprec_used : float | None
+        The tolerance actually used after closure verification.
+    n_pure_translations : int
+        Number of pure translation operations (with W = I).
     """
 
     number: int
@@ -144,6 +102,8 @@ class SymmetryInfo:
     rotations: np.ndarray
     translations: np.ndarray
     symprec: float
+    symprec_used: float | None = None
+    n_pure_translations: int = 1
 
     @property
     def n_operations(self) -> int:
@@ -228,43 +188,25 @@ class IrreducibleZone:
 
 
 def crystal_symmetry(atoms, symprec: float = DEFAULT_SYMPREC) -> SymmetryInfo:
-    """Find the space group of an ASE ``Atoms`` with spglib."""
-    key = (
-        tuple(np.round(np.asarray(atoms.cell[:], dtype=float).flatten(), 8)),
-        tuple(np.round(np.asarray(atoms.get_scaled_positions(), dtype=float).flatten(), 8)),
-        tuple(int(z) for z in atoms.get_atomic_numbers()),
-        float(symprec)
+    """Find the space group of an ASE ``Atoms`` natively."""
+    from mandacaru import _native
+
+    cell = np.ascontiguousarray(atoms.cell[:], dtype=np.float64)
+    positions = np.ascontiguousarray(atoms.get_scaled_positions(), dtype=np.float64)
+    numbers = np.ascontiguousarray(atoms.get_atomic_numbers(), dtype=np.int64)
+
+    raw = _native.crystal_symmetry(cell, positions, numbers, float(symprec))
+
+    return SymmetryInfo(
+        number=int(raw["number"]),
+        international=str(raw["international"]),
+        point_group=str(raw["point_group"]),
+        rotations=np.asarray(raw["rotations"], dtype=int),
+        translations=np.asarray(raw["translations"], dtype=float),
+        symprec=float(raw["symprec"]),
+        symprec_used=float(raw["symprec_used"]),
+        n_pure_translations=int(raw["n_pure_translations"]),
     )
-    if key in _SYMMETRY_CACHE:
-        return _SYMMETRY_CACHE[key]
-
-    spglib = require_spglib()
-    cell = (np.asarray(atoms.cell[:], dtype=float),
-            np.asarray(atoms.get_scaled_positions(), dtype=float),
-            np.asarray(atoms.get_atomic_numbers(), dtype=int))
-    dataset = spglib.get_symmetry_dataset(cell, symprec=float(symprec))
-    if dataset is None:                                    # pragma: no cover
-        raise ValueError(
-            "spglib could not determine the space group of this geometry; "
-            "check that the cell is non-degenerate and that symprec "
-            f"({symprec:g}) is sensible for the coordinates.")
-
-    # spglib >= 2.5 returns a dataclass, earlier versions a dict.  Both are in
-    # the wild, and the attribute names coincide with the dict keys.
-    def field_of(name):
-        if isinstance(dataset, dict):
-            return dataset[name]
-        return getattr(dataset, name)
-
-    info = SymmetryInfo(
-        number=int(field_of("number")),
-        international=str(field_of("international")),
-        point_group=str(field_of("pointgroup")),
-        rotations=np.asarray(field_of("rotations"), dtype=int),
-        translations=np.asarray(field_of("translations"), dtype=float),
-        symprec=float(symprec))
-    _SYMMETRY_CACHE[key] = info
-    return info
 
 
 def _fold(k):

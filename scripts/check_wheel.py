@@ -33,7 +33,7 @@ assert pathlib.Path(sys.argv[1]).resolve() not in pathlib.Path(mandacaru.__file_
 requirements=importlib.metadata.requires('mandacaru')
 required={r.split(';')[0].split('>')[0].split('=')[0].strip().lower()
           for r in requirements if ';' not in r}
-assert {'numpy','ase','scipy','spglib','matplotlib',
+assert {'numpy','ase','scipy','matplotlib',
         'qiskit','qiskit-ibm-runtime','amazon-braket-sdk','cirq'}.issubset(required), requirements
 assert {'pandas','fastparquet','pyarrow'}.isdisjoint(required), requirements
 g=Geometry((1,1),np.array([[2.5,2.5,2.13],[2.5,2.5,2.87]]),np.eye(3)*5)

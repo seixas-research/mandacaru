@@ -68,6 +68,16 @@ pub fn diagonalize(
     fields: &[f64],
     moments: &[C64],
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    diagonalize_with_exchange(c, point, fields, moments, None)
+}
+
+pub fn diagonalize_with_exchange(
+    c: &Crystal,
+    point: &KPoint,
+    fields: &[f64],
+    moments: &[C64],
+    exchange: Option<&Matrix>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
     let m = c.m;
     let n = c.grid.index.points();
     if fields.len() != c.field_channels() * n
@@ -126,6 +136,9 @@ pub fn diagonalize(
     }
     drop(projector);
     drop(samples);
+    if let Some(k) = exchange {
+        h -= k * C64::new(0.25, 0.);
+    }
     let lowdin = Matrix::from_fn(2 * m, 2 * m, |i, j| {
         if i / m == j / m {
             point.lowdin[(i % m, j % m)]

@@ -37,6 +37,26 @@ def test_no_execution_selector_or_mutable_scientific_configuration():
     with calculator() as calc:
         with pytest.raises(AttributeError):
             calc.xc = "lda"
+        with pytest.raises(AttributeError):
+            calc.vdw = "rvv10"
+
+
+def test_vdw_transforms_functional():
+    assert Mandacaru(method="dft", xc="r2scan", vdw="rvv10").xc == "r2scan+rvv10"
+    assert Mandacaru(method="dft", xc="R2SCAN", vdw="rVV10").xc == "r2scan+rvv10"
+    assert Mandacaru(method="dft", xc="pbe", vdw="rvv10").xc == "pbe+rvv10"
+    assert Mandacaru(method="dft", xc="lda", vdw=None).xc == "lda"
+    with pytest.raises(ValueError, match="does not use: vdw"):
+        Mandacaru(method="rhf", vdw="rvv10")
+    ts_calc = Mandacaru(method="dft", xc="pbe", vdw="ts")
+    assert ts_calc.xc == "pbe"
+    assert ts_calc.vdw == "ts"
+    ts_upper = Mandacaru(method="dft", xc="pbe", vdw="TS")
+    assert ts_upper.vdw == "ts"
+    with pytest.raises(ValueError, match="cannot combine vdw='ts' with an rvv10 functional"):
+        Mandacaru(method="dft", xc="pbe+rvv10", vdw="ts")
+    with pytest.raises(NotImplementedError, match="D4"):
+        Mandacaru(method="dft", xc="r2scan", vdw="d4")
 
 
 @pytest.mark.parametrize("functional", _native.FUNCTIONALS)
@@ -139,7 +159,7 @@ def test_native_calculation_avoids_unrelated_integration_imports_and_scratch(tmp
 import importlib.abc, sys
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'scipy','jax','qiskit','braket','cirq','matplotlib','pandas','pyarrow','fastparquet','threadpoolctl'}:
+        if fullname.split('.')[0] in {'scipy','jax','qiskit','braket','cirq','matplotlib','pandas','pyarrow','fastparquet'}:
             raise AssertionError('optional import: '+fullname)
 sys.meta_path.insert(0,Block())
 import numpy as np

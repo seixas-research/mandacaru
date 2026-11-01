@@ -40,7 +40,7 @@ print(f"peak native memory: {atoms.calc.context.memory_peak_bytes / 2**20:.0f} M
 ```
 
 `resources` configures the native context: `threads`, `memory_limit_bytes`
-(512 MiB by default) and `scratch_dir`. The context refuses an allocation that
+(32 GiB by default) and `scratch_dir`. The context refuses an allocation that
 would exceed the limit, rather than exhausting the machine, and reports its peak
 as `calc.context.memory_peak_bytes` and `result.timings["memory_peak_bytes"]`.
 Raise the limit for a larger problem.

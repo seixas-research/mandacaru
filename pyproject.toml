@@ -14,9 +14,7 @@ requires-python = ">=3.14"
 dependencies = [
     'numpy>=2.0.0',
     'scipy',
-    'threadpoolctl',
     'ase>=3.29',
-    'spglib',
     'matplotlib',
     'qiskit',
     'qiskit-aer',
@@ -24,7 +22,6 @@ dependencies = [
     'amazon-braket-sdk',
     'cirq',
     'pytest',
-    'psutil',
 ]
 
 classifiers = [

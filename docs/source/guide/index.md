@@ -18,6 +18,7 @@ pseudopotentials
 basis_sets
 nao_ae
 open_shell
+finite_size
 ```
 
 ## Forces, properties and visualization

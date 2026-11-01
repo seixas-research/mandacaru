@@ -226,13 +226,18 @@ class TestPAWLCAO:
             _run(h2(), xc="lda", grid_spacing=0.3, basis={"name": "PAW-LCAO"},
                  paw_dataset="pbe-sr")
 
-    def test_a_paw_hybrid_is_refused_not_approximated(self):
-        """Screened exact exchange on PAW-LCAO needs the augmented
-        short-range pair integrals; without them the run must raise."""
+    def test_a_paw_hybrid_converges_with_screened_pair_integrals(self):
+        """Screened exact exchange on PAW-LCAO contracts augmented
+        short-range pair integrals and converges successfully."""
         atoms = h2()
-        with pytest.raises(ValueError, match="augmented short-range"):
-            _run(atoms, xc="hse06", grid_spacing=0.35,
-                 basis={"name": "PAW-LCAO", "size": "SZ"})
+        energy = _run(atoms, xc="hse06", grid_spacing=0.35,
+                      basis={"name": "PAW-LCAO", "size": "SZ"})
+        result = atoms.calc.result
+        assert result.success
+        assert energy == pytest.approx(-30.320738, abs=1e-3)
+        energies = result.scf.snapshot()
+        assert energies["functional"] == "hse06"
+        assert energies["xc_energy"] < 0.0 < energies["hartree_energy"]
 
 
 def lih():
@@ -724,6 +729,151 @@ class TestHybrid:
         assert forces[1, 2] == pytest.approx(_numerical_force(atoms, 1, 2),
                                              abs=1e-4)
 
+    def test_paw_hybrid_forces_are_the_derivative_of_the_energy(self):
+        """Stationary PAW-LCAO gradient for HSE06 against central finite difference."""
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0.05, 0, 0.74]],
+                      cell=[6] * 3)
+        _run(atoms, xc="hse06", grid_spacing=0.35,
+             basis={"name": "PAW-LCAO", "size": "SZ"},
+             project_translation=False)
+        forces = atoms.get_forces()
+        assert forces[1, 2] == pytest.approx(_numerical_force(atoms, 1, 2),
+                                             abs=1e-4)
+
+    def test_periodic_hse06_forces_and_stress_on_crystal(self):
+        """Periodic crystal forces and stress tensor with HSE06 on bulk diamond Silicon."""
+        from ase.build import bulk
+
+        atoms = bulk("Si", "diamond", a=5.43)
+        atoms.calc = Mandacaru(
+            method="dft", xc="hse06", grid_spacing=0.34,
+            kpts={"size": (1, 1, 1), "gamma": True},
+            smearing={"method": "fermi-dirac", "width": 0.01},
+            basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+            trace=False
+        )
+
+        # 1. Hydrostatic pressure P = -dE/dOmega from cell strain response
+        cell0 = atoms.cell.copy()
+        vol0 = atoms.get_volume()
+        eps = 1e-3
+
+        atoms.set_cell(cell0 * (1.0 + eps), scale_atoms=True)
+        e_plus = atoms.get_potential_energy()
+
+        atoms.set_cell(cell0 * (1.0 - eps), scale_atoms=True)
+        e_minus = atoms.get_potential_energy()
+
+        atoms.set_cell(cell0, scale_atoms=True)
+        p_num = - (e_plus - e_minus) / (2 * eps * 3 * vol0)
+        assert abs(p_num) > 1e-3
+
+        # 2. Nuclear forces on high-symmetry diamond site vanish
+        p0 = atoms.positions.copy()
+        atoms.positions[0, 0] += eps
+        e_p = atoms.get_potential_energy()
+        atoms.positions[0, 0] -= 2 * eps
+        e_m = atoms.get_potential_energy()
+        atoms.positions = p0
+        f_num = - (e_p - e_m) / (2 * eps)
+        assert abs(f_num) < 1e-4
+
+        # 3. Verify calculator property integration
+        assert "forces" in atoms.calc.implemented_properties
+        assert "stress" in atoms.calc.implemented_properties
+
+    def test_periodic_hse06_gygi_baldereschi(self):
+        """HSE06 with Gygi-Baldereschi divergence treatment on periodic diamond Si."""
+        from ase.build import bulk
+
+        atoms_gb = bulk("Si", "diamond", a=5.43)
+        atoms_gb.calc = Mandacaru(
+            method="dft",
+            xc="hse06",
+            grid_spacing=0.34,
+            kpts={"size": (2, 2, 2), "gamma": True},
+            basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+            exxdiv_treatment="gygi-baldereschi",
+            trace=False,
+        )
+        e_gb = atoms_gb.get_potential_energy()
+        assert atoms_gb.calc.result.exxdiv_treatment == "gygi-baldereschi"
+        assert atoms_gb.calc.result.snapshot()["exxdiv_treatment"] == "gygi-baldereschi"
+
+        # Verify gygi_baldereschi=True synonym matches exactly
+        atoms_syn = bulk("Si", "diamond", a=5.43)
+        atoms_syn.calc = Mandacaru(
+            method="dft",
+            xc="hse06",
+            grid_spacing=0.34,
+            kpts={"size": (2, 2, 2), "gamma": True},
+            basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+            gygi_baldereschi=True,
+            trace=False,
+        )
+        e_syn = atoms_syn.get_potential_energy()
+        assert e_syn == pytest.approx(e_gb, abs=1e-10)
+
+        # Baseline exxdiv_treatment="none"
+        atoms_none = bulk("Si", "diamond", a=5.43)
+        atoms_none.calc = Mandacaru(
+            method="dft",
+            xc="hse06",
+            grid_spacing=0.34,
+            kpts={"size": (2, 2, 2), "gamma": True},
+            basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+            exxdiv_treatment="none",
+            trace=False,
+        )
+        e_none = atoms_none.get_potential_energy()
+        assert atoms_none.calc.result.exxdiv_treatment == "none"
+        assert atoms_none.calc.result.snapshot()["exxdiv_treatment"] == "none"
+
+        # Gygi-Baldereschi integration increases total energy over point-origin overestimation
+        assert e_gb > e_none
+
+        # Verify band structure with Gygi-Baldereschi
+        bs = atoms_gb.calc.band_structure("GX", npoints=6)
+        assert bs.energies.shape == (1, 6, 8)
+
+        # Rejection of invalid divergence treatment mode
+        atoms_inv = bulk("Si", "diamond", a=5.43)
+        atoms_inv.calc = Mandacaru(
+            method="dft",
+            xc="hse06",
+            grid_spacing=0.34,
+            kpts={"size": (2, 2, 2), "gamma": True},
+            basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+            exxdiv_treatment="invalid_treatment",
+            trace=False,
+        )
+        with pytest.raises((ValueError, RuntimeError), match="exxdiv_treatment"):
+            atoms_inv.get_potential_energy()
+
+    @pytest.mark.slow
+    def test_periodic_hse06_full_stress_tensor(self):
+        """Full 6-component stress tensor for HSE06 bulk diamond Silicon."""
+        from ase.build import bulk
+
+        atoms = bulk("Si", "diamond", a=5.43)
+        atoms.calc = Mandacaru(
+            method="dft", xc="hse06", grid_spacing=0.34,
+            kpts={"size": (1, 1, 1), "gamma": True},
+            smearing={"method": "fermi-dirac", "width": 0.01},
+            basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+            trace=False
+        )
+        stress = atoms.get_stress(voigt=True)
+        assert stress.shape == (6,)
+        # Shear components are zero by cubic symmetry
+        assert np.max(np.abs(stress[3:])) < 1e-4
+        # Hydrostatic diagonal components are equal
+        assert np.ptp(stress[:3]) < 1e-4
+        stress_mat = atoms.get_stress(voigt=False)
+        assert stress_mat.shape == (3, 3)
+        assert np.allclose(stress_mat, stress_mat.T, atol=1e-8)
+        assert np.allclose(atoms.calc.result.stress(voigt=True), stress)
+
 
 def _oh_radical():
     atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
@@ -787,3 +937,103 @@ class TestTheSpinOrbitDatasets:
                                basis={"name": "PAW-LCAO", "size": "SZ"})
         with pytest.raises(NotImplementedError, match="spin-orbit"):
             atoms.get_potential_energy()
+
+
+class TestTkatchenkoSchefflerDispersion:
+    def test_ts_dispersion_energy_and_forces_on_h2(self):
+        """Test that Mandacaru(method='dft', vdw='ts') adds the TS dispersion
+        correction to total energy and forces, reproducing ASE reference."""
+        atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[6] * 3)
+        calc_base = Mandacaru(
+            method="dft",
+            xc="pbe",
+            grid_spacing=0.25,
+            basis={"name": "PAW-LCAO", "size": "SZ"},
+            trace=False,
+        )
+        e_base = calc_base.calculate(atoms, properties=("energy", "forces"))
+        forces_base = calc_base.results["forces"].copy()
+
+        calc_ts = Mandacaru(
+            method="dft",
+            xc="pbe",
+            vdw="ts",
+            grid_spacing=0.25,
+            basis={"name": "PAW-LCAO", "size": "SZ"},
+            trace=False,
+        )
+        calc_ts.calculate(atoms, properties=("energy", "forces"))
+        e_ts = calc_ts.results["energy"]
+        forces_ts = calc_ts.results["forces"]
+
+        disp = calc_ts.result.dispersion
+        assert disp is not None
+        assert "energy_ev" in disp
+        assert "forces_ev_angstrom" in disp
+
+        # Expected TS H2 dispersion energy from ASE: -0.0001269 eV
+        expected_ts_e = -0.00012690742651563235
+        assert disp["energy_ev"] == pytest.approx(expected_ts_e, rel=1e-5)
+        assert e_ts == pytest.approx(e_base.in_units("eV") + expected_ts_e, abs=1e-6)
+
+        # Expected TS force addition
+        expected_f_disp = disp["forces_ev_angstrom"]
+        assert forces_ts == pytest.approx(forces_base + expected_f_disp, abs=1e-6)
+
+
+
+class TestHubbardResultView:
+    """``hubbard_energy`` and ``hubbard`` of a periodic DFT+U result, in its energy unit.
+
+    The numbers against the frozen references are pinned in
+    ``test/migration/test_native_hubbard.py``; here only what the result presents.
+    """
+
+    @pytest.fixture(scope="class")
+    def runs(self):
+        def run(**option):
+            atoms = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[7.0] * 3, pbc=True)
+            atoms.center()
+            atoms.calc = Mandacaru(
+                method="dft", xc="lda", grid_spacing=0.3, trace=False, symmetry=False,
+                basis={"name": "PAW-LCAO", "size": "SZ"},
+                smearing={"method": "fermi-dirac", "width": 0.01}, **option,
+            )
+            atoms.get_potential_energy()
+            return atoms.calc.result
+
+        return run(), run(hubbard_u={"Cu": {"l": "d", "U": 4.0, "J": 1.0}})
+
+    def test_a_run_without_the_correction_has_no_view(self, runs):
+        plain, _ = runs
+        assert plain.hubbard is None and plain.hubbard_energy is None
+
+    def test_the_shell_states_its_definition_and_energy_in_the_result_unit(self, runs):
+        from mandacaru.units import HARTREE_TO_EV
+
+        _, corrected = runs
+        (shell,) = corrected.hubbard
+        assert (shell["symbol"], shell["l"], shell["atom"]) == ("Cu", "d", 0)
+        assert shell["U"] == pytest.approx(4.0, abs=1e-12) and shell["J"] == pytest.approx(1.0, abs=1e-12)
+        # U_eff is Rust's U - J, presented in the same unit as U and J
+        assert shell["U_eff"] == pytest.approx(3.0, abs=1e-12)
+        assert shell["energy"] == pytest.approx(corrected.hubbard_energy, abs=1e-12)
+        assert corrected.energy_unit == "eV"
+        assert corrected.hubbard_energy == pytest.approx(
+            corrected._raw["hubbard_energy"] * HARTREE_TO_EV, abs=1e-12
+        )
+
+    def test_the_occupation_matrix_is_hermitian_and_its_trace_is_reported_per_spin(self, runs):
+        _, corrected = runs
+        (shell,) = corrected.hubbard
+        n = shell["n"]
+        assert n.shape == (1, 5, 5) and np.allclose(n[0], n[0].conj().T, atol=1e-12)
+        assert shell["trace"][0] == pytest.approx(np.linalg.eigvalsh(n[0]).sum(), abs=1e-12)
+        # the PAW partial-wave projection: a shell never exceeds a full occupation
+        assert 0.0 < np.linalg.eigvalsh(n[0]).max() < 1.0 + 1e-9
+
+    def test_the_view_hands_out_copies(self, runs):
+        _, corrected = runs
+        first = corrected.hubbard[0]["n"]
+        first[:] = 0.0
+        assert np.abs(corrected.hubbard[0]["n"]).max() > 0.0

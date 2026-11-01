@@ -5,6 +5,9 @@ pub mod dispersion;
 pub mod elements;
 pub mod hubbard;
 pub mod hubbard_request;
+pub mod hubbard_slater;
+pub mod hubbard_response;
+pub mod hubbard_spinor;
 pub mod mixing;
 pub mod nonlocal;
 pub mod numerov;
@@ -14,6 +17,7 @@ pub mod selection;
 pub mod spectrum;
 pub mod spherical;
 pub mod spin_orbit;
+pub mod ts;
 pub mod xc;
 fn invalid(message: impl Into<String>) -> crate::Error {
     crate::Error::Invalid(message.into())

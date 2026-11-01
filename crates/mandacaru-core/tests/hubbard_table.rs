@@ -7,7 +7,7 @@ use mandacaru_core::paw::onecenter::{Basis, Channel};
 use mandacaru_core::paw::shell;
 use mandacaru_core::periodic::hubbard::{Seed, Spec};
 use mandacaru_core::periodic::hubbard_table::{
-    build, check_loaded, ChannelData, Layout, Projector, Species,
+    build, check_datasets, check_loaded, ChannelData, Dataset, Layout, Projector, Species,
 };
 use mandacaru_core::{Context, Error};
 use std::collections::BTreeMap;
@@ -48,7 +48,11 @@ fn species(shift: f64) -> Species {
             },
         ),
     ]);
-    Species { r, channels }
+    Species {
+        r,
+        channels,
+        source: "/library/lda-sr/Ni.json".into(),
+    }
 }
 
 /// Projector labels of one atom's channel `l` with `waves` radial indices, ordered as the
@@ -365,4 +369,84 @@ fn an_option_agrees_with_a_file_only_when_it_names_the_same_shells_and_energies(
     // A file with no correction disagrees with any option.
     let m = invalid(check_loaded(&option, None).unwrap_err());
     assert!(m.contains("file: no correction") && m.contains("Ni"), "{m}");
+}
+
+/// An element whose reference atom holds no electron in the requested channel (Ba 5d or Au 5f in
+/// `lda-sr`) cannot define the shell: the table and the geometry check alone both refuse, naming
+/// the element, the shell and the dataset set, and neither substitutes a partial wave.
+#[test]
+fn a_channel_with_no_occupied_reference_wave_is_refused_naming_element_shell_and_set() {
+    let ctx = context();
+    let mut empty = species(0.);
+    empty.channels.get_mut(&2).unwrap().occupations = vec![0., 0.];
+    empty.source = "/library/lda-sr/Ba.json".into();
+    let projectors = channel("Ba", 0, 2, 2, "raw");
+    let all = [empty];
+    let layout = Layout {
+        projectors: &projectors,
+        species_of_atom: &[0],
+        species: &all,
+        moments: &[0.],
+        spin_orbit: false,
+    };
+    let ba = request(r#"{"Ba": {"l": "d", "U": 3.0}}"#);
+    let refused = invalid(build(&ctx, &ba, &layout).unwrap_err());
+    for part in [
+        "hubbard_u",
+        "'d' shell of Ba",
+        "lda-sr",
+        "no occupied reference wave",
+    ] {
+        assert!(refused.contains(part), "{part} missing from: {refused}");
+    }
+    let geometry_only =
+        invalid(check_datasets(&ba, false, &[Dataset::of("Ba", &all[0])]).unwrap_err());
+    assert_eq!(geometry_only, refused);
+    // An element whose d channel is occupied passes the same check.
+    check_datasets(
+        &request(r#"{"Ba": {"l": "d", "U": 3.0}}"#),
+        false,
+        &[Dataset::of("Ba", &species(0.))],
+    )
+    .unwrap();
+}
+
+/// The geometry check is the prelude of the build: it needs no projector, so the calculator can
+/// run it at construction. Each refusal names `hubbard_u`.
+#[test]
+fn the_geometry_check_refuses_from_the_elements_and_their_datasets_alone() {
+    let ni = species(0.);
+    let sets = [Dataset::of("Ni", &ni), Dataset::of("O", &ni)];
+    let d = request(r#"{"Ni": {"l": "d", "U": 3.0}}"#);
+    check_datasets(&d, false, &sets).unwrap();
+    assert!(matches!(
+        check_datasets(&d, true, &sets),
+        Err(Error::Unsupported(m)) if m.contains("spin-orbit")
+    ));
+    let absent = invalid(
+        check_datasets(&request(r#"{"Cu": {"l": "d", "U": 1.0}}"#), false, &sets).unwrap_err(),
+    );
+    assert!(
+        absent.contains("hubbard_u names Cu, which is not in the system"),
+        "{absent}"
+    );
+    let wrong = invalid(
+        check_datasets(&request(r#"{"Ni": {"l": "f", "U": 1.0}}"#), false, &sets).unwrap_err(),
+    );
+    assert!(
+        wrong.contains("the Ni dataset has no 'f' channel") && wrong.contains("dataset set lda-sr"),
+        "{wrong}"
+    );
+    // A dataset with no file names no folder.
+    let mut loose = species(0.);
+    loose.source.clear();
+    let m = invalid(
+        check_datasets(
+            &request(r#"{"Ni": {"l": "f", "U": 1.0}}"#),
+            false,
+            &[Dataset::of("Ni", &loose)],
+        )
+        .unwrap_err(),
+    );
+    assert!(m.contains("dataset set unknown"), "{m}");
 }

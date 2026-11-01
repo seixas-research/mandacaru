@@ -173,7 +173,7 @@ impl PyCrystal {
     fn save(&self, py: Python<'_>, path: &str) -> PyResult<()> {
         py.detach(|| self.inner.save(path)).map_err(error)
     }
-    #[pyo3(signature=(*,max_iterations=300,tolerance=1e-7,density_tolerance=1e-5,smearing="fermi-dirac",width_ha=0.003674932217565499,mixing=0.25,history=7))]
+    #[pyo3(signature=(*,max_iterations=300,tolerance=1e-7,density_tolerance=1e-5,smearing="fermi-dirac",width_ha=0.003674932217565499,mixing=0.25,history=7,exxdiv_treatment="none"))]
     fn solve(
         &self,
         py: Python<'_>,
@@ -184,7 +184,10 @@ impl PyCrystal {
         width_ha: f64,
         mixing: f64,
         history: usize,
+        exxdiv_treatment: &str,
     ) -> PyResult<PyPeriodicResult> {
+        let exxdiv = mandacaru_core::periodic::screened_exchange::ExxDivTreatment::parse(exxdiv_treatment)
+            .map_err(error)?;
         let options = Options {
             max_iterations,
             tolerance,
@@ -193,6 +196,7 @@ impl PyCrystal {
             width: width_ha,
             mixing,
             history,
+            exxdiv_treatment: exxdiv,
         };
         let inner = py.detach(|| self.inner.solve(&options)).map_err(error)?;
         Ok(PyPeriodicResult {
@@ -235,6 +239,10 @@ impl PyPeriodicResult {
     #[getter]
     fn n_iterations(&self) -> usize {
         self.inner.history.len()
+    }
+    #[getter]
+    fn exxdiv_treatment(&self) -> &'static str {
+        self.inner.options.exxdiv_treatment.as_str()
     }
     fn projectability<'py>(
         &self,
@@ -316,6 +324,7 @@ impl PyPeriodicResult {
         out.set_item("converged", r.converged)?;
         out.set_item("n_iterations", r.history.len())?;
         out.set_item("precision", c.precision.name())?;
+        out.set_item("exxdiv_treatment", r.options.exxdiv_treatment.as_str())?;
         if let Some(tau) = &r.kinetic_density {
             out.set_item(
                 "kinetic_density",
@@ -518,9 +527,22 @@ impl PyPeriodicResult {
                 let mut eps = vec![];
                 let mut projections = vec![];
                 let n = c.grid.index.points();
+                let is_hybrid = c.functional == "hse06";
                 for s in 0..c.spins {
                     for p in &points {
-                        let (e, _, y) = mandacaru_core::periodic::solver::diagonalize_with(
+                        let exchange = if is_hybrid {
+                            Some(mandacaru_core::periodic::screened_exchange::exchange_operator_at_k(
+                                c,
+                                &self.inner.matrices,
+                                p,
+                                0.11,
+                                s,
+                                self.inner.options.exxdiv_treatment,
+                            )?)
+                        } else {
+                            None
+                        };
+                        let (e, _, y) = mandacaru_core::periodic::solver::diagonalize_with_exchange(
                             c,
                             p,
                             if c.spinor {
@@ -535,6 +557,7 @@ impl PyPeriodicResult {
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
                             // The converged DFT+U operator of this spin channel.
                             self.inner.hubbard.as_ref().map(|h| &h.operators[s]),
+                            exchange.as_ref(),
                         )?;
                         eps.extend(e.iter().map(|e| e + c.reference));
                         for a in 0..c.bands() {

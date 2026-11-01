@@ -363,7 +363,7 @@ def test_periodic_pbe_and_collinear_spin_match_python_on_skew_cells(spin):
                 [[1.2,1.6,1.9],[2.,2.3,2.1]],cell=cell,pbc=True)
     if spin:
         atoms.set_initial_magnetic_moments([1.])
-    opts=dict(method='dft',xc=xc,basis={'name':'PAW-LCAO','size':'SZ','filter_cutoff':200},
+    opts=dict(method='dft',xc=xc,spin=spin,basis={'name':'PAW-LCAO','size':'SZ','filter_cutoff':200},
               grid_spacing=.7,kpts={'size':(2,1,1),'gamma':True},smearing=.3,trace=False)
     py=atoms.copy();py.calc=Mandacaru(**opts)
     expected=py.get_potential_energy()

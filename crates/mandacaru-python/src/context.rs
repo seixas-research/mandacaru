@@ -1173,7 +1173,7 @@ impl PyContext {
         Ok(quantum::PyProblem { inner })
     }
     #[new]
-    #[pyo3(signature = (threads=None, memory_limit_bytes=536870912))]
+    #[pyo3(signature = (threads=None, memory_limit_bytes=34359738368))]
     fn new(threads: Option<usize>, memory_limit_bytes: usize) -> PyResult<Self> {
         Ok(Self {
             inner: Context::new(threads, memory_limit_bytes).map_err(error)?,
@@ -1604,5 +1604,49 @@ impl PyContext {
             })
             .map_err(error)?;
         array(py, &[ms.len(), points], result.as_slice().to_vec())
+    }
+    #[pyo3(signature=(geometry, functional, volume_ratios=None, s_r=None, r_max_angstrom=None, l_decay_angstrom=None))]
+    fn tkatchenko_scheffler<'py>(
+        &self,
+        py: Python<'py>,
+        geometry: &PyGeometry,
+        functional: &str,
+        volume_ratios: Option<PyReadonlyArray1<'py, f64>>,
+        s_r: Option<f64>,
+        r_max_angstrom: Option<f64>,
+        l_decay_angstrom: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let ratios = match volume_ratios {
+            Some(ref v) => Some(copy(&self.inner, v)?),
+            None => None,
+        };
+        let ratios_slice = ratios.as_ref().map(|(vec, _res)| vec.as_slice());
+        let out = py
+            .detach(|| {
+                mandacaru_core::models::ts::tkatchenko_scheffler(
+                    &geometry.inner,
+                    functional,
+                    ratios_slice,
+                    s_r,
+                    r_max_angstrom,
+                    l_decay_angstrom,
+                )
+            })
+            .map_err(error)?;
+        let n = geometry.inner.numbers().len();
+        let dict = PyDict::new(py);
+        dict.set_item("energy_ha", out.energy_ha)?;
+        dict.set_item("energy_ev", out.energy_ev)?;
+        let mut forces_ha_flat = Vec::with_capacity(n * 3);
+        let mut forces_ev_flat = Vec::with_capacity(n * 3);
+        for i in 0..n {
+            for a in 0..3 {
+                forces_ha_flat.push(out.forces_ha_bohr[i][a]);
+                forces_ev_flat.push(out.forces_ev_angstrom[i][a]);
+            }
+        }
+        dict.set_item("forces_ha_bohr", array(py, &[n, 3], forces_ha_flat)?)?;
+        dict.set_item("forces_ev_angstrom", array(py, &[n, 3], forces_ev_flat)?)?;
+        Ok(dict)
     }
 }

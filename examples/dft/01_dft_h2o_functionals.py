@@ -5,7 +5,7 @@ from mandacaru import Mandacaru
 atoms = molecule("H2O")
 atoms.center(vacuum=3.0)
 
-for xc, vdw in (("lda", None), ("pbe", "d4"), ("r2scan", "d4")):
+for xc, vdw in (("lda", None), ("pbe", "rvv10"), ("r2scan", "rvv10")):
     atoms.calc = Mandacaru(method="dft",
                            xc=xc,
                            vdw=vdw,
@@ -13,4 +13,4 @@ for xc, vdw in (("lda", None), ("pbe", "d4"), ("r2scan", "d4")):
                            grid_spacing=0.2)
     energy = atoms.get_potential_energy()
     scf = atoms.calc.result.scf
-    print(f"{xc:7s} E = {energy:.4f} eV  ({scf.n_iterations} SCF iterations)")
+    print(f"{atoms.calc.xc:14s} E = {energy:.4f} eV  ({scf.n_iterations} SCF iterations)")
