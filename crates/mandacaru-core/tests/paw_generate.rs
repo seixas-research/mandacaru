@@ -240,12 +240,6 @@ fn an_impossible_recipe_is_refused_by_name() {
         }
     };
     let oxygen = Recipe::for_dataset("O", "lda", Treatment::Scalar).unwrap();
-    let mut recipe = oxygen.clone();
-    recipe.relativity = Treatment::Dirac;
-    assert!(
-        run(&recipe).contains("Dirac"),
-        "the Dirac chain is not silently run as scalar"
-    );
     let mut recipe = Recipe::for_dataset("B", "lda", Treatment::Scalar).unwrap();
     recipe.rc_factor = 1e4;
     let message = run(&recipe);

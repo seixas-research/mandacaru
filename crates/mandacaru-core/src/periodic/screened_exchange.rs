@@ -147,24 +147,24 @@ impl EnergyParts {
 
 /// Which part of the augmented pair density a build keeps.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Part {
+pub(super) enum Part {
     Pseudo,
     Compensation,
     Both,
 }
 
-type Stage<'a> = Option<(&'a Augmentation<'a>, Part)>;
+pub(super) type Stage<'a> = Option<(&'a Augmentation<'a>, Part)>;
 
 /// Occupied Bloch states at a given q-point for one spin channel or spinor.
-struct OccupiedStates {
-    weight: f64,
+pub(super) struct OccupiedStates {
+    pub(super) weight: f64,
     // For each occupied state: [up] for collinear, [up, down] for spinor
-    wavefunctions: Vec<Vec<Buffer<C64>>>,
+    pub(super) wavefunctions: Vec<Vec<Buffer<C64>>>,
     // For each occupied state: its coefficients over the basis, the square root of the
     // occupation folded in (`components * m`).
-    coefficients: Vec<Vec<C64>>,
+    pub(super) coefficients: Vec<Vec<C64>>,
     // For each occupied state: `<p_j | psi>` per component, filled only for an augmented build.
-    projected: Vec<Vec<C64>>,
+    pub(super) projected: Vec<Vec<C64>>,
 }
 
 /// Extracts occupied Bloch wavefunctions on the real-space grid for a k-point q.
@@ -235,7 +235,7 @@ fn extract_occupied(
 
 /// The occupied states of every k-point of one spin channel, with their projections when the
 /// build is augmented.
-fn occupied_states<M: MatrixSource>(
+pub(super) fn occupied_states<M: MatrixSource>(
     c: &Crystal,
     matrices: &[M],
     spin: usize,
@@ -260,7 +260,7 @@ fn occupied_states<M: MatrixSource>(
 }
 
 /// The Coulomb weight of one (k, q) pair on the grid: `sqrt(w_q dv / N v^omega(Q))`.
-fn kernel_weights(
+pub(super) fn kernel_weights(
     c: &Crystal,
     k_diff: [f64; 3],
     w_q: f64,
@@ -291,6 +291,69 @@ fn kernel_weights(
     Ok(sqrt_kernel_weight)
 }
 
+/// The periodic parts `u_mu(r) = chi_mu(r) exp(-i k.r)` of Bloch sums `samples` (`m * n`,
+/// function-major) at wave vector `k`, written to `out`.
+pub(super) fn periodic_part(c: &Crystal, k: [f64; 3], samples: &[C64], out: &mut [C64]) {
+    let n = c.grid.index.points();
+    for r_idx in 0..n {
+        let r = c.grid.point(r_idx);
+        let phase_arg = -(0..3).map(|a| k[a] * r[a]).sum::<f64>();
+        let phase = C64::from_polar(1.0, phase_arg);
+        for mu in 0..out.len() / n {
+            out[mu * n + r_idx] = samples[mu * n + r_idx] * phase;
+        }
+    }
+}
+
+/// What one occupied state contributes to the pair densities of every basis function of a target
+/// point: the periodic parts `u` of the target basis, the state's wave function `psi` per
+/// spin component and, for an augmented build, its `moments` (`n_basis x channels`) against the
+/// pair `shapes` (`channels x n`).
+pub(super) struct PairInputs<'a> {
+    pub u_k: &'a [C64],
+    pub psi: &'a [Buffer<C64>],
+    pub moments: Option<&'a DMatrix<C64>>,
+    pub shapes: Option<&'a [C64]>,
+    pub kernel: &'a [f64],
+    pub part: Part,
+}
+
+/// `W_i = sqrt(kernel) (FFT[conj(u_i) psi] + sum_a moments[i, a] shapes[a])` for every basis
+/// function `i` of the target (`n_basis * n`, row-major), the one assembly of the exchange
+/// matrix and of its derivatives (the gradient calls it with tangent inputs).
+pub(super) fn weighted_pairs(
+    c: &Crystal,
+    fft: &mut Fft3,
+    pair_buf: &mut Buffer<C64>,
+    input: &PairInputs,
+    out: &mut [C64],
+) -> Result<()> {
+    let (m, n) = (c.m, c.grid.index.points());
+    for i in 0..out.len() / n {
+        let (comp, mu) = (i / m, i % m);
+        if input.part == Part::Compensation {
+            pair_buf.as_mut_slice().fill(C64::default());
+        } else {
+            let u_mu = &input.u_k[mu * n..(mu + 1) * n];
+            let psi_comp = input.psi[comp].as_slice();
+            for r_idx in 0..n {
+                pair_buf.as_mut_slice()[r_idx] = u_mu[r_idx].conj() * psi_comp[r_idx];
+            }
+            fft.transform(pair_buf.as_mut_slice(), false)?;
+        }
+        if let (Some(moments), Some(shapes)) = (input.moments, input.shapes) {
+            if input.part != Part::Pseudo {
+                let row: Vec<C64> = moments.row(i).iter().copied().collect();
+                add_compensation(pair_buf.as_mut_slice(), &row, shapes);
+            }
+        }
+        for at in 0..n {
+            out[i * n + at] = pair_buf.as_slice()[at] * input.kernel[at];
+        }
+    }
+    Ok(())
+}
+
 /// `K(k)` of one target point against the occupied states of every point of the mesh (one spin
 /// channel): `K_ij = sum_{q, n} sum_Q v(Q) rho_{i n}(Q) rho_{j n}(Q)^*`.
 #[allow(clippy::too_many_arguments)]
@@ -310,17 +373,10 @@ fn target_matrix(
     let part = stage.map_or(Part::Pseudo, |(_, part)| part);
 
     // Periodic basis functions u_{mu, k}(r) = psi_{mu, k}(r) * exp(-i k . r)
-    let k_samples = target_point.psi.read(&c.context)?;
     let mut u_k = c.context.allocate::<C64>(m * n)?;
     if part != Part::Compensation {
-        for r_idx in 0..n {
-            let r = c.grid.point(r_idx);
-            let phase_arg = -(0..3).map(|a| target_point.k[a] * r[a]).sum::<f64>();
-            let phase = C64::from_polar(1.0, phase_arg);
-            for mu in 0..m {
-                u_k.as_mut_slice()[mu * n + r_idx] = k_samples[mu * n + r_idx] * phase;
-            }
-        }
+        let k_samples = target_point.psi.read(&c.context)?;
+        periodic_part(c, target_point.k, &k_samples, u_k.as_mut_slice());
     }
 
     let mut k_mat = Matrix::zeros(n_basis, n_basis);
@@ -350,30 +406,15 @@ fn target_matrix(
                 augmentation.moments(c, target_point, &occ_q.projected[state])
             });
 
-            for i in 0..n_basis {
-                let comp = i / m;
-                let mu = i % m;
-                if part == Part::Compensation {
-                    pair_buf.as_mut_slice().fill(C64::default());
-                } else {
-                    let u_mu = &u_k.as_slice()[mu * n..(mu + 1) * n];
-                    let psi_comp = psi_j[comp].as_slice();
-                    for r_idx in 0..n {
-                        pair_buf.as_mut_slice()[r_idx] = u_mu[r_idx].conj() * psi_comp[r_idx];
-                    }
-                    fft.transform(pair_buf.as_mut_slice(), false)?;
-                }
-                if let (Some(moments), Some(shapes)) = (&moments, &shapes) {
-                    if part != Part::Pseudo {
-                        let row: Vec<C64> = moments.row(i).iter().copied().collect();
-                        add_compensation(pair_buf.as_mut_slice(), &row, shapes.as_slice());
-                    }
-                }
-                for at in 0..n {
-                    transformed_pairs.as_mut_slice()[i * n + at] =
-                        pair_buf.as_slice()[at] * sqrt_kernel_weight.as_slice()[at];
-                }
-            }
+            let input = PairInputs {
+                u_k: u_k.as_slice(),
+                psi: psi_j,
+                moments: moments.as_ref(),
+                shapes: shapes.as_ref().map(|s| s.as_slice()),
+                kernel: sqrt_kernel_weight.as_slice(),
+                part,
+            };
+            weighted_pairs(c, fft, &mut pair_buf, &input, transformed_pairs.as_mut_slice())?;
 
             // Accumulate into K: K_{i, j} += sum_{at} W_i[at] * W_j[at]^*
             for i in 0..n_basis {
@@ -447,7 +488,7 @@ fn build<M: MatrixSource>(
 
 /// The one-center model's terms for the density `matrices`: the projected density
 /// `P_s = sum_k w_k C(k)^+ D_s(k) C(k)` (the four spin blocks for a spinor) handed to the model.
-fn one_center<M: MatrixSource>(
+pub(super) fn one_center<M: MatrixSource>(
     c: &Crystal,
     matrices: &[M],
     model: &dyn OneCenter,
@@ -482,7 +523,7 @@ fn one_center<M: MatrixSource>(
 }
 
 /// `C(k) O C(k)^+`, with `O` of a spin channel (`p x p`) or of a spinor (`2p x 2p`, block by block).
-fn lift(c: &Crystal, point: &KPoint, operator: &Matrix) -> Matrix {
+pub(super) fn lift(c: &Crystal, point: &KPoint, operator: &Matrix) -> Matrix {
     if !c.spinor {
         return &point.projections * operator * point.projections.adjoint();
     }

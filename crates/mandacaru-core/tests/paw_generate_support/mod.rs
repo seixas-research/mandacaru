@@ -10,7 +10,7 @@ use crate::paw_assemble_support::{directory, Frozen, Npz};
 use compare::nan_max;
 use mandacaru_core::models::relativity::Treatment;
 use mandacaru_core::paw::generate::recipe::Recipe;
-use mandacaru_core::paw::record::PawDataset;
+use mandacaru_core::paw::record::{PawDataset, SpinOrbit};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -51,11 +51,15 @@ pub fn recipe_of(f: &Frozen) -> Recipe {
         doc["element"].as_str().unwrap(),
     );
     let functional = doc["options"]["xc"].as_str().unwrap();
-    assert_eq!(doc["options"]["relativity"], "scalar", "{set} {element}");
+    let relativity = match doc["options"]["relativity"].as_str() {
+        Some("scalar") => Treatment::Scalar,
+        Some("dirac") => Treatment::Dirac,
+        other => panic!("{set} {element}: relativity {other:?} is not in the freeze"),
+    };
     let mut recipe = if set == "upaw" {
-        Recipe::upaw(element, functional, Treatment::Scalar)
+        Recipe::upaw(element, functional, relativity)
     } else {
-        Recipe::for_dataset(element, functional, Treatment::Scalar)
+        Recipe::for_dataset(element, functional, relativity)
     }
     .unwrap();
     let search = &doc["ghost_free"];
@@ -134,6 +138,30 @@ pub fn arrays(dataset: &PawDataset) -> BTreeMap<String, Vec<f64>> {
             ("residual_kinetic", &channel.residual_kinetic),
         ] {
             out.insert(format!("{name}_l{l}"), flat(array));
+        }
+    }
+    out.extend(spin_orbit_arrays(&dataset.spin_orbit));
+    out
+}
+
+/// The spin-orbit block of a record under the freeze's names.
+pub fn spin_orbit_arrays(spin_orbit: &BTreeMap<u32, SpinOrbit>) -> BTreeMap<String, Vec<f64>> {
+    let mut out = BTreeMap::new();
+    for (l, so) in spin_orbit {
+        for (i, p) in so.projectors.iter().enumerate() {
+            out.insert(format!("so_projector_l{l}_{i}"), p.as_slice().to_vec());
+        }
+        for (name, array) in [
+            ("average", &so.average),
+            ("average_screened", &so.average_screened),
+            ("coupling", &so.coupling),
+            ("coupling_screened", &so.coupling_screened),
+            ("overlap_average", &so.overlap_average),
+            ("overlap_coupling", &so.overlap_coupling),
+            ("level_errors", &so.level_errors),
+            ("reference_energies", &so.reference_energies),
+        ] {
+            out.insert(format!("so_{name}_l{l}"), flat(array));
         }
     }
     out

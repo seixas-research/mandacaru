@@ -40,11 +40,25 @@ pub const CUTOFF_WARN_RADIUS: f64 = 3.3;
 /// A configuration as the atom solver takes it.
 type Occupations = Vec<(usize, usize, f64)>;
 
-/// The equation the all-electron waves of `recipe` obey.
+/// The equation the all-electron waves of `recipe` obey. A Dirac dataset is the
+/// scalar-relativistic construction plus the j-resolved spin-orbit term, so its channel waves
+/// obey the scalar (j-averaged) equation; the two `j` branches have their own, [`branch_equation`].
 pub fn equation(recipe: &Recipe) -> Equation {
     Equation {
-        treatment: recipe.relativity,
+        treatment: match recipe.relativity {
+            Treatment::Dirac => Treatment::Scalar,
+            other => other,
+        },
         kappa: None,
+        z: recipe.atomic_number as f64,
+    }
+}
+
+/// The Dirac equation of the branch `kappa` of a channel.
+pub fn branch_equation(recipe: &Recipe, kappa: i32) -> Equation {
+    Equation {
+        treatment: Treatment::Dirac,
+        kappa: Some(kappa),
         z: recipe.atomic_number as f64,
     }
 }
@@ -216,10 +230,50 @@ pub fn reference_waves(
     extra_l: usize,
     extra_energy: Option<f64>,
 ) -> Result<(BTreeMap<usize, ChannelReference>, Vec<String>)> {
+    let eq = equation(recipe);
+    reference_waves_with(
+        ctx,
+        recipe,
+        atom,
+        shells,
+        table,
+        extra_l,
+        extra_energy,
+        &|_| eq,
+    )
+}
+
+/// The level the Numerov shoot of the bound state `(n, l)` starts from: the atom's own
+/// eigenvalue, or for a Dirac branch the level of the `(n, l, kappa)` state.
+fn bound_guess(atom: &Atom, at: usize, n: usize, l: usize, eq: &Equation) -> f64 {
+    if eq.treatment == Treatment::Dirac {
+        if let Some(j) = atom
+            .j_states
+            .iter()
+            .find(|j| (j.n, j.l) == (n, l) && Some(j.kappa) == eq.kappa)
+        {
+            return j.eigenvalue;
+        }
+    }
+    atom.eigenvalues[at]
+}
+
+/// [`reference_waves`] with the radial equation of each channel chosen by `equations(l)`: the
+/// scalar one for the channels of the dataset, a Dirac branch for the spin-orbit construction.
+#[allow(clippy::too_many_arguments)]
+pub fn reference_waves_with(
+    ctx: &Context,
+    recipe: &Recipe,
+    atom: &Atom,
+    shells: &Shells,
+    table: &BTreeMap<usize, f64>,
+    extra_l: usize,
+    extra_energy: Option<f64>,
+    equations: &dyn Fn(usize) -> Equation,
+) -> Result<(BTreeMap<usize, ChannelReference>, Vec<String>)> {
     let r = atom.r.as_slice();
     let v_ae = atom.effective.as_slice();
     let n_points = r.len();
-    let eq = equation(recipe);
     let mut notes = Vec::new();
     let mut per_l: BTreeMap<usize, Vec<(BoundState, Vec<f64>)>> = BTreeMap::new();
     let mut ordered = shells.valence.clone();
@@ -230,12 +284,13 @@ pub fn reference_waves(
             .iter()
             .position(|s| (s.0, s.1) == (n, l))
             .ok_or_else(|| invalid("a valence subshell is missing from the reference atom"))?;
+        let eq = equations(l);
         let (wave, energy) = bound_reference(
             ctx,
             r,
             v_ae,
             l,
-            atom.eigenvalues[at],
+            bound_guess(atom, at, n, l, &eq),
             &eq,
             Some(BOUND_WINDOW),
         )?;
@@ -287,7 +342,15 @@ pub fn reference_waves(
                 Some(&energy) => energy,
                 None => energies[0] + recipe.energy_offset,
             };
-            waves.extend(scattering_reference(ctx, r, v_ae, l, second, &eq, radius)?);
+            waves.extend(scattering_reference(
+                ctx,
+                r,
+                v_ae,
+                l,
+                second,
+                &equations(l),
+                radius,
+            )?);
             energies.push(second);
         }
         channels.insert(
@@ -320,7 +383,15 @@ pub fn reference_waves(
             let energies = vec![anchor, anchor + recipe.energy_offset];
             let mut waves = Vec::with_capacity(2 * n_points);
             for &energy in &energies {
-                waves.extend(scattering_reference(ctx, r, v_ae, l, energy, &eq, widest)?);
+                waves.extend(scattering_reference(
+                    ctx,
+                    r,
+                    v_ae,
+                    l,
+                    energy,
+                    &equations(l),
+                    widest,
+                )?);
             }
             channels.insert(
                 l,

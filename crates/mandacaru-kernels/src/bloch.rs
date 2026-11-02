@@ -241,6 +241,11 @@ pub fn gradient_value(
     }
 }
 
+/// The values (`derivative < 0`) or the Cartesian derivative along `derivative` of the image of
+/// the shell at `center + shift` at the points `j0..j0 + n`. With `weight` in `0..=2` (and a
+/// derivative) every value is multiplied by the component `weight` of the full argument
+/// `y = r_j - center - shift` of that image, `(d_a phi)(y) y_b`: the weight belongs inside the
+/// image sum, so it cannot be formed from the summed derivatives.
 #[inline(always)]
 fn image_values(
     x: &[f64],
@@ -252,6 +257,7 @@ fn image_values(
     shift: &[f64],
     support2: f64,
     derivative: i32,
+    weight: i32,
     l: i32,
     ms: &[i32],
     breaks: &[f64],
@@ -298,6 +304,9 @@ fn image_values(
                 if m_val < 0 {
                     let sign = if (order & 1) != 0 { -1.0 } else { 1.0 };
                     g = Complex64::new(sign * g.re, -sign * g.im);
+                }
+                if weight >= 0 {
+                    g = g.mul_real([dx, dy, dz][weight as usize]);
                 }
                 values[i * BLOCK + jj] = g;
             }
@@ -743,6 +752,61 @@ pub unsafe fn bloch_shell(
     m_dim: i64,
     out: *mut Complex64,
 ) {
+    bloch_shell_weighted(
+        x,
+        y,
+        z,
+        npts,
+        center,
+        translations,
+        n_images,
+        phases,
+        nk,
+        support,
+        breaks,
+        coeffs,
+        nb,
+        rc,
+        l,
+        derivative,
+        -1,
+        ms,
+        rows,
+        nm,
+        m_dim,
+        out,
+    );
+}
+
+/// [`bloch_shell`] with one more by-value argument, `weight`: `-1` is the plain Bloch sum, `0..=2`
+/// (valid only with `derivative` in `0..=2`) multiplies the derivative of every image by the
+/// component `weight` of that image's own argument `r - center - R`, so the output is the strain
+/// tangent `sum_R e^{i k.R} (d_derivative phi)(y) y_weight`. The pointer contract is that of
+/// [`bloch_shell`]; `weight` is not read through a pointer.
+pub unsafe fn bloch_shell_weighted(
+    x: *const f64,
+    y: *const f64,
+    z: *const f64,
+    npts: i64,
+    center: *const f64,
+    translations: *const f64,
+    n_images: i32,
+    phases: *const Complex64,
+    nk: i32,
+    support: f64,
+    breaks: *const f64,
+    coeffs: *const f64,
+    nb: i32,
+    rc: f64,
+    l: i32,
+    derivative: i32,
+    weight: i32,
+    ms: *const i32,
+    rows: *const i64,
+    nm: i32,
+    m_dim: i64,
+    out: *mut Complex64,
+) {
     let support2 = support * support;
     let npts_usize = npts as usize;
     let nb_usize = nb as usize;
@@ -815,6 +879,7 @@ pub unsafe fn bloch_shell(
                             shift,
                             support2,
                             derivative,
+                            weight,
                             l,
                             ms_slice,
                             breaks_slice,
@@ -943,6 +1008,7 @@ pub unsafe fn bloch_project(
                             shift,
                             support2,
                             derivative,
+                            -1,
                             l,
                             ms_slice,
                             breaks_slice,

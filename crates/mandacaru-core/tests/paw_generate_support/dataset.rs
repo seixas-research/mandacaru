@@ -15,6 +15,19 @@ pub fn compare_dataset(
     generated: &Generated,
     scheme: Scheme,
 ) -> Comparison {
+    compare_dataset_with(f, data, generated, scheme, GATE)
+}
+
+/// [`compare_dataset`] with the gate of `v_local` where the density is above the tail set by the
+/// caller: 1e-12 of the maximum for the datasets A3 gated, 100 x the 1-ulp floor of the Python
+/// PBE potential for a density whose floor is larger (`paw_spin_orbit.rs`).
+pub fn compare_dataset_with(
+    f: &Frozen,
+    data: &Decimated,
+    generated: &Generated,
+    scheme: Scheme,
+    v_local_gate: f64,
+) -> Comparison {
     let mut out = Comparison::default();
     let dataset = &generated.dataset;
     let ours = arrays(dataset);
@@ -43,10 +56,11 @@ pub fn compare_dataset(
                 .enumerate()
                 .map(|(k, b)| {
                     let at = (k + 1) * frozen.stride - 1;
-                    (mine[at] - b).abs() / tail_allowance(scheme, pbe, rho[at], frozen.scale)
+                    (mine[at] - b).abs()
+                        / tail_allowance(scheme, pbe, rho[at], frozen.scale, v_local_gate)
                 })
                 .fold(0., nan_max);
-            out.push(format!("array.{key}"), worst * GATE, GATE);
+            out.push(format!("array.{key}"), worst * v_local_gate, v_local_gate);
         } else {
             out.push(
                 format!("array.{key}"),

@@ -116,7 +116,14 @@ fn the_engine_force_is_the_derivative_of_the_converged_energy_for_every_scenario
         for (name, term) in breakdown.terms() {
             let size = largest(term);
             eprintln!("  {name}: {size:e}");
-            assert!(size > 1e-4, "scenario {index}: {name} is {size:e}");
+            if name.starts_with("spin_orbit") || name.starts_with("exchange") {
+                // A scalar semilocal request has neither a spin-orbit term
+                // (periodic_gradient_spin_orbit_hook.rs) nor an exchange term
+                // (periodic_gradient_hybrid.rs).
+                assert_eq!(size, 0., "scenario {index}: {name}");
+            } else {
+                assert!(size > 1e-4, "scenario {index}: {name} is {size:e}");
+            }
         }
     }
 }
@@ -418,7 +425,13 @@ fn unsupported_requests_raise() {
             "rvv10",
             Box::new(|d| d.layout.request.functional = "pbe+rvv10".into()),
         ),
-        ("spinor", Box::new(|d| d.layout.request.spinor = true)),
+        (
+            "spinor hybrid",
+            Box::new(|d| {
+                d.layout.request.spinor = true;
+                d.layout.request.functional = "hse06".into();
+            }),
+        ),
         (
             "float32",
             Box::new(|d| d.layout.request.single_precision = true),
@@ -428,7 +441,17 @@ fn unsupported_requests_raise() {
         let mut d = ToyDerivatives::new(&s.model);
         change(&mut d);
         match gradient(&d, &s.solution.state, None) {
-            Err(Error::Unsupported(message)) => eprintln!("{name}: {message}"),
+            Err(Error::Unsupported(message)) => {
+                eprintln!("{name}: {message}");
+                // A hybrid request reaches the provider, which has no exchange to differentiate:
+                // it raises (never a zero term).
+                if name == "hse06" {
+                    assert!(message.contains("screened exact exchange"), "{message}");
+                }
+                if name == "spinor hybrid" {
+                    assert!(message.contains("spinor hybrid"), "{message}");
+                }
+            }
             other => panic!(
                 "{name}: expected Unsupported, got {:?}",
                 other.map(|b| b.overlap)

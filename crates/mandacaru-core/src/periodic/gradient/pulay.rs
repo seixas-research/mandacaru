@@ -7,7 +7,7 @@
 //! `H_C = D_ion + sum_a m_a B_a (+ O_s)`, the contribution is `2 Re sum G_C[mu,p] Z[p,mu]`,
 //! added to the owner of `mu` (the rows) and subtracted from the owner of `p` (the columns).
 //! The +U operator joins `D_ion` here and nowhere else.
-use super::{invalid, Derivatives, Frozen, Matrix, Term};
+use super::{invalid, spin_orbit::Gradient, Derivatives, Frozen, Matrix, Term};
 use crate::{quantum::C64, Result};
 
 /// `dE/dtau` per atom, matrix terms only.
@@ -18,6 +18,8 @@ pub struct Pulay {
     pub short_range: Vec<[f64; 3]>,
     pub rows: Vec<[f64; 3]>,
     pub columns: Vec<[f64; 3]>,
+    /// The spin-orbit union-projector term (spinor requests; zero otherwise).
+    pub spin_orbit: Gradient,
 }
 
 impl Pulay {
@@ -30,6 +32,7 @@ impl Pulay {
             short_range: zero(),
             rows: zero(),
             columns: zero(),
+            spin_orbit: Gradient::new(atoms),
         }
     }
 
@@ -121,6 +124,29 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
                         out.columns[column][axis] -= t;
                     }
                 }
+            }
+        }
+        if l.request.spinor {
+            if l.spins != 1 || l.degeneracy != 1.0 {
+                return Err(invalid(
+                    "crystal gradient: a spinor layout has one spin channel of degeneracy 1",
+                ));
+            }
+            // The spin-orbit matrix moves with the atoms only through its own projections: no
+            // `dS`, no hat, no `W`. `D` is the spinor density in the provider's frame.
+            let so = d.spin_orbit()?;
+            let (c_so, g_so) = (
+                d.spin_orbit_projection(k)?,
+                d.spin_orbit_projection_gradient(k)?,
+            );
+            for bands in frozen.state.bands.iter().map(|s| &s[k]) {
+                so.add_k(
+                    &mut out.spin_orbit,
+                    l.degeneracy * l.weights[k],
+                    &c_so,
+                    &g_so,
+                    &bands.density(),
+                )?;
             }
         }
     }

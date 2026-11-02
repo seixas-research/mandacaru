@@ -567,3 +567,67 @@ pub fn bloch_project(
     c64_finite(output.as_slice(), "Bloch projections")?;
     Ok(output)
 }
+
+/// [`bloch_shell`] with the derivative of every image multiplied by one component of that image's
+/// own argument: adds `sum_R phase(k, R) (d_axis phi_m)(y) y_weight`, `y = r - center - R`, to
+/// `out[(k * m_dim + rows[m]) * points + j]`, with `axis = call.derivative` in `0..=2` and
+/// `weight` in `0..=2`. This is the strain tangent `d chi / d eps_{axis, weight}` of a Bloch sum
+/// for nodes and image centers that move with the cell; the weight sits inside the image sum, so
+/// it cannot be built from the summed derivatives. The checks are those of [`bloch_shell`] plus
+/// the two bounds; `out` accumulates.
+pub fn bloch_shell_weighted(
+    ctx: &Context,
+    call: &ShellImages<'_>,
+    weight: usize,
+    rows: &[i64],
+    m_dim: usize,
+    out: &mut [C64],
+) -> Result<()> {
+    if weight > 2 || !(0..=2).contains(&call.derivative) {
+        return Err(Error::Invalid(
+            "a weighted Bloch sum needs a derivative axis and a weight component in 0..=2".into(),
+        ));
+    }
+    let (nk, points) = call.check()?;
+    length(rows.len(), call.ms.len(), "shell rows")?;
+    let distinct: std::collections::BTreeSet<_> = rows.iter().collect();
+    if distinct.len() != rows.len() || rows.iter().any(|&r| r < 0 || r as usize >= m_dim) {
+        return Err(Error::Invalid(
+            "shell rows must be distinct and inside the destination".into(),
+        ));
+    }
+    length(out.len(), product(&[nk, m_dim, points])?, "Bloch sums")?;
+    let spline = call.spline;
+    let m_dim_i = i64::try_from(m_dim).map_err(|_| Error::Overflow)?;
+    let points_i = i64::try_from(points).map_err(|_| Error::Overflow)?;
+    // SAFETY: the same checks as `bloch_shell` (coordinates, images, phases, spline, angular
+    // indices, distinct rows inside `m_dim`, `out` of `nk * m_dim * points` entries that cannot
+    // alias the inputs); the weight is a bounded by-value scalar, read through no pointer.
+    ctx.run(|| unsafe {
+        bloch::bloch_shell_weighted(
+            call.xyz[0].as_ptr(),
+            call.xyz[1].as_ptr(),
+            call.xyz[2].as_ptr(),
+            points_i,
+            call.center.as_ptr(),
+            call.images.as_ptr().cast::<f64>(),
+            call.images.len() as i32,
+            call.phases.as_ptr().cast::<Complex64>(),
+            nk as i32,
+            call.support,
+            spline.breaks.as_ptr(),
+            spline.coefficients.as_ptr(),
+            spline.breaks.len() as i32,
+            spline.cutoff,
+            spline.l,
+            call.derivative,
+            weight as i32,
+            call.ms.as_ptr(),
+            rows.as_ptr(),
+            call.ms.len() as i32,
+            m_dim_i,
+            out.as_mut_ptr().cast::<Complex64>(),
+        )
+    });
+    c64_finite(out, "Bloch sums")
+}

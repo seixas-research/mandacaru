@@ -25,23 +25,72 @@
 //! +U operator are those of the OUTPUT density, and `W` takes eigenvalues with the reference
 //! removed.
 //!
+//! # Hybrid functionals (HX-W)
+//!
+//! The exact exchange `E_x[D; R] = -(a/2) sum_k w_k tr(D_k K_k[D])` is quadratic in the density
+//! matrix, so at fixed `D` its derivative is the explicit terms of [`super::hybrid_gradient`]
+//! (the phase of the compensation shapes, the basis functions of the grid pair, bra and ket, and
+//! the response `Z` of the compensation moments and of the one-center terms to the projections).
+//! The provider returns them through [`Derivatives::exchange_gradient`]; [`contract`] adds them as
+//! four terms of the [`Breakdown`], the response `Z` chained to the atoms with the same ownership
+//! identity as the projection term (its weights are inside `Z`, so it never joins the engine's
+//! own `z`). The Hamiltonian the bands are diagonalized with is `H_semilocal - a K[D_out]`: `K` is
+//! Hamiltonian-like, so `W` takes the eigenvalues of THAT `H` and the matrix terms above are the
+//! semilocal ones. A provider that does not implement the hook raises; it never returns a zero.
+//!
+//! # Spin polarization (F1)
+//!
+//! A collinear unrestricted crystal (`Layout::spins = 2`, degeneracy 1) is the same contraction
+//! with one density matrix `D_s` and one energy-weighted `W_s` per spin channel, a common Fermi
+//! level and the Mermin occupations of the whole mesh. What is spin-resolved: the local-potential
+//! term (`D_s` against the potential `v_ee + v_xc,s` of ITS spin: [`Derivatives::cross`] takes the
+//! spin), the projection terms (`H_C C^+ D_s - q C^+ W_s`, summed over spins). What is spin-summed:
+//! the compensation moments `q` and the hats, the ions, the dense lattice sums (the electrostatic
+//! energy sees the total charge). The partial core is split in halves between the spin densities
+//! (`rho_s + core/2` in the functional), so `dE_xc/d core = (v_up + v_dn) / 2`: the provider keeps
+//! that ONE spin-averaged array, not two, because nothing else reads the spin resolution of `v_xc`
+//! in the explicit terms (a core differentiated against `v_up` alone is wrong by the half
+//! difference of the two potentials, and no sum rule catches it). For a hybrid the exact exchange
+//! acts within a spin, `K_s[D_s]`, and the spheres' spin-scaling remainder enters through the
+//! one-center operators of each spin, which depend on both projected densities.
+//!
 //! # Conventions
 //!
 //! Atomic units; derivatives and the [`Breakdown`] are `dE/dtau` (the force is the negative);
-//! every contraction is per spin channel times `Layout::degeneracy`. Only the collinear
-//! scalar-relativistic LDA/PBE case with float64 data is supported; [`gradient`] raises
-//! `Unsupported` for hybrid, meta-GGA, rVV10, spinor and float32 requests. Derivative data are
-//! requested one k-point at a time and dropped after use.
+//! every contraction is per spin channel times `Layout::degeneracy`. The collinear
+//! scalar-relativistic LDA/PBE/HSE06 case (restricted or collinear spin-polarized) and the spinor (spin-orbit) LDA/PBE case with float64
+//! data are supported; [`gradient`] raises `Unsupported` for meta-GGA, rVV10, a spinor hybrid and
+//! float32 requests. Derivative data are requested one k-point at a time and dropped after use.
+//!
+//! # The spinor frame (the contract of a spinor provider)
+//!
+//! A spinor request is presented in the DOUBLED frame ([`spinor`]): `Layout::m` is `2M` (spin
+//! major, the `alpha` block first), `row_owner` repeats the owners per spin, the bands carry `2M`
+//! rows, and the scalar operators and projections are `I2 x (.)`, so the scalar terms contract
+//! `D_alpha,alpha + D_beta,beta` and `W_alpha,alpha + W_beta,beta` with no change of the
+//! algebra. The local potential is the Pauli sum `sum_a sigma_a x G^a` of the four channel
+//! derivatives (one channel for a time-reversal crystal). The spin-orbit matrix is not of that
+//! form: its projections stay in the scalar frame (`M x P_so`), reached through
+//! [`Derivatives::spin_orbit_projection`], and [`SpinOrbit::add_k`] contracts them with the
+//! full `2M x 2M` density of the frozen state, once per k-point, in [`pulay::contract`]
+//! (`Breakdown::spin_orbit_rows` / `spin_orbit_columns`). A provider without spin-orbit data
+//! raises `Unsupported`, never a zero term. [`gradient`] differentiates the LDA/PBE spinor;
+//! a spinor hybrid (stage 3), DFT+U, a meta-GGA and float32 raise with their cause.
 pub mod core;
 pub mod electrostatic;
+pub mod exchange;
 pub mod hellmann_feynman;
 pub mod pulay;
+pub mod scf;
+pub mod spin_orbit;
+pub mod spinor;
 pub mod state;
 
-use super::invalid;
+use super::{hybrid_gradient, invalid};
 use crate::{models, quantum::C64, Error, Result};
 use nalgebra::DMatrix;
 
+pub use spin_orbit::SpinOrbit;
 pub use state::{freeze, Bands, Frozen, State};
 
 pub type Matrix = DMatrix<C64>;
@@ -166,6 +215,37 @@ pub trait Derivatives {
     fn constant(&self, atom: usize, axis: usize) -> Result<f64>;
     /// E5: `<v_xc | d rho_core>`.
     fn core_overlap(&self, fields: &Self::Fields, atom: usize, axis: usize) -> Result<f64>;
+
+    /// The spin-orbit operator `B` of a spinor crystal with the owners of the basis functions and of
+    /// the union projectors ([`SpinOrbit`]). A provider without spin-orbit data raises
+    /// `Unsupported` (never an empty operator).
+    fn spin_orbit(&self) -> Result<&SpinOrbit> {
+        Err(no_spin_orbit())
+    }
+    /// `C^SO_k` (`m x p_so`): the projections of the Bloch sums on the spin-orbit union
+    /// projectors, in the scalar frame (`m` basis functions, not `2m`).
+    fn spin_orbit_projection(&self, _k: usize) -> Result<Matrix> {
+        Err(no_spin_orbit())
+    }
+    /// `G^SO_k`: the derivative of `C^SO_k` with respect to the center of the ROW function.
+    fn spin_orbit_projection_gradient(&self, _k: usize) -> Result<[Matrix; 3]> {
+        Err(no_spin_orbit())
+    }
+
+    /// The explicit terms of the exact-exchange derivative at the FIXED occupied states of
+    /// `state` ([`hybrid_gradient::explicit`] with the basis functions moving): required, with
+    /// [`Gradient::functions`](hybrid_gradient::Gradient::functions) present, for a hybrid
+    /// request. A provider without the screened exchange raises `Unsupported` (never an empty
+    /// term).
+    fn exchange_gradient(&self, _state: &State) -> Result<hybrid_gradient::Gradient> {
+        Err(Error::Unsupported(
+            "this geometry provider carries no screened exact exchange".into(),
+        ))
+    }
+}
+
+fn no_spin_orbit() -> Error {
+    Error::Unsupported("this geometry provider carries no spin-orbit projectors".into())
 }
 
 /// The +U hook: the operator `O_s = W V W^T` (`p x p`, one per spin channel, the complete
@@ -190,10 +270,22 @@ pub struct Breakdown {
     pub dense: Vec<[f64; 3]>,
     pub constants: Vec<[f64; 3]>,
     pub core: Vec<[f64; 3]>,
+    /// The spin-orbit union-projector term, the basis functions moving (spinor requests only).
+    pub spin_orbit_rows: Vec<[f64; 3]>,
+    /// The same, the union projectors moving.
+    pub spin_orbit_columns: Vec<[f64; 3]>,
+    /// Hybrids only: the phase of the compensation shapes of the exact exchange.
+    pub exchange_phase: Vec<[f64; 3]>,
+    /// The basis functions of the exchange pair density moving, bra and ket slots together.
+    pub exchange_functions: Vec<[f64; 3]>,
+    /// The projection response of the exact exchange, the basis functions moving.
+    pub exchange_rows: Vec<[f64; 3]>,
+    /// The same, the projectors moving.
+    pub exchange_columns: Vec<[f64; 3]>,
 }
 
 impl Breakdown {
-    pub fn terms(&self) -> [(&'static str, &Vec<[f64; 3]>); 11] {
+    pub fn terms(&self) -> [(&'static str, &Vec<[f64; 3]>); 17] {
         [
             ("overlap", &self.overlap),
             ("kinetic", &self.kinetic),
@@ -206,6 +298,12 @@ impl Breakdown {
             ("dense", &self.dense),
             ("constants", &self.constants),
             ("core", &self.core),
+            ("spin_orbit_rows", &self.spin_orbit_rows),
+            ("spin_orbit_columns", &self.spin_orbit_columns),
+            ("exchange_phase", &self.exchange_phase),
+            ("exchange_functions", &self.exchange_functions),
+            ("exchange_rows", &self.exchange_rows),
+            ("exchange_columns", &self.exchange_columns),
         ]
     }
 
@@ -228,22 +326,26 @@ impl Breakdown {
     }
 }
 
-/// Raises for everything the first engine does not differentiate.
+/// Whether the functional of `request` carries screened exact exchange.
+fn is_hybrid(request: &Request) -> Result<bool> {
+    Ok(models::functional(&request.functional)?
+        .screened_exchange
+        .is_some())
+}
+
+/// Raises for everything the engine does not differentiate.
 pub fn check_request(request: &Request) -> Result<()> {
     let refuse = |what: &str| {
         Err(Error::Unsupported(format!(
             "crystal forces are not available for {what}"
         )))
     };
-    if request.spinor {
-        return refuse("a spinor calculation");
+    let definition = models::functional(&request.functional)?;
+    if request.spinor && is_hybrid(request)? {
+        return refuse("a spinor hybrid (HSE06 with spin-orbit coupling)");
     }
     if request.single_precision {
         return refuse("float32 data");
-    }
-    let definition = models::functional(&request.functional)?;
-    if definition.screened_exchange.is_some() {
-        return refuse(&format!("the hybrid functional {}", definition.name));
     }
     if definition.requires_tau {
         return refuse(&format!("the meta-GGA {}", definition.name));
@@ -289,8 +391,20 @@ pub fn gradient<D: Derivatives>(
 /// The contraction algebra on a consistent frozen state (no re-diagonalization).
 pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Breakdown> {
     validate(d)?;
+    frozen.state.check(d)?;
+    // Reached directly with a hand-built state, a spinor hybrid would drop its exact exchange.
+    if d.layout().request.spinor && is_hybrid(&d.layout().request)? {
+        return Err(Error::Unsupported(
+            "crystal forces are not available for a spinor hybrid".into(),
+        ));
+    }
     let matrix = pulay::contract(d, frozen)?;
     let explicit = hellmann_feynman::explicit(d, frozen)?;
+    let exchange = if is_hybrid(&d.layout().request)? {
+        exchange::contract(d, &frozen.state)?
+    } else {
+        exchange::Terms::new(d.layout().atoms)
+    };
     Ok(Breakdown {
         overlap: matrix.overlap,
         kinetic: matrix.kinetic,
@@ -303,5 +417,11 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Bre
         dense: explicit.dense,
         constants: explicit.constants,
         core: explicit.core,
+        spin_orbit_rows: matrix.spin_orbit.rows,
+        spin_orbit_columns: matrix.spin_orbit.columns,
+        exchange_phase: exchange.phase,
+        exchange_functions: exchange.functions,
+        exchange_rows: exchange.rows,
+        exchange_columns: exchange.columns,
     })
 }

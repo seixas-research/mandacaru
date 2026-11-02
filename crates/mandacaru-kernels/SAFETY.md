@@ -30,7 +30,7 @@ extension does not turn arbitrary raw-pointer calls into checked operations.
 | One-body | `psi[M,G]`, `potential[G]`, inverse metric `[9]`, and separate kinetic/local outputs `[M,M]`; `G=nx*ny*nz`. Each worker owns disjoint output columns and a private Laplacian scratch field. |
 | Laplacian | Input and separate output `[N,nx,ny,nz]`, inverse metric `[9]`; workers own disjoint field/x planes. |
 | Projectors | `psi[M,G]`, `chi[P,G]`, output `[M,P]`; workers own disjoint orbital rows. |
-| Real/Bloch shells | Coordinates `[3,G]`, center `[3]`, strictly increasing knots `[B]` with `B>=2`, interval-major cubic coefficients `[B-1,4]`, valid angular indices `-l..l`, derivative `-1..2`, destination row indices inside `M`. Bloch inputs additionally need translations `[I,3]`, phases `[K,I]` and output `[K,M,G]`. Real outputs use `[M,G]`. Destination rows must be unique to prevent overlapping writes. |
+| Real/Bloch shells | Coordinates `[3,G]`, center `[3]`, strictly increasing knots `[B]` with `B>=2`, interval-major cubic coefficients `[B-1,4]`, valid angular indices `-l..l`, derivative `-1..2`, destination row indices inside `M`. Bloch inputs additionally need translations `[I,3]`, phases `[K,I]` and output `[K,M,G]`. Real outputs use `[M,G]`. Destination rows must be unique to prevent overlapping writes. `bloch::bloch_shell_weighted` (Rust-internal, no `extern` symbol) is `bloch_shell` plus one by-value `weight` in `-1..=2`: `-1` is the plain sum, `0..=2` is allowed only with `derivative` in `0..=2` and multiplies every image's derivative by that component of its own argument `r - center - R` (the strain tangent); it reads no extra memory, so the pointer contract above is its whole contract. `mandacaru_bloch_shell` and `bloch::bloch_shell` keep their signature and call it with `-1`. |
 | Bloch projection | Shell inputs above, columns `[P,G]` and output `[I,nm,P]`; all dimensions and derived block counts must be positive. Workers own different point blocks and sum into private copies that are added in worker order. |
 | Two-center | Radii `[nr]`, wave numbers `[nk]`, Bessel output `[nr,nk]`; Fourier-Bessel weights `[nr]` and output `[nk]`; two-center quadrature weights `[nk]`, distances `[nR]` and output `[nR]`. Parallel output ranges are disjoint. |
 | Numerov | Coefficients, source and solution all `[N]`, `N>=3`, valid boundary below `N-1`, two initial boundary values, positive squared step and nonsingular recurrence denominators. Solution is the sole mutable buffer. |
@@ -42,7 +42,7 @@ extension does not turn arbitrary raw-pointer calls into checked operations.
 The checked Phase 1 interfaces cover one-body, both real Laplacian precisions,
 complex projectors, Bessel/Fourier-Bessel, radial eigenpairs, Numerov, real
 shells, and the Bloch shells and Bloch projections of the periodic setup
-(`kernels::bloch_shell`, `kernels::bloch_project`: the two complex types share
+(`kernels::bloch_shell`, `kernels::bloch_shell_weighted`, `kernels::bloch_project`: the two complex types share
 layout, asserted at compile time). They validate integer conversions, shape products, finiteness, spline
 sizes and angular/derivative bounds before allocating independent outputs and
 entering unsafe kernels. Other raw interfaces remain caller-validated legacy

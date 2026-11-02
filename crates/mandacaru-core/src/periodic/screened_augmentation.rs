@@ -108,12 +108,40 @@ impl<'a> Augmentation<'a> {
     pub(super) fn one_center(&self) -> Option<&'a dyn OneCenter> {
         self.one_center
     }
+    /// The atoms, channels and cell the shapes are evaluated for.
+    pub(super) fn sites(&self) -> &Sites<'a> {
+        &self.sites
+    }
 
     /// `T_a(G) = hat_a(Q) e^{+i G.r0} / dv`, `(channels, n)` row-major, for the pairs of two
     /// points whose wave vectors differ by `k_diff = q - k`. `Q` is the box vector of the grid
     /// index shifted by `k_diff` and wrapped into the FFT box, as the kernel's `Q` is; `G` is
     /// that `Q` minus `k_diff`. Rows are built in blocks reserved from the context.
     pub fn pair_shapes(&self, c: &Crystal, k_diff: [f64; 3]) -> Result<Buffer<C64>> {
+        self.shape_rows(c, k_diff, None)
+    }
+
+    /// `dT_a/dR_{atom(a)}^axis = -i Q_axis T_a`: the derivative of [`Augmentation::pair_shapes`]
+    /// with respect to the center of the channel's atom, at the same wrapped `Q`.
+    pub fn pair_shape_slopes(
+        &self,
+        c: &Crystal,
+        k_diff: [f64; 3],
+        axis: usize,
+    ) -> Result<Buffer<C64>> {
+        if axis > 2 {
+            return Err(invalid("a Cartesian axis is 0, 1 or 2"));
+        }
+        self.shape_rows(c, k_diff, Some(axis))
+    }
+
+    /// The rows of [`Augmentation::pair_shapes`], times `-i Q_axis` when `slope` names an axis.
+    fn shape_rows(
+        &self,
+        c: &Crystal,
+        k_diff: [f64; 3],
+        slope: Option<usize>,
+    ) -> Result<Buffer<C64>> {
         let rows = self.sites.channels.len();
         let n = c.grid.index.points();
         let shape = c.grid.index.shape();
@@ -159,6 +187,10 @@ impl<'a> Augmentation<'a> {
             for row in 0..rows {
                 for (v, phase) in phases.iter().enumerate() {
                     out.as_mut_slice()[row * n + start + v] *= phase;
+                    if let Some(axis) = slope {
+                        out.as_mut_slice()[row * n + start + v] *=
+                            C64::new(0., -vectors[v][axis]);
+                    }
                 }
             }
         }

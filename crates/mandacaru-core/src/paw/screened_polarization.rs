@@ -27,6 +27,8 @@ use crate::{models::xc::exchange_hole_batch, Context, Result};
 use nalgebra::DMatrix;
 use std::f64::consts::PI;
 
+pub mod vector;
+
 /// The product of two partial waves of one channel, all-electron and smooth,
 /// with the radial derivative of each.
 struct PairTable {

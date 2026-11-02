@@ -1,28 +1,40 @@
-//! Reciprocal metric and strain derivatives for periodic stress tensor evaluation.
-//! Differentiates the screened Coulomb kernel v^omega(Q) and reciprocal kinetic / pair terms
-//! with respect to cell strain epsilon_{alpha, beta}.
-
-use super::{invalid, Crystal};
+//! Strain derivatives of the screened Coulomb kernel `v^omega` of the exact exchange.
+//!
+//! Convention (the stress plan's, shared by every strain derivative of the crystal): the strain
+//! `eps` acts as `x -> (1 + eps) x` on lattice vectors, atoms and grid nodes at fixed fractional
+//! coordinates, so a wave vector moves as `Q -> (1 - eps^T) Q` and `Q^2` as
+//! `d Q^2 / d eps_ab = -2 Q_a Q_b`. Every function here returns the derivative of the energy-side
+//! quantity, `d v / d eps_ab` (symmetric in `ab`: Voigt xx, yy, zz, yz, xz, xy), NOT a stress.
+//! The stress is `sigma_ab = +(1/Omega) (dE/d eps_ab + dE/d eps_ba) / 2`, the sign ASE uses; a
+//! caller that wants `-(1/Omega)` is wrong.
+//!
+//! The kernel the exchange evaluates is a function of the alias-MEAN square of the wave vector
+//! (`math::reciprocal::bloch`), so its strain derivative is `v'(s)` times the alias mean of
+//! `-2 Q_a Q_b` over the same vectors (`reciprocal::bloch_outer`), never the outer product of
+//! the mean vector.
 use crate::{
-    math::reciprocal,
-    Result,
+    math::{reciprocal, SpatialGrid},
+    Buffer, Context, Result,
 };
 use std::f64::consts::PI;
 
-/// Strain response of the screened Coulomb kernel or Gygi-Baldereschi divergence term:
+/// The derivative of the screened kernel `v^omega(s)` at the mean square `s`, with `outer` the
+/// alias mean of `Q_a Q_b` (xx, yy, zz, yz, xz, xy) belonging to `s`:
+/// `d v / d eps_ab = -2 v'(s) outer_ab`, the Taylor series of `v'` below `s = 1e-4`.
 ///
-/// Under strain epsilon_{alpha, beta}, reciprocal wave-vectors transform as
-/// Q' = (I - epsilon^T) Q, giving d(Q^2) / d(epsilon_{alpha, beta}) = -2 Q_alpha Q_beta.
-///
-/// Returns [xx, yy, zz, yz, xz, xy] in Voigt order.
-pub fn kernel_strain_derivative(
-    q: &[f64; 3],
+/// At `s <= 1e-12` (the kernel's own threshold) the frequency is the head: zero for
+/// [`super::screened_exchange::ExxDivTreatment::None`] (the limit `pi / omega^2` does not
+/// depend on the cell), and for Gygi-Baldereschi `delta_ab (v_bar(q_c) - v(q_c))` with
+/// `q_c = (6 pi^2 w_q / Omega)^(1/3)`: `q_c` shrinks as `Omega^(-1/3)`, so
+/// `d q_c / d eps_ab = -q_c delta_ab / 3` and `d v_bar / d q_c = 3 (v(q_c) - v_bar) / q_c`.
+pub fn kernel_strain_from_moments(
+    s: f64,
+    outer: [f64; 6],
     omega: f64,
     qc: f64,
     exxdiv: super::screened_exchange::ExxDivTreatment,
 ) -> [f64; 6] {
-    let s = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
-    if s < 1e-12 {
+    if s <= 1e-12 {
         return match exxdiv {
             super::screened_exchange::ExxDivTreatment::GygiBaldereschi => {
                 let v_bar = super::screened_exchange::gygi_baldereschi_screened_kernel(qc, omega);
@@ -36,8 +48,7 @@ pub fn kernel_strain_derivative(
     let w2 = omega * omega;
     let w4 = w2 * w2;
 
-    // Differentiate v(s) = 4 pi / s * (1 - exp(-s / (4 w^2))) with respect to s:
-    // dv / ds
+    // Differentiate v(s) = 4 pi / s * (1 - exp(-s / (4 w^2))) with respect to s.
     let dv_ds = if s < 1e-4 {
         // Taylor series expansion for numerical stability as s -> 0:
         // dv/ds = -pi / (8 w^4) + pi s / (48 w^6) - pi s^2 / (512 w^8)
@@ -48,58 +59,58 @@ pub fn kernel_strain_derivative(
         let exp_term = (-s / (4.0 * w2)).exp();
         -4.0 * PI / (s * s) * (1.0 - exp_term) + PI / (w2 * s) * exp_term
     };
-
-    // dv / d(epsilon_{alpha, beta}) = -2 Q_alpha Q_beta * dv/ds
-    let pref = -2.0 * dv_ds;
-    [
-        pref * q[0] * q[0], // xx
-        pref * q[1] * q[1], // yy
-        pref * q[2] * q[2], // zz
-        pref * q[1] * q[2], // yz
-        pref * q[0] * q[2], // xz
-        pref * q[0] * q[1], // xy
-    ]
+    outer.map(|o| -2.0 * dv_ds * o)
 }
 
-/// Evaluates the screened exchange kernel stress contribution (in Voigt order, Ha / Bohr^3):
-/// sigma_{alpha, beta}^{xx, kernel} = - 1 / Omega * d E_xx / d(epsilon_{alpha, beta})
-pub fn screened_exchange_kernel_stress(
-    c: &Crystal,
+/// [`kernel_strain_from_moments`] of one wave vector `q`, which is its own mean: `s = |q|^2`
+/// and `outer = q (x) q`. Returns [xx, yy, zz, yz, xz, xy].
+pub fn kernel_strain_derivative(
+    q: &[f64; 3],
     omega: f64,
-    pair_transformed_weights: &[f64],
+    qc: f64,
     exxdiv: super::screened_exchange::ExxDivTreatment,
-) -> Result<[f64; 6]> {
-    let volume = c.grid.index.dv() * c.grid.index.points() as f64;
-    if volume <= 0.0 {
-        return Err(invalid("crystal grid has non-positive volume"));
-    }
-    let mut stress = [0.0; 6];
-    let n = c.grid.index.points();
-    if pair_transformed_weights.len() < n {
-        return Ok(stress);
-    }
+) -> [f64; 6] {
+    let s = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+    let outer = [
+        q[0] * q[0],
+        q[1] * q[1],
+        q[2] * q[2],
+        q[1] * q[2],
+        q[0] * q[2],
+        q[0] * q[1],
+    ];
+    kernel_strain_from_moments(s, outer, omega, qc, exxdiv)
+}
 
-    let nk = c.points.len().max(1);
-    let qc = (6.0 * PI * PI / (nk as f64 * volume)).cbrt();
-
-    let b = reciprocal::bloch(&c.context, &c.grid, [0.0, 0.0, 0.0])?;
-    for k in 0..n {
-        let q = [
-            b.vectors.as_slice()[k],
-            b.vectors.as_slice()[n + k],
-            b.vectors.as_slice()[2 * n + k],
-        ];
-        let dkernel = kernel_strain_derivative(&q, omega, qc, exxdiv);
-        let weight = pair_transformed_weights[k];
-        for a in 0..6 {
-            stress[a] += weight * dkernel[a];
+/// `d v / d eps_ab` of the kernel the exchange evaluates for the pair wave vector `k_diff = q - k`
+/// (Cartesian, inverse Bohr), `(6, n)` component-major in the order of
+/// [`kernel_strain_from_moments`]: the alias-mean square and outer product of
+/// `reciprocal::bloch` / `reciprocal::bloch_outer` and, at the head, the Gygi-Baldereschi radius
+/// of the PAIR's own weight `pair_weight` (`w_q`; `1 / nk` only on a uniform mesh). The cell
+/// volume of the radius is the grid's.
+pub fn screened_kernel_strain(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    k_diff: [f64; 3],
+    pair_weight: f64,
+    omega: f64,
+    exxdiv: super::screened_exchange::ExxDivTreatment,
+) -> Result<Buffer<f64>> {
+    let n = grid.index.points();
+    let volume = grid.index.dv() * n as f64;
+    let qc = (6.0 * PI * PI * pair_weight / volume).cbrt();
+    let symbols = reciprocal::bloch(ctx, grid, k_diff)?;
+    let outer = reciprocal::bloch_outer(ctx, grid, k_diff)?;
+    let mut out = ctx.allocate::<f64>(crate::product(&[6, n])?)?;
+    for at in 0..n {
+        let moments = std::array::from_fn(|row| outer.as_slice()[row * n + at]);
+        let derivative =
+            kernel_strain_from_moments(symbols.squares.as_slice()[at], moments, omega, qc, exxdiv);
+        for (row, value) in derivative.iter().enumerate() {
+            out.as_mut_slice()[row * n + at] = *value;
         }
     }
-
-    for a in 0..6 {
-        stress[a] /= volume;
-    }
-    Ok(stress)
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -132,14 +143,21 @@ mod tests {
             }
 
             let s_plus = q_plus[0] * q_plus[0] + q_plus[1] * q_plus[1] + q_plus[2] * q_plus[2];
-            let s_minus = q_minus[0] * q_minus[0] + q_minus[1] * q_minus[1] + q_minus[2] * q_minus[2];
+            let s_minus =
+                q_minus[0] * q_minus[0] + q_minus[1] * q_minus[1] + q_minus[2] * q_minus[2];
 
             let v_plus = 4.0 * PI * (1.0 - (-s_plus / (4.0 * omega * omega)).exp()) / s_plus;
             let v_minus = 4.0 * PI * (1.0 - (-s_minus / (4.0 * omega * omega)).exp()) / s_minus;
 
             let num = (v_plus - v_minus) / (2.0 * eps) * if a == b { 1.0 } else { 0.5 };
             let diff = (ana[v_idx] - num).abs();
-            assert!(diff < 1e-7, "Voigt {v_idx} ({a},{b}): analytic {} vs num {}, diff {}", ana[v_idx], num, diff);
+            assert!(
+                diff < 1e-7,
+                "Voigt {v_idx} ({a},{b}): analytic {} vs num {}, diff {}",
+                ana[v_idx],
+                num,
+                diff
+            );
         }
     }
 

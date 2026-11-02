@@ -190,6 +190,17 @@ impl ShapeTable {
         let slope = (self.f[j + 1] - self.f[j]) / (self.q[j + 1] - self.q[j]);
         slope * (x - self.q[j]) + self.f[j]
     }
+    /// `d at / dx`: the slope of the linear piece [`ShapeTable::at`] reads, the right-hand one
+    /// on a node and zero outside the table. Piecewise constant, discontinuous at every node:
+    /// the derivative of the interpolant, not of the radial transform it tabulates.
+    pub fn slope(&self, x: f64) -> f64 {
+        let n = self.q.len();
+        if x <= self.q[0] || x >= self.q[n - 1] {
+            return 0.;
+        }
+        let j = self.q.partition_point(|v| *v <= x) - 1;
+        (self.f[j + 1] - self.f[j]) / (self.q[j + 1] - self.q[j])
+    }
 }
 
 /// The shape tables of a crystal's channels, built once per (radius, L).
@@ -257,6 +268,35 @@ impl Shapes {
         out: &mut [Complex64],
         stride: usize,
     ) -> Result<()> {
+        self.evaluate(sites, vectors, out, stride, false)
+    }
+
+    /// The gradient of [`Shapes::transforms`] with respect to the wave vector at a FIXED atom
+    /// phase: `out[(row * 3 + b) * stride + v] = exp(-i G.R) d/dG_b [4 pi (-i)^L Y_LM(G^) F_L(|G|)]`,
+    /// the radial part through [`ShapeTable::slope`] (the interpolant the shapes use, not the
+    /// transform it tabulates). Zero at `G = 0`, where `L > 0` shapes have a direction-dependent
+    /// slope that the strain derivative `-G_a d_b` multiplies by zero.
+    ///
+    /// Under the strain `x -> (1 + eps) x`, `G -> (1 - eps^T) G` and `G.R` is invariant, so the
+    /// strain derivative of a shape is `d shape / d eps_ab = -G_a out[b]`.
+    pub fn transform_gradients(
+        &self,
+        sites: &Sites,
+        vectors: &[[f64; 3]],
+        out: &mut [Complex64],
+        stride: usize,
+    ) -> Result<()> {
+        self.evaluate(sites, vectors, out, stride, true)
+    }
+
+    fn evaluate(
+        &self,
+        sites: &Sites,
+        vectors: &[[f64; 3]],
+        out: &mut [Complex64],
+        stride: usize,
+        gradient: bool,
+    ) -> Result<()> {
         let channels = sites.channels;
         let mut radial = Vec::new();
         let mut radial_keys: Vec<(i64, usize)> = Vec::new();
@@ -289,6 +329,10 @@ impl Shapes {
             vec![0.; radial.len()],
             vec![Complex64::default(); sites.atoms.len()],
         );
+        let (mut harmonic_slope, mut shape_slope) = (
+            vec![[Complex64::default(); 3]; lm.len()],
+            vec![0.; radial.len()],
+        );
         for (v, g) in vectors.iter().enumerate() {
             let norm = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
             if norm > self.top {
@@ -310,6 +354,14 @@ impl Shapes {
             for (value, table) in shape.iter_mut().zip(&radial) {
                 *value = table.at(norm);
             }
+            if gradient {
+                for (value, &(l, m)) in harmonic_slope.iter_mut().zip(&lm) {
+                    *value = angular::complex_gradient(l, m, *g);
+                }
+                for (value, table) in shape_slope.iter_mut().zip(&radial) {
+                    *value = table.slope(norm);
+                }
+            }
             for (value, atom) in phase.iter_mut().zip(sites.atoms) {
                 let angle =
                     -(g[0] * atom.center[0] + g[1] * atom.center[1] + g[2] * atom.center[2]);
@@ -323,7 +375,21 @@ impl Shapes {
                     Complex64::new(-1., 0.),
                     Complex64::new(0., 1.),
                 ][l % 4];
-                out[row * stride + v] = unit * h * phase[atom] * (4. * PI * s);
+                if !gradient {
+                    out[row * stride + v] = unit * h * phase[atom] * (4. * PI * s);
+                    continue;
+                }
+                for b in 0..3 {
+                    // d(F Y)/dG_b = F' G^_b Y + F dY/dG_b; the direction gradient carries 1/|G|.
+                    let radial_part = if norm > 0. {
+                        h * (shape_slope[shape_of[row]] * g[b] / norm)
+                    } else {
+                        Complex64::default()
+                    };
+                    let angular_part = harmonic_slope[lm_of[row]][b] * s;
+                    out[(row * 3 + b) * stride + v] =
+                        unit * (radial_part + angular_part) * phase[atom] * (4. * PI);
+                }
             }
         }
         Ok(())

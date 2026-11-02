@@ -365,8 +365,6 @@ fn what_the_generator_cannot_honor_is_refused() {
         let message = result.err().expect("must be refused").to_string();
         assert!(message.contains(needle), "{message}");
     };
-    refused(Recipe::for_dataset("O", "lda", Treatment::Dirac), "Dirac");
-    refused(Recipe::upaw("O", "lda", Treatment::Dirac), "Dirac");
     for functional in ["hse06", "r2scan", "LDA", "pbe+rvv10", ""] {
         refused(
             Recipe::for_dataset("O", functional, Treatment::Scalar),
@@ -395,7 +393,6 @@ fn what_the_generator_cannot_honor_is_refused() {
     assert!(broken(&|r| r.local_radius = Some(-1.)).contains("r_cut_local"));
     assert!(broken(&|r| r.cutoffs = Cutoffs::Uniform(0.)).contains("r_cut"));
     assert!(broken(&|r| r.nlcc = Nlcc::Radius(f64::INFINITY)).contains("nlcc"));
-    assert!(broken(&|r| r.relativity = Treatment::Dirac).contains("Dirac"));
     assert!(broken(&|r| r.functional = "hse06".into()).contains("lda and pbe"));
     let mut upaw = Recipe::upaw("O", "lda", Treatment::Scalar).unwrap();
     upaw.norm_deficit = 0.05;

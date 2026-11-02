@@ -6,6 +6,7 @@
 //! convention fails these gates.
 //!
 //! Reads the shipped library: `MANDACARU_PAW_PATH`; a missing one fails the tests.
+mod periodic_screened_onecenter_spinor_support;
 mod periodic_screened_onecenter_support;
 
 use mandacaru_core::{
@@ -21,6 +22,7 @@ use mandacaru_core::{
     quantum::C64,
     Context,
 };
+use periodic_screened_onecenter_spinor_support::remainder;
 use periodic_screened_onecenter_support::*;
 
 #[test]
@@ -178,16 +180,25 @@ fn the_restricted_and_spinor_terms_equal_the_older_evaluator_on_the_rotated_tens
         )
         .unwrap();
     let mine = model.spinor(&ctx, &general).unwrap();
+    // The older evaluator has no magnetization remainder: the model adds `-fraction P` of the
+    // sphere's vector magnetization (and its operator), written out independently by `remainder`.
+    let (atom, _) = periodic_screened_onecenter_support::terms(&ctx, "lda-sr", "Si", Basis::Raw);
+    let (extra_energy, extra_operator) = remainder(&ctx, &atom, &general);
+    assert!(
+        extra_energy.abs() > 1e-6,
+        "the remainder must be active here"
+    );
     let from_theirs = Matrix::from_fn(2 * n, 2 * n, |i, j| {
         theirs.operators[0].as_slice()[i * 2 * n + j]
-    });
+    }) - extra_operator * C64::new(FRACTION, 0.);
     let operator_gap =
         largest(&(mine.operators[0].clone() * C64::new(-FRACTION, 0.) - &from_theirs));
+    let expected = theirs.energy + extra_energy;
     println!(
-        "Si spinor: energy {:.10} against {:.10}; operator {operator_gap:.2e}",
-        mine.energy, theirs.energy
+        "Si spinor: energy {:.10} against {expected:.10}; operator {operator_gap:.2e}",
+        mine.energy
     );
-    assert!((mine.energy - theirs.energy).abs() < 1e-12 * theirs.energy.abs().max(1.));
+    assert!((mine.energy - expected).abs() < 1e-12 * expected.abs().max(1.));
     assert!(operator_gap < 1e-11);
 }
 

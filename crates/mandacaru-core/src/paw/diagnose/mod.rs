@@ -1,0 +1,200 @@
+//! Diagnostics of a PAW-LCAO / UPAW-LCAO dataset: does its smooth Hamiltonian have the atom's
+//! spectrum and scatter like the atom?
+//!
+//! - [`spectrum`]: the bound levels of each channel's generalized radial problem.
+//! - [`scattering`]: the smooth logarithmic derivative against the all-electron one, and the
+//!   phase errors over the energy windows around the references.
+//! - [`ghosts`]: spurious bound states (below or among the physical ones, excited, and in the
+//!   channels without projectors) and the opposite failure, a physical reference the
+//!   Hamiltonian does not bind.
+//! - [`intruding`]: the completeness of the s channel against a neighbor's 1s.
+//! - [`kappa`]: the `j` branches of a fully relativistic dataset as channels of their own.
+//! - [`reference`]: the all-electron side (atom, equation, core shells, cached logarithmic
+//!   derivatives). [`view`]: the smooth side, the one thing the checks read.
+//!
+//! [`Diagnosis::run`] evaluates every check; [`Diagnosis::defects`] applies the recording rule
+//! of the generator (`ghosts="flag"`): a dataset with a ghost records the ghosts alone, one
+//! without records the channels that scatter outside their tolerance, the unprojected channels
+//! outside theirs and a failed s completeness. That list is the record's [`Defects`].
+//!
+//! A check that cannot be evaluated (a level or phase that is not finite) is
+//! [`Error::Unevaluated`], never a pass.
+pub mod ghosts;
+pub mod intruding;
+pub mod kappa;
+pub mod reconstruct;
+pub mod reference;
+pub mod scattering;
+pub mod spectrum;
+pub mod view;
+
+use self::{
+    ghosts::{ghost_errors, missing_states},
+    intruding::{failed_acceptance, intruding_s_miss},
+    reference::{AeLogs, AllElectron},
+    scattering::{
+        scattering_errors, unprojected_errors, PHASE_TOLERANCE, RESONANCE_TOLERANCE,
+        UNPROJECTED_TOLERANCE,
+    },
+    view::{Key, Smooth},
+};
+use crate::{paw::record::Defects, Context};
+use std::collections::BTreeMap;
+
+/// Why a diagnostic did not produce a number.
+#[derive(Debug)]
+pub enum Error {
+    /// A level, phase or potential is not finite, or the check has nothing to evaluate on:
+    /// a failure of the construction, never a pass.
+    Unevaluated(String),
+    /// Any other failure (a malformed dataset, a context budget).
+    Failed(crate::Error),
+}
+
+pub type Outcome<T> = std::result::Result<T, Error>;
+
+impl From<crate::Error> for Error {
+    fn from(error: crate::Error) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl Error {
+    /// The same failure as a crate error (an unevaluated check is an invalid dataset).
+    pub fn into_core(self) -> crate::Error {
+        match self {
+            Self::Unevaluated(message) => crate::Error::Invalid(message),
+            Self::Failed(error) => error,
+        }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unevaluated(message) => f.write_str(message),
+            Self::Failed(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// The grid node nearest to `radius`.
+pub fn snap_to(r: &[f64], radius: f64) -> f64 {
+    crate::paw::pseudize::snap(r, radius)
+}
+
+/// Every number the checks produce for one dataset.
+#[derive(Debug, Clone, Default)]
+pub struct Diagnosis {
+    /// `{l: eps_0 - eps_ref}` of the channels holding a ghost.
+    pub ghosts: BTreeMap<usize, f64>,
+    /// `(near, far)` phase errors (rad) of every channel.
+    pub phases: BTreeMap<Key, [f64; 2]>,
+    /// Phase error (rad) of every angular momentum without projectors.
+    pub unprojected: BTreeMap<usize, f64>,
+    /// The intruding-1s miss; `None` for a dataset without an s channel.
+    pub s_miss: Option<f64>,
+    /// `{l: nearest level - reference}` of the channels that do not bind a physical reference.
+    pub missing: BTreeMap<usize, f64>,
+}
+
+impl Diagnosis {
+    /// Evaluate every check of `smooth` against the all-electron atom `ae`; `cache` holds the
+    /// all-electron logarithmic derivatives already computed for this atom.
+    pub fn run(
+        ctx: &Context,
+        smooth: &Smooth,
+        ae: &AllElectron<'_>,
+        cache: &mut AeLogs,
+    ) -> Outcome<Self> {
+        let s_miss = intruding_s_miss(smooth);
+        if let Some(miss) = s_miss {
+            if !miss.is_finite() {
+                return Err(Error::Unevaluated(format!(
+                    "{}: the intruding-1s miss is {miss}",
+                    smooth.symbol
+                )));
+            }
+        }
+        Ok(Self {
+            ghosts: ghost_errors(ctx, smooth, Some(ae))?,
+            phases: scattering_errors(ctx, smooth, ae, cache)?,
+            unprojected: unprojected_errors(ctx, smooth, ae, cache)?,
+            s_miss,
+            missing: missing_states(ctx, smooth)?,
+        })
+    }
+
+    /// The channels of the `j`-averaged set whose phase is outside `PHASE_TOLERANCE` near the
+    /// reference or `RESONANCE_TOLERANCE` farther out.
+    pub fn wrong_phases(&self) -> BTreeMap<usize, [f64; 2]> {
+        self.phases
+            .iter()
+            .filter(|(k, [near, far])| {
+                k.kappa.is_none() && (*near > PHASE_TOLERANCE || *far > RESONANCE_TOLERANCE)
+            })
+            .map(|(k, v)| (k.l, *v))
+            .collect()
+    }
+
+    /// The defects in the record's format. A dataset with a ghost records the ghosts and
+    /// nothing else (the generator never examines the rest of a ghosted construction); one
+    /// without records the phases outside tolerance, the unprojected channels above
+    /// `UNPROJECTED_TOLERANCE` and an s completeness miss at or above its tolerance.
+    pub fn defects(&self) -> Defects {
+        if !self.ghosts.is_empty() {
+            return Defects {
+                ghosts: self.ghosts.iter().map(|(&l, &e)| (l as u32, e)).collect(),
+                ..Defects::default()
+            };
+        }
+        Defects {
+            ghosts: BTreeMap::new(),
+            phases: self
+                .wrong_phases()
+                .into_iter()
+                .map(|(l, v)| (l as u32, v))
+                .collect(),
+            residuals: BTreeMap::new(),
+            s_miss: failed_acceptance(self.s_miss),
+            unprojected: self
+                .unprojected
+                .iter()
+                .filter(|(_, &e)| e > UNPROJECTED_TOLERANCE)
+                .map(|(&l, &e)| (l as u32, e))
+                .collect(),
+        }
+    }
+
+    /// Whether the dataset has no defect at all: no ghost, no missing state, every channel
+    /// inside its tolerances.
+    pub fn is_clean(&self) -> bool {
+        self.missing.is_empty() && self.defects() == Defects::default()
+    }
+}
+
+/// Diagnose a dataset record against the all-electron atom it was built on: solved again from
+/// the record when `atom` is `None`, as a dataset read from a file needs. This is the entry the
+/// bindings and the ghost search call; `cache` shares all-electron logarithmic derivatives across
+/// the attempts of a search that use one atom.
+pub fn diagnose_record(
+    ctx: &Context,
+    dataset: &crate::paw::record::PawDataset,
+    atom: Option<&crate::models::atom::Atom>,
+    cache: &mut AeLogs,
+) -> Outcome<Diagnosis> {
+    let solved;
+    let atom = match atom {
+        Some(atom) => atom,
+        None => {
+            solved = reference::reference_atom(ctx, dataset)?;
+            &solved
+        }
+    };
+    reference::check_reference(dataset, atom)?;
+    let smooth = Smooth::scalar(ctx, dataset)?;
+    let ae = AllElectron::new(atom, smooth.atomic_number, &smooth.frozen, &smooth.semicore);
+    Diagnosis::run(ctx, &smooth, &ae, cache)
+}

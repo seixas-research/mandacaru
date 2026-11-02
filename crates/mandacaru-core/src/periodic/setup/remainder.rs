@@ -24,10 +24,15 @@ use nalgebra::DMatrix;
 use num_complex::Complex64;
 use std::{collections::BTreeSet, f64::consts::PI};
 
-/// Step and end (Bohr^-1) of the table of `E^(L)(q)`; a vector past the end reads the last entry.
+/// Step and end (Bohr^-1) of the table of `E^(L)(q)`. The table holds `E^(L)` up to its last point
+/// (`REMAINDER_TABLE_MAX` plus two steps, 12.025) and a vector past it raises. The Python era read
+/// the last entry there; that is a wrong number, not a convention (extending the table to 13
+/// moved the transform of the one frozen vector at 12.717 by 8.5e-3 of the largest entry), and the
+/// beyond-multipole remainder has no production caller to depend on it.
 pub const REMAINDER_TABLE_STEP: f64 = 0.025;
 pub const REMAINDER_TABLE_MAX: f64 = 12.;
-/// Interpolation never reads past `points - 1 - CLAMP`.
+/// Inside the table the last cell is read at its upper end at most: a shift of `1e-6` of a step,
+/// the number the Python era produced.
 const CLAMP: f64 = 1.000001;
 
 /// The columns of the projections `C[:, p]` that hold `atom`'s projectors, given the atom each
@@ -288,6 +293,13 @@ impl Remainder {
         out.fill(Complex64::new(0., 0.));
         for (v, g) in vectors.iter().enumerate() {
             let norm = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+            if norm > (self.points - 1) as f64 * REMAINDER_TABLE_STEP {
+                return Err(invalid(format!(
+                    "the remainder table ends at |g| = {:.3} Bohr^-1 and a vector of {norm:.3} \
+                     was asked for: extend REMAINDER_TABLE_MAX",
+                    (self.points - 1) as f64 * REMAINDER_TABLE_STEP
+                )));
+            }
             let scale = (norm / REMAINDER_TABLE_STEP).min(self.points as f64 - CLAMP);
             let low = scale.floor();
             let frac = scale - low;

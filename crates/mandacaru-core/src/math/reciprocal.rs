@@ -185,6 +185,56 @@ pub fn bloch(ctx: &Context, grid: &SpatialGrid, k: [f64; 3]) -> Result<BlochSymb
     Ok(BlochSymbols { vectors, squares })
 }
 
+/// How many lattice operations the grid's alias average runs over. The strain derivatives hold
+/// this set at the reference cell (a strained grid may keep fewer), so a caller that strains a
+/// grid compares the two counts.
+pub fn operation_count(ctx: &Context, grid: &SpatialGrid) -> Result<usize> {
+    Ok(lattice(ctx, grid)?.group.len())
+}
+
+/// The alias mean of the outer products `Q_a Q_b` of the vectors whose squares [`bloch`] averages,
+/// `(6, n)` component-major in the order xx, yy, zz, yz, xz, xy (Bohr^-2). The strain derivative
+/// of the mean square is `-2` times it: the mean of the products, not the product of the mean
+/// vectors (`BlochSymbols::vectors`), which differ on the Nyquist faces; the first three rows
+/// add up to `BlochSymbols::squares`.
+pub fn bloch_outer(ctx: &Context, grid: &SpatialGrid, k: [f64; 3]) -> Result<Buffer<f64>> {
+    finite(&k, "Bloch wave vector")?;
+    let shape = grid.index.shape();
+    let n = grid.index.points();
+    let lattice = lattice(ctx, grid)?;
+    let kappa = lattice
+        .reciprocal
+        .try_inverse()
+        .ok_or_else(|| invalid("singular reciprocal cell"))?
+        * Vector3::from(k);
+    let mut out = ctx.allocate::<f64>(crate::product(&[6, n])?)?;
+    let count = lattice.operations.len() as f64;
+    for at in 0..n {
+        let index = [
+            at / (shape[1] * shape[2]),
+            at / shape[2] % shape[1],
+            at % shape[2],
+        ];
+        let q = Vector3::from_fn(|a, _| frequency(index[a], shape[a]) + kappa[a]);
+        let mut sum = [0.; 6];
+        for (w, v) in lattice.group.iter().zip(&lattice.operations) {
+            let image = v * q;
+            let wrapped = Vector3::from_fn(|a, _| boxed(image[a], shape[a] as f64));
+            let wave = lattice.reciprocal * (w.transpose() * wrapped);
+            for (slot, (a, b)) in
+                sum.iter_mut()
+                    .zip([(0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1)])
+            {
+                *slot += wave[a] * wave[b];
+            }
+        }
+        for (row, value) in sum.iter().enumerate() {
+            out.as_mut_slice()[row * n + at] = value / count;
+        }
+    }
+    Ok(out)
+}
+
 /// Reciprocal vectors of the grid's cell as the columns of a matrix (Bohr^-1).
 pub fn reciprocal_cell(grid: &SpatialGrid) -> Result<Matrix3<f64>> {
     let shape = grid.index.shape();

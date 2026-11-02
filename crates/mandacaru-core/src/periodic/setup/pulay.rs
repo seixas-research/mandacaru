@@ -199,7 +199,7 @@ pub fn grid_cross(
 /// The periodic part `dV * FFT(e^{-ik.r} f)` of every row of `rows` (`count` functions on the
 /// mesh), column-major `(points, count)`, with the reservation that charges it to the `Context`
 /// for as long as the caller keeps it.
-fn periodic_parts(
+pub(crate) fn periodic_parts(
     ctx: &Context,
     fft: &mut Fft3,
     mesh: &Mesh,
@@ -232,7 +232,7 @@ fn periodic_parts(
 /// The multiplier of the kinetic operator on the periodic part at `k`:
 /// `|G + k|^2 / 2` averaged over the aliases the grid's lattice operations allow, over the cell
 /// volume (`reciprocal::bloch`, which also pins the equivariance of the star of `k`).
-fn kinetic_weights(
+pub(crate) fn kinetic_weights(
     ctx: &Context,
     grid: &SpatialGrid,
     mesh: &Mesh,

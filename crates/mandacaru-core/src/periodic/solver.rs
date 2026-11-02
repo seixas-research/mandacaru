@@ -106,7 +106,7 @@ pub(super) fn sym_field(c: &Crystal, field: &[f64], out: &mut [f64]) {
             c.permutations.iter().map(|p| field[p[k]]).sum::<f64>() / c.permutations.len() as f64;
     }
 }
-fn reciprocal(c: &Crystal, fft: &mut Fft3, input: &[f64]) -> Result<Buffer<C64>> {
+pub(super) fn reciprocal(c: &Crystal, fft: &mut Fft3, input: &[f64]) -> Result<Buffer<C64>> {
     let mut out = c.context.allocate::<C64>(input.len())?;
     for (a, &b) in out.as_mut_slice().iter_mut().zip(input) {
         *a = C64::new(b, 0.);
@@ -203,7 +203,7 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
         moments,
     })
 }
-fn exchange_correlation(
+pub(super) fn exchange_correlation(
     c: &Crystal,
     fft: &mut Fft3,
     rho: &[f64],
@@ -321,12 +321,12 @@ pub(super) fn collinear_xc(
         kinetic_potential: None,
     })
 }
-struct LocalPotential {
-    local: Buffer<f64>,
-    moments: Buffer<C64>,
-    kinetic: Option<Buffer<f64>>,
+pub(super) struct LocalPotential {
+    pub(super) local: Buffer<f64>,
+    pub(super) moments: Buffer<C64>,
+    pub(super) kinetic: Option<Buffer<f64>>,
 }
-fn local_potential(
+pub(super) fn local_potential(
     c: &Crystal,
     fft: &mut Fft3,
     rho: &[f64],
@@ -468,7 +468,10 @@ pub fn diagonalize_with_exchange(
     let (eps, y) = eigen(data.lowdin.adjoint() * h * &data.lowdin)?;
     Ok((eps, &data.lowdin * &y, y))
 }
-fn density(c: &Crystal, matrices: &[StoredMatrix]) -> Result<(Buffer<f64>, Buffer<C64>)> {
+pub(super) fn density(
+    c: &Crystal,
+    matrices: &[StoredMatrix],
+) -> Result<(Buffer<f64>, Buffer<C64>)> {
     if c.spinor {
         return super::spinor::density(c, matrices);
     }
@@ -513,7 +516,7 @@ fn density(c: &Crystal, matrices: &[StoredMatrix]) -> Result<(Buffer<f64>, Buffe
     }
     Ok((rho, q))
 }
-fn energy(
+pub(super) fn energy(
     c: &Crystal,
     fft: &mut Fft3,
     matrices: &[StoredMatrix],

@@ -167,7 +167,7 @@ pub struct Projector {
 }
 
 /// `p(x)` on `points` into `out`, by the Bloch kernel with the single image at the center.
-fn evaluate(
+pub(crate) fn evaluate(
     ctx: &Context,
     projector: &Projector,
     points: [&[f64]; 3],

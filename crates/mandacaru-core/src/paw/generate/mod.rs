@@ -24,8 +24,9 @@
 //! dataset ([`tables_cutoffs`], [`tables_elements`], [`tables_repairs`], [`tables_upaw`]).
 //!
 //! This is the first construction of the ghost search: the result is returned unexamined. The
-//! search that repairs a construction binding a ghost state or scattering wrongly, the spectrum
-//! and scattering diagnostics and the Dirac spin-orbit term are separate pieces.
+//! search that repairs a construction binding a ghost state or scattering wrongly and the spectrum
+//! and scattering diagnostics are separate pieces. A Dirac recipe adds the j-resolved spin-orbit
+//! term ([`spin_orbit`]) to the scalar construction.
 pub mod assemble;
 pub mod core;
 pub mod energies;
@@ -33,6 +34,7 @@ mod finish;
 pub mod recipe;
 pub mod reference;
 pub mod shells;
+pub mod spin_orbit;
 pub mod tables_cutoffs;
 pub mod tables_elements;
 pub mod tables_repairs;
@@ -49,7 +51,10 @@ use self::{
     waves::{pseudize_channels, screened_local_potential},
 };
 use crate::{
-    models::atom::Atom, paw::pseudize::snap, paw::record::PawDataset, product, Context, Result,
+    models::{atom::Atom, relativity::Treatment},
+    paw::pseudize::snap,
+    paw::record::PawDataset,
+    product, Context, Result,
 };
 use std::collections::BTreeMap;
 
@@ -147,7 +152,7 @@ pub fn generate_with_atom(
             )?,
         );
     }
-    let dataset = finish(
+    let mut dataset = finish(
         ctx,
         &Parts {
             recipe,
@@ -163,6 +168,27 @@ pub fn generate_with_atom(
         channels,
         source,
     )?;
+    if recipe.relativity == Treatment::Dirac {
+        let radii = pseudized
+            .channels
+            .iter()
+            .map(|(&l, c)| (l, c.r_cut))
+            .collect();
+        dataset.spin_orbit = spin_orbit::channels(
+            ctx,
+            &spin_orbit::Inputs {
+                recipe,
+                atom,
+                shells: &shells,
+                radii: &radii,
+                extra_l,
+                anchor: pseudized.anchor,
+                v_loc: v_loc.as_slice(),
+                r_local,
+                hartree_screening: dataset.hartree_screening,
+            },
+        )?;
+    }
     Ok(Generated {
         dataset,
         notes: pseudized.notes,

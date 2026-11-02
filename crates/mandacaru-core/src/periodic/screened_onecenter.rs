@@ -9,6 +9,11 @@
 //! K[Q] = sum_k lambda_k F_k Q F_k
 //! ```
 //!
+//! For a spinor the spin sum runs over the four blocks `Q_st` (`-(a/2) sum_st tr(Q_ts K[Q_st])`)
+//! and `P` is the non-collinear remainder of the vector magnetization of the sphere
+//! (`paw::screened_polarization::vector`): `O^a = dP/dQ^a` lifts to the `2p x 2p` operator as
+//! `O_uu = O^0 + O^3`, `O_dd = O^0 - O^3`, `O_ud = O^1 - i O^2`, `O_du = O^1 + i O^2`.
+//!
 //! `Q_s = <p_i| rho_s |p_j>` is the projected density of one spin on the atom's projectors,
 //! `Delta W^SR = sum_k lambda_k F_k (x) F_k` the screened one-center tensor, `V` the frozen
 //! short-range semilocal exchange potential of the reference atom, `P` the spin-scaling remainder
@@ -18,7 +23,10 @@
 //! The species code works in real spherical harmonics; a crystal's projectors carry complex ones
 //! (`math::angular::complex`). `Y_lm = sum_m' S[m, m'] R_lm'` rotates the factors once,
 //! `F^c = S^* F S^T`, and `V` and `P` (both diagonal in `m`, equal for every `m`) are invariant.
-use super::screened_augmentation::{OneCenter, OneCenterTerms};
+use super::{
+    screened_augmentation::{OneCenter, OneCenterTerms},
+    spinor::component,
+};
 use crate::{
     paw::{pair_tables::Projector, screened_atom::ScreenedAtom},
     periodic::invalid,
@@ -106,12 +114,17 @@ pub struct Sphere {
     pub species: usize,
 }
 
+/// The largest spherical-average magnetization, relative to the charge, a sphere of a
+/// time-reversal-symmetric crystal may carry before the crystal is refused.
+pub const TIME_REVERSAL_MOMENT: f64 = 1e-6;
+
 /// The one-center model of a crystal, every sphere of it.
 pub struct SphereModel {
     species: Vec<Species>,
     spheres: Vec<Sphere>,
     p: usize,
     fraction: f64,
+    time_reversal: bool,
 }
 
 fn block(m: &Matrix, row: usize, col: usize, n: usize) -> Matrix {
@@ -150,7 +163,16 @@ impl SphereModel {
             spheres,
             p,
             fraction,
+            time_reversal: false,
         })
+    }
+    /// Declares the spinor densities time-reversal symmetric: no sphere has a magnetization,
+    /// so the non-collinear remainder is zero by symmetry and is not evaluated. A sphere that
+    /// has grown a spherical-average moment above [`TIME_REVERSAL_MOMENT`] raises instead of
+    /// silently dropping the remainder. Without this call the remainder is always evaluated.
+    pub fn with_time_reversal(mut self, time_reversal: bool) -> Self {
+        self.time_reversal = time_reversal;
+        self
     }
     fn size(&self, sphere: &Sphere) -> usize {
         self.species[sphere.species].projectors()
@@ -201,7 +223,7 @@ impl OneCenter for SphereModel {
         Ok(OneCenterTerms { energy, operators })
     }
 
-    fn spinor(&self, _ctx: &Context, projected: &Matrix) -> Result<OneCenterTerms> {
+    fn spinor(&self, ctx: &Context, projected: &Matrix) -> Result<OneCenterTerms> {
         let p = self.p;
         if projected.shape() != (2 * p, 2 * p) {
             return Err(invalid("a projected spinor density must be 2p x 2p"));
@@ -226,6 +248,34 @@ impl OneCenter for SphereModel {
                 }
             }
             energy -= a * species.constant;
+            // The Pauli components of this sphere's projected density.
+            let whole = Matrix::from_fn(2 * n, 2 * n, |i, j| q(i / n, j / n)[(i % n, j % n)]);
+            let pauli: [DMatrix<f64>; 4] = std::array::from_fn(|c| real(&component(&whole, n, c)));
+            let polarization = &species.atom.polarization;
+            if self.time_reversal {
+                let ratio = polarization.magnetization_ratio(&pauli)?;
+                if ratio > TIME_REVERSAL_MOMENT {
+                    return Err(invalid(format!(
+                        "a time-reversal-symmetric spinor crystal has a sphere with a magnetization \
+                         {ratio:.2e} of its charge (limit {TIME_REVERSAL_MOMENT:.0e}); the crystal \
+                         must not be flagged time-reversal symmetric"
+                    )));
+                }
+                continue;
+            }
+            let terms = polarization.evaluate_vector(ctx, &pauli)?;
+            energy -= a * terms.energy;
+            let [o0, o1, o2, o3] = terms.operators.map(|o| o.map(|x| C64::new(x, 0.)));
+            let i = C64::i();
+            for (s, t, o) in [
+                (0, 0, &o0 + &o3),
+                (1, 1, &o0 - &o3),
+                (0, 1, &o1 - &o2 * i),
+                (1, 0, &o1 + &o2 * i),
+            ] {
+                let mut view = operator.view_mut((s * p + at, t * p + at), (n, n));
+                view += o;
+            }
         }
         Ok(OneCenterTerms {
             energy,

@@ -3,7 +3,10 @@
 //! the frozen Python (Si and Al, raw projectors; gate `max(1e-12, 100 x` the measured floor`)`),
 //! and the identities that need no frozen number (Hermiticity, translation with the atom, the
 //! pair symmetry of the quadrature). The frozen transform is the LINEAR TABLE of the Python era
-//! (step 0.025, end 12, clamp 1.000001), so the twin interpolates the same table. Needs
+//! (step 0.025, end 12, clamp 1.000001), so the twin interpolates the same table. The one frozen
+//! vector past the end of the table (12.717 > 12.025) is where the Python reads the last entry
+//! (a wrong number: 8.5e-3 of the largest entry against a table that reaches it); the Rust
+//! raises there, so that vector is excluded from the comparison and asserted to raise. Needs
 //! `MANDACARU_PAW_PATH`.
 mod setup_gradients_support;
 
@@ -16,6 +19,9 @@ use mandacaru_core::{
 };
 use num_complex::Complex64;
 use setup_gradients_support::*;
+
+/// The end of the table, `(points - 1) * step`.
+const TABLE_END: f64 = 12.025;
 
 fn vectors(case: &Case) -> Vec<[f64; 3]> {
     let a = Array::read(&case.inputs()["remainder_vectors_bohr_inv"]);
@@ -78,7 +84,21 @@ fn the_remainder_transforms_equal_the_frozen_python_and_their_identities() {
         let cell = case.cell();
         let sites = cell.sites();
         let shapes = Shapes::new(&ctx, &sites, 20.).unwrap();
-        let g = vectors(&case);
+        let all = vectors(&case);
+        let norm = |v: &[f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let keep: Vec<usize> = (0..all.len())
+            .filter(|&v| norm(&all[v]) <= TABLE_END)
+            .collect();
+        let g: Vec<[f64; 3]> = keep.iter().map(|&v| all[v]).collect();
+        let past: Vec<[f64; 3]> = all
+            .iter()
+            .filter(|v| norm(v) > TABLE_END)
+            .copied()
+            .collect();
+        assert!(
+            !past.is_empty() && g.len() + past.len() == all.len(),
+            "{name}: the frozen vectors no longer reach past the table"
+        );
         let mut first: Option<Vec<Complex64>> = None;
         for atom in 0..case.atoms() {
             let ds = case.dataset(&ctx, atom);
@@ -90,7 +110,14 @@ fn the_remainder_transforms_equal_the_frozen_python_and_their_identities() {
             let mut got = vec![Complex64::default(); n * n * g.len()];
             remainder.transforms(&g, &mut got).unwrap();
             let key = format!("remainder_transforms.atom{atom}");
-            let miss = relative(&got, &case.quantity(&key).complex());
+            let frozen = case.quantity(&key).complex();
+            let want: Vec<Complex64> = (0..n * n)
+                .flat_map(|ab| keep.iter().map(move |&v| (ab, v)))
+                .map(|(ab, v)| frozen[ab * all.len() + v])
+                .collect();
+            let miss = relative(&got, &want);
+            let mut beyond = vec![Complex64::default(); n * n * past.len()];
+            assert!(remainder.transforms(&past, &mut beyond).is_err());
             let gate = case.gate(&key);
             println!("{name} atom {atom}: remainder transforms {miss:.2e} (gate {gate:.1e})");
             assert!(miss <= gate);
@@ -142,14 +169,37 @@ fn the_remainder_transforms_equal_the_frozen_python_and_their_identities() {
             bare.transforms(&g, &mut dropped).unwrap();
             let moved = center.iter().any(|x| x.abs() > 1e-6);
             if moved {
-                assert!(relative(&dropped, &case.quantity(&key).complex()) > 1e3 * gate);
+                assert!(relative(&dropped, &want) > 1e3 * gate);
             }
             let dual =
                 Remainder::new(&ctx, &ds, &shapes, Basis::Dual, &projectors, center).unwrap();
             let mut other = vec![Complex64::default(); got.len()];
             dual.transforms(&g, &mut other).unwrap();
-            assert!(relative(&other, &case.quantity(&key).complex()) > 1e3 * gate);
+            assert!(relative(&other, &want) > 1e3 * gate);
         }
+    }
+}
+
+/// A vector past the end of the table raises instead of reading the last entry; the last point of
+/// the table is still read.
+#[test]
+fn a_vector_past_the_table_end_raises() {
+    let case = Case::load("si");
+    let ctx = context();
+    let cell = case.cell();
+    let sites = cell.sites();
+    let shapes = Shapes::new(&ctx, &sites, 20.).unwrap();
+    let ds = case.dataset(&ctx, 0);
+    let projectors = of_atom(&case, 0);
+    let n = projectors.len();
+    let center = cell.atoms[0].center;
+    let remainder = Remainder::new(&ctx, &ds, &shapes, Basis::Raw, &projectors, center).unwrap();
+    let mut out = vec![Complex64::default(); n * n];
+    // The table ends at 12.025: 12.02 reads, 12.03 and 40 raise.
+    remainder.transforms(&[[12.02, 0., 0.]], &mut out).unwrap();
+    for far in [12.03, 40.] {
+        let err = remainder.transforms(&[[0., far, 0.]], &mut out);
+        assert!(err.is_err(), "|g| = {far}");
     }
 }
 

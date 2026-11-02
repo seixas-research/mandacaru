@@ -8,13 +8,28 @@
 //! quantity, one k-point at a time (the derivative samples of the last k-point are kept for
 //! the four terms that read them and dropped for the next).
 //!
-//! Two methods are NOT here and raise `Unsupported`: [`fields`](Derivatives::fields) and
-//! [`bands`](Derivatives::bands) need the SCF's own routines (`solver.rs`'s potentials of a
-//! density, its energy and its diagonalization), which stay private until the `solver.rs`
-//! holder exposes them; until then a caller builds the [`Frozen`](crate::periodic::gradient::
-//! Frozen) state itself and contracts it with [`contract`](crate::periodic::gradient::contract).
+//! [`fields`](Derivatives::fields) and [`bands`](Derivatives::bands) exist once the geometry is
+//! tied to the SCF crystal whose state is differentiated ([`SetupDerivatives::with_scf`]): they
+//! are the potentials of the output density, the re-diagonalization with them and the Fermi level
+//! over the whole mesh, from [`crate::periodic::gradient::scf`]. Without that crystal they raise
+//! `Unsupported`, and a caller builds the [`Frozen`](crate::periodic::gradient::Frozen) state
+//! itself and contracts it with [`contract`](crate::periodic::gradient::contract).
+//!
+//! A hybrid crystal also gets its exact-exchange terms (`hybrid`, a child module): the fields
+//! re-diagonalize with `-a K[D_out]`, and [`exchange_gradient`](Derivatives::exchange_gradient)
+//! returns the explicit derivative of the screened exchange, the basis functions moving.
+//!
+//! A spinor crystal (`Layout::request.spinor`, described by the SCALAR `M` functions and `P`
+//! projectors) is presented to the engine in the doubled frame of
+//! [`gradient::spinor`](crate::periodic::gradient::spinor): `2M`, `2P`, `I2 x (.)` operators and
+//! projections, the Pauli sum of the local term. Its spin-orbit projectors and couplings come
+//! with [`SetupDerivatives::with_spin_orbit`] (`spinor`, a child module).
+mod hybrid;
+mod spinor;
+
 use super::{
     basis_gradient::ShortRange,
+    electrostatics::ion_charge,
     gradients::{
         dense_gradients, hat_overlaps, ion_constants_gradient, ion_overlaps,
         short_range_ion_compensation_gradient, DenseGradients,
@@ -31,13 +46,24 @@ use super::{
 use crate::{
     math::SpatialGrid,
     periodic::{
-        gradient::{Bands, Dense, Derivatives, Layout, State, Term},
-        invalid,
+        gradient::{
+            scf::{self, OutputFields},
+            spinor::{doubled, doubled_layout},
+            Bands, Dense, Derivatives, Layout, SpinOrbit, State, Term,
+        },
+        hybrid_gradient, invalid, Crystal, Options,
     },
     quantum::C64,
-    Context, Error, Result,
+    Context, Error, Reservation, Result,
 };
 use std::cell::{OnceCell, RefCell};
+
+/// Gates of the geometry tie of [`SetupDerivatives::with_scf`]: the change of basis between the
+/// setup's lattice and the grid's cell is an integer matrix to `CELL_TOLERANCE`, and the ion table
+/// of a Rust setup agrees with the Python-built one to 3.4e-16 relative (measured on Si, Al2 and
+/// LiH, `periodic_gradient_crystals_setup.rs`) against `ION_TOLERANCE`.
+const CELL_TOLERANCE: f64 = 1e-9;
+const ION_TOLERANCE: f64 = 1e-11;
 
 /// One atom's smooth core density: the radial table the placement samples.
 #[derive(Clone, Copy)]
@@ -83,8 +109,13 @@ pub struct Fields {
     pub xc: Vec<f64>,
     pub weights: Vec<C64>,
     pub moments: Vec<C64>,
+    /// The re-diagonalized bands of the density, when the fields come from a real SCF crystal
+    /// ([`SetupDerivatives::with_scf`]): the Fermi level needs the whole mesh, so
+    /// [`Derivatives::bands`] returns these.
+    bands: Vec<Vec<Bands>>,
     hats: OnceCell<Vec<[C64; 3]>>,
     ions: OnceCell<Vec<[C64; 3]>>,
+    _held: Option<Reservation>,
 }
 
 impl Fields {
@@ -94,8 +125,10 @@ impl Fields {
             xc,
             weights,
             moments,
+            bands: Vec::new(),
             hats: OnceCell::new(),
             ions: OnceCell::new(),
+            _held: None,
         }
     }
 }
@@ -104,14 +137,19 @@ impl Fields {
 pub struct SetupDerivatives<'a> {
     ctx: &'a Context,
     inputs: Inputs<'a>,
+    /// The layout the engine reads: the scalar one, or its doubled frame for a spinor.
     layout: Layout,
+    /// The number of basis functions of one spin block (`layout.m` is `2M` for a spinor).
+    functions: usize,
     operators: Operators,
+    spin_orbit: Option<spinor::SpinOrbitData<'a>>,
     mesh: Mesh,
     samples: RefCell<Option<KSamples>>,
     spheres: RefCell<Option<(usize, Vec<[Matrix; 3]>)>>,
     dense: OnceCell<DenseGradients>,
     linear: OnceCell<Vec<Vec<[C64; 3]>>>,
     constants: OnceCell<Vec<[f64; 3]>>,
+    scf: Option<(&'a Crystal, Options)>,
 }
 
 impl<'a> SetupDerivatives<'a> {
@@ -121,8 +159,12 @@ impl<'a> SetupDerivatives<'a> {
         layout: Layout,
         operators: Operators,
     ) -> Result<Self> {
+        if layout.spins != 1 && layout.spins != 2 {
+            return Err(invalid("crystal gradient: one or two spin channels"));
+        }
         let atoms = inputs.sites.atoms.len();
         let p = inputs.projectors.len();
+        let functions = layout.m;
         let consistent = layout.atoms == atoms
             && layout.m == inputs.shells.functions()
             && layout.p == p
@@ -141,18 +183,146 @@ impl<'a> SetupDerivatives<'a> {
                 "crystal gradient: the layout, the operators and the setup disagree",
             ));
         }
+        let (layout, operators) = if layout.request.spinor {
+            let operators = Operators {
+                blocks: operators.blocks.iter().map(doubled).collect(),
+                augmentation: doubled(&operators.augmentation),
+                ion_operator: doubled(&operators.ion_operator),
+            };
+            (doubled_layout(&layout)?, operators)
+        } else {
+            (layout, operators)
+        };
         Ok(Self {
             ctx,
             mesh: Mesh::new(ctx, inputs.grid)?,
             inputs,
             layout,
+            functions,
             operators,
+            spin_orbit: None,
             samples: RefCell::new(None),
             spheres: RefCell::new(None),
             dense: OnceCell::new(),
             linear: OnceCell::new(),
             constants: OnceCell::new(),
+            scf: None,
         })
+    }
+
+    /// Ties the geometry to the SCF crystal whose state is differentiated, so that
+    /// [`Derivatives::fields`] and [`Derivatives::bands`] exist: the layout, the mesh, the
+    /// k-points, the dimensions, the cell and the atoms (through the crystal's ion table) must be
+    /// the crystal's, and the crystal one this engine differentiates ([`scf::refuse`]). `options` are those of the SCF (smearing and width
+    /// define the occupations).
+    pub fn with_scf(mut self, crystal: &'a Crystal, options: Options) -> Result<Self> {
+        scf::refuse(crystal)?;
+        let l = &self.layout;
+        let agree = self.functions == crystal.m
+            && self.inputs.projectors.len() == crystal.p
+            && l.request.spinor == crystal.spinor
+            && l.spins == crystal.spins
+            && l.degeneracy == crystal.degeneracy()
+            && l.reference == crystal.reference
+            && l.weights.len() == crystal.points.len()
+            && self.inputs.sites.channels.len() == crystal.channels
+            && self.mesh.len() == crystal.grid.index.points()
+            && l.weights
+                .iter()
+                .zip(&crystal.points)
+                .all(|(w, p)| *w == p.weight)
+            && self
+                .inputs
+                .kpoints
+                .iter()
+                .zip(&crystal.points)
+                .all(|(k, p)| (0..3).all(|a| (k[a] - p.k[a]).abs() < 1e-12))
+            && l.request.functional == crystal.functional;
+        if !agree {
+            return Err(invalid(
+                "crystal gradient: the geometry and the SCF crystal disagree (sizes, k-points, \
+                 weights, reference, degeneracy or functional)",
+            ));
+        }
+        self.same_cell_and_ions(crystal)?;
+        self.same_spheres(crystal)?;
+        self.scf = Some((crystal, options));
+        self.same_spin_orbit()?;
+        Ok(self)
+    }
+
+    /// The setup's lattice and atom centers are those the crystal's grid and ion charges were
+    /// built from. Both matrices hold the cell vectors as COLUMNS: the grid's are `shape[j]`
+    /// steps long, and they must generate the setup's lattice (the two bases differ by an integer
+    /// unimodular matrix: a primitive cell and its transpose can be one lattice, as the circulant fcc cell
+    /// is, and then the energy is the same). The Gaussian ions of the setup's atoms must
+    /// reproduce the crystal's ion table, which carries every center, charge and width,
+    /// translations included. A transposed lattice or a moved atom would otherwise
+    /// differentiate another energy without any other symptom.
+    fn same_cell_and_ions(&self, crystal: &Crystal) -> Result<()> {
+        let shape = crystal.grid.index.shape();
+        let lattice = &self.inputs.sites.lattice;
+        let cell = nalgebra::Matrix3::from_fn(|i, j| shape[j] as f64 * crystal.grid.step[(i, j)]);
+        let same = lattice.try_inverse().is_some_and(|inverse| {
+            let change = inverse * cell;
+            let integer = change
+                .iter()
+                .all(|x| (x - x.round()).abs() < CELL_TOLERANCE);
+            integer && (change.determinant().abs() - 1.).abs() < CELL_TOLERANCE
+        });
+        if !same {
+            return Err(invalid(
+                "crystal gradient: the setup's lattice does not generate the SCF crystal's cell \
+                 (a transposed or rescaled lattice?)",
+            ));
+        }
+        let ions = ion_charge(self.ctx, &crystal.grid, &self.inputs.sites)?;
+        let (gap, scale) = ions
+            .as_slice()
+            .iter()
+            .zip(crystal.ion.as_slice())
+            .fold((0f64, 0f64), |(gap, scale), (a, b)| {
+                (gap.max((a - b).norm()), scale.max(b.norm()))
+            });
+        if gap > ION_TOLERANCE * scale {
+            return Err(invalid(
+                "crystal gradient: the setup's atoms do not reproduce the SCF crystal's ion \
+                 charges (centers, charges or ion width differ)",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The row-center derivative of one matrix term in the SCALAR frame (`M x M`).
+    fn scalar_cross(
+        &self,
+        spin: usize,
+        k: usize,
+        term: Term,
+        fields: &Fields,
+    ) -> Result<[Matrix; 3]> {
+        match term {
+            Term::Overlap => self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, None)),
+            Term::Kinetic => self.with_samples(k, |s| {
+                kinetic_cross(self.ctx, self.inputs.grid, &self.mesh, s)
+            }),
+            Term::Local => {
+                let v = fields
+                    .local
+                    .get(spin)
+                    .ok_or_else(|| invalid("crystal gradient: one local potential per spin"))?;
+                self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, Some(v)))
+            }
+            // The rows' share of every sphere: the sum over the spheres of `G_A`.
+            Term::ShortRange => self.with_spheres(k, |blocks| {
+                let m = self.functions;
+                std::array::from_fn(|axis| {
+                    blocks
+                        .iter()
+                        .fold(Matrix::zeros(m, m), |sum, g| sum + &g[axis])
+                })
+            }),
+        }
     }
 
     fn kpoint(&self, k: usize) -> Result<[f64; 3]> {
@@ -280,73 +450,143 @@ impl Derivatives for SetupDerivatives<'_> {
         &self.operators.ion_operator
     }
     fn projection(&self, k: usize) -> Result<Matrix> {
-        projection(
+        let c = projection(
             self.ctx,
             self.inputs.shells,
             &self.inputs.sites.lattice,
             self.kpoint(k)?,
             self.inputs.projectors,
-        )
+        )?;
+        Ok(self.frame(c))
     }
     fn projection_gradient(&self, k: usize) -> Result<[Matrix; 3]> {
-        projection_gradient(
+        let g = projection_gradient(
             self.ctx,
             self.inputs.shells,
             &self.inputs.sites.lattice,
             self.kpoint(k)?,
             self.inputs.projectors,
-        )
+        )?;
+        Ok(g.map(|g| self.frame(g)))
     }
     fn cross(&self, spin: usize, k: usize, term: Term, fields: &Fields) -> Result<[Matrix; 3]> {
-        match term {
-            Term::Overlap => self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, None)),
-            Term::Kinetic => self.with_samples(k, |s| {
-                kinetic_cross(self.ctx, self.inputs.grid, &self.mesh, s)
-            }),
-            Term::Local => {
-                let v = fields
-                    .local
-                    .get(spin)
-                    .ok_or_else(|| invalid("crystal gradient: one local potential per spin"))?;
-                self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, Some(v)))
-            }
-            // The rows' share of every sphere: the sum over the spheres of `G_A`.
-            Term::ShortRange => self.with_spheres(k, |blocks| {
-                let m = self.layout.m;
-                std::array::from_fn(|axis| {
-                    blocks
-                        .iter()
-                        .fold(Matrix::zeros(m, m), |sum, g| sum + &g[axis])
-                })
-            }),
+        if self.layout.request.spinor && term == Term::Local {
+            return self.spinor_local(k, fields);
         }
+        Ok(self
+            .scalar_cross(spin, k, term, fields)?
+            .map(|g| self.frame(g)))
     }
     fn sphere_cross(&self, _spin: usize, k: usize, _fields: &Fields) -> Result<Vec<[Matrix; 3]>> {
-        self.with_spheres(k, |blocks| blocks.to_vec())
+        self.with_spheres(k, |blocks| {
+            blocks
+                .iter()
+                .map(|g| g.clone().map(|g| self.frame(g)))
+                .collect()
+        })
     }
 
-    fn fields(&self, _state: &State, _q: &[C64]) -> Result<Fields> {
-        Err(Error::Unsupported(
-            "the potentials of a density need the SCF's own routines (solver.rs keeps them \
-             private): build the fields and the frozen state outside and contract them"
-                .into(),
-        ))
+    fn fields(&self, state: &State, q: &[C64]) -> Result<Fields> {
+        let Some((crystal, options)) = &self.scf else {
+            return Err(Error::Unsupported(
+                "the potentials of a density need the SCF crystal: tie the geometry to it with \
+                 with_scf, or build the frozen state outside and contract it"
+                    .into(),
+            ));
+        };
+        // What the fields keep for the whole contraction, reserved before it is formed: the copies
+        // of the potentials, weights and moments, and the re-diagonalized bands (`m x m`
+        // coefficients, eigenvalues and occupations for every spin and k-point).
+        let (n, m) = (self.mesh.len(), self.layout.m);
+        let mesh_bytes =
+            crate::product(&[crystal.field_channels() * n + n + 2 * n + 2 * q.len(), 8])?;
+        let band_bytes = crate::product(&[
+            self.layout.spins * self.layout.weights.len(),
+            m * m * 16 + 2 * m * 8,
+        ])?;
+        let held = self.ctx.reserve(mesh_bytes + band_bytes)?;
+        // A hybrid holds the exchange matrices (`m x m` per spin and k-point) while it diagonalizes.
+        let exchange_bytes = if crystal.screened_exchange()?.is_some() {
+            band_bytes
+        } else {
+            0
+        };
+        let _transient = self.ctx.reserve(exchange_bytes)?;
+        let densities = scf::densities(crystal, &state.bands)?;
+        let output = scf::output_fields(crystal, &densities, q)?;
+        let exchange = scf::exchange_operators(crystal, &densities, options.exxdiv_treatment)?;
+        let bands = scf::rediagonalize(crystal, &output, options, &exchange)?;
+        let OutputFields {
+            local,
+            moments,
+            xc,
+            weights,
+        } = output;
+        let mut fields = Fields::new(
+            local.as_slice().chunks(n).map(<[f64]>::to_vec).collect(),
+            xc.as_slice().to_vec(),
+            weights.as_slice().to_vec(),
+            moments.as_slice().to_vec(),
+        );
+        fields.bands = bands;
+        fields._held = Some(held);
+        Ok(fields)
     }
     fn moments<'f>(&self, fields: &'f Fields) -> &'f [C64] {
         &fields.moments
     }
     fn bands(
         &self,
-        _spin: usize,
-        _k: usize,
-        _fields: &Fields,
-        _hubbard: Option<&Matrix>,
+        spin: usize,
+        k: usize,
+        fields: &Fields,
+        hubbard: Option<&Matrix>,
     ) -> Result<Bands> {
-        Err(Error::Unsupported(
-            "the diagonalization of the crystal Hamiltonian is the SCF's (solver.rs keeps it \
-             private): build the frozen state outside and contract it"
-                .into(),
-        ))
+        if hubbard.is_some() {
+            return Err(Error::Unsupported(
+                "crystal forces are not available for a DFT+U crystal".into(),
+            ));
+        }
+        fields
+            .bands
+            .get(spin)
+            .and_then(|s| s.get(k))
+            .cloned()
+            .ok_or_else(|| {
+                Error::Unsupported(
+                    "the bands of a density come from the SCF crystal (with_scf); fields built \
+                     outside carry none"
+                        .into(),
+                )
+            })
+    }
+
+    fn spin_orbit(&self) -> Result<&SpinOrbit> {
+        self.spin_orbit_data().map(|so| &so.operator)
+    }
+    fn spin_orbit_projection(&self, k: usize) -> Result<Matrix> {
+        let so = self.spin_orbit_data()?;
+        projection(
+            self.ctx,
+            self.inputs.shells,
+            &self.inputs.sites.lattice,
+            self.kpoint(k)?,
+            so.projectors,
+        )
+    }
+    fn spin_orbit_projection_gradient(&self, k: usize) -> Result<[Matrix; 3]> {
+        let so = self.spin_orbit_data()?;
+        projection_gradient(
+            self.ctx,
+            self.inputs.shells,
+            &self.inputs.sites.lattice,
+            self.kpoint(k)?,
+            so.projectors,
+        )
+    }
+
+    fn exchange_gradient(&self, state: &State) -> Result<hybrid_gradient::Gradient> {
+        self.exchange_terms(state)
     }
 
     fn hat_overlap(&self, fields: &Fields, atom: usize, axis: usize) -> Result<Vec<C64>> {

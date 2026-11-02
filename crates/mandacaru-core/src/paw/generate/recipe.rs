@@ -7,8 +7,9 @@
 //! cannot be known without the atom (a cutoff from the peak of a reference orbital, the local
 //! radius from the largest cutoff) stays a rule in the recipe and is evaluated by the reference
 //! step. There is no switch that selects another calculation: a functional other than LDA and
-//! PBE, a Dirac atom (its spin-orbit chain is a separate construction) and an inconsistent
-//! option raise.
+//! PBE and an inconsistent option raise. A Dirac recipe is the scalar-relativistic construction
+//! plus the j-resolved spin-orbit term ([`super::spin_orbit`]); it is the same recipe with the
+//! reference atom solved with the Dirac equation.
 use super::{
     tables_cutoffs, tables_elements as elements, tables_elements::Subshell,
     tables_repairs as repairs, tables_upaw,
@@ -49,7 +50,8 @@ pub struct Recipe {
     pub family: Family,
     /// `"lda"` or `"pbe"`.
     pub functional: String,
-    /// The treatment of the reference atom: `None` or `Scalar`.
+    /// The treatment of the reference atom: `None`, `Scalar` or `Dirac` (the partial waves of a
+    /// Dirac dataset are scalar-relativistic; the spin-orbit term is built per `j`).
     pub relativity: Treatment,
     pub cutoffs: Cutoffs,
     /// The radii of the policy tables for this dataset (element, then dataset on top), consulted
@@ -101,11 +103,6 @@ impl Recipe {
             return Err(invalid(format!(
                 "PAW-LCAO generation supports the functionals lda and pbe, not {functional:?}"
             )));
-        }
-        if relativity == Treatment::Dirac {
-            return Err(invalid(
-                "the Dirac PAW-LCAO construction (scalar waves plus the j-resolved spin-orbit term) is not ported yet; use relativity none or scalar",
-            ));
         }
         let mut cutoff_table = radii(tables_cutoffs::by_element(symbol).unwrap_or(&[]));
         cutoff_table.extend(radii(
@@ -193,11 +190,6 @@ impl Recipe {
         if !matches!(self.functional.as_str(), "lda" | "pbe") {
             return Err(invalid(
                 "PAW-LCAO generation supports the functionals lda and pbe",
-            ));
-        }
-        if self.relativity == Treatment::Dirac {
-            return Err(invalid(
-                "the Dirac PAW-LCAO construction (the j-resolved spin-orbit term) is not ported yet",
             ));
         }
         positive("q_cut", self.q_cut)?;

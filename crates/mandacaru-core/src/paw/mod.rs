@@ -5,6 +5,7 @@ pub mod checks;
 pub mod confinement;
 pub mod core_correction;
 pub mod dataset;
+pub mod diagnose;
 pub mod digest;
 pub mod fields;
 pub mod generate;

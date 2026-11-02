@@ -17,7 +17,7 @@
 //! construction and never runs without its spheres. A hybrid crystal without the block raises.
 use super::{
     invalid,
-    screened_augmentation::Augmentation,
+    screened_augmentation::{Augmentation, OneCenter},
     screened_exchange::{
         exchange_operator_at_k_with, exchange_operators_with, Exchange, ExxDivTreatment, Screening,
     },
@@ -80,8 +80,11 @@ impl Hybrid {
         }
         if spinor && !time_reversal {
             return Err(invalid(
-                "a magnetic spinor hybrid needs the spin-density functional of the spheres, \
-                 which is not implemented; only a time-reversal-symmetric spinor crystal is",
+                "a magnetic spinor hybrid is not available: the spin-density functional of the \
+                 spheres (the non-collinear remainder) is implemented, but the grid functional of \
+                 a screened hybrid cannot take the four non-collinear fields yet \
+                 (periodic::fields::evaluate reads its spin layout from the crystal's single \
+                 spinor block)",
             ));
         }
         let centers = sites["centers"]
@@ -183,8 +186,14 @@ impl Hybrid {
             channels: labels.to_vec(),
             lattice,
             shapes,
-            model: SphereModel::new(species, spheres, p, fraction)?,
+            model: SphereModel::new(species, spheres, p, fraction)?
+                .with_time_reversal(spinor && time_reversal),
         })
+    }
+
+    /// The one-center model of the spheres: the object the exchange and its derivative read.
+    pub fn one_center(&self) -> &dyn OneCenter {
+        &self.model
     }
 
     /// The augmentation of the crystal's pair densities with the one-center terms attached.
@@ -208,6 +217,12 @@ impl Crystal {
                 self.functional
             ))
         })
+    }
+
+    /// The augmentation of this hybrid crystal's pair densities with its one-center terms: the
+    /// object [`Crystal::hybrid_exchange`] builds, for the callers that differentiate it.
+    pub fn hybrid_augmentation(&self) -> Result<Augmentation<'_>> {
+        self.spheres()?.augmentation(self)
     }
 
     /// The screened exact exchange of every (spin channel, k-point) of the mesh with the

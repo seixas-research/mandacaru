@@ -151,7 +151,23 @@ fn channel_of(name: &str) -> Option<usize> {
     tail.split('_').next()?.parse().ok()
 }
 
+/// Gate of a spin-orbit item: 100 x the 1-ulp floor the freeze recorded for the Dirac function
+/// that makes it, with the 1e-12 floor and no cap (the Dirac floors reach 1.2e-6 for gold).
+fn spin_orbit_gate(f: &Frozen, name: &str) -> f64 {
+    let group = if name.starts_with("so_projector") {
+        "tables"
+    } else if name.starts_with("so_level_errors") || name.starts_with("so_reference_energies") {
+        "scalars"
+    } else {
+        "matrices"
+    };
+    (100. * floor(f, "j_resolved_spin_orbit", group)).max(GATE)
+}
+
 pub fn gate_of(f: &Frozen, name: &str) -> f64 {
+    if name.starts_with("so_") {
+        return spin_orbit_gate(f, name);
+    }
     let base = name
         .trim_end_matches(|c: char| c.is_ascii_digit() || c == '_')
         .to_string();
@@ -185,8 +201,8 @@ pub fn gate_of(f: &Frozen, name: &str) -> f64 {
 
 /// Allowed absolute deviation of `v_local` at a point where the density that made its
 /// exchange-correlation potential is `rho`.
-pub fn tail_allowance(scheme: Scheme, pbe: bool, rho: f64, scale: f64) -> f64 {
-    let tight = GATE * scale;
+pub fn tail_allowance(scheme: Scheme, pbe: bool, rho: f64, scale: f64, gate: f64) -> f64 {
+    let tight = gate * scale;
     match (scheme, pbe) {
         (Scheme::Legacy, false) => tight,
         (Scheme::Legacy, true) => {
@@ -251,5 +267,24 @@ pub fn compare_atom(f: &Frozen, atom: &Atom) -> Comparison {
             .abs(),
         0.5,
     );
+    // A Dirac atom also carries the level of every (n, l, kappa).
+    if let Some(levels) = frozen.get("eigenvalues_j").and_then(Value::as_object) {
+        out.push(
+            "atom.j_levels",
+            (atom.j_states.len() as f64 - levels.len() as f64).abs(),
+            0.5,
+        );
+        for j in &atom.j_states {
+            let key = format!("{},{},{}", j.n, j.l, j.kappa);
+            let frozen_level = levels
+                .get(&key)
+                .unwrap_or_else(|| panic!("the freeze has no Dirac level {key}"));
+            out.push(
+                format!("atom.eigenvalue_j.{key}"),
+                relative(j.eigenvalue, number(frozen_level)),
+                GATE,
+            );
+        }
+    }
     out
 }

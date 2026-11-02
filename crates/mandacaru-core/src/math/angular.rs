@@ -19,6 +19,132 @@ pub fn complex(l: usize, m: i32, point: [f64; 3]) -> num_complex::Complex64 {
     }
 }
 
+/// Gradient of `u -> Y_lm(u / |u|)` (the complex harmonics of [`complex`]) with respect to the
+/// Cartesian components of `u`: tangential to the sphere and scaled by `1 / |u|`, so it is the
+/// derivative of the harmonic of a wave vector with respect to that wave vector. The strain
+/// derivative of a form factor `F_L(|G|) Y_LM(G^)` is `-G_a d_b(F Y)` of it. Zero at `u = 0`,
+/// where the harmonic of `L > 0` has no limit (its form factor vanishes there).
+pub fn complex_gradient(l: usize, m: i32, u: [f64; 3]) -> [num_complex::Complex64; 3] {
+    use num_complex::Complex64;
+    let r = u.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if r == 0. {
+        return [Complex64::default(); 3];
+    }
+    let unit = u.map(|v| v / r);
+    let real = |order: i32| tangential(l, order, unit).map(|g| g / r);
+    if m == 0 {
+        return real(0).map(|g| Complex64::new(g, 0.));
+    }
+    let order = m.abs();
+    let sign = if order % 2 == 0 { 1. } else { -1. };
+    let (cos, sin) = (real(order), real(-order));
+    std::array::from_fn(|a| {
+        let positive = Complex64::new(cos[a], sin[a]) * (sign / 2f64.sqrt());
+        if m > 0 {
+            positive
+        } else {
+            sign * positive.conj()
+        }
+    })
+}
+
+/// A complex number and its three Cartesian derivatives: forward-mode differentiation of the
+/// recurrence that [`normalized`] evaluates.
+#[derive(Clone, Copy)]
+struct Jet {
+    value: num_complex::Complex64,
+    slope: [num_complex::Complex64; 3],
+}
+impl Jet {
+    fn constant(value: f64) -> Self {
+        Self {
+            value: num_complex::Complex64::new(value, 0.),
+            slope: [num_complex::Complex64::default(); 3],
+        }
+    }
+    fn times(self, other: Self) -> Self {
+        Self {
+            value: self.value * other.value,
+            slope: std::array::from_fn(|a| {
+                self.slope[a] * other.value + self.value * other.slope[a]
+            }),
+        }
+    }
+    fn scaled(self, factor: f64) -> Self {
+        Self {
+            value: self.value * factor,
+            slope: self.slope.map(|s| s * factor),
+        }
+    }
+    fn minus(self, other: Self) -> Self {
+        Self {
+            value: self.value - other.value,
+            slope: std::array::from_fn(|a| self.slope[a] - other.slope[a]),
+        }
+    }
+}
+
+/// The real harmonic `(l, m)` on the unit sphere and its derivative along the sphere. The
+/// recurrence of [`normalized`] is differentiated as a function of three independent
+/// coordinates; the off-sphere extension is arbitrary, and projecting out the radial part
+/// leaves the intrinsic gradient.
+fn tangential(l: usize, m: i32, [x, y, z]: [f64; 3]) -> [f64; 3] {
+    use num_complex::Complex64;
+    let order = m.unsigned_abs() as usize;
+    if order > l {
+        return [0.; 3];
+    }
+    let mut scale = 1. / (4. * PI).sqrt();
+    for k in 1..=order {
+        scale *= -((2 * k + 1) as f64 / (2 * k) as f64).sqrt();
+    }
+    let ring = Jet {
+        value: Complex64::new(x, y),
+        slope: [
+            Complex64::new(1., 0.),
+            Complex64::new(0., 1.),
+            Complex64::default(),
+        ],
+    };
+    let height = Jet {
+        value: Complex64::new(z, 0.),
+        slope: [
+            Complex64::default(),
+            Complex64::default(),
+            Complex64::new(1., 0.),
+        ],
+    };
+    let mut value = (0..order)
+        .fold(Jet::constant(1.), |p, _| p.times(ring))
+        .scaled(scale);
+    if l > order {
+        let mut previous = value;
+        value = value.times(height).scaled(((2 * order + 3) as f64).sqrt());
+        for degree in order + 2..=l {
+            let d = degree as f64;
+            let o = order as f64;
+            let a = ((4. * d * d - 1.) / (d * d - o * o)).sqrt();
+            let b = (((d - 1.).powi(2) - o * o) / (4. * (d - 1.).powi(2) - 1.)).sqrt();
+            let next = height.times(value).minus(previous.scaled(b)).scaled(a);
+            previous = value;
+            value = next;
+        }
+    }
+    let pick = |c: Complex64| if m < 0 { c.im } else { c.re };
+    let factor = if m == 0 {
+        1.
+    } else {
+        2f64.sqrt() * if order % 2 == 0 { 1. } else { -1. }
+    };
+    let slope = value.slope.map(|s| factor * pick(s));
+    let radial = slope[0] * x + slope[1] * y + slope[2] * z;
+    [
+        slope[0] - radial * x,
+        slope[1] - radial * y,
+        slope[2] - radial * z,
+    ]
+}
+
 fn factorial(n: i32) -> f64 {
     (2..=n).map(|n| n as f64).product()
 }

@@ -166,9 +166,9 @@ pub fn diagonalize_with_exchange(
     Ok((eps, &lowdin * &y, y))
 }
 
-/// Spatial Hermitian matrices for (n, mx, my, mz). This retains transverse
+/// Spatial Hermitian matrices for (n, mx, my, mz); public for the spinor force. This retains transverse
 /// coherences; dropping the off-diagonal spin blocks would discard SOC.
-fn component(d: &Matrix, m: usize, a: usize) -> Matrix {
+pub fn component(d: &Matrix, m: usize, a: usize) -> Matrix {
     Matrix::from_fn(m, m, |i, j| match a {
         0 => d[(i, j)] + d[(m + i, m + j)],
         1 => d[(i, m + j)] + d[(m + i, j)],
