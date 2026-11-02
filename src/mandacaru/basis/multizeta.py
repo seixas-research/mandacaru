@@ -71,6 +71,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.interpolate import CubicSpline
 
+from .. import _native
 from ..units import to_bohr
 from ._angular import sample_dtype as _dtype
 from ._angular import (radial_angular_gradient, spherical_coords,
@@ -78,57 +79,6 @@ from ._angular import (radial_angular_gradient, spherical_coords,
 from .base import BasisFunction
 
 from ..models.radial import (ZETA_SPLITS, DEFAULT_ZETA_SPLIT, DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS, validate_zeta_split, resolve_split_scheme, DEFAULT_NAO_SIZE, ZETA_NAMES, resolve_zeta)
-
-# --------------------------------------------------------------------------- #
-# Split-valence construction.
-# --------------------------------------------------------------------------- #
-
-def split_radius(r: np.ndarray, radial: np.ndarray, split_norm: float) -> float:
-    r"""Radius outside which the orbital carries ``split_norm`` of its norm.
-
-    Solves :math:`\int_{r_s}^{r_c}|R|^2r^2dr = \texttt{split\_norm}` by scanning
-    the cumulative tail norm.  A larger ``split_norm`` pushes :math:`r_s` inward,
-    giving a longer-ranged (softer) extra zeta.
-    """
-    from scipy.integrate import cumulative_trapezoid
-
-    density = np.asarray(radial) ** 2 * r ** 2
-    total = np.trapezoid(density, r)
-    if total <= 0:
-        raise ValueError("the radial function has zero norm")
-    inner = cumulative_trapezoid(density, r, initial=0.0)
-    tail = (total - inner) / total
-    # tail decreases monotonically from 1 to 0; find where it crosses.
-    index = int(np.argmin(np.abs(tail - float(split_norm))))
-    return float(r[max(index, 1)])
-
-
-def split_valence_tail(r: np.ndarray, radial: np.ndarray, l: int,
-                       r_split: float) -> np.ndarray:
-    r"""The split-valence extra-zeta function ``R_1 - r^l(a - b r^2)``.
-
-    ``a`` and ``b`` are fixed by matching value and slope of :math:`R_1/r^l` at
-    ``r_split``, so the difference and its first derivative vanish there and the
-    result is zero beyond it.
-    """
-    r = np.asarray(r, dtype=float)
-    radial = np.asarray(radial, dtype=float)
-
-    spline = CubicSpline(r, radial)
-    value = float(spline(r_split))
-    slope = float(spline(r_split, 1))
-
-    # R(r) = r^l (a - b r^2)  =>  match R and R' at r_split.
-    #   value = rs^l (a - b rs^2)
-    #   slope = l rs^(l-1) (a - b rs^2) - 2 b rs^(l+1)
-    #         = l * value / rs - 2 b rs^(l+1)
-    b = (l * value / r_split - slope) / (2.0 * r_split ** (l + 1))
-    a = value / r_split ** l + b * r_split ** 2
-
-    inside = r < r_split
-    smooth = np.where(inside, r ** l * (a - b * r * r), 0.0)
-    return np.where(inside, radial - smooth, 0.0)
-
 
 # --------------------------------------------------------------------------- #
 # Basis functions.
@@ -243,11 +193,15 @@ class TabulatedOrbital(BasisFunction):
 
 def zeta_tables(r: np.ndarray, radial: np.ndarray, n: int, l: int,
                 n_zeta: int, split_norm: float = DEFAULT_SPLIT_NORM,
-                tail_norms=None) -> list[RadialTable]:
-    """First-zeta table plus ``n_zeta - 1`` split-valence refinements.
+                tail_norms=None, *, fractions: bool = False,
+                context=None) -> list[RadialTable]:
+    r"""First-zeta table plus ``n_zeta - 1`` split-valence refinements.
 
-    Two schemes share the split-valence polynomial and differ in *what* is
-    split and *where*:
+    The construction is native (``_native.radial_zetas``): the extra zeta is
+    :math:`R_1 - r^l(a - b r^2)` below a split radius, with ``a`` and ``b``
+    fixed by matching value and slope of the previous zeta there, so it and
+    its slope vanish at the split and it is zero beyond; it is normalized.
+    Two schemes share it and differ in *what* is split and *where*:
 
     * ``last_zeta`` (``tail_norms=None``) -- each successive zeta splits the
       *previous* one, at the radius leaving ``split_norm`` of its **squared
@@ -255,32 +209,27 @@ def zeta_tables(r: np.ndarray, radial: np.ndarray, n: int, l: int,
     * ``first_zeta``, selected by ``tail_norms`` (a sequence, one entry per
       extra zeta) -- every zeta splits the **first** one, at the radius
       leaving a tail of **norm** ``tail_norms[k]`` (so a squared-norm
-      fraction of its square) outside.
+      fraction of its square) outside; with ``fractions`` the entries are
+      that squared-norm fraction itself.
 
-    Either way the added functions become progressively shorter-ranged.
+    Either way the added functions become progressively shorter-ranged, and
+    fewer than ``n_zeta`` tables come back when a split leaves nothing.  ``r``
+    is any increasing grid from ``r >= 0``.
     """
-    first = np.asarray(radial, dtype=float)
-    tables = [RadialTable(r=r, values=first, n=n, l=l, zeta=1)]
     if tail_norms is not None and int(n_zeta) - 1 > len(tail_norms):
         raise ValueError(
             f"{int(n_zeta)} zetas need {int(n_zeta) - 1} tail norms, got "
             f"{tuple(tail_norms)!r}")
-    current = first
-    norm = float(split_norm)
-    for zeta in range(2, int(n_zeta) + 1):
-        if tail_norms is not None:
-            current, norm = first, float(tail_norms[zeta - 2]) ** 2
-        r_split = split_radius(r, current, norm)
-        values = split_valence_tail(r, current, l, r_split)
-        if not np.any(np.abs(values) > 1e-12):
-            break                              # nothing left to split
-        # Normalize the extra zeta.  Its span is unchanged, but a function
-        # carrying a few percent of the norm makes the overlap matrix (and the
-        # grid kinetic energy that screens it) needlessly ill-conditioned.
-        values = values / np.sqrt(np.trapezoid(values * values * r * r, r))
-        tables.append(RadialTable(r=r, values=values, n=n, l=l, zeta=zeta))
-        current, norm = values, norm * 0.5
-    return tables
+    first = np.asarray(radial, dtype=float)
+    refined = _native.radial_zetas(
+        _native.Context(threads=1) if context is None else context,
+        np.asarray(r, dtype=float), first, int(l), int(n_zeta),
+        float(split_norm),
+        None if tail_norms is None else np.asarray(tail_norms, dtype=float),
+        fractions)
+    values = [first] + list(refined[1:])
+    return [RadialTable(r=r, values=v, n=n, l=l, zeta=zeta)
+            for zeta, v in enumerate(values, start=1)]
 
 
 def polarization_tables(r: np.ndarray, l_max: int, n_polarization: int,

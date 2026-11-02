@@ -30,7 +30,7 @@ def main():
                                  generator='test/migration/export_crystal.py', energy_ev=energy)
     args.output.write_text(json.dumps(payload, separators=(',', ':'), sort_keys=True, allow_nan=False)+'\n')
     print(json.dumps(dict(path=str(args.output), sha256=hashlib.sha256(args.output.read_bytes()).hexdigest(),
-                         energy_ev=energy, dataset_sources=payload['provenance']['dataset_sources']), indent=2))
+                         energy_ev=energy, datasets=payload['sites']['datasets']), indent=2))
 
 
 if __name__=='__main__':

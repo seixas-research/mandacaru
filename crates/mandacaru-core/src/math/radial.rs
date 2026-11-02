@@ -142,3 +142,69 @@ pub fn interpolate(r: &[f64], values: &[f64], x: f64) -> f64 {
         })
         .sum()
 }
+
+/// Derivatives of `values(r)` at `at`, up to `order`, from a degree-`degree` polynomial fit
+/// in `r - at` over the `2 * window + 1` nodes centered on the node nearest `at`.
+///
+/// This is the fit the PAW generator matches cutoffs with: the center is the nearest node (the
+/// lower index on a tie), the window is truncated at the ends of the mesh, the abscissa is not
+/// rescaled, the Vandermonde columns are normalized to unit length and the least-squares
+/// solution drops singular values below `len * epsilon` of the largest. Unlike
+/// [`derivatives`], whose degree follows the order and whose center is the first node at or
+/// above `at`, every one of those choices is explicit here. A derivative above the degree is 0.
+pub fn local_derivatives(
+    r: &[f64],
+    values: &[f64],
+    at: f64,
+    order: usize,
+    window: usize,
+    degree: usize,
+) -> Result<Vec<f64>> {
+    validate(r, values)?;
+    if !at.is_finite() || order > 20 {
+        return Err(invalid("invalid local derivative request"));
+    }
+    let mut center = 0;
+    for (i, x) in r.iter().enumerate() {
+        if (x - at).abs() < (r[center] - at).abs() {
+            center = i;
+        }
+    }
+    let low = center.saturating_sub(window);
+    let high = (center + window + 1).min(r.len());
+    let count = high - low;
+    if count <= degree {
+        return Err(invalid(
+            "the local polynomial fit needs more nodes than its degree",
+        ));
+    }
+    let mut matrix = DMatrix::<f64>::zeros(count, degree + 1);
+    for i in 0..count {
+        let x = r[low + i] - at;
+        matrix[(i, 0)] = 1.;
+        for j in 1..=degree {
+            matrix[(i, j)] = matrix[(i, j - 1)] * x;
+        }
+    }
+    let scale = matrix.column_iter().map(|c| c.norm()).collect::<Vec<_>>();
+    for (j, s) in scale.iter().enumerate() {
+        matrix.column_mut(j).unscale_mut(*s);
+    }
+    let svd = matrix.svd(true, true);
+    let cutoff = count as f64 * f64::EPSILON * svd.singular_values.max();
+    let target = DVector::from_column_slice(&values[low..high]);
+    let solution = svd.solve(&target, cutoff).map_err(invalid)?;
+    let mut factorial = 1.;
+    Ok((0..=order)
+        .map(|k| {
+            if k > 0 {
+                factorial *= k as f64;
+            }
+            if k <= degree {
+                solution[k] / scale[k] * factorial
+            } else {
+                0.
+            }
+        })
+        .collect())
+}

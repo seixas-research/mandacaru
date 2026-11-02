@@ -28,6 +28,10 @@ pub enum Kind {
     Overlap,
     Hopping,
     Projection,
+    /// The pair function of the toy's density-dependent local potential (periodic_gradient).
+    Local,
+    /// A second constant Hermitian block, the toy's short-range term (periodic_gradient).
+    Short,
 }
 
 /// The radial weights `W` of a shell (`NP x NM`), the same for every shell.
@@ -50,6 +54,8 @@ fn pair(kind: Kind, i: usize, j: usize) -> (f64, f64) {
         Kind::Overlap => (sigma(i, j), 0.10),
         Kind::Hopping => (-0.45 * sigma(i, j) * (1.0 + 0.15 * (x * y).cos()), 0.09),
         Kind::Projection => (0.5 * (1.0 + 0.4 * (1.3 * x + 0.7 * y + 0.2).sin()), 0.07),
+        Kind::Local => (0.35 * (1.0 + 0.3 * (x + y).cos()), 0.08),
+        Kind::Short => (0.12 * sigma(i, j) * (1.0 + 0.1 * (x * y).sin()), 0.12),
     }
 }
 
@@ -146,7 +152,7 @@ impl Toy {
     }
 
     /// Row and column centers and owners, and the sign `s` of `d = s (row - col) + R`.
-    fn frame(&self, kind: Kind) -> (Vec<[f64; 3]>, Vec<usize>, Vec<[f64; 3]>, Vec<usize>, f64) {
+    pub fn frame(&self, kind: Kind) -> (Vec<[f64; 3]>, Vec<usize>, Vec<[f64; 3]>, Vec<usize>, f64) {
         let rows = (self.basis_centers(), self.basis_owner());
         if kind == Kind::Projection {
             (
@@ -202,7 +208,12 @@ impl Toy {
         C64::new(arg.cos(), arg.sin())
     }
 
-    fn sum(&self, kind: Kind, k: [f64; 3], cell: impl Fn(usize, usize, usize) -> f64) -> Matrix {
+    pub fn sum(
+        &self,
+        kind: Kind,
+        k: [f64; 3],
+        cell: impl Fn(usize, usize, usize) -> f64,
+    ) -> Matrix {
         let (rows, _, cols, _, _) = self.frame(kind);
         let mut out = Matrix::zeros(rows.len(), cols.len());
         for image in 0..self.images().len() {

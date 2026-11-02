@@ -130,6 +130,26 @@ def default_library_folder(functional: str | None = None) -> str:
     return library_folder_name("paw-lcao", DATASET_FUNCTIONALS[functional])
 
 
+def with_functional_set(family: str, options: dict, functional: str) -> dict:
+    """``options`` of a basis, with the ``paw_dataset`` a Kohn-Sham calculation
+    of ``functional`` reads when none is named.
+
+    This is the one place the functional picks its set, shared by the
+    molecular and the periodic route: a PAW-LCAO basis without
+    ``paw_dataset`` gets :func:`default_library_folder` (``pbe-sr`` for PBE,
+    HSE06 and r2SCAN, ``lda-sr`` for LDA).  A named folder (``None`` is not
+    one) always wins, and a family that is not PAW-LCAO is returned
+    unchanged: UPAW-LCAO is generated on demand and has no functional sets.
+    """
+    from .families import canonical_family_name
+
+    options = dict(options)
+    if (canonical_family_name(family) in FOLDER_FAMILIES
+            and options.get("paw_dataset") is None):
+        options["paw_dataset"] = default_library_folder(functional)
+    return options
+
+
 def _folders(root: str) -> list[str]:
     """The set folders of a checkout: its non-hidden subdirectories."""
     return sorted(entry for entry in os.listdir(root)

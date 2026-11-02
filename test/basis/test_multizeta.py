@@ -10,18 +10,32 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from ase.data import atomic_numbers
 
 from mandacaru.basis import BasisSet
 from mandacaru.basis._config import ground_state_config, valence_subshells
-from mandacaru.basis.multizeta import (DEFAULT_SPLIT_NORM, ZETA_NAMES,
+from mandacaru.basis.multizeta import (ZETA_NAMES,
                                        RadialTable, TabulatedOrbital,
-                                       resolve_zeta, split_radius,
-                                       split_valence_tail, zeta_tables)
+                                       resolve_zeta, zeta_tables)
 from mandacaru.basis.nao import solve_confined_radial
 from mandacaru.integrals import Grid
+
+
+FROZEN = Path(__file__).resolve().parents[1] / "migration" / "reference" / "basis_zetas"
+HYDROGEN = json.loads((FROZEN / "zeta_tables.json").read_text())["hydrogen_1s"]
+
+
+@pytest.fixture(scope="module")
+def frozen():
+    """What the scipy implementation (``split_radius``, ``split_valence_tail``,
+    ``zeta_tables``) returned for the hydrogen 1s below, frozen before it was
+    replaced by ``_native.radial_zetas``."""
+    return np.load(FROZEN / "zeta_tables.npz")
 
 
 @pytest.fixture(scope="module")
@@ -62,32 +76,64 @@ class TestZetaNames:
 class TestSplitValence:
     """The split-valence construction of the extra zetas."""
 
-    def test_split_radius_leaves_the_requested_tail_norm(self, hydrogen_1s):
+    @staticmethod
+    def split_of(r, radial, **options):
+        """The second zeta and the split radius it was cut at: the first node
+        past its support, since the tail is exactly zero from there on."""
+        zeta = zeta_tables(r, radial, 1, 0, 2, **options)[1].values
+        return zeta, float(r[np.flatnonzero(zeta)[-1] + 1])
+
+    def test_the_input_is_the_frozen_hydrogen(self, hydrogen_1s, frozen):
         r, radial = hydrogen_1s
+        np.testing.assert_allclose(r, frozen["h1s_r"], rtol=1e-12, atol=0)
+        np.testing.assert_allclose(radial, frozen["h1s_values"], rtol=1e-12,
+                                   atol=1e-14)
+
+    def test_the_zetas_match_the_frozen_construction(self, hydrogen_1s, frozen):
+        r, radial = hydrogen_1s
+        tables = zeta_tables(r, radial, 1, 0, 4)
+        assert len(tables) == HYDROGEN["count_out"]
+        for k, table in enumerate(tables, start=1):
+            expected = frozen[f"h1s_zeta{k}"]
+            scale = np.abs(expected).max()
+            assert np.abs(table.values - expected).max() <= 1e-12 * scale
+
+    def test_split_radius_leaves_the_requested_tail_norm(self, hydrogen_1s,
+                                                         frozen):
+        r, radial = hydrogen_1s
+        for norm, expected in zip(HYDROGEN["split_norms"],
+                                  HYDROGEN["split_radii"]):
+            _, r_s = self.split_of(r, radial, split_norm=norm)
+            assert r_s == pytest.approx(expected, rel=1e-14)
         for target in (0.05, 0.15, 0.30):
-            r_s = split_radius(r, radial, target)
+            _, r_s = self.split_of(r, radial, split_norm=target)
             density = radial ** 2 * r ** 2
             tail = np.trapezoid(density[r >= r_s], r[r >= r_s])
             assert tail == pytest.approx(target, abs=2e-3)
 
     def test_larger_split_norm_pushes_the_radius_inward(self, hydrogen_1s):
         r, radial = hydrogen_1s
-        assert split_radius(r, radial, 0.30) < split_radius(r, radial, 0.05)
+        assert (self.split_of(r, radial, split_norm=0.30)[1]
+                < self.split_of(r, radial, split_norm=0.05)[1])
 
     def test_tail_vanishes_beyond_the_split_radius(self, hydrogen_1s):
         r, radial = hydrogen_1s
-        r_s = split_radius(r, radial, DEFAULT_SPLIT_NORM)
-        tail = split_valence_tail(r, radial, 0, r_s)
-        assert np.all(tail[r >= r_s] == 0.0)
-        assert np.any(np.abs(tail[r < r_s]) > 1e-6)
+        zeta, r_s = self.split_of(r, radial)
+        assert np.all(zeta[r >= r_s] == 0.0)
+        assert np.any(np.abs(zeta[r < r_s]) > 1e-6)
 
-    def test_tail_is_continuous_at_the_split_radius(self, hydrogen_1s):
-        """Value and slope are matched there, so no discontinuity is injected."""
+    def test_tail_is_continuous_at_the_split_radius(self, hydrogen_1s, frozen):
+        """Value and slope are matched there, so no discontinuity is injected:
+        the (unnormalized) frozen tail is zero beyond ``r_s`` and the
+        normalized zeta is that tail over its norm."""
         r, radial = hydrogen_1s
-        r_s = split_radius(r, radial, DEFAULT_SPLIT_NORM)
-        tail = split_valence_tail(r, radial, 0, r_s)
+        zeta, r_s = self.split_of(r, radial)
+        tail = frozen["h1s_tail_default"]
         inside = np.nonzero(r < r_s)[0]
         assert abs(tail[inside[-1]]) < 1e-3
+        norm = np.sqrt(np.trapezoid(tail * tail * r * r, r))
+        np.testing.assert_allclose(zeta * norm, tail, rtol=0,
+                                   atol=1e-12 * np.abs(tail).max())
 
     def test_zeta_hierarchy_is_strictly_shorter_ranged(self, hydrogen_1s):
         """Each added zeta lives inside the previous one."""

@@ -416,13 +416,23 @@ fn unsupported_states_raise_instead_of_returning_forces() {
         state.converged = false;
         let error = base.gradient(&state).err().unwrap().to_string();
         assert!(error.contains("converged"), "{error}");
-        // Screened exchange and nonlocal correlation have no PAW force.
-        for name in ["hse06", "pbe+rvv10"] {
-            let mut state = solve(&base, Method::Ks("pbe"), [1, 1]);
-            state.functional = Some(name.into());
-            let error = base.gradient(&state).err().unwrap().to_string();
-            assert!(error.contains(name), "{error}");
-        }
+        // Nonlocal correlation has no PAW force: the functional is refused by name.
+        let mut state = solve(&base, Method::Ks("pbe"), [1, 1]);
+        state.functional = Some("pbe+rvv10".into());
+        let error = base.gradient(&state).err().unwrap().to_string();
+        assert!(error.contains("pbe+rvv10"), "{error}");
+        // The screened exchange has a PAW force now (the HSE06 stream dropped the functional
+        // guard), so a PBE state relabeled "hse06" is not refused for its functional. It is
+        // refused because it does not reproduce its energy under the hybrid operator: a
+        // gradient is never returned for a state that was not computed with these integrals.
+        let mut relabeled = solve(&base, Method::Ks("pbe"), [1, 1]);
+        relabeled.functional = Some("hse06".into());
+        let error = base.gradient(&relabeled).err().unwrap().to_string();
+        assert!(
+            error.contains("does not reproduce its energy")
+                && error.contains("not computed with them"),
+            "{error}"
+        );
         // Float32 samples cannot carry a finite difference.
         let float32 = integrals_in(&ctx, &H2, "lda", Precision::Float32);
         let good = solve(&base, Method::Hf("rhf"), [1, 1]);

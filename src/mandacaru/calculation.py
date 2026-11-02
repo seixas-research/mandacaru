@@ -93,6 +93,58 @@ def _refuse_inapplicable(method, arguments):
         )
 
 
+_EXXDIV_TREATMENTS = ("none", "gygi-baldereschi")
+
+
+def _exchange_divergence(exxdiv_treatment, gygi_baldereschi, periodic_scf_options):
+    """The canonical divergence treatment of the exact exchange.
+
+    ``exxdiv_treatment`` is ``None`` (left out), ``"none"`` or
+    ``"gygi-baldereschi"``; ``gygi_baldereschi=True`` is the one shorthand for
+    the second. Any other spelling, a non-boolean flag, a flag that contradicts
+    an explicit ``exxdiv_treatment`` and the old route through
+    ``periodic_scf_options`` raise.
+    """
+    for key in ("exxdiv_treatment", "gygi_baldereschi"):
+        if key in (periodic_scf_options or {}):
+            raise ValueError(
+                f"{key} is a Mandacaru option, not a periodic_scf_options key; "
+                f"pass Mandacaru({key}=...)"
+            )
+    if exxdiv_treatment is not None and exxdiv_treatment not in _EXXDIV_TREATMENTS:
+        raise ValueError(
+            f"unknown exxdiv_treatment {exxdiv_treatment!r}; "
+            "use 'none' or 'gygi-baldereschi'"
+        )
+    if gygi_baldereschi is not None and not isinstance(gygi_baldereschi, bool):
+        raise TypeError("gygi_baldereschi must be True, False or None")
+    if gygi_baldereschi is None:
+        return "none" if exxdiv_treatment is None else exxdiv_treatment
+    wanted = "gygi-baldereschi" if gygi_baldereschi else "none"
+    if exxdiv_treatment is not None and exxdiv_treatment != wanted:
+        raise ValueError(
+            f"gygi_baldereschi={gygi_baldereschi} contradicts "
+            f"exxdiv_treatment={exxdiv_treatment!r}; give one of them"
+        )
+    return wanted
+
+
+def _refuse_exchange_divergence_without_hybrid(treatment, functional, periodic):
+    """Raise for a divergence treatment that no exact exchange would use."""
+    if treatment == "none":
+        return
+    if not periodic:
+        raise ValueError(
+            f"exxdiv_treatment={treatment!r} treats the divergence of a periodic "
+            "exact exchange; a molecule has none, so leave the option out"
+        )
+    if functional != "hse06":
+        raise ValueError(
+            f"exxdiv_treatment={treatment!r} applies to a hybrid functional "
+            f"(xc='hse06'), not to xc={functional!r}"
+        )
+
+
 def _check_float32_floors(method, tolerance, convergence, *, adapt):
     """Raise for a setting a complex64 state cannot resolve, naming the floor.
 
@@ -350,9 +402,11 @@ class Mandacaru(ASEProperties, Calculator):
         ``"rhf"`` run with ``xc="pbe"`` is the same Hartree-Fock). It also
         chooses the default PAW-LCAO dataset folder (``pbe-sr`` for PBE, HSE06
         and r2SCAN, ``lda-sr`` otherwise); a dataset generated with another
-        functional triggers a warning. A crystal supports ``"lda"``,
-        ``"pbe"``, ``"r2scan"``, ``"pbe+rvv10"`` and ``"r2scan+rvv10"``;
-        ``"hse06"`` raises ``NotImplementedError`` at ``run()``. With
+        functional triggers a warning. A crystal supports every one of them,
+        ``"hse06"`` included, on the whole k mesh (see ``kpts`` and
+        ``symmetry``: a hybrid crystal on a symmetry-reduced mesh raises
+        ``NotImplementedError``); its forces and stress are central finite
+        differences of the energy through ASE, not analytic. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
     vdw : str or bool, optional
         Van der Waals dispersion correction, one of ``"rvv10"``, ``"ts"``
@@ -735,7 +789,16 @@ class Mandacaru(ASEProperties, Calculator):
         reversal is always used). Spinor (spin-orbit) calculations never use
         the space-group reduction, and nonzero initial magnetic moments keep
         the full mesh. A non-boolean raises
-        ``TypeError``. Ignored for molecules.
+        ``TypeError``. A hybrid functional (``xc="hse06"``) needs the whole
+        mesh, because its exact exchange sums over the listed k-points: a mesh
+        reduced by space-group symmetry or halved by time reversal raises
+        ``NotImplementedError`` at the first calculation. Use
+        ``symmetry=False`` together with a Gamma-centered mesh of one or two
+        points per direction (all of its points are time-reversal invariant,
+        so nothing is halved); on any other mesh use ``symmetry=False`` with
+        ``unrestricted=True`` and nonzero initial magnetic moments (only a
+        spin-polarized run keeps the whole mesh; a spin-orbit crystal has no
+        such option). Ignored for molecules.
     hubbard_u : dict, optional
         The on-site DFT+U correction (simplified rotationally invariant form of
         Dudarev et al., fully localized double counting) of a periodic
@@ -773,6 +836,27 @@ class Mandacaru(ASEProperties, Calculator):
     save_crystal : path, optional
         Write the periodic setup (before the SCF) to this path for reuse with
         ``load_crystal``. Periodic calculations only.
+    exxdiv_treatment : str, optional
+        Treatment of the divergence of the exact exchange at the zero
+        momentum transfer of a periodic hybrid (``xc="hse06"``), one of
+        ``"none"`` (the default: the finite point limit ``pi / omega**2`` of
+        the screened Coulomb kernel) and ``"gygi-baldereschi"`` (the kernel
+        is averaged over the Voronoi sphere of the k-point, which speeds the
+        convergence with the k mesh). These two are the only values; any
+        other spelling raises ``ValueError``. It applies to a periodic hybrid
+        only: with a non-hybrid functional (``ValueError`` at construction,
+        or at the first calculation with ``load_crystal``), a molecule
+        (``ValueError`` at the first calculation) any value but ``"none"``
+        raises, and giving it to a method other than ``"dft"`` raises
+        ``ValueError`` whatever the value. Giving it in
+        ``periodic_scf_options`` raises ``ValueError``. Used by
+        ``method="dft"`` only.
+    gygi_baldereschi : bool, optional
+        The one shorthand for ``exxdiv_treatment="gygi-baldereschi"``:
+        ``True`` selects that treatment, ``False`` selects ``"none"``. Giving
+        it together with an ``exxdiv_treatment`` that says otherwise raises
+        ``ValueError``, a non-boolean raises ``TypeError``, and it is refused
+        wherever ``exxdiv_treatment`` is. Used by ``method="dft"`` only.
 
     Notes
     -----
@@ -862,7 +946,7 @@ class Mandacaru(ASEProperties, Calculator):
         hubbard_u=None,
         load_crystal=None,
         save_crystal=None,
-        exxdiv_treatment="none",
+        exxdiv_treatment=None,
         gygi_baldereschi=None,
     ):
         super().__init__()
@@ -1263,14 +1347,14 @@ class Mandacaru(ASEProperties, Calculator):
         if len(size) != 3 or any(type(n) is not int or n < 1 for n in size):
             raise ValueError("kpts needs three positive integer mesh sizes")
         self._periodic_options = dict(periodic_scf_options or {})
-        if "exxdiv_treatment" not in self._periodic_options:
-            if self._periodic_options.get("gygi_baldereschi") is True or gygi_baldereschi is True:
-                self._periodic_options["exxdiv_treatment"] = "gygi-baldereschi"
-            elif exxdiv_treatment != "none":
-                self._periodic_options["exxdiv_treatment"] = exxdiv_treatment
-            else:
-                self._periodic_options["exxdiv_treatment"] = "none"
-        self._periodic_options.pop("gygi_baldereschi", None)
+        self._periodic_options["exxdiv_treatment"] = _exchange_divergence(
+            exxdiv_treatment, gygi_baldereschi, periodic_scf_options
+        )
+        if load_crystal is None and self._periodic_options["exxdiv_treatment"] != "none":
+            # A crystal file owns its functional: it is checked when the file is read.
+            _refuse_exchange_divergence_without_hybrid(
+                self._periodic_options["exxdiv_treatment"], self._xc, periodic=True
+            )
         self._periodic_symmetry = symmetry
         self._hubbard_u = hubbard.validate(hubbard_u, xc=self._xc, precision=precision)
         if atoms is not None:
@@ -1278,7 +1362,7 @@ class Mandacaru(ASEProperties, Calculator):
         # A crystal file owns its basis; otherwise the option needs a PAW dataset.
         paw = None if load_crystal is not None else hubbard.paw_basis(self._hubbard_u, basis)
         if atoms is not None:
-            hubbard.check_atoms(self._hubbard_u, self.context, atoms, paw)
+            hubbard.check_atoms(self._hubbard_u, self.context, atoms, paw, self._xc)
         self._periodic_basis = basis
         self._periodic_two_body_requested = False
         self._requested_mapping = mapping
@@ -1850,6 +1934,9 @@ class Mandacaru(ASEProperties, Calculator):
         ):
             raise ValueError("xc disagrees with the crystal functional")
         self._xc = self.periodic_problem.functional
+        _refuse_exchange_divergence_without_hybrid(
+            self._periodic_options["exxdiv_treatment"], self._xc, periodic=True
+        )
         if self._save_crystal:
             self.periodic_problem.save(str(self._save_crystal))
         periodic = self.periodic_problem.solve(**self._periodic_options)
@@ -1905,6 +1992,9 @@ class Mandacaru(ASEProperties, Calculator):
                 result = self._periodic(value)
             elif value is not None:
                 hubbard.require_crystal(self._hubbard_u, value.pbc)
+                _refuse_exchange_divergence_without_hybrid(
+                    self._periodic_options["exxdiv_treatment"], self._xc, periodic=False
+                )
                 reference = self._mean_field(value)
                 if not reference.success:
                     raise RuntimeError("native SCF did not converge")

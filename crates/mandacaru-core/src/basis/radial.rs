@@ -1,6 +1,6 @@
 //! Checked uniform-grid radial eigensolves and not-a-knot cubic interpolation.
 use super::invalid;
-use crate::{kernels, product, Buffer, Context, Result};
+use crate::{kernels, math::spline::Cubic, product, Buffer, Context, Result};
 
 #[derive(Debug)]
 pub struct Table {
@@ -181,47 +181,80 @@ pub fn confined(
     values.as_mut_slice()[0] = 2. * values.as_slice()[1] - values.as_slice()[2];
     Table::new(ctx, step, values, energy, l)
 }
-pub fn zetas(
+/// The extra zetas of a first-zeta table `(r, first)` by the split-valence
+/// construction; `r` is any increasing grid with `r[0] >= 0` (a PAW table starts
+/// at its step, not at zero). The result holds a copy of `first` followed by up to
+/// `count - 1` normalized refinements, one fewer when the split leaves nothing.
+///
+/// Without `tail_norms` each zeta splits the previous one at the radius leaving
+/// `split_norm` of its squared norm outside, halved for every further zeta. With
+/// them every zeta splits the first one, leaving `tail_norms[k]^2` outside.
+pub fn zeta_values(
     ctx: &Context,
-    first: Table,
+    r: &[f64],
+    first: &[f64],
     l: usize,
     count: usize,
     split_norm: f64,
     tail_norms: Option<&[f64]>,
-) -> Result<Vec<std::sync::Arc<Table>>> {
+) -> Result<Vec<Buffer<f64>>> {
+    let fractions = tail_norms.map(|v| v.iter().map(|x| x.powi(2)).collect::<Vec<_>>());
+    zeta_values_by_fraction(ctx, r, first, l, count, split_norm, fractions.as_deref())
+}
+/// [`zeta_values`] with the first-zeta tails given as the squared-norm fractions
+/// left outside the split radius (`tail_fractions[k]` rather than its square
+/// root): the convention of the polarization zetas.
+pub fn zeta_values_by_fraction(
+    ctx: &Context,
+    r: &[f64],
+    first: &[f64],
+    l: usize,
+    count: usize,
+    split_norm: f64,
+    tail_fractions: Option<&[f64]>,
+) -> Result<Vec<Buffer<f64>>> {
     if count == 0
         || count > 4
         || !split_norm.is_finite()
         || !(0. ..1.).contains(&split_norm)
         || split_norm == 0.
-        || tail_norms.is_some_and(|v| {
+        || tail_fractions.is_some_and(|v| {
             v.len() < count - 1 || v.iter().any(|x| !x.is_finite() || *x <= 0. || *x >= 1.)
         })
     {
         return Err(invalid("invalid zeta count or tail norms"));
     }
-    let mut out = vec![std::sync::Arc::new(first)];
+    let n = r.len();
+    if n < 4 || first.len() != n || r[0] < 0. || r.windows(2).any(|w| w[1] <= w[0]) {
+        return Err(invalid(
+            "the zeta split needs matching values on an increasing grid from r >= 0",
+        ));
+    }
+    crate::finite(r, "zeta grid")?;
+    crate::finite(first, "zeta values")?;
+    let l_i = i32::try_from(l).map_err(|_| invalid("angular momentum too large"))?;
+    let trapezoid = |f: &[f64]| {
+        (1..n)
+            .map(|i| 0.5 * (f[i - 1] + f[i]) * (r[i] - r[i - 1]))
+            .sum::<f64>()
+    };
+    let _work = ctx.reserve(product(&[n, 24])?)?;
+    let mut out = vec![ctx.copy_slice(first)?];
     let mut fraction = split_norm;
     for zeta in 1..count {
-        let previous = &out[if tail_norms.is_some() {
+        let previous = out[if tail_fractions.is_some() {
             0
         } else {
             out.len() - 1
-        }];
-        if let Some(tails) = tail_norms {
-            fraction = tails[zeta - 1].powi(2);
+        }]
+        .as_slice();
+        if let Some(tails) = tail_fractions {
+            fraction = tails[zeta - 1];
         }
-        let y = previous.values.as_slice();
-        let h = previous.step;
-        let n = y.len();
-        let _work = ctx.reserve(product(&[n, 8])?)?;
         let density = (0..n)
-            .map(|i| y[i].powi(2) * (i as f64 * h).powi(2))
+            .map(|i| previous[i].powi(2) * r[i].powi(2))
             .collect::<Vec<_>>();
-        let total = density
-            .windows(2)
-            .map(|v| 0.5 * (v[0] + v[1]) * h)
-            .sum::<f64>();
+        let total = trapezoid(&density);
         if total <= 0. {
             return Err(invalid("zero-norm radial function"));
         }
@@ -230,7 +263,7 @@ pub fn zetas(
         let mut error = f64::INFINITY;
         for i in 0..n {
             if i > 0 {
-                inner += 0.5 * (density[i - 1] + density[i]) * h;
+                inner += 0.5 * (density[i - 1] + density[i]) * (r[i] - r[i - 1]);
             }
             let diff = ((total - inner) / total - fraction).abs();
             if diff < error {
@@ -238,35 +271,59 @@ pub fn zetas(
                 best = i;
             }
         }
-        let radius = best.max(1) as f64 * h;
-        let (value, slope) = previous.value_slope(radius);
-        let b = (l as f64 * value / radius - slope) / (2. * radius.powi(l as i32 + 1));
-        let a = value / radius.powi(l as i32) + b * radius * radius;
+        let radius = r[best.max(1)];
+        let spline = Cubic::new(ctx, ctx.copy_slice(r)?, ctx.copy_slice(previous)?)?;
+        let (value, slope) = spline.value_slope(radius);
+        let b = (l as f64 * value / radius - slope) / (2. * radius.powi(l_i + 1));
+        let a = value / radius.powi(l_i) + b * radius * radius;
         let mut values = ctx.allocate::<f64>(n)?;
-        for (i, y) in y.iter().enumerate() {
-            let r = i as f64 * h;
-            if r < radius {
-                values.as_mut_slice()[i] = y - r.powi(l as i32) * (a - b * r * r);
+        for i in 0..n {
+            if r[i] < radius {
+                values.as_mut_slice()[i] = previous[i] - r[i].powi(l_i) * (a - b * r[i] * r[i]);
             }
         }
         if !values.as_slice().iter().any(|v| v.abs() > 1e-12) {
             break;
         }
-        let norm = (values
-            .as_slice()
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                v * v * (i as f64 * h).powi(2) * if i == 0 || i == n - 1 { 0.5 } else { 1. }
-            })
-            .sum::<f64>()
-            * h)
-            .sqrt();
+        let weight = (0..n)
+            .map(|i| values.as_slice()[i].powi(2) * r[i].powi(2))
+            .collect::<Vec<_>>();
+        let norm = trapezoid(&weight).sqrt();
         for value in values.as_mut_slice() {
             *value /= norm;
         }
-        out.push(std::sync::Arc::new(Table::new(ctx, h, values, 0., l)?));
+        out.push(values);
         fraction *= 0.5;
+    }
+    Ok(out)
+}
+/// [`zeta_values`] on the uniform grid `i * step` of a table, as spline tables.
+pub fn zetas(
+    ctx: &Context,
+    first: Table,
+    l: usize,
+    count: usize,
+    split_norm: f64,
+    tail_norms: Option<&[f64]>,
+) -> Result<Vec<std::sync::Arc<Table>>> {
+    let n = first.values.as_slice().len();
+    let h = first.step;
+    if first.radius() != (n - 1) as f64 * h {
+        return Err(invalid("the zeta split needs a table on a uniform grid"));
+    }
+    let r = (0..n).map(|i| i as f64 * h).collect::<Vec<_>>();
+    let refined = zeta_values(
+        ctx,
+        &r,
+        first.values.as_slice(),
+        l,
+        count,
+        split_norm,
+        tail_norms,
+    )?;
+    let mut out = vec![std::sync::Arc::new(first)];
+    for values in refined.into_iter().skip(1) {
+        out.push(std::sync::Arc::new(Table::new(ctx, h, values, 0., l)?));
     }
     Ok(out)
 }

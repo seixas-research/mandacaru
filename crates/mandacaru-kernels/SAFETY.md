@@ -31,7 +31,7 @@ extension does not turn arbitrary raw-pointer calls into checked operations.
 | Laplacian | Input and separate output `[N,nx,ny,nz]`, inverse metric `[9]`; workers own disjoint field/x planes. |
 | Projectors | `psi[M,G]`, `chi[P,G]`, output `[M,P]`; workers own disjoint orbital rows. |
 | Real/Bloch shells | Coordinates `[3,G]`, center `[3]`, strictly increasing knots `[B]` with `B>=2`, interval-major cubic coefficients `[B-1,4]`, valid angular indices `-l..l`, derivative `-1..2`, destination row indices inside `M`. Bloch inputs additionally need translations `[I,3]`, phases `[K,I]` and output `[K,M,G]`. Real outputs use `[M,G]`. Destination rows must be unique to prevent overlapping writes. |
-| Bloch projection | Shell inputs above, columns `[P,G]` and output `[ceil(G/BLOCK),I,nm,P]`; all dimensions and derived block counts must be positive. Workers own different point blocks. |
+| Bloch projection | Shell inputs above, columns `[P,G]` and output `[I,nm,P]`; all dimensions and derived block counts must be positive. Workers own different point blocks and sum into private copies that are added in worker order. |
 | Two-center | Radii `[nr]`, wave numbers `[nk]`, Bessel output `[nr,nk]`; Fourier-Bessel weights `[nr]` and output `[nk]`; two-center quadrature weights `[nk]`, distances `[nR]` and output `[nR]`. Parallel output ranges are disjoint. |
 | Numerov | Coefficients, source and solution all `[N]`, `N>=3`, valid boundary below `N-1`, two initial boundary values, positive squared step and nonsingular recurrence denominators. Solution is the sole mutable buffer. |
 | Eigenpair | Finite diagonal `[N]`, off diagonal `[N-1]`, `N>=1`, `0<=index<N`, scalar eigenvalue output and independent vector `[N]`. Scratch arrays belong to the call. |
@@ -40,8 +40,10 @@ extension does not turn arbitrary raw-pointer calls into checked operations.
 | Bader | Consistent grid/cell transforms, `[nstart,3]` starts, three grid-gradient fields, `[natom,3]` positions, `[natom+1]` monotone core offsets into radial arrays, `[natom]` supports, output owners `[nstart]` and final indices `[nstart,3]`. Workers own disjoint start ranges. |
 
 The checked Phase 1 interfaces cover one-body, both real Laplacian precisions,
-complex projectors, Bessel/Fourier-Bessel, radial eigenpairs, Numerov and real
-shells. They validate integer conversions, shape products, finiteness, spline
+complex projectors, Bessel/Fourier-Bessel, radial eigenpairs, Numerov, real
+shells, and the Bloch shells and Bloch projections of the periodic setup
+(`kernels::bloch_shell`, `kernels::bloch_project`: the two complex types share
+layout, asserted at compile time). They validate integer conversions, shape products, finiteness, spline
 sizes and angular/derivative bounds before allocating independent outputs and
 entering unsafe kernels. Other raw interfaces remain caller-validated legacy
 paths and must gain checked interfaces when their owning components migrate.
@@ -89,3 +91,13 @@ test in the binary would share the harness's baseline); it is a separate file
 because a `#[global_allocator]` owns its whole test binary.
 `periodic_load_memory.rs` does the same for `Crystal::load` (the heap of a saved crystal
 against the reservation of the load), under the same one-test rule.
+
+`paw_record_memory.rs` is a sixth process-wide counting allocator, under the
+same contract as `parquet_memory.rs` (it forwards to `System` unchanged, keeps
+atomic counters that never allocate, serializes its measurements behind a mutex
+and refuses growth past an emulated hard limit by returning null). It measures
+`paw::record::PawDataset::read`: the live bytes of a read of `pbe-fr/Pb`, of a
+hostile payload, of a footer declaring 2^40 rows and of byte-mutated dataset
+files never exceed `Context::memory_peak()` plus a fixed 1 MiB. Like the
+others it is a separate test binary because a `#[global_allocator]` owns its
+whole test binary, and it never ships in a library build.

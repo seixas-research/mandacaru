@@ -247,7 +247,7 @@ impl PyContext {
             .map_err(error)?;
         Ok(quantum::PyProblem { inner })
     }
-    #[pyo3(signature=(variables,*,omega=0.11))]
+    #[pyo3(signature=(variables,*,omega=mandacaru_core::models::HSE06_OMEGA))]
     fn exchange_hole<'py>(
         &self,
         py: Python<'py>,
@@ -264,7 +264,7 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[rows, 3], out.as_slice().to_vec())
     }
-    #[pyo3(signature=(variables,*,omega=0.11,exact_fraction=0.25))]
+    #[pyo3(signature=(variables,*,omega=mandacaru_core::models::HSE06_OMEGA,exact_fraction=mandacaru_core::models::HSE06_EXACT_FRACTION))]
     fn hybrid_points<'py>(
         &self,
         py: Python<'py>,

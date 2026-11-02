@@ -32,15 +32,14 @@ reads the dataset tables and prepares the radial basis tables.
 
 | | |
 | --- | --- |
-| Methods | `rhf`, `uhf`, semilocal `dft` (`lda`, `pbe`, `r2scan`), and the variational methods through an RHF or UHF reference |
+| Methods | `rhf`, `uhf`, `dft` (`lda`, `pbe`, `r2scan` and the screened hybrid `hse06`), and the variational methods through an RHF or UHF reference |
 | Frozen-core exchange (Hartree–Fock, variational) | an empty core or a single closed 1s shell |
-| Forces | RHF, UHF and semilocal Kohn–Sham ([Forces](forces_relaxation.md)) |
+| Forces | RHF, UHF and Kohn–Sham, `hse06` included ([Forces](forces_relaxation.md)) |
 | Geometry | molecules; a crystal reads its own datasets through the periodic setup |
 
 The following raise, or are not yet available ([open items](#not-yet-available)):
-screened exact exchange (`hse06`) and nonlocal correlation (`pbe+rvv10`,
-`r2scan+rvv10`) with PAW; multi-shell frozen-core exchange; spin-orbit
-projectors, so a molecule on a `-fr` dataset raises `NotImplementedError`;
+nonlocal correlation (`pbe+rvv10`, `r2scan+rvv10`) with PAW; multi-shell
+frozen-core exchange; spin-orbit projectors, so a molecule on a `-fr` dataset raises `NotImplementedError`;
 `precision="float32"` forces; the GHF-to-quantum handoff.
 
 The two families of one-center terms differ by method. Kohn–Sham keeps the

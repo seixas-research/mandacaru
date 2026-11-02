@@ -1,14 +1,20 @@
 //! Periodic engine and portable crystal snapshots. Atomic units throughout.
 pub mod analysis;
 pub mod ewald;
+pub mod exchange_state;
 pub mod fields;
 pub mod finite_size;
+pub mod gradient;
 pub mod hubbard;
 pub mod hubbard_gradient;
 pub mod hubbard_table;
+pub mod hybrid_setup;
 pub mod input;
 pub mod screening;
+pub mod screened_augmentation;
 pub mod screened_exchange;
+pub mod screened_onecenter;
+pub mod setup;
 pub mod solver;
 pub mod space_group;
 pub mod spectrum;

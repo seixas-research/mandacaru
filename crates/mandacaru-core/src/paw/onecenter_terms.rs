@@ -49,7 +49,7 @@ fn symmetrize(m: &DMatrix<f64>) -> DMatrix<f64> {
 }
 
 /// `searchsorted(r, radius) + 1`, capped at the grid: the nodes of a sphere.
-fn nodes_inside(r: &[f64], radius: f64) -> usize {
+pub(crate) fn nodes_inside(r: &[f64], radius: f64) -> usize {
     (r.partition_point(|x| *x < radius) + 1).min(r.len())
 }
 

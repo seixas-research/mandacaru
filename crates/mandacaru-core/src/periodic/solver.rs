@@ -51,6 +51,23 @@ pub struct Iteration {
     pub moment_residual: f64,
     pub magnetization: f64,
     pub kinetic_residual: f64,
+    /// Hybrids only: the largest change of the exact-exchange Hamiltonian between the operator the
+    /// iteration diagonalized with and the one its output density builds, in Hartree
+    /// ([`super::exchange_state::residual`]).
+    pub exchange_residual: Option<f64>,
+}
+impl Iteration {
+    /// The stopping rule: the energy, density, moment and kinetic-density residuals pass their
+    /// tolerances, and for a hybrid the exchange operator has stopped moving. The exchange is a
+    /// Hamiltonian, in Hartree like the energy: `tolerance` bounds it, so the bands of the SCF are
+    /// within `tolerance` of those of the converged density.
+    pub fn converged(&self, options: &Options) -> bool {
+        self.delta.is_some_and(|d| d.abs() < options.tolerance)
+            && self.residual < options.density_tolerance
+            && self.kinetic_residual < options.density_tolerance
+            && self.moment_residual < options.density_tolerance
+            && self.exchange_residual.is_none_or(|r| r < options.tolerance)
+    }
 }
 pub struct PeriodicResult {
     pub energy: f64,
@@ -385,10 +402,18 @@ pub fn diagonalize_with(
     kinetic_potential: Option<&[f64]>,
     hubbard: Option<&Matrix>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    // The exact exchange K(k) of a hybrid is not part of (v, w) either: this entry point would
+    // silently diagonalize a different Hamiltonian.
+    if c.screened_exchange()?.is_some() {
+        return Err(invalid(
+            "diagonalize_with without the exact exchange of a hybrid crystal; \
+             use diagonalize_with_exchange",
+        ));
+    }
     diagonalize_with_exchange(c, data, v, w, kinetic_potential, hubbard, None)
 }
 
-/// [`diagonalize_with`] with an optional exact exchange matrix K(k), added as -0.25 K(k).
+/// [`diagonalize_with`] with an optional exact exchange matrix K(k), added as -fraction K(k).
 pub fn diagonalize_with_exchange(
     c: &Crystal,
     data: &KPoint,
@@ -437,7 +462,7 @@ pub fn diagonalize_with_exchange(
         }
     }
     if let Some(k) = exchange {
-        h -= k * C64::new(0.25, 0.);
+        h -= k * C64::new(c.require_screened_exchange()?.1, 0.);
     }
     let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
     let (eps, y) = eigen(data.lowdin.adjoint() * h * &data.lowdin)?;
@@ -698,7 +723,8 @@ impl Crystal {
             Some(h) => h.bytes(c)?,
             None => 0,
         };
-        if c.spinor && c.functional != "lda" && c.functional != "pbe" && c.functional != "hse06" {
+        let hybrid = c.screened_exchange()?;
+        if c.spinor && c.functional != "lda" && c.functional != "pbe" && hybrid.is_none() {
             return Err(invalid("periodic spinor XC currently requires LDA, PBE or HSE06"));
         }
         if options.max_iterations == 0
@@ -723,10 +749,18 @@ impl Crystal {
                 .checked_add(hub_bytes)
                 .ok_or(crate::Error::Overflow)?;
             let archive_matrices = product(&[c.spins, nk, m, m, 32])? > ctx.memory_limit() / 8;
+            // The mixed state: the fields, the moments and, for a hybrid, the exchange operators.
+            let exchange_len = if hybrid.is_some() {
+                super::exchange_state::len(c)
+            } else {
+                0
+            };
             let mut memory = ctx.reserve(
                 retained
                     .checked_add(product(&[
-                        c.field_channels() * n * (1 + usize::from(meta)) + c.channels,
+                        c.field_channels() * n * (1 + usize::from(meta))
+                            + c.channels
+                            + exchange_len,
                         16,
                         8,
                     ])?)
@@ -768,8 +802,12 @@ impl Crystal {
                 Some(h) if active => h.seed(c.spins)?,
                 _ => vec![],
             };
-            let is_hybrid = c.functional == "hse06";
-            let mut exchange_operators: Option<Vec<Matrix>> = None;
+            // Exact exchange of a hybrid: K_in defines the diagonalization, is mixed with the density
+            // and starts at zero, the first iteration being the semilocal one.
+            let mut exchange_in = match hybrid {
+                Some(_) => super::exchange_state::zeros(c),
+                None => vec![],
+            };
             let mut exchange_energy = 0.0;
             for iteration in 1..=options.max_iterations {
                 let LocalPotential {
@@ -804,7 +842,7 @@ impl Crystal {
                                 .as_ref()
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
                             hub_operators.as_ref().map(|o| &o[s]),
-                            exchange_operators.as_ref().map(|ops| &ops[s * c.points.len() + k_idx]),
+                            hybrid.map(|_| &exchange_in[s * c.points.len() + k_idx]),
                         )?;
                         eigenvalues.push(eps);
                         coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
@@ -859,16 +897,17 @@ impl Crystal {
                 } else {
                     None
                 };
-                if is_hybrid {
-                    let (ops, exx) = super::screened_exchange::exchange_operators(
-                        c,
-                        &matrices,
-                        0.11,
-                        options.exxdiv_treatment,
-                    )?;
-                    exchange_operators = Some(ops);
-                    exchange_energy = exx;
-                }
+                let exchange_out = match hybrid {
+                    Some(_) => {
+                        let exchange = c.hybrid_exchange(&matrices, options.exxdiv_treatment)?;
+                        exchange_energy = exchange.energy;
+                        exchange.operators
+                    }
+                    None => vec![],
+                };
+                let exchange_residual = hybrid.map(|(_, fraction)| {
+                    super::exchange_state::residual(c, fraction, &exchange_in, &exchange_out)
+                });
                 let mut terms = energy(
                     c,
                     &mut fft,
@@ -877,7 +916,7 @@ impl Crystal {
                     qout.as_slice(),
                     tauout.as_ref().map(|t| t.as_slice()),
                 )?;
-                if is_hybrid {
+                if hybrid.is_some() {
                     terms[2] += exchange_energy;
                 }
                 let energy = terms.iter().sum::<f64>() + hub_energy;
@@ -906,7 +945,9 @@ impl Crystal {
                     qout.as_slice(),
                     tauout.as_ref().map(|t| t.as_slice()),
                 );
-                let unit_from = if hub_out.is_some() {
+                // Past `unit_from` the mixer's metric is the plain sum: DFT+U occupations (never
+                // with a hybrid) or the exchange operators.
+                let unit_from = if hub_out.is_some() || hybrid.is_some() {
                     x.len()
                 } else {
                     usize::MAX
@@ -914,6 +955,18 @@ impl Crystal {
                 if let Some(out) = &hub_out {
                     x.extend(super::hubbard::flatten(&hub_in));
                     y.extend(super::hubbard::flatten(out));
+                }
+                let exchange_from = x.len();
+                if hybrid.is_some() {
+                    // The first iteration had no exchange to start from: it enters the mixer at its
+                    // own output, so the second one diagonalizes with K of the first density.
+                    let built = super::exchange_state::flatten(&exchange_out);
+                    x.extend(if iteration == 1 {
+                        built.clone()
+                    } else {
+                        super::exchange_state::flatten(&exchange_in)
+                    });
+                    y.extend(built);
                 }
                 let kinetic_residual = tau.as_ref().zip(tauout.as_ref()).map_or(0., |(a, b)| {
                     a.as_slice()
@@ -965,11 +1018,11 @@ impl Crystal {
                     moment_residual,
                     magnetization,
                     kinetic_residual,
+                    exchange_residual,
                 });
-                let converged = delta.is_some_and(|d: f64| d.abs() < options.tolerance)
-                    && residual < options.density_tolerance
-                    && kinetic_residual < options.density_tolerance
-                    && moment_residual < options.density_tolerance;
+                let converged = history
+                    .last()
+                    .is_some_and(|last: &Iteration| last.converged(options));
                 if converged || iteration == options.max_iterations {
                     let mut eigenvalues = eigenvalues;
                     for e in eigenvalues.iter_mut().flatten() {
@@ -1041,8 +1094,11 @@ impl Crystal {
                     q.as_mut_slice(),
                     tau.as_mut().map(|t| t.as_mut_slice()),
                 );
-                if unit_from != usize::MAX {
-                    super::hubbard::restore(&mut hub_in, &next[unit_from..]);
+                if hub_out.is_some() {
+                    super::hubbard::restore(&mut hub_in, &next[unit_from..exchange_from]);
+                }
+                if hybrid.is_some() {
+                    super::exchange_state::restore(&mut exchange_in, &next[exchange_from..]);
                 }
                 previous = Some(free);
             }

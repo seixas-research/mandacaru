@@ -24,10 +24,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from mandacaru.basis.multizeta import RadialTable, TabulatedOrbital
 from mandacaru.pseudopotentials import get_paw
 from mandacaru.pseudopotentials.families import pseudo_basis_arguments
 from mandacaru.pseudopotentials.orbitals import (
-    BOUND_LEVEL, KBProjector, PseudoAtomicOrbital, _RadialTabulated,
+    BOUND_LEVEL, KBProjector, PseudoAtomicOrbital, PseudoShell, _RadialTabulated,
     basis_states, bound_radial,
     occupied_states, pseudo_basis, valence_electrons, _lowest_level)
 
@@ -172,6 +173,55 @@ class TestFrozenPythonOutputs:
         close(strided(radial), FROZEN[f"bound_{key}"], 1e-9)
         # Zero past the box it was solved in.
         assert radial[-1] == 0.0
+
+
+class TestShells:
+    """A zeta, polarization or diffuse shell evaluated by the native table
+    routines, against the SciPy ``TabulatedOrbital`` of the multiple-zeta stack."""
+
+    @pytest.mark.parametrize("l", [0, 1, 2])
+    @pytest.mark.parametrize("start", [0.0, 0.02])
+    def test_it_samples_like_the_scipy_orbital(self, l, start):
+        r = start + 0.02 * np.arange(500)
+        table = RadialTable(r, r ** l * np.exp(-r) * (1 + 0.3 * np.cos(r)),
+                            l + 1, l, zeta=2, polarization=True)
+        shell = PseudoShell(table, -l, center=[0.0, 0.0, 0.0], real=True)
+        old = TabulatedOrbital(table, -l, center=[0.0, 0.0, 0.0], real=True)
+        nodes = np.concatenate([np.linspace(0.0, r[-1] - 1e-9, 300),
+                                [r[-1] + 1.0]])
+        close(shell.radial(nodes), old.radial(nodes), 1e-12)
+        close(shell.radial_slope(nodes), old.radial_slope(nodes), 1e-11)
+        np.testing.assert_allclose(shell._spline.x, old._spline.x)
+        close(shell._spline.c, old._spline.c, 1e-11)
+        assert shell.r_c == old.r_c
+        assert (shell.kind, shell.zeta, shell.state) == (
+            old.kind, old.zeta, old.state)
+        assert shell.table is table
+
+    def test_the_kind_follows_the_table(self):
+        r = np.linspace(0.01, 5.0, 200)
+        kinds = {}
+        for flags in ({}, {"polarization": True}, {"diffuse": True}):
+            table = RadialTable(r, np.exp(-r), 1, 0, **flags)
+            kinds[tuple(flags)] = PseudoShell(table, 0, real=True).kind
+        assert kinds == {(): "zeta", ("polarization",): "polarization",
+                         ("diffuse",): "diffuse"}
+
+    def test_a_magnetic_number_beyond_l_is_refused(self):
+        table = RadialTable(np.linspace(0.01, 5.0, 200), np.ones(200), 2, 1)
+        with pytest.raises(ValueError, match=r"\|m\| <= l"):
+            PseudoShell(table, 2, real=True)
+
+    @needs_library
+    def test_a_polarized_basis_is_shells_after_the_orbitals(self):
+        pp = get_paw("H")
+        functions, owners = pseudo_basis(
+            ["H"], np.zeros((1, 3)), {"H": pp},
+            **pseudo_basis_arguments("paw-lcao", {"size": "DZP"}))
+        kinds = [f.kind for f in functions]
+        assert kinds == ["zeta"] * 2 + ["polarization"] * 3
+        assert all(isinstance(f, PseudoShell) for f in functions)
+        assert owners == [0] * 5
 
 
 @needs_library

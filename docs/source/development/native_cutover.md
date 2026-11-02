@@ -38,10 +38,10 @@ replaces which numerical Python; it does not infer parity from a module name.
 
 | Area | Current native coverage | Work before removing numerical Python |
 | --- | --- | --- |
-| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, PAW Kohn–Sham (including HSE06 screened exchange and one-center terms), stationary all-electron forces, stationary PAW-LCAO RHF/UHF/KS forces (including HSE06), variational molecular PAW forces and real/radial bases | Multi-shell core exchange; PAW forces for nonlocal correlation |
-| Periodic calculations | LDA/PBE/meta-GGA/HSE06 iterations, two-component LDA/PBE/HSE06 spinor SCF and bands, spectra, periodic forces and stress tensor, Ewald primitives, DFT+U (Dudarev, fully localized limit, scalar-relativistic collinear crystals on a full k mesh) and native finite-size corrections (KZK, MPC, CCMH) | Geometry assembly, electronic response, and a density symmetrizer for DFT+U |
+| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, PAW Kohn–Sham (including HSE06 screened exchange, one-center terms and, for open shells, the spin-scaling remainder of the spheres' short-range semilocal exchange), stationary all-electron forces, stationary PAW-LCAO RHF/UHF/KS forces (including HSE06), variational molecular PAW forces and real/radial bases | Multi-shell core exchange; PAW forces for nonlocal correlation |
+| Periodic calculations | LDA/PBE/meta-GGA/HSE06 iterations (a hybrid crystal carries the compensation charges and the one-center screened terms of its PAW spheres, read from the dataset files recorded with their SHA-256 in the snapshot's `sites` block; the exchange operator is part of the mixed state), two-component LDA/PBE/HSE06 spinor SCF and bands, spectra, Ewald primitives, DFT+U (Dudarev, fully localized limit, scalar-relativistic collinear crystals on a full k mesh) and native finite-size corrections (KZK, MPC, CCMH) | Geometry assembly, electronic response, and a density symmetrizer for DFT+U. A hybrid (HSE06) runs only on the whole k mesh: its exact exchange sums over the listed points, so a mesh reduced by space-group symmetry or halved by time reversal raises `NotImplementedError` (use `symmetry=False`, with `unrestricted=True` or a Gamma-centered mesh of one or two points per direction). Periodic forces and stress are ASE central finite differences of the energy (an interim Python route, to be replaced by native derivatives), not analytic; for a hybrid they include the one-center terms, and the analytic gradient and stress have no compensation or one-center hybrid term. Crystal HSE06 energies and gaps are not validated against an all-electron reference; a magnetic spinor hybrid and a hybrid snapshot without its `sites` block raise; `resources` threads do not yet bound the Bloch kernels reached from the Python setup |
 | Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, MCAS-VQE/VALQA, graph proposals and SDK execution | GHF-to-quantum handoff and optional GP/ranker proposal models |
-| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods and their forces; empty/closed-1s cores | Basis recipe preparation, multi-shell cores, screened exchange and spin-orbit terms |
+| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods and their forces; empty/closed-1s cores, HSE06 screened exchange | Basis recipe preparation, multi-shell cores and spin-orbit terms |
 | Radial PAW spectrum | Generalized separable eigenpairs, overlap normalization, confined and free channel spectra | Remaining dataset construction and basis recipes |
 | Correlation | Closed-shell MP2/FNO, local pair domains and PNOs, coupled local MP2 amplitudes, symmetry-preserving active spaces | Open-shell correlation and correlating-pair constraints |
 | Molecular result fields | Native natural orbitals, charge/reference/difference densities, orbital sampling and cube/XSF output; PAW augmentation charge accounting | Periodic field views |
@@ -144,8 +144,10 @@ and projector centers, the overlap and compensation augmentation, the
 compensation charges and core densities on the fixed grid, the one-center
 Coulomb and exchange–correlation terms, closed-1s core exchange, the local
 potential and the kinetic energy at once, so GGA and open-shell states need no
-separate term. It raises for GHF, screened exchange, nonlocal correlation,
-`float32` samples and unconverged states.
+separate term. It includes the screened exact exchange of HSE06 (the energy is differenced with the
+hybrid operator rebuilt at each displaced geometry). It raises for GHF, nonlocal
+correlation, `float32` samples, unconverged states and a state that does not
+reproduce its energy on these integrals.
 
 The ASE adapter supports free-molecule internal-direction projection and
 records its force convention in the text output. Unprojected Cartesian
@@ -340,8 +342,8 @@ or disconnected from their native replacements:
 | --- | --- |
 | Active spaces | Correlating-pair constraints and open-shell MP2 |
 | Variational methods | Optional Gaussian-process and pairwise-ranker proposal models; subspace checkpoint continuation |
-| Molecular PAW | Nonlinear one-center XC, augmented screened exchange, multi-shell frozen-core exchange, spin-orbit projectors and forces for screened exchange and nonlocal correlation |
-| Dispersion and advanced periodic DFT | Complete D4, spinor meta-GGA and screened exchange |
+| Molecular PAW | Nonlinear one-center XC, multi-shell frozen-core exchange, spin-orbit projectors and forces for nonlocal correlation |
+| Dispersion and advanced periodic DFT | Complete D4, spinor meta-GGA, a hybrid on a symmetry- or time-reversal-reduced k mesh (refused with `NotImplementedError`) and analytic periodic forces and stress |
 | Periodic quantum calculations | Bloch VQE/ADAPT, quasiparticle weights, interacting spectral functions and quantum unit-cell relaxation |
 | Electronic response | Wannier construction, constrained RPA and downfolding |
 | Circuit execution | Multi-reference SDK execution and continuation of device runs |
@@ -367,8 +369,8 @@ Molecular PAW HF and variational paths cover empty cores and single closed
 1s cores. Molecular semilocal PAW Kohn–Sham uses the frozen atomic one-center
 model, compensation Hartree terms, smooth-core XC and the atomic energy offset.
 Its signed compensation Fock contribution and LDA/PBE/r²SCAN potentials pass
-energy-derivative checks. Multi-shell core exchange, spin-orbit projectors,
-PAW screened exchange and advanced periodic methods remain incomplete. All
+energy-derivative checks. Multi-shell core exchange, spin-orbit projectors
+and advanced periodic methods remain incomplete. All
 examples are retained; `scripts/check_examples.py` reports failures instead of
 filtering them out. The full scientific test suite does not yet pass in full (see
 the open findings above). Passing focused recovery tests does not establish

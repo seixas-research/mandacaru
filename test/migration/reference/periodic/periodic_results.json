@@ -1,0 +1,7440 @@
+{
+ "cases": {
+  "companion_al_fcc": {
+   "float32": {
+    "E_eV": -57.292663809467975,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 566444,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.12265322993675526,
+       0.8040288100526645,
+       0.8040288157990569,
+       0.8040288157990576
+      ],
+      [
+       0.11567082180116726,
+       0.13493199358632718,
+       0.7015676531252442,
+       0.7015676632674015
+      ],
+      [
+       0.17550225839288583,
+       0.2660664294916769,
+       0.4904259903814322,
+       0.49042599300036993
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     3,
+     4
+    ],
+    "energy": -2.105466397120842,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.1054665606356275,
+    "fermi_level": 0.22078438347467955,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.1054667241504132,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      -6.526913907223908e-18,
+      -6.526913907223908e-18,
+      0.5
+     ],
+     [
+      0.0,
+      0.5,
+      0.5
+     ]
+    ],
+    "last_history": [
+     12.0,
+     -2.1054667241504132,
+     0.0,
+     3.8877171527897824e-12,
+     6.389016038769161e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 12,
+    "n_spins": 1,
+    "occupation_sum": 3.0,
+    "rss_peak_mb": 280.046875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 0.7908150508755578,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.0933399674887196,
+     "entropy": -3.270295715240114e-07,
+     "xc": -0.8091471815173835
+    },
+    "wall_s": 1.49,
+    "weights": [
+     0.125,
+     0.5,
+     0.375
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 1.1537227351254842e-07,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 7.063756912728536e-09,
+    "n_iter": [
+     12,
+     12
+    ]
+   },
+   "float64": {
+    "E_eV": -57.29266392484025,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 4.440892098500626e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 577420,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.12265323156852642,
+       0.8040288068557528,
+       0.8040288087353,
+       0.8040288087353016
+      ],
+      [
+       0.11567081950512739,
+       0.13493199267069322,
+       0.7015676560686397,
+       0.7015676573251031
+      ],
+      [
+       0.175502255786237,
+       0.266066434111647,
+       0.49042598591462044,
+       0.49042599186333374
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     3,
+     4
+    ],
+    "energy": -2.1054664013608435,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.1054665648754805,
+    "fermi_level": 0.22078438448152543,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.105466728390118,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      -6.526913907223908e-18,
+      -6.526913907223908e-18,
+      0.5
+     ],
+     [
+      0.0,
+      0.5,
+      0.5
+     ]
+    ],
+    "last_history": [
+     12.0,
+     -2.105466728390118,
+     0.0,
+     3.887483343497086e-12,
+     6.388447171441779e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 12,
+    "n_spins": 1,
+    "occupation_sum": 2.9999999999999996,
+    "rss_peak_mb": 259.359375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 0.7908150508750333,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.0933399679389586,
+     "entropy": -3.270292741244798e-07,
+     "xc": -0.8091471853066219
+    },
+    "wall_s": 1.48,
+    "weights": [
+     0.125,
+     0.5,
+     0.375
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 9.992007221626409e-15,
+     "energy": 0.0,
+     "fermi_level": 2.4147350785597155e-15,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      12,
+      12
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 1.1146639167236572e-13,
+     "energy": 0.0,
+     "fermi_level": 1.942890293094024e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      12,
+      12
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "metal": true,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "companion_al_fcc",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ]
+  },
+  "companion_al_fcc_gamma": {
+   "float32": {
+    "E_eV": -51.720217786536836,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 1.1808332089913165e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 540470,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.12063449398386239,
+       0.8112367748124951,
+       0.8112367803853449,
+       0.8112367803853457
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     1,
+     4
+    ],
+    "energy": -1.8957156007251437,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -1.900682946432484,
+    "fermi_level": 0.8053222032911473,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -1.9056502921398242,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     13.0,
+     -1.9056502921398242,
+     9.494627306594339e-13,
+     9.364714939707019e-11,
+     8.756116356067531e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 13,
+    "n_spins": 1,
+    "occupation_sum": 2.999999999998819,
+    "rss_peak_mb": 267.53125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.107323827624609,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.1888005938440647,
+     "entropy": -0.00993469141468048,
+     "xc": -0.8204445355153915
+    },
+    "wall_s": 1.45,
+    "weights": [
+     1.0
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 2.044550910795806e-07,
+    "electron_count_error": 1.1808332089913165e-12,
+    "max_eigenvalue_Ha": 6.432331112193879e-09,
+    "n_iter": [
+     14,
+     13
+    ]
+   },
+   "float64": {
+    "E_eV": -51.72021799099193,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 5.082601006733967e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 529494,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.12063449549107391,
+       0.8112367720734375,
+       0.8112367739530146,
+       0.8112367739530146
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     1,
+     4
+    ],
+    "energy": -1.895715608238741,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -1.90068295394607,
+    "fermi_level": 0.805322198089891,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -1.905650299653399,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     14.0,
+     -1.905650299653399,
+     -4.021227795192317e-13,
+     1.7587199896436373e-11,
+     2.7172391398565254e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 14,
+    "n_spins": 1,
+    "occupation_sum": 2.9999999999949174,
+    "rss_peak_mb": 273.75,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1073238276204775,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.188800596905511,
+     "entropy": -0.009934691414658093,
+     "xc": -0.8204445399634113
+    },
+    "wall_s": 1.43,
+    "weights": [
+     1.0
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 3.9102054927298013e-13,
+     "energy": 3.453015651189162e-12,
+     "fermi_level": 3.659295089164516e-13,
+     "free_energy": 3.419708960450407e-12,
+     "moment": 0.0,
+     "n_iter": [
+      14,
+      15
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 8.901768211444505e-13,
+     "energy": 3.731681630370076e-12,
+     "fermi_level": 9.157119507108291e-13,
+     "free_energy": 3.695710404372221e-12,
+     "moment": 0.0,
+     "n_iter": [
+      14,
+      13
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "metal": true,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "companion_al_fcc_gamma",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ]
+  },
+  "companion_si_3x3x3": {
+   "float32": {
+    "E_eV": -213.6272934588044,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1943286,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.172606865046344,
+       0.023924868292633406,
+       0.18203607277280281,
+       0.18203607351630507,
+       0.3120270913750716,
+       0.4112650672558059,
+       0.411265070127254,
+       0.5934664797184661
+      ],
+      [
+       -0.15271956790688804,
+       0.03436565627462668,
+       0.12853683073903727,
+       0.12853683094683754,
+       0.2909099588660963,
+       0.40104726342843017,
+       0.5555402652573337,
+       0.5555402674709928
+      ],
+      [
+       -0.10246350351776659,
+       -0.03118767673337028,
+       0.058280131035546134,
+       0.13923839049862938,
+       0.3463648867059511,
+       0.5202686635145649,
+       0.5234179992198268,
+       0.5805103001786407
+      ],
+      [
+       -0.22479375035557544,
+       0.22745832346287784,
+       0.2274583257518904,
+       0.22745832575189107,
+       0.3368360812902734,
+       0.3368360912685462,
+       0.33683609126854785,
+       0.34153821185116096
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     4,
+     8
+    ],
+    "energy": -7.850658232830797,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.850658232830797,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2397510718082333,
+    "free_energy": -7.850658232830797,
+    "kpoints_fractional": [
+     [
+      -0.3333333333333333,
+      -0.33333333333333326,
+      -0.33333333333333326
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      5.784441872307935e-35
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      0.3333333333333333
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     18.0,
+     -7.850658232830797,
+     -1.2434497875801753e-14,
+     6.862293655897572e-11,
+     3.204474717264243e-15,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 18,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 265.921875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 2.5547758495822253,
+     "constant": 0.01495032888730452,
+     "electrostatic": -8.043997024872137,
+     "entropy": -8.330013708704005e-18,
+     "xc": -2.376387386428189
+    },
+    "wall_s": 1.49,
+    "weights": [
+     0.2962962962962963,
+     0.2222222222222222,
+     0.4444444444444444,
+     0.037037037037037035
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -5.0636543846849236e-08,
+    "electron_count_error": 8.881784197001252e-16,
+    "max_eigenvalue_Ha": 1.181315145704076e-08,
+    "n_iter": [
+     18,
+     18
+    ]
+   },
+   "float64": {
+    "E_eV": -213.62729340816784,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 2071286,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.1726068618171501,
+       0.023924868801787735,
+       0.18203607430469912,
+       0.1820360746697483,
+       0.3120270953720664,
+       0.41126507062677586,
+       0.41126507073476737,
+       0.5934664828590364
+      ],
+      [
+       -0.15271956777423498,
+       0.03436565513874379,
+       0.1285368297548956,
+       0.12853682975489597,
+       0.29090995482713894,
+       0.4010472610297436,
+       0.5555402657744066,
+       0.5555402657744071
+      ],
+      [
+       -0.10246350399134355,
+       -0.031187679327382728,
+       0.05828012895940385,
+       0.13923839193953536,
+       0.34636488279850586,
+       0.5202686562086128,
+       0.5234180050929716,
+       0.5805102982951429
+      ],
+      [
+       -0.2247937576054155,
+       0.2274583233006619,
+       0.22745832330066357,
+       0.2274583269742908,
+       0.33683608577791024,
+       0.3368360875309647,
+       0.3368360875309664,
+       0.3415382000380095
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     4,
+     8
+    ],
+    "energy": -7.850658230969938,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.850658230969938,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.23975107303068383,
+    "free_energy": -7.850658230969938,
+    "kpoints_fractional": [
+     [
+      -0.3333333333333333,
+      -0.33333333333333326,
+      -0.33333333333333326
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      5.784441872307935e-35
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      0.3333333333333333
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     18.0,
+     -7.850658230969938,
+     1.2434497875801753e-14,
+     6.808887796192673e-11,
+     3.0932423506378462e-15,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 18,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 268.890625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 2.5547758465516925,
+     "constant": 0.01495032888730452,
+     "electrostatic": -8.043997019559693,
+     "entropy": -8.127768598676438e-18,
+     "xc": -2.376387386849242
+    },
+    "wall_s": 1.58,
+    "weights": [
+     0.2962962962962963,
+     0.2222222222222222,
+     0.4444444444444444,
+     0.037037037037037035
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 3.3861802251067274e-15,
+     "energy": 0.0,
+     "fermi_level": 9.71445146547012e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      18,
+      18
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 2.220446049250313e-15,
+     "energy": 8.881784197001252e-16,
+     "fermi_level": 8.881784197001252e-16,
+     "free_energy": 8.881784197001252e-16,
+     "moment": 0.0,
+     "n_iter": [
+      18,
+      18
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "metal": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "companion_si_3x3x3",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "companion_si_shifted": {
+   "float32": {
+    "E_eV": -214.06013071325188,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1656430,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.1964549389051484,
+       0.076494316499069,
+       0.19038345697885178,
+       0.19038345760957917,
+       0.3125272765590052,
+       0.3924648685885044,
+       0.39246487115386364,
+       0.5227787237232218
+      ],
+      [
+       -0.1237006678063707,
+       -0.019705946973314598,
+       0.09065093564820174,
+       0.13386586092928332,
+       0.3371707240289472,
+       0.4579048490079708,
+       0.527762562677111,
+       0.5823898997860516
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.8665647085441135,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.8665647085441135,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2032745952296907,
+    "free_energy": -7.8665647085441135,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.8665647085441135,
+     1.5987211554602254e-14,
+     1.1062447479438886e-11,
+     6.86494178308881e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 266.4375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 2.5211686048817565,
+     "constant": 0.01495032888730452,
+     "electrostatic": -8.030838818227828,
+     "entropy": -7.369971797553666e-18,
+     "xc": -2.3718448240853465
+    },
+    "wall_s": 1.48,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -3.1918546028464334e-08,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 3.8545361347175344e-09,
+    "n_iter": [
+     21,
+     21
+    ]
+   },
+   "float64": {
+    "E_eV": -214.06013068133333,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1656430,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19645493806865413,
+       0.07649431696470636,
+       0.1903834571818062,
+       0.19038345745158752,
+       0.31252727774149114,
+       0.3924648694592128,
+       0.39246486946623377,
+       0.5227787228929702
+      ],
+      [
+       -0.12370066708146357,
+       -0.01970594701992076,
+       0.09065093542042582,
+       0.1338658619206327,
+       0.3371707205042248,
+       0.4579048458474386,
+       0.5277625631550483,
+       0.5823898959315155
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.866564707371128,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.866564707371128,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.20327459507164655,
+    "free_energy": -7.866564707371128,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.866564707371128,
+     -1.0658141036401503e-14,
+     1.1052211290730207e-11,
+     6.744072263958194e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 275.84375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 2.5211686049461477,
+     "constant": 0.01495032888730452,
+     "electrostatic": -8.030838820635346,
+     "entropy": -8.084652849595989e-18,
+     "xc": -2.3718448205692355
+    },
+    "wall_s": 1.57,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 5.551115123125783e-16,
+     "energy": 1.7763568394002505e-15,
+     "fermi_level": 3.3306690738754696e-16,
+     "free_energy": 1.7763568394002505e-15,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 8.881784197001252e-16,
+     "energy": 1.7763568394002505e-15,
+     "fermi_level": 2.7755575615628914e-16,
+     "free_energy": 1.7763568394002505e-15,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "metal": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "companion_si_shifted",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "companion_si_so": {
+   "float32": {
+    "E_eV": -202.75692152148002,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1677573,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.2003782327603338,
+       -0.20037823276033376,
+       0.25586968907951335,
+       0.25586968907951335,
+       0.2574691965052075,
+       0.2574691965052077,
+       0.2618272762803775,
+       0.2618272762803776,
+       0.3556679248481365,
+       0.35566792484813653,
+       0.3605841160959501,
+       0.36058411609595054,
+       0.3617936492349714,
+       0.3617936492349718,
+       0.3776212319592541,
+       0.3776212319592541
+      ],
+      [
+       -0.11289401554256848,
+       -0.11289401554256814,
+       -0.010935537522507227,
+       -0.010935537522507088,
+       0.20021757706865578,
+       0.2002175770686559,
+       0.2014322137078405,
+       0.2014322137078406,
+       0.32733459360268835,
+       0.3273345936026884,
+       0.4463968036082627,
+       0.4463968036082643,
+       0.4480602415130358,
+       0.4480602415130388,
+       0.7063376369805264,
+       0.7063376369805267
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     16
+    ],
+    "energy": -7.451179432336865,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.451179432336865,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.27471841390046514,
+    "free_energy": -7.451179432336865,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.49999999999999994,
+      1.6106699614712532e-17,
+      1.6106699614712532e-17
+     ]
+    ],
+    "last_history": [
+     22.0,
+     -7.451179432336865,
+     1.5987211554602254e-14,
+     8.244381667162364e-11,
+     4.2948242423649047e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 22,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 311.375,
+    "spin_orbit_energy": -6.4135855982831025e-06,
+    "spinor": true,
+    "terms": {
+     "band_fixed": 3.1572718333319116,
+     "constant": 0.014895612455389173,
+     "electrostatic": -8.169756350734428,
+     "entropy": -8.79933390163831e-18,
+     "xc": -2.453590527389738
+    },
+    "wall_s": 1.73,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 6.92750461439573e-08,
+    "electron_count_error": 8.881784197001252e-16,
+    "max_eigenvalue_Ha": 5.774150546589141e-09,
+    "n_iter": [
+     22,
+     22
+    ]
+   },
+   "float64": {
+    "E_eV": -202.75692159075507,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1677573,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.20037823271362107,
+       -0.20037823271362096,
+       0.2558696857935844,
+       0.2558696857935848,
+       0.2574691932272346,
+       0.25746919322723505,
+       0.26182727276622264,
+       0.261827272766223,
+       0.35566792204767805,
+       0.3556679220476784,
+       0.3605841122385178,
+       0.36058411223851805,
+       0.3617936453161708,
+       0.361793645316171,
+       0.3776212360778015,
+       0.3776212360778015
+      ],
+      [
+       -0.11289401496254783,
+       -0.11289401496254739,
+       -0.010935537322863065,
+       -0.010935537322862982,
+       0.2002175787613366,
+       0.2002175787613367,
+       0.2014322154005734,
+       0.20143221540057343,
+       0.3273345993768388,
+       0.32733459937683895,
+       0.44639680862691267,
+       0.44639680862691333,
+       0.448060246532496,
+       0.4480602465324971,
+       0.7063376326178303,
+       0.7063376326178312
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     16
+    ],
+    "energy": -7.451179434882675,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.451179434882675,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.27471841038629735,
+    "free_energy": -7.451179434882675,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.49999999999999994,
+      1.6106699614712532e-17,
+      1.6106699614712532e-17
+     ]
+    ],
+    "last_history": [
+     22.0,
+     -7.451179434882675,
+     1.7763568394002505e-15,
+     8.180622525296517e-11,
+     4.241497380212836e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 22,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 338.125,
+    "spin_orbit_energy": -6.413585657403658e-06,
+    "spinor": true,
+    "terms": {
+     "band_fixed": 3.1572718318235613,
+     "constant": 0.014895612455389173,
+     "electrostatic": -8.169756349117067,
+     "entropy": -8.79933390163831e-18,
+     "xc": -2.4535905300445573
+    },
+    "wall_s": 2.0,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 2.9976021664879227e-15,
+     "energy": 0.0,
+     "fermi_level": 8.326672684688674e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      22,
+      22
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 6.5503158452884236e-15,
+     "energy": 0.0,
+     "fermi_level": 5.495603971894525e-14,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      22,
+      22
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-fr",
+    "metal": false,
+    "reference": null,
+    "spinor_expected": true,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-fr/Si.parquet": "9bf8bce1304155afcc23b5209ce0366670bdf20d0a9999e562e3a603415949b6"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "companion_si_so",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "companion_si_so_scalar": {
+   "float32": {
+    "E_eV": -203.7156301623252,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1656360,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.20465550372708377,
+       0.25236383616872066,
+       0.2523638374915436,
+       0.25728684476470176,
+       0.35154650926003994,
+       0.35683545673800116,
+       0.3568354631103611,
+       0.3731785332198253
+      ],
+      [
+       -0.11724008253173776,
+       -0.0151296687531417,
+       0.19648062346041342,
+       0.19648062559931814,
+       0.32300382263745986,
+       0.4429530614575423,
+       0.44295306652505584,
+       0.7017937434181708
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.4864113250518685,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.4864113250518685,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.27017798238479784,
+    "free_energy": -7.4864113250518685,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.49999999999999994,
+      1.6106699614712532e-17,
+      1.6106699614712532e-17
+     ]
+    ],
+    "last_history": [
+     22.0,
+     -7.4864113250518685,
+     8.881784197001252e-16,
+     8.552911141293823e-11,
+     4.383018129039005e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 22,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 275.078125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.1228209404526974,
+     "constant": 0.01495032888730452,
+     "electrostatic": -8.170232032484725,
+     "entropy": -8.79933390163831e-18,
+     "xc": -2.4539505619071464
+    },
+    "wall_s": 1.64,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 3.7714437439717585e-07,
+    "electron_count_error": 8.881784197001252e-16,
+    "max_eigenvalue_Ha": 1.5343582515647824e-08,
+    "n_iter": [
+     22,
+     22
+    ]
+   },
+   "float64": {
+    "E_eV": -203.71563053946957,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1656360,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.20465550964736365,
+       0.2523638364352489,
+       0.25236383888434316,
+       0.25728684619117026,
+       0.3515465076112061,
+       0.35683545952849904,
+       0.35683546069721384,
+       0.3731785250693055
+      ],
+      [
+       -0.1172400874236589,
+       -0.015129670799577444,
+       0.19648062502115615,
+       0.19648062593204207,
+       0.32300380729387734,
+       0.4429530645664891,
+       0.4429530647133042,
+       0.7017937479878572
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.486411338911668,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.486411338911668,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.27017798381127817,
+    "free_energy": -7.486411338911668,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.49999999999999994,
+      1.6106699614712532e-17,
+      1.6106699614712532e-17
+     ]
+    ],
+    "last_history": [
+     22.0,
+     -7.486411338911668,
+     -1.7763568394002505e-15,
+     8.473514705379877e-11,
+     4.347647733159197e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 22,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 296.671875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.122820944859229,
+     "constant": 0.01495032888730452,
+     "electrostatic": -8.170232040789982,
+     "entropy": -7.369971797553666e-18,
+     "xc": -2.45395057186822
+    },
+    "wall_s": 1.74,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 5.384581669432009e-15,
+     "energy": 2.6645352591003757e-15,
+     "fermi_level": 5.551115123125783e-17,
+     "free_energy": 2.6645352591003757e-15,
+     "moment": 0.0,
+     "n_iter": [
+      22,
+      22
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 4.690692279041286e-15,
+     "energy": 7.993605777301127e-15,
+     "fermi_level": 1.7763568394002505e-15,
+     "free_energy": 7.993605777301127e-15,
+     "moment": 0.0,
+     "n_iter": [
+      22,
+      22
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "metal": false,
+    "reference": null,
+    "spinor_expected": false,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "companion_si_so_scalar",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "extra_al_pbe": {
+   "float32": {
+    "E_eV": -55.35883286719934,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 5.195843755245733e-13,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1135019,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.05198500750720783,
+       0.5218781096073031,
+       0.7617942131491169,
+       0.7617942156677248
+      ],
+      [
+       0.11065398259378874,
+       0.2818927061212929,
+       0.5043809835402677,
+       0.582063122373827
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     4
+    ],
+    "energy": -2.0326452244869437,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.034399584304947,
+    "fermi_level": 0.28443997502664164,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.03615394412295,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     16.0,
+     -2.03615394412295,
+     2.327027459614328e-13,
+     6.940504209627143e-11,
+     1.3805577662289898e-12,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 16,
+    "n_spins": 1,
+    "occupation_sum": 2.9999999999994804,
+    "rss_peak_mb": 264.359375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1586813542364254,
+     "constant": 0.007116477892935347,
+     "electrostatic": -2.3916220481385246,
+     "entropy": -0.003508719636006597,
+     "xc": -0.8068210084777798
+    },
+    "wall_s": 1.67,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 4.356311933406687e-08,
+    "electron_count_error": 5.195843755245733e-13,
+    "max_eigenvalue_Ha": 2.82659451400491e-09,
+    "n_iter": [
+     16,
+     16
+    ]
+   },
+   "float64": {
+    "E_eV": -55.35883291076246,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 1.2452261444195756e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1135019,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.05198500735557063,
+       0.5218781086574457,
+       0.7617942159757114,
+       0.761794216911963
+      ],
+      [
+       0.11065398136739628,
+       0.28189270608183076,
+       0.5043809811212252,
+       0.5820631210756622
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     4
+    ],
+    "energy": -2.0326452260878614,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.034399585905862,
+    "fermi_level": 0.2844399749871989,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.0361539457238633,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     16.0,
+     -2.0361539457238633,
+     2.788880237858393e-13,
+     6.96352685152052e-11,
+     1.3713628930992342e-12,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 16,
+    "n_spins": 1,
+    "occupation_sum": 3.0000000000012452,
+    "rss_peak_mb": 269.53125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.158681353991287,
+     "constant": 0.007116477892935347,
+     "electrostatic": -2.3916220485230677,
+     "entropy": -0.003508719636002102,
+     "xc": -0.8068210094490159
+    },
+    "wall_s": 1.46,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 5.440092820663267e-15,
+     "energy": 2.4868995751603507e-14,
+     "fermi_level": 3.0531133177191805e-15,
+     "free_energy": 2.531308496145357e-14,
+     "moment": 0.0,
+     "n_iter": [
+      16,
+      16
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 1.0658141036401503e-14,
+     "energy": 4.529709940470639e-14,
+     "fermi_level": 7.271960811294775e-15,
+     "free_energy": 4.574118861455645e-14,
+     "moment": 0.0,
+     "n_iter": [
+      16,
+      16
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "pbe-sr",
+    "metal": true,
+    "provisional_not_a_gate": false,
+    "reference": null,
+    "xc": "pbe"
+   },
+   "prior_wrong_dataset": {
+    "E_eV": -56.13004821856553,
+    "E_eV_new_minus_prior": 0.7712153078030681,
+    "energy": -2.060986865901114,
+    "free_energy": -2.064495585537114,
+    "n_iter": 17,
+    "note": "scratchpad number of extension 39cf62c7: crystals then read lda-sr for PBE; the change is the dataset fix, not a regression"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Al.parquet": "ec8455b835d0c0a0ee36d970faecd2f0f67344e2b4b7a7110fa73a3b80bb3df4"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "extra_al_pbe",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ]
+  },
+  "extra_si_hse06": {
+   "float32": {
+    "unavailable": "NotImplementedError: a hybrid functional needs the full k mesh: its exact exchange sums over the listed k-points, and these are a symmetry or time-reversal reduction of the mesh. Use symmetry=False together with a Gamma-centered mesh of one or two points per direction (all of its points are time-reversal invariant, so nothing is halved); on any other mesh use symmetry=False with unrestricted=True and nonzero initial m"
+   },
+   "float64": {
+    "unavailable": "NotImplementedError: a hybrid functional needs the full k mesh: its exact exchange sums over the listed k-points, and these are a symmetry or time-reversal reduction of the mesh. Use symmetry=False together with a Gamma-centered mesh of one or two points per direction (all of its points are time-reversal invariant, so nothing is halved); on any other mesh use symmetry=False with unrestricted=True and nonzero initial m"
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": null,
+    "same_threads_repeat": null
+   },
+   "meta": {
+    "dataset": "pbe-sr",
+    "metal": false,
+    "provisional_not_a_gate": true,
+    "reference": null,
+    "xc": "hse06"
+   },
+   "provisional_not_a_gate": "periodic HSE06 has no one-center screened term: do not gate a test on this entry",
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "extra_si_hse06_full_mesh": {
+   "float32": {
+    "E_eV": -212.19255351557533,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3233612,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.3959780711580574,
+       0.08216552566341823,
+       0.08216552566341845,
+       0.0821655262055094,
+       0.41437840929883984,
+       0.4143784121728084,
+       0.4143784121728089,
+       0.4386368681923672
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     1,
+     8
+    ],
+    "energy": -7.797932512418791,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.797932512418791,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.21635074076342692,
+    "free_energy": -7.797932512418791,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     237.0,
+     -7.797932512418791,
+     -8.881784197001252e-15,
+     7.49384590071029e-12,
+     5.201459922499295e-17,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 237,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 250.46875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 4.75231790436267,
+     "constant": 0.0175231757583183,
+     "electrostatic": -9.349338391409228,
+     "entropy": -1.2204153221222325e-16,
+     "xc": -3.2184352011305517
+    },
+    "wall_s": 39.4,
+    "weights": [
+     1.0
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -1.386189865115739e-07,
+    "electron_count_error": 8.881784197001252e-16,
+    "max_eigenvalue_Ha": 6.124829809994736e-09,
+    "n_iter": [
+     153,
+     237
+    ]
+   },
+   "float64": {
+    "E_eV": -212.19255337695634,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3093004,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.39597806733745966,
+       0.0821655256136751,
+       0.0821655256136778,
+       0.08216552601545171,
+       0.41437840928121183,
+       0.4143784095278435,
+       0.4143784095278438,
+       0.438636874317197
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     1,
+     8
+    ],
+    "energy": -7.797932507324637,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.797932507324637,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2163507405733967,
+    "free_energy": -7.797932507324637,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     153.0,
+     -7.797932507324637,
+     -1.5987211554602254e-14,
+     6.69197526783774e-11,
+     1.556643269148391e-16,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 153,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 288.03125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 4.752317904364635,
+     "constant": 0.0175231757583183,
+     "electrostatic": -9.34933839100797,
+     "entropy": -9.237956013575829e-17,
+     "xc": -3.2184351964396196
+    },
+    "wall_s": 25.99,
+    "weights": [
+     1.0
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": null,
+    "same_threads_repeat": {
+     "eigenvalues": 2.653438024857735e-10,
+     "energy": 1.3768541862191341e-11,
+     "fermi_level": 3.374478474427178e-11,
+     "free_energy": 1.3768541862191341e-11,
+     "moment": 0.0,
+     "n_iter": [
+      153,
+      300
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "pbe-sr",
+    "metal": false,
+    "provisional_not_a_gate": true,
+    "reference": null,
+    "xc": "hse06"
+   },
+   "provisional_not_a_gate": "periodic HSE06 has no one-center screened term: do not gate a test on this entry",
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Si.parquet": "57a23fb7570740d02de254266b294d480506de255fbc3b633275fd20256a25ce"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "extra_si_hse06_full_mesh",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "extra_si_lda_fr": {
+   "float32": {
+    "E_eV": -213.3811835472661,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3579023,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19421021928900206,
+       -0.19421021928836807,
+       0.0794232714799192,
+       0.07942327148801319,
+       0.19440982747960886,
+       0.19440982748947028,
+       0.19567801567615342,
+       0.1956780156761545,
+       0.3142520613675154,
+       0.31425206136773415,
+       0.39623824417881554,
+       0.39623824418517345,
+       0.3978437939944927,
+       0.3978437939944931,
+       0.5281793242205994,
+       0.5281793242247764
+      ],
+      [
+       -0.12161524751301649,
+       -0.12161524644085873,
+       -0.01741053928385329,
+       -0.01741053915372219,
+       0.09470470829056565,
+       0.09470470960697482,
+       0.13839976331604326,
+       0.13839976334018544,
+       0.3419633495654442,
+       0.34196335441820985,
+       0.46412407252412885,
+       0.4641240785642115,
+       0.5324609074191401,
+       0.5324609075173735,
+       0.5889018629576447,
+       0.5889018740823736
+      ],
+      [
+       -0.12161530792869739,
+       -0.12161530685516693,
+       -0.017410637724305858,
+       -0.017410637595613024,
+       0.09470459321333605,
+       0.09470459452969798,
+       0.13839953511978387,
+       0.1383995351446657,
+       0.34196566574852566,
+       0.3419656705920607,
+       0.46412548155525546,
+       0.46412548757200367,
+       0.5324613043332747,
+       0.5324613044400365,
+       0.5889020637484916,
+       0.5889020748405217
+      ],
+      [
+       -0.12161530792869606,
+       -0.12161530685516618,
+       -0.017410637724304748,
+       -0.01741063759561194,
+       0.09470459321333673,
+       0.09470459452969876,
+       0.13839953511978412,
+       0.13839953514466596,
+       0.34196566574852727,
+       0.3419656705920622,
+       0.46412548155525357,
+       0.46412548757200156,
+       0.5324613043332785,
+       0.5324613044400403,
+       0.5889020637484965,
+       0.5889020748405263
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     4,
+     16
+    ],
+    "energy": -7.841613856325155,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.841613860401053,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2559459206001617,
+    "free_energy": -7.841613864476951,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ],
+     [
+      -0.25,
+      0.24999999999999997,
+      -0.25
+     ],
+     [
+      -0.24999999999999997,
+      0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.841613864476951,
+     3.552713678800501e-14,
+     4.564526430390185e-11,
+     3.175652678067422e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 321.953125,
+    "spin_orbit_energy": -1.5168232546389305e-05,
+    "spinor": true,
+    "terms": {
+     "band_fixed": 3.524019939642681,
+     "constant": 0.014895612455389173,
+     "electrostatic": -9.007474239253195,
+     "entropy": -8.15179561980024e-09,
+     "xc": -2.3730551691700303
+    },
+    "wall_s": 1.84,
+    "weights": [
+     0.25,
+     0.25,
+     0.25,
+     0.25
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -4.5094253664501593e-08,
+    "electron_count_error": 8.881784197001252e-16,
+    "max_eigenvalue_Ha": 4.389956231865e-09,
+    "n_iter": [
+     19,
+     19
+    ]
+   },
+   "float64": {
+    "E_eV": -213.38118350217184,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3860239,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19421021836842534,
+       -0.194210218368425,
+       0.07942327243440436,
+       0.07942327243440792,
+       0.19440982852024732,
+       0.19440982852026384,
+       0.1956780167118451,
+       0.1956780167118453,
+       0.3142520657574716,
+       0.31425206575754194,
+       0.39623824487552195,
+       0.39623824487559495,
+       0.3978437946879515,
+       0.39784379468795505,
+       0.5281793242360994,
+       0.5281793242361003
+      ],
+      [
+       -0.1216152485701016,
+       -0.12161524749829188,
+       -0.01741054007430974,
+       -0.01741053993814147,
+       0.09470470803365273,
+       0.09470470934110649,
+       0.13839976502187182,
+       0.13839976504591744,
+       0.3419633486213669,
+       0.3419633534326566,
+       0.4641240727572241,
+       0.46412407876149026,
+       0.53246091100727,
+       0.5324609111051208,
+       0.5889018623407943,
+       0.5889018734023956
+      ],
+      [
+       -0.12161530862571392,
+       -0.12161530755390436,
+       -0.01741063829469354,
+       -0.01741063815852069,
+       0.0947045933499196,
+       0.09470459465737877,
+       0.13839953568422522,
+       0.1383995357082709,
+       0.3419656652730807,
+       0.34196567008436285,
+       0.4641254810928296,
+       0.4641254870972527,
+       0.5324613045308046,
+       0.5324613046286553,
+       0.5889020650863879,
+       0.5889020761481369
+      ],
+      [
+       -0.1216153086257123,
+       -0.12161530755390275,
+       -0.017410638294692707,
+       -0.0174106381585198,
+       0.09470459334991978,
+       0.09470459465737896,
+       0.13839953568422508,
+       0.13839953570827063,
+       0.3419656652730813,
+       0.34196567008436296,
+       0.4641254810928308,
+       0.46412548709725365,
+       0.5324613045308128,
+       0.5324613046286634,
+       0.5889020650863919,
+       0.588902076148142
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     4,
+     16
+    ],
+    "energy": -7.841613854667974,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.84161385874387,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2559459233186356,
+    "free_energy": -7.8416138628197665,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ],
+     [
+      -0.25,
+      0.24999999999999997,
+      -0.25
+     ],
+     [
+      -0.24999999999999997,
+      0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.8416138628197665,
+     -1.5987211554602254e-14,
+     4.574781117990205e-11,
+     3.1708948689381295e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 329.953125,
+    "spin_orbit_energy": -1.5168232564137603e-05,
+    "spinor": true,
+    "terms": {
+     "band_fixed": 3.5240199398338614,
+     "constant": 0.014895612455389173,
+     "electrostatic": -9.007474237898348,
+     "entropy": -8.151792127271899e-09,
+     "xc": -2.3730551690588757
+    },
+    "wall_s": 1.96,
+    "weights": [
+     0.25,
+     0.25,
+     0.25,
+     0.25
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 3.164135620181696e-15,
+     "energy": 0.0,
+     "fermi_level": 7.216449660063518e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 3.4416913763379853e-15,
+     "energy": 3.552713678800501e-15,
+     "fermi_level": 1.6653345369377348e-15,
+     "free_energy": 3.552713678800501e-15,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-fr",
+    "metal": false,
+    "provisional_not_a_gate": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "prior_still_valid": {
+    "E_eV": -213.38118350217175,
+    "E_eV_new_minus_prior": -8.526512829121202e-14,
+    "energy": -7.841613854667971,
+    "free_energy": -7.841613862819763,
+    "n_iter": 19,
+    "note": "set named explicitly: not affected, compare"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-fr/Si.parquet": "9bf8bce1304155afcc23b5209ce0366670bdf20d0a9999e562e3a603415949b6"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "extra_si_lda_fr",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "extra_si_pbe": {
+   "float32": {
+    "E_eV": -212.4870424578811,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3297317,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19104012763529354,
+       0.08360278532526427,
+       0.19921685533526007,
+       0.19921685613598028,
+       0.3228837810815526,
+       0.40250640015033906,
+       0.40250640019395684,
+       0.5387321075737239
+      ],
+      [
+       -0.11835220384455945,
+       -0.013520608392446051,
+       0.09852220895896852,
+       0.1416354375597679,
+       0.35064592522725113,
+       0.473445617314988,
+       0.5390164926449488,
+       0.599131572313208
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.808754779151469,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.808754781436754,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2623210684045567,
+    "free_energy": -7.808754783722038,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.808754783722038,
+     -1.2434497875801753e-14,
+     5.600050520862911e-11,
+     6.949296834933484e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 271.609375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.5334786937239606,
+     "constant": 0.0175231757583183,
+     "electrostatic": -8.983269823293439,
+     "entropy": -4.570568848574747e-09,
+     "xc": -2.37648682534031
+    },
+    "wall_s": 1.72,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -1.0475844192114891e-07,
+    "electron_count_error": 8.881784197001252e-16,
+    "max_eigenvalue_Ha": 5.394616753306991e-09,
+    "n_iter": [
+     21,
+     21
+    ]
+   },
+   "float64": {
+    "E_eV": -212.48704235312266,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3297317,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19104012995039188,
+       0.08360278435532265,
+       0.19921685659509947,
+       0.1992168566055646,
+       0.3228837756869358,
+       0.4025064020569044,
+       0.4025064021174347,
+       0.5387321089843595
+      ],
+      [
+       -0.11835220202061579,
+       -0.013520606540975325,
+       0.09852220854727611,
+       0.14163543693251768,
+       0.3506459290750488,
+       0.4734456181398805,
+       0.5390164902019077,
+       0.5991315690114404
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.808754775301665,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.808754777586952,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.26232106613707296,
+    "free_energy": -7.808754779872237,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.808754779872237,
+     -1.2434497875801753e-14,
+     5.591721700976702e-11,
+     6.925849953170782e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 276.265625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.5334786913871863,
+     "constant": 0.0175231757583183,
+     "electrostatic": -8.983269819916256,
+     "entropy": -4.570572508487242e-09,
+     "xc": -2.3764868225309144
+    },
+    "wall_s": 1.65,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 2.220446049250313e-15,
+     "energy": 0.0,
+     "fermi_level": 1.0547118733938987e-15,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 1.887379141862766e-15,
+     "energy": 0.0,
+     "fermi_level": 7.216449660063518e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "pbe-sr",
+    "metal": false,
+    "provisional_not_a_gate": false,
+    "reference": null,
+    "xc": "pbe"
+   },
+   "prior_wrong_dataset": {
+    "E_eV": -214.47518194673447,
+    "E_eV_new_minus_prior": 1.9881395936118054,
+    "energy": -7.881817556611394,
+    "free_energy": -7.88181756347414,
+    "n_iter": 21,
+    "note": "scratchpad number of extension 39cf62c7: crystals then read lda-sr for PBE; the change is the dataset fix, not a regression"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Si.parquet": "57a23fb7570740d02de254266b294d480506de255fbc3b633275fd20256a25ce"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "extra_si_pbe",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "extra_si_pbe_rvv10": {
+   "float32": {
+    "E_eV": -212.34399484365295,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 18141147,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19082247772077937,
+       0.08391372639647797,
+       0.20023626089686145,
+       0.2002362617057709,
+       0.3230859453478797,
+       0.4033250387854451,
+       0.40332503884117404,
+       0.5396391747699297
+      ],
+      [
+       -0.1178084739999578,
+       -0.013229920154621586,
+       0.0982445742137092,
+       0.14219448925642295,
+       0.350209006483371,
+       0.47434981504820245,
+       0.5401386149806264,
+       0.5999907194361087
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.803497876036381,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.803497878575024,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.26293130580114454,
+    "free_energy": -7.803497881113668,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.803497881113668,
+     2.842170943040401e-14,
+     5.1237275395291765e-11,
+     4.7038413876945937e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 291.125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.5314556761407534,
+     "constant": 0.0175231757583183,
+     "electrostatic": -8.98159420154817,
+     "entropy": -5.077286978716533e-09,
+     "xc": -2.370882526387283
+    },
+    "wall_s": 2.45,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -1.0391508453722054e-07,
+    "electron_count_error": 8.881784197001252e-16,
+    "max_eigenvalue_Ha": 5.394834357019818e-09,
+    "n_iter": [
+     21,
+     21
+    ]
+   },
+   "float64": {
+    "E_eV": -212.34399473973787,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 18422363,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.1908224800279053,
+       0.08391372544157932,
+       0.20023626215763995,
+       0.20023626216829032,
+       0.32308593995304535,
+       0.40332504070003783,
+       0.4033250407607537,
+       0.5396391761620393
+      ],
+      [
+       -0.11780847219102693,
+       -0.01322991832051161,
+       0.09824457381191316,
+       0.1421944886328311,
+       0.35020901032621227,
+       0.4743498158723925,
+       0.5401386125248482,
+       0.5999907161324763
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.803497872217569,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.803497874756215,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2629313035558474,
+    "free_energy": -7.803497877294861,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.803497877294861,
+     2.3092638912203256e-14,
+     5.118074146702915e-11,
+     4.983839951133422e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 280.859375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.531455673818747,
+     "constant": 0.0175231757583183,
+     "electrostatic": -8.981594198178497,
+     "entropy": -5.0772910408812435e-09,
+     "xc": -2.3708825236161375
+    },
+    "wall_s": 2.24,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 1.1435297153639112e-14,
+     "energy": 7.105427357601002e-15,
+     "fermi_level": 8.215650382226158e-15,
+     "free_energy": 7.105427357601002e-15,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 1.3766765505351941e-14,
+     "energy": 1.7763568394002505e-15,
+     "fermi_level": 1.1268763699945339e-14,
+     "free_energy": 1.7763568394002505e-15,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "pbe-sr",
+    "metal": false,
+    "provisional_not_a_gate": false,
+    "reference": null,
+    "xc": "pbe+rvv10"
+   },
+   "prior_wrong_dataset": {
+    "E_eV": -214.333308572856,
+    "E_eV_new_minus_prior": 1.989313833118132,
+    "energy": -7.876603805912491,
+    "free_energy": -7.876603813523433,
+    "n_iter": 22,
+    "note": "scratchpad number of extension 39cf62c7: crystals then read lda-sr for PBE; the change is the dataset fix, not a regression"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Si.parquet": "57a23fb7570740d02de254266b294d480506de255fbc3b633275fd20256a25ce"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "extra_si_pbe_rvv10",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "extra_si_r2scan": {
+   "float32": {
+    "E_eV": -212.52136946917318,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 4249048,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.2181409489835922,
+       0.07326034959966835,
+       0.19536749269856868,
+       0.1953674935235052,
+       0.3301002554030412,
+       0.4111877125685158,
+       0.41118771265953447,
+       0.5596567837345756
+      ],
+      [
+       -0.1420663381054949,
+       -0.029672372375688247,
+       0.08999288104104305,
+       0.13404015201925526,
+       0.35955777266778016,
+       0.4881077045095248,
+       0.556872825876067,
+       0.622846583870816
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.810016275284378,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.8100162758340534,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.26400568938712893,
+    "free_energy": -7.810016276383728,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.810016276383728,
+     3.730349362740526e-14,
+     7.609301670686462e-11,
+     2.044228565367879e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 267.53125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.5338946951000754,
+     "constant": 0.0175231757583183,
+     "electrostatic": -8.983595454618236,
+     "entropy": -1.099350824012215e-09,
+     "xc": -2.377838691524535
+    },
+    "wall_s": 1.81,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -1.0424648166917905e-07,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 5.347823406331997e-09,
+    "n_iter": [
+     19,
+     19
+    ]
+   },
+   "float64": {
+    "E_eV": -212.5213693649267,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 4530264,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.2181409513457414,
+       0.07326034861153052,
+       0.19536749397734082,
+       0.19536749398853093,
+       0.3301002500552178,
+       0.41118771450281016,
+       0.4111877145640636,
+       0.5596567849186401
+      ],
+      [
+       -0.1420663362027657,
+       -0.02967237044917874,
+       0.08999288062100552,
+       0.13404015139882333,
+       0.35955777651664866,
+       0.48810770513798557,
+       0.5568728234066167,
+       0.6228465806907064
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.8100162714533905,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.810016272003066,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2640056872925575,
+    "free_energy": -7.810016272552742,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.810016272552742,
+     -1.9539925233402755e-14,
+     7.606772794310015e-11,
+     2.0452930543689647e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 262.515625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.533894692878947,
+     "constant": 0.0175231757583183,
+     "electrostatic": -8.983595451338934,
+     "entropy": -1.0993517113910214e-09,
+     "xc": -2.3778386887517224
+    },
+    "wall_s": 1.92,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 1.6653345369377348e-15,
+     "energy": 0.0,
+     "fermi_level": 1.1102230246251565e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 6.661338147750939e-16,
+     "energy": 0.0,
+     "fermi_level": 5.551115123125783e-17,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "pbe-sr",
+    "metal": false,
+    "provisional_not_a_gate": false,
+    "reference": null,
+    "xc": "r2scan"
+   },
+   "prior_wrong_dataset": {
+    "E_eV": -214.50269460297764,
+    "E_eV_new_minus_prior": 1.9813252380509425,
+    "energy": -7.882828630653878,
+    "free_energy": -7.882828632368034,
+    "n_iter": 19,
+    "note": "scratchpad number of extension 39cf62c7: crystals then read lda-sr for PBE; the change is the dataset fix, not a regression"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Si.parquet": "57a23fb7570740d02de254266b294d480506de255fbc3b633275fd20256a25ce"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "extra_si_r2scan",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "lda9_al_dzp_spacing0.25_k4": {
+   "float32": {
+    "E_eV": -56.86730165269065,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 7.94031507211912e-13,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3637228,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       0.012638890135400233,
+       0.2541316637798109,
+       0.6907524634983375,
+       0.6907524683308571,
+       0.7869913826580919,
+       0.7869913877689159,
+       0.8862268567635507,
+       1.1977764717475357,
+       1.1977764752354034,
+       1.8969275005486357,
+       2.09527646191854,
+       2.09527662971204,
+       3.2960932918640333
+      ],
+      [
+       0.012516421689938384,
+       0.4095484998132005,
+       0.5002103581329959,
+       0.5382927561292346,
+       0.624799614341375,
+       0.7642711242865755,
+       1.1059215667854732,
+       1.1802765116181966,
+       1.3268013226000053,
+       1.6206601449179603,
+       1.7763367320949712,
+       1.7972771848376472,
+       4.0108146316286675
+      ],
+      [
+       0.1317332502008785,
+       0.3013976529149258,
+       0.36985594645625836,
+       0.4997082713618107,
+       0.5795022509272703,
+       0.724365203178781,
+       1.2312367591190916,
+       1.3265575834688623,
+       1.3873744148119533,
+       1.6712593569985135,
+       1.7142930207707716,
+       1.9611040186346937,
+       3.663488196321577
+      ],
+      [
+       0.1339394230862591,
+       0.21241583981797646,
+       0.38227575337050207,
+       0.5779060293783889,
+       0.685003490009516,
+       0.9829832519426863,
+       1.0648255543644805,
+       1.1372979527454665,
+       1.1570731641121315,
+       1.6461381659029044,
+       2.3880313729418097,
+       2.415863684770362,
+       3.7703391950012195
+      ],
+      [
+       -0.028054756391351077,
+       0.3720821584966675,
+       0.5387584282421105,
+       0.7247673780179806,
+       0.8301122282638927,
+       0.8548740439628112,
+       0.9615525733625435,
+       0.989345128368755,
+       1.1578678302940775,
+       1.5278059414866014,
+       1.8846678726609236,
+       2.5056819478059458,
+       3.9313279439388022
+      ],
+      [
+       0.05322238242474353,
+       0.29199630288124057,
+       0.4605406228725825,
+       0.53969113187055,
+       0.7959598026745028,
+       0.8856833885908523,
+       0.9562045878522046,
+       1.1264027028010566,
+       1.288913787787262,
+       1.8969455074449604,
+       1.969896111795243,
+       2.571702024669958,
+       3.7230730743817952
+      ],
+      [
+       0.17170312505355695,
+       0.25202578710720913,
+       0.3420850119371403,
+       0.42074885379124727,
+       0.7549957589619348,
+       0.9102696107253493,
+       1.005771512770182,
+       1.1573096649640826,
+       1.3452219212245298,
+       1.990436043624534,
+       2.1287502874694892,
+       2.6249188045852954,
+       3.5944649908883255
+      ],
+      [
+       0.09343376276507126,
+       0.1743482264609665,
+       0.5768243397017947,
+       0.6165085383706901,
+       0.7197803961572886,
+       0.8620062969774884,
+       0.9638918262380367,
+       1.1808027529745062,
+       1.3266026468376884,
+       1.37983964558265,
+       1.7929859170469482,
+       2.2682994629894075,
+       3.758380594999692
+      ],
+      [
+       -0.10987702573500646,
+       0.6118012741162753,
+       0.7350428030192212,
+       0.7350428068466603,
+       0.8836875785364294,
+       0.8836875787116255,
+       0.89333602722289,
+       1.0188287195146841,
+       1.0188287251725048,
+       1.167986242459441,
+       1.7099149962594666,
+       1.7099150492915682,
+       3.9486296931455147
+      ],
+      [
+       -0.06900121353690947,
+       0.4907190580315294,
+       0.6170131046844005,
+       0.6967127392238794,
+       0.7469275335722142,
+       0.8478121043312459,
+       1.0071231911604288,
+       1.0156418749893383,
+       1.1361442590001192,
+       1.3017658782910453,
+       1.5918537360842084,
+       1.7278023610304307,
+       3.966836724492529
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     10,
+     13
+    ],
+    "energy": -2.0892765811816143,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.089834789694886,
+    "fermi_level": 0.2915270708786361,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.0903929982081575,
+    "kpoints_fractional": [
+     [
+      -0.375,
+      -0.375,
+      -0.375
+     ],
+     [
+      -0.375,
+      -0.375,
+      -0.125
+     ],
+     [
+      -0.37499999999999994,
+      -0.375,
+      0.125
+     ],
+     [
+      -0.375,
+      -0.375,
+      0.375
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      -0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.375
+     ],
+     [
+      -0.375,
+      0.125,
+      0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      -0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      0.125
+     ]
+    ],
+    "last_history": [
+     16.0,
+     -2.0903929982081575,
+     3.33510996597397e-13,
+     6.286690636832483e-11,
+     1.820118806223205e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 16,
+    "n_spins": 1,
+    "occupation_sum": 3.000000000000794,
+    "rss_peak_mb": 353.65625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1080588674623886,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.394452321710677,
+     "entropy": -0.001116417026543406,
+     "xc": -0.8090888279430294
+    },
+    "wall_s": 2.09,
+    "weights": [
+     0.03125,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.1875,
+     0.1875,
+     0.09375,
+     0.03125,
+     0.09375
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 2.1842893715984246e-08,
+    "electron_count_error": 7.94031507211912e-13,
+    "max_eigenvalue_Ha": 2.354228081369314e-07,
+    "n_iter": [
+     16,
+     16
+    ]
+   },
+   "float64": {
+    "E_eV": -56.86730167453354,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 2.389199948993337e-13,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 4744620,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       0.012638890377605239,
+       0.2541316625684248,
+       0.6907524669539323,
+       0.6907524670097601,
+       0.7869913844762557,
+       0.786991384768921,
+       0.8862268564761004,
+       1.1977764732322844,
+       1.1977764747213677,
+       1.8969277359714438,
+       2.095276582714672,
+       2.0952766170811703,
+       3.296093211523236
+      ],
+      [
+       0.012516421948837453,
+       0.409548499741231,
+       0.5002103570748178,
+       0.5382927547616041,
+       0.6247996142960699,
+       0.7642711257795483,
+       1.1059215694479816,
+       1.1802765165139661,
+       1.3268013245723829,
+       1.6206601673307095,
+       1.7763366821454722,
+       1.7972772163031525,
+       4.010814546316446
+      ],
+      [
+       0.13173325000344188,
+       0.30139765174231464,
+       0.36985594700142277,
+       0.4997082691786634,
+       0.5795022535361856,
+       0.7243652038925255,
+       1.231236759676206,
+       1.3265575721906644,
+       1.3873744159360542,
+       1.6712593365033752,
+       1.714293107903198,
+       1.9611040460477072,
+       3.663488142366055
+      ],
+      [
+       0.13393942275450108,
+       0.21241583984845805,
+       0.3822757566692252,
+       0.5779060277188568,
+       0.685003487724862,
+       0.9829832527017631,
+       1.0648255612082778,
+       1.1372979483167958,
+       1.1570731480704157,
+       1.6461382213557445,
+       2.3880313061077363,
+       2.4158636267441427,
+       3.7703391612910346
+      ],
+      [
+       -0.028054755696349493,
+       0.3720821591157025,
+       0.5387584298900727,
+       0.7247673787722747,
+       0.8301122292865043,
+       0.8548740466570928,
+       0.9615525761503013,
+       0.9893451254780355,
+       1.1578678213295905,
+       1.5278058844387403,
+       1.8846678403437453,
+       2.5056819655630287,
+       3.931327947075583
+      ],
+      [
+       0.05322238288730003,
+       0.29199630277412725,
+       0.4605406237205,
+       0.5396911305932794,
+       0.7959598036253495,
+       0.8856833859720313,
+       0.9562045862165098,
+       1.1264027059933281,
+       1.288913784787022,
+       1.8969454082344541,
+       1.969896043779375,
+       2.5717019947770634,
+       3.7230729938981355
+      ],
+      [
+       0.17170312410233934,
+       0.25202578579630286,
+       0.34208501124305474,
+       0.4207488547148161,
+       0.7549957592454344,
+       0.9102696021005856,
+       1.0057715120240516,
+       1.1573096581042308,
+       1.3452219304480189,
+       1.9904360694415875,
+       2.128750192106935,
+       2.624918768751413,
+       3.5944650058473417
+      ],
+      [
+       0.09343376175133607,
+       0.17434822602424083,
+       0.5768243387038441,
+       0.6165085349715841,
+       0.7197803975679392,
+       0.8620062944347514,
+       0.9638918278289672,
+       1.180802754573484,
+       1.326602649452549,
+       1.379839660423521,
+       1.7929859269476611,
+       2.268299313090238,
+       3.7583806610140504
+      ],
+      [
+       -0.10987702607074601,
+       0.611801274951654,
+       0.7350428065590803,
+       0.7350428066266126,
+       0.8836875787971629,
+       0.8836875788614276,
+       0.8933360279625374,
+       1.0188287255055708,
+       1.0188287269779457,
+       1.1679862134933225,
+       1.709914989499692,
+       1.7099149983174533,
+       3.9486296293784386
+      ],
+      [
+       -0.06900121372636833,
+       0.4907190582276713,
+       0.6170131045056726,
+       0.6967127402639735,
+       0.7469275321697048,
+       0.8478121035804826,
+       1.0071231956265585,
+       1.0156418758132983,
+       1.136144253854425,
+       1.3017659004623825,
+       1.5918536789467925,
+       1.7278024113843058,
+       3.966836701412749
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     10,
+     13
+    ],
+    "energy": -2.089276581970757,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.089834790497598,
+    "fermi_level": 0.2915270706572494,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.090392999024439,
+    "kpoints_fractional": [
+     [
+      -0.375,
+      -0.375,
+      -0.375
+     ],
+     [
+      -0.375,
+      -0.375,
+      -0.125
+     ],
+     [
+      -0.37499999999999994,
+      -0.375,
+      0.125
+     ],
+     [
+      -0.375,
+      -0.375,
+      0.375
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      -0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.375
+     ],
+     [
+      -0.375,
+      0.125,
+      0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      -0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      0.125
+     ]
+    ],
+    "last_history": [
+     16.0,
+     -2.090392999024439,
+     6.794564910705958e-14,
+     7.139499146064471e-11,
+     2.7674683120726065e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 16,
+    "n_spins": 1,
+    "occupation_sum": 2.999999999999761,
+    "rss_peak_mb": 344.734375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1080588744565534,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.3944523286520885,
+     "entropy": -0.0011164170536824677,
+     "xc": -0.8090888287849255
+    },
+    "wall_s": 2.02,
+    "weights": [
+     0.03125,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.1875,
+     0.1875,
+     0.09375,
+     0.03125,
+     0.09375
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 4.058708924503662e-11,
+     "energy": 2.2648549702353193e-14,
+     "fermi_level": 6.938893903907228e-15,
+     "free_energy": 2.353672812205332e-14,
+     "moment": 0.0,
+     "n_iter": [
+      16,
+      16
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 2.596500792151346e-11,
+     "energy": 7.327471962526033e-14,
+     "fermi_level": 3.730349362740526e-14,
+     "free_energy": 7.37188088351104e-14,
+     "moment": 0.0,
+     "n_iter": [
+      16,
+      16
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 3,
+    "metal": true,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_al_dzp_spacing0.25_k4",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": 5.551115123125783e-14,
+    "dE_eV": 1.5205614545266144e-12,
+    "dF_Ha": 5.639932965095795e-14,
+    "dFermi_level_Ha": 2.836619827917275e-14,
+    "max_eigenvalue_Ha": 9.746425888579324e-11,
+    "n_iter": [
+     16,
+     16
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_al_dzp_spacing0.30_k2": {
+   "float32": {
+    "E_eV": -56.724241275008396,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.144596108650148e-13,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1851420,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.06392409352376471,
+       0.4182956062010109,
+       0.6983866384705334,
+       0.6983866389093587,
+       0.8679544236426562,
+       0.8679544262494451,
+       0.8996155773846094,
+       1.0556774750733082,
+       1.0556774769871975,
+       1.2979821223882233,
+       3.3120531192355482,
+       3.3120532267455625,
+       3.9942310073892973
+      ],
+      [
+       0.09814702436533662,
+       0.25850448435719986,
+       0.4258442581827412,
+       0.5436909989648852,
+       0.6444700977573191,
+       0.9182232313195304,
+       1.0318134612941552,
+       1.1599061377584017,
+       1.3494230032498693,
+       1.8766847328785974,
+       1.9284865133088251,
+       2.3968666106286554,
+       3.6188121797995474
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     13
+    ],
+    "energy": -2.0828230579668667,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.08457741778487,
+    "fermi_level": 0.26105175326254537,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.086331777602874,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     20.0,
+     -2.086331777602874,
+     -5.773159728050814e-14,
+     1.677397717617336e-11,
+     2.869305252617194e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 20,
+    "n_spins": 1,
+    "occupation_sum": 2.9999999999991855,
+    "rss_peak_mb": 272.84375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.0801075018453834,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.3602109651167256,
+     "entropy": -0.0035087196360073483,
+     "xc": -0.8089252957052281
+    },
+    "wall_s": 1.94,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 4.4695553924611886e-08,
+    "electron_count_error": 8.144596108650148e-13,
+    "max_eigenvalue_Ha": 1.956002337877294e-07,
+    "n_iter": [
+     20,
+     20
+    ]
+   },
+   "float64": {
+    "E_eV": -56.72424131970395,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 2.674749310926927e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1851420,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.0639240917676912,
+       0.4182956063790423,
+       0.6983866382233266,
+       0.6983866384407214,
+       0.8679544229230604,
+       0.8679544243234492,
+       0.8996155734526308,
+       1.0556774748296867,
+       1.0556774749233453,
+       1.2979819904815548,
+       3.312053007358578,
+       3.3120530311453287,
+       3.9942309355640853
+      ],
+      [
+       0.09814702345548978,
+       0.25850448266779047,
+       0.42584425611440035,
+       0.5436909931220987,
+       0.6444700949228692,
+       0.9182232279774014,
+       1.0318134596912438,
+       1.1599061573616984,
+       1.3494230092954884,
+       1.8766848153955396,
+       1.9284864258712597,
+       2.396866599641065,
+       3.6188121447306
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     13
+    ],
+    "energy": -2.0828230596093955,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.0845774194274016,
+    "fermi_level": 0.26105175157311544,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.0863317792454077,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     20.0,
+     -2.0863317792454077,
+     -2.4780177909633494e-13,
+     1.5695211857354148e-11,
+     2.699291378782425e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 20,
+    "n_spins": 1,
+    "occupation_sum": 2.9999999999973253,
+    "rss_peak_mb": 288.921875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.0801075150704929,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.3602109775276032,
+     "entropy": -0.0035087196360120876,
+     "xc": -0.8089252981619888
+    },
+    "wall_s": 1.89,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 2.4919177832316564e-11,
+     "energy": 7.105427357601002e-15,
+     "fermi_level": 3.086420008457935e-14,
+     "free_energy": 7.105427357601002e-15,
+     "moment": 0.0,
+     "n_iter": [
+      20,
+      20
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 2.149525002437258e-11,
+     "energy": 5.81756864903582e-13,
+     "fermi_level": 3.9968028886505635e-14,
+     "free_energy": 5.910827383104333e-13,
+     "moment": 0.0,
+     "n_iter": [
+      20,
+      20
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 2,
+    "metal": true,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_al_dzp_spacing0.30_k2",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": -4.516387264175137e-13,
+    "dE_eV": -1.2384759884298546e-11,
+    "dF_Ha": -4.587441537751147e-13,
+    "dFermi_level_Ha": 8.43769498715119e-15,
+    "max_eigenvalue_Ha": 3.1240343645322355e-11,
+    "n_iter": [
+     20,
+     20
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_al_sz_spacing0.25_k2": {
+   "float32": {
+    "E_eV": -56.141571746301565,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 2.757793993168889e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1475566,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.060298099496309265,
+       0.5115343798433114,
+       0.74581749266169,
+       0.745817494030967
+      ],
+      [
+       0.10192271080180917,
+       0.2720267412257873,
+       0.49208184965693036,
+       0.5704072035431912
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     4
+    ],
+    "energy": -2.06141034773448,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.063164707552486,
+    "fermi_level": 0.27457401013111127,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.064919067370492,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     17.0,
+     -2.064919067370492,
+     -4.876099524153688e-13,
+     5.004963445313444e-11,
+     4.940169712044779e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 17,
+    "n_spins": 1,
+    "occupation_sum": 2.999999999997242,
+    "rss_peak_mb": 264.25,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1871833335229354,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.4463171203041076,
+     "entropy": -0.0035087196360122984,
+     "xc": -0.8084822619630112
+    },
+    "wall_s": 1.38,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 6.535941565743997e-09,
+    "electron_count_error": 2.757793993168889e-12,
+    "max_eigenvalue_Ha": 4.051092128420919e-09,
+    "n_iter": [
+     17,
+     17
+    ]
+   },
+   "float64": {
+    "E_eV": -56.14157175283751,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 1.949551631241775e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1475566,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.06029810062284127,
+       0.5115343757922193,
+       0.7458174900355965,
+       0.7458174906379419
+      ],
+      [
+       0.10192271061434793,
+       0.27202674155376805,
+       0.492081849033667,
+       0.5704072038209809
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     4
+    ],
+    "energy": -2.061410347974672,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.0631647077926774,
+    "fermi_level": 0.274574010459101,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.0649190676106826,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     17.0,
+     -2.0649190676106826,
+     -3.0686564400639327e-13,
+     5.248665747281393e-11,
+     5.599095466422612e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 17,
+    "n_spins": 1,
+    "occupation_sum": 2.9999999999980504,
+    "rss_peak_mb": 254.28125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1871833328237338,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.4463171189895294,
+     "entropy": -0.0035087196360102406,
+     "xc": -0.80848226281858
+    },
+    "wall_s": 1.4,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 8.659739592076221e-15,
+     "energy": 4.529709940470639e-14,
+     "fermi_level": 6.217248937900877e-15,
+     "free_energy": 4.574118861455645e-14,
+     "moment": 0.0,
+     "n_iter": [
+      17,
+      17
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 5.662137425588298e-15,
+     "energy": 4.796163466380676e-14,
+     "fermi_level": 1.1102230246251565e-16,
+     "free_energy": 4.8405723873656825e-14,
+     "moment": 0.0,
+     "n_iter": [
+      17,
+      17
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 4,
+    "metal": true,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_al_sz_spacing0.25_k2",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": -3.68594044175552e-14,
+    "dE_eV": -1.0160761121369433e-12,
+    "dF_Ha": -3.730349362740526e-14,
+    "dFermi_level_Ha": 2.7755575615628914e-15,
+    "max_eigenvalue_Ha": 5.551115123125783e-15,
+    "n_iter": [
+     17,
+     17
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_al_sz_spacing0.30_k2": {
+   "float32": {
+    "E_eV": -56.14155733759075,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 2.2239987629291136e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1135019,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.06029804876718073,
+       0.5115340643289071,
+       0.7458177066493078,
+       0.7458177085017662
+      ],
+      [
+       0.10192273273310505,
+       0.2720266649498556,
+       0.49208186461149983,
+       0.5704072769785642
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     4
+    ],
+    "energy": -2.0614098182241243,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.06316417804213,
+    "fermi_level": 0.2745739338551855,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.064918537860135,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     17.0,
+     -2.064918537860135,
+     -3.375077994860476e-13,
+     2.4764495635069913e-11,
+     8.781664932460148e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 17,
+    "n_spins": 1,
+    "occupation_sum": 2.999999999997776,
+    "rss_peak_mb": 264.515625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1432965064229004,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.4024305434202513,
+     "entropy": -0.003508719636010939,
+     "xc": -0.8084814822364769
+    },
+    "wall_s": 1.49,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -2.7237042843353265e-08,
+    "electron_count_error": 2.2239987629291136e-12,
+    "max_eigenvalue_Ha": 1.8082594310797617e-09,
+    "n_iter": [
+     17,
+     17
+    ]
+   },
+   "float64": {
+    "E_eV": -56.141557310353704,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 2.6045832157706172e-12,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1135019,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.06029804739779193,
+       0.5115340661371666,
+       0.7458177061198364,
+       0.7458177072571476
+      ],
+      [
+       0.1019227329114099,
+       0.27202666498561123,
+       0.492081865933121,
+       0.5704072781836313
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     4
+    ],
+    "energy": -2.0614098172231876,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.063164177041187,
+    "fermi_level": 0.2745739338909944,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.0649185368591865,
+    "kpoints_fractional": [
+     [
+      -0.25,
+      -0.25,
+      -0.25
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.25
+     ]
+    ],
+    "last_history": [
+     17.0,
+     -2.0649185368591865,
+     7.105427357601002e-15,
+     5.701288528560594e-11,
+     6.846276715045585e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 17,
+    "n_spins": 1,
+    "occupation_sum": 3.0000000000026046,
+    "rss_peak_mb": 254.84375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.143296507366566,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.4024305433536477,
+     "entropy": -0.0035087196359986396,
+     "xc": -0.8084814822458096
+    },
+    "wall_s": 1.43,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 9.2148511043888e-15,
+     "energy": 2.353672812205332e-14,
+     "fermi_level": 7.549516567451064e-15,
+     "free_energy": 2.353672812205332e-14,
+     "moment": 0.0,
+     "n_iter": [
+      17,
+      17
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 8.215650382226158e-15,
+     "energy": 2.6645352591003757e-15,
+     "fermi_level": 5.551115123125783e-16,
+     "free_energy": 2.6645352591003757e-15,
+     "moment": 0.0,
+     "n_iter": [
+      17,
+      17
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 0,
+    "metal": true,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_al_sz_spacing0.30_k2",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": 1.318944953254686e-13,
+    "dE_eV": 3.61666252501891e-12,
+    "dF_Ha": 1.3367085216486885e-13,
+    "dFermi_level_Ha": 1.362243651215067e-13,
+    "max_eigenvalue_Ha": 1.4568901640643617e-13,
+    "n_iter": [
+     17,
+     17
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_al_sz_spacing0.30_k4": {
+   "float32": {
+    "E_eV": -56.309698357901816,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 1.3500311979441904e-13,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1407264,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       0.016531896863898693,
+       0.2784463141342244,
+       0.7131235403682051,
+       0.7131235504262012
+      ],
+      [
+       0.0168201382244038,
+       0.45677083566104215,
+       0.5632317095024911,
+       0.6142935333440923
+      ],
+      [
+       0.13560236814719884,
+       0.34447307486039813,
+       0.39905278094119956,
+       0.5100404836145643
+      ],
+      [
+       0.13737699244664806,
+       0.21985613302028667,
+       0.423136569644579,
+       0.616660052199758
+      ],
+      [
+       -0.024025062210527554,
+       0.42736214858724086,
+       0.6162488158730158,
+       0.7555291429182975
+      ],
+      [
+       0.05717900848053714,
+       0.3127100517781065,
+       0.5095505953593245,
+       0.631651008749263
+      ],
+      [
+       0.17584617542017802,
+       0.26241053151089266,
+       0.3778236575892562,
+       0.4627114587042661
+      ],
+      [
+       0.09721978238178472,
+       0.18312507081814605,
+       0.6417534944196716,
+       0.6556139205837798
+      ],
+      [
+       -0.10736980322343756,
+       0.745621126507878,
+       0.7849356460775466,
+       0.7849356491429211
+      ],
+      [
+       -0.06542593539543151,
+       0.5873691712676221,
+       0.6705820524994102,
+       0.7927712549166611
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     10,
+     4
+    ],
+    "energy": -2.068864930438585,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.0693432465684847,
+    "fermi_level": 0.3127089916022887,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.069821562698385,
+    "kpoints_fractional": [
+     [
+      -0.375,
+      -0.375,
+      -0.375
+     ],
+     [
+      -0.375,
+      -0.375,
+      -0.125
+     ],
+     [
+      -0.37499999999999994,
+      -0.375,
+      0.125
+     ],
+     [
+      -0.375,
+      -0.375,
+      0.375
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      -0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.375
+     ],
+     [
+      -0.375,
+      0.125,
+      0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      -0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      0.125
+     ]
+    ],
+    "last_history": [
+     17.0,
+     -2.069821562698385,
+     -5.684341886080802e-14,
+     3.4719772014540267e-12,
+     3.334348076919345e-15,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 17,
+    "n_spins": 1,
+    "occupation_sum": 2.999999999999865,
+    "rss_peak_mb": 264.1875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1306333753118187,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.397140522125586,
+     "entropy": -0.0009566322598001851,
+     "xc": -0.8085634846345212
+    },
+    "wall_s": 1.34,
+    "weights": [
+     0.03125,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.1875,
+     0.1875,
+     0.09375,
+     0.03125,
+     0.09375
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 1.4203770604126476e-08,
+    "electron_count_error": 1.3500311979441904e-13,
+    "max_eigenvalue_Ha": 9.522609811796201e-09,
+    "n_iter": [
+     17,
+     17
+    ]
+   },
+   "float64": {
+    "E_eV": -56.309698372105586,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.43769498715119e-14,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 1663264,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       0.01653189513807464,
+       0.27844631446150225,
+       0.7131235429663153,
+       0.7131235432053917
+      ],
+      [
+       0.01682013847612289,
+       0.45677083524417983,
+       0.5632317077670869,
+       0.614293524417976
+      ],
+      [
+       0.13560236734976466,
+       0.3444730758877318,
+       0.39905278095770147,
+       0.5100404849214504
+      ],
+      [
+       0.13737699216741422,
+       0.21985613207381605,
+       0.4231365686233294,
+       0.6166600534761998
+      ],
+      [
+       -0.02402506258323303,
+       0.42736214687174634,
+       0.6162488170825716,
+       0.7555291413370875
+      ],
+      [
+       0.05717900861825977,
+       0.31271005133492513,
+       0.5095505960448714,
+       0.6316510126244742
+      ],
+      [
+       0.17584617505647357,
+       0.2624105316170845,
+       0.37782365733810663,
+       0.4627114565186744
+      ],
+      [
+       0.09721978216210934,
+       0.18312507076562093,
+       0.6417534942928697,
+       0.655613920789666
+      ],
+      [
+       -0.10736980427676407,
+       0.7456211360304879,
+       0.7849356444810767,
+       0.7849356455934418
+      ],
+      [
+       -0.06542593479327244,
+       0.5873691699762471,
+       0.670582059140179,
+       0.7927712549464295
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     10,
+     4
+    ],
+    "energy": -2.068864930960752,
+    "expected_electrons": 3.0,
+    "extrapolated_energy": -2.0693432470904636,
+    "fermi_level": 0.31270899115967576,
+    "fermi_level_reported_nonunique": null,
+    "free_energy": -2.0698215632201755,
+    "kpoints_fractional": [
+     [
+      -0.375,
+      -0.375,
+      -0.375
+     ],
+     [
+      -0.375,
+      -0.375,
+      -0.125
+     ],
+     [
+      -0.37499999999999994,
+      -0.375,
+      0.125
+     ],
+     [
+      -0.375,
+      -0.375,
+      0.375
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      -0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.12500000000000003
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.375
+     ],
+     [
+      -0.375,
+      0.125,
+      0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      -0.125
+     ],
+     [
+      -0.125,
+      -0.125,
+      0.125
+     ]
+    ],
+    "last_history": [
+     17.0,
+     -2.0698215632201755,
+     -2.3092638912203256e-14,
+     5.209373179383833e-12,
+     1.02515999073706e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 17,
+    "n_spins": 1,
+    "occupation_sum": 2.9999999999999156,
+    "rss_peak_mb": 284.34375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 1.1306333749939057,
+     "constant": 0.006205701009703635,
+     "electrostatic": -2.3971405219905524,
+     "entropy": -0.0009566322594236449,
+     "xc": -0.8085634849738093
+    },
+    "wall_s": 1.46,
+    "weights": [
+     0.03125,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.1875,
+     0.1875,
+     0.09375,
+     0.03125,
+     0.09375
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 2.708944180085382e-14,
+     "energy": 3.9968028886505635e-14,
+     "fermi_level": 1.765254609153999e-14,
+     "free_energy": 3.9968028886505635e-14,
+     "moment": 0.0,
+     "n_iter": [
+      17,
+      17
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 1.709743457922741e-14,
+     "energy": 1.0658141036401503e-14,
+     "fermi_level": 3.6637359812630166e-15,
+     "free_energy": 1.0658141036401503e-14,
+     "moment": 0.0,
+     "n_iter": [
+      17,
+      17
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 1,
+    "metal": true,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_al_sz_spacing0.30_k4",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Al"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": 8.393286066166183e-14,
+    "dE_eV": 2.2950530365051236e-12,
+    "dF_Ha": 8.393286066166183e-14,
+    "dFermi_level_Ha": 2.042810365310288e-14,
+    "max_eigenvalue_Ha": 3.863576125695545e-14,
+    "n_iter": [
+     17,
+     17
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_si_dzp_spacing0.30_k2": {
+   "float32": {
+    "E_eV": -215.56039457768836,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 6310951,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.18825243534272612,
+       0.07992152704366262,
+       0.19700390354918035,
+       0.19700390531085726,
+       0.2993768789788762,
+       0.3616250785427131,
+       0.36162507909447206,
+       0.48095800569354014,
+       0.5445049460015767,
+       0.5445049540522806,
+       0.6662675105900321,
+       0.8150354326373034,
+       0.8571059054349794,
+       0.8571059123447865,
+       0.955144007518264,
+       0.9551440301823576,
+       1.0499652343855574,
+       1.2646744398822178,
+       1.2646744473840912,
+       1.2955248955203917,
+       1.3660369960167833,
+       1.3660370669918782,
+       1.586249617851579,
+       1.9371617275545585,
+       1.9371617969008856,
+       2.289684768463354
+      ],
+      [
+       -0.11752879990530664,
+       -0.014091932770326679,
+       0.09386810212026207,
+       0.1416786327277146,
+       0.28637402685482816,
+       0.4096021960686259,
+       0.4468095082980215,
+       0.4602064821276449,
+       0.6180705772528915,
+       0.651910121059914,
+       0.7063084242794154,
+       0.7390101370607174,
+       0.8256824806671123,
+       0.9243394974534368,
+       0.9774048978999536,
+       0.9801936314048156,
+       1.0449499654319423,
+       1.0536164382103461,
+       1.2005998601206016,
+       1.2574286264259031,
+       1.2965563563319997,
+       1.3265922869485454,
+       1.4710646388305924,
+       1.6668192425467157,
+       1.7550131886047906,
+       2.8112374337499997
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     26
+    ],
+    "energy": -7.921698076461605,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.921698388646782,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.24092621827578042,
+    "free_energy": -7.92169870083196,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.92169870083196,
+     -2.3092638912203256e-14,
+     8.954099544730202e-11,
+     2.3847292414003444e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 328.109375,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.5744532396238986,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.092442953885632,
+     "entropy": -6.243703549302941e-07,
+     "xc": -2.418658691087177
+    },
+    "wall_s": 2.11,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -1.4483703125733882e-10,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 5.0501903992028474e-08,
+    "n_iter": [
+     21,
+     21
+    ]
+   },
+   "float64": {
+    "E_eV": -215.56039457754352,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 6310951,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.18825243498980943,
+       0.07992152747528643,
+       0.19700390611835283,
+       0.19700390615266597,
+       0.2993768799617994,
+       0.3616250791435275,
+       0.36162507919879355,
+       0.4809580074237995,
+       0.5445049478478983,
+       0.5445049480370786,
+       0.6662675038298483,
+       0.8150354326550696,
+       0.8571059072772256,
+       0.8571059074611126,
+       0.9551440208276644,
+       0.9551440232296088,
+       1.0499652193168716,
+       1.2646744449891505,
+       1.264674445972828,
+       1.295524920420133,
+       1.3660370346372541,
+       1.366037036375232,
+       1.5862495980802114,
+       1.9371617480004768,
+       1.9371617530264773,
+       2.289684752306526
+      ],
+      [
+       -0.11752879781911489,
+       -0.01409193127529594,
+       0.0938681026036356,
+       0.14167863356513982,
+       0.2863740266492158,
+       0.4096022000299168,
+       0.4468095102150887,
+       0.46020648071335346,
+       0.6180705823878381,
+       0.6519101205028068,
+       0.7063084294682179,
+       0.7390101379641736,
+       0.8256824880383791,
+       0.9243395007984415,
+       0.9774048936581786,
+       0.9801936380468832,
+       1.0449499679920198,
+       1.053616435831872,
+       1.2005998503880764,
+       1.2574286247471542,
+       1.2965563599859695,
+       1.3265922364466414,
+       1.4710646183005793,
+       1.6668192591323823,
+       1.7550131825115611,
+       2.811237384516612
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     26
+    ],
+    "energy": -7.921698076456209,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.9216983886414605,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.24092621903150574,
+    "free_energy": -7.921698700826712,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     21.0,
+     -7.921698700826712,
+     -3.197442310920451e-14,
+     8.8888335076125e-11,
+     2.3420582964882394e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 21,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 311.90625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.574453267184257,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.092442977653926,
+     "entropy": -6.243705038034271e-07,
+     "xc": -2.418658694873844
+    },
+    "wall_s": 2.14,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 3.6850522633358196e-12,
+     "energy": 5.329070518200751e-15,
+     "fermi_level": 1.9984014443252818e-14,
+     "free_energy": 5.329070518200751e-15,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 6.000755448098971e-12,
+     "energy": 8.881784197001252e-16,
+     "fermi_level": 2.4480417692984702e-14,
+     "free_energy": 8.881784197001252e-16,
+     "moment": 0.0,
+     "n_iter": [
+      21,
+      21
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 7,
+    "metal": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_si_dzp_spacing0.30_k2",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": -1.7763568394002505e-15,
+    "dE_eV": -2.842170943040401e-14,
+    "dF_Ha": -1.7763568394002505e-15,
+    "dFermi_level_Ha": null,
+    "max_eigenvalue_Ha": 4.027000954920368e-12,
+    "n_iter": [
+     21,
+     21
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_si_sz_spacing0.25_k2": {
+   "float32": {
+    "E_eV": -214.33356668014918,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 4578070,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.1985052475009294,
+       0.07512822667851035,
+       0.19071356588465102,
+       0.1907135662260619,
+       0.3099146700395984,
+       0.39274991661791747,
+       0.3927499184588049,
+       0.5237502337131319
+      ],
+      [
+       -0.12594112740314706,
+       -0.02173019722513865,
+       0.09048001827049176,
+       0.13411631005635283,
+       0.33777758442307165,
+       0.4597219675644818,
+       0.5280985382339969,
+       0.584494918517847
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.876613290933272,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.876613294986034,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.25158494620664096,
+    "free_energy": -7.876613299038795,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.876613299038795,
+     2.1316282072803006e-14,
+     4.657259369248433e-11,
+     3.0935816140933364e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 292.578125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.831385943572476,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.349502832298136,
+     "entropy": -8.105523487211115e-09,
+     "xc": -2.373446731094918
+    },
+    "wall_s": 1.5,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -3.1592975346939056e-08,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 1.1004103739331583e-08,
+    "n_iter": [
+     19,
+     19
+    ]
+   },
+   "float64": {
+    "E_eV": -214.3335666485562,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 4578070,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19850525066022562,
+       0.07512822415621014,
+       0.19071356727189806,
+       0.19071356730433375,
+       0.30991465903549464,
+       0.3927499180924441,
+       0.39274991809449344,
+       0.5237502250352852
+      ],
+      [
+       -0.12594112604718388,
+       -0.021730196122310502,
+       0.09048001893388444,
+       0.13411631005915953,
+       0.3377775830824449,
+       0.45972196735015974,
+       0.5280985389639528,
+       0.5844949208589162
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.876613289772245,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.876613293825013,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2515849413205441,
+    "free_energy": -7.876613297877781,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.876613297877781,
+     -4.085620730620576e-14,
+     4.6375248265285265e-11,
+     3.106539093278653e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 275.5,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.8313859490202837,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.349502837595269,
+     "entropy": -8.105536167560432e-09,
+     "xc": -2.373446730084565
+    },
+    "wall_s": 1.64,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 1.7763568394002505e-15,
+     "energy": 0.0,
+     "fermi_level": 1.1102230246251565e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 1.304512053934559e-15,
+     "energy": 1.7763568394002505e-15,
+     "fermi_level": 5.551115123125783e-16,
+     "free_energy": 1.7763568394002505e-15,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 8,
+    "metal": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_si_sz_spacing0.25_k2",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": 4.440892098500626e-15,
+    "dE_eV": 1.1368683772161603e-13,
+    "dF_Ha": 4.440892098500626e-15,
+    "dFermi_level_Ha": null,
+    "max_eigenvalue_Ha": 2.4424906541753444e-15,
+    "n_iter": [
+     19,
+     19
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_si_sz_spacing0.30_k2": {
+   "float32": {
+    "E_eV": -214.33357495771438,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3297318,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.1985065008043152,
+       0.07512837456617834,
+       0.1907132789755083,
+       0.190713281575943,
+       0.30992569521062796,
+       0.3927494582494621,
+       0.39274946389285675,
+       0.5237632505457497
+      ],
+      [
+       -0.12594245185423159,
+       -0.021731016491313884,
+       0.09048000749718688,
+       0.13411603626456808,
+       0.3377882563008799,
+       0.4597378406149839,
+       0.5280979961609716,
+       0.584504199900009
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.876613595134052,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.876613599180944,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.25159031562461875,
+    "free_energy": -7.8766136032278355,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.8766136032278355,
+     -2.4868995751603507e-14,
+     4.636997870781509e-11,
+     3.0752457246147105e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 288.953125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.490484218142706,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.008604440204488,
+     "entropy": -8.093783143786478e-09,
+     "xc": -2.373443701959575
+    },
+    "wall_s": 1.62,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -1.0431071473249176e-07,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 3.4807685067583805e-09,
+    "n_iter": [
+     19,
+     19
+    ]
+   },
+   "float64": {
+    "E_eV": -214.33357485340366,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 3297318,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.19850650167625544,
+       0.07512837383865584,
+       0.19071328029968257,
+       0.1907132803362116,
+       0.3099256925863549,
+       0.3927494611220194,
+       0.39274946115974957,
+       0.5237632529932986
+      ],
+      [
+       -0.12594245030253376,
+       -0.02173101604282908,
+       0.0904800074570494,
+       0.13411603612987855,
+       0.33778825713085436,
+       0.4597378440957524,
+       0.5280979970200776,
+       0.5845042021825174
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     8
+    ],
+    "energy": -7.8766135913007025,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.876613595347596,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2515903143346066,
+    "free_energy": -7.876613599394489,
+    "kpoints_fractional": [
+     [
+      -0.24999999999999997,
+      -0.24999999999999997,
+      -0.24999999999999997
+     ],
+     [
+      -0.25,
+      -0.25,
+      0.24999999999999997
+     ]
+    ],
+    "last_history": [
+     19.0,
+     -7.876613599394489,
+     -1.7763568394002505e-15,
+     4.632233848551574e-11,
+     3.070672677000793e-13,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 19,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 270.75,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.4904842131204683,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.008604432881397,
+     "entropy": -8.093785895645912e-09,
+     "xc": -2.373443700427079
+    },
+    "wall_s": 1.48,
+    "weights": [
+     0.25,
+     0.75
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 1.4988010832439613e-15,
+     "energy": 8.881784197001252e-16,
+     "fermi_level": 9.43689570931383e-16,
+     "free_energy": 8.881784197001252e-16,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 9.992007221626409e-16,
+     "energy": 0.0,
+     "fermi_level": 4.440892098500626e-16,
+     "free_energy": 0.0,
+     "moment": 0.0,
+     "n_iter": [
+      19,
+      19
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 5,
+    "metal": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_si_sz_spacing0.30_k2",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": 8.881784197001252e-16,
+    "dE_eV": 0.0,
+    "dF_Ha": 8.881784197001252e-16,
+    "dFermi_level_Ha": null,
+    "max_eigenvalue_Ha": 2.609024107869118e-15,
+    "n_iter": [
+     19,
+     19
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda9_si_sz_spacing0.30_k4": {
+   "float32": {
+    "E_eV": -214.49881033795668,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 4481519,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.16551296303272361,
+       -0.001507692769775873,
+       0.17591055921543586,
+       0.1759105595091921,
+       0.3040396097730907,
+       0.41452641633239284,
+       0.4145264189947743,
+       0.6245719549462972
+      ],
+      [
+       -0.161548509113065,
+       0.032192544582385185,
+       0.11837174833030599,
+       0.13428740440698317,
+       0.31698552512183265,
+       0.41764915901555644,
+       0.5255709722913059,
+       0.5409292791837571
+      ],
+      [
+       -0.10572393840181186,
+       -0.038258774777224766,
+       0.09128547228541328,
+       0.11667925507344429,
+       0.3205383273064672,
+       0.38542693941487655,
+       0.5912044682874321,
+       0.6004533052704882
+      ],
+      [
+       -0.12041684099334242,
+       -0.029426872553025132,
+       0.07106397239211604,
+       0.14549419415412007,
+       0.34957611991432647,
+       0.4948328051045249,
+       0.4992239590488642,
+       0.5966863667326114
+      ],
+      [
+       -0.18193280356602132,
+       0.04507834182005986,
+       0.1322659578382792,
+       0.18837133918130808,
+       0.3451846419884569,
+       0.39887916452281885,
+       0.4341069557481016,
+       0.5453482990184666
+      ],
+      [
+       -0.14577877647297105,
+       -0.0007733390743412116,
+       0.0951850890646723,
+       0.14515753352891658,
+       0.3808939010638403,
+       0.4133137393660862,
+       0.5053543228660756,
+       0.5726496118280279
+      ],
+      [
+       -0.09984791513562018,
+       -0.042039997557263606,
+       0.06913611896925917,
+       0.10782539134767598,
+       0.38633469159820616,
+       0.46520744040896467,
+       0.5393897159218862,
+       0.5773125087142228
+      ],
+      [
+       -0.13862799116302887,
+       -0.03169880264762469,
+       0.1323921633150213,
+       0.1576014423313929,
+       0.34085600098331087,
+       0.42125712126494463,
+       0.4544285699661906,
+       0.6428960476181563
+      ],
+      [
+       -0.22149926106889367,
+       0.15939632047643754,
+       0.21111024551765928,
+       0.21111024824597585,
+       0.32547226878031615,
+       0.3563184665316806,
+       0.35631846881472734,
+       0.4069836527495474
+      ],
+      [
+       -0.20107968993969122,
+       0.09645663879890481,
+       0.16861388771828845,
+       0.17269416299189644,
+       0.33244758614991904,
+       0.37616755997515583,
+       0.4338383036409105,
+       0.48174056590739034
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     10,
+     8
+    ],
+    "energy": -7.882685871940866,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.8826858874042856,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.25863530702240656,
+    "free_energy": -7.882685902867705,
+    "kpoints_fractional": [
+     [
+      -0.375,
+      -0.375,
+      -0.375
+     ],
+     [
+      -0.37499999999999994,
+      -0.37499999999999994,
+      -0.12499999999999999
+     ],
+     [
+      -0.375,
+      -0.375,
+      0.12499999999999999
+     ],
+     [
+      -0.37499999999999994,
+      -0.37499999999999994,
+      0.375
+     ],
+     [
+      -0.375,
+      -0.125,
+      -0.125
+     ],
+     [
+      -0.37499999999999994,
+      -0.12499999999999994,
+      0.125
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.37499999999999994
+     ],
+     [
+      -0.375,
+      0.12499999999999999,
+      0.12499999999999999
+     ],
+     [
+      -0.12499999999999999,
+      -0.12499999999999999,
+      -0.12499999999999999
+     ],
+     [
+      -0.125,
+      -0.125,
+      0.12499999999999999
+     ]
+    ],
+    "last_history": [
+     23.0,
+     -7.882685902867705,
+     -1.4210854715202004e-14,
+     3.729582996278442e-11,
+     5.607759058612952e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 23,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 270.796875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.4789716329597358,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.00708056588894,
+     "entropy": -3.0926839738494186e-08,
+     "xc": -2.3695272678989667
+    },
+    "wall_s": 1.57,
+    "weights": [
+     0.03125,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.1875,
+     0.1875,
+     0.09375,
+     0.03125,
+     0.09375
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 5.1343533868930535e-09,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 9.47714251520182e-09,
+    "n_iter": [
+     23,
+     23
+    ]
+   },
+   "float64": {
+    "E_eV": -214.49881034309104,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 5606383,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.16551296602684346,
+       -0.0015076953729693254,
+       0.17591055890374518,
+       0.1759105589404128,
+       0.3040396002959482,
+       0.4145264158341134,
+       0.4145264159000654,
+       0.6245719496346757
+      ],
+      [
+       -0.1615485093002058,
+       0.03219254365737528,
+       0.11837174856770785,
+       0.1342874049023688,
+       0.3169855239326203,
+       0.4176491604250545,
+       0.5255709736517369,
+       0.5409292757523433
+      ],
+      [
+       -0.10572393900420689,
+       -0.03825877540807664,
+       0.09128547334718842,
+       0.116679256672402,
+       0.3205383248488761,
+       0.38542693743846124,
+       0.5912044716837941,
+       0.600453310012607
+      ],
+      [
+       -0.12041684222709702,
+       -0.0294268730554728,
+       0.07106397244680027,
+       0.14549419412409298,
+       0.3495761149331636,
+       0.49483280401307217,
+       0.49922395906578093,
+       0.5966863694977852
+      ],
+      [
+       -0.1819328024067952,
+       0.0450783427782277,
+       0.13226595805272884,
+       0.18837133913758208,
+       0.34518464336179283,
+       0.3988791637850216,
+       0.4341069543083593,
+       0.5453483022612096
+      ],
+      [
+       -0.14577877678799822,
+       -0.0007733388925806051,
+       0.0951850885318305,
+       0.14515753299442846,
+       0.3808938959237799,
+       0.41331373714171016,
+       0.5053543235301845,
+       0.572649613617925
+      ],
+      [
+       -0.09984791478347489,
+       -0.042039997624431655,
+       0.069136119289541,
+       0.10782539168108024,
+       0.3863346921614169,
+       0.4652074405410606,
+       0.5393897180690268,
+       0.5773125061379498
+      ],
+      [
+       -0.1386279931956308,
+       -0.03169880351645797,
+       0.13239216261202016,
+       0.15760144365100065,
+       0.340855998418699,
+       0.42125711999056226,
+       0.4544285743484846,
+       0.642896045092204
+      ],
+      [
+       -0.22149926387903446,
+       0.15939631886827021,
+       0.2111102480251823,
+       0.21111024803874862,
+       0.3254722628017212,
+       0.3563184687243115,
+       0.35631846874753664,
+       0.40698365085167637
+      ],
+      [
+       -0.20107968866106546,
+       0.09645664022848928,
+       0.1686138876462826,
+       0.1726941652085897,
+       0.3324475877642126,
+       0.37616756200751,
+       0.43383830296652404,
+       0.4817405695007475
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     10,
+     8
+    ],
+    "energy": -7.882685872129532,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.88268588759297,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2586353033013234,
+    "free_energy": -7.882685903056409,
+    "kpoints_fractional": [
+     [
+      -0.375,
+      -0.375,
+      -0.375
+     ],
+     [
+      -0.37499999999999994,
+      -0.37499999999999994,
+      -0.12499999999999999
+     ],
+     [
+      -0.375,
+      -0.375,
+      0.12499999999999999
+     ],
+     [
+      -0.37499999999999994,
+      -0.37499999999999994,
+      0.375
+     ],
+     [
+      -0.375,
+      -0.125,
+      -0.125
+     ],
+     [
+      -0.37499999999999994,
+      -0.12499999999999994,
+      0.125
+     ],
+     [
+      -0.375,
+      -0.12500000000000003,
+      0.37499999999999994
+     ],
+     [
+      -0.375,
+      0.12499999999999999,
+      0.12499999999999999
+     ],
+     [
+      -0.12499999999999999,
+      -0.12499999999999999,
+      -0.12499999999999999
+     ],
+     [
+      -0.125,
+      -0.125,
+      0.12499999999999999
+     ]
+    ],
+    "last_history": [
+     23.0,
+     -7.882685903056409,
+     -1.0658141036401503e-14,
+     3.726816256295347e-11,
+     5.567708956437391e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 23,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999999,
+    "rss_peak_mb": 296.015625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 3.4789716334842185,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.007080566778981,
+     "entropy": -3.0926876839520417e-08,
+     "xc": -2.3695272677220736
+    },
+    "wall_s": 1.85,
+    "weights": [
+     0.03125,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.09375,
+     0.1875,
+     0.1875,
+     0.09375,
+     0.03125,
+     0.09375
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 1.9984014443252818e-15,
+     "energy": 8.881784197001252e-16,
+     "fermi_level": 2.7755575615628914e-16,
+     "free_energy": 8.881784197001252e-16,
+     "moment": 0.0,
+     "n_iter": [
+      23,
+      23
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 2.609024107869118e-15,
+     "energy": 6.217248937900877e-15,
+     "fermi_level": 1.0547118733938987e-15,
+     "free_energy": 6.217248937900877e-15,
+     "moment": 0.0,
+     "n_iter": [
+      23,
+      23
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "frozen_index": 6,
+    "metal": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda9_si_sz_spacing0.30_k4",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ],
+   "vs_frozen_periodic_energies_json": {
+    "T3_pass": true,
+    "dE_Ha": -2.6645352591003757e-15,
+    "dE_eV": -5.684341886080802e-14,
+    "dF_Ha": -2.6645352591003757e-15,
+    "dFermi_level_Ha": null,
+    "max_eigenvalue_Ha": 4.551914400963142e-15,
+    "n_iter": [
+     23,
+     23
+    ],
+    "old_extension_sha256_prefix": "39cf62c7"
+   }
+  },
+  "lda_si_sz_k3_spacing0.15": {
+   "float32": {
+    "E_eV": -213.89170595055944,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 24758327,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.1747086722958143,
+       0.02245711514834053,
+       0.1823715930369021,
+       0.18237159379503345,
+       0.3098050284031596,
+       0.4115416664857407,
+       0.4115416676625807,
+       0.5961046881991705
+      ],
+      [
+       -0.1547759736618769,
+       0.03195542194700663,
+       0.12878449345182305,
+       0.1287844937848041,
+       0.2916409496777953,
+       0.4020457551352893,
+       0.55587545999437,
+       0.5558754622823423
+      ],
+      [
+       -0.10480903138172498,
+       -0.03335997880129403,
+       0.05833838609223903,
+       0.1395102486237427,
+       0.3468349933073514,
+       0.5237309715181214,
+       0.5241008060270215,
+       0.5820713338593511
+      ],
+      [
+       -0.22680838318484473,
+       0.2278457700285221,
+       0.22784577770702885,
+       0.22784577770703043,
+       0.3350122465835073,
+       0.33708374166461036,
+       0.3370837513093509,
+       0.33708375130935375
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     4,
+     8
+    ],
+    "energy": -7.860373298962321,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.860375212677571,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.25845213749936213,
+    "free_energy": -7.86037712639282,
+    "kpoints_fractional": [
+     [
+      -0.3333333333333333,
+      -0.33333333333333326,
+      -0.33333333333333326
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      5.784441872307935e-35
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      0.3333333333333333
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     18.0,
+     -7.86037712639282,
+     -1.6076029396572267e-13,
+     4.5010889604178876e-11,
+     1.3498872701058604e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 18,
+    "n_spins": 1,
+    "occupation_sum": 8.0,
+    "rss_peak_mb": 348.046875,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 4.450915504756059,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.948261918298803,
+     "entropy": -3.827430499628819e-06,
+     "xc": -2.377977214306882
+    },
+    "wall_s": 2.33,
+    "weights": [
+     0.2962962962962963,
+     0.2222222222222222,
+     0.4444444444444444,
+     0.037037037037037035
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": -8.353589464604738e-08,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 6.646906691720744e-09,
+    "n_iter": [
+     18,
+     18
+    ]
+   },
+   "float64": {
+    "E_eV": -213.89170586702355,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 1.7763568394002505e-15,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 28742295,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.17470867214963157,
+       0.022457115031128523,
+       0.18237159290804628,
+       0.1823715929932276,
+       0.30980502779574814,
+       0.411541666197543,
+       0.41154166621174226,
+       0.596104688800969
+      ],
+      [
+       -0.15477597265632997,
+       0.03195542147521608,
+       0.12878449274672177,
+       0.12878449274672185,
+       0.2916409472179544,
+       0.4020457543365036,
+       0.5558754582313561,
+       0.5558754582313616
+      ],
+      [
+       -0.10480902959665364,
+       -0.033359977438302116,
+       0.05833838696666442,
+       0.13951024810771728,
+       0.3468349986631479,
+       0.5237309698653726,
+       0.5241008126739282,
+       0.5820713394913378
+      ],
+      [
+       -0.22680838504546383,
+       0.22784577464177366,
+       0.2278457748191629,
+       0.22784577481916418,
+       0.3350122464701879,
+       0.3370837475749879,
+       0.3370837475749909,
+       0.337083747638657
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     4,
+     8
+    ],
+    "energy": -7.860373295891956,
+    "expected_electrons": 8.0,
+    "extrapolated_energy": -7.8603752096076835,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": 0.2584521360843586,
+    "free_energy": -7.860377123323411,
+    "kpoints_fractional": [
+     [
+      -0.3333333333333333,
+      -0.33333333333333326,
+      -0.33333333333333326
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      5.784441872307935e-35
+     ],
+     [
+      -0.3333333333333333,
+      -0.3333333333333333,
+      0.3333333333333333
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    "last_history": [
+     18.0,
+     -7.860377123323411,
+     1.0658141036401503e-13,
+     4.462797337168803e-11,
+     1.3340552078820776e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 18,
+    "n_spins": 1,
+    "occupation_sum": 7.999999999999998,
+    "rss_peak_mb": 362.015625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": 4.45091550195401,
+     "constant": 0.01495032888730452,
+     "electrostatic": -9.94826191354712,
+     "entropy": -3.827431454638943e-06,
+     "xc": -2.377977213186152
+    },
+    "wall_s": 2.46,
+    "weights": [
+     0.2962962962962963,
+     0.2222222222222222,
+     0.4444444444444444,
+     0.037037037037037035
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 5.662137425588298e-15,
+     "energy": 7.993605777301127e-15,
+     "fermi_level": 2.7755575615628914e-15,
+     "free_energy": 7.993605777301127e-15,
+     "moment": 0.0,
+     "n_iter": [
+      18,
+      18
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 3.9968028886505635e-15,
+     "energy": 8.881784197001252e-15,
+     "fermi_level": 2.275957200481571e-15,
+     "free_energy": 8.881784197001252e-15,
+     "moment": 0.0,
+     "n_iter": [
+      18,
+      18
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "memory_table_E_eV": -213.89170586640074,
+    "metal": false,
+    "reference": null,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "lda_si_sz_k3_spacing0.15",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "Si",
+    "Si"
+   ]
+  },
+  "skew_h2_skew_pbe": {
+   "float32": {
+    "E_eV": -31.171448479080592,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 417854,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.37758256809569585,
+       0.01209565044211311
+      ],
+      [
+       -0.3674728907888588,
+       -0.03308245073997247
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     2
+    ],
+    "energy": -1.1455295471584779,
+    "expected_electrons": 2.0,
+    "extrapolated_energy": -1.1455296028395634,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": -0.1985148079197378,
+    "free_energy": -1.145529658520649,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.5,
+      -4.3064475926099616e-20,
+      8.222795421346375e-19
+     ]
+    ],
+    "last_history": [
+     34.0,
+     -1.145529658520649,
+     0.0,
+     5.701339509581253e-11,
+     7.565042342561057e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 34,
+    "n_spins": 1,
+    "occupation_sum": 2.0,
+    "rss_peak_mb": 279.328125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": -0.7748006211962202,
+     "constant": 0.0032758874317836417,
+     "electrostatic": 0.14800948715309936,
+     "entropy": -1.1136217100838114e-07,
+     "xc": -0.5220143005471405
+    },
+    "wall_s": 1.21,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 1.1084427598007096e-08,
+    "electron_count_error": 0.0,
+    "max_eigenvalue_Ha": 2.294673118186097e-09,
+    "n_iter": [
+     34,
+     34
+    ]
+   },
+   "float64": {
+    "E_eV": -31.17144849016502,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 0.0,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 424766,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.37758256580102273,
+       0.012095651673124652
+      ],
+      [
+       -0.36747288933761396,
+       -0.03308244984621188
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     1,
+     2,
+     2
+    ],
+    "energy": -1.1455295475658214,
+    "expected_electrons": 2.0,
+    "extrapolated_energy": -1.1455296032469087,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": -0.1985148066236439,
+    "free_energy": -1.1455296589279962,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.5,
+      -4.3064475926099616e-20,
+      8.222795421346375e-19
+     ]
+    ],
+    "last_history": [
+     34.0,
+     -1.1455296589279962,
+     -4.440892098500626e-16,
+     5.68185728937393e-11,
+     7.537546975466825e-14,
+     0.0
+    ],
+    "moment": 0.0,
+    "n_iter": 34,
+    "n_spins": 1,
+    "occupation_sum": 2.0,
+    "rss_peak_mb": 242.8125,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": -0.7748006211947442,
+     "constant": 0.0032758874317836417,
+     "electrostatic": 0.14800949119270282,
+     "entropy": -1.1136217480167356e-07,
+     "xc": -0.5220143049955633
+    },
+    "wall_s": 1.17,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 7.022160630754115e-15,
+     "energy": 4.440892098500626e-16,
+     "fermi_level": 6.661338147750939e-15,
+     "free_energy": 4.440892098500626e-16,
+     "moment": 0.0,
+     "n_iter": [
+      34,
+      34
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 1.5543122344752192e-15,
+     "energy": 4.440892098500626e-16,
+     "fermi_level": 1.2212453270876722e-15,
+     "free_energy": 4.440892098500626e-16,
+     "moment": 0.0,
+     "n_iter": [
+      34,
+      34
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "pbe-sr",
+    "metal": false,
+    "reference": null,
+    "xc": "pbe"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/H.parquet": "4ca77e03965ec44d41256f40c2d658a41c6e032d01237aad39e6b2a4be9f4e35"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "skew_h2_skew_pbe",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "H",
+    "H"
+   ]
+  },
+  "skew_h_skew_spin_lda": {
+   "float32": {
+    "E_eV": -13.387633918193965,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 2.1094237467877974e-15,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 347262,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.2826599066566137
+      ],
+      [
+       -0.2736473552884162
+      ]
+     ],
+     [
+      [
+       -0.10141670252692622
+      ],
+      [
+       -0.08887690940113416
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     2,
+     2,
+     1
+    ],
+    "energy": -0.4919585126943874,
+    "expected_electrons": 1.0,
+    "extrapolated_energy": -0.4919864720294364,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": -0.18704900544090322,
+    "free_energy": -0.4920144313644854,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.5,
+      -4.3064475926099616e-20,
+      8.222795421346375e-19
+     ]
+    ],
+    "last_history": [
+     38.0,
+     -0.4920144313644854,
+     4.996003610813204e-16,
+     8.455147273152691e-11,
+     2.544839339257976e-15,
+     0.9994410653112527
+    ],
+    "moment": 0.9994410653112527,
+    "n_iter": 38,
+    "n_spins": 2,
+    "occupation_sum": 0.9999999999999979,
+    "rss_peak_mb": 234.65625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": -0.1709739643636985,
+     "constant": 0.0018737835756973964,
+     "electrostatic": -0.06731423091444916,
+     "entropy": -5.591867009803971e-05,
+     "xc": -0.25554410099193714
+    },
+    "wall_s": 0.92,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "float32_minus_float64": {
+    "T4_pass": true,
+    "dE_eV": 7.702594118086381e-09,
+    "electron_count_error": 2.1094237467877974e-15,
+    "max_eigenvalue_Ha": 3.5605476067512853e-09,
+    "n_iter": [
+     38,
+     38
+    ]
+   },
+   "float64": {
+    "E_eV": -13.387633925896559,
+    "checks": {
+     "converged": true,
+     "occupation_sum_error": 8.881784197001252e-16,
+     "occupation_sum_pass": true,
+     "terms_constant_minus_species_sum": 0.0,
+     "weights_sum_error": 0.0
+    },
+    "context_peak_bytes": 350718,
+    "converged": true,
+    "eigenvalues": [
+     [
+      [
+       -0.2826599055311294
+      ],
+      [
+       -0.2736473545865711
+      ]
+     ],
+     [
+      [
+       -0.10141669896637862
+      ],
+      [
+       -0.08887690609491833
+      ]
+     ]
+    ],
+    "eigenvalues_shape": [
+     2,
+     2,
+     1
+    ],
+    "energy": -0.49195851298044296,
+    "expected_electrons": 1.0,
+    "extrapolated_energy": -0.4919864723125015,
+    "fermi_level": null,
+    "fermi_level_reported_nonunique": -0.18704900327569363,
+    "free_energy": -0.49201443164456,
+    "kpoints_fractional": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.5,
+      -4.3064475926099616e-20,
+      8.222795421346375e-19
+     ]
+    ],
+    "last_history": [
+     38.0,
+     -0.49201443164456,
+     2.7755575615628914e-16,
+     8.016316687812573e-11,
+     6.977057820378718e-15,
+     0.9994410653788388
+    ],
+    "moment": 0.9994410653788388,
+    "n_iter": 38,
+    "n_spins": 2,
+    "occupation_sum": 0.9999999999999991,
+    "rss_peak_mb": 234.15625,
+    "spin_orbit_energy": null,
+    "spinor": false,
+    "terms": {
+     "band_fixed": -0.17097396436351328,
+     "constant": 0.0018737835756973964,
+     "electrostatic": -0.06731422934558083,
+     "entropy": -5.59186641170125e-05,
+     "xc": -0.25554410284704626
+    },
+    "wall_s": 0.92,
+    "weights": [
+     0.5,
+     0.5
+    ]
+   },
+   "floor": {
+    "note": "run-to-run differences of the float64 SCF (b: repeat at 2 threads, c: 1 thread, only if the case took < 10 s)",
+    "one_thread": {
+     "eigenvalues": 1.0071665723643264e-12,
+     "energy": 9.992007221626409e-16,
+     "fermi_level": 2.4222290839759353e-13,
+     "free_energy": 1.6653345369377348e-16,
+     "moment": 1.2323475573339238e-14,
+     "n_iter": [
+      38,
+      38
+     ]
+    },
+    "same_threads_repeat": {
+     "eigenvalues": 2.170486013142181e-13,
+     "energy": 7.216449660063518e-16,
+     "fermi_level": 2.375877272697835e-14,
+     "free_energy": 7.771561172376096e-16,
+     "moment": 9.992007221626409e-16,
+     "n_iter": [
+      38,
+      38
+     ]
+    }
+   },
+   "meta": {
+    "dataset": "lda-sr",
+    "metal": false,
+    "reference": null,
+    "spins": 2,
+    "xc": "lda"
+   },
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/H.parquet": "298f409b108a2a1d120e4b918d3966a7b72de75942c1a0e7c88987ebfe22692f"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "skew_h_skew_spin_lda",
+     "precision": "float64",
+     "threads": 2
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "symbols": [
+    "H"
+   ]
+  }
+ },
+ "cross_checks": {
+  "generic_k": {
+   "companion_al_fcc": 0,
+   "companion_al_fcc_gamma": 0,
+   "companion_si_3x3x3": 3,
+   "companion_si_shifted": 2,
+   "companion_si_so": 0,
+   "companion_si_so_scalar": 0,
+   "extra_al_pbe": 2,
+   "extra_si_hse06_full_mesh": 0,
+   "extra_si_lda_fr": 4,
+   "extra_si_pbe": 2,
+   "extra_si_pbe_rvv10": 2,
+   "extra_si_r2scan": 2,
+   "lda9_al_dzp_spacing0.25_k4": 10,
+   "lda9_al_dzp_spacing0.30_k2": 2,
+   "lda9_al_sz_spacing0.25_k2": 2,
+   "lda9_al_sz_spacing0.30_k2": 2,
+   "lda9_al_sz_spacing0.30_k4": 10,
+   "lda9_si_dzp_spacing0.30_k2": 2,
+   "lda9_si_sz_spacing0.25_k2": 2,
+   "lda9_si_sz_spacing0.30_k2": 2,
+   "lda9_si_sz_spacing0.30_k4": 10,
+   "lda_si_sz_k3_spacing0.15": 3,
+   "skew_h2_skew_pbe": 0,
+   "skew_h_skew_spin_lda": 0
+  },
+  "generic_k_every_required_case_has_one": true,
+  "generic_k_note": "count of irreducible k with k != -k mod G; zero means the case is blind to the sign of k.R",
+  "mesh_3x3x3_tuple_equals_gamma_dict": true,
+  "si_k3_spacing0.15_vs_memory_table_json": {
+   "dE_eV": -6.22804918748443e-10,
+   "note": "memory_table.json (extension 39cf62c7) used kpts=(3, 3, 3), default SCF options"
+  },
+  "si_so_vs_scalar": {
+   "dE_Ha": 0.03523190402899257,
+   "gamma_top_valence_spread_meV": {
+    "scalar": 133.9619199611432,
+    "spinor": 162.11420020653517
+   },
+   "note": "dE_Ha mixes the lda-fr and lda-sr datasets (different frozen cores): it is NOT the spin-orbit effect. The effect is spin_orbit_energy_Ha (far above its floor). No Delta_so is claimed: the 10^3 grid breaks the cubic symmetry (the scalar Gamma_25' triplet splits 2+1, spread above), so the levels are not those of Si; the (2,M,2,M) block is frozen with the snapshot",
+   "scalar_bands": [
+    1,
+    2,
+    8
+   ],
+   "scalar_spinor": false,
+   "spin_orbit_energy_Ha": -6.413585657403658e-06,
+   "spin_orbit_energy_floor_Ha": 0.0,
+   "spinor": true,
+   "spinor_bands": [
+    1,
+    2,
+    16
+   ]
+  }
+ },
+ "scf": {
+  "density_tolerance": 1e-10,
+  "tolerance": 1e-12
+ },
+ "stamp": {
+  "datasets_sha256": {
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-fr/Si.parquet": "9bf8bce1304155afcc23b5209ce0366670bdf20d0a9999e562e3a603415949b6",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/H.parquet": "298f409b108a2a1d120e4b918d3966a7b72de75942c1a0e7c88987ebfe22692f",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Al.parquet": "ec8455b835d0c0a0ee36d970faecd2f0f67344e2b4b7a7110fa73a3b80bb3df4",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/H.parquet": "4ca77e03965ec44d41256f40c2d658a41c6e032d01237aad39e6b2a4be9f4e35",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Si.parquet": "57a23fb7570740d02de254266b294d480506de255fbc3b633275fd20256a25ce"
+  },
+  "date": "2026-11-01",
+  "extension": {
+   "file": "_native.cpython-314-darwin.so",
+   "mtime": "2026-11-01T09:12:57+00:00",
+   "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+   "size": 7189904
+  },
+  "extra": {
+   "extension_currency": {
+    "extension_built": "2026-11-01T09:12:57+00:00",
+    "files": [
+     "crates/mandacaru-python/src/basis_zetas.rs",
+     "crates/mandacaru-python/src/lib.rs",
+     "crates/mandacaru-core/src/basis/radial.rs",
+     "crates/mandacaru-core/tests/basis_radial.rs",
+     "crates/mandacaru-core/src/periodic/gradient/pulay.rs",
+     "crates/mandacaru-core/src/periodic/gradient/electrostatic.rs",
+     "crates/mandacaru-core/src/periodic/gradient/core.rs",
+     "crates/mandacaru-core/src/periodic/gradient/hellmann_feynman.rs",
+     "crates/mandacaru-core/src/periodic/mod.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/derivatives.rs",
+     "crates/mandacaru-core/src/periodic/gradient/mod.rs",
+     "crates/mandacaru-core/src/periodic/gradient/state.rs",
+     "crates/mandacaru-core/tests/hubbard_gradient_support/mod.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/mod.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/scf.rs",
+     "crates/mandacaru-core/tests/hubbard_gradient_support/functional.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/reference.rs",
+     "crates/mandacaru-core/tests/periodic_gradient.rs"
+    ],
+    "n_crate_files_newer": 18,
+    "newest": [
+     "2026-11-01T13:19:33+00:00",
+     "crates/mandacaru-core/tests/periodic_gradient.rs"
+    ]
+   },
+   "extension_shas_in_parts": [
+    "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7"
+   ],
+   "script": "freeze_periodic_results.py",
+   "tolerances": {
+    "T3_eigenvalues_Ha": 1e-08,
+    "T3_energy_Ha": 1e-10,
+    "T4_eV": 1e-06
+   }
+  },
+  "git": {
+   "dirty": true,
+   "dirty_kernel_files": [
+    "crates/mandacaru-kernels/SAFETY.md"
+   ],
+   "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+   "n_dirty_files": 79
+  },
+  "platform": "Darwin arm64",
+  "sources_sha256": {
+   "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+   "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+  },
+  "versions": {
+   "numpy": "2.5.3",
+   "python": "3.14.7",
+   "scipy": "1.18.1"
+  }
+ },
+ "units": "Hartree unless the key ends in _eV"
+}

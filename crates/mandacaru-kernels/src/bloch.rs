@@ -898,10 +898,10 @@ pub unsafe fn bloch_project(
     let n_threads = crate::runtime::thread_count();
     let blocks_per_thread = (n_blocks + n_threads - 1) / n_threads;
 
-    let sync_mutex = std::sync::Mutex::new(());
-    let out_ptr = out as usize;
-
-    std::thread::scope(|s| {
+    // Each worker returns its partial sum and they are added in worker order after the scope
+    // joins. Added in order of arrival the last bits of the result would change from run to run.
+    let partials = std::thread::scope(|s| {
+        let mut workers = Vec::with_capacity(n_threads);
         for t in 0..n_threads {
             let b_start = t * blocks_per_thread;
             let b_end = std::cmp::min(b_start + blocks_per_thread, n_blocks);
@@ -909,9 +909,7 @@ pub unsafe fn bloch_project(
                 continue;
             }
 
-            let sync_ref = &sync_mutex;
-            crate::runtime::spawn(s, move || {
-                let out_raw = out_ptr as *mut Complex64;
+            workers.push(crate::runtime::spawn(s, move || {
                 let mut hits = vec![0usize; n_images_usize.max(1)];
                 let mut inside = [0usize; BLOCK];
                 let mut buffer = vec![Complex64::default(); nm_usize * BLOCK];
@@ -972,14 +970,17 @@ pub unsafe fn bloch_project(
                     }
                 }
 
-                let _guard = sync_ref.lock().unwrap();
-                for k in 0..total_size {
-                    unsafe {
-                        let curr = *out_raw.add(k);
-                        *out_raw.add(k) = curr.add(local_out[k]);
-                    }
-                }
-            });
+                local_out
+            }));
         }
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("a bloch_project worker panicked"))
+            .collect::<Vec<_>>()
     });
+    for partial in &partials {
+        for (to, from) in out_slice.iter_mut().zip(partial) {
+            *to = to.add(*from);
+        }
+    }
 }

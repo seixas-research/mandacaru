@@ -375,9 +375,9 @@ def pseudo_basis_arguments(family, options, *, confinement=None,
 
     The split-valence scheme is ``zeta_split`` (``"first_zeta"`` unless
     written), and the scheme fixes its own tail norms or split norm
-    (:func:`~mandacaru.basis.multizeta.resolve_split_scheme`).
+    (:func:`~mandacaru.models.radial.resolve_split_scheme`).
     """
-    from ..basis.multizeta import resolve_split_scheme
+    from ..models.radial import resolve_split_scheme
 
     spec = resolve_family(family)
     split_norm, tail_norms = resolve_split_scheme(options.get("zeta_split"))

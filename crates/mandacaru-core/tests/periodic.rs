@@ -1,3 +1,5 @@
+mod setup_support;
+
 use mandacaru_core::{
     periodic::{
         analysis,
@@ -116,6 +118,97 @@ fn silicon_crystal_solves_without_python_and_releases_owned_storage() {
     drop(state);
     drop(crystal);
     assert_eq!(ctx.memory_used(), 0);
+}
+#[test]
+fn a_hybrid_crystal_needs_the_whole_k_mesh() {
+    use serde_json::{json, Value};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/migration/phase5/si_crystal.json");
+    let text = std::fs::read_to_string(path).unwrap();
+    let ctx = Context::new(Some(1), 512 * 1024 * 1024).unwrap();
+    let load = |edit: &dyn Fn(&mut Value)| {
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        edit(&mut value);
+        Crystal::from_json(&ctx, &value.to_string()).map(|_| ())
+    };
+    let hybrid = |v: &mut Value| {
+        v["functional"] = json!("hse06");
+        v["sites"] = setup_support::sites(v, "lda-sr");
+    };
+    // The fixture is the irreducible wedge of the 2x2x2 mesh (weights 1/8, 1/2, 3/8, 24
+    // operations): the plain functional loads it, the hybrid must not.
+    assert!(load(&|_| {}).is_ok());
+    let error = load(&hybrid).err().expect("a wedge must be refused").to_string();
+    assert!(error.contains("full k mesh"), "{error}");
+    assert!(matches!(load(&hybrid), Err(mandacaru_core::Error::Unsupported(_))));
+    // One point is the whole mesh when it is Gamma or any time-reversal-invariant point, even
+    // beside the symmetry table; a point that is not its own mirror image is half a mesh.
+    let one = |fractional: [f64; 3]| {
+        move |v: &mut Value| {
+            hybrid(v);
+            let mut point = v["kpoints"][0].clone();
+            point["weight"] = json!(1.0);
+            point["fractional"] = json!(fractional);
+            v["kpoints"] = json!([point]);
+        }
+    };
+    assert!(load(&one([0., 0., 0.])).is_ok());
+    assert!(load(&one([0., 0., 0.5])).is_ok());
+    let half = load(&one([0.1, 0., 0.])).err().expect("k and -k are both needed").to_string();
+    assert!(half.contains("full k mesh"), "{half}");
+    // Two points with equal weights are still refused beside a symmetry table, and kept without.
+    let pair = |table: bool| {
+        move |v: &mut Value| {
+            hybrid(v);
+            let (mut a, mut b) = (v["kpoints"][0].clone(), v["kpoints"][1].clone());
+            a["weight"] = json!(0.5);
+            b["weight"] = json!(0.5);
+            v["kpoints"] = json!([a, b]);
+            if !table {
+                v["permutations"] = json!([]);
+            }
+        }
+    };
+    assert!(load(&pair(true)).is_err());
+    assert!(load(&pair(false)).is_ok());
+}
+#[test]
+fn a_hybrid_crystal_refuses_the_entry_points_that_would_drop_its_exchange() {
+    use mandacaru_core::periodic::{solver, spinor};
+    let ctx = Context::new(Some(1), 128 * 1024 * 1024).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/migration/phase5/si_crystal.json");
+    let mut crystal = Crystal::load(&ctx, path.to_str().unwrap()).unwrap();
+    let potential = vec![0.; crystal.grid.index.points()];
+    let moments = vec![C64::default(); crystal.channels];
+    // The same inputs on a plain functional are accepted: the refusal is the hybrid's alone.
+    assert!(solver::diagonalize(&crystal, &crystal.points[0], &potential, &moments, None).is_ok());
+    crystal.functional = "hse06".into();
+    let point = &crystal.points[0];
+    for (name, outcome) in [
+        (
+            "diagonalize",
+            solver::diagonalize(&crystal, point, &potential, &moments, None).map(|_| ()),
+        ),
+        (
+            "diagonalize_with",
+            solver::diagonalize_with(&crystal, point, &potential, &moments, None, None).map(|_| ()),
+        ),
+        (
+            "spinor::diagonalize",
+            spinor::diagonalize(&crystal, point, &potential, &moments).map(|_| ()),
+        ),
+    ] {
+        let message = outcome
+            .err()
+            .unwrap_or_else(|| panic!("{name} must raise"))
+            .to_string();
+        assert!(message.contains("exact exchange"), "{name}: {message}");
+        assert!(
+            message.contains("diagonalize_with_exchange"),
+            "{name}: {message}"
+        );
+    }
 }
 #[test]
 fn ewald_madelung_and_derivatives_follow_the_same_lattice_energy() {

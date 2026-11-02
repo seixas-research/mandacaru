@@ -7,7 +7,9 @@ use crate::{
         storage::{ComplexSamples, Precision},
         SpatialGrid,
     },
-    periodic::{solver::diagonalize_with, Crystal, KPoint, PeriodicResult},
+    periodic::{
+        solver::diagonalize_with_exchange, Crystal, KPoint, PeriodicResult,
+    },
     product,
     quantum::C64,
     Buffer, Context, Reservation, Result,
@@ -165,7 +167,19 @@ impl Frame {
         let n = c.grid.index.points();
         let components = if c.spinor { 2 } else { 1 };
         let _work = ctx.reserve(product(&[c.bands(), c.bands(), 16, 16])?)?;
-        let (e, coefficients, _) = diagonalize_with(
+        // A hybrid frame needs the exact exchange K(k) of the converged density matrices, as the
+        // bands path does: without it the frame is a different Hamiltonian (no error, wrong bands).
+        let exchange = if c.screened_exchange()?.is_some() {
+            Some(c.hybrid_exchange_at_k(
+                &result.matrices,
+                point,
+                spin,
+                result.options.exxdiv_treatment,
+            )?)
+        } else {
+            None
+        };
+        let (e, coefficients, _) = diagonalize_with_exchange(
             c,
             point,
             if c.spinor {
@@ -180,6 +194,7 @@ impl Frame {
                 .map(|v| &v.as_slice()[spin * n..(spin + 1) * n]),
             // The converged DFT+U operator of this spin channel.
             result.hubbard.as_ref().map(|h| &h.operators[spin]),
+            exchange.as_ref(),
         )?;
         let memory = ctx.reserve(product(&[c.bands() + components * c.p, bands.len(), 16])?)?;
         let coefficients =

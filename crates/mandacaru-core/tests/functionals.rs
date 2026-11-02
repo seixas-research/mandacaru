@@ -268,3 +268,18 @@ fn only_the_orbital_product_rule_keeps_an_unresolved_orbital_iso_orbital() {
     assert!(product_worst < 1e-12, "{product_worst}");
     assert!(stencil_worst > 1e-2, "{stencil_worst}");
 }
+#[test]
+fn the_hse06_range_separation_and_fraction_have_one_definition() {
+    use mandacaru_core::models::{functional, HSE06_EXACT_FRACTION, HSE06_OMEGA};
+    // The literals are the published values on purpose, independent of the constants under test.
+    assert_eq!(HSE06_OMEGA, 0.11);
+    assert_eq!(HSE06_EXACT_FRACTION, 0.25);
+    assert_eq!(
+        functional("hse06").unwrap().screened_exchange,
+        Some((HSE06_OMEGA, HSE06_EXACT_FRACTION))
+    );
+    // The semilocal part is the one the registry names, and no other functional is screened.
+    for name in ["lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"] {
+        assert!(functional(name).unwrap().screened_exchange.is_none(), "{name}");
+    }
+}

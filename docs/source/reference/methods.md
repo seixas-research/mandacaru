@@ -45,7 +45,11 @@ or `execute_circuits=True`). Otherwise it raises `PropertyNotImplementedError` o
 `dft`, with `lda`, `pbe`, `r2scan`, `pbe+rvv10`, `r2scan+rvv10` or `hse06`. Every other
 method raises `NotImplementedError` ("periodic geometry calculations currently
 provide native DFT"). Periodic forces and stress are supported for crystals
-via `atoms.get_forces()` and `atoms.get_stress()`.
+via `atoms.get_forces()` and `atoms.get_stress()`; they are central finite
+differences of the energy taken through ASE (each displacement is a full SCF),
+not analytic derivatives. A hybrid (`xc="hse06"`) crystal needs the whole k
+mesh: on a mesh reduced by symmetry or halved by time reversal it raises
+`NotImplementedError` (see `symmetry` in the `Mandacaru` docstring).
 `hubbard_u` is accepted for a crystal only: a molecule raises `ValueError`, and a
 screened hybrid or a spin-orbit dataset raises `NotImplementedError`
 (the full list is in [DFT+U](../guide/dft_u.md)).

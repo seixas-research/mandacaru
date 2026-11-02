@@ -3,7 +3,7 @@
 mod hubbard_response_support;
 
 use hubbard_response_support::*;
-use mandacaru_core::models::hubbard_response::{measure, Fit, Kernel, Options, Response};
+use mandacaru_core::models::hubbard_response::{Fit, Kernel, Response};
 use mandacaru_core::Error;
 use nalgebra::DMatrix;
 

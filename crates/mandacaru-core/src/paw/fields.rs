@@ -72,6 +72,20 @@ pub fn place(
     radial: &Cubic,
     centers: &[[f64; 3]],
 ) -> Result<Buffer<f64>> {
+    place_by(ctx, grid, radial, centers, &|distance, _| {
+        radial.value_slope(distance).0
+    })
+}
+
+/// [`place`] with the sampled quantity `sample(distance, r - center)` in place of the radial
+/// value, over the same images and the same support: the placed gradient of a core, for one.
+pub fn place_by(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    radial: &Cubic,
+    centers: &[[f64; 3]],
+    sample: &dyn Fn(f64, [f64; 3]) -> f64,
+) -> Result<Buffer<f64>> {
     if radial.knots.as_slice()[0] < 0. {
         return Err(invalid("radial field nodes must be nonnegative"));
     }
@@ -168,9 +182,10 @@ pub fn place(
                         for y in lower[1]..=upper[1] {
                             for z in lower[2]..=upper[2] {
                                 let at = (x * shape[1] + y) * shape[2] + z;
-                                let distance = (Vector3::from(grid.point(at)) - position).norm();
+                                let offset = Vector3::from(grid.point(at)) - position;
+                                let distance = offset.norm();
                                 if distance <= support {
-                                    field.as_mut_slice()[at] += radial.value_slope(distance).0;
+                                    field.as_mut_slice()[at] += sample(distance, offset.into());
                                 }
                             }
                         }

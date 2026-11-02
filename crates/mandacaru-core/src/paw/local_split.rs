@@ -5,7 +5,7 @@
 //! The dataset's own local potential (a spline, evaluated by its owner) enters as
 //! sampled values: the split is exact because the short-range part is the
 //! *difference* of that table and the Gaussian ion's potential, never an asymptote.
-use super::{invalid, molecular::onecenter::angular_rule as unit_sphere_rule};
+use super::{invalid, pair_tables::angular_rule as unit_sphere_rule};
 use crate::{math::radial::gauss_legendre, Result};
 use std::f64::consts::PI;
 

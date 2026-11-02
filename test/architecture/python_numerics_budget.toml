@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 11352
+zero_sloc = 11321
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -40,7 +40,7 @@ zero_sloc = 11352
 "basis/hao.py" = { np = 8, scipy = 1, dloops = 1, bi = 2, aloops = 1, arith = 35, arithmax = 14, sloc = 90, wave = "BF", dies = "2027-07-16" }
 "basis/hse.py" = { np = 1, sloc = 10, wave = "W4", dies = "2027-07-16" }
 "basis/loggrid.py" = { np = 26, dloops = 3, bi = 11, arith = 128, arithmax = 64, sloc = 162, wave = "BF", dies = "2027-07-16" }
-"basis/multizeta.py" = { np = 16, scipy = 2, dloops = 2, bi = 4, arith = 32, arithmax = 13, sloc = 159, wave = "BF", dies = "2027-07-16" }
+"basis/multizeta.py" = { np = 8, scipy = 1, dloops = 1, bi = 3, arith = 9, arithmax = 5, sloc = 134, wave = "BF", dies = "2027-07-16" }
 "basis/nao.py" = { np = 8, scipy = 1, bi = 1, arith = 24, arithmax = 18, sloc = 76, wave = "BF", dies = "2027-07-16" }
 "basis/nao_ae.py" = { np = 13, scipy = 1, dloops = 6, bi = 6, aloops = 2, arith = 31, arithmax = 5, sloc = 240, wave = "BF", dies = "2027-07-16" }
 "basis/pople.py" = { dloops = 1, bi = 2, arith = 4, arithmax = 2, sloc = 41, wave = "BF", dies = "2027-07-16" }
@@ -100,7 +100,7 @@ zero_sloc = 11352
 "pseudopotentials/multipoles.py" = { bi = 1, sloc = 66, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/native_context.py" = { sloc = 6, category = "hand-off" }
 "pseudopotentials/onecenter.py" = { np = 1, dloops = 4, dcomp = 1, bi = 9, sloc = 264, wave = "3a", dies = "2027-03-26" }
-"pseudopotentials/orbitals.py" = { math = 1, dloops = 3, dcomp = 1, bi = 7, arith = 3, arithmax = 2, sloc = 300, wave = "3b", dies = "2027-05-07" }
+"pseudopotentials/orbitals.py" = { dloops = 2, bi = 5, arith = 1, arithmax = 1, sloc = 294, wave = "3b", dies = "2027-05-07" }
 "pseudopotentials/partial_waves.py" = { dloops = 7, dcomp = 10, bi = 37, aloops = 1, acomp = 2, arith = 12, arithmax = 3, sloc = 737, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/paw.py" = { np = 91, scipy = 8, matmul = 18, meth = 9, dloops = 21, dcomp = 9, bi = 31, aloops = 10, acomp = 17, arith = 232, arithmax = 31, sloc = 1813, wave = "3a/3b", dies = "2027-05-07" }
 "pseudopotentials/periodic_paw.py" = { np = 167, scipy = 4, matmul = 37, meth = 27, dloops = 45, dcomp = 9, bi = 29, aloops = 12, acomp = 4, arith = 217, arithmax = 16, sloc = 1391, wave = "3b", dies = "2027-05-07" }

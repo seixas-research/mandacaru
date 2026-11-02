@@ -2,6 +2,8 @@
 //! Dataset decoding and basis recipes are outside this numerical boundary.
 pub(super) mod data;
 pub(super) mod onecenter;
+mod screened;
+pub use screened::{Screened, SpinTerms};
 use super::invalid;
 use crate::{
     basis::{Basis, Orbital, Radial},
@@ -20,9 +22,10 @@ use crate::{
     product, Buffer, Context, Geometry, Result,
 };
 pub use data::Arrays;
+use crate::paw::screened_atom::ScreenedAtom;
 use data::{count, table, Species};
 use nalgebra::DMatrix;
-use onecenter::{angular_rule, harmonic, potential, shape};
+use crate::paw::pair_tables::{angular_rule, harmonic, potential, shape};
 use std::{collections::BTreeMap, f64::consts::PI, sync::Arc};
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -131,6 +134,8 @@ pub struct Setup {
     atoms: Vec<usize>,
     basis: Basis,
     species_terms: Vec<onecenter::AtomTerms>,
+    /// The species-level terms of a screened hybrid, built once per screening.
+    screened: std::sync::Mutex<Vec<(f64, Arc<Vec<ScreenedAtom>>)>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -234,6 +239,7 @@ pub fn build(
         atoms,
         basis,
         species_terms,
+        screened: std::sync::Mutex::new(Vec::new()),
     });
     setup.at_geometry(ctx, geometry, grid, kinetic, tolerance, precision)
 }

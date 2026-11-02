@@ -62,12 +62,33 @@ pub fn exchange_correlation(
     })
 }
 
+/// The Lowdin transformation of one k-point, block diagonal in spin for a spinor.
+pub(super) fn lowdin_block(point: &KPoint, m: usize, spinor: bool) -> Matrix {
+    if !spinor {
+        return point.lowdin.clone();
+    }
+    Matrix::from_fn(2 * m, 2 * m, |i, j| {
+        if i / m == j / m {
+            point.lowdin[(i % m, j % m)]
+        } else {
+            C64::default()
+        }
+    })
+}
+
 pub fn diagonalize(
     c: &Crystal,
     point: &KPoint,
     fields: &[f64],
     moments: &[C64],
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    // The exact exchange K(k) of a hybrid is not part of (fields, moments): refuse, never drop it.
+    if c.screened_exchange()?.is_some() {
+        return Err(invalid(
+            "spinor diagonalize without the exact exchange of a hybrid crystal; \
+             use diagonalize_with_exchange",
+        ));
+    }
     diagonalize_with_exchange(c, point, fields, moments, None)
 }
 
@@ -137,15 +158,9 @@ pub fn diagonalize_with_exchange(
     drop(projector);
     drop(samples);
     if let Some(k) = exchange {
-        h -= k * C64::new(0.25, 0.);
+        h -= k * C64::new(c.require_screened_exchange()?.1, 0.);
     }
-    let lowdin = Matrix::from_fn(2 * m, 2 * m, |i, j| {
-        if i / m == j / m {
-            point.lowdin[(i % m, j % m)]
-        } else {
-            C64::default()
-        }
-    });
+    let lowdin = lowdin_block(point, m, true);
     let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
     let (eps, y) = eigen(lowdin.adjoint() * h * &lowdin)?;
     Ok((eps, &lowdin * &y, y))

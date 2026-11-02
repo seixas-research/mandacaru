@@ -20,10 +20,10 @@ def build(driver, geometry):
     spec = {"name": driver.basis} if isinstance(driver.basis, str) else driver.basis
     family = lookup_family(spec["name"])
     options = family.resolved_options({k: v for k, v in spec.items() if k != "name"})
-    if driver.method == "dft" and family.name == "paw-lcao" and "paw_dataset" not in spec:
-        from ..pseudopotentials.environment import default_library_folder
+    if driver.method == "dft":
+        from ..pseudopotentials.environment import with_functional_set
 
-        options["paw_dataset"] = default_library_folder(driver.xc)
+        options = with_functional_set(family.name, options, driver.xc)
     unknown = options.keys() - set(family.options)
     if unknown:
         raise TypeError(f"unsupported {family.label} basis options: {sorted(unknown)}")

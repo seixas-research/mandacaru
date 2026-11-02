@@ -150,7 +150,7 @@ fn evaluate(
     name: &str,
     poisson: &mut Poisson,
     orbital_gradients: Option<&RealSamples>,
-    screened: Option<&super::integrals::Eri>,
+    screened: Option<&Screening>,
 ) -> Result<Evaluation> {
     let ctx = &integrals.context;
     let m = integrals.m();
@@ -303,16 +303,41 @@ fn evaluate(
             }
         }
     }
+    // An open shell's spheres carry the polarization of the short-range semilocal
+    // exchange that the hybrid replaces; a restricted density has none.
+    let polarization = match screened {
+        Some(Screening {
+            spin: Some(spin), ..
+        }) if d.len() == 2 => {
+            let (up, down) = (d[0].map(|v| v.re), d[1].map(|v| v.re));
+            Some(spin.polarization(ctx, &up, &down)?)
+        }
+        _ => None,
+    };
     for s in 0..d.len() {
         let v = Matrix::from_fn(m, m, |a, b| C64::new(sums[s][(a, b)] * dv, 0.));
         let mut fock = h + v + &augmentation;
-        if let Some(eri) = screened {
-            let (_, exchange) = scf::jk(eri, m, &d[s]);
-            exact_energy -=
-                0.125 * (d[s].clone() * &exchange).trace().re * if d.len() == 1 { 2. } else { 1. };
-            fock -= exchange * C64::new(0.25, 0.);
+        if let Some(screening) = screened {
+            let spins = if d.len() == 1 { 2. } else { 1. };
+            let (_, exchange) = scf::jk(&screening.eri, m, &d[s]);
+            exact_energy -= 0.5 * screening.fraction * (d[s].clone() * &exchange).trace().re * spins;
+            fock -= exchange * C64::new(screening.fraction, 0.);
+            if let Some(frozen) = &screening.one_body {
+                let frozen = frozen.map(|v| C64::new(v, 0.));
+                exact_energy -= screening.fraction * (d[s].clone() * &frozen).trace().re * spins;
+                fock -= frozen * C64::new(screening.fraction, 0.);
+            }
+            if let Some((_, spheres)) = &polarization {
+                fock -= spheres[s].map(|v| C64::new(v, 0.)) * C64::new(screening.fraction, 0.);
+            }
         }
         f.push(scf::hermitian(fock));
+    }
+    if let Some(screening) = screened {
+        exact_energy -= screening.fraction * screening.constant;
+        if let Some((energy, _)) = &polarization {
+            exact_energy -= screening.fraction * energy;
+        }
     }
     let eone =
         d.iter().map(|d| (d * h).trace().re).sum::<f64>() * if d.len() == 1 { 2. } else { 1. };
@@ -322,6 +347,68 @@ fn evaluate(
         hartree: eh,
         xc: terms.energy + exact_energy,
     })
+}
+/// A screened hybrid's exact exchange: the short-range pair integrals, the
+/// exact-exchange fraction and, on PAW-LCAO, the frozen short-range semilocal
+/// exchange of the spheres (a one-body matrix and a constant).
+pub(super) struct Screening {
+    pub(super) eri: std::sync::Arc<super::integrals::Eri>,
+    pub(super) fraction: f64,
+    pub(super) one_body: Option<DMatrix<f64>>,
+    pub(super) constant: f64,
+    /// The spin dependence of the spheres' semilocal exchange (PAW-LCAO only).
+    pub(super) spin: Option<crate::paw::molecular::SpinTerms>,
+    /// How many correction factors of `eri` are the one-center tensor.
+    pub(super) one_center_factors: usize,
+}
+impl MolecularIntegrals {
+    /// The screened exact exchange of `name`, or `None` for a semilocal functional.
+    /// On PAW-LCAO the pair integrals carry the compensation charges and the
+    /// one-center tensor under the screened kernel, never the bare one.
+    pub(super) fn screening(&self, name: &str) -> Result<Option<Screening>> {
+        let Some((omega, fraction)) = crate::models::functional(name)?.screened_exchange else {
+            return Ok(None);
+        };
+        let (ctx, m) = (&self.context, self.m());
+        let mut solver = Poisson::screened(ctx, &self.grid, omega)?;
+        let base = std::sync::Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {
+            super::integrals::cholesky_from_grid(
+                ctx,
+                &self.grid,
+                samples,
+                m,
+                1e-12,
+                &mut solver,
+                None,
+            )
+        })?);
+        let Some(_) = self.corrections.as_ref() else {
+            return Ok(Some(Screening {
+                eri: base,
+                fraction,
+                one_body: None,
+                constant: 0.,
+                spin: None,
+                one_center_factors: 0,
+            }));
+        };
+        let setup = self.paw_setup.as_ref().ok_or_else(|| {
+            invalid("a screened hybrid needs the PAW setup that rebuilds its geometry; custom molecular corrections have none")
+        })?;
+        let screened = setup.screened_exchange(self, omega)?;
+        Ok(Some(Screening {
+            eri: std::sync::Arc::new(super::integrals::Eri::Augmented {
+                m,
+                base,
+                correction: screened.pairs,
+            }),
+            fraction,
+            one_body: Some(screened.one_body),
+            constant: screened.constant,
+            spin: Some(screened.spin),
+            one_center_factors: screened.one_center_factors,
+        }))
+    }
 }
 impl MolecularIntegrals {
     /// One-electron matrix of the Kohn-Sham model: the shared core operator
@@ -341,9 +428,9 @@ impl MolecularIntegrals {
         })
     }
     /// Electronic Kohn-Sham energy of orthonormal-frame spin densities, which
-    /// need not be idempotent. Nuclear repulsion is not included. Screened
-    /// exact exchange has no PAW augmentation, so it is not evaluated here.
-    pub(super) fn kohn_sham_energy(&self, functional: &str, d: &[Matrix]) -> Result<f64> {
+    /// need not be idempotent. Nuclear repulsion is not included. A screened
+    /// hybrid's exact exchange and its PAW spheres' terms are included.
+    pub fn kohn_sham_energy(&self, functional: &str, d: &[Matrix]) -> Result<f64> {
         let definition = crate::models::functional(functional)?;
         let m = self.m();
         if d.is_empty()
@@ -355,31 +442,7 @@ impl MolecularIntegrals {
             ));
         }
         let ctx = &self.context;
-        let screened = if let Some((omega, _)) = definition.screened_exchange {
-            let mut solver = Poisson::screened(ctx, &self.grid, omega)?;
-            let base = std::sync::Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {
-                super::integrals::cholesky_from_grid(
-                    ctx,
-                    &self.grid,
-                    samples,
-                    m,
-                    1e-12,
-                    &mut solver,
-                    None,
-                )
-            })?);
-            Some(if let Some(corrections) = self.corrections.as_ref() {
-                std::sync::Arc::new(super::integrals::Eri::Augmented {
-                    m,
-                    base,
-                    correction: corrections.pairs.clone(),
-                })
-            } else {
-                base
-            })
-        } else {
-            None
-        };
+        let screened = self.screening(functional)?;
         let mut poisson = Poisson::isolated(ctx, &self.grid)?;
         let gradients = if definition.requires_tau {
             Some(orbital_gradients(self)?)
@@ -393,7 +456,7 @@ impl MolecularIntegrals {
             functional,
             &mut poisson,
             gradients.as_ref(),
-            screened.as_deref(),
+            screened.as_ref(),
         )?
         .energy)
     }
@@ -413,31 +476,7 @@ impl MolecularIntegrals {
         self.context.run(|| {
             let m = self.m();
             let ctx = &self.context;
-            let screened = if let Some((omega, _)) = definition.screened_exchange {
-                let mut solver = Poisson::screened(ctx, &self.grid, omega)?;
-                let base = std::sync::Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {
-                    super::integrals::cholesky_from_grid(
-                        ctx,
-                        &self.grid,
-                        samples,
-                        m,
-                        1e-12,
-                        &mut solver,
-                        None,
-                    )
-                })?);
-                Some(if let Some(corrections) = self.corrections.as_ref() {
-                    std::sync::Arc::new(super::integrals::Eri::Augmented {
-                        m,
-                        base,
-                        correction: corrections.pairs.clone(),
-                    })
-                } else {
-                    base
-                })
-            } else {
-                None
-            };
+            let screened = self.screening(functional)?;
             let orbital_gradients = if definition.requires_tau {
                 Some(orbital_gradients(self)?)
             } else {
@@ -485,7 +524,7 @@ impl MolecularIntegrals {
                     functional,
                     &mut poisson,
                     orbital_gradients.as_ref(),
-                    screened.as_deref(),
+                    screened.as_ref(),
                 )?
                 .f;
                 starts.push(
@@ -550,7 +589,7 @@ impl MolecularIntegrals {
                             functional,
                             &mut poisson,
                             orbital_gradients.as_ref(),
-                            screened.as_deref(),
+                            screened.as_ref(),
                         )?;
                         if retry
                             && previous.is_some_and(|p: f64| value.energy > p + 1e-10)
@@ -610,7 +649,7 @@ impl MolecularIntegrals {
                     functional,
                     &mut poisson,
                     orbital_gradients.as_ref(),
-                    screened.as_deref(),
+                    screened.as_ref(),
                 )?;
                 let energies = value
                     .f

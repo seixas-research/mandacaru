@@ -5,8 +5,8 @@ pub mod dispersion;
 pub mod elements;
 pub mod hubbard;
 pub mod hubbard_request;
-pub mod hubbard_slater;
 pub mod hubbard_response;
+pub mod hubbard_slater;
 pub mod hubbard_spinor;
 pub mod mixing;
 pub mod nonlocal;
@@ -24,6 +24,12 @@ fn invalid(message: impl Into<String>) -> crate::Error {
 }
 
 use crate::{Error, Result};
+
+/// Range-separation parameter of HSE06 (Bohr^-1): the one definition every screened-exchange
+/// path reads, through the `screened_exchange` entry of the functional registry.
+pub const HSE06_OMEGA: f64 = 0.11;
+/// Fraction of short-range exact exchange in HSE06, which the semilocal part gives up.
+pub const HSE06_EXACT_FRACTION: f64 = 0.25;
 
 pub struct Functional {
     pub name: &'static str,
@@ -59,7 +65,7 @@ pub const FUNCTIONALS: &[Functional] = &[
         name: "hse06",
         semilocal: "hse06",
         requires_tau: false,
-        screened_exchange: Some((0.11, 0.25)),
+        screened_exchange: Some((HSE06_OMEGA, HSE06_EXACT_FRACTION)),
         nonlocal_b: None,
     },
     Functional {

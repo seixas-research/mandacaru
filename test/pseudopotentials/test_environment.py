@@ -214,100 +214,154 @@ def test_a_missing_folder_lists_the_ones_present(monkeypatch, paw_checkout):
         library_folder("paw-lcao", "fr")
 
 
-def test_the_calculator_points_the_basis_at_the_folder(monkeypatch,
-                                                       paw_checkout):
+def test_the_calculator_names_the_folder_in_the_basis(paw_checkout):
+    """``Mandacaru(paw_dataset=...)`` merges the folder name into the basis;
+    the loaders resolve it inside the checkout when a dataset is read."""
     from mandacaru import Mandacaru
 
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
     calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"},
                      paw_dataset="lda-fr")
     assert calc.basis == {"name": "PAW-LCAO", "size": "SZ",
-                          "paw_dataset": str(paw_checkout / "lda-fr")}
-    assert calc.library_folder == "lda-fr"
+                          "paw_dataset": "lda-fr"}
+    assert Mandacaru(method="rhf", basis="PAW-LCAO").basis == "PAW-LCAO"
 
 
-def test_the_default_folder_leaves_the_basis_alone(monkeypatch, paw_checkout):
+def test_a_basis_and_a_calculator_cannot_name_two_folders():
     from mandacaru import Mandacaru
 
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    for kwargs in ({}, {"paw_dataset": "lda-sr"}):
-        calc = Mandacaru(method="rhf", basis="PAW-LCAO", **kwargs)
-        assert calc.basis == "PAW-LCAO"
-
-
-@pytest.mark.parametrize("xc, folder", [
-    ("lda", "lda-sr"), (None, "lda-sr"), ("pbe", "pbe-sr"),
-    ("hse06", "pbe-sr"), ("r2scan", "pbe-sr"), ("r2SCAN+rVV10", "pbe-sr")])
-def test_the_functional_picks_its_own_set(monkeypatch, paw_checkout, xc,
-                                          folder):
-    """Without ``paw_dataset=``, Kohn-Sham reads the set of its functional:
-    ``pbe-sr`` for PBE and the functionals with no datasets of their own,
-    ``lda-sr`` for LDA."""
-    from mandacaru import Mandacaru
-
-    (paw_checkout / "pbe-sr").mkdir()
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    kwargs = {} if xc is None else {"xc": xc}
-    calc = Mandacaru(method="dft", basis="PAW-LCAO", **kwargs)
-    assert calc.library_folder == folder
-    expected = ("PAW-LCAO" if folder == "lda-sr" else
-                {"name": "PAW-LCAO", "paw_dataset": str(paw_checkout / folder)})
-    assert calc.basis == expected
-
-
-def test_a_named_folder_wins_over_the_functional(monkeypatch, paw_checkout):
-    from mandacaru import Mandacaru
-
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    calc = Mandacaru(method="dft", xc="pbe", basis="PAW-LCAO",
-                     paw_dataset="lda-sr")
-    assert (calc.library_folder, calc.basis) == ("lda-sr", "PAW-LCAO")
-
-
-def test_methods_without_a_functional_read_the_lda_set(monkeypatch,
-                                                       paw_checkout):
-    from mandacaru import Mandacaru
-
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    assert Mandacaru(method="rhf", basis="PAW-LCAO").library_folder == "lda-sr"
-
-
-def test_the_functional_s_set_leaves_a_basis_without_a_library_alone():
-    """``xc="pbe"`` on an all-electron basis chose the ``pbe-sr`` folder for
-    nothing: unlike a named ``paw_dataset=``, it is not an error."""
-    from mandacaru import Mandacaru
-
-    calc = Mandacaru(method="dft", xc="pbe", basis="HAO")
-    assert calc.basis == "HAO"
-    with pytest.raises(ValueError, match="reads none"):
-        Mandacaru(method="dft", xc="pbe", basis="HAO", paw_dataset="pbe-sr")
-
-
-def test_an_explicit_basis_paw_dataset_wins(monkeypatch, paw_checkout, tmp_path):
-    from mandacaru import Mandacaru
-
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    own = {"name": "PAW-LCAO", "paw_dataset": str(tmp_path)}
-    assert Mandacaru(method="rhf", basis=own, paw_dataset="lda-fr").basis == own
-
-
-def test_a_per_element_basis_rewrites_only_its_library_entries(
-        monkeypatch, paw_checkout):
-    from mandacaru import Mandacaru
-
-    monkeypatch.setenv("MANDACARU_PAW_PATH", str(paw_checkout))
-    calc = Mandacaru(method="rhf", basis={"H": "PAW-LCAO", "*": "HAO"},
-                     paw_dataset="lda-fr")
-    assert calc.basis == {"H": {"name": "PAW-LCAO",
-                                "paw_dataset": str(paw_checkout / "lda-fr")},
-                          "*": "HAO"}
+    own = {"name": "PAW-LCAO", "paw_dataset": "lda-sr"}
+    assert Mandacaru(method="rhf", basis=own, paw_dataset="lda-sr").basis == own
+    with pytest.raises(ValueError, match="different PAW datasets"):
+        Mandacaru(method="rhf", basis=own, paw_dataset="lda-fr")
 
 
 def test_a_folder_needs_a_library_basis():
     from mandacaru import Mandacaru
 
-    with pytest.raises(ValueError, match="reads none"):
+    with pytest.raises(ValueError, match="applies to a PAW-LCAO or UPAW-LCAO"):
         Mandacaru(method="rhf", basis="HAO", paw_dataset="lda-fr")
+    # The functional's own set is chosen only where a library is read, so an
+    # all-electron basis with xc="pbe" is not an error.
+    assert Mandacaru(method="dft", xc="pbe", basis="HAO").basis == "HAO"
+
+
+@pytest.mark.parametrize("xc, folder", [
+    (None, "lda-sr"), ("lda", "lda-sr"), ("pbe", "pbe-sr"),
+    ("hse06", "pbe-sr"), ("r2scan", "pbe-sr"), ("pbe+rvv10", "pbe-sr"),
+    ("r2scan+rvv10", "pbe-sr")])
+def test_the_functional_picks_its_own_set(xc, folder):
+    """The shared selection (molecule and crystal alike): without a named
+    folder, Kohn-Sham reads the set of its functional; a named folder wins;
+    UPAW-LCAO has no functional sets."""
+    from mandacaru.pseudopotentials.environment import (
+        default_library_folder, with_functional_set)
+
+    assert default_library_folder(xc) == folder
+    assert with_functional_set("PAW-LCAO", {"size": "SZ"}, xc or "lda") == \
+        {"size": "SZ", "paw_dataset": folder}
+    assert with_functional_set("paw-lcao", {"paw_dataset": None},
+                               xc or "lda") == {"paw_dataset": folder}
+    assert with_functional_set("paw-lcao", {"paw_dataset": "lda-fr"},
+                               xc or "lda") == {"paw_dataset": "lda-fr"}
+    assert with_functional_set("upaw-lcao", {}, xc or "lda") == {}
+
+
+# --------------------------------------------------------------------------- #
+# The folder a calculation actually reads, molecule and crystal: the run is
+# stopped where the datasets have just been loaded, before any SCF.
+# --------------------------------------------------------------------------- #
+
+class _Stopped(Exception):
+    pass
+
+
+@pytest.fixture
+def real_library():
+    """The shipped PAW-LCAO checkout named by ``MANDACARU_PAW_PATH``."""
+    try:
+        for name in ("lda-sr", "pbe-sr"):
+            library_folder("paw-lcao", name)
+    except LibraryPathError:
+        pytest.skip("no PAW-LCAO library with lda-sr/ and pbe-sr/ folders")
+
+
+def _molecule_folder(monkeypatch, **options):
+    """The folder of the datasets a molecular ``Mandacaru`` loads."""
+    from ase import Atoms
+
+    from mandacaru import Mandacaru
+    from mandacaru.pseudopotentials import orbitals
+
+    seen = {}
+
+    def stop(symbols, positions, species, **kwargs):
+        seen["sources"] = {os.path.basename(os.path.dirname(d.source))
+                           for d in species.values()}
+        raise _Stopped
+
+    monkeypatch.setattr(orbitals, "pseudo_basis", stop)
+    atoms = Atoms("H2", positions=[(3.0, 3.0, 2.63), (3.0, 3.0, 3.37)],
+                  cell=[6.0, 6.0, 6.0])
+    atoms.calc = Mandacaru(basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.4, trace=False, **options)
+    with pytest.raises(_Stopped):
+        atoms.get_potential_energy()
+    (folder,) = seen["sources"]
+    return folder
+
+
+def _crystal_folder(monkeypatch, **options):
+    """The folder of the datasets a periodic ``Mandacaru`` hands the crystal
+    setup (:func:`~mandacaru.pseudopotentials.periodic_paw.build_crystal`)."""
+    from ase.build import bulk
+
+    from mandacaru import Mandacaru
+    from mandacaru.pseudopotentials import periodic_paw
+    from mandacaru.pseudopotentials.paw import get_paw
+
+    seen = {}
+
+    def stop(atoms, grid_spacing, basis_options, **kwargs):
+        seen["source"] = get_paw("Si", basis_options["paw_dataset"]).source
+        raise _Stopped
+
+    monkeypatch.setattr(periodic_paw, "build_crystal", stop)
+    atoms = bulk("Si", "diamond", a=5.43)
+    atoms.calc = Mandacaru(method="dft",
+                           basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.4, trace=False,
+                           kpts={"size": (1, 1, 1), "gamma": True}, **options)
+    with pytest.raises(_Stopped):
+        atoms.get_potential_energy()
+    return os.path.basename(os.path.dirname(seen["source"]))
+
+
+@pytest.mark.parametrize("options, folder", [
+    ({"method": "dft", "xc": "lda"}, "lda-sr"),
+    ({"method": "dft", "xc": "pbe"}, "pbe-sr"),
+    ({"method": "dft", "xc": "hse06"}, "pbe-sr"),
+    ({"method": "dft", "xc": "r2scan"}, "pbe-sr"),
+    ({"method": "dft", "xc": "pbe", "paw_dataset": "lda-sr"}, "lda-sr"),
+    ({"method": "rhf"}, "lda-sr")])
+@pytest.mark.filterwarnings("ignore:xc=:RuntimeWarning")  # a named set may mismatch
+def test_a_molecule_reads_the_set_of_its_functional(monkeypatch, real_library,
+                                                    options, folder):
+    assert _molecule_folder(monkeypatch, **options) == folder
+
+
+@pytest.mark.parametrize("options, folder", [
+    ({"xc": "lda"}, "lda-sr"),
+    ({"xc": "pbe"}, "pbe-sr"),
+    ({"xc": "hse06"}, "pbe-sr"),
+    ({"xc": "r2scan"}, "pbe-sr"),
+    ({"xc": "pbe", "paw_dataset": "lda-sr"}, "lda-sr"),
+    ({"xc": "lda", "paw_dataset": "pbe-sr"}, "pbe-sr")])
+@pytest.mark.filterwarnings("ignore:xc=:RuntimeWarning")  # a named set may mismatch
+def test_a_crystal_reads_the_set_of_its_functional(monkeypatch, real_library,
+                                                   options, folder):
+    """A crystal used to read ``lda-sr`` whatever its functional: PBE and HSE06
+    energies were those of datasets generated with another functional."""
+    assert _crystal_folder(monkeypatch, **options) == folder
 
 
 def test_a_dataset_in_the_wrong_functional_folder_is_refused(tmp_path):

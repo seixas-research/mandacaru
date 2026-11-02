@@ -1,0 +1,1173 @@
+{
+ "m7_noise_spread": {
+  "m1": {
+   "E_eV": {
+    "range": 3.2173375075217336e-11,
+    "values": [
+     -431.1599829182491,
+     -431.15998291821694,
+     -431.1599829182444
+    ]
+   },
+   "context_peak_mib": {
+    "range": 0.0,
+    "values": [
+     34.80700969696045,
+     34.80700969696045,
+     34.80700969696045
+    ]
+   },
+   "context_used_mib": {
+    "range": 0.0,
+    "values": [
+     26.687935829162598,
+     26.687935829162598,
+     26.687935829162598
+    ]
+   },
+   "rss_delta_mib": {
+    "range": 5.125,
+    "values": [
+     436.65625,
+     441.5,
+     436.375
+    ]
+   },
+   "traced_peak_mib": {
+    "range": 0.0034313201904296875,
+    "values": [
+     196.18217849731445,
+     196.18560981750488,
+     196.1848373413086
+    ]
+   }
+  }
+ },
+ "notes": [
+  "M4 (32 atoms) is not baselined: no Python periodic run of that size is made",
+  "RSS is ru_maxrss; a macOS process can also hold compressed pages that RSS hides (polled_rss_peak_mb_total_process is the RSS polled with ps by the driver, baseline included)"
+ ],
+ "python_old_baseline_memory_table_json": {
+  "m1__float32": {
+   "ctx_peak": 35.2961950302124,
+   "ctx_used": 24.687918663024902,
+   "rss_delta": 326.578125,
+   "traced": 225.19199657440186
+  },
+  "m1__float64": {
+   "ctx_peak": 34.84938621520996,
+   "ctx_used": 26.687918663024902,
+   "rss_delta": 319.265625,
+   "traced": 227.2001895904541
+  },
+  "m2__float32": {
+   "ctx_peak": 23.611364364624023,
+   "ctx_used": 14.362310409545898,
+   "rss_delta": 208.046875,
+   "traced": 182.6746768951416
+  },
+  "m2__float64": {
+   "ctx_peak": 27.4107723236084,
+   "ctx_used": 18.6533260345459,
+   "rss_delta": 198.96875,
+   "traced": 182.67385005950928
+  }
+ },
+ "runs": {
+  "m1__float32__a": {
+   "E_eV": -431.15998238596643,
+   "bands": 32,
+   "case": "m1",
+   "context_peak_mib": 35.2962121963501,
+   "context_used_mib": 24.687935829162598,
+   "converged": true,
+   "grid_points": 8192,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 9,
+   "natoms": 8,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.25",
+    "method": "'dft'",
+    "precision": "'float32'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 521.359375,
+   "precision": "float32",
+   "psi_bytes_complex128": 4194304,
+   "psi_mib_complex128": 4.0,
+   "rss_baseline_mib": 93.609375,
+   "rss_delta_mib": 439.171875,
+   "rss_peak_mib": 532.78125,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m1",
+     "precision": "float32"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 194.18562126159668,
+   "tracemalloc": true,
+   "wall_s": 7.2
+  },
+  "m1__float64__a": {
+   "E_eV": -431.1599829182491,
+   "bands": 32,
+   "case": "m1",
+   "context_peak_mib": 34.80700969696045,
+   "context_used_mib": 26.687935829162598,
+   "converged": true,
+   "grid_points": 8192,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 9,
+   "natoms": 8,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.25",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 498.625,
+   "precision": "float64",
+   "psi_bytes_complex128": 4194304,
+   "psi_mib_complex128": 4.0,
+   "rss_baseline_mib": 92.171875,
+   "rss_delta_mib": 436.65625,
+   "rss_peak_mib": 528.828125,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m1",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 196.18217849731445,
+   "tracemalloc": true,
+   "wall_s": 7.2
+  },
+  "m1__float64__control_old_per_mem": {
+   "E_eV": -431.15998291822496,
+   "case": "m1",
+   "context_peak_mib": 34.80700969696045,
+   "context_used_mib": 26.687935829162598,
+   "n_iter": 9,
+   "note": "CONTROL: the original 2026-10-29 driver (scratchpad precision/baseline/per_mem.py, baseline taken before the calculator is built) run against the current extension on 2026-11-01. It reproduces freeze_periodic_memory.py (436-441) and not the frozen memory_table.json (319.3): the live Python route moved, the protocol did not.",
+   "ok": true,
+   "polled_rss_peak_mb_total_process": null,
+   "precision": "float64",
+   "rss_baseline_mib": 87.09375,
+   "rss_delta_mib": 439.640625,
+   "traced_peak_mib": 198.14849853515625,
+   "tracemalloc": true,
+   "wall_s": 6.8
+  },
+  "m1__float64__r1": {
+   "E_eV": -431.15998291821694,
+   "bands": 32,
+   "case": "m1",
+   "context_peak_mib": 34.80700969696045,
+   "context_used_mib": 26.687935829162598,
+   "converged": true,
+   "grid_points": 8192,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 9,
+   "natoms": 8,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.25",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 522.34375,
+   "precision": "float64",
+   "psi_bytes_complex128": 4194304,
+   "psi_mib_complex128": 4.0,
+   "rss_baseline_mib": 93.109375,
+   "rss_delta_mib": 441.5,
+   "rss_peak_mib": 534.609375,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m1",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 196.18560981750488,
+   "tracemalloc": true,
+   "wall_s": 7.1
+  },
+  "m1__float64__r2": {
+   "E_eV": -431.1599829182444,
+   "bands": 32,
+   "case": "m1",
+   "context_peak_mib": 34.80700969696045,
+   "context_used_mib": 26.687935829162598,
+   "converged": true,
+   "grid_points": 8192,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 9,
+   "natoms": 8,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.25",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 495.609375,
+   "precision": "float64",
+   "psi_bytes_complex128": 4194304,
+   "psi_mib_complex128": 4.0,
+   "rss_baseline_mib": 93.875,
+   "rss_delta_mib": 436.375,
+   "rss_peak_mib": 530.25,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m1",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 196.1848373413086,
+   "tracemalloc": true,
+   "wall_s": 7.2
+  },
+  "m1__float64__untraced": {
+   "E_eV": -431.1599829182332,
+   "bands": 32,
+   "case": "m1",
+   "context_peak_mib": 34.80700969696045,
+   "context_used_mib": 26.687935829162598,
+   "converged": true,
+   "grid_points": 8192,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 9,
+   "natoms": 8,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.25",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 488.828125,
+   "precision": "float64",
+   "psi_bytes_complex128": 4194304,
+   "psi_mib_complex128": 4.0,
+   "rss_baseline_mib": 94.28125,
+   "rss_delta_mib": 407.859375,
+   "rss_peak_mib": 502.140625,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m1",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": null,
+   "tracemalloc": false,
+   "wall_s": 5.0
+  },
+  "m2__float32__a": {
+   "E_eV": -213.89170594993416,
+   "bands": 8,
+   "case": "m2",
+   "context_peak_mib": 23.61138153076172,
+   "context_used_mib": 14.362327575683594,
+   "converged": true,
+   "grid_points": 17576,
+   "irreducible_k": 4,
+   "kmesh": [
+    [
+     -0.3333333333333333,
+     -0.33333333333333326,
+     -0.33333333333333326
+    ],
+    [
+     -0.3333333333333333,
+     -0.3333333333333333,
+     5.784441872307935e-35
+    ],
+    [
+     -0.3333333333333333,
+     -0.3333333333333333,
+     0.3333333333333333
+    ],
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 8,
+   "natoms": 2,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.15",
+    "kpts": "(3, 3, 3)",
+    "method": "'dft'",
+    "precision": "'float32'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 356.484375,
+   "precision": "float32",
+   "psi_bytes_complex128": 8998912,
+   "psi_mib_complex128": 8.58203125,
+   "rss_baseline_mib": 93.875,
+   "rss_delta_mib": 262.640625,
+   "rss_peak_mib": 356.515625,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m2",
+     "precision": "float32"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 99.70174884796143,
+   "tracemalloc": true,
+   "wall_s": 2.8
+  },
+  "m2__float64__a": {
+   "E_eV": -213.89170586640503,
+   "bands": 8,
+   "case": "m2",
+   "context_peak_mib": 27.410789489746094,
+   "context_used_mib": 18.653343200683594,
+   "converged": true,
+   "grid_points": 17576,
+   "irreducible_k": 4,
+   "kmesh": [
+    [
+     -0.3333333333333333,
+     -0.33333333333333326,
+     -0.33333333333333326
+    ],
+    [
+     -0.3333333333333333,
+     -0.3333333333333333,
+     5.784441872307935e-35
+    ],
+    [
+     -0.3333333333333333,
+     -0.3333333333333333,
+     0.3333333333333333
+    ],
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 8,
+   "natoms": 2,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.15",
+    "kpts": "(3, 3, 3)",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 345.15625,
+   "precision": "float64",
+   "psi_bytes_complex128": 8998912,
+   "psi_mib_complex128": 8.58203125,
+   "rss_baseline_mib": 92.4375,
+   "rss_delta_mib": 252.75,
+   "rss_peak_mib": 345.1875,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m2",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 103.9984941482544,
+   "tracemalloc": true,
+   "wall_s": 2.8
+  },
+  "m2__float64__untraced": {
+   "E_eV": -213.89170586640552,
+   "bands": 8,
+   "case": "m2",
+   "context_peak_mib": 27.410789489746094,
+   "context_used_mib": 18.653343200683594,
+   "converged": true,
+   "grid_points": 17576,
+   "irreducible_k": 4,
+   "kmesh": [
+    [
+     -0.3333333333333333,
+     -0.33333333333333326,
+     -0.33333333333333326
+    ],
+    [
+     -0.3333333333333333,
+     -0.3333333333333333,
+     5.784441872307935e-35
+    ],
+    [
+     -0.3333333333333333,
+     -0.3333333333333333,
+     0.3333333333333333
+    ],
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 8,
+   "natoms": 2,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'SZ'}",
+    "grid_spacing": "0.15",
+    "kpts": "(3, 3, 3)",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 306.140625,
+   "precision": "float64",
+   "psi_bytes_complex128": 8998912,
+   "psi_mib_complex128": 8.58203125,
+   "rss_baseline_mib": 92.375,
+   "rss_delta_mib": 234.109375,
+   "rss_peak_mib": 326.484375,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m2",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": null,
+   "tracemalloc": false,
+   "wall_s": 2.3
+  },
+  "m6__float32__a": {
+   "E_eV": -220.914232147504,
+   "bands": 52,
+   "case": "m6",
+   "context_peak_mib": 56.55693435668945,
+   "context_used_mib": 28.806896209716797,
+   "converged": true,
+   "grid_points": 19683,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 10,
+   "natoms": 4,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'DZP'}",
+    "grid_spacing": "0.15",
+    "method": "'dft'",
+    "precision": "'float32'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 409.59375,
+   "precision": "float32",
+   "psi_bytes_complex128": 16376256,
+   "psi_mib_complex128": 15.61761474609375,
+   "rss_baseline_mib": 94.671875,
+   "rss_delta_mib": 320.453125,
+   "rss_peak_mib": 415.125,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m6",
+     "precision": "float32"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 136.48508262634277,
+   "tracemalloc": true,
+   "wall_s": 6.2
+  },
+  "m6__float64__a": {
+   "E_eV": -220.91423214498545,
+   "bands": 52,
+   "case": "m6",
+   "context_peak_mib": 48.74812698364258,
+   "context_used_mib": 36.61570358276367,
+   "converged": true,
+   "grid_points": 19683,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 10,
+   "natoms": 4,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'DZP'}",
+    "grid_spacing": "0.15",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 406.890625,
+   "precision": "float64",
+   "psi_bytes_complex128": 16376256,
+   "psi_mib_complex128": 15.61761474609375,
+   "rss_baseline_mib": 91.578125,
+   "rss_delta_mib": 336.3125,
+   "rss_peak_mib": 427.890625,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m6",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 144.29446601867676,
+   "tracemalloc": true,
+   "wall_s": 6.3
+  },
+  "m6__float64__untraced": {
+   "E_eV": -220.914232144904,
+   "bands": 52,
+   "case": "m6",
+   "context_peak_mib": 48.74812698364258,
+   "context_used_mib": 36.61570358276367,
+   "converged": true,
+   "grid_points": 19683,
+   "irreducible_k": 1,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "n_iter": 10,
+   "natoms": 4,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'DZP'}",
+    "grid_spacing": "0.15",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 405.25,
+   "precision": "float64",
+   "psi_bytes_complex128": 16376256,
+   "psi_mib_complex128": 15.61761474609375,
+   "rss_baseline_mib": 93.203125,
+   "rss_delta_mib": 312.296875,
+   "rss_peak_mib": 405.5,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m6",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": null,
+   "tracemalloc": false,
+   "wall_s": 4.9
+  },
+  "m6k__float32__a": {
+   "E_eV": -225.33732353112168,
+   "bands": 52,
+   "case": "m6k",
+   "context_peak_mib": 80.67899894714355,
+   "context_used_mib": 52.9289608001709,
+   "converged": true,
+   "grid_points": 19683,
+   "irreducible_k": 4,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.5
+    ],
+    [
+     0.0,
+     0.5,
+     0.5
+    ],
+    [
+     0.5,
+     0.5,
+     0.5
+    ]
+   ],
+   "n_iter": 9,
+   "natoms": 4,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'DZP'}",
+    "grid_spacing": "0.15",
+    "kpts": "{'size': (2, 2, 2), 'gamma': True}",
+    "method": "'dft'",
+    "precision": "'float32'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 643.9375,
+   "precision": "float32",
+   "psi_bytes_complex128": 65505024,
+   "psi_mib_complex128": 62.470458984375,
+   "rss_baseline_mib": 93.828125,
+   "rss_delta_mib": 578.40625,
+   "rss_peak_mib": 672.234375,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m6k",
+     "precision": "float32"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 165.75017929077148,
+   "tracemalloc": true,
+   "wall_s": 6.6
+  },
+  "m6k__float64__a": {
+   "E_eV": -225.33732357904836,
+   "bands": 52,
+   "case": "m6k",
+   "context_peak_mib": 96.2966136932373,
+   "context_used_mib": 84.1641902923584,
+   "converged": true,
+   "grid_points": 19683,
+   "irreducible_k": 4,
+   "kmesh": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.5
+    ],
+    [
+     0.0,
+     0.5,
+     0.5
+    ],
+    [
+     0.5,
+     0.5,
+     0.5
+    ]
+   ],
+   "n_iter": 9,
+   "natoms": 4,
+   "ok": true,
+   "options": {
+    "basis": "{'name': 'PAW-LCAO', 'size': 'DZP'}",
+    "grid_spacing": "0.15",
+    "kpts": "{'size': (2, 2, 2), 'gamma': True}",
+    "method": "'dft'",
+    "precision": "'float64'",
+    "resources": "{'threads': 2, 'memory_limit_bytes': 1887436800}",
+    "xc": "'lda'"
+   },
+   "polled_rss_peak_mb_total_process": 572.296875,
+   "precision": "float64",
+   "psi_bytes_complex128": 65505024,
+   "psi_mib_complex128": 62.470458984375,
+   "rss_baseline_mib": 93.484375,
+   "rss_delta_mib": 487.921875,
+   "rss_peak_mib": 581.40625,
+   "stamp": {
+    "datasets_sha256": {
+     "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db"
+    },
+    "date": "2026-11-01",
+    "extension": {
+     "file": "_native.cpython-314-darwin.so",
+     "mtime": "2026-11-01T09:12:57+00:00",
+     "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+     "size": 7189904
+    },
+    "extra": {
+     "case": "m6k",
+     "precision": "float64"
+    },
+    "git": {
+     "dirty": true,
+     "dirty_kernel_files": [
+      "crates/mandacaru-kernels/SAFETY.md"
+     ],
+     "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+     "n_dirty_files": 79
+    },
+    "platform": "Darwin arm64",
+    "sources_sha256": {
+     "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+     "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+    },
+    "versions": {
+     "numpy": "2.5.3",
+     "python": "3.14.7",
+     "scipy": "1.18.1"
+    }
+   },
+   "traced_peak_mib": 191.4701623916626,
+   "tracemalloc": true,
+   "wall_s": 6.6
+  }
+ },
+ "stamp": {
+  "datasets_sha256": {},
+  "date": "2026-11-01",
+  "extension": {
+   "file": "_native.cpython-314-darwin.so",
+   "mtime": "2026-11-01T09:12:57+00:00",
+   "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+   "size": 7189904
+  },
+  "extra": {
+   "extension_currency": {
+    "extension_built": "2026-11-01T09:12:57+00:00",
+    "files": [
+     "crates/mandacaru-python/src/basis_zetas.rs",
+     "crates/mandacaru-python/src/lib.rs",
+     "crates/mandacaru-core/src/basis/radial.rs",
+     "crates/mandacaru-core/tests/basis_radial.rs",
+     "crates/mandacaru-core/src/periodic/gradient/pulay.rs",
+     "crates/mandacaru-core/src/periodic/gradient/electrostatic.rs",
+     "crates/mandacaru-core/src/periodic/gradient/core.rs",
+     "crates/mandacaru-core/src/periodic/gradient/hellmann_feynman.rs",
+     "crates/mandacaru-core/src/periodic/mod.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/derivatives.rs",
+     "crates/mandacaru-core/src/periodic/gradient/mod.rs",
+     "crates/mandacaru-core/src/periodic/gradient/state.rs",
+     "crates/mandacaru-core/tests/hubbard_gradient_support/mod.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/mod.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/scf.rs",
+     "crates/mandacaru-core/tests/hubbard_gradient_support/functional.rs",
+     "crates/mandacaru-core/tests/periodic_gradient_support/reference.rs",
+     "crates/mandacaru-core/tests/periodic_gradient.rs"
+    ],
+    "n_crate_files_newer": 18,
+    "newest": [
+     "2026-11-01T13:19:33+00:00",
+     "crates/mandacaru-core/tests/periodic_gradient.rs"
+    ]
+   },
+   "extension_shas_in_parts": [
+    "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7"
+   ],
+   "script": "freeze_periodic_memory.py"
+  },
+  "git": {
+   "dirty": true,
+   "dirty_kernel_files": [
+    "crates/mandacaru-kernels/SAFETY.md"
+   ],
+   "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+   "n_dirty_files": 79
+  },
+  "platform": "Darwin arm64",
+  "sources_sha256": {
+   "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+   "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+  },
+  "versions": {
+   "numpy": "2.5.3",
+   "python": "3.14.7",
+   "scipy": "1.18.1"
+  }
+ },
+ "units": "MiB (2^20 bytes)"
+}

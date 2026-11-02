@@ -6,7 +6,6 @@ occupations, mixing, eigensolves and spectral contractions belong to Rust.
 
 from __future__ import annotations
 import json
-from pathlib import Path
 from time import perf_counter
 import numpy as np
 
@@ -123,6 +122,14 @@ def crystal_input(
         p=p,
         channels=len(channels),
         channel_labels=[list(ch) for ch in channels],
+        sites=dict(
+            centers=[list(map(float, p)) for p in c.centers],
+            projector_basis=c.projectors[0].projector_basis,
+            datasets=[
+                dict(symbol=d.symbol, file=getattr(d, "source", ""), sha256=getattr(d, "source_sha256", ""))
+                for d in c.datasets
+            ],
+        ),
         kpoints=[
             point_input(d, np.asarray(d.k) @ c.lattice / (2 * np.pi), i)
             for i, d in enumerate(c.kpoint_data)
@@ -205,7 +212,9 @@ def configure(driver, atoms):
         raise NotImplementedError(
             "native periodic DFT currently uses the explicit PAW-LCAO/UPAW-LCAO setup adapter"
         )
-    options = dict(options)
+    from ..pseudopotentials.environment import with_functional_set
+
+    options = with_functional_set(family.name, options, driver.xc)
     spinor = bool(spin_orbit_symbols(atoms, options, family.name))
     moments = initial_moments(atoms, spinor=spinor, unrestricted=driver._unrestricted)
     time_reversal = spinor and not driver._unrestricted and not np.any(moments)
@@ -251,14 +260,6 @@ def configure(driver, atoms):
             mesh_size=list(context["kpts_size"]),
             mesh_gamma=context["kpts_gamma"],
             family=family.name,
-            dataset_sources=[
-                dict(
-                    symbol=d.symbol,
-                    sha256=getattr(d, "source_sha256", None),
-                    file=Path(getattr(d, "source", "")).name,
-                )
-                for d in crystal.datasets
-            ],
             geometry=dict(
                 numbers=atoms.numbers.tolist(),
                 positions_angstrom=atoms.positions.tolist(),

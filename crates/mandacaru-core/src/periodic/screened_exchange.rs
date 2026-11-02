@@ -2,14 +2,21 @@
 //! Evaluates the non-singular reciprocal Fock exchange matrix K(k)
 //! contracted with the self-consistent density matrices over the k-mesh.
 //! Fully supports restricted, unrestricted collinear, and 2-component spinor calculations.
+//!
+//! The pair densities are the smooth pair on the FFT grid and, when an
+//! [`Augmentation`] is given, the PAW compensation charges added in reciprocal space before the
+//! kernel weight (so the Gygi-Baldereschi head acts on the unit-charge pair). The `*_with`
+//! entries take the range separation explicitly and the augmentation, with the one-center model
+//! attached; the SCF, the bands and the Wannier frames reach them through `Crystal::hybrid_exchange`
+//! and `Crystal::hybrid_exchange_at_k` (`hybrid_setup.rs`), which hold the crystal's spheres.
 
-use super::{Crystal, KPoint};
+use super::{
+    invalid,
+    screened_augmentation::{add_compensation, Augmentation, OneCenter, OneCenterTerms},
+    Crystal, KPoint,
+};
 use crate::{
-    math::{
-        fft::Fft3,
-        reciprocal,
-        storage::MatrixSource,
-    },
+    math::{fft::Fft3, reciprocal, storage::MatrixSource},
     quantum::C64,
     Buffer, Result,
 };
@@ -31,11 +38,10 @@ pub enum ExxDivTreatment {
 
 impl ExxDivTreatment {
     pub fn parse(s: &str) -> Result<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "none" | "off" | "false" | "" => Ok(Self::None),
-            "gygi-baldereschi" | "gb" | "gygi_baldereschi" | "on" | "true" => {
-                Ok(Self::GygiBaldereschi)
-            }
+        // The two canonical spellings only: a shorthand would be an alias.
+        match s {
+            "none" => Ok(Self::None),
+            "gygi-baldereschi" => Ok(Self::GygiBaldereschi),
             other => Err(crate::Error::Invalid(format!(
                 "unknown exxdiv_treatment: '{other}', expected 'none' or 'gygi-baldereschi'"
             ))),
@@ -98,11 +104,67 @@ pub fn gygi_baldereschi_screened_kernel(qc: f64, omega: f64) -> f64 {
     }
 }
 
+/// Range separation and exact-exchange fraction of a hybrid. The public entries without an
+/// explicit one read them from the functional registry ([`Screening::of`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Screening {
+    pub omega: f64,
+    pub fraction: f64,
+}
+
+impl Screening {
+    pub fn of(c: &Crystal) -> Result<Self> {
+        let (omega, fraction) = c.require_screened_exchange()?;
+        Ok(Self { omega, fraction })
+    }
+}
+
+/// The exchange matrices of every (spin channel, k-point) of the mesh and the exact exchange
+/// energy `E_x = -1/2 fraction sum_k w_k tr(D_k K_k)`.
+pub struct Exchange {
+    pub operators: Vec<Matrix>,
+    pub energy: f64,
+}
+
+/// The pieces of the exchange energy of an augmented pair density `rho = rho_grid + rho_comp`:
+/// the quadratic form of `|rho|^2` splits into the grid pair alone, the cross term and the
+/// compensation charges alone. `augmentation()` is what the compensation adds to the grid.
+#[derive(Clone, Copy, Debug)]
+pub struct EnergyParts {
+    pub pseudo: f64,
+    pub cross: f64,
+    pub compensation: f64,
+}
+
+impl EnergyParts {
+    pub fn total(&self) -> f64 {
+        self.pseudo + self.cross + self.compensation
+    }
+    pub fn augmentation(&self) -> f64 {
+        self.cross + self.compensation
+    }
+}
+
+/// Which part of the augmented pair density a build keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Pseudo,
+    Compensation,
+    Both,
+}
+
+type Stage<'a> = Option<(&'a Augmentation<'a>, Part)>;
+
 /// Occupied Bloch states at a given q-point for one spin channel or spinor.
 struct OccupiedStates {
     weight: f64,
     // For each occupied state: [up] for collinear, [up, down] for spinor
     wavefunctions: Vec<Vec<Buffer<C64>>>,
+    // For each occupied state: its coefficients over the basis, the square root of the
+    // occupation folded in (`components * m`).
+    coefficients: Vec<Vec<C64>>,
+    // For each occupied state: `<p_j | psi>` per component, filled only for an augmented build.
+    projected: Vec<Vec<C64>>,
 }
 
 /// Extracts occupied Bloch wavefunctions on the real-space grid for a k-point q.
@@ -133,6 +195,7 @@ fn extract_occupied(
     }
 
     let mut wavefunctions = Vec::new();
+    let mut coefficients = Vec::new();
     let n_spin_components = if spinor { 2 } else { 1 };
 
     for (j, &val) in eigenvals.iter().enumerate() {
@@ -141,11 +204,13 @@ fn extract_occupied(
         }
         let occ_sqrt = val.sqrt();
         let mut components = Vec::with_capacity(n_spin_components);
+        let mut folded = Vec::with_capacity(n_spin_components * m);
 
         for comp in 0..n_spin_components {
             let mut psi = c.context.allocate::<C64>(n)?;
             for mu in 0..m {
                 let coeff = eigenvecs[(comp * m + mu, j)] * C64::new(occ_sqrt, 0.);
+                folded.push(coeff);
                 if coeff.norm_sqr() < 1e-24 {
                     continue;
                 }
@@ -157,193 +222,112 @@ fn extract_occupied(
             components.push(psi);
         }
         wavefunctions.push(components);
+        coefficients.push(folded);
     }
 
     Ok(OccupiedStates {
         weight: point.weight,
         wavefunctions,
+        coefficients,
+        projected: Vec::new(),
     })
 }
 
-/// Computes the screened exact exchange matrices K_s(k) for all k-points in the crystal mesh.
-/// Also returns the exact exchange energy E_xx.
-pub fn exchange_operators<M: MatrixSource>(
+/// The occupied states of every k-point of one spin channel, with their projections when the
+/// build is augmented.
+fn occupied_states<M: MatrixSource>(
     c: &Crystal,
     matrices: &[M],
-    omega: f64,
-    exxdiv: ExxDivTreatment,
-) -> Result<(Vec<Matrix>, f64)> {
-    let m = c.m;
-    let n = c.grid.index.points();
+    spin: usize,
+    spin_scale: f64,
+    stage: Stage,
+) -> Result<Vec<OccupiedStates>> {
     let nk = c.points.len();
-    let dv = c.grid.index.dv();
-    let cell_volume = dv * n as f64;
-    let spinor = c.spinor;
-    let n_spin_channels = if spinor { 1 } else { c.spins };
-    let n_basis = if spinor { 2 * m } else { m };
-    let spin_scale = if !spinor && c.spins == 1 { 0.5 } else { 1.0 };
-    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
-
-    let mut operators = Vec::with_capacity(n_spin_channels * nk);
-    let mut total_exchange_energy = 0.0;
-
-    for s in 0..n_spin_channels {
-        // 1. Extract occupied wavefunctions for all q-points
-        let mut all_occupied = Vec::with_capacity(nk);
-        for q in 0..nk {
-            let d = matrices[s * nk + q].matrix(&c.context)?;
-            let occ = extract_occupied(c, q, &d, spin_scale)?;
-            all_occupied.push(occ);
+    let mut all = Vec::with_capacity(nk);
+    for q in 0..nk {
+        let d = matrices[spin * nk + q].matrix(&c.context)?;
+        let mut occ = extract_occupied(c, q, &d, spin_scale)?;
+        if let Some((augmentation, _)) = stage {
+            occ.projected = occ
+                .coefficients
+                .iter()
+                .map(|coefficients| augmentation.project(c, &c.points[q], coefficients))
+                .collect();
         }
-
-        // 2. Loop over target k-points
-        for k in 0..nk {
-            let target_point = &c.points[k];
-            let k_samples = target_point.psi.read(&c.context)?;
-
-            // Compute periodic basis functions u_{mu, k}(r) = psi_{mu, k}(r) * exp(-i k . r)
-            let mut u_k = c.context.allocate::<C64>(m * n)?;
-            for r_idx in 0..n {
-                let r = c.grid.point(r_idx);
-                let phase_arg = -(0..3).map(|a| target_point.k[a] * r[a]).sum::<f64>();
-                let phase = C64::from_polar(1.0, phase_arg);
-                for mu in 0..m {
-                    u_k.as_mut_slice()[mu * n + r_idx] = k_samples[mu * n + r_idx] * phase;
-                }
-            }
-
-            let mut k_mat = Matrix::zeros(n_basis, n_basis);
-            let mut pair_buf = c.context.allocate::<C64>(n)?;
-
-            // Loop over source q-points
-            for (q, occ_q) in all_occupied.iter().enumerate() {
-                if occ_q.wavefunctions.is_empty() {
-                    continue;
-                }
-                let source_point = &c.points[q];
-                let k_diff = [
-                    source_point.k[0] - target_point.k[0],
-                    source_point.k[1] - target_point.k[1],
-                    source_point.k[2] - target_point.k[2],
-                ];
-                let symbols = reciprocal::bloch(&c.context, &c.grid, k_diff)?;
-                let w_q = occ_q.weight;
-
-                // Precompute sqrt_kernel_weights for this (k, q) pair
-                let mut sqrt_kernel_weight = c.context.allocate::<f64>(n)?;
-                for at in 0..n {
-                    let q2 = symbols.squares.as_slice()[at];
-                    let v = if q2 > 1e-12 {
-                        screened_kernel(q2, omega)
-                    } else {
-                        match exxdiv {
-                            ExxDivTreatment::GygiBaldereschi => {
-                                let qc = (6.0 * PI * PI * w_q / cell_volume).cbrt();
-                                gygi_baldereschi_screened_kernel(qc, omega)
-                            }
-                            ExxDivTreatment::None => screened_kernel(0.0, omega),
-                        }
-                    };
-                    let factor = (w_q * dv / n as f64) * v;
-                    sqrt_kernel_weight.as_mut_slice()[at] = factor.max(0.0).sqrt();
-                }
-
-                // Loop over occupied states j at q
-                for psi_j in &occ_q.wavefunctions {
-                    let mut transformed_pairs = c.context.allocate::<C64>(n_basis * n)?;
-
-                    for i in 0..n_basis {
-                        let comp = i / m;
-                        let mu = i % m;
-                        let u_mu = &u_k.as_slice()[mu * n..(mu + 1) * n];
-                        let psi_comp = psi_j[comp].as_slice();
-
-                        for r_idx in 0..n {
-                            pair_buf.as_mut_slice()[r_idx] = u_mu[r_idx].conj() * psi_comp[r_idx];
-                        }
-                        fft.transform(pair_buf.as_mut_slice(), false)?;
-                        for at in 0..n {
-                            transformed_pairs.as_mut_slice()[i * n + at] =
-                                pair_buf.as_slice()[at] * sqrt_kernel_weight.as_slice()[at];
-                        }
-                    }
-
-                    // Accumulate into K: K_{i, j} += sum_{at} W_i[at] * W_j[at]^*
-                    for i in 0..n_basis {
-                        let w_i = &transformed_pairs.as_slice()[i * n..(i + 1) * n];
-                        for j in 0..=i {
-                            let w_j = &transformed_pairs.as_slice()[j * n..(j + 1) * n];
-                            let dot: C64 = (0..n).map(|at| w_i[at] * w_j[at].conj()).sum();
-                            k_mat[(i, j)] += dot;
-                            if j != i {
-                                k_mat[(j, i)] += dot.conj();
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Symmetrize K to ensure strict hermiticity
-            let k_herm = (&k_mat + k_mat.adjoint()) * C64::new(0.5, 0.0);
-
-            // Exact exchange energy contribution
-            let d_mat = matrices[s * nk + k].matrix(&c.context)?;
-            let d_spin = &*d_mat * C64::new(spin_scale, 0.);
-            let tr = (d_spin * &k_herm).trace().re;
-            let mult = if !spinor && c.spins == 1 { 2.0 } else { 1.0 };
-            total_exchange_energy -= 0.125 * target_point.weight * tr * mult;
-
-            operators.push(k_herm);
-        }
+        all.push(occ);
     }
-
-    Ok((operators, total_exchange_energy))
+    Ok(all)
 }
 
-/// Evaluates the screened exact exchange matrix K(k_path) at an arbitrary off-mesh k-point
-/// using converged SCF density matrices.
-pub fn exchange_operator_at_k<M: MatrixSource>(
+/// The Coulomb weight of one (k, q) pair on the grid: `sqrt(w_q dv / N v^omega(Q))`.
+fn kernel_weights(
     c: &Crystal,
-    matrices: &[M],
+    k_diff: [f64; 3],
+    w_q: f64,
+    omega: f64,
+    exxdiv: ExxDivTreatment,
+) -> Result<Buffer<f64>> {
+    let n = c.grid.index.points();
+    let dv = c.grid.index.dv();
+    let cell_volume = dv * n as f64;
+    let symbols = reciprocal::bloch(&c.context, &c.grid, k_diff)?;
+    let mut sqrt_kernel_weight = c.context.allocate::<f64>(n)?;
+    for at in 0..n {
+        let q2 = symbols.squares.as_slice()[at];
+        let v = if q2 > 1e-12 {
+            screened_kernel(q2, omega)
+        } else {
+            match exxdiv {
+                ExxDivTreatment::GygiBaldereschi => {
+                    let qc = (6.0 * PI * PI * w_q / cell_volume).cbrt();
+                    gygi_baldereschi_screened_kernel(qc, omega)
+                }
+                ExxDivTreatment::None => screened_kernel(0.0, omega),
+            }
+        };
+        let factor = (w_q * dv / n as f64) * v;
+        sqrt_kernel_weight.as_mut_slice()[at] = factor.max(0.0).sqrt();
+    }
+    Ok(sqrt_kernel_weight)
+}
+
+/// `K(k)` of one target point against the occupied states of every point of the mesh (one spin
+/// channel): `K_ij = sum_{q, n} sum_Q v(Q) rho_{i n}(Q) rho_{j n}(Q)^*`.
+#[allow(clippy::too_many_arguments)]
+fn target_matrix(
+    c: &Crystal,
+    occupied: &[OccupiedStates],
     target_point: &KPoint,
     omega: f64,
-    spin: usize,
     exxdiv: ExxDivTreatment,
+    fft: &mut Fft3,
+    stage: Stage,
 ) -> Result<Matrix> {
     let m = c.m;
     let n = c.grid.index.points();
-    let nk = c.points.len();
-    let dv = c.grid.index.dv();
-    let cell_volume = dv * n as f64;
     let spinor = c.spinor;
     let n_basis = if spinor { 2 * m } else { m };
-    let spin_scale = if !spinor && c.spins == 1 { 0.5 } else { 1.0 };
-    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+    let part = stage.map_or(Part::Pseudo, |(_, part)| part);
 
-    // 1. Extract occupied wavefunctions for all q-points
-    let mut all_occupied = Vec::with_capacity(nk);
-    for q in 0..nk {
-        let d = matrices[spin * nk + q].matrix(&c.context)?;
-        let occ = extract_occupied(c, q, &d, spin_scale)?;
-        all_occupied.push(occ);
-    }
-
-    // 2. Periodic basis functions u_{mu, k}(r) at target_point
+    // Periodic basis functions u_{mu, k}(r) = psi_{mu, k}(r) * exp(-i k . r)
     let k_samples = target_point.psi.read(&c.context)?;
     let mut u_k = c.context.allocate::<C64>(m * n)?;
-    for r_idx in 0..n {
-        let r = c.grid.point(r_idx);
-        let phase_arg = -(0..3).map(|a| target_point.k[a] * r[a]).sum::<f64>();
-        let phase = C64::from_polar(1.0, phase_arg);
-        for mu in 0..m {
-            u_k.as_mut_slice()[mu * n + r_idx] = k_samples[mu * n + r_idx] * phase;
+    if part != Part::Compensation {
+        for r_idx in 0..n {
+            let r = c.grid.point(r_idx);
+            let phase_arg = -(0..3).map(|a| target_point.k[a] * r[a]).sum::<f64>();
+            let phase = C64::from_polar(1.0, phase_arg);
+            for mu in 0..m {
+                u_k.as_mut_slice()[mu * n + r_idx] = k_samples[mu * n + r_idx] * phase;
+            }
         }
     }
 
     let mut k_mat = Matrix::zeros(n_basis, n_basis);
     let mut pair_buf = c.context.allocate::<C64>(n)?;
 
-    for (q, occ_q) in all_occupied.iter().enumerate() {
+    // Loop over source q-points
+    for (q, occ_q) in occupied.iter().enumerate() {
         if occ_q.wavefunctions.is_empty() {
             continue;
         }
@@ -353,46 +337,45 @@ pub fn exchange_operator_at_k<M: MatrixSource>(
             source_point.k[1] - target_point.k[1],
             source_point.k[2] - target_point.k[2],
         ];
-        let symbols = reciprocal::bloch(&c.context, &c.grid, k_diff)?;
-        let w_q = occ_q.weight;
+        let sqrt_kernel_weight = kernel_weights(c, k_diff, occ_q.weight, omega, exxdiv)?;
+        let shapes = match stage {
+            Some((augmentation, _)) => Some(augmentation.pair_shapes(c, k_diff)?),
+            None => None,
+        };
 
-        let mut sqrt_kernel_weight = c.context.allocate::<f64>(n)?;
-        for at in 0..n {
-            let q2 = symbols.squares.as_slice()[at];
-            let v = if q2 > 1e-12 {
-                screened_kernel(q2, omega)
-            } else {
-                match exxdiv {
-                    ExxDivTreatment::GygiBaldereschi => {
-                        let qc = (6.0 * PI * PI * w_q / cell_volume).cbrt();
-                        gygi_baldereschi_screened_kernel(qc, omega)
-                    }
-                    ExxDivTreatment::None => screened_kernel(0.0, omega),
-                }
-            };
-            let factor = (w_q * dv / n as f64) * v;
-            sqrt_kernel_weight.as_mut_slice()[at] = factor.max(0.0).sqrt();
-        }
-
-        for psi_j in &occ_q.wavefunctions {
+        // Loop over occupied states j at q
+        for (state, psi_j) in occ_q.wavefunctions.iter().enumerate() {
             let mut transformed_pairs = c.context.allocate::<C64>(n_basis * n)?;
+            let moments = stage.map(|(augmentation, _)| {
+                augmentation.moments(c, target_point, &occ_q.projected[state])
+            });
 
             for i in 0..n_basis {
                 let comp = i / m;
                 let mu = i % m;
-                let u_mu = &u_k.as_slice()[mu * n..(mu + 1) * n];
-                let psi_comp = psi_j[comp].as_slice();
-
-                for r_idx in 0..n {
-                    pair_buf.as_mut_slice()[r_idx] = u_mu[r_idx].conj() * psi_comp[r_idx];
+                if part == Part::Compensation {
+                    pair_buf.as_mut_slice().fill(C64::default());
+                } else {
+                    let u_mu = &u_k.as_slice()[mu * n..(mu + 1) * n];
+                    let psi_comp = psi_j[comp].as_slice();
+                    for r_idx in 0..n {
+                        pair_buf.as_mut_slice()[r_idx] = u_mu[r_idx].conj() * psi_comp[r_idx];
+                    }
+                    fft.transform(pair_buf.as_mut_slice(), false)?;
                 }
-                fft.transform(pair_buf.as_mut_slice(), false)?;
+                if let (Some(moments), Some(shapes)) = (&moments, &shapes) {
+                    if part != Part::Pseudo {
+                        let row: Vec<C64> = moments.row(i).iter().copied().collect();
+                        add_compensation(pair_buf.as_mut_slice(), &row, shapes.as_slice());
+                    }
+                }
                 for at in 0..n {
                     transformed_pairs.as_mut_slice()[i * n + at] =
                         pair_buf.as_slice()[at] * sqrt_kernel_weight.as_slice()[at];
                 }
             }
 
+            // Accumulate into K: K_{i, j} += sum_{at} W_i[at] * W_j[at]^*
             for i in 0..n_basis {
                 let w_i = &transformed_pairs.as_slice()[i * n..(i + 1) * n];
                 for j in 0..=i {
@@ -407,7 +390,204 @@ pub fn exchange_operator_at_k<M: MatrixSource>(
         }
     }
 
+    // Symmetrize K to ensure strict hermiticity
     Ok((&k_mat + k_mat.adjoint()) * C64::new(0.5, 0.0))
+}
+
+/// The mesh loop: `K_s(k)` for every spin channel and point, and the exchange energy.
+fn build<M: MatrixSource>(
+    c: &Crystal,
+    matrices: &[M],
+    screening: Screening,
+    exxdiv: ExxDivTreatment,
+    stage: Stage,
+) -> Result<Exchange> {
+    let nk = c.points.len();
+    let spinor = c.spinor;
+    let n_spin_channels = if spinor { 1 } else { c.spins };
+    let spin_scale = if !spinor && c.spins == 1 { 0.5 } else { 1.0 };
+    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+
+    let mut operators = Vec::with_capacity(n_spin_channels * nk);
+    let mut total_exchange_energy = 0.0;
+
+    for s in 0..n_spin_channels {
+        // 1. Extract occupied wavefunctions for all q-points
+        let all_occupied = occupied_states(c, matrices, s, spin_scale, stage)?;
+
+        // 2. Loop over target k-points
+        for k in 0..nk {
+            let target_point = &c.points[k];
+            let k_herm = target_matrix(
+                c,
+                &all_occupied,
+                target_point,
+                screening.omega,
+                exxdiv,
+                &mut fft,
+                stage,
+            )?;
+
+            // Exact exchange energy contribution
+            let d_mat = matrices[s * nk + k].matrix(&c.context)?;
+            let d_spin = &*d_mat * C64::new(spin_scale, 0.);
+            let tr = (d_spin * &k_herm).trace().re;
+            let mult = if !spinor && c.spins == 1 { 2.0 } else { 1.0 };
+            total_exchange_energy -= 0.5 * screening.fraction * target_point.weight * tr * mult;
+
+            operators.push(k_herm);
+        }
+    }
+
+    Ok(Exchange {
+        operators,
+        energy: total_exchange_energy,
+    })
+}
+
+/// The one-center model's terms for the density `matrices`: the projected density
+/// `P_s = sum_k w_k C(k)^+ D_s(k) C(k)` (the four spin blocks for a spinor) handed to the model.
+fn one_center<M: MatrixSource>(
+    c: &Crystal,
+    matrices: &[M],
+    model: &dyn OneCenter,
+) -> Result<OneCenterTerms> {
+    let (nk, p, m) = (c.points.len(), c.p, c.m);
+    if c.spinor {
+        let mut projected = Matrix::zeros(2 * p, 2 * p);
+        for (k, point) in c.points.iter().enumerate() {
+            let d = matrices[k].matrix(&c.context)?;
+            for s in 0..2 {
+                for t in 0..2 {
+                    let block = point.projections.adjoint()
+                        * d.view((s * m, t * m), (m, m))
+                        * &point.projections
+                        * C64::new(point.weight, 0.);
+                    let mut view = projected.view_mut((s * p, t * p), (p, p));
+                    view += block;
+                }
+            }
+        }
+        return model.spinor(&c.context, &projected);
+    }
+    let mut projected = vec![Matrix::zeros(p, p); c.spins];
+    for (s, total) in projected.iter_mut().enumerate() {
+        for (k, point) in c.points.iter().enumerate() {
+            let d = matrices[s * nk + k].matrix(&c.context)?;
+            *total +=
+                point.projections.adjoint() * &*d * &point.projections * C64::new(point.weight, 0.);
+        }
+    }
+    model.collinear(&c.context, &projected)
+}
+
+/// `C(k) O C(k)^+`, with `O` of a spin channel (`p x p`) or of a spinor (`2p x 2p`, block by block).
+fn lift(c: &Crystal, point: &KPoint, operator: &Matrix) -> Matrix {
+    if !c.spinor {
+        return &point.projections * operator * point.projections.adjoint();
+    }
+    let (m, p) = (c.m, c.p);
+    let mut out = Matrix::zeros(2 * m, 2 * m);
+    for s in 0..2 {
+        for t in 0..2 {
+            let block = &point.projections
+                * operator.view((s * p, t * p), (p, p))
+                * point.projections.adjoint();
+            out.view_mut((s * m, t * m), (m, m)).copy_from(&block);
+        }
+    }
+    out
+}
+
+/// The screened exact exchange matrices `K_s(k)` of every point of the mesh and the exchange
+/// energy, with the compensation charges of `augmentation` in the pair densities. `None` keeps
+/// the smooth pair densities alone (the operator before the augmentation existed). An attached
+/// [`OneCenter`] model adds `C(k) O C(k)^+` to each matrix and its energy to the total.
+pub fn exchange_operators_with<M: MatrixSource>(
+    c: &Crystal,
+    matrices: &[M],
+    screening: Screening,
+    exxdiv: ExxDivTreatment,
+    augmentation: Option<&Augmentation>,
+) -> Result<Exchange> {
+    let mut out = build(
+        c,
+        matrices,
+        screening,
+        exxdiv,
+        augmentation.map(|a| (a, Part::Both)),
+    )?;
+    if let Some(model) = augmentation.and_then(|a| a.one_center()) {
+        let nk = c.points.len();
+        let terms = one_center(c, matrices, model)?;
+        if terms.operators.len() != if c.spinor { 1 } else { c.spins } {
+            return Err(invalid("the one-center model returned the wrong number of operators"));
+        }
+        for (s, operator) in terms.operators.iter().enumerate() {
+            for (k, point) in c.points.iter().enumerate() {
+                out.operators[s * nk + k] += lift(c, point, operator);
+            }
+        }
+        out.energy += terms.energy;
+    }
+    Ok(out)
+}
+
+/// The energy of the grid pair alone, the cross term and the compensation charges alone.
+pub fn energy_parts<M: MatrixSource>(
+    c: &Crystal,
+    matrices: &[M],
+    screening: Screening,
+    exxdiv: ExxDivTreatment,
+    augmentation: &Augmentation,
+) -> Result<EnergyParts> {
+    let energy =
+        |part| build(c, matrices, screening, exxdiv, Some((augmentation, part))).map(|e| e.energy);
+    let (pseudo, compensation, both) = (
+        energy(Part::Pseudo)?,
+        energy(Part::Compensation)?,
+        energy(Part::Both)?,
+    );
+    Ok(EnergyParts {
+        pseudo,
+        cross: both - pseudo - compensation,
+        compensation,
+    })
+}
+
+/// Evaluates the screened exact exchange matrix K(k_path) at an arbitrary off-mesh k-point
+/// using converged SCF density matrices, with the compensation charges of `augmentation`.
+pub fn exchange_operator_at_k_with<M: MatrixSource>(
+    c: &Crystal,
+    matrices: &[M],
+    target_point: &KPoint,
+    spin: usize,
+    screening: Screening,
+    exxdiv: ExxDivTreatment,
+    augmentation: Option<&Augmentation>,
+) -> Result<Matrix> {
+    let spin_scale = if !c.spinor && c.spins == 1 { 0.5 } else { 1.0 };
+    let stage = augmentation.map(|a| (a, Part::Both));
+    let all_occupied = occupied_states(c, matrices, spin, spin_scale, stage)?;
+    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+    let mut k_mat = target_matrix(
+        c,
+        &all_occupied,
+        target_point,
+        screening.omega,
+        exxdiv,
+        &mut fft,
+        stage,
+    )?;
+    if let Some(model) = augmentation.and_then(|a| a.one_center()) {
+        let terms = one_center(c, matrices, model)?;
+        let operator = terms
+            .operators
+            .get(spin)
+            .ok_or_else(|| invalid("the spin channel has no one-center operator"))?;
+        k_mat += lift(c, target_point, operator);
+    }
+    Ok(k_mat)
 }
 
 #[cfg(test)]
@@ -436,10 +616,28 @@ mod tests {
         assert!((val_below - val_above).abs() < 1e-6);
 
         // Parsing tests
-        assert_eq!(ExxDivTreatment::parse("none").unwrap(), ExxDivTreatment::None);
-        assert_eq!(ExxDivTreatment::parse("gb").unwrap(), ExxDivTreatment::GygiBaldereschi);
-        assert_eq!(ExxDivTreatment::parse("gygi-baldereschi").unwrap(), ExxDivTreatment::GygiBaldereschi);
-        assert_eq!(ExxDivTreatment::parse("gygi_baldereschi").unwrap(), ExxDivTreatment::GygiBaldereschi);
-        assert!(ExxDivTreatment::parse("unknown_mode").is_err());
+        assert_eq!(
+            ExxDivTreatment::parse("none").unwrap(),
+            ExxDivTreatment::None
+        );
+        assert_eq!(
+            ExxDivTreatment::parse("gygi-baldereschi").unwrap(),
+            ExxDivTreatment::GygiBaldereschi
+        );
+        // No aliases: every other spelling raises.
+        for spelling in [
+            "gb",
+            "gygi_baldereschi",
+            "off",
+            "on",
+            "true",
+            "false",
+            "",
+            " none",
+            "None",
+            "unknown_mode",
+        ] {
+            assert!(ExxDivTreatment::parse(spelling).is_err(), "{spelling:?}");
+        }
     }
 }

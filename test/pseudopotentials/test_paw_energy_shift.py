@@ -336,7 +336,7 @@ class TestTheReferenceRecipe:
 
     @pytest.mark.parametrize("symbol", sorted(REFERENCE_RECIPE))
     def test_cutoff_and_split_radii(self, symbol):
-        from mandacaru.basis.multizeta import split_radius
+        from mandacaru.basis.multizeta import zeta_tables
 
         pp, reference = get_paw(symbol), REFERENCE_RECIPE[symbol]
         r = np.asarray(pp.r)
@@ -345,7 +345,11 @@ class TestTheReferenceRecipe:
             assert orbital.r_c == pytest.approx(expected, abs=0.06)
             # The reference recipe's first_zeta tail norm is a *norm*: 0.16 -> 0.0256
             # of the squared norm.
-            split = split_radius(r, orbital.radial, 0.16 ** 2)
+            # The tail is exactly zero from the split radius on: the first
+            # node past the second zeta's support.
+            zeta = zeta_tables(r, orbital.radial, l + 1, l, 2,
+                               tail_norms=(0.16,))[1].values
+            split = r[np.flatnonzero(zeta)[-1] + 1]
             assert split == pytest.approx(reference["r_split"][l], abs=0.08)
 
     @pytest.mark.parametrize("symbol", sorted(REFERENCE_RECIPE))

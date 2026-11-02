@@ -68,8 +68,15 @@ impl MolecularIntegrals {
                 source.as_mut_slice()[k] = C64::new(rho.as_slice()[k] + rho.as_slice()[n + k], 0.);
             }
             let mut poisson = Poisson::isolated(ctx, &self.grid)?;
-            let mut screened = if state.functional.as_deref() == Some("hse06") {
-                Some(Poisson::screened(ctx, &self.grid, 0.11)?)
+            // The registry entry is the only definition of (omega, fraction); a name outside it
+            // (the Hartree-Fock label) has no screened exchange.
+            let screening = state
+                .functional
+                .as_deref()
+                .and_then(|name| crate::models::functional(name).ok())
+                .and_then(|definition| definition.screened_exchange);
+            let mut screened = if let Some((omega, _)) = screening {
+                Some(Poisson::screened(ctx, &self.grid, omega)?)
             } else {
                 None
             };
@@ -241,7 +248,7 @@ impl MolecularIntegrals {
                         }
                     }
                     if xc.is_none() || screened.is_some() {
-                        let fraction = if screened.is_some() { 0.25 } else { 1. };
+                        let fraction = screening.map_or(1., |(_, fraction)| fraction);
                         let solver = screened.as_mut().unwrap_or(&mut poisson);
                         for j in 0..occupied {
                             for (k, psi) in psi.iter().enumerate() {

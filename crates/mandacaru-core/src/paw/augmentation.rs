@@ -2,10 +2,8 @@
 //! once; radial reconstruction and reciprocal form factors are native.
 use super::{
     invalid,
-    molecular::{
-        data::{self, Arrays},
-        onecenter::shape,
-    },
+    molecular::data::{self, Arrays},
+    pair_tables::shape,
 };
 use crate::{
     math::{angular, radial::validate, spline::simpson},

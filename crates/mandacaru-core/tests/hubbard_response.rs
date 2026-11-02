@@ -188,6 +188,14 @@ fn an_ill_conditioned_response_raises_with_its_condition_number() {
 }
 
 #[test]
+fn a_singular_interacting_response_raises_even_when_the_bare_one_is_regular() {
+    let mut probe = Linear::new(mat(2, &[-1., 0., 0., -1.]), mat(2, &[-0.5, 0., 0., 0.]), 1);
+    let message = refusal(&mut probe, &Options::new(&[0.01], Fit::Central).unwrap());
+    assert!(message.starts_with("chi is singular"), "{message}");
+    assert!(message.contains("condition number inf"), "{message}");
+}
+
+#[test]
 fn a_bare_response_that_is_not_negative_definite_is_refused() {
     let mut probe = Linear::new(mat(2, &[-1., 0., 0., 0.5]), mat(2, &[-0.5, 0., 0., 0.2]), 1);
     let message = refusal(&mut probe, &Options::new(&[0.01], Fit::Central).unwrap());

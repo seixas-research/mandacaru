@@ -8,6 +8,7 @@ mod atom;
 mod basis_confinement;
 mod basis_filter;
 mod basis_table;
+mod basis_zetas;
 mod context;
 mod finite_size;
 mod geometry;
@@ -68,6 +69,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     basis_confinement::register(m)?;
     basis_filter::register(m)?;
     basis_table::register(m)?;
+    basis_zetas::register(m)?;
     run_log::register(m)?;
     hubbard::register(m)?;
     symmetry::register(m)?;

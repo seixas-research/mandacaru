@@ -345,12 +345,12 @@ impl Species {
                             .map(|k| ch.ae[j][k] * core_orbital[k])
                             .collect();
                         exchange[(i, j)] =
-                            -0.5 * (super::onecenter::coulomb(
+                            -0.5 * (crate::paw::pair_tables::coulomb(
                                 &r.as_slice()[..core_extent],
                                 &left,
                                 &right,
                                 ch.l,
-                            ) + super::onecenter::coulomb(
+                            ) + crate::paw::pair_tables::coulomb(
                                 &r.as_slice()[..core_extent],
                                 &right,
                                 &left,

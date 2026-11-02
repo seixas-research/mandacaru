@@ -388,3 +388,182 @@ pub fn real_shell(
     finite(output.as_slice(), "shell result")?;
     Ok(output)
 }
+
+use num_complex::Complex64 as C64;
+
+// `num_complex::Complex64` and the kernels' `#[repr(C)]` complex are two `f64` pairs in the same
+// order; the checked entry points below take the former and hand the latter's pointer type to the
+// kernels.
+const _: () = {
+    assert!(std::mem::size_of::<C64>() == std::mem::size_of::<Complex64>());
+    assert!(std::mem::align_of::<C64>() == std::mem::align_of::<Complex64>());
+};
+
+fn c64_finite(values: &[C64], name: &str) -> Result<()> {
+    if values.iter().all(|v| v.re.is_finite() && v.im.is_finite()) {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "{name} must contain finite complex values"
+        )))
+    }
+}
+
+/// What one atom-centered shell is sampled on: the points, the lattice images that reach them and
+/// the radial function. `phases` is `(k, image)` row-major, one row per k-point.
+pub struct ShellImages<'a> {
+    pub xyz: [&'a [f64]; 3],
+    pub center: [f64; 3],
+    pub images: &'a [[f64; 3]],
+    pub phases: &'a [C64],
+    pub support: f64,
+    pub spline: &'a Spline<'a>,
+    pub ms: &'a [i32],
+    /// `-1` the values, `0..=2` the Cartesian derivative.
+    pub derivative: i32,
+}
+
+impl ShellImages<'_> {
+    /// Validates the shape of the call; returns the number of k-points and of points.
+    fn check(&self) -> Result<(usize, usize)> {
+        let points = self.xyz[0].len();
+        let (images, nm) = (self.images.len(), self.ms.len());
+        dimension(points)?;
+        dimension(images)?;
+        dimension(nm)?;
+        if !self.support.is_finite()
+            || self.support <= 0.0
+            || !(-1..=2).contains(&self.derivative)
+            || self.ms.iter().any(|&m| m.abs() > self.spline.l)
+        {
+            return Err(Error::Invalid(
+                "invalid shell support, angular component or derivative axis".into(),
+            ));
+        }
+        for axis in self.xyz {
+            length(axis.len(), points, "shell coordinates")?;
+            finite(axis, "shell coordinates")?;
+        }
+        finite(&self.center, "shell center")?;
+        if self.images.iter().any(|t| t.iter().any(|x| !x.is_finite())) {
+            return Err(Error::Invalid("lattice images must be finite".into()));
+        }
+        if self.phases.is_empty() || self.phases.len() % images != 0 {
+            return Err(Error::Invalid(format!(
+                "{} phases do not make whole rows of {images} images",
+                self.phases.len()
+            )));
+        }
+        c64_finite(self.phases, "k-point phases")?;
+        Ok((self.phases.len() / images, points))
+    }
+}
+
+/// Adds `sum_R phase(k, R) phi_m(r - center - R)` to `out[(k * m_dim + rows[m]) * points + j]`.
+///
+/// `rows` places each `m` of the shell; the rows must be distinct and inside `m_dim`, and `out`
+/// holds `k * m_dim * points` entries. The kernel accumulates, so `out` starts at zero for a plain
+/// Bloch sum. A shell owns its rows: shells never share one.
+pub fn bloch_shell(
+    ctx: &Context,
+    call: &ShellImages<'_>,
+    rows: &[i64],
+    m_dim: usize,
+    out: &mut [C64],
+) -> Result<()> {
+    let (nk, points) = call.check()?;
+    length(rows.len(), call.ms.len(), "shell rows")?;
+    let distinct: std::collections::BTreeSet<_> = rows.iter().collect();
+    if distinct.len() != rows.len() || rows.iter().any(|&r| r < 0 || r as usize >= m_dim) {
+        return Err(Error::Invalid(
+            "shell rows must be distinct and inside the destination".into(),
+        ));
+    }
+    length(out.len(), product(&[nk, m_dim, points])?, "Bloch sums")?;
+    let spline = call.spline;
+    let m_dim_i = i64::try_from(m_dim).map_err(|_| Error::Overflow)?;
+    let points_i = i64::try_from(points).map_err(|_| Error::Overflow)?;
+    // SAFETY: coordinates, images, phases, spline, angular indices and rows are checked above;
+    // `out` holds `nk * m_dim * points` entries and cannot alias the read-only inputs. Distinct
+    // rows make the destination ranges of the shell's components disjoint.
+    ctx.run(|| unsafe {
+        bloch::bloch_shell(
+            call.xyz[0].as_ptr(),
+            call.xyz[1].as_ptr(),
+            call.xyz[2].as_ptr(),
+            points_i,
+            call.center.as_ptr(),
+            call.images.as_ptr().cast::<f64>(),
+            call.images.len() as i32,
+            call.phases.as_ptr().cast::<Complex64>(),
+            nk as i32,
+            call.support,
+            spline.breaks.as_ptr(),
+            spline.coefficients.as_ptr(),
+            spline.breaks.len() as i32,
+            spline.cutoff,
+            spline.l,
+            call.derivative,
+            call.ms.as_ptr(),
+            rows.as_ptr(),
+            call.ms.len() as i32,
+            m_dim_i,
+            out.as_mut_ptr().cast::<Complex64>(),
+        )
+    });
+    c64_finite(out, "Bloch sums")
+}
+
+/// `out[image, m, p] = sum_j conj(phi_m(r_j - center - R_image)) columns[p, j]` over the points
+/// inside the support, for every image of `call` (its `phases` are not read; pass the images
+/// alone through [`ShellImages::phases`] as one row of ones). The k-point phases are applied by
+/// the caller, which is what makes the work independent of the number of k-points.
+pub fn bloch_project(
+    ctx: &Context,
+    call: &ShellImages<'_>,
+    columns: &[C64],
+) -> Result<Buffer<C64>> {
+    let (_, points) = call.check()?;
+    let projectors = columns.len() / points;
+    length(
+        columns.len(),
+        product(&[projectors, points])?,
+        "projector columns",
+    )?;
+    dimension(projectors)?;
+    c64_finite(columns, "projector columns")?;
+    let size = product(&[call.images.len(), call.ms.len(), projectors])?;
+    let mut output = ctx.allocate::<C64>(size)?;
+    // Every worker sums into a private copy of the output, joined in worker order afterwards.
+    let _scratch = ctx.reserve(product(&[ctx.threads(), size, 16])?)?;
+    let spline = call.spline;
+    let points_i = i64::try_from(points).map_err(|_| Error::Overflow)?;
+    // SAFETY: coordinates, images, spline, angular indices and the `P * points` columns are
+    // checked; the output holds `images * nm * P` entries (the kernel zeroes it first) and cannot
+    // alias the inputs.
+    ctx.run(|| unsafe {
+        bloch::bloch_project(
+            call.xyz[0].as_ptr(),
+            call.xyz[1].as_ptr(),
+            call.xyz[2].as_ptr(),
+            points_i,
+            call.center.as_ptr(),
+            call.images.as_ptr().cast::<f64>(),
+            call.images.len() as i32,
+            call.support,
+            spline.breaks.as_ptr(),
+            spline.coefficients.as_ptr(),
+            spline.breaks.len() as i32,
+            spline.cutoff,
+            spline.l,
+            call.derivative,
+            call.ms.as_ptr(),
+            call.ms.len() as i32,
+            columns.as_ptr().cast::<Complex64>(),
+            projectors as i32,
+            output.as_mut_slice().as_mut_ptr().cast::<Complex64>(),
+        )
+    });
+    c64_finite(output.as_slice(), "Bloch projections")?;
+    Ok(output)
+}

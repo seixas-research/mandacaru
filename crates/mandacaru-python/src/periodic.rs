@@ -338,6 +338,15 @@ impl PyPeriodicResult {
                     .collect::<Vec<_>>(),
             )?;
         }
+        if c.screened_exchange().map_err(error)?.is_some() {
+            out.set_item(
+                "exchange_residuals",
+                r.history
+                    .iter()
+                    .filter_map(|it| it.exchange_residual)
+                    .collect::<Vec<_>>(),
+            )?;
+        }
         out.set_item("smearing", (r.options.smearing.name(), r.options.width))?;
         out.set_item(
             "eigenvalues",
@@ -527,15 +536,13 @@ impl PyPeriodicResult {
                 let mut eps = vec![];
                 let mut projections = vec![];
                 let n = c.grid.index.points();
-                let is_hybrid = c.functional == "hse06";
+                let is_hybrid = c.screened_exchange()?.is_some();
                 for s in 0..c.spins {
                     for p in &points {
                         let exchange = if is_hybrid {
-                            Some(mandacaru_core::periodic::screened_exchange::exchange_operator_at_k(
-                                c,
+                            Some(c.hybrid_exchange_at_k(
                                 &self.inner.matrices,
                                 p,
-                                0.11,
                                 s,
                                 self.inner.options.exxdiv_treatment,
                             )?)

@@ -26,8 +26,6 @@ integral engine unchanged.
 
 from __future__ import annotations
 
-import hashlib
-import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -221,7 +219,53 @@ class KBProjector(_RadialTabulated):
 # Building the valence basis and the projector set for a molecule.
 # --------------------------------------------------------------------------- #
 
-_FILTER_RADIAL_CACHE: dict = {}
+class PseudoShell(_RadialTabulated):
+    """One ``m`` component of a zeta, polarization or diffuse shell of a
+    PAW-LCAO basis: the shell's :class:`~mandacaru.basis.multizeta.RadialTable`
+    (kept as :attr:`table`) times a harmonic, evaluated by the native table
+    routines like every other function of the pseudopotential basis."""
+
+    def __init__(self, table, m: int, center=None, units: str = "angstrom",
+                 *, real: bool):
+        super().__init__(table.r, table.values, table.l, m, center, units,
+                         real=real)
+        self.table = table
+        self.n, self.zeta = int(table.n), int(table.zeta)
+        self.polarization = bool(table.polarization)
+        self.diffuse = bool(table.diffuse)
+        #: Where the table ends and the function is zero.
+        self.r_c = float(table.r[-1])
+
+    @property
+    def state(self) -> tuple[int, int, int]:
+        return (self.n, self.l, self.m)
+
+    @property
+    def kind(self) -> str:
+        """``"diffuse"``, ``"polarization"`` or ``"zeta"``."""
+        return ("diffuse" if self.diffuse
+                else "polarization" if self.polarization else "zeta")
+
+    def __repr__(self) -> str:
+        kind = ("diffuse" if self.diffuse
+                else "pol" if self.polarization else f"zeta{self.zeta}")
+        return (f"PseudoShell(n={self.n}, l={self.l}, m={self.m}, {kind}, "
+                f"r_c={self.r_c:.2f})")
+
+
+def _shells(tables, center, units: str, real: bool) -> list[PseudoShell]:
+    """Every ``m`` component of every radial table, in table order."""
+    return [PseudoShell(table, m, center=center, units=units, real=real)
+            for table in tables for m in range(-table.l, table.l + 1)]
+
+
+def _orbitals(pp, orbitals, center, units: str, real: bool) -> list:
+    """Every ``m`` component of the ``(state, radial)`` pairs of an element's
+    minimal set."""
+    return [PseudoAtomicOrbital(pp, state.l, m, center=center, units=units,
+                                radial=radial, index=state.index,
+                                eigenvalue=state.level, real=real)
+            for state, radial in orbitals for m in range(-state.l, state.l + 1)]
 
 
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
@@ -260,7 +304,8 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     extra zeta split from the *first* one, at the radius leaving a tail of
     that **norm**; ``None`` is ``"last_zeta"``, each zeta split from the
     previous one by ``split_norm`` (see
-    :func:`~mandacaru.basis.multizeta.zeta_tables`).
+    :func:`~mandacaru.basis.multizeta.zeta_tables`, which runs the native
+    construction).
 
     ``polarization_shape`` (optional) is a callable ``(symbol, potential) ->
     (l, R(r))`` -- or ``None`` to decline for that element -- that replaces the polarization shell built here --
@@ -298,51 +343,22 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
     band-limited, so the filter barely moves it.
     """
     from ..basis.filtering import filter_radial, filter_table
-    from ..basis.multizeta import (DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS,
-                                   orbitals_from_tables, resolve_zeta,
-                                   zeta_tables)
+    from ..basis.multizeta import zeta_tables
+    from ..models.radial import DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS, resolve_zeta
 
     k_c = None if filter_wavevector is None else float(filter_wavevector)
     split = DEFAULT_SPLIT_NORM if split_norm is None else float(split_norm)
-    # One filter evaluation per (element, radial function), not per atom and
-    # not per m: water's two hydrogens are the same element, and a p shell is
-    # three functions off one table. Shared across steps via _FILTER_RADIAL_CACHE.
-    cache = _FILTER_RADIAL_CACHE
 
-    def filtered(symbol, key, r, values, l):
-        if k_c is None:
-            return values
-        pp = potentials.get(symbol)
-        pp_id = getattr(pp, "sha256", None) or id(pp)
-        # The values are part of the key: the same dataset and radial function
-        # is a different table once a confinement shift or a polarization shape
-        # changes it, and the cache outlives the calculator.
-        digest = hashlib.blake2b(np.ascontiguousarray(values, dtype=float),
-                                 digest_size=8).hexdigest()
-        cache_key = (pp_id, key, round(k_c, 8), digest)
-        memo = cache.get(cache_key)
-        if memo is None:
-            memo, _info = filter_radial(r, values, l, k_c,
-                                        context=_context())
-            cache[cache_key] = memo
-        return memo
+    # The filter memoizes by content (`filtering.filter_radial`): the same
+    # radial function of the same element is filtered once, across atoms and
+    # across steps.
+    def filtered(values, r, l):
+        return values if k_c is None else filter_radial(
+            r, values, l, k_c, context=_context())[0]
 
-    def filtered_table(symbol, key, table):
-        if k_c is None:
-            return table
-        pp = potentials.get(symbol)
-        pp_id = getattr(pp, "sha256", None) or id(pp)
-        # The values are part of the key: the same dataset and radial function
-        # is a different table once a confinement shift or a polarization shape
-        # changes it, and the cache outlives the calculator.
-        digest = hashlib.blake2b(np.ascontiguousarray(table.values, dtype=float),
-                                 digest_size=8).hexdigest()
-        cache_key = (pp_id, key, round(k_c, 8), digest)
-        memo = cache.get(cache_key)
-        if memo is None:
-            memo, _info = filter_table(table, k_c, context=_context())
-            cache[cache_key] = memo
-        return memo
+    def filtered_table(table):
+        return table if k_c is None else filter_table(
+            table, k_c, context=_context())[0]
 
     confined: dict = {}
 
@@ -377,9 +393,11 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
             return spec
         return size
 
-    functions, owners = [], []
-    for index, (symbol, position) in enumerate(zip(symbols, positions)):
-        pp = potentials[symbol]
+    def element(symbol, pp):
+        """``(orbitals, tables)`` of one element, built once for all its
+        atoms: the ``(state, radial)`` pairs of the minimal set (``radial``
+        ``None`` is the stored partial wave) and the radial tables of
+        everything else."""
         # Empty scattering or bound-reference channels improve the nonlocal
         # operator without adding electrons. They supply projectors, not
         # minimal valence basis functions (or a new polarization parent).
@@ -390,31 +408,21 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
         n_zeta, n_polarization = resolve_zeta(size_of(symbol))
         if n_zeta == 1 and n_polarization == 0:
             # Minimal valence set: the original path, unchanged.
-            existing = []
+            orbitals, existing = [], []
             for state in states:
                 l = state.l
                 radial = first_radial(symbol, pp, l, state.index, state.empty)
                 if k_c is None and first_zeta is None and not state.empty:
                     radial = None          # the stored table, byte for byte
                 else:
-                    radial = filtered(symbol, ("sz", l, state.index), pp.r,
-                                      radial, l)
+                    radial = filtered(radial, pp.r, l)
+                orbitals.append((state, radial))
                 existing.append((state.n, l, pp.r,
                                  pp.channels[l].pseudo_waves[state.index]
                                  if radial is None else radial))
-                for m in range(-l, l + 1):
-                    functions.append(PseudoAtomicOrbital(
-                        pp, l, m, center=position, units=units, radial=radial,
-                        index=state.index, eigenvalue=state.level,
-                        real=real))
-                    owners.append(index)
-            if diffuse_shells is not None:
-                extra = orbitals_from_tables(
-                    diffuse_shells(symbol, pp, existing, k_c),
-                    center=position, units=units, real=real)
-                functions.extend(extra)
-                owners.extend([index] * len(extra))
-            continue
+            extra = ([] if diffuse_shells is None
+                     else diffuse_shells(symbol, pp, existing, k_c))
+            return orbitals, extra
 
         tables = []
         valence = [state for state in states if not state.semicore]
@@ -426,10 +434,9 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                                                   state.index, state.empty),
                                      state.n, state.l,
                                      1 if state.semicore else n_zeta,
-                                     split,
-                                     tail_norms=tail_norms):
-                tables.append(filtered_table(
-                    symbol, ("z", state.l, state.index, table.zeta), table))
+                                     split, tail_norms=tail_norms,
+                                     context=_context()):
+                tables.append(filtered_table(table))
         # Polarization: raise the outermost channel to l+1.  Solving a new
         # confined orbital is not an option here -- there is no pseudopotential
         # channel for an unoccupied l -- so the shape is r^k R_outer(r),
@@ -444,40 +451,44 @@ def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
                   else None)
         if custom is not None:
             l, shape = custom
-            # For the polarization zetas the tail norms are used *unsquared*
-            # (they are squared-norm fractions here, while the valence zetas
-            # square them); `zeta_tables` squares what it is given.
-            norms = [math.sqrt(t) for t in (tail_norms or DEFAULT_TAIL_NORMS)]
-            if tail_norms is None:
-                # zeta_split="last_zeta" was asked for: keep it for the
-                # polarization zetas too, rather than mixing conventions.
-                norms = None
+            # For the polarization zetas the tail norms are squared-norm
+            # fractions (the valence zetas square them); `last_zeta` keeps its
+            # convention for them too, rather than mixing the two.
+            tails = (None if tail_norms is None
+                     else tail_norms or DEFAULT_TAIL_NORMS)
             for table in zeta_tables(pp.r, shape, l + 1, l, n_polarization,
-                                     split,
-                                     tail_norms=norms):
+                                     split, tail_norms=tails, fractions=True,
+                                     context=_context()):
                 table.polarization = True
-                tables.append(filtered_table(symbol, ("pol", l, table.zeta),
-                                             table))
+                tables.append(filtered_table(table))
             n_polarization = 0                 # the loop below has nothing left
         for offset in range(n_polarization):
             l = l_max + 1 + offset
             shape = _native.pao_power_shape(r_table, outermost, offset + 1)
-            for table in zeta_tables(pp.r, shape, l + 1, l, 1,
-                                     split):
+            for table in zeta_tables(pp.r, shape, l + 1, l, 1, split,
+                                     context=_context()):
                 table.polarization = True
                 # `filter_table` copies the record, `polarization` included.
-                tables.append(filtered_table(symbol, ("pol", l, table.zeta),
-                                             table))
+                tables.append(filtered_table(table))
 
         if diffuse_shells is not None:
             # After the polarization shells, still on this atom: the
             # atom-major order the populations and `atom_of_orbital` rely on.
             tables.extend(diffuse_shells(
                 symbol, pp, [(t.n, t.l, t.r, t.values) for t in tables], k_c))
-        atom_functions = orbitals_from_tables(tables, center=position,
-                                              units=units, real=real)
+        return [], tables
+
+    built: dict = {}
+    functions, owners = [], []
+    for index, (symbol, position) in enumerate(zip(symbols, positions)):
+        pp = potentials[symbol]
+        if symbol not in built:
+            built[symbol] = element(symbol, pp)
+        orbitals, tables = built[symbol]
+        atom_functions = _orbitals(pp, orbitals, position, units, real)
+        atom_functions.extend(_shells(tables, position, units, real))
         functions.extend(atom_functions)
-        owners.extend([index] * len(atom_functions))
+        owners.extend(index for _ in atom_functions)
     return functions, owners
 
 

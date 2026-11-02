@@ -452,7 +452,12 @@ fn integrate_hole(
         + integrate_hole(f, mid, hi, depth + 1, budget)?)
 }
 fn hse_partials(values: [f64; 7], relativistic: bool) -> Result<(f64, [f64; 7])> {
-    hybrid_partials(values, relativistic, 0.11, 0.25)
+    hybrid_partials(
+        values,
+        relativistic,
+        super::HSE06_OMEGA,
+        super::HSE06_EXACT_FRACTION,
+    )
 }
 fn hybrid_partials(
     values: [f64; 7],

@@ -47,4 +47,3 @@ pub fn two_level(vu: Vu) -> TwoLevel {
         vu,
     }
 }
-

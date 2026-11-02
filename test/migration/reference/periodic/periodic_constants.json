@@ -1,0 +1,204 @@
+{
+ "rust_comparison": "Species::dft_constant (paw/molecular/data.rs) has no binding that reports it; the Rust test reads this file and compares to 1e-9",
+ "species": {
+  "lda-fr/Si": {
+   "constant": 0.007447806227694587,
+   "control_nonrelativistic_difference": 6.867215462946774e-09,
+   "core_correction_offset": 0.00822669029660017,
+   "dataset_xc": "lda",
+   "file": "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-fr/Si.parquet",
+   "folder": "lda-fr",
+   "independent_offset": {
+    "bare": 0.29177536638551327,
+    "dressed": 0.2835486760900383,
+    "libxc": [
+     "LDA_X",
+     "LDA_C_PZ"
+    ],
+    "relativistic_exchange": true,
+    "value": 0.008226690295474959
+   },
+   "independent_offset_difference": -1.1252110354575962e-12,
+   "nlcc_applied": true,
+   "one_center_energy": -0.0007788840689055831,
+   "relativistic_exchange": true,
+   "sha256": "9bf8bce1304155afcc23b5209ce0366670bdf20d0a9999e562e3a603415949b6",
+   "symbol": "Si",
+   "valence_charge": 4.0
+  },
+  "lda-sr/Al": {
+   "constant": 0.006205701009703635,
+   "control_nonrelativistic_difference": 3.1981558512583774e-09,
+   "core_correction_offset": 0.005728278134616627,
+   "dataset_xc": "lda",
+   "file": "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet",
+   "folder": "lda-sr",
+   "independent_offset": {
+    "bare": 0.17694673523702686,
+    "dressed": 0.17121845710236583,
+    "libxc": [
+     "LDA_X",
+     "LDA_C_PZ"
+    ],
+    "relativistic_exchange": true,
+    "value": 0.005728278134661036
+   },
+   "independent_offset_difference": 4.440892098500626e-14,
+   "nlcc_applied": true,
+   "one_center_energy": 0.000477422875087008,
+   "relativistic_exchange": true,
+   "sha256": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db",
+   "symbol": "Al",
+   "valence_charge": 3.0
+  },
+  "lda-sr/H": {
+   "constant": 0.0018737835756973964,
+   "core_correction_offset": 0.0,
+   "dataset_xc": "lda",
+   "file": "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/H.parquet",
+   "folder": "lda-sr",
+   "independent_offset": {
+    "reason": "no core correction: the offset is exactly 0",
+    "value": null
+   },
+   "nlcc_applied": false,
+   "one_center_energy": 0.0018737835756973964,
+   "relativistic_exchange": true,
+   "sha256": "298f409b108a2a1d120e4b918d3966a7b72de75942c1a0e7c88987ebfe22692f",
+   "symbol": "H",
+   "valence_charge": 1.0
+  },
+  "lda-sr/Si": {
+   "constant": 0.00747516444365226,
+   "control_nonrelativistic_difference": 6.955732767544021e-09,
+   "core_correction_offset": 0.008275533206470675,
+   "dataset_xc": "lda",
+   "file": "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet",
+   "folder": "lda-sr",
+   "independent_offset": {
+    "bare": 0.29190721806392694,
+    "dressed": 0.28363168485754364,
+    "libxc": [
+     "LDA_X",
+     "LDA_C_PZ"
+    ],
+    "relativistic_exchange": true,
+    "value": 0.008275533206383301
+   },
+   "independent_offset_difference": -8.737455203799982e-14,
+   "nlcc_applied": true,
+   "one_center_energy": -0.0008003687628184153,
+   "relativistic_exchange": true,
+   "sha256": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db",
+   "symbol": "Si",
+   "valence_charge": 4.0
+  },
+  "pbe-sr/Al": {
+   "constant": 0.007116477892935347,
+   "control_nonrelativistic_difference": 6.687138287553296e-09,
+   "core_correction_offset": 0.005037931385054373,
+   "dataset_xc": "pbe",
+   "file": "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Al.parquet",
+   "folder": "pbe-sr",
+   "independent_offset": {
+    "bare": 0.17344550836467965,
+    "dressed": 0.1684075786216528,
+    "libxc": [
+     "GGA_X_PBE",
+     "GGA_C_PBE"
+    ],
+    "relativistic_exchange": true,
+    "value": 0.005037929743026859
+   },
+   "independent_offset_difference": -1.6420275139594764e-09,
+   "nlcc_applied": true,
+   "one_center_energy": 0.002078546507880974,
+   "relativistic_exchange": true,
+   "sha256": "ec8455b835d0c0a0ee36d970faecd2f0f67344e2b4b7a7110fa73a3b80bb3df4",
+   "symbol": "Al",
+   "valence_charge": 3.0
+  },
+  "pbe-sr/H": {
+   "constant": 0.0016379437158918209,
+   "core_correction_offset": 0.0,
+   "dataset_xc": "pbe",
+   "file": "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/H.parquet",
+   "folder": "pbe-sr",
+   "independent_offset": {
+    "reason": "no core correction: the offset is exactly 0",
+    "value": null
+   },
+   "nlcc_applied": false,
+   "one_center_energy": 0.0016379437158918209,
+   "relativistic_exchange": true,
+   "sha256": "4ca77e03965ec44d41256f40c2d658a41c6e032d01237aad39e6b2a4be9f4e35",
+   "symbol": "H",
+   "valence_charge": 1.0
+  },
+  "pbe-sr/Si": {
+   "constant": 0.00876158787915915,
+   "control_nonrelativistic_difference": 1.4450519336683953e-08,
+   "core_correction_offset": 0.00745349467554024,
+   "dataset_xc": "pbe",
+   "file": "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Si.parquet",
+   "folder": "pbe-sr",
+   "independent_offset": {
+    "bare": 0.2866635164379576,
+    "dressed": 0.2792100250909858,
+    "libxc": [
+     "GGA_X_PBE",
+     "GGA_C_PBE"
+    ],
+    "relativistic_exchange": true,
+    "value": 0.007453491346971819
+   },
+   "independent_offset_difference": -3.3285684208905764e-09,
+   "nlcc_applied": true,
+   "one_center_energy": 0.0013080932036189097,
+   "relativistic_exchange": true,
+   "sha256": "57a23fb7570740d02de254266b294d480506de255fbc3b633275fd20256a25ce",
+   "symbol": "Si",
+   "valence_charge": 4.0
+  }
+ },
+ "stamp": {
+  "datasets_sha256": {
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-fr/Si.parquet": "9bf8bce1304155afcc23b5209ce0366670bdf20d0a9999e562e3a603415949b6",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Al.parquet": "fb695efb7d24dc7b447094fff975bfe928611f3e3a825c94f7a348bc4516c0db",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/H.parquet": "298f409b108a2a1d120e4b918d3966a7b72de75942c1a0e7c88987ebfe22692f",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/lda-sr/Si.parquet": "18d1efd8cf71adfcfd6c4394db8014bac2db78393fa3e455b43d8a0ad008f9db",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Al.parquet": "ec8455b835d0c0a0ee36d970faecd2f0f67344e2b4b7a7110fa73a3b80bb3df4",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/H.parquet": "4ca77e03965ec44d41256f40c2d658a41c6e032d01237aad39e6b2a4be9f4e35",
+   "/Users/leseixas/Library/CloudStorage/Dropbox/Repositories/seixas-research/mandacaru-paw/pbe-sr/Si.parquet": "57a23fb7570740d02de254266b294d480506de255fbc3b633275fd20256a25ce"
+  },
+  "date": "2026-11-01",
+  "extension": {
+   "file": "_native.cpython-314-darwin.so",
+   "mtime": "2026-11-01T09:12:57+00:00",
+   "sha256": "06be01b6333552276bf3a75b8e0f044816c9eda77f838ce3ed0f245563d058c7",
+   "size": 7189904
+  },
+  "extra": {
+   "script": "freeze_periodic_constants.py"
+  },
+  "git": {
+   "dirty": true,
+   "dirty_kernel_files": [
+    "crates/mandacaru-kernels/SAFETY.md"
+   ],
+   "head": "49d872c6edb8d2df710ea22d094cff124ffd4074",
+   "n_dirty_files": 79
+  },
+  "platform": "Darwin arm64",
+  "sources_sha256": {
+   "src/mandacaru/integrations/paw.py": "d8fc0e279aebd95c87dbc20c9a39f5ad4322f0298cd2e19dc4be55627ad053b6",
+   "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2"
+  },
+  "versions": {
+   "numpy": "2.5.3",
+   "python": "3.14.7",
+   "scipy": "1.18.1"
+  }
+ },
+ "units": "Hartree"
+}

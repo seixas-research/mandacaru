@@ -345,8 +345,17 @@ def test_ase_silicon_adapter_getters_and_native_off_mesh_spectra():
     axis,dos=atoms.calc.dos(npoints=801)
     _,pdos=atoms.calc.pdos(energies=axis)
     assert np.allclose(sum(pdos.values()),dos,atol=1e-10)
-    with pytest.raises(NotImplementedError):
-        atoms.get_forces()
+    # Through the ASE adapter a crystal's forces and stress are central finite
+    # differences of the energy taken by ASE on the attached Atoms: an INTERIM Python
+    # route that the PAW plan replaces with native derivatives (CF-7). This pins what
+    # it returns today, not a final contract. Measured on this cell: every force
+    # component is below 2e-10 eV/A and their sum below 3e-10 (diamond Si is a stationary
+    # point and the translation sum rule holds); 1e-6 leaves three decades of margin without
+    # hiding a real violation, which would be of order 1e-2 eV/A.
+    forces=atoms.get_forces()
+    assert forces.shape==(2,3)
+    assert np.abs(forces.sum(axis=0)).max()<1e-6
+    assert atoms.get_stress().shape==(6,)
 
 
 @pytest.mark.parametrize('spin',[False,True])

@@ -9,8 +9,6 @@ from ase.calculators.calculator import (
 from ..calculation import Mandacaru
 from .ase_properties import ASEProperties
 from ..structure import geometry_value
-import numpy as np
-from ..units import HARTREE_TO_EV
 
 
 def geometry_from_atoms(atoms):
@@ -46,8 +44,11 @@ class ASECalculator(ASEProperties, Calculator):
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
         try:
+            # The Atoms object itself, not its geometry: the interim finite-difference
+            # forces and stress of a crystal displace the Atoms the user attached the
+            # calculator to, and they need its calculator.
             self.calculation.calculate(
-                geometry_value(self.atoms), properties=properties
+                atoms if atoms is not None else self.atoms, properties=properties
             )
         except NotImplementedError as exc:
             raise PropertyNotImplementedError(str(exc)) from exc

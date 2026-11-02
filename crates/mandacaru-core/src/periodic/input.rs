@@ -124,6 +124,8 @@ pub struct Crystal {
     pub qsym: Buffer<C64>,
     /// DFT+U shells, when the snapshot carries a `hubbard` object.
     pub hubbard: Option<super::hubbard::Spec>,
+    /// The PAW spheres of a hybrid crystal (its `sites` block); `None` for a semilocal one.
+    pub hybrid: Option<super::hybrid_setup::Hybrid>,
     source: String,
     _memory: Reservation,
 }
@@ -276,6 +278,37 @@ fn tree_bytes(source: &str) -> Result<usize> {
         .checked_add(product(&[members, MEMBER_BYTES])?)
         .and_then(|bytes| bytes.checked_add(source.len()))
         .ok_or(crate::Error::Overflow)
+}
+
+/// The periodic exact exchange sums over `Crystal::points`, so it is exact only on the whole mesh:
+/// equal weights, a point set closed under `k -> -k`, and no symmetry table beside several points.
+/// An irreducible wedge or a time-reversal-halved mesh would give a wrong energy and wrong bands
+/// with no error, so it is refused. One Gamma point is complete whatever the table says.
+fn hybrid_needs_the_full_mesh(points: &[KPoint], permutations: usize) -> Result<()> {
+    const TOLERANCE: f64 = 1e-8;
+    let first = points.first().map_or(0., |p| p.weight);
+    let uniform = points.iter().all(|p| (p.weight - first).abs() < 1e-10);
+    let closed = points.iter().all(|p| {
+        points.iter().any(|q| {
+            (0..3).all(|i| {
+                let sum = p.fractional[i] + q.fractional[i];
+                (sum - sum.round()).abs() < TOLERANCE
+            })
+        })
+    });
+    if uniform && closed && (permutations == 0 || points.len() == 1) {
+        return Ok(());
+    }
+    Err(crate::Error::Unsupported(
+        "a hybrid functional needs the full k mesh: its exact exchange sums over the listed \
+         k-points, and these are a symmetry or time-reversal reduction of the mesh. Use \
+         symmetry=False together with a Gamma-centered mesh of one or two points per direction \
+         (all of its points are time-reversal invariant, so nothing is halved); on any other \
+         mesh use symmetry=False with unrestricted=True and nonzero initial magnetic moments \
+         (only a spin-polarized run keeps the whole mesh; a spin-orbit crystal has no such \
+         option)"
+            .into(),
+    ))
 }
 
 impl Crystal {
@@ -495,6 +528,9 @@ impl Crystal {
                 "DFT+U is not available with hybrid functionals",
             ));
         }
+        if definition.screened_exchange.is_some() {
+            hybrid_needs_the_full_mesh(&points, permutations.len())?;
+        }
         let hubbard = super::hubbard::Spec::parse(
             &v["hubbard"],
             p,
@@ -504,6 +540,23 @@ impl Crystal {
             permutations.len(),
         )?;
         let functional = definition.name.to_string();
+        let hybrid = match definition.screened_exchange {
+            Some(range) => Some(super::hybrid_setup::Hybrid::parse(
+                ctx,
+                &grid,
+                p,
+                &labels
+                    .iter()
+                    .map(|&(atom, l, order)| (atom, l, order as i32))
+                    .collect::<Vec<_>>(),
+                blocks.as_slice(),
+                &v["sites"],
+                range,
+                spinor,
+                time_reversal,
+            )?),
+            None => None,
+        };
         let core_tau = if definition.requires_tau {
             let values = arrays.real(ctx, &v["core_tau"], n, "core kinetic density")?;
             if values.as_slice().iter().any(|v| *v < 0.) {
@@ -571,6 +624,7 @@ impl Crystal {
                 "moment symmetrization",
             )?,
             hubbard,
+            hybrid,
             source: source.to_string(),
             _memory: memory,
         };

@@ -81,10 +81,11 @@ def _channels(dataset):
     }
 
 
-def check_atoms(spec, context, atoms, paw):
+def check_atoms(spec, context, atoms, paw, xc):
     """Refuse at construction what the elements and their datasets already rule out.
 
-    Loads the dataset of each distinct element (cached, and read again by the calculation) and
+    Loads the dataset of each distinct element (cached, and read again by the calculation) from
+    the set of the functional ``xc`` unless the basis names a folder, and
     hands its file and reference occupations to Rust, which refuses a spin-orbit dataset, an
     element the option names that ``atoms`` lacks, a dataset without the shell and a shell
     with no occupied reference wave. What needs the assembled crystal (a k mesh reduced by
@@ -92,11 +93,13 @@ def check_atoms(spec, context, atoms, paw):
     """
     if spec is None or paw is None or not any(atoms.pbc):
         return
+    from .pseudopotentials.environment import with_functional_set
     from .pseudopotentials.families import resolve_family
     from .pseudopotentials.paw import get_paw, get_upaw
 
     family, options = paw
-    folder = resolve_family(family).resolved_options(options).get("paw_dataset")
+    options = with_functional_set(family, resolve_family(family).resolved_options(options), xc)
+    folder = options.get("paw_dataset")
     load = get_upaw if family == "upaw-lcao" else get_paw
     symbols = sorted(set(atoms.get_chemical_symbols()))
     datasets = [load(symbol, folder) for symbol in symbols]

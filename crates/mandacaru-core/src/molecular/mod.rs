@@ -2,6 +2,7 @@
 pub mod active;
 pub mod correlation;
 pub mod dft;
+mod exchange_pieces;
 pub mod forces;
 pub mod integrals;
 pub mod local_correlation;
@@ -13,6 +14,7 @@ pub mod symmetry;
 pub mod transform;
 use crate::math::SpatialGrid;
 use crate::Error;
+pub use exchange_pieces::ExchangePieces;
 pub use integrals::MolecularIntegrals;
 pub use scf::{MeanField, ScfOptions};
 pub(crate) fn invalid(message: impl Into<String>) -> Error {

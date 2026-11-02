@@ -1,0 +1,4365 @@
+{
+ "constants": {
+  "energy_offset": 1.0,
+  "extra_anchor_energies": [
+   0.0,
+   0.1,
+   0.25
+  ],
+  "frozen_scattering_energy": 0.25,
+  "gga_local_fit_fraction": 0.15,
+  "local_factor": 0.9,
+  "n_bessel": 8,
+  "norm_deficit": 0.1,
+  "q_cut": 5.0,
+  "rc_factor": 1.3,
+  "semicore_cutoff_fraction": 0.7
+ },
+ "datasets": {
+  "Ac/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.6,
+    "1": 2.6,
+    "2": 2.6,
+    "3": 2.6
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 16.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Ac/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.6,
+    "1": 2.6,
+    "2": 2.6,
+    "3": 2.6
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 16.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Ag/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Ag/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Al/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Al/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ar/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ar/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "As/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.081,
+    "1": 2.564,
+    "2": 2.2
+   },
+   "energy_offset": 3.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "As/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.095,
+    "1": 2.582,
+    "2": 1.612
+   },
+   "energy_offset": 3.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "At/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "At/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Au/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.4,
+    "1": 1.58,
+    "2": 2.4,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 20.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Au/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.4,
+    "1": 1.58,
+    "2": 2.4,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 20.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "B/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "B/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ba/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.2,
+    "1": 3.2,
+    "2": 3.2,
+    "3": 3.2
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ba/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.2,
+    "1": 3.2,
+    "2": 3.2,
+    "3": 3.2
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Be/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Be/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Bi/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.294,
+    "1": 3.183,
+    "2": 1.344,
+    "3": 3.183
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Bi/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.294,
+    "1": 3.183,
+    "2": 2.2,
+    "3": 3.183
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Br/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.829,
+    "1": 2.159,
+    "2": 1.006
+   },
+   "energy_offset": 3.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Br/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.839,
+    "1": 2.171,
+    "2": 1.009
+   },
+   "energy_offset": 3.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "C/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.5,
+    "1": 1.5
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 12.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "C/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.5,
+    "1": 1.5
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 12.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ca/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Ca/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Cd/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Cd/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Ce/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ce/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Cl/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Cl/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Co/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Co/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Cr/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.376,
+    "2": 1.062
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 40.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Cr/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.409,
+    "2": 1.068
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Cs/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.0,
+    "1": 3.0,
+    "2": 3.0,
+    "3": 3.0
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Cs/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.0,
+    "1": 3.0,
+    "2": 3.0,
+    "3": 3.0
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Cu/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Cu/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Dy/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Dy/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Er/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Er/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Eu/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Eu/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "F/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.4,
+    "1": 1.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 8.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.15,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "F/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.4,
+    "1": 1.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 8.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.15,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Fe/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Fe/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Fr/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Fr/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ga/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.4425,
+    "1": 3.2799,
+    "2": 2.6
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ga/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.4574,
+    "1": 3.3051,
+    "2": 2.6
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Gd/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Gd/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ge/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.242,
+    "1": 2.86,
+    "2": 1.696
+   },
+   "energy_offset": 3.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ge/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.261,
+    "1": 2.882,
+    "2": 1.696
+   },
+   "energy_offset": 3.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "H/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.0
+   },
+   "energy_offset": 0.5,
+   "frozen_subshells": [],
+   "highest_channel": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.05,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "H/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.0
+   },
+   "energy_offset": 0.5,
+   "frozen_subshells": [],
+   "highest_channel": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.05,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "He/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "He/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Hf/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Hf/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Hg/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Hg/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ho/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ho/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "I/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.194,
+    "1": 2.628,
+    "2": 1.113
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "I/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.206,
+    "1": 2.641,
+    "2": 1.113
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "In/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.78,
+    "1": 3.69,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "In/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.79,
+    "1": 3.72,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ir/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.4,
+    "1": 1.67,
+    "2": 2.4,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 20.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ir/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.4,
+    "1": 1.67,
+    "2": 2.4,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 20.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "K/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "K/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Kr/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.727,
+    "1": 2.011,
+    "2": 1.066
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Kr/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.736,
+    "1": 2.019,
+    "2": 1.07
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "La/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.5,
+    "1": 2.5,
+    "2": 2.5,
+    "3": 2.5
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 16.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "La/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.6,
+    "1": 2.6,
+    "2": 2.6,
+    "3": 2.6
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 16.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Li/lda": {
+   "core_radius": 1.5,
+   "cutoff_table": {
+    "0": 2.6
+   },
+   "energy_offset": 0.5,
+   "frozen_subshells": [],
+   "highest_channel": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Li/pbe": {
+   "core_radius": 1.5,
+   "cutoff_table": {
+    "0": 2.6
+   },
+   "energy_offset": 0.5,
+   "frozen_subshells": [],
+   "highest_channel": 1,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Lu/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.0,
+    "1": 2.0,
+    "2": 2.2,
+    "3": 2.2
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Lu/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.0,
+    "1": 2.0,
+    "2": 2.2,
+    "3": 2.2
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Mg/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.065,
+   "reference_configuration": [],
+   "second_reference": {
+    "1": -0.12
+   },
+   "semicore_subshells": [
+    [
+     2,
+     0
+    ],
+    [
+     2,
+     1
+    ]
+   ]
+  },
+  "Mg/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.065,
+   "reference_configuration": [],
+   "second_reference": {
+    "1": -0.12
+   },
+   "semicore_subshells": [
+    [
+     2,
+     0
+    ],
+    [
+     2,
+     1
+    ]
+   ]
+  },
+  "Mn/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Mn/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Mo/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Mo/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "N/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.45,
+    "1": 1.45
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.15,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "N/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.45,
+    "1": 1.45
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.15,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Na/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     2,
+     0
+    ],
+    [
+     2,
+     1
+    ]
+   ]
+  },
+  "Na/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     2,
+     0
+    ],
+    [
+     2,
+     1
+    ]
+   ]
+  },
+  "Nb/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Nb/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Nd/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Nd/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ne/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ne/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ni/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Ni/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "O/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.45,
+    "1": 1.45
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 6.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.15,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "O/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.45,
+    "1": 1.45
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 6.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.15,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Os/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.871,
+    "2": 3.19,
+    "3": 3.19
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": []
+  },
+  "Os/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.041,
+    "2": 3.201,
+    "3": 3.201
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 50.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": []
+  },
+  "P/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "P/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Pa/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.8,
+    "1": 2.8,
+    "2": 2.8,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [
+    [
+     5,
+     3,
+     2.0
+    ],
+    [
+     6,
+     2,
+     1.0
+    ]
+   ],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Pa/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.8,
+    "1": 2.8,
+    "2": 2.8,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [
+    [
+     5,
+     3,
+     2.0
+    ],
+    [
+     6,
+     2,
+     1.0
+    ]
+   ],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Pb/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Pb/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Pd/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.178,
+    "2": 1.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 50.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Pd/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.196,
+    "2": 1.399
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 50.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Pm/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Pm/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Po/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Po/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Pr/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Pr/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Pt/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.005,
+    "2": 3.005,
+    "3": 3.005
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Pt/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.011,
+    "2": 3.011,
+    "3": 3.011
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ra/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.9,
+    "1": 2.9,
+    "2": 2.9,
+    "3": 2.9
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 16.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Ra/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.9,
+    "1": 2.9,
+    "2": 2.9,
+    "3": 2.9
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 16.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Rb/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Rb/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Re/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.968,
+    "2": 3.298,
+    "3": 3.298
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Re/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.981,
+    "2": 3.312,
+    "3": 3.312
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Rh/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.279,
+    "2": 1.474
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 50.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Rh/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.299,
+    "2": 1.472
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 50.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Rn/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Rn/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ru/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.39,
+    "2": 1.558
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 50.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Ru/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.412,
+    "2": 1.555
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "S/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "S/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sb/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.439,
+    "1": 3.026,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sb/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.46,
+    "1": 3.05,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sc/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.07
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Sc/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.07
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Se/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.945,
+    "1": 2.34,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Se/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 1.958,
+    "1": 2.353,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Si/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Si/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sm/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sm/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sn/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.33,
+    "1": 3.305,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sn/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.33,
+    "1": 3.305,
+    "2": 2.0
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Sr/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Sr/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 2,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Ta/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {
+    "1": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ta/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Tb/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Tb/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Tc/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {
+    "1": 0.25
+   },
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Tc/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {
+    "1": 0.25
+   },
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Te/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Te/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Th/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.0,
+    "1": 3.0,
+    "2": 3.0,
+    "3": 3.0
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Th/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 3.0,
+    "1": 3.0,
+    "2": 3.0,
+    "3": 3.0
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": 3,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Ti/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 1.86
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Ti/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 1.86
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Tl/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.678,
+    "1": 3.773,
+    "2": 1.451,
+    "3": 3.773
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Tl/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.689,
+    "1": 3.801,
+    "2": 2.2,
+    "3": 3.801
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Tm/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Tm/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "U/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.6,
+    "1": 2.6,
+    "2": 2.6,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [
+    [
+     5,
+     3,
+     3.0
+    ],
+    [
+     6,
+     2,
+     1.0
+    ]
+   ],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "U/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.6,
+    "1": 2.6,
+    "2": 2.6,
+    "3": 2.4
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 12.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [
+    [
+     5,
+     3,
+     3.0
+    ],
+    [
+     6,
+     2,
+     1.0
+    ]
+   ],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "V/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 1.67
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "V/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 1.67
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "W/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.97,
+    "1": 1.78,
+    "2": 3.3,
+    "3": 3.3
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "W/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.97,
+    "1": 1.78,
+    "2": 3.3,
+    "3": 3.3
+   },
+   "energy_offset": 1.0,
+   "frozen_subshells": [
+    [
+     4,
+     3
+    ]
+   ],
+   "highest_channel": null,
+   "local_shift": 10.0,
+   "n_bessel": 10,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "3": 0.25
+   },
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Xe/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.093,
+    "1": 2.476,
+    "2": 1.07
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Xe/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "0": 2.104,
+    "1": 2.487,
+    "2": 1.07
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Y/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Y/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Yb/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Yb/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": []
+  },
+  "Zn/lda": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Zn/pbe": {
+   "core_radius": null,
+   "cutoff_table": {
+    "2": 2.2
+   },
+   "energy_offset": 2.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 9,
+   "norm_deficit": 0.0,
+   "reference_configuration": [],
+   "second_reference": {
+    "1": -0.16
+   },
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Zr/lda": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Zr/pbe": {
+   "core_radius": null,
+   "cutoff_table": {},
+   "energy_offset": 1.0,
+   "frozen_subshells": [],
+   "highest_channel": null,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "norm_deficit": 0.1,
+   "reference_configuration": [],
+   "second_reference": {},
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  }
+ },
+ "generation_points": {
+  "Ac": 133500,
+  "Ag": 70500,
+  "Al": 19500,
+  "Ar": 27000,
+  "As": 49500,
+  "At": 127500,
+  "Au": 118500,
+  "B": 7500,
+  "Ba": 84000,
+  "Be": 6000,
+  "Bi": 124500,
+  "Br": 52500,
+  "C": 9000,
+  "Ca": 30000,
+  "Cd": 72000,
+  "Ce": 87000,
+  "Cl": 25500,
+  "Co": 40500,
+  "Cr": 36000,
+  "Cs": 82500,
+  "Cu": 43500,
+  "Dy": 99000,
+  "Er": 102000,
+  "Eu": 94500,
+  "F": 13500,
+  "Fe": 39000,
+  "Fr": 130500,
+  "Ga": 46500,
+  "Gd": 96000,
+  "Ge": 48000,
+  "H": 6000,
+  "He": 6000,
+  "Hf": 108000,
+  "Hg": 120000,
+  "Ho": 100500,
+  "I": 79500,
+  "In": 73500,
+  "Ir": 115500,
+  "K": 28500,
+  "Kr": 54000,
+  "La": 85500,
+  "Li": 6000,
+  "Lu": 106500,
+  "Mg": 18000,
+  "Mn": 37500,
+  "Mo": 63000,
+  "N": 10500,
+  "Na": 16500,
+  "Nb": 61500,
+  "Nd": 90000,
+  "Ne": 15000,
+  "Ni": 42000,
+  "O": 12000,
+  "Os": 114000,
+  "P": 22500,
+  "Pa": 136500,
+  "Pb": 123000,
+  "Pd": 69000,
+  "Pm": 91500,
+  "Po": 126000,
+  "Pr": 88500,
+  "Pt": 117000,
+  "Ra": 132000,
+  "Rb": 55500,
+  "Re": 112500,
+  "Rh": 67500,
+  "Rn": 129000,
+  "Ru": 66000,
+  "S": 24000,
+  "Sb": 76500,
+  "Sc": 31500,
+  "Se": 51000,
+  "Si": 21000,
+  "Sm": 93000,
+  "Sn": 75000,
+  "Sr": 57000,
+  "Ta": 109500,
+  "Tb": 97500,
+  "Tc": 64500,
+  "Te": 78000,
+  "Th": 135000,
+  "Ti": 33000,
+  "Tl": 121500,
+  "Tm": 103500,
+  "U": 138000,
+  "V": 34500,
+  "W": 111000,
+  "Xe": 81000,
+  "Y": 58500,
+  "Yb": 105000,
+  "Zn": 45000,
+  "Zr": 60000
+ },
+ "note": "policy tables of paw.py resolved per dataset; see freeze_paw_recipe.py",
+ "upaw": {
+  "Al/lda": {
+   "extra_l": 1,
+   "local_shift": 5.0
+  },
+  "Ar/lda": {
+   "energy_offset": 1.5,
+   "extra_l": 1
+  },
+  "Ce/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     1.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Cl/lda": {
+   "extra_l": 1
+  },
+  "Cr/lda": {
+   "energy_offset": 2.0,
+   "extra_l": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "r_cut": {
+    "0": 1.819,
+    "1": 1.819,
+    "2": 1.062
+   },
+   "semicore_subshells": [
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     1
+    ]
+   ]
+  },
+  "Dy/lda": {
+   "local_shift": 20.0,
+   "reference_configuration": [
+    [
+     4,
+     3,
+     9.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Er/lda": {
+   "local_shift": 20.0,
+   "reference_configuration": [
+    [
+     4,
+     3,
+     11.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Eu/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     6.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Fr/lda": {
+   "energy_offset": 2.0,
+   "extra_l": 2,
+   "local_shift": 8.0,
+   "n_bessel": 10,
+   "r_cut": {
+    "0": 2.9,
+    "1": 2.9
+   },
+   "semicore_subshells": [
+    [
+     6,
+     0
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  },
+  "Gd/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     7.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ho/lda": {
+   "local_shift": 20.0,
+   "reference_configuration": [
+    [
+     4,
+     3,
+     10.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "I/lda": {
+   "extra_l": 1
+  },
+  "Nd/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     3.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "P/lda": {
+   "extra_l": 1
+  },
+  "Pd/lda": {
+   "energy_offset": 2.0,
+   "extra_l": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "r_cut": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 1.4
+   },
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Pm/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     4.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Pr/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     2.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ra/lda": {
+   "energy_offset": 2.0
+  },
+  "Rh/lda": {
+   "energy_offset": 2.0,
+   "extra_l": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "r_cut": {
+    "0": 1.768,
+    "1": 1.768,
+    "2": 1.473
+   },
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "Ru/lda": {
+   "energy_offset": 2.0,
+   "extra_l": 1,
+   "local_shift": 0.0,
+   "n_bessel": 8,
+   "r_cut": {
+    "0": 1.829,
+    "1": 1.829,
+    "2": 1.558
+   },
+   "semicore_subshells": [
+    [
+     4,
+     0
+    ],
+    [
+     4,
+     1
+    ]
+   ]
+  },
+  "S/lda": {
+   "extra_l": 1
+  },
+  "Si/lda": {
+   "extra_l": 1
+  },
+  "Sm/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     5.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Ta/lda": {
+   "energy_offset": 0.6,
+   "local_shift": 10.0
+  },
+  "Tb/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     8.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Te/lda": {
+   "extra_l": 1
+  },
+  "Tm/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     12.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  },
+  "Xe/lda": {
+   "extra_l": 1
+  },
+  "Yb/lda": {
+   "reference_configuration": [
+    [
+     4,
+     3,
+     13.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ],
+    [
+     6,
+     0,
+     2.0
+    ]
+   ],
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
+  }
+ }
+}

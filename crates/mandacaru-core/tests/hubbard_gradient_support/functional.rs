@@ -1,8 +1,12 @@
 //! Stand-in +U functionals for the toy: they take `(n_up, n_down)` of one shell and return the
 //! energy and the potential `V = dE/dn = V_Hub - V_dc` per spin. They are not the production
 //! forms: the force layer takes `V` as a matrix, so any smooth functional exercises it.
-use super::{Matrix, NM};
-use mandacaru_core::quantum::C64;
+use super::Matrix;
+use mandacaru_core::{
+    models::hubbard::{evaluate, Hubbard, Spin},
+    quantum::C64,
+    Context,
+};
 
 #[derive(Clone, Copy)]
 pub enum Functional {
@@ -20,6 +24,9 @@ pub enum Functional {
         b: f64,
         q: f64,
     },
+    /// The production form of `models::hubbard` (Dudarev, fully localized limit), for a shell
+    /// of `2l + 1` orbitals; its `V` is complete (the double counting is inside it).
+    Production { u: f64, j: f64, l: usize },
 }
 
 pub struct Evaluation {
@@ -30,8 +37,8 @@ pub struct Evaluation {
     pub double_counting: [Matrix; 2],
 }
 
-fn identity(scale: f64) -> Matrix {
-    Matrix::identity(NM, NM) * C64::new(scale, 0.0)
+fn identity(size: usize, scale: f64) -> Matrix {
+    Matrix::identity(size, size) * C64::new(scale, 0.0)
 }
 
 fn real_trace(m: &Matrix) -> f64 {
@@ -40,6 +47,8 @@ fn real_trace(m: &Matrix) -> f64 {
 
 impl Functional {
     pub fn evaluate(&self, n: [&Matrix; 2]) -> Evaluation {
+        let size = n[0].nrows();
+        let identity = |scale: f64| identity(size, scale);
         let zero = || [identity(0.0), identity(0.0)];
         match *self {
             Functional::None => Evaluation {
@@ -57,6 +66,27 @@ impl Functional {
                     energy,
                     potential: [v(0), v(1)],
                     double_counting: [identity(-0.5 * u), identity(-0.5 * u)],
+                }
+            }
+            Functional::Production { u, j, l } => {
+                let context = Context::new(Some(1), 64 << 20).unwrap();
+                let flat = |m: &Matrix| -> Vec<C64> {
+                    (0..size)
+                        .flat_map(|a| (0..size).map(move |b| m[(a, b)]))
+                        .collect()
+                };
+                let channels = [flat(n[0]), flat(n[1])];
+                let model = Hubbard::new(u, j).unwrap();
+                let views = [channels[0].as_slice(), channels[1].as_slice()];
+                let e = evaluate(&context, &model, l, Spin::Unrestricted, &views).unwrap();
+                let potential = |s: usize| {
+                    Matrix::from_fn(size, size, |a, b| e.potentials[s].as_slice()[a * size + b])
+                };
+                Evaluation {
+                    energy: e.energy,
+                    potential: [potential(0), potential(1)],
+                    // The shift inside `V = U_eff (1/2 - n)`, as in the stand-in Dudarev.
+                    double_counting: [identity(-0.5 * (u - j)), identity(-0.5 * (u - j))],
                 }
             }
             Functional::Quartic { u, j, a, b, q } => {
