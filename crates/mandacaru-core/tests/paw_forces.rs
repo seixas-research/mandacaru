@@ -1,232 +1,25 @@
-//! Stationary PAW-LCAO forces against independently converged total energies.
+//! Analytic PAW-LCAO forces against independently converged total energies.
 //!
-//! The PAW input is a synthetic hydrogen-like dataset built here from smooth
-//! analytic radial tables, so the test needs no dataset files. It exercises
-//! the full molecular PAW engine (projectors, overlap and compensation
-//! augmentation, signed one-center Coulomb factors, local potential). Real
-//! datasets, including the closed-1s core exchange of lithium, are covered
-//! through `Mandacaru(...).get_forces()` in `test/migration/test_native_dft.py`.
+//! The PAW input is a synthetic hydrogen-like dataset built from smooth analytic
+//! radial tables, so the test needs no dataset files (the real datasets are in
+//! `paw_forces_dataset`; the per-term gates are in `paw_forces_terms`). The
+//! reference is the derivative of reconverged total energies on the same fixed
+//! grid, and the retired finite-difference expression (fixed orthonormal-frame
+//! densities, Richardson steps) kept as a test oracle.
+mod paw_forces_support;
+
 use mandacaru_core::{
-    math::{storage::Precision, SpatialGrid},
-    molecular::{MeanField, MolecularIntegrals, ScfOptions},
-    paw::molecular::{build, Arrays},
+    math::storage::Precision,
+    molecular::{MeanField, MolecularIntegrals},
     Context, Geometry, LengthUnit,
 };
-use nalgebra::{DMatrix, DVector};
-use serde_json::{json, Value};
-use std::f64::consts::PI;
+use paw_forces_support::{
+    fixed_density_derivative,
+    synthetic::{displaced, integrals, integrals_in, options, solve, Method, H2},
+};
 
 const HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM: f64 = 27.211386245988 / 0.529177210903;
-const SPACING: f64 = 0.5;
-const CELL: f64 = 14.;
-const RADIUS: f64 = 1.;
 
-fn bessel(l: usize, x: f64) -> f64 {
-    match l {
-        0 => x.sin() / x,
-        _ => x.sin() / (x * x) - x.cos() / x,
-    }
-}
-fn smooth_cutoff(r: f64, edge: f64) -> f64 {
-    if r >= edge {
-        0.
-    } else {
-        (1. - (r / edge).powi(2)).powi(3)
-    }
-}
-fn table(ctx: &Context, arrays: &mut Arrays, values: &[f64]) -> Value {
-    let key = format!("a{}", arrays.len());
-    arrays.insert(key.clone(), ctx.copy_slice(values).unwrap());
-    Value::String(key)
-}
-/// A hydrogen-like species with s and p channels, two partial waves each.
-fn species(ctx: &Context, arrays: &mut Arrays, functional: &str) -> Value {
-    let r: Vec<f64> = (1..=700).map(|k| 0.02 * k as f64).collect();
-    let n = r.len();
-    let mut channels = Vec::new();
-    for l in 0..2usize {
-        let power = |r: f64| r.powi(l as i32);
-        let ae: Vec<Vec<f64>> = vec![
-            r.iter().map(|&r| 1.5 * power(r) * (-r).exp()).collect(),
-            r.iter()
-                .map(|&r| 1.1 * power(r) * (-0.6 * r).exp())
-                .collect(),
-        ];
-        let projectors: Vec<Vec<f64>> = (0..2)
-            .map(|i| {
-                r.iter()
-                    .map(|&r| {
-                        let x = r / RADIUS;
-                        if x >= 1. {
-                            0.
-                        } else {
-                            (1.2 + 0.5 * i as f64 * x) * power(r) * (1. - x * x).powi(2)
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-        let mut wavevectors = Vec::new();
-        let mut coefficients = Vec::new();
-        for wave in &ae {
-            let q: Vec<f64> = (1..=8).map(|z| PI * z as f64 / RADIUS).collect();
-            let points: Vec<usize> = (0..n).filter(|&k| r[k] <= RADIUS && k % 2 == 0).collect();
-            let design =
-                DMatrix::from_fn(points.len(), q.len(), |a, z| bessel(l, q[z] * r[points[a]]));
-            let target = DVector::from_fn(points.len(), |a, _| wave[points[a]]);
-            let fit = design
-                .svd(true, true)
-                .solve(&target, 1e-10)
-                .unwrap()
-                .as_slice()
-                .to_vec();
-            wavevectors.push(table(ctx, arrays, &q));
-            coefficients.push(table(ctx, arrays, &fit));
-        }
-        let flat = |rows: &[Vec<f64>]| rows.iter().flatten().copied().collect::<Vec<_>>();
-        channels.push(json!({
-            "l": l,
-            "principal_n": l + 1,
-            "radius": RADIUS,
-            "occupations": if l == 0 { vec![1., 0.] } else { vec![0., 0.] },
-            "ae": table(ctx, arrays, &flat(&ae)),
-            "projectors": table(ctx, arrays, &flat(&projectors)),
-            "coupling": table(ctx, arrays, &[-0.08, -0.15, -0.15, -0.30]),
-            "overlap": table(ctx, arrays, &[0.014, 0.026, 0.026, 0.050]),
-            "vanderbilt": table(ctx, arrays, &[-0.063, -0.138, -0.125, -0.276]),
-            "wavevectors": wavevectors,
-            "wave_coefficients": coefficients,
-        }));
-    }
-    let ionic: Vec<f64> = r.iter().map(|&r| -libm::erf(r / 0.35) / r).collect();
-    let valence: Vec<f64> = r.iter().map(|&r| (-2. * r).exp() / PI).collect();
-    json!({
-        "atomic_number": 1,
-        "spin_orbit": false,
-        "frozen_subshells": [],
-        "semicore_subshells": [],
-        "r": table(ctx, arrays, &r),
-        "ionic": table(ctx, arrays, &ionic),
-        "core": table(ctx, arrays, &vec![0.; n]),
-        "valence": table(ctx, arrays, &valence),
-        "xc_core": table(ctx, arrays, &vec![0.; n]),
-        "charge": 1.0,
-        "local_radius": 0.9,
-        "compensation_radius": 1.0,
-        "functional": functional,
-        "one_center_energy": 0.002,
-        "relativistic_exchange": false,
-        "channels": channels,
-    })
-}
-fn integrals(ctx: &Context, positions: &[[f64; 3]], functional: &str) -> MolecularIntegrals {
-    integrals_in(ctx, positions, functional, Precision::Float64)
-}
-fn integrals_in(
-    ctx: &Context,
-    positions: &[[f64; 3]],
-    functional: &str,
-    precision: Precision,
-) -> MolecularIntegrals {
-    let geometry = Geometry::new(
-        vec![1; positions.len()],
-        positions.to_vec(),
-        [[CELL, 0., 0.], [0., CELL, 0.], [0., 0., CELL]],
-        [false; 3],
-        LengthUnit::Bohr,
-    )
-    .unwrap();
-    let grid = SpatialGrid::from_geometry(&geometry, [SPACING; 3], false, false).unwrap();
-    let mut arrays = Arrays::new();
-    let species = species(ctx, &mut arrays, functional);
-    let mut basis = Vec::new();
-    let radii: Vec<f64> = (0..=350).map(|k| 0.02 * k as f64).collect();
-    let tables: Vec<(usize, Value, Value)> = [0usize, 1]
-        .into_iter()
-        .map(|l| {
-            let values: Vec<f64> = radii
-                .iter()
-                .map(|&r| r.powi(l as i32) * (-1.1 * r).exp() * smooth_cutoff(r, 7.))
-                .collect();
-            (
-                l,
-                table(ctx, &mut arrays, &radii),
-                table(ctx, &mut arrays, &values),
-            )
-        })
-        .collect();
-    // The s function on every atom shares one table; the p set is added so
-    // that the basis can polarize, which the forces need.
-    for atom in 0..positions.len() {
-        for (l, r, values) in &tables {
-            for m in -(*l as i32)..=*l as i32 {
-                basis.push(json!({"atom": atom, "l": l, "m": m, "r": r, "values": values}));
-            }
-        }
-    }
-    // Radial keys are consumed on first use; later atoms hit the value cache.
-    let metadata = json!({
-        "format": "molecular-paw-input",
-        "version": 1,
-        "length_unit": "bohr",
-        "energy_unit": "Ha",
-        "projector_basis": "dual",
-        "atoms": vec![0; positions.len()],
-        "species": [species],
-        "basis": basis,
-    });
-    build(
-        ctx,
-        geometry,
-        grid,
-        &metadata.to_string(),
-        arrays,
-        "spectral",
-        1e-12,
-        precision,
-    )
-    .unwrap()
-}
-fn options() -> ScfOptions {
-    ScfOptions {
-        tolerance: 1e-12,
-        max_iterations: 400,
-        ..Default::default()
-    }
-}
-#[derive(Clone, Copy)]
-enum Method {
-    Hf(&'static str),
-    Ks(&'static str),
-}
-fn solve(integrals: &MolecularIntegrals, method: Method, particles: [usize; 2]) -> MeanField {
-    let state = match method {
-        Method::Hf(kind) => integrals.mean_field(kind, particles, &options()).unwrap(),
-        Method::Ks(name) => integrals
-            .kohn_sham(name, particles, particles[0] != particles[1], &options())
-            .unwrap(),
-    };
-    assert!(state.converged, "SCF did not converge");
-    state
-}
-fn displaced(
-    base: &MolecularIntegrals,
-    atom: usize,
-    axis: usize,
-    delta: f64,
-) -> MolecularIntegrals {
-    let mut positions = base.geometry.positions().to_vec();
-    positions[atom][axis] += delta;
-    let geometry = Geometry::new(
-        base.geometry.numbers().to_vec(),
-        positions,
-        *base.geometry.cell(),
-        base.geometry.pbc(),
-        LengthUnit::Bohr,
-    )
-    .unwrap();
-    base.at_geometry(geometry).unwrap()
-}
 /// Richardson-extrapolated derivative of independently converged total
 /// energies on the same fixed grid, in Hartree per Bohr.
 fn energy_derivative(
@@ -245,8 +38,9 @@ fn energy_derivative(
     let fine = (energy(0.5 * h) - energy(-0.5 * h)) / h;
     (4. * fine - coarse) / 3.
 }
-/// Largest |F_stationary - F_finite_difference| in eV/Angstrom over the
-/// listed components; the measured value is printed for the record.
+/// Largest |F_analytic - F_reference| in eV/Angstrom over the listed
+/// components, for the reconverged energies and for the retired fixed-density
+/// finite difference; both are printed for the record.
 fn check(
     label: &str,
     base: &MolecularIntegrals,
@@ -258,23 +52,32 @@ fn check(
     let state = solve(base, method, particles);
     let gradient = base.gradient(&state).unwrap();
     assert!(gradient.hellmann_feynman.is_none() && gradient.pulay.is_none());
-    assert_eq!(gradient.step, Some(1e-3));
-    let mut worst = 0f64;
+    assert_eq!(gradient.scheme, "analytic");
+    let to_ev = HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM;
+    let (mut worst, mut worst_retired) = (0f64, 0f64);
     for &(atom, axis) in components {
         let reference = energy_derivative(base, method, particles, atom, axis);
+        let (retired, _) = fixed_density_derivative(base, &state, atom, axis);
         let analytic = gradient.total.as_slice()[3 * atom + axis];
-        worst = worst.max((analytic - reference).abs() * HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM);
+        worst = worst.max((analytic - reference).abs() * to_ev);
+        worst_retired = worst_retired.max((analytic - retired).abs() * to_ev);
     }
     println!(
-        "{label}: max |F - F_fd| = {worst:.3e} eV/A, step estimate {:.2e} Ha/Bohr, max |F| = {:.4} eV/A",
-        gradient.estimate.unwrap(),
-        gradient.total.as_slice().iter().fold(0f64, |a, v| a.max(v.abs()))
-            * HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM
+        "{label}: max |F - F_scf| = {worst:.3e} eV/A, max |F - F_retired| = {worst_retired:.3e} eV/A, \
+         stationarity {:.2e}, max |F| = {:.4} eV/A",
+        gradient.stationarity.unwrap(),
+        gradient.total.as_slice().iter().fold(0f64, |a, v| a.max(v.abs())) * to_ev
     );
-    assert!(worst < tolerance_ev, "{label}: {worst:.3e} eV/A");
+    assert!(
+        worst.is_finite() && worst < tolerance_ev,
+        "{label}: {worst:.3e} eV/A"
+    );
+    assert!(
+        worst_retired.is_finite() && worst_retired < tolerance_ev,
+        "{label} against the retired expression: {worst_retired:.3e} eV/A"
+    );
     gradient.total.as_slice().to_vec()
 }
-const H2: [[f64; 3]; 2] = [[0., 0., -0.8], [0., 0., 0.8]];
 
 #[test]
 fn closed_shell_h2_forces_follow_total_energies_for_hf_lda_and_pbe() {
@@ -375,6 +178,49 @@ fn open_shell_forces_follow_total_energies_for_uhf_and_uks() {
     assert_eq!(ctx.memory_used(), 0);
 }
 #[test]
+fn the_net_force_is_the_egg_box_ripple_the_fixed_grid_energy_has_under_a_rigid_translation() {
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    {
+        // Off the grid nodes, so the grid is not mirror symmetric: the sum of the
+        // forces is not zero, it is the slope of the energy of the whole molecule
+        // moved rigidly across the fixed grid (the egg-box ripple of this coarse
+        // grid), and that slope is what the sum must reproduce.
+        let positions = [[0.13, 0., 0.], [1.7, 0.21, 0.3], [0.4, 1.6, -0.5]];
+        let bent = integrals(&ctx, &positions, "pbe");
+        let state = solve(&bent, Method::Ks("pbe"), [2, 1]);
+        let g = bent.gradient(&state).unwrap();
+        let total = g.total.as_slice();
+        let net: Vec<f64> = (0..3)
+            .map(|a| (0..3).map(|i| total[3 * i + a]).sum())
+            .collect();
+        let largest = total.iter().fold(0f64, |a, v| a.max(v.abs()));
+        let shifted = |t: f64| {
+            let moved: Vec<[f64; 3]> = positions.iter().map(|p| [p[0] + t, p[1], p[2]]).collect();
+            let geometry = Geometry::new(
+                bent.geometry.numbers().to_vec(),
+                moved,
+                *bent.geometry.cell(),
+                bent.geometry.pbc(),
+                LengthUnit::Bohr,
+            )
+            .unwrap();
+            let x = bent.at_geometry(geometry).unwrap();
+            solve(&x, Method::Ks("pbe"), [2, 1]).electronic_energy + x.nuclear
+        };
+        let h = 1e-3;
+        let coarse = (shifted(h) - shifted(-h)) / (2. * h);
+        let fine = (shifted(0.5 * h) - shifted(-0.5 * h)) / h;
+        let ripple = (4. * fine - coarse) / 3.;
+        let ev = HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM;
+        println!(
+            "egg-box ripple along x: net force {:.4e} Ha/Bohr, dE/dt {ripple:.4e} (largest force component {:.3e}), net y {:.3e}, net z {:.3e}  [eV/A: {:.4}]",
+            net[0], largest, net[1], net[2], net[0] * ev
+        );
+        assert!((net[0] - ripple).abs() < 1e-7, "{:.3e}", net[0] - ripple);
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+#[test]
 fn bond_force_does_not_depend_on_the_cartesian_axis_of_the_bond() {
     let ctx = Context::new(Some(2), 512 << 20).unwrap();
     {
@@ -404,45 +250,65 @@ fn bond_force_does_not_depend_on_the_cartesian_axis_of_the_bond() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
+fn refusal(base: &MolecularIntegrals, state: &MeanField) -> String {
+    base.gradient(state).err().unwrap().to_string()
+}
 #[test]
 fn unsupported_states_raise_instead_of_returning_forces() {
     let ctx = Context::new(Some(2), 512 << 20).unwrap();
     {
         let base = integrals(&ctx, &H2, "lda");
         let spinor = base.mean_field("ghf", [1, 1], &options()).unwrap();
-        let error = base.gradient(&spinor).err().unwrap().to_string();
-        assert!(error.contains("spinor"), "{error}");
+        assert!(refusal(&base, &spinor).contains("spinor"));
         let mut state = solve(&base, Method::Hf("rhf"), [1, 1]);
         state.converged = false;
-        let error = base.gradient(&state).err().unwrap().to_string();
-        assert!(error.contains("converged"), "{error}");
+        assert!(refusal(&base, &state).contains("converged"));
         // Nonlocal correlation has no PAW force: the functional is refused by name.
         let mut state = solve(&base, Method::Ks("pbe"), [1, 1]);
         state.functional = Some("pbe+rvv10".into());
-        let error = base.gradient(&state).err().unwrap().to_string();
-        assert!(error.contains("pbe+rvv10"), "{error}");
-        // The screened exchange has a PAW force now (the HSE06 stream dropped the functional
-        // guard), so a PBE state relabeled "hse06" is not refused for its functional. It is
-        // refused because it does not reproduce its energy under the hybrid operator: a
-        // gradient is never returned for a state that was not computed with these integrals.
+        assert!(refusal(&base, &state).contains("pbe+rvv10"));
+        // A PBE state relabeled as the screened hybrid is not the stationary
+        // state of the hybrid operator: no gradient is returned for it.
         let mut relabeled = solve(&base, Method::Ks("pbe"), [1, 1]);
         relabeled.functional = Some("hse06".into());
-        let error = base.gradient(&relabeled).err().unwrap().to_string();
-        assert!(
-            error.contains("does not reproduce its energy")
-                && error.contains("not computed with them"),
-            "{error}"
-        );
-        // Float32 samples cannot carry a finite difference.
-        let float32 = integrals_in(&ctx, &H2, "lda", Precision::Float32);
-        let good = solve(&base, Method::Hf("rhf"), [1, 1]);
-        let error = float32.gradient(&good).err().unwrap().to_string();
-        assert!(error.contains("float64"), "{error}");
-        // A state from other integrals does not reproduce its energy here.
+        assert!(refusal(&base, &relabeled).contains("not computed with them"));
+        // A state from other integrals is not stationary on these ones.
         let other = integrals(&ctx, &[[0., 0., -1.2], [0., 0., 1.2]], "lda");
         let foreign = solve(&other, Method::Hf("rhf"), [1, 1]);
-        let error = base.gradient(&foreign).err().unwrap().to_string();
-        assert!(error.contains("not computed with them"), "{error}");
+        assert!(refusal(&base, &foreign).contains("not computed with them"));
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+#[test]
+fn a_float32_state_has_an_analytic_force_at_its_own_floor() {
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    {
+        let reference = integrals(&ctx, &H2, "pbe");
+        let float32 = integrals_in(&ctx, &H2, "pbe", Precision::Float32);
+        let g64 = reference
+            .gradient(&solve(&reference, Method::Ks("pbe"), [1, 1]))
+            .unwrap();
+        let state32 = {
+            let mut o = options();
+            o.tolerance = 1e-6;
+            float32.kohn_sham("pbe", [1, 1], false, &o).unwrap()
+        };
+        assert!(state32.converged);
+        let g32 = float32.gradient(&state32).unwrap();
+        let to_ev = HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM;
+        let worst = g64
+            .total
+            .as_slice()
+            .iter()
+            .zip(g32.total.as_slice())
+            .fold(0f64, |a, (x, y)| a.max((x - y).abs()))
+            * to_ev;
+        println!(
+            "float32 against float64 force: {worst:.3e} eV/A, float32 stationarity {:.2e}",
+            g32.stationarity.unwrap()
+        );
+        // Measured 5.0e-6 eV/A with a float32 stationarity of 1.0e-7; the gate is 100 times the force.
+        assert!(worst < 5e-4, "{worst:.3e} eV/A");
     }
     assert_eq!(ctx.memory_used(), 0);
 }

@@ -1,6 +1,6 @@
 //! Bounded tiled projection of a local field into a real orbital basis.
 use super::gemm::{self, MatrixMut, MatrixRef};
-use super::storage::Sample;
+use super::storage::{ComplexTiles, Sample, TILE};
 use crate::{finite, product, Buffer, Context, Error, Reservation, Result};
 use nalgebra::DMatrix;
 use num_complex::Complex64 as C64;
@@ -169,12 +169,15 @@ impl RealWorkspace {
 }
 
 /// Local scalar-field projection into complex Bloch orbitals. Real GEMMs
-/// accumulate both components without allocating a grid-sized pair tensor.
-pub struct ComplexProjector<'a> {
-    samples: &'a [C64],
+/// accumulate both components without allocating a grid-sized pair tensor. The orbital stack is
+/// read one grid tile at a time ([`ComplexTiles`]), so a stack on disk is never materialized: a
+/// tile is the `orbitals x TILE` block the products consume anyway.
+pub struct ComplexProjector<'a, S: ComplexTiles + ?Sized = [C64]> {
+    samples: &'a S,
     orbitals: usize,
     points: usize,
     tile: usize,
+    staged: Buffer<C64>,
     left: Buffer<f64>,
     right: Buffer<f64>,
     real: Buffer<f64>,
@@ -182,25 +185,32 @@ pub struct ComplexProjector<'a> {
     matrix: Buffer<C64>,
     _packing: Reservation,
 }
-impl<'a> ComplexProjector<'a> {
+impl<'a> ComplexProjector<'a, [C64]> {
+    /// A projector over samples held in memory, row-major `(orbitals, points)`.
     pub fn new(ctx: &Context, samples: &'a [C64], orbitals: usize, points: usize) -> Result<Self> {
+        Self::streaming(ctx, samples, orbitals, points)
+    }
+}
+impl<'a, S: ComplexTiles + ?Sized> ComplexProjector<'a, S> {
+    /// A projector over any tiled stack, row-major `(orbitals, points)`: resident or on disk.
+    pub fn streaming(ctx: &Context, samples: &'a S, orbitals: usize, points: usize) -> Result<Self> {
         if orbitals == 0
             || points == 0
             || samples.len() != product(&[orbitals, points])?
-            || samples
-                .iter()
-                .any(|v| !v.re.is_finite() || !v.im.is_finite())
+            || !samples.finite()
         {
             return Err(Error::Invalid(
                 "complex orbital samples have inconsistent dimensions or values".into(),
             ));
         }
-        let tile = points.min(2048);
+        let tile = points.min(TILE);
+        let staged = samples.scratch_len(orbitals, tile);
         Ok(Self {
             samples,
             orbitals,
             points,
             tile,
+            staged: ctx.allocate(staged)?,
             left: ctx.allocate(product(&[orbitals, tile])?)?,
             right: ctx.allocate(product(&[orbitals, tile])?)?,
             real: ctx.allocate(product(&[orbitals, orbitals])?)?,
@@ -222,6 +232,13 @@ impl<'a> ComplexProjector<'a> {
         self.imaginary.as_mut_slice().fill(0.);
         for start in (0..self.points).step_by(self.tile) {
             let count = self.tile.min(self.points - start);
+            let tile = self.samples.tile(
+                m,
+                self.points,
+                start,
+                count,
+                &mut self.staged.as_mut_slice()[..],
+            )?;
             for (left_imag, right_imag, imaginary, sign) in [
                 (false, false, false, 1.),
                 (true, true, false, 1.),
@@ -229,8 +246,9 @@ impl<'a> ComplexProjector<'a> {
                 (true, false, true, -1.),
             ] {
                 for a in 0..m {
+                    let row = tile.row(a);
                     for k in 0..count {
-                        let sample = self.samples[a * self.points + start + k];
+                        let sample = row[k];
                         self.left.as_mut_slice()[k * m + a] =
                             if left_imag { sample.im } else { sample.re };
                         self.right.as_mut_slice()[a * self.tile + k] =
@@ -281,15 +299,25 @@ pub fn hermitian_density(
     matrix: &DMatrix<C64>,
     points: usize,
 ) -> Result<Buffer<f64>> {
+    hermitian_density_tiles(ctx, samples, matrix, points)
+}
+
+/// [`hermitian_density`] over a tiled stack: the samples are read one tile at a time (a stack on
+/// disk is never materialized). Each tile runs only the products its own values need: a tile of
+/// real samples skips the imaginary ones, which add exact zeros to the same sums.
+pub fn hermitian_density_tiles<S: ComplexTiles + ?Sized>(
+    ctx: &Context,
+    samples: &S,
+    matrix: &DMatrix<C64>,
+    points: usize,
+) -> Result<Buffer<f64>> {
     let m = matrix.nrows();
     if m == 0
         || matrix.ncols() != m
         || points == 0
         || samples.len() != product(&[m, points])?
-        || samples
-            .iter()
-            .chain(matrix.iter())
-            .any(|v| !v.re.is_finite() || !v.im.is_finite())
+        || !samples.finite()
+        || matrix.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
     {
         return Err(Error::Invalid(
             "complex density projection has invalid dimensions or values".into(),
@@ -303,7 +331,8 @@ pub fn hermitian_density(
             "grid density needs a Hermitian matrix".into(),
         ));
     }
-    let tile = points.min(2048);
+    let tile = points.min(TILE);
+    let mut staged = ctx.allocate::<C64>(samples.scratch_len(m, tile))?;
     let mut x = ctx.allocate::<f64>(product(&[m, tile])?)?;
     let mut y = ctx.allocate::<f64>(product(&[m, tile])?)?;
     let mut work = ctx.allocate::<f64>(product(&[m, tile])?)?;
@@ -316,14 +345,16 @@ pub fn hermitian_density(
         }
     }
     let imaginary_matrix = b.as_slice().iter().any(|v| *v != 0.);
-    let imaginary_samples = samples.iter().any(|v| v.im != 0.);
     let _packing = ctx.reserve(product(&[m, tile, 16])?)?;
     let mut density = ctx.allocate::<f64>(points)?;
     for start in (0..points).step_by(tile) {
         let count = tile.min(points - start);
+        let block = samples.tile(m, points, start, count, staged.as_mut_slice())?;
+        let mut imaginary_samples = false;
         for j in 0..count {
             for i in 0..m {
-                let value = samples[i * points + start + j];
+                let value = block.row(i)[j];
+                imaginary_samples |= value.im != 0.;
                 x.as_mut_slice()[i + j * m] = value.re;
                 y.as_mut_slice()[i + j * m] = value.im;
             }

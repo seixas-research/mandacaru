@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 use crate::paw::invalid;
 use crate::{Buffer, Reservation, Result};
 
-pub use files::{tree_cost, WriteSpec, TREE_BYTES_PER_MEMBER, TREE_BYTES_PER_VALUE};
+pub use files::{tree_cost, Parts, WriteSpec, TREE_BYTES_PER_MEMBER, TREE_BYTES_PER_VALUE};
 pub use values::LocalPotential;
 
 /// `format` of every dataset file.
@@ -115,6 +115,10 @@ pub struct Nlcc {
 }
 
 /// Generation defects, keyed by angular momentum.
+///
+/// `missing` and `branch_ghosts` are keys of the native generator (`ghosts="flag"` could not
+/// say these before): a file written earlier lacks them, and they are written only when
+/// non-empty, so every older record round-trips byte for byte.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Defects {
     pub ghosts: BTreeMap<u32, f64>,
@@ -122,6 +126,19 @@ pub struct Defects {
     pub residuals: BTreeMap<u32, f64>,
     pub s_miss: Option<f64>,
     pub unprojected: BTreeMap<u32, f64>,
+    /// `{l: nearest smooth level - reference}` (Hartree) of the channels that do not bind an
+    /// occupied bound reference: a physical state the dataset lacks.
+    pub missing: BTreeMap<u32, f64>,
+    /// `{"l:kappa": eps_0 - eps_ref}` (Hartree) of the `j` branches of a fully relativistic
+    /// dataset that hold a ghost state, e.g. `"1:-2"` for the `j = 3/2` p branch.
+    pub branch_ghosts: BTreeMap<String, f64>,
+}
+
+impl Defects {
+    /// The key of a `j` branch in [`Defects::branch_ghosts`].
+    pub fn branch_key(l: usize, kappa: i32) -> String {
+        format!("{l}:{kappa}")
+    }
 }
 
 /// One angular-momentum channel. The radial tables are on the dataset's grid.
@@ -170,10 +187,10 @@ pub struct SpinOrbit {
 
 /// A PAW dataset: scalars, the radial tables and the per-channel matrices.
 ///
-/// Every field is public so a consumer reads what it needs without a copy;
-/// construct one only through [`PawDataset::read`]. The memory of the tables
-/// and arrays is charged to the `Context` that read it and released when the
-/// record is dropped.
+/// Every field is public so a consumer reads what it needs without a copy. A record comes from
+/// [`PawDataset::read`] (a file) or from the generator (`paw::generate`), which fills the same
+/// fields; neither is built field by field elsewhere. The memory of the tables and arrays is
+/// charged to the `Context` that read or generated it and released when the record is dropped.
 #[derive(Debug)]
 pub struct PawDataset {
     pub family: Family,

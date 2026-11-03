@@ -426,9 +426,8 @@ def core_orbitals(dataset) -> list:
     ``dataset.r``.
 
     The files store the core *density*, not its orbitals, so the reference
-    atom is solved again from the dataset's record
-    (:func:`~.partial_waves.reference_atom`) unless the dataset still carries
-    the one it was generated from.  The core subshells are the generator's:
+    atom is solved again from the dataset's record (the engine's
+    ``paw::diagnose::reference``).  The core subshells are the generator's:
     the aufbau split of that atom with the dataset's ``frozen_subshells``
     moved into the core and its ``semicore_subshells`` out of it.  Cached on
     the dataset and, for a dataset read from a file, per file
@@ -443,14 +442,14 @@ def core_orbitals(dataset) -> list:
     if key is not None and key in _CORE_ORBITALS:
         result, error = _CORE_ORBITALS[key]
     else:
-        from .dataset import _valence_configuration
+        from ..basis._config import valence_subshells
+        from .record import record_of
 
-        atom = getattr(dataset, "atom", None)
-        if atom is None or not getattr(atom, "orbitals", None):
-            from .partial_waves import reference_atom
-            atom = reference_atom(dataset)
-        valence, core = _valence_configuration(
-            int(dataset.atomic_number), configuration=atom.occupations)
+        atom = _native.paw_reference_atom(context(), *record_of(dataset))
+        occupied = {k: v for k, v in atom["occupations"].items() if v > 0}
+        shells = valence_subshells(int(dataset.atomic_number), configuration=occupied)
+        valence = {k: v for k, v in occupied.items() if k in shells}
+        core = {k: v for k, v in occupied.items() if k not in valence}
         for orbital in dataset.frozen_subshells or ():
             orbital = (int(orbital[0]), int(orbital[1]))
             core[orbital] = valence.pop(orbital)
@@ -460,12 +459,12 @@ def core_orbitals(dataset) -> list:
         subshells = sorted(core.items())
         radial, error = _native.paw_core_orbitals(
             context(), np.ascontiguousarray(dataset.r, dtype=float),
-            np.ascontiguousarray(atom.r, dtype=float),
+            np.ascontiguousarray(atom["r"], dtype=float),
             [int(l) for (_n, l), _f in subshells],
             [float(f) for _orbital, f in subshells],
             np.ascontiguousarray(
-                [atom.orbitals[orbital] for orbital, _f in subshells],
-                dtype=float).reshape(len(subshells), np.size(atom.r)),
+                [atom["orbitals"][orbital] for orbital, _f in subshells],
+                dtype=float).reshape(len(subshells), np.size(atom["r"])),
             np.ascontiguousarray(dataset.core_density, dtype=float))
         result = [(int(n), int(l), float(f), radial[i])
                   for i, ((n, l), f) in enumerate(subshells)]
@@ -508,8 +507,10 @@ def exact_one_center_terms(dataset, basis: str = "raw") -> dict:
     in the functional, relativistic exchange and core correction the dataset
     was unscreened with (all-electron core plus valence density, smooth
     valence plus the smooth core of the nonlinear core correction).  The
-    potentials are those of the atom solver's radial scheme (derivatives on
-    subset nodes, splined back), the scheme the datasets were generated with.
+    potentials are those of the variational radial scheme (the derivative of the
+    radial energy functional, the scheme of the molecular PAW path); a PBE dataset
+    generated before that scheme was the production one differs from it by the
+    measured scheme difference (``PAW_MIGRATION_LOG.md``, "G0 / XC-SW").
 
     ``K``: the frozen core's exchange, one spin's worth,
     :math:`K_{ij} = -\sum_c f_c\,(2l_c+1)\sum_L

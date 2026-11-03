@@ -126,3 +126,34 @@ fn the_local_potential_reproduces_a_cubic_exactly_and_has_the_ionic_tail() {
     let tiny = ds.local_potential(&Context::new(Some(1), 1 << 12).unwrap());
     assert!(matches!(tiny, Err(Error::Budget { .. })), "{tiny:?}");
 }
+
+#[test]
+fn a_potential_built_from_the_bare_table_is_the_records_own() {
+    use mandacaru_core::paw::record::LocalPotential;
+    let ctx = context();
+    let recipe = mandacaru_core::paw::generate::recipe::Recipe::for_dataset(
+        "H",
+        "lda",
+        mandacaru_core::models::relativity::Treatment::Scalar,
+    )
+    .unwrap();
+    let ds = mandacaru_core::paw::generate::generate(&ctx, &recipe)
+        .unwrap()
+        .dataset;
+    let (own, bare) = (
+        ds.local_potential(&ctx).unwrap(),
+        LocalPotential::from_table(
+            &ctx,
+            ds.r.as_slice(),
+            ds.v_local.as_slice(),
+            ds.valence_charge,
+        )
+        .unwrap(),
+    );
+    let last = *ds.r.as_slice().last().unwrap();
+    for radius in [0.5 * ds.r.as_slice()[0], 0.37, 1.9, last, 2. * last] {
+        assert_eq!(own.value(radius).to_bits(), bare.value(radius).to_bits());
+        assert_eq!(own.slope(radius).to_bits(), bare.slope(radius).to_bits());
+    }
+    assert!(LocalPotential::from_table(&ctx, &[], &[], 1.0).is_err());
+}

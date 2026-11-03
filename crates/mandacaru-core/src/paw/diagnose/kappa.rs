@@ -180,7 +180,13 @@ pub fn recovery_mismatch(ds: &PawDataset) -> f64 {
             for (d, a) in difference.iter().zip(&average) {
                 let from_difference = sign * d / factor;
                 let from_average = a * total / weight;
-                worst = worst.max((from_difference - from_average).abs() / scale);
+                // a NaN disagreement stays NaN: `f64::max` would drop it
+                let miss = (from_difference - from_average).abs() / scale;
+                worst = if worst.is_nan() || miss.is_nan() {
+                    f64::NAN
+                } else {
+                    worst.max(miss)
+                };
             }
         }
     }

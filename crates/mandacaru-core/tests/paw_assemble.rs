@@ -15,8 +15,9 @@
 mod paw_assemble_support;
 
 use mandacaru_core::math::radial::local_derivatives;
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::generate::core::pseudize_density;
-use mandacaru_core::paw::generate::energies::{hartree_energy, xc_energies, AtomSolver};
+use mandacaru_core::paw::generate::energies::{hartree_energy, xc_energies};
 use mandacaru_core::Context;
 use paw_assemble_support::call::{call, outputs};
 use paw_assemble_support::{datasets, directory, group_of, Frozen, Reference};
@@ -27,8 +28,10 @@ const GATE: f64 = 1e-12;
 /// A density below which the PBE exchange-correlation tables of the freeze and of the Rust atom
 /// scheme differ at the level of the exchange floor, not of round-off.
 const TAIL_DENSITY: f64 = 1e-9;
-/// `(lowest density, highest density, absolute bound in Hartree)` of the three regions of
-/// the PBE tail, measured on pbe-sr {O, Cu, Ce} and pbe-fr Si (`PAW_MIGRATION_LOG.md`, A2): the
+/// (XC-SW: this belongs to the legacy seam alone, the Python and the Rust implementations of
+/// the atom scheme part at a density at the exchange floor; the production scheme has no such
+/// band, `xc_scheme.rs`.) `(lowest density, highest density, absolute bound in Hartree)` of
+/// the three regions of the PBE tail, measured on pbe-sr {O, Cu, Ce} and pbe-fr Si (`PAW_MIGRATION_LOG.md`, A2): the
 /// potential just above the Rust exchange floor (3.9e-9, Ce), in the band between the Python
 /// threshold on the total density and the Rust one on the spin density (9.96e-5, the
 /// uniform-gas exchange against the full PBE one) and below it (1.6e-9).

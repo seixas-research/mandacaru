@@ -13,14 +13,14 @@ use super::{
     core::{
         augmented_density, core_density, pseudize_density, valence_sums, ChannelWaves, CoreShell,
     },
-    energies::{one_center_energies, EnergyDensities, XcSource},
+    energies::{one_center_energies, EnergyDensities},
     recipe::{Nlcc as NlccChoice, Recipe},
     reference::ChannelReference,
     shells::{orbital, Shells},
 };
 use crate::{
     math::radial::integrate,
-    models::{atom::Atom, spherical},
+    models::{atom::Atom, spherical, xc_scheme::XcSource},
     paw::{
         core_correction::partial_core_density,
         invalid,

@@ -15,14 +15,13 @@ mod paw_assemble_support;
 mod paw_diagnose_support;
 mod paw_generate_support;
 
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::diagnose::{
     reference::{AeLogs, AllElectron},
     view::Smooth,
     Diagnosis,
 };
-use mandacaru_core::paw::generate::{
-    energies::AtomSolver, generate_with_atom, reference::solve_reference,
-};
+use mandacaru_core::paw::generate::{generate_with_atom, reference::solve_reference_with};
 use paw_assemble_support::Frozen;
 use paw_diagnose_support::*;
 use paw_generate_support::{recipe_of, HEAVY, LIGHT};
@@ -54,7 +53,7 @@ fn parity(name: &str) -> (f64, f64) {
     let (checks, miss) = recorded(&frozen);
     let ctx = context();
     let recipe = recipe_of(&frozen);
-    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
     let generated = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
     let smooth = Smooth::scalar(&ctx, &generated.dataset).unwrap();
     let ae = AllElectron::new(

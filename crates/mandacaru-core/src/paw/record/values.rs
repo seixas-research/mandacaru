@@ -25,22 +25,32 @@ impl PawDataset {
     /// The local potential `v_local(r)` as a callable, built on copies of the
     /// table reserved from `ctx`.
     pub fn local_potential(&self, ctx: &Context) -> Result<LocalPotential> {
-        let knots = ctx.copy_slice(self.r.as_slice())?;
-        let values = ctx.copy_slice(self.v_local.as_slice())?;
-        Ok(LocalPotential {
-            spline: Cubic::new(ctx, knots, values)?,
-            first: self.r.as_slice()[0],
-            last: *self
-                .r
-                .as_slice()
-                .last()
-                .expect("a dataset grid is never empty"),
-            charge: self.valence_charge,
-        })
+        LocalPotential::from_table(
+            ctx,
+            self.r.as_slice(),
+            self.v_local.as_slice(),
+            self.valence_charge,
+        )
     }
 }
 
 impl LocalPotential {
+    /// The potential of a table `v(r)` (strictly increasing `r`, at least four points) whose
+    /// ionic charge is `charge`: the callable a record builds, for a caller that holds the
+    /// table without the record.
+    pub fn from_table(ctx: &Context, r: &[f64], v: &[f64], charge: f64) -> Result<Self> {
+        let (first, last) = match (r.first(), r.last()) {
+            (Some(&a), Some(&b)) => (a, b),
+            _ => return Err(crate::paw::invalid("the local potential needs a table")),
+        };
+        Ok(Self {
+            spline: Cubic::new(ctx, ctx.copy_slice(r)?, ctx.copy_slice(v)?)?,
+            first,
+            last,
+            charge,
+        })
+    }
+
     /// `v_local` at `radius` (Bohr).
     pub fn value(&self, radius: f64) -> f64 {
         if radius <= self.last {

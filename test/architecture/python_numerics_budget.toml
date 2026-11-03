@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 11321
+zero_sloc = 9527
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -87,23 +87,26 @@ zero_sloc = 11321
 "models/setup.py" = { sloc = 22, category = "hand-off" }
 "optimizers/optim.py" = { np = 3, scipy = 1, dloops = 1 }
 "pseudopotentials/__init__.py" = { sloc = 16, category = "hand-off" }
-"pseudopotentials/build_cli.py" = { np = 2, meth = 1, dloops = 3, dcomp = 1, bi = 6, arith = 1, arithmax = 1, sloc = 237, wave = "W4", dies = "2027-07-16" }
+"pseudopotentials/build_cli.py" = { meth = 1, dloops = 2, dcomp = 1, bi = 6, arith = 1, arithmax = 1, sloc = 227, wave = "W4", dies = "2027-07-16" }
 "pseudopotentials/confinement.py" = { dloops = 1, dcomp = 1, bi = 4, arith = 2, arithmax = 1, sloc = 284, wave = "W4-A-py", dies = "2027-03-26" }
 "pseudopotentials/core_correction.py" = { sloc = 30, category = "hand-off" }
-"pseudopotentials/dataset.py" = { np = 8, bi = 2, aloops = 1, arith = 3, arithmax = 2, sloc = 69, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/dataset.py" = { sloc = 35, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/defects.py" = { sloc = 91, category = "validation" }
+"pseudopotentials/diagnostics.py" = { sloc = 75, category = "hand-off" }
 "pseudopotentials/diffuse.py" = { math = 1, dloops = 3, dcomp = 1, bi = 13, aloops = 3, acomp = 2, arith = 10, arithmax = 4, sloc = 342, wave = "W4", dies = "2027-07-16" }
 "pseudopotentials/environment.py" = { sloc = 189, category = "hand-off" }
 "pseudopotentials/families.py" = { sloc = 173, category = "validation" }
-"pseudopotentials/io.py" = { sloc = 227, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/generation.py" = { sloc = 125, category = "validation" }
+"pseudopotentials/io.py" = { sloc = 136, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/library_cli.py" = { acomp = 1, arith = 2, arithmax = 1, sloc = 180, category = "hand-off" }
 "pseudopotentials/local_split.py" = { bi = 1, sloc = 57, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/multipoles.py" = { bi = 1, sloc = 66, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/native_context.py" = { sloc = 6, category = "hand-off" }
 "pseudopotentials/onecenter.py" = { np = 1, dloops = 4, dcomp = 1, bi = 9, sloc = 264, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/orbitals.py" = { dloops = 2, bi = 5, arith = 1, arithmax = 1, sloc = 294, wave = "3b", dies = "2027-05-07" }
-"pseudopotentials/partial_waves.py" = { dloops = 7, dcomp = 10, bi = 37, aloops = 1, acomp = 2, arith = 12, arithmax = 3, sloc = 737, wave = "3a", dies = "2027-03-26" }
-"pseudopotentials/paw.py" = { np = 91, scipy = 8, matmul = 18, meth = 9, dloops = 21, dcomp = 9, bi = 31, aloops = 10, acomp = 17, arith = 232, arithmax = 31, sloc = 1813, wave = "3a/3b", dies = "2027-05-07" }
+"pseudopotentials/paw.py" = { np = 14, matmul = 6, dloops = 9, dcomp = 3, bi = 8, aloops = 3, acomp = 1, arith = 17, arithmax = 16, sloc = 403, wave = "3a/3b", dies = "2027-05-07" }
 "pseudopotentials/periodic_paw.py" = { np = 167, scipy = 4, matmul = 37, meth = 27, dloops = 45, dcomp = 9, bi = 29, aloops = 12, acomp = 4, arith = 217, arithmax = 16, sloc = 1391, wave = "3b", dies = "2027-05-07" }
+"pseudopotentials/record.py" = { sloc = 190, category = "hand-off" }
 "results.py" = { np = 1 }
 "specifications.py" = { math = 2 }
 "utils/banner.py" = { dyn = 3 }
@@ -194,17 +197,49 @@ reason = "sorted family and alias names for messages"
 
 [[exception]]
 module = "pseudopotentials/io.py"
-function = "_load_pseudopotential_cached"
-bi = 1
-category = "validation"
-reason = "sorts the table families for the error text"
-
-[[exception]]
-module = "pseudopotentials/io.py"
 function = "available_elements"
 bi = 1
 category = "hand-off"
 reason = "sorted list of the elements found on disk"
+
+[[exception]]
+module = "pseudopotentials/defects.py"
+function = "defect_message"
+dcomp = 6
+bi = 6
+category = "log-table"
+reason = "sorted per-l clauses of the warning text"
+
+[[exception]]
+module = "pseudopotentials/diagnostics.py"
+function = "report_paw"
+dloops = 1
+dcomp = 4
+bi = 3
+category = "log-table"
+reason = "the printed summary of a dataset's checks"
+
+[[exception]]
+module = "pseudopotentials/generation.py"
+function = "generate_upaw"
+bi = 1
+category = "validation"
+reason = "sorts the unexpected keyword names for the error text"
+
+[[exception]]
+module = "pseudopotentials/record.py"
+function = "_channel"
+bi = 1
+category = "hand-off"
+reason = "counts the partial waves a record holds"
+
+[[exception]]
+module = "pseudopotentials/record.py"
+function = "record_of"
+dloops = 1
+bi = 1
+category = "hand-off"
+reason = "numbers the partial waves of a dataset view into file columns"
 
 [[exception]]
 module = "pseudopotentials/library_cli.py"

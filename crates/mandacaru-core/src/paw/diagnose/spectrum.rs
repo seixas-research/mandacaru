@@ -28,9 +28,12 @@ pub const EXTENT_BOUNDS: (f64, f64) = (12., 24.);
 pub const BRANCH_SPACING: f64 = 0.004;
 pub const BRANCH_REACH: f64 = 22.;
 
-/// The nodes `h, 2h, ..., floor(r_max / h) h` (`np.arange(1, int(r_max / h) + 1) * h`).
-pub fn nodes(r_max: f64, h: f64) -> Vec<f64> {
-    (1..=(r_max / h) as usize).map(|i| i as f64 * h).collect()
+/// The nodes `radial_step, 2 radial_step, ..., floor(r_max / radial_step) radial_step` of the
+/// radial box (`np.arange(1, int(r_max / step) + 1) * step`).
+pub fn nodes(r_max: f64, radial_step: f64) -> Vec<f64> {
+    (1..=(r_max / radial_step) as usize)
+        .map(|i| i as f64 * radial_step)
+        .collect()
 }
 
 /// The channel's splines on the dataset's table, ready to be evaluated on any uniform grid.

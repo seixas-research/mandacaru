@@ -515,14 +515,19 @@ BOUND_LEVEL = -1e-3
 _LEVEL_CACHE: dict = {}
 
 
+def _spectrum_box(pp, l: int) -> float:
+    """The radius of the box channel ``l``'s spectrum is solved in (Bohr): the engine's rule
+    (``paw::diagnose::spectrum::extent``), asked of the dataset's record."""
+    from .record import record_of
+    return float(_native.paw_spectrum_box(_context(), *record_of(pp), int(l)))
+
+
 def _lowest_level(pp, l: int) -> float:
     entry = _LEVEL_CACHE.get((id(pp), int(l)))
     if entry is None or entry[0] is not pp:
         from .confinement import channel_arrays
-        from .partial_waves import _spectrum_extent
         level = _native.pao_bound_level(
-            _context(), *channel_arrays(pp, int(l)),
-            _spectrum_extent(pp, int(l)))
+            _context(), *channel_arrays(pp, int(l)), _spectrum_box(pp, int(l)))
         entry = (pp, float(level))
         _LEVEL_CACHE[(id(pp), int(l))] = entry
     return entry[1]
@@ -532,9 +537,8 @@ def bound_radial(pp, l: int) -> np.ndarray:
     """``R(r)`` on ``pp.r`` of channel ``l``'s lowest eigenstate in the
     dataset's own operator, zero past the box it was solved in."""
     from .confinement import channel_arrays
-    from .partial_waves import _spectrum_extent
     radial, _level = _native.pao_bound_radial(
-        _context(), *channel_arrays(pp, int(l)), _spectrum_extent(pp, int(l)))
+        _context(), *channel_arrays(pp, int(l)), _spectrum_box(pp, int(l)))
     return radial
 
 

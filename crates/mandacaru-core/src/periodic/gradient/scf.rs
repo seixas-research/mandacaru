@@ -30,8 +30,9 @@ use crate::{
 };
 
 /// What this engine cannot differentiate, from the crystal itself: a meta-GGA, rVV10, float32 data,
-/// DFT+U, a hybrid without the PAW spheres its projections were built from, and a mesh that is not
-/// the whole one (space-group permutations, a nontrivial moment symmetrization). A collinear
+/// DFT+U, a hybrid without the PAW spheres its projections were built from, and a mesh reduced by
+/// space-group symmetry whose operations the snapshot does not carry ([`reduced_mesh`]; with them
+/// the engine averages the k-sum over the group, CF-6). A collinear
 /// spin-polarized crystal (`spins = 2`) and a spinor, magnetic or not, hybrid or not, are
 /// differentiated (the one-center operator the model returns carries the non-collinear remainder).
 pub fn refuse(c: &Crystal) -> Result<()> {
@@ -59,12 +60,50 @@ pub fn refuse(c: &Crystal) -> Result<()> {
         (v - C64::new(want, 0.)).norm() < 1e-12
     });
     if !c.permutations.is_empty() || !identity {
-        return no(
-            "a k mesh reduced by space-group symmetry (the force symmetrizer is not written; \
-                   use symmetry=False)",
-        );
+        reduced_mesh(c).map_err(|cause| {
+            Error::Unsupported(format!("crystal forces are not available for {cause}"))
+        })?;
     }
     Ok(())
+}
+
+/// Whether a mesh reduced by space-group operations can be differentiated: the snapshot must
+/// carry the operations (its `setup` block) to average the k-sum over. A spin-orbit crystal is
+/// not (the moment would need the spin rotation), nor is a hybrid (it needs the whole mesh).
+/// The cause names what to do.
+pub fn reduced_mesh(c: &Crystal) -> std::result::Result<(), String> {
+    if c.spinor {
+        return Err(
+            "a spin-orbit crystal on a k mesh reduced by space-group symmetry (the \
+                    magnetization would need the spin rotation of every operation; use \
+                    symmetry=False)"
+                .into(),
+        );
+    }
+    if c.screened_exchange().map_err(|e| e.to_string())?.is_some() {
+        return Err(
+            "a hybrid crystal on a k mesh reduced by space-group symmetry (a hybrid \
+                    needs the whole mesh; use symmetry=False)"
+                .into(),
+        );
+    }
+    if let Some(note) = &c.description_unavailable {
+        return Err(format!(
+            "a k mesh reduced by space-group symmetry whose symmetry operations are unavailable ({note})"
+        ));
+    }
+    match c.description.as_ref() {
+        None => Err(
+            "a k mesh reduced by space-group symmetry in a snapshot without the \
+                     'setup' block (its symmetry operations): rebuild the crystal with this \
+                     version, or use symmetry=False"
+                .into(),
+        ),
+        Some(d) if d.point_group.is_none() => Err("a k mesh reduced by space-group symmetry \
+                     whose 'setup' block lists no operations"
+            .into()),
+        Some(_) => Ok(()),
+    }
 }
 
 /// The request the engine refuses by: what the crystal is.

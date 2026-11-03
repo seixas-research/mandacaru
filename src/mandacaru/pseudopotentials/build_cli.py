@@ -7,10 +7,11 @@ r"""``mandacaru-build``: generate pseudopotential datasets from the command line
     mandacaru-build --pp UPAW --element O
     mandacaru-build --pp PAW --all --workers 7 --output staging/
 
-Dataset assembly still uses the Python PAW generators. The nonrelativistic
-LDA atom and radial eigenpair/Numerov kernels execute in the packaged Rust
-extension. Unsupported atomic models raise explicitly. This development module
-is not an installed console entry point.
+The generator (reference atom, smooth waves, projectors, one-center terms, the Dirac
+spin-orbit chain and the search that repairs a ghost state) runs in the packaged Rust
+extension; this module parses the command line, writes and checks the files and prints
+the report. Unsupported options raise explicitly. This development module is not an
+installed console entry point.
 
 A dataset is written to ``--output`` (default: the current folder, one
 subfolder per family) at the library stride.  ``--install`` writes into
@@ -21,7 +22,8 @@ calculations load; it is never the default.
 
 Each channel is checked after generation: its two lowest levels against the
 reference (a ghost state is refused or repaired, per ``--ghosts``), and with
-``--check`` the scattering phase against the all-electron atom as well.
+``--check`` the scattering phase against the all-electron atom as well, both on the file
+read back.
 
 What is released is the file, not the object in memory: it is written beside
 its final name, read back, and moved into place only when every channel's
@@ -38,6 +40,7 @@ import sys
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import chain
 
 #: ``--pp`` spellings -> family name.
 FAMILIES = {"paw": "paw-lcao", "paw-lcao": "paw-lcao",
@@ -57,24 +60,25 @@ def reload_errors(generated, loaded, levels) -> dict:
     and as read back from its file; a level that is not finite counts as
     moved.  Levels above zero are box states, whose energy follows the box
     the spectrum picks from the grid, not the dataset."""
-    import numpy as np
-
-    out = {}
-    for l in generated.channels:
-        before = np.asarray(levels(generated, l), dtype=float)
-        after = np.asarray(levels(loaded, l), dtype=float)
-        bound = ~(before >= 0.0)               # a NaN stays in, and fails
-        shift = float(np.max(np.abs(after - before)[bound], initial=0.0))
-        if not np.all(np.isfinite(after[bound])) or not (
-                shift <= RELOAD_LEVEL_TOLERANCE):
-            out[int(l)] = shift
+    out, worst = {}, {}
+    for l, before, after in chain.from_iterable(
+            ((l, a, b) for a, b in zip(levels(generated, l), levels(loaded, l)))
+            for l in generated.channels):
+        if before >= 0.0:                          # a NaN stays in, and fails
+            continue
+        gap = after - before
+        gap = gap if gap >= 0.0 else -gap
+        if gap != gap or worst.get(l, 0.0) < gap:
+            worst[l] = gap
+        if not gap <= RELOAD_LEVEL_TOLERANCE:
+            out[int(l)] = worst[l]
     return out
 
 
 def build_parser() -> argparse.ArgumentParser:
     """The ``mandacaru-build`` argument parser."""
+    from .defects import GHOST_MODES
     from .io import PSEUDO_FORMATS
-    from .partial_waves import GHOST_MODES
 
     parser = argparse.ArgumentParser(
         prog="mandacaru-build",
@@ -142,16 +146,9 @@ def _paw_dataset(family: str, output, install: bool, xc: str = "lda",
 
 
 def _generate(family: str, symbol: str, options: dict):
-    if family == "paw-lcao":
-        from .paw import generate_paw
-        return generate_paw(symbol, **options)
-    from .paw import generate_upaw
-    return generate_upaw(symbol, **options)
+    from .generation import generate_paw, generate_upaw
 
-
-def _levels_and_phase(family: str):
-    from .paw import _paw_levels, log_derivative_paw
-    return _paw_levels, log_derivative_paw
+    return (generate_paw if family == "paw-lcao" else generate_upaw)(symbol, **options)
 
 
 def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
@@ -193,21 +190,18 @@ def _limit_threads(threads: int) -> None:
 
 def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
                fmt: str, check: bool) -> tuple[bool, str]:
-    from .io import STRIDE, library_file, load_pseudopotential, \
-        save_pseudopotential
-    from .partial_waves import GhostStateWarning, ghost_errors, \
-        scattering_errors
+    from .diagnostics import diagnose, ghost_levels
+    from .io import STRIDE, library_file
+    from .record import read_dataset, write_dataset
 
     started = time.perf_counter()
-    spectrum, log_derivative = _levels_and_phase(family)
     solved: dict = {}
 
     def levels(dataset, l):
-        """``spectrum``, once per dataset and channel."""
-        key = (id(dataset), int(l))
-        if key not in solved:
-            solved[key] = spectrum(dataset, l)
-        return solved[key]
+        """The ghost-test levels of channel ``l``, once per dataset."""
+        if id(dataset) not in solved:
+            solved[id(dataset)] = ghost_levels(dataset)
+        return solved[id(dataset)][int(l)]
 
     staged = None
     try:
@@ -217,11 +211,8 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
         # Written beside its final name and read back: what is released is
         # the file (its stride and digits), so that is what is checked, and
         # it replaces nothing until it passes.
-        staged = save_pseudopotential(pp, f"{path}.new", format=fmt,
-                                      stride=STRIDE)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", GhostStateWarning)
-            loaded = load_pseudopotential(staged, format=fmt)
+        staged = write_dataset(pp, f"{path}.new", stride=STRIDE, format=fmt)
+        loaded = read_dataset(staged, warn=False)
         moved = reload_errors(pp, loaded, levels)
         if moved:
             raise RuntimeError(
@@ -229,12 +220,11 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
                 + ", ".join(f"l={l} levels moved {shift:.1e} Ha"
                             for l, shift in sorted(moved.items()))
                 + f" (tolerance {RELOAD_LEVEL_TOLERANCE:g} Ha); not written")
-        # The checks of the file, against the generation's atom.
-        loaded.atom = pp.atom
-        ghosts = ghost_errors(loaded, levels)
-        phases = scattering_errors(loaded, log_derivative) if check else {}
-        spectra = {l: [float(e) for e in levels(loaded, l)[:2]]
-                   for l in loaded.channels}
+        # The checks of the file, against the atom its record names.
+        found = diagnose(loaded)
+        ghosts = found["ghosts"]
+        phases = found["phases"] if check else {}
+        spectra = {l: levels(loaded, l)[:2] for l in loaded.channels}
         os.replace(staged, path)
         staged = None
     except Exception as error:                          # noqa: BLE001
@@ -246,10 +236,10 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
     elapsed = time.perf_counter() - started
     lines = [f"{symbol:>2}  {pp!r}"]
     if getattr(pp, "defects", None):
-        from .partial_waves import defect_message
+        from .defects import defect_message
         lines = [f"{symbol:>2}  FLAGGED  "
                  + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
-    lines.append(f"    {elapsed:.1f} s, Rust radial kernels -> {path} "
+    lines.append(f"    {elapsed:.1f} s, Rust generator -> {path} "
                  f"(read back: levels within "
                  f"{RELOAD_LEVEL_TOLERANCE:g} Ha of the generated dataset)")
     for l, channel in sorted(loaded.channels.items()):
@@ -304,7 +294,7 @@ def main(argv=None) -> int:
     print(f"mandacaru-build: {family}, {args.xc.upper()}, "
           f"relativity={relativity}, ghosts={ghosts}, "
           f"{len(symbols)} element(s), {args.workers} worker(s)")
-    print("radial kernels: packaged Rust radial kernels")
+    print("generator: packaged Rust engine")
     print(f"writing to {paw_dataset}\n", flush=True)
 
     failures = flagged = 0

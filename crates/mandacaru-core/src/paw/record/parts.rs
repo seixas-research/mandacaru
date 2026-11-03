@@ -49,6 +49,26 @@ pub(crate) fn nlcc(value: Value) -> Result<Nlcc> {
     })
 }
 
+/// `{"l:kappa": number}`: the keys are validated, not kept as free text.
+fn branch_map(value: Value) -> Result<BTreeMap<String, f64>> {
+    let what = "defects.branch_ghosts";
+    let map = object(value, what)?;
+    if map.len() > MAX_ENTRIES {
+        return Err(fail(what, format!("more than {MAX_ENTRIES} entries")));
+    }
+    map.into_iter()
+        .map(|(key, v)| {
+            let valid = key.split_once(':').is_some_and(|(l, kappa)| {
+                l.parse::<u8>().is_ok_and(|l| l <= 8) && kappa.parse::<i8>().is_ok_and(|k| k != 0)
+            });
+            if !valid {
+                return Err(fail(what, format!("{key:?} is not an \"l:kappa\" key")));
+            }
+            Ok((key.clone(), number(&v, &format!("{what}.{key}"))?))
+        })
+        .collect()
+}
+
 pub(crate) fn defects(value: Value) -> Result<Defects> {
     let what = "defects";
     let mut map = object(value, what)?;
@@ -77,6 +97,11 @@ pub(crate) fn defects(value: Value) -> Result<Defects> {
         .remove("unprojected")
         .map(|v| float_map(v, "defects.unprojected"))
         .transpose()?;
+    let missing = map
+        .remove("missing")
+        .map(|v| float_map(v, "defects.missing"))
+        .transpose()?;
+    let branch_ghosts = map.remove("branch_ghosts").map(branch_map).transpose()?;
     nothing_left(&map, what)?;
     Ok(Defects {
         ghosts,
@@ -84,6 +109,8 @@ pub(crate) fn defects(value: Value) -> Result<Defects> {
         residuals: residuals.unwrap_or_default(),
         s_miss,
         unprojected: unprojected.unwrap_or_default(),
+        missing: missing.unwrap_or_default(),
+        branch_ghosts: branch_ghosts.unwrap_or_default(),
     })
 }
 

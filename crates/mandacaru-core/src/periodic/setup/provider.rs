@@ -51,7 +51,9 @@ use crate::{
             spinor::{doubled, doubled_layout},
             Bands, Dense, Derivatives, Layout, SpinOrbit, State, Term,
         },
-        hybrid_gradient, invalid, Crystal, Options,
+        hybrid_gradient, invalid,
+        point_group::PointGroup,
+        Crystal, Options,
     },
     quantum::C64,
     Context, Error, Reservation, Result,
@@ -150,6 +152,8 @@ pub struct SetupDerivatives<'a> {
     linear: OnceCell<Vec<Vec<[C64; 3]>>>,
     constants: OnceCell<Vec<[f64; 3]>>,
     scf: Option<(&'a Crystal, Options)>,
+    /// The operations of a symmetry-reduced mesh (from the SCF crystal), averaged over by the engine.
+    point_group: Option<PointGroup>,
 }
 
 impl<'a> SetupDerivatives<'a> {
@@ -207,6 +211,7 @@ impl<'a> SetupDerivatives<'a> {
             linear: OnceCell::new(),
             constants: OnceCell::new(),
             scf: None,
+            point_group: None,
         })
     }
 
@@ -246,9 +251,21 @@ impl<'a> SetupDerivatives<'a> {
         }
         self.same_cell_and_ions(crystal)?;
         self.same_spheres(crystal)?;
+        self.point_group = crystal
+            .description
+            .as_ref()
+            .and_then(|d| d.point_group.clone());
         self.scf = Some((crystal, options));
         self.same_spin_orbit()?;
         Ok(self)
+    }
+
+    /// Replaces the operations the engine averages over (those of the SCF crystal, set by
+    /// [`Self::with_scf`]); `None` leaves the k-sum of a reduced mesh unaveraged. For the controls
+    /// of the symmetrizer: a caller of the engine takes the crystal's own.
+    #[doc(hidden)]
+    pub fn set_point_group(&mut self, group: Option<PointGroup>) {
+        self.point_group = group;
     }
 
     /// The setup's lattice and atom centers are those the crystal's grid and ion charges were
@@ -436,6 +453,31 @@ fn axis_of(axis: usize) -> Result<usize> {
 
 impl Derivatives for SetupDerivatives<'_> {
     type Fields = Fields;
+
+    fn point_group(&self) -> Option<&PointGroup> {
+        self.point_group.as_ref()
+    }
+
+    fn symmetrize_moments(&self, q: &mut [C64]) -> Result<()> {
+        let Some((crystal, _)) = &self.scf else {
+            return Ok(());
+        };
+        let channels = crystal.channels;
+        if q.len() != channels {
+            return Err(invalid(format!(
+                "the channel moments have {} entries, the SCF crystal's moment symmetrization \
+                 acts on {channels}",
+                q.len()
+            )));
+        }
+        let raw = q.to_vec();
+        for (a, out) in q.iter_mut().enumerate() {
+            *out = (0..channels)
+                .map(|b| crystal.qsym.as_slice()[a * channels + b] * raw[b])
+                .sum();
+        }
+        Ok(())
+    }
 
     fn layout(&self) -> &Layout {
         &self.layout

@@ -25,9 +25,15 @@ const CAP: f64 = 1e-9;
 /// Relative gate of energies and integrals: round-off of a sum of terms of several Hartree.
 pub const SCALAR_GATE: f64 = 1e-11;
 
-/// The density below which the PBE tables of the freeze (atom scheme) and of the Rust kernel
-/// differ at the level of the exchange floor, not of round-off: `(lowest density, highest
-/// density, absolute bound in Hartree)`, measured in A2 (`PAW_MIGRATION_LOG.md`).
+/// The density below which the PBE tables of the freeze (Python, atom scheme) and of the Rust
+/// port of that scheme (`AtomSolver`, the legacy seam) differ at the level of the exchange
+/// floor, not of round-off: `(lowest density, highest density, absolute bound in Hartree)`,
+/// measured in A2 (`PAW_MIGRATION_LOG.md`). Since XC-SW this is the property of the seam alone:
+/// the three bands are how the two implementations of the atom scheme treat a density at its
+/// exchange floor (the Python threshold is on the total density, the Rust on the spin density),
+/// the production scheme has no such band (its far tail is exactly zero, `xc_scheme.rs`), and
+/// nothing outside the legacy seam reads these bounds. They stay at their measured values
+/// because the seam must keep reproducing the frozen numbers; they were not widened.
 pub const PBE_TAIL: [(f64, f64, f64); 3] = [
     (2e-12, 1e-9, 1e-8),
     (1e-12, 2e-12, 1.1e-4),

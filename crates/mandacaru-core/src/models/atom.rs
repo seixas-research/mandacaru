@@ -12,9 +12,9 @@ use super::{
     invalid,
     mixing::{density_change, PulayMixer, HISTORY},
     numerov,
-    radial_xc::xc_potential,
     relativity::{self, PotentialTerms, Treatment},
     selection, spherical, xc,
+    xc_scheme::{Variational, XcSource},
 };
 use crate::{product, Buffer, Context, Reservation, Result};
 use std::{collections::HashMap, f64::consts::PI};
@@ -87,7 +87,9 @@ fn integrate(values: impl Iterator<Item = f64>, n: usize, h: f64) -> f64 {
         * h
 }
 
-/// Hartree and exchange-correlation potentials of `density`, and the XC energy.
+/// Hartree and exchange-correlation potentials of `density`, and the XC energy. The density the
+/// mixer hands over can dip below zero in the far tail by round-off; the exchange-correlation
+/// functional sees it clamped at zero, as it is a density.
 fn potentials(
     ctx: &Context,
     r: &[f64],
@@ -95,16 +97,18 @@ fn potentials(
     h: f64,
     functional: &str,
     relativistic: bool,
+    scheme: &dyn XcSource,
 ) -> Result<(Vec<f64>, Vec<f64>, f64)> {
     let n = r.len();
     let hartree = spherical::hartree(ctx, r, density)?.as_slice().to_vec();
-    let (per_electron, vxc) = xc_potential(ctx, r, density, functional, relativistic)?;
+    let physical = density.iter().map(|d| d.max(0.)).collect::<Vec<_>>();
+    let field = scheme.evaluate(ctx, r, &physical, functional, relativistic)?;
     let exc = integrate(
-        (0..n).map(|i| per_electron[i] * density[i] * 4. * PI * r[i] * r[i]),
+        (0..n).map(|i| field.per_particle[i] * physical[i] * 4. * PI * r[i] * r[i]),
         n,
         h,
     );
-    Ok((hartree, vxc, exc))
+    Ok((hartree, field.potential, exc))
 }
 
 /// Nonrelativistic LDA atom.
@@ -181,6 +185,30 @@ pub fn solve_model(
     configuration_spec: Option<&[(usize, usize, f64)]>,
     confinement: Option<&[f64]>,
 ) -> Result<Atom> {
+    solve_model_with(
+        ctx,
+        z,
+        options,
+        model,
+        configuration_spec,
+        confinement,
+        &Variational,
+    )
+}
+
+#[doc(hidden)]
+/// [`solve_model`] with the radial exchange-correlation scheme as a parameter. Production is the
+/// variational scheme (D-2b); the legacy `AtomSolver` reproduces the atoms the shipped PBE
+/// datasets were generated on and exists for the parity tests.
+pub fn solve_model_with(
+    ctx: &Context,
+    z: u8,
+    options: &AtomOptions,
+    model: &AtomModel,
+    configuration_spec: Option<&[(usize, usize, f64)]>,
+    confinement: Option<&[f64]>,
+    scheme: &dyn XcSource,
+) -> Result<Atom> {
     xc::functional(&model.functional)?;
     let functional = model.functional.as_str();
     let treatment = model.relativity;
@@ -210,9 +238,15 @@ pub fn solve_model(
     }
     let occupations = match configuration_spec {
         Some(v) => v.to_vec(),
-        None => {
-            selection::relaxed_configuration(ctx, z, functional, treatment, options.r_max, None)?
-        }
+        None => selection::relaxed_configuration_with(
+            ctx,
+            z,
+            functional,
+            treatment,
+            options.r_max,
+            None,
+            scheme,
+        )?,
     };
     if occupations.is_empty()
         || occupations.iter().any(|(nn, l, q)| {
@@ -276,7 +310,7 @@ pub fn solve_model(
     let mut converged = false;
     let mut iterations = 0;
     for iteration in 1..=options.max_iterations {
-        let (hartree, vxc, _) = potentials(ctx, &r, &density, h, functional, relativistic)?;
+        let (hartree, vxc, _) = potentials(ctx, &r, &density, h, functional, relativistic, scheme)?;
         let effective = (0..n)
             .map(|i| nuclear[i] + hartree[i] + vxc[i])
             .collect::<Vec<_>>();
@@ -341,7 +375,8 @@ pub fn solve_model(
                        eigenvalues: &mut [f64],
                        valence_only: bool|
          -> Result<Vec<f64>> {
-            let (hartree, vxc, _) = potentials(ctx, &r, density, h, functional, relativistic)?;
+            let (hartree, vxc, _) =
+                potentials(ctx, &r, density, h, functional, relativistic, scheme)?;
             let walled = (0..n)
                 .map(|i| nuclear[i] + hartree[i] + vxc[i] + wall[i])
                 .collect::<Vec<_>>();
@@ -424,7 +459,7 @@ pub fn solve_model(
     }
 
     // Final potentials consistent with the converged density.
-    let (hartree, vxc, exc) = potentials(ctx, &r, &density, h, functional, relativistic)?;
+    let (hartree, vxc, exc) = potentials(ctx, &r, &density, h, functional, relativistic, scheme)?;
     let effective = (0..n)
         .map(|i| nuclear[i] + hartree[i] + vxc[i])
         .collect::<Vec<_>>();

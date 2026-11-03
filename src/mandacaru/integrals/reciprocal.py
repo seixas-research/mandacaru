@@ -460,8 +460,10 @@ def radial_transform(r, values, L: int, q) -> np.ndarray:
     flat = q.reshape(-1)
     out = np.empty(flat.size)
     weights = np.asarray(values, dtype=float) * r * r
-    for start in range(0, flat.size, 2048):
-        chunk = flat[start:start + 2048]
+    # Each q is its own row of the integral: the block only bounds the (q, r) matrix of Bessel
+    # values (256 x 1201 x 8 bytes), and the result does not depend on it.
+    for start in range(0, flat.size, 256):
+        chunk = flat[start:start + 256]
         out[start:start + chunk.size] = np.trapezoid(
             spherical_jn(int(L), np.outer(chunk, r)) * weights[None, :], r,
             axis=1)

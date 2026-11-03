@@ -19,12 +19,12 @@ use serde_json::{Map, Value};
 
 use super::codec::{assemble, Tables};
 use super::digits;
-use super::emit::payload_text;
+use super::emit::{json_file_text, payload_text, payload_text_exact};
 use super::json::{fail, kind, table_from_json};
 use super::{PawDataset, METADATA_KEY};
 use crate::parquet::{self, Codec, Column, Table, WriteOptions};
 use crate::paw::invalid;
-use crate::{Context, Error, Reservation, Result};
+use crate::{Buffer, Context, Error, Reservation, Result};
 
 /// Bytes charged per JSON value of the parse tree. A `serde_json::Value` is 32
 /// bytes; arrays grow by doubling, so a finished array holds up to twice its
@@ -157,7 +157,90 @@ fn read_json(ctx: &Context, path: &Path) -> Result<PawDataset> {
     assemble(ctx, payload, tables)
 }
 
+/// A record in the layout of a dataset file: the payload text (everything but the radial tables)
+/// and the radial tables by column name, in file order.
+#[derive(Debug)]
+pub struct Parts<'a> {
+    pub text: String,
+    pub tables: Vec<(String, &'a [f64])>,
+    _text: Reservation,
+}
+
 impl PawDataset {
+    /// The record as a file holds it, at full precision (stride 1, nothing rounded): what a
+    /// caller that keeps the dataset in memory is handed.
+    pub fn parts(&self, ctx: &Context) -> Result<Parts<'_>> {
+        let (text, memory) = payload_text_exact(ctx, self)?;
+        Ok(Parts {
+            text,
+            tables: self.tables(),
+            _text: memory,
+        })
+    }
+
+    /// The record from its payload text and radial tables (the layout of [`PawDataset::parts`]
+    /// and of a Parquet file): every refusal of the file reader applies, and a table the
+    /// payload does not name raises.
+    pub fn from_parts(
+        ctx: &Context,
+        text: &str,
+        tables: Vec<(String, Buffer<f64>)>,
+    ) -> Result<Self> {
+        let (payload, _tree) = parse(ctx, text, "payload")?;
+        let mut named = Tables::new();
+        for (name, values) in tables {
+            if named.insert(name.clone(), values).is_some() {
+                return Err(fail(
+                    "radial_tables",
+                    format!("the table {name:?} is given twice"),
+                ));
+            }
+        }
+        assemble(ctx, payload, named)
+    }
+
+    /// Writes a plain JSON dataset file (the payload with the tables inline), staged and read
+    /// back like [`PawDataset::write`].
+    pub fn write_json(&self, ctx: &Context, path: &Path, stride: usize) -> Result<()> {
+        if stride == 0 {
+            return Err(invalid("paw record: the stride must be at least 1"));
+        }
+        let staged = staged_path(path);
+        let result = self.write_json_staged(ctx, &staged, stride);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&staged);
+            return result;
+        }
+        std::fs::rename(&staged, path).map_err(|e| {
+            invalid(format!(
+                "paw record: cannot move {} into place: {e}",
+                staged.display()
+            ))
+        })
+    }
+
+    fn write_json_staged(&self, ctx: &Context, staged: &Path, stride: usize) -> Result<()> {
+        {
+            let (text, _memory) = json_file_text(ctx, self, stride)?;
+            std::fs::write(staged, text.as_bytes()).map_err(|e| {
+                invalid(format!(
+                    "paw record: cannot write {}: {e}",
+                    staged.display()
+                ))
+            })?;
+        }
+        let again = PawDataset::read(ctx, staged)?;
+        let (a, _ma) = payload_text(ctx, self, stride)?;
+        let (b, _mb) = payload_text(ctx, &again, 1)?;
+        if a != b {
+            return Err(fail(
+                "read-back",
+                "the typed record read back does not reproduce the payload",
+            ));
+        }
+        Ok(())
+    }
+
     /// Reads a dataset file: Parquet (detected by its magic) or plain JSON.
     /// Everything it holds is reserved from `ctx` before it is allocated and
     /// released when the record is dropped.

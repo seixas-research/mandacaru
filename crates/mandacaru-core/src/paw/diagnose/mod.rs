@@ -15,7 +15,10 @@
 //! [`Diagnosis::run`] evaluates every check; [`Diagnosis::defects`] applies the recording rule
 //! of the generator (`ghosts="flag"`): a dataset with a ghost records the ghosts alone, one
 //! without records the channels that scatter outside their tolerance, the unprojected channels
-//! outside theirs and a failed s completeness. That list is the record's [`Defects`].
+//! outside theirs, a failed s completeness and the missing states. That list is the record's
+//! [`Defects`]. The `j` branches of a fully relativistic dataset are examined too
+//! ([`Diagnosis::with_branches`]): a branch that holds a ghost is recorded like a ghost of a
+//! scalar channel, under its own `"l:kappa"` key.
 //!
 //! A check that cannot be evaluated (a level or phase that is not finite) is
 //! [`Error::Unevaluated`], never a pass.
@@ -29,7 +32,7 @@ pub mod spectrum;
 pub mod view;
 
 use self::{
-    ghosts::{ghost_errors, missing_states},
+    ghosts::{branch_ghost_errors, ghost_errors, missing_states},
     intruding::{failed_acceptance, intruding_s_miss},
     reference::{AeLogs, AllElectron},
     scattering::{
@@ -98,6 +101,10 @@ pub struct Diagnosis {
     pub s_miss: Option<f64>,
     /// `{l: nearest level - reference}` of the channels that do not bind a physical reference.
     pub missing: BTreeMap<usize, f64>,
+    /// `{(l, kappa): eps_0 - eps_ref}` of the `j` branches of a fully relativistic dataset that
+    /// hold a ghost ([`ghosts::branch_ghost_errors`]); empty for a dataset without spin-orbit
+    /// entries and for a diagnosis that did not look ([`Diagnosis::with_branches`]).
+    pub branch_ghosts: BTreeMap<Key, f64>,
 }
 
 impl Diagnosis {
@@ -124,16 +131,34 @@ impl Diagnosis {
             unprojected: unprojected_errors(ctx, smooth, ae, cache)?,
             s_miss,
             missing: missing_states(ctx, smooth)?,
+            branch_ghosts: BTreeMap::new(),
         })
     }
 
+    /// Add the ghosts of the `j` branches of `dataset` (a no-op without spin-orbit entries): the
+    /// branches are channels of their own ([`kappa::branches`]) and the same extra-state test
+    /// applies to each against its own Dirac reference.
+    pub fn with_branches(
+        mut self,
+        ctx: &Context,
+        dataset: &crate::paw::record::PawDataset,
+    ) -> Outcome<Self> {
+        if dataset.spin_orbit.is_empty() {
+            return Ok(self);
+        }
+        let branches = kappa::branches(ctx, dataset)?;
+        self.branch_ghosts = branch_ghost_errors(ctx, &branches)?;
+        Ok(self)
+    }
+
     /// The channels of the `j`-averaged set whose phase is outside `PHASE_TOLERANCE` near the
-    /// reference or `RESONANCE_TOLERANCE` farther out.
+    /// reference or `RESONANCE_TOLERANCE` farther out. A phase that is not a number is outside
+    /// (a NaN fails every gate).
     pub fn wrong_phases(&self) -> BTreeMap<usize, [f64; 2]> {
         self.phases
             .iter()
             .filter(|(k, [near, far])| {
-                k.kappa.is_none() && (*near > PHASE_TOLERANCE || *far > RESONANCE_TOLERANCE)
+                k.kappa.is_none() && (!(*near <= PHASE_TOLERANCE) || !(*far <= RESONANCE_TOLERANCE))
             })
             .map(|(k, v)| (k.l, *v))
             .collect()
@@ -144,9 +169,14 @@ impl Diagnosis {
     /// without records the phases outside tolerance, the unprojected channels above
     /// `UNPROJECTED_TOLERANCE` and an s completeness miss at or above its tolerance.
     pub fn defects(&self) -> Defects {
-        if !self.ghosts.is_empty() {
+        if self.has_ghost() {
             return Defects {
                 ghosts: self.ghosts.iter().map(|(&l, &e)| (l as u32, e)).collect(),
+                branch_ghosts: self
+                    .branch_ghosts
+                    .iter()
+                    .map(|(k, &e)| (Defects::branch_key(k.l, k.kappa.unwrap_or(0)), e))
+                    .collect(),
                 ..Defects::default()
             };
         }
@@ -162,16 +192,23 @@ impl Diagnosis {
             unprojected: self
                 .unprojected
                 .iter()
-                .filter(|(_, &e)| e > UNPROJECTED_TOLERANCE)
+                .filter(|(_, &e)| !(e <= UNPROJECTED_TOLERANCE))
                 .map(|(&l, &e)| (l as u32, e))
                 .collect(),
+            missing: self.missing.iter().map(|(&l, &d)| (l as u32, d)).collect(),
+            branch_ghosts: BTreeMap::new(),
         }
+    }
+
+    /// Whether a scalar channel or a `j` branch holds a ghost.
+    pub fn has_ghost(&self) -> bool {
+        !self.ghosts.is_empty() || !self.branch_ghosts.is_empty()
     }
 
     /// Whether the dataset has no defect at all: no ghost, no missing state, every channel
     /// inside its tolerances.
     pub fn is_clean(&self) -> bool {
-        self.missing.is_empty() && self.defects() == Defects::default()
+        self.defects() == Defects::default()
     }
 }
 
@@ -196,5 +233,5 @@ pub fn diagnose_record(
     reference::check_reference(dataset, atom)?;
     let smooth = Smooth::scalar(ctx, dataset)?;
     let ae = AllElectron::new(atom, smooth.atomic_number, &smooth.frozen, &smooth.semicore);
-    Diagnosis::run(ctx, &smooth, &ae, cache)
+    Diagnosis::run(ctx, &smooth, &ae, cache)?.with_branches(ctx, dataset)
 }

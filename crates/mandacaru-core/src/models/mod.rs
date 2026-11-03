@@ -19,6 +19,7 @@ pub mod spherical;
 pub mod spin_orbit;
 pub mod ts;
 pub mod xc;
+pub mod xc_scheme;
 fn invalid(message: impl Into<String>) -> crate::Error {
     crate::Error::Invalid(message.into())
 }

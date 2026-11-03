@@ -1,8 +1,8 @@
-//! Negative controls of the search (A6): each wrong variant is built from the same public pieces
-//! as the search (the attempt table, `examine`, the ranking), run on the same ghost-ridden recipe,
-//! and compared with what the search selects. A variant that does not change the selection, or
-//! changes it by less than 100 ghost tolerances, would mean the search does not depend on the
-//! piece that was broken.
+//! Negative controls of the search (A6): each wrong variant is the search itself with one piece
+//! replaced through its own review hook (`search_reviewed`: the loop of `search.rs`, not a copy
+//! of it in a test), run on the same ghost-ridden recipe and compared with what the faithful
+//! search returns. A variant that does not change the selection, or changes it by less than 100
+//! ghost tolerances, would mean the search does not depend on the piece that was broken.
 //!
 //! The recipe is oxygen with its local potential lowered by 3 Ha (an s ghost at -0.868 Ha); the
 //! search removes it with the first remedy. The ranking control uses silicon with a short local
@@ -11,23 +11,19 @@ mod paw_assemble_support;
 mod paw_generate_support;
 mod paw_search_support;
 
-use mandacaru_core::models::{atom::Atom, relativity::Treatment};
-use mandacaru_core::paw::diagnose::{
-    ghosts::GHOST_TOLERANCE,
-    reference::{AeLogs, AllElectron},
-    view::Smooth,
-    Diagnosis,
-};
+use mandacaru_core::models::{atom::Atom, relativity::Treatment, xc_scheme::AtomSolver};
+use mandacaru_core::paw::diagnose::{ghosts::GHOST_TOLERANCE, reference::AeLogs, Diagnosis};
 use mandacaru_core::paw::generate::{
-    energies::AtomSolver,
-    generate_with_atom,
     ranking::Badness,
     recipe::Recipe,
-    reference::solve_reference,
-    search::{examine, plan, radii_of, search_with_atom, Mode, Options, Why},
+    reference::solve_reference_with,
+    search::{
+        examine, search_reviewed, Attempt, Error, Faithful, Mode, Options, Pinned, Review, Searched,
+    },
 };
 use mandacaru_core::Context;
 use paw_search_support::context;
+use std::cmp::Ordering;
 
 fn ghosted_oxygen() -> Recipe {
     Recipe {
@@ -36,45 +32,93 @@ fn ghosted_oxygen() -> Recipe {
     }
 }
 
-/// The deepest ghost (Ha, negative) of a diagnosis, 0 when none.
-fn deepest(d: &Diagnosis) -> f64 {
-    d.ghosts.values().copied().fold(0., f64::min)
-}
-
-/// A search that does not look at ghosts: every other check runs on the full diagnosis (the
-/// search itself stops at a ghost), the ghost list is cleared, and the first construction that
-/// passes is kept. Returns its position, label and the deepest ghost it binds.
-fn blind(ctx: &Context, recipe: &Recipe, atom: &Atom) -> (usize, String, f64) {
-    let first = generate_with_atom(ctx, recipe, atom, &AtomSolver).unwrap();
-    let table = plan(recipe, &radii_of(&first.dataset));
-    let mut cache = AeLogs::new();
-    let mut candidates = std::iter::once(("first construction".to_string(), Some(first)))
-        .chain(table.into_iter().map(|a| {
-            let built = generate_with_atom(ctx, &a.recipe, atom, &AtomSolver).ok();
-            (a.label, built)
-        }))
-        .enumerate();
-    // Lazily: the remedies are only built as far as the blind search needs them.
-    while let Some((index, (label, generated))) = candidates.next() {
-        let Some(generated) = generated else { continue };
-        let smooth = Smooth::scalar(ctx, &generated.dataset).unwrap();
-        let ae = AllElectron::new(atom, smooth.atomic_number, &smooth.frozen, &smooth.semicore);
-        let mut d = Diagnosis::run(ctx, &smooth, &ae, &mut cache).unwrap();
-        let ghost = deepest(&d);
-        d.ghosts.clear();
-        if Why::of(&d).is_none() {
-            return (index, label, ghost);
-        }
-    }
-    panic!("no attempt is clean");
-}
-
 /// Silicon with a local radius a fifth of the cutoff: an s ghost at -8.08 Ha.
 fn deep_silicon() -> Recipe {
     Recipe {
         local_factor: 0.2,
         local_shift: 0.0,
         ..Recipe::for_dataset("Si", "lda", Treatment::Scalar).unwrap()
+    }
+}
+
+/// Nothing pinned: the odd settings of these recipes are the generator's to repair.
+fn free(mode: Mode) -> Options {
+    Options {
+        mode,
+        pinned: Pinned::default(),
+    }
+}
+
+/// The deepest ghost (Ha, negative) of a diagnosis, 0 when none; a NaN depth is returned as NaN.
+fn deepest(d: &Diagnosis) -> f64 {
+    d.ghosts.values().copied().fold(0., |a, b| {
+        if a.is_nan() || b.is_nan() {
+            f64::NAN
+        } else {
+            a.min(b)
+        }
+    })
+}
+
+fn search(
+    ctx: &Context,
+    recipe: &Recipe,
+    atom: &Atom,
+    mode: Mode,
+    review: &dyn Review,
+) -> Result<Searched, Error> {
+    search_reviewed(ctx, recipe, &free(mode), atom, &AtomSolver, review)
+}
+
+/// The ghost of the construction a search returned, measured by the search's own `examine`.
+fn ghost_of(ctx: &Context, atom: &Atom, searched: &Searched) -> f64 {
+    deepest(&examine(ctx, &searched.generated, atom, &mut AeLogs::new()).unwrap())
+}
+
+/// A search without the ghost criterion: every other check runs on the full diagnosis (the
+/// faithful search stops at a ghost), the ghost list is cleared and the first construction that
+/// passes is kept.
+struct GhostBlind;
+
+impl Review for GhostBlind {
+    fn stops_at_ghost(&self) -> bool {
+        false
+    }
+    fn judge(&self, mut d: Diagnosis) -> Diagnosis {
+        d.ghosts.clear();
+        d.branch_ghosts.clear();
+        d
+    }
+}
+
+/// A search without its first remedy.
+struct SkipFirstRemedy;
+
+impl Review for SkipFirstRemedy {
+    fn remedies(&self, table: Vec<Attempt>) -> Vec<Attempt> {
+        table.into_iter().skip(1).collect()
+    }
+}
+
+/// A search that picks the worst attempt where the ranking picks the best, over the first eight
+/// attempts (all ghosted, so the table has no clean one and `Flag` has to rank).
+struct ReversedRanking;
+
+impl Review for ReversedRanking {
+    fn remedies(&self, table: Vec<Attempt>) -> Vec<Attempt> {
+        table.into_iter().take(7).collect()
+    }
+    fn rank(&self, a: &Badness, b: &Badness) -> Ordering {
+        b.compare(a)
+    }
+}
+
+/// The oracle of the ranking control: the faithful ranking over the same eight attempts.
+struct FirstEight;
+
+impl Review for FirstEight {
+    fn remedies(&self, table: Vec<Attempt>) -> Vec<Attempt> {
+        table.into_iter().take(7).collect()
     }
 }
 
@@ -90,23 +134,24 @@ fn without_the_ghost_criterion_a_ghosted_construction_is_accepted() {
         ("oxygen -3 Ha", ghosted_oxygen()),
         ("silicon 0.2", deep_silicon()),
     ] {
-        let atom = solve_reference(&ctx, &recipe).unwrap();
-        let right = search_with_atom(
-            &ctx,
-            &recipe,
-            &Options::new(&recipe, Mode::Repair),
-            &atom,
-            &AtomSolver,
-        )
-        .unwrap();
-        let (index, label, ghost) = blind(&ctx, &recipe, &atom);
+        let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+        let right = search(&ctx, &recipe, &atom, Mode::Repair, &Faithful).unwrap();
+        let blind = search(&ctx, &recipe, &atom, Mode::Repair, &GhostBlind).unwrap();
+        let ghost = ghost_of(&ctx, &atom, &blind);
         println!(
-            "{name}: the search selects {} ({}); without the ghost criterion {label} ({index}), ghost {ghost:+.3} Ha ({:.0} tolerances)",
+            "{name}: the search selects {} ({}); without the ghost criterion {} ({}), ghost {ghost:+.3} Ha ({:.0} tolerances)",
             right.label,
             right.index,
+            blind.label,
+            blind.index,
             -ghost / GHOST_TOLERANCE
         );
-        if label != right.label {
+        assert_eq!(
+            ghost_of(&ctx, &atom, &right),
+            0.0,
+            "the oracle is ghost-free"
+        );
+        if blind.label != right.label {
             changed += 1;
             assert!(
                 -ghost / GHOST_TOLERANCE > 100.0,
@@ -122,101 +167,79 @@ fn without_the_ghost_criterion_a_ghosted_construction_is_accepted() {
 fn skipping_the_first_remedy_selects_another_attempt_and_a_different_construction() {
     let ctx = context();
     let recipe = ghosted_oxygen();
-    let atom = solve_reference(&ctx, &recipe).unwrap();
-    let first = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
-    let table = plan(&recipe, &radii_of(&first.dataset));
-    assert_eq!(table[0].label, "norm_deficit=0");
-    let mut cache = AeLogs::new();
-    let mut chosen = None;
-    for attempt in table.iter().skip(1) {
-        let Ok(built) = generate_with_atom(&ctx, &attempt.recipe, &atom, &AtomSolver) else {
-            continue;
-        };
-        if let Ok(d) = examine(&ctx, &built, &atom, &mut cache) {
-            if Why::of(&d).is_none() {
-                chosen = Some((attempt.label.clone(), built));
-                break;
-            }
-        }
-    }
-    let (label, built) = chosen.expect("a later attempt is clean");
-    assert_ne!(label, "norm_deficit=0");
+    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+    let oracle = search(&ctx, &recipe, &atom, Mode::Repair, &Faithful).unwrap();
+    assert_eq!(oracle.label, "norm_deficit=0");
+    let skipped = search(&ctx, &recipe, &atom, Mode::Repair, &SkipFirstRemedy).unwrap();
+    assert_ne!(skipped.label, oracle.label);
     // And a different dataset: the oracle's construction keeps the lowered local potential at its
     // radius, the one this control keeps has the 0.75 times shorter radius and no lowering.
-    let oracle = generate_with_atom(&ctx, &table[0].recipe, &atom, &AtomSolver).unwrap();
-    let (a, b) = (oracle.dataset.r_cut_local, built.dataset.r_cut_local);
+    let (a, b) = (
+        oracle.generated.dataset.r_cut_local,
+        skipped.generated.dataset.r_cut_local,
+    );
     println!(
-        "skipped remedy: {label}; r_cut_local {a} against {b}; local_shift {} against {}",
-        oracle.dataset.local_shift, built.dataset.local_shift
+        "skipped remedy: {}; r_cut_local {a} against {b}; local_shift {} against {}",
+        skipped.label, oracle.generated.dataset.local_shift, skipped.generated.dataset.local_shift
     );
     assert!(
         (a - b).abs() / a > 100.0 * 1e-12,
         "the local radius moved by {:.2e}",
         (a - b).abs() / a
     );
-    assert_ne!(oracle.dataset.local_shift, built.dataset.local_shift);
+    assert_ne!(
+        oracle.generated.dataset.local_shift,
+        skipped.generated.dataset.local_shift
+    );
 }
 
 #[test]
-fn keeping_the_first_attempt_always_returns_the_ghost() {
+fn keeping_the_first_attempt_always_returns_the_ghost_the_repair_removes() {
     let ctx = context();
     let recipe = ghosted_oxygen();
-    let atom = solve_reference(&ctx, &recipe).unwrap();
-    let kept = search_with_atom(
-        &ctx,
-        &recipe,
-        &Options::new(&recipe, Mode::Keep),
-        &atom,
-        &AtomSolver,
-    )
-    .unwrap();
-    let d = examine(&ctx, &kept.generated, &atom, &mut AeLogs::new()).unwrap();
-    assert!(-deepest(&d) / GHOST_TOLERANCE > 100.0);
+    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+    let repaired = search(&ctx, &recipe, &atom, Mode::Repair, &Faithful).unwrap();
+    let kept = search(&ctx, &recipe, &atom, Mode::Keep, &Faithful).unwrap();
+    // The oracle is the Repair result: clean, and a different construction from the first.
+    assert!(repaired.diagnosis.as_ref().unwrap().is_clean());
+    assert_eq!((repaired.index, kept.index), (1, 0));
+    assert_ne!(
+        repaired.generated.dataset.one_center_energy.to_bits(),
+        kept.generated.dataset.one_center_energy.to_bits(),
+        "the repair changed the construction"
+    );
+    let (clean, ghost) = (
+        ghost_of(&ctx, &atom, &repaired),
+        ghost_of(&ctx, &atom, &kept),
+    );
+    println!(
+        "keep: ghost {ghost:+.4} Ha ({:.0} tolerances); repair: {clean}",
+        -ghost / GHOST_TOLERANCE
+    );
+    assert_eq!(clean, 0.0);
+    assert!(-ghost / GHOST_TOLERANCE > 100.0);
 }
 
 #[test]
 fn the_reversed_ranking_keeps_the_deepest_ghost_among_real_attempts() {
     let ctx = context();
-    let base = Recipe::for_dataset("Si", "lda", Treatment::Scalar).unwrap();
-    let recipe = Recipe {
-        local_factor: 0.2,
-        local_shift: 0.0,
-        ..base
-    };
-    let atom = solve_reference(&ctx, &recipe).unwrap();
-    let first = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
-    let table = plan(&recipe, &radii_of(&first.dataset));
-    let mut cache = AeLogs::new();
-    let mut ranked = vec![(
-        "first construction".to_string(),
-        examine(&ctx, &first, &atom, &mut cache).unwrap(),
-    )];
-    drop(first);
-    for attempt in table.iter().take(7) {
-        let built = generate_with_atom(&ctx, &attempt.recipe, &atom, &AtomSolver).unwrap();
-        ranked.push((
-            attempt.label.clone(),
-            examine(&ctx, &built, &atom, &mut cache).unwrap(),
-        ));
-    }
-    assert!(ranked.iter().all(|(_, d)| !d.ghosts.is_empty()));
-    let key = |d: &Diagnosis| Badness::of(d);
-    let right = (0..ranked.len())
-        .min_by(|&a, &b| key(&ranked[a].1).compare(&key(&ranked[b].1)))
-        .unwrap();
-    let reversed = (0..ranked.len())
-        .max_by(|&a, &b| key(&ranked[a].1).compare(&key(&ranked[b].1)))
-        .unwrap();
+    let recipe = deep_silicon();
+    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+    let right = search(&ctx, &recipe, &atom, Mode::Flag, &FirstEight).unwrap();
+    let reversed = search(&ctx, &recipe, &atom, Mode::Flag, &ReversedRanking).unwrap();
+    assert!(right.flagged && reversed.flagged);
+    let (a, b) = (
+        ghost_of(&ctx, &atom, &right),
+        ghost_of(&ctx, &atom, &reversed),
+    );
     println!(
-        "ranking keeps {} ({:+.3} Ha), reversed keeps {} ({:+.3} Ha)",
-        ranked[right].0,
-        deepest(&ranked[right].1),
-        ranked[reversed].0,
-        deepest(&ranked[reversed].1)
+        "ranking keeps {} ({a:+.3} Ha), reversed keeps {} ({b:+.3} Ha)",
+        right.label, reversed.label
     );
-    assert_eq!(ranked[right].0, "own cutoffs, shift 20");
-    assert_eq!(ranked[reversed].0, "local radius x 0.45, no shift");
-    assert!(
-        (deepest(&ranked[reversed].1) - deepest(&ranked[right].1)).abs() / GHOST_TOLERANCE > 100.0
-    );
+    assert_eq!(right.label, "own cutoffs, shift 20");
+    assert_eq!(reversed.label, "local radius x 0.45, no shift");
+    assert!((b - a).abs() / GHOST_TOLERANCE > 100.0);
+    // The record carries the kept attempt's ghost, not the other's.
+    let recorded = |s: &Searched| s.generated.dataset.defects.ghosts[&0];
+    assert!((recorded(&right) - a).abs() < 1e-9 && (recorded(&reversed) - b).abs() < 1e-9);
 }

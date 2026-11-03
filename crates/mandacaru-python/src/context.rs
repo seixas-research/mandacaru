@@ -1,6 +1,6 @@
 //! Execution context and dispatch to Python-independent scientific operations.
 use super::{
-    advanced, array, atom, complex, complex_array, copy, error, models, molecular, paw, periodic,
+    advanced, array, atom, complex, complex_array, copy, error, models, molecular, periodic,
     persistence, quantum, Array, PyGeometry, PyGrid, PySpatialGrid, Workspace,
 };
 use mandacaru_core::periodic::{
@@ -1221,11 +1221,34 @@ impl PyContext {
         Ok(quantum::PyProblem { inner })
     }
     #[new]
-    #[pyo3(signature = (threads=None, memory_limit_bytes=34359738368))]
-    fn new(threads: Option<usize>, memory_limit_bytes: usize) -> PyResult<Self> {
+    #[pyo3(signature = (threads=None, memory_limit_bytes=34359738368, disk_offload_bytes=None))]
+    fn new(
+        threads: Option<usize>,
+        memory_limit_bytes: usize,
+        disk_offload_bytes: Option<usize>,
+    ) -> PyResult<Self> {
         Ok(Self {
-            inner: Context::new(threads, memory_limit_bytes).map_err(error)?,
+            inner: Context::with_offload(
+                threads,
+                memory_limit_bytes,
+                disk_offload_bytes.unwrap_or(mandacaru_core::context::DEFAULT_OFFLOAD_BYTES),
+            )
+            .map_err(error)?,
         })
+    }
+    #[getter]
+    fn disk_offload_bytes(&self) -> usize {
+        self.inner.offload_threshold()
+    }
+    /// Hands the pages the allocator holds free back to the operating system; `False` on a
+    /// platform without such a call. A best-effort hygiene step between calculations.
+    fn release_freed_memory(&self) -> bool {
+        self.inner.release_freed_memory()
+    }
+    /// Bytes this context's archives have written to the scratch folder so far.
+    #[getter]
+    fn disk_archived_bytes(&self) -> usize {
+        self.inner.archived_bytes()
     }
     #[getter]
     fn threads(&self) -> usize {
@@ -1362,18 +1385,6 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[k.len()], result.as_slice().to_vec())
     }
-    #[pyo3(signature=(r, potential, radius, *, shift=0., fit_window=None))]
-    fn paw_local_potential<'py>(
-        &self,
-        py: Python<'py>,
-        r: PyReadonlyArray1<'py, f64>,
-        potential: PyReadonlyArray1<'py, f64>,
-        radius: f64,
-        shift: f64,
-        fit_window: Option<f64>,
-    ) -> PyResult<Array<'py, f64>> {
-        paw::local(self, py, r, potential, radius, shift, fit_window)
-    }
     fn radial_hartree<'py>(
         &self,
         py: Python<'py>,
@@ -1431,105 +1442,6 @@ impl PyContext {
             .detach(|| fields::sample_many(&self.inner, &grid.inner, &sources, kinetic_density))
             .map_err(error)?;
         array(py, &[grid.inner.index.points()], out.as_slice().to_vec())
-    }
-    #[pyo3(signature=(r, density, *, functional="lda", relativistic=false))]
-    fn radial_xc<'py>(
-        &self,
-        py: Python<'py>,
-        r: PyReadonlyArray1<'py, f64>,
-        density: PyReadonlyArray1<'py, f64>,
-        functional: &str,
-        relativistic: bool,
-    ) -> PyResult<Bound<'py, PyDict>> {
-        models::radial_xc(self, py, r, density, functional, relativistic)
-    }
-    #[pyo3(signature=(r, ae, potential, local, l, radius, local_radius, energies, wavevectors, coefficients))]
-    fn paw_channel<'py>(
-        &self,
-        py: Python<'py>,
-        r: PyReadonlyArray1<'py, f64>,
-        ae: PyReadonlyArray2<'py, f64>,
-        potential: PyReadonlyArray1<'py, f64>,
-        local: PyReadonlyArray1<'py, f64>,
-        l: usize,
-        radius: f64,
-        local_radius: f64,
-        energies: Vec<f64>,
-        wavevectors: Vec<f64>,
-        coefficients: PyReadonlyArray2<'py, f64>,
-    ) -> PyResult<Bound<'py, PyDict>> {
-        paw::channel(
-            self,
-            py,
-            r,
-            ae,
-            potential,
-            local,
-            l,
-            radius,
-            local_radius,
-            energies,
-            wavevectors,
-            coefficients,
-        )
-    }
-    fn paw_compensation<'py>(
-        &self,
-        py: Python<'py>,
-        r: PyReadonlyArray1<'py, f64>,
-        radius: f64,
-    ) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
-        let (r, _memory) = copy(&self.inner, &r)?;
-        if !radius.is_finite() || radius <= 0. || r.iter().any(|v| !v.is_finite() || *v < 0.) {
-            return Err(PyValueError::new_err(
-                "compensation needs a positive radius and nonnegative coordinates",
-            ));
-        }
-        let (shape, potential) = py
-            .detach(|| {
-                let mut shape = self.inner.allocate::<f64>(r.len())?;
-                let mut potential = self.inner.allocate::<f64>(r.len())?;
-                for (i, _) in r.iter().enumerate() {
-                    shape.as_mut_slice()[i] = mandacaru_core::paw::radial::shape(r[i], radius);
-                    potential.as_mut_slice()[i] =
-                        mandacaru_core::paw::radial::compensation_potential(r[i], radius);
-                }
-                Ok::<_, Error>((shape, potential))
-            })
-            .map_err(error)?;
-        Ok((
-            array(py, &[r.len()], shape.as_slice().to_vec())?,
-            array(py, &[r.len()], potential.as_slice().to_vec())?,
-        ))
-    }
-    #[pyo3(signature=(radius_a,radius_b,distance,*,points=160,angles=80))]
-    fn paw_compensation_coulomb(
-        &self,
-        py: Python<'_>,
-        radius_a: f64,
-        radius_b: f64,
-        distance: f64,
-        points: usize,
-        angles: usize,
-    ) -> PyResult<f64> {
-        let _memory = self
-            .inner
-            .reserve(
-                product(&[
-                    points
-                        .checked_add(angles)
-                        .ok_or_else(|| error(Error::Overflow))?,
-                    16,
-                ])
-                .map_err(error)?,
-            )
-            .map_err(error)?;
-        py.detach(|| {
-            mandacaru_core::paw::radial::compensation_coulomb(
-                radius_a, radius_b, distance, points, angles,
-            )
-        })
-        .map_err(error)
     }
     fn eigenpair<'py>(
         &self,

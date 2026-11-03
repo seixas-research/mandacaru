@@ -9,6 +9,8 @@ import json
 from time import perf_counter
 import numpy as np
 
+from .setup_block import setup_block
+
 
 def band_input(crystal, fractional_kpoints):
     """Off-mesh setup matrices use the same typed boundary as a crystal."""
@@ -130,6 +132,7 @@ def crystal_input(
                 for d in c.datasets
             ],
         ),
+        setup=setup_block(c),
         kpoints=[
             point_input(d, np.asarray(d.k) @ c.lattice / (2 * np.pi), i)
             for i, d in enumerate(c.kpoint_data)
@@ -227,6 +230,9 @@ def configure(driver, atoms):
         if not periodic and size[axis] != 1:
             raise ValueError("nonperiodic directions require one k-point")
     start = perf_counter()
+    # The crystal of the previous geometry (a relaxation, a scan on one calculator) is released
+    # before the next is built: two crystals and their setup arrays never coexist in memory.
+    driver._drop_crystal()
     crystal, context = build_crystal(
         atoms,
         driver._grid_spacing,
@@ -276,11 +282,8 @@ def configure(driver, atoms):
     # have been transferred to the native owner and need no Python duplicate.
     crystal.kpoint_data.clear()
     driver._geometry_seconds = perf_counter() - start
-    driver._periodic_atoms = atoms.copy()
     driver._orbital_groups = [
         (int(a), int(f.l)) for a, f in zip(crystal.atom_of_orbital, crystal.basis)
     ]
     if spinor:
         driver._orbital_groups *= 2
-    if driver._save_crystal:
-        driver.periodic_problem.save(str(driver._save_crystal))

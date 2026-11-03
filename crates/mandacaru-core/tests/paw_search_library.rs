@@ -21,8 +21,8 @@ mod paw_assemble_support;
 mod paw_generate_support;
 mod paw_search_support;
 
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::models::{elements::atomic_number, relativity::Treatment};
-use mandacaru_core::paw::generate::energies::AtomSolver;
 use mandacaru_core::paw::generate::{
     recipe::Recipe,
     search::{search_with, Mode, Options},
@@ -35,7 +35,7 @@ fn census(set: &str) -> BTreeMap<u8, (String, String)> {
     let path = paw_assemble_support::directory().join(format!("census_{set}.json"));
     let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "{}: {e} (run freeze_paw_generation.py census)",
+            "{}: {e} (tracked file: `git checkout` it)",
             path.display()
         )
     }))
@@ -113,38 +113,53 @@ fn report(line: &Value) {
     }
 }
 
-fn run(set: &str, max_z: u8) -> Vec<String> {
+/// The elements of `set` up to `max_z` searched, and what is wrong with them: a label that
+/// disagrees with the census, and, when `clean` is asked for, any element returned flagged (the
+/// light elements of the census are all unflagged). A run that searched nothing is a failure of
+/// the run, not a pass: an empty selection (a typo in `MANDACARU_SEARCH_ELEMENTS`) must not be
+/// read as zero mismatches.
+fn run(set: &str, max_z: u8, clean: bool) -> Vec<String> {
     let only: Option<Vec<String>> = std::env::var("MANDACARU_SEARCH_ELEMENTS")
         .ok()
         .map(|s| s.split(',').map(str::to_string).collect());
-    let mut mismatches = Vec::new();
+    let mut problems = Vec::new();
+    let mut searched = 0usize;
     for (z, (symbol, label)) in census(set) {
         if z > max_z || only.as_ref().is_some_and(|o| !o.contains(&symbol)) {
             continue;
         }
         let (line, wrong) = element(set, &symbol, &label);
         report(&line);
+        searched += 1;
         if wrong {
-            mismatches.push(format!(
+            problems.push(format!(
                 "{set} {symbol}: census {label}, search {}",
                 line["selected"]
             ));
         }
+        if clean && line["flagged"].as_bool() != Some(false) {
+            problems.push(format!("{set} {symbol}: returned flagged"));
+        }
     }
-    mismatches
+    if searched == 0 {
+        problems.push(format!(
+            "{set}: no element was searched (Z <= {max_z}, selection {only:?})"
+        ));
+    }
+    problems
 }
 
 /// H to Ar: the first construction for most, zero norm deficit for Be, B and Ne, the shorter
 /// local radius for Al and the third-row p block (PBE takes zero deficit for Si and P).
 #[test]
 fn search_census_light_lda() {
-    let mismatches = run("lda-sr", 18);
+    let mismatches = run("lda-sr", 18, true);
     assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
 
 #[test]
 fn search_census_light_pbe() {
-    let mismatches = run("pbe-sr", 18);
+    let mismatches = run("pbe-sr", 18, true);
     assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
 
@@ -155,6 +170,7 @@ fn search_census_sweep() {
     let max_z: u8 = std::env::var("MANDACARU_SEARCH_MAX_Z")
         .map(|s| s.parse().unwrap())
         .unwrap_or(103);
-    let mismatches = run(&set, max_z);
+    // The heavy elements include the flagged lanthanides: flags are reported in the JSON lines.
+    let mismatches = run(&set, max_z, false);
     assert!(mismatches.is_empty(), "{mismatches:#?}");
 }

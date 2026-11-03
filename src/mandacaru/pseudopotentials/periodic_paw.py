@@ -70,6 +70,7 @@ from __future__ import annotations
 
 from ..utils.profiling import profile_stage
 
+import weakref
 from dataclasses import dataclass
 
 import numpy as np
@@ -120,6 +121,9 @@ ION_PAIR_REACH = 12.0
 #: exceeds this fraction of its peak.
 SUPPORT_TOLERANCE = 1e-12
 
+#: ``id(values) -> (weak reference to values, support radius)``.  The entry holds the
+#: radial array weakly and leaves with it: a filtered table is rebuilt for every geometry, and a
+#: strong reference here kept every one of them alive across a scan.
 _SUPPORTS: dict = {}
 
 
@@ -207,16 +211,14 @@ def _support(function) -> float:
     table = _radial_table(function)
     if table is not None:
         r, values = table
-        key = id(values)
-        if key not in _SUPPORTS:
-            magnitude = np.abs(np.asarray(values, dtype=float))
-            significant = np.nonzero(magnitude > SUPPORT_TOLERANCE
-                                     * float(magnitude.max()))[0]
-            r = np.asarray(r, dtype=float)
-            edge = (r[min(significant[-1] + 1, r.size - 1)]
-                    if significant.size else r[0])
-            _SUPPORTS[key] = (values, float(edge))
-        return _SUPPORTS[key][1]
+        held = _SUPPORTS.get(id(values))
+        if held is None or held[0]() is not values:
+            magnitude = np.abs(values)
+            big = np.nonzero(magnitude > SUPPORT_TOLERANCE * magnitude.max())[0]
+            edge = float(r[min(big[-1] + 1, r.size - 1)] if big.size else r[0])
+            held = _SUPPORTS[id(values)] = (weakref.ref(
+                values, lambda _, key=id(values): _SUPPORTS.pop(key, None)), edge)
+        return held[1]
     for name in ("r_c", "r_cut"):
         value = getattr(function, name, None)
         if value is not None and np.isfinite(value):
@@ -261,8 +263,10 @@ _SHAPE_TABLES: dict = {}
 
 #: Quadrature points per call when a sphere's Bloch sums are streamed: the
 #: values at every point and k-point at once ran to gigabytes (a sphere's
-#: tens of thousands of points times the 50 k-points of a band path).
-SPHERE_CHUNK = 16384
+#: tens of thousands of points times the 50 k-points of a band path).  A chunk
+#: of 2048 holds an eighth of the sums one of 16384 did; the chunks add up to
+#: the same quadrature.
+SPHERE_CHUNK = 2048
 #: Bytes of Bloch sums one sphere chunk may hold (:func:`_sphere_chunk_size`).
 SPHERE_BYTES = 1 << 29
 
@@ -273,7 +277,7 @@ def _sphere_chunk_size(n_kpoints: int, n_functions: int) -> int:
     of that many points would pass :data:`SPHERE_BYTES`.  A function of the
     sizes alone, never of the thread count."""
     fit = SPHERE_BYTES // (32 * max(1, n_kpoints) * max(1, n_functions))
-    return int(max(4096, min(SPHERE_CHUNK, fit)))
+    return int(max(512, min(SPHERE_CHUNK, fit)))
 
 
 def _sphere_chunks(points, *arrays, size: int = SPHERE_CHUNK):
@@ -1114,6 +1118,8 @@ class PeriodicPAW:
                 # conjugated copy of the Bloch sums.
                 block[i] += zgemm(1.0, (chi[i] * weighted).T, chi_ket[i].T,
                                   trans_a=2)
+            # Unbound before the next chunk is evaluated: two chunks are never alive at once.
+            del chi, chi_ket
         return (bra_rows, ket_rows), block
 
     # -- charges ------------------------------------------------------------ #

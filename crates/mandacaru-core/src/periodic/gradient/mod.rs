@@ -88,7 +88,7 @@ pub mod spin_orbit;
 pub mod spinor;
 pub mod state;
 
-use super::{hybrid_gradient, invalid};
+use super::{hybrid_gradient, invalid, point_group::PointGroup};
 use crate::{models, quantum::C64, Error, Result};
 use nalgebra::DMatrix;
 
@@ -234,6 +234,22 @@ pub trait Derivatives {
         Err(no_spin_orbit())
     }
 
+    /// The space-group operations the k mesh was reduced with (CF-6): the engine averages every
+    /// term of the [`Breakdown`] over them. `None`: the mesh is whole (or reduced by time reversal
+    /// alone), nothing to average.
+    fn point_group(&self) -> Option<&PointGroup> {
+        None
+    }
+
+    /// Replaces the channel moments `q` of the k-sum over the irreducible mesh by their average
+    /// over the symmetry operations of the mesh (`qsym` of the SCF crystal), as the SCF does before
+    /// it builds a potential from them. The default leaves them (a whole mesh). A provider whose
+    /// symmetrization does not fit the moments it is handed raises: a length that disagrees is a
+    /// different crystal, never a silent no-op.
+    fn symmetrize_moments(&self, _q: &mut [C64]) -> Result<()> {
+        Ok(())
+    }
+
     /// The explicit terms of the exact-exchange derivative at the FIXED occupied states of
     /// `state` ([`hybrid_gradient::explicit`] with the basis functions moving): required, with
     /// [`Gradient::functions`](hybrid_gradient::Gradient::functions) present, for a hybrid
@@ -307,6 +323,38 @@ impl Breakdown {
             ("exchange_rows", &self.exchange_rows),
             ("exchange_columns", &self.exchange_columns),
         ]
+    }
+
+    fn terms_mut(&mut self) -> [&mut Vec<[f64; 3]>; 17] {
+        [
+            &mut self.overlap,
+            &mut self.kinetic,
+            &mut self.local,
+            &mut self.short_range,
+            &mut self.projection_rows,
+            &mut self.projection_columns,
+            &mut self.hats,
+            &mut self.ion,
+            &mut self.dense,
+            &mut self.constants,
+            &mut self.core,
+            &mut self.spin_orbit_rows,
+            &mut self.spin_orbit_columns,
+            &mut self.exchange_phase,
+            &mut self.exchange_functions,
+            &mut self.exchange_rows,
+            &mut self.exchange_columns,
+        ]
+    }
+
+    /// Replaces every term by its average over the operations of `group` (CF-6): the k-sum of a
+    /// symmetry-reduced mesh visited one point per star, the full mesh's is the group average.
+    pub fn symmetrize(&mut self, group: &PointGroup) {
+        for term in self.terms_mut() {
+            if !term.is_empty() {
+                group.vectors(term);
+            }
+        }
     }
 
     /// `dE/dtau` per atom.
@@ -398,7 +446,7 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Bre
     } else {
         exchange::Terms::new(d.layout().atoms)
     };
-    Ok(Breakdown {
+    let mut breakdown = Breakdown {
         overlap: matrix.overlap,
         kinetic: matrix.kinetic,
         local: matrix.local,
@@ -416,5 +464,9 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Bre
         exchange_functions: exchange.functions,
         exchange_rows: exchange.rows,
         exchange_columns: exchange.columns,
-    })
+    };
+    if let Some(group) = d.point_group() {
+        breakdown.symmetrize(group);
+    }
+    Ok(breakdown)
 }

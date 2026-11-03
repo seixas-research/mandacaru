@@ -521,9 +521,9 @@ class CalculationResult:
         """Forces in eV/Angstrom; variational steps are specified in Bohr.
 
         Richardson extrapolation is available for force convergence checks.
-        A stationary mean-field state ignores ``step`` and ``extrapolate``: the
-        all-electron gradient is analytic, and the PAW-LCAO gradient is a
-        Richardson difference at the native step of ``force_details``.
+        A stationary mean-field state ignores ``step`` and ``extrapolate``: its
+        gradient, all-electron or PAW-LCAO, is analytic, and ``force_details``
+        names the scheme and the stationarity of the state it differentiated.
         """
         if type(extrapolate) is not bool:
             raise TypeError("extrapolate must be a boolean")
@@ -548,12 +548,15 @@ class CalculationResult:
                 key: value.copy() if isinstance(value, np.ndarray) else value
                 for key, value in self._gradient_cache[cache_key].items()
             }
+        elif self.periodic is not None:
+            # The analytic crystal force of the Rust engine (Hartree/Bohr), converted once here.
+            if not hasattr(self, "_crystal_forces"):
+                self._crystal_forces = self.periodic.forces()
+            forces = self._crystal_forces * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)
+            if self._dispersion is not None and "forces_ev_angstrom" in self._dispersion:
+                forces = forces + self._dispersion["forces_ev_angstrom"]
+            return forces
         elif self._reference is None:
-            if "forces" in self._raw:
-                forces = np.array(self._raw["forces"], copy=True)
-                if self._dispersion is not None and "forces_ev_angstrom" in self._dispersion:
-                    forces = forces + self._dispersion["forces_ev_angstrom"]
-                return forces
             raise ValueError("stationary forces require a native mean-field state")
         else:
             stationary = self._reference.gradient()
@@ -570,14 +573,24 @@ class CalculationResult:
         return forces
 
     def stress(self, voigt=True):
-        """Stress tensor in eV/Angstrom^3 (Voigt (6,) by default, or 3x3 if voigt=False)."""
-        if "stress" in self._raw:
-            val = np.array(self._raw["stress"], copy=True)
-            if not voigt and val.shape == (6,):
-                from ase.stress import voigt_6_to_full_3x3_stress
-                return voigt_6_to_full_3x3_stress(val)
-            return val
-        raise ValueError("stress tensor requires a periodic crystal calculation")
+        """Stress tensor in eV/Angstrom^3 (ASE Voigt order ``[xx, yy, zz, yz, xz, xy]`` by default, or 3x3).
+
+        The analytic stress of the Rust engine at the pins of the crystal (node counts, ion width,
+        basis): ``sigma = (g + g^T) / (2 Omega)`` with ``g_ab = dF/d eps_ab``, the sign ASE uses.
+        """
+        if self.periodic is None:
+            raise ValueError("stress tensor requires a periodic crystal calculation")
+        if self._dispersion is not None:
+            raise NotImplementedError(
+                "the crystal stress does not include the Tkatchenko-Scheffler dispersion "
+                "(its stress is not available), so it would not be the derivative of the energy"
+            )
+        if not hasattr(self, "_crystal_stress"):
+            self._crystal_stress = self.periodic.stress()["sigma"]
+        full = self._crystal_stress * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3)
+        if not voigt:
+            return np.array(full, copy=True)
+        return np.array([full[0, 0], full[1, 1], full[2, 2], full[1, 2], full[0, 2], full[0, 1]])
 
     def snapshot(self, *, include_hamiltonian=False):
         if self._reference is not None and self._problem is None:

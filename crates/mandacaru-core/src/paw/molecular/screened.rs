@@ -109,7 +109,7 @@ fn short_range_potential(
 
 impl Setup {
     /// The species-level screened terms at `omega`, built once per value.
-    fn screened_atoms(&self, ctx: &Context, omega: f64) -> Result<Arc<Vec<ScreenedAtom>>> {
+    pub(super) fn screened_atoms(&self, ctx: &Context, omega: f64) -> Result<Arc<Vec<ScreenedAtom>>> {
         let mut cache = self
             .screened
             .lock()

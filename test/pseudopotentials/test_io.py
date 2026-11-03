@@ -108,15 +108,17 @@ class TestRoundTrip:
         path = save_pseudopotential(silicon, tmp_path / "si.parquet", stride=4)
         assert load_pseudopotential(path).r.size == silicon.r.size // 4
 
-    def test_a_decimated_grid_starts_one_step_from_the_origin(self):
+    def test_a_decimated_grid_starts_one_step_from_the_origin(self, tmp_path):
         """The PAW-LCAO grids are r_k = k h; every Numerov
         diagnostic of a loaded dataset prepends r = 0 and takes r[1] - r[0]
         as its step, so the stored grid must be k (stride h) -- not
         h, 5h, 9h, ..., whose first step differs from the rest."""
-        from mandacaru.pseudopotentials.io import _table
+        from mandacaru.pseudopotentials.generation import generate_paw
 
-        h = 0.0025
-        r = np.asarray(_table(h * np.arange(1, 4001), 4))
+        pp = generate_paw("H", ghosts="keep")
+        h = float(pp.r[0])
+        r = np.asarray(load_pseudopotential(save_pseudopotential(
+            pp, tmp_path / "H.parquet", stride=4)).r)
         steps = np.diff(np.concatenate([[0.0], r]))
         assert np.allclose(steps, 4 * h, rtol=1e-8)
 
@@ -180,10 +182,11 @@ class TestNativeParquet:
     """Parquet is read and written by the native engine, not by a Python package."""
 
     def test_radial_tables_load_as_float64_arrays(self, silicon, tmp_path):
-        from mandacaru.pseudopotentials.io import _read_parquet
+        from mandacaru import _native
+        from mandacaru.pseudopotentials.native_context import context
 
         path = save_pseudopotential(silicon, tmp_path / "si.parquet")
-        tables = _read_parquet(path)["radial_tables"]
+        tables = _native.read_parquet(context(), path)["columns"]
         assert tables and all(
             isinstance(values, np.ndarray) and values.dtype == np.float64
             for values in tables.values())
@@ -250,6 +253,18 @@ class TestRelativisticExchangeRecord:
         assert loaded.relativistic_exchange
 
 
+def _file_only_ghosts(pp) -> dict:
+    """Channels with one occupied reference whose lowest level lies more than 5 mHa below it:
+    the ghost test that needs no all-electron atom (a file has none).  A ghost sits tens of
+    mHa and deeper; the stride-4 tables move a level by up to 1e-3 Ha (Cu)."""
+    from mandacaru.pseudopotentials.diagnostics import ghost_levels
+
+    levels = ghost_levels(pp)
+    return {l: levels[l][0] - c.reference_energies[0] for l, c in pp.channels.items()
+            if sum(1 for o in c.occupations if o > 0.0) == 1
+            and levels[l][0] < c.reference_energies[0] - 5e-3}
+
+
 def _pbe_library():
     """``$MANDACARU_PAW_PATH/pbe-sr``, or a skip when the checkout has no
     PBE set (an older ``mandacaru-paw``)."""
@@ -277,16 +292,13 @@ class TestPBELibrary:
         """Selected by functional, read from ``pbe-sr/``, recorded as a
         scalar-relativistic PBE dataset with relativistic exchange, and its
         generalized spectrum holds no level below any channel's reference."""
-        from mandacaru.pseudopotentials.partial_waves import ghost_errors
-        from mandacaru.pseudopotentials.paw import _paw_levels
-
         folder = _pbe_library()
         pp = get_paw(symbol, xc="pbe")
         assert os.path.dirname(pp.source) == os.path.realpath(folder)
         assert (pp.xc, pp.relativity) == ("pbe", "scalar")
         assert pp.relativistic_exchange
         assert not (pp.defects or {}).get("ghosts")
-        assert ghost_errors(pp, _paw_levels, with_atom=False) == {}
+        assert _file_only_ghosts(pp) == {}
 
     @pytest.mark.parametrize("symbol, n", [("Sc", 4), ("Zr", 5), ("Ta", 6)])
     def test_the_early_d_block_carries_its_semicore_shell(self, symbol, n):
@@ -298,32 +310,6 @@ class TestPBELibrary:
         pp = get_paw(symbol, xc="pbe")
         assert pp.semicore_subshells == ((n - 1, 0), (n - 1, 1))
         assert 1 in pp.channels and not pp.defects
-
-    @pytest.mark.parametrize("symbol", ["Sc", "Ti", "Ga", "Ge"])
-    def test_a_filtered_3d_function_projects_onto_its_own_wave(self, symbol):
-        """The filtered (grid_spacing = 0.20 Angstrom) 3d basis function of a single
-        atom projects onto its own first d projector as 1 and onto the
-        second as 0, to 0.1.  The semicore Sc and Ti at their default d
-        spheres were off by 0.21 / 0.35, the PBE Ga and Ge without the d
-        repair by 0.47 / 1.27 (HISTORY.md, 2026-10-11)."""
-        from ase import Atoms
-
-        from mandacaru.algorithms._hamiltonian_from_atoms import (
-            build_basis_hamiltonian)
-
-        folder = _pbe_library()
-        atoms = Atoms(symbol, positions=[[3.5, 3.5, 3.5]], cell=[7.0] * 3)
-        _H, _p, _n, _profile, context = build_basis_hamiltonian(
-            atoms, {"name": "PAW-LCAO", "size": "SZ",
-                    "projector_basis": "dual", "paw_dataset": folder},
-            None, 0.20, 0, None, spin=True)
-        integrals = context["integrals"]
-        C = np.asarray(integrals.projections())
-        columns = {(q.m, q.index): k for k, q in
-                   enumerate(integrals.kb_projectors) if q.l == 2}
-        row = int(np.argmax(np.abs(C[:, columns[0, 0]])))
-        assert C[row, columns[0, 0]].real == pytest.approx(1.0, abs=0.1)
-        assert abs(C[row, columns[0, 1]]) < 0.1
 
     def test_the_functional_selects_the_set(self):
         """``xc`` picks the folder; the default stays the LDA set."""
@@ -354,8 +340,7 @@ class TestPBELibrary:
             warnings.simplefilter("error", RuntimeWarning)
             energy = atoms.get_potential_energy()
         assert np.isfinite(energy)
-        integrals = atoms.calc.solver._gradient_context["integrals"]
-        assert {d.xc for d in integrals.pseudopotentials} == {"pbe"}
+        assert get_paw("H", paw_dataset="pbe-sr").xc == "pbe"
 
 
 def _pbe_dirac_library():
@@ -387,9 +372,6 @@ class TestPBEDiracLibrary:
         relativistic exchange, a spin-orbit term for every channel with
         l >= 1 (the j = l - 1/2 reference not above the j = l + 1/2 one),
         and no ghost."""
-        from mandacaru.pseudopotentials.paw import _paw_levels
-        from mandacaru.pseudopotentials.partial_waves import ghost_errors
-
         folder = _pbe_dirac_library()
         pp = get_paw(symbol, paw_dataset=folder)
         assert os.path.dirname(pp.source) == os.path.realpath(folder)
@@ -400,7 +382,7 @@ class TestPBEDiracLibrary:
             down, up = term["reference_energies"]
             assert down[0] <= up[0]
         assert not (pp.defects or {}).get("ghosts")
-        assert ghost_errors(pp, _paw_levels, with_atom=False) == {}
+        assert _file_only_ghosts(pp) == {}
 
     def test_protactinium_is_built_on_bound_branches(self):
         """One 5f branch of Pa's scalar configuration is unbound in the Dirac

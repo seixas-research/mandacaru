@@ -3,10 +3,11 @@
 //! exchange-correlation, core exchange and reference density matrix that turn a
 //! dataset's Kohn-Sham one-center terms into Hartree-Fock ones.
 //!
-//! The exchange-correlation potentials here use the atom solver's radial scheme
-//! (`models::radial_xc`: derivatives on subset nodes, splined back), the scheme
-//! the datasets were unscreened with, not the variational one of
-//! `models::spherical`.
+//! The exchange-correlation potentials here are the variational radial scheme of
+//! `models::spherical` (D-2b: the scheme the reference atom is solved with and the datasets
+//! are unscreened with). The atom-solver scheme the 431 shipped datasets were produced with
+//! (`models::radial_xc`, derivatives on subset nodes) is reachable only through the
+//! `doc(hidden)` [`exact_one_center_terms_with`], to prove the port.
 use super::{
     checks::interpolate_linear,
     invalid,
@@ -14,7 +15,10 @@ use super::{
     onecenter_radial::{gradient_first_edge, radial_coulomb, three_j_squared, trapezoid},
 };
 use crate::{
-    models::{radial_xc::xc_potential, xc::exchange_hole_batch},
+    models::{
+        xc::exchange_hole_batch,
+        xc_scheme::{Variational, XcSource},
+    },
     Context, Result,
 };
 use nalgebra::DMatrix;
@@ -261,6 +265,18 @@ pub fn exact_one_center_terms(
     atom: &ReferenceAtom<'_>,
     basis: Basis,
 ) -> Result<Vec<ChannelTerms>> {
+    exact_one_center_terms_with(ctx, atom, basis, &Variational)
+}
+
+#[doc(hidden)]
+/// [`exact_one_center_terms`] with the radial exchange-correlation scheme as a parameter (the
+/// legacy `AtomSolver` reproduces the frozen numbers of the shipped PBE datasets).
+pub fn exact_one_center_terms_with(
+    ctx: &Context,
+    atom: &ReferenceAtom<'_>,
+    basis: Basis,
+    scheme: &dyn XcSource,
+) -> Result<Vec<ChannelTerms>> {
     let r = atom.r;
     let grid = r.len();
     let channels = sorted(&atom.channels, grid)?;
@@ -282,8 +298,21 @@ pub fn exact_one_center_terms(
     let smooth = (0..grid)
         .map(|i| atom.valence_density[i] + atom.smooth_core[i])
         .collect::<Vec<_>>();
-    let v_ae = xc_potential(ctx, r, &all_electron, atom.functional, atom.relativistic)?.1;
-    let v_ps = xc_potential(ctx, r, &smooth, atom.functional, atom.relativistic)?.1;
+    // A density is not negative: round-off in a tail is clamped, as the atom solver does.
+    let physical = |density: &[f64]| density.iter().map(|d| d.max(0.)).collect::<Vec<_>>();
+    let potential = |density: &[f64]| -> Result<Vec<f64>> {
+        Ok(scheme
+            .evaluate(
+                ctx,
+                r,
+                &physical(density),
+                atom.functional,
+                atom.relativistic,
+            )?
+            .potential)
+    };
+    let v_ae = potential(&all_electron)?;
+    let v_ps = potential(&smooth)?;
     let extent = core_extent(r, atom.core, 1e-14);
     let sphere = channels
         .iter()

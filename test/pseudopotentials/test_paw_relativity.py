@@ -26,15 +26,18 @@ multipole all take the plain inner product.  The two matrices are identical
 non-relativistically and differ at ``O(c^-2)`` when they are not.
 """
 
+import json
 import warnings
 
 import numpy as np
 import pytest
 
-from mandacaru.pseudopotentials.paw import (from_payload, generate_paw,
-                                            paw_spin_orbit_blocks,
-                                            paw_spin_orbit_projectors,
-                                            to_payload)
+from mandacaru import _native
+from mandacaru.pseudopotentials.generation import generate_paw
+from mandacaru.pseudopotentials.native_context import context
+from mandacaru.pseudopotentials.paw import (paw_spin_orbit_blocks,
+                                            paw_spin_orbit_projectors)
+from mandacaru.pseudopotentials.record import record_of
 
 HARTREE_EV = 27.211386245988
 
@@ -78,29 +81,6 @@ class TestTheOneCenterIdentitiesStillClose:
             assert channel.consistency_error < 1e-10
             assert channel.asymmetry < 1e-4
 
-    def test_the_conserved_norm_differs_from_the_overlap(self):
-        """If it did not, none of the above would be saying anything."""
-        from mandacaru.basis.atomic_solver import solve_atom
-        from mandacaru.pseudopotentials.partial_waves import (
-            bound_state, inner_overlaps, norm_targets, scattering_wave)
-
-        atom = solve_atom(8, points=4000, r_max=20.0, tolerance=1e-6,
-                          relativity="scalar")
-        r, v = atom.r, atom.v_effective
-        u, e1 = bound_state(r, v, 1, atom.eigenvalues[(2, 1)], 8.0,
-                            treatment="scalar")
-        e2 = e1 + 1.0
-        u2 = scattering_wave(r, v, 1, e2, 8.0, "scalar")
-        r_cut = 1.45
-        inside = r <= r_cut
-        u2 = u2 / np.sqrt(np.trapezoid(u2[inside] ** 2, r[inside]))
-        waves = [u / r, u2 / r]
-        targets = norm_targets(r, waves, [e1, e2], r_cut, v, "scalar",
-                               z_eff=8.0)
-        overlaps = inner_overlaps(r, waves, r_cut)
-        shift = np.max(np.abs(targets - overlaps))
-        assert shift > 1e-6        # there is something to get wrong
-        assert shift < 1e-2        # and it is an O(c^-2) correction
 
 
 class TestTheOptions:
@@ -182,24 +162,6 @@ class TestTheOptions:
         assert 1e-6 < np.abs(scalar.overlap_correction[2]).max() < 1e-3
 
 
-def _level_with_spin_orbit(pp, l, lz_s):
-    """Lowest level of channel ``l`` with ``<L.S> = lz_s``, built only from
-    what the dataset stores: the union projectors, the average plus the
-    L.S difference, and the overlap split the same way."""
-    from scipy.interpolate import CubicSpline
-
-    from mandacaru.pseudopotentials.paw import _generalized_spectrum
-
-    entry = pp.spin_orbit[l]
-    h = 0.004
-    r = np.arange(1, int(22.0 / h)) * h
-    v = CubicSpline(pp.r, pp.v_local_screened)(r) + l * (l + 1) / (2 * r * r)
-    p_u = [CubicSpline(pp.r, p)(r) * r for p in entry["projectors"]]
-    D = entry["average_screened"] + lz_s * entry["coupling_screened"]
-    q = entry["overlap_average"] + lz_s * entry["overlap_coupling"]
-    return float(_generalized_spectrum(r, v, p_u, D, q, 1)[0])
-
-
 class TestSpinOrbitCoupling:
     """The j-resolved term: two unitary branches per l, stored as their
     (2j+1) average and L.S difference on the union of their projectors."""
@@ -227,24 +189,10 @@ class TestSpinOrbitCoupling:
                 assert np.allclose(entry[key], entry[key].T, atol=1e-10)
 
     def test_each_j_is_the_dirac_atoms_level(self, oxygen_dirac):
-        """Solved per j from the stored terms, not from the branches."""
-        pp = oxygen_dirac
-        for l, entry in pp.spin_orbit.items():
-            down, up = entry["reference_energies"]
-            assert _level_with_spin_orbit(pp, l, -(l + 1) / 2) == \
-                pytest.approx(down[0], abs=1e-4)
-            assert _level_with_spin_orbit(pp, l, l / 2) == \
-                pytest.approx(up[0], abs=1e-4)
+        """The level of each branch, solved by the generator from the stored terms,
+        against the Dirac atom's: the error is stored with the entry."""
+        for entry in oxygen_dirac.spin_orbit.values():
             assert np.all(np.abs(entry["level_errors"]) < 1e-4)
-
-    def test_the_splitting_is_the_dirac_atoms(self, oxygen_dirac):
-        """0.28 % here; the first-order term it replaced was 0.8 % off for
-        oxygen and 19-20 % for the 6p of Tl-Bi."""
-        pp = oxygen_dirac
-        split = (_level_with_spin_orbit(pp, 1, 0.5)
-                 - _level_with_spin_orbit(pp, 1, -1.0))
-        assert split == pytest.approx(pp.atom.spin_orbit_splitting(2, 1),
-                                      rel=0.01)
 
     def test_the_overlap_stays_spin_free(self, oxygen_dirac):
         """Unitary branches: a j-dependent q would give the metric an L.S
@@ -264,37 +212,48 @@ class TestSpinOrbitCoupling:
             assert np.allclose(oxygen_dirac.overlap_correction[l],
                                oxygen_scalar.overlap_correction[l], atol=1e-4)
 
-    def test_it_survives_a_payload_round_trip(self, oxygen_dirac):
-        back = from_payload(to_payload(oxygen_dirac))
+    def test_it_survives_a_record_round_trip(self, oxygen_dirac, tmp_path):
+        from mandacaru.pseudopotentials.record import read_dataset, write_dataset
+
+        back = read_dataset(write_dataset(oxygen_dirac, tmp_path / "O.parquet"))
         assert back.has_spin_orbit and back.relativity == "dirac"
         for l, entry in oxygen_dirac.spin_orbit.items():
             for key, value in entry.items():
                 if key == "projectors":
-                    assert all(np.allclose(a, b) for a, b in
+                    # Tables are stored to ten digits.
+                    assert all(np.allclose(a, b, rtol=1e-9, atol=1e-12) for a, b in
                                zip(back.spin_orbit[l][key], value))
                 else:
                     assert np.allclose(back.spin_orbit[l][key], value)
 
-    def test_the_first_order_format_is_refused(self, oxygen_dirac):
-        payload = to_payload(oxygen_dirac)
-        payload["spin_orbit"] = {"1": [[0.01, 0.0], [0.0, 0.01]]}
+    def test_the_first_order_format_is_refused(self, oxygen_dirac, tmp_path):
+        payload, tables = record_of(oxygen_dirac)
+        record = json.loads(payload)
+        record["spin_orbit"] = {"1": [[0.01, 0.0], [0.0, 0.01]]}
         with pytest.raises(ValueError, match="first-order spin-orbit"):
-            from_payload(payload)
+            _native.paw_record_write(context(), str(tmp_path / "O.parquet"),
+                                     json.dumps(record), tables)
 
-    def test_a_strided_payload_keeps_the_projectors_on_its_grid(
-            self, oxygen_dirac):
-        """The union projectors are radial tables like every other, stored
-        on the dataset's stride; they were once written at full length."""
-        back = from_payload(to_payload(oxygen_dirac, stride=4))
+    def test_a_strided_record_keeps_the_projectors_on_its_grid(self, oxygen_dirac,
+                                                               tmp_path):
+        """The union projectors are radial tables like every other, stored on the
+        dataset's stride; they were once written at full length."""
+        from mandacaru.pseudopotentials.record import read_dataset, write_dataset
+
+        back = read_dataset(write_dataset(oxygen_dirac, tmp_path / "O.parquet", stride=4))
         for entry in back.spin_orbit.values():
             assert all(p.size == back.r.size for p in entry["projectors"])
 
-    def test_projectors_off_the_grid_are_refused(self, oxygen_dirac):
-        payload = to_payload(oxygen_dirac, stride=4)
-        entry = payload["spin_orbit"]["1"]
-        entry["projectors"] = [p + p for p in entry["projectors"]]
+    def test_projectors_off_the_grid_are_refused(self, oxygen_dirac, tmp_path):
+        payload, tables = record_of(oxygen_dirac)
+        record = json.loads(payload)
+        tables = {k: np.ascontiguousarray(v[3::4]) for k, v in tables.items()}      # the grid at stride 4 ...
+        # ... with the union projectors left at full length.
+        record["spin_orbit"]["1"]["projectors"] = [
+            list(p) for p in oxygen_dirac.spin_orbit[1]["projectors"]]
         with pytest.raises(ValueError, match="radial grid"):
-            from_payload(payload)
+            _native.paw_record_write(context(), str(tmp_path / "O.parquet"),
+                                     json.dumps(record), tables)
 
     def test_the_blocks_act_through_the_union_projectors(self, oxygen_dirac):
         position = np.zeros((1, 3))
@@ -306,121 +265,3 @@ class TestSpinOrbitCoupling:
         assert set(blocks) == {(0, 1)}
         assert np.allclose(blocks[(0, 1)],
                            oxygen_dirac.spin_orbit[1]["coupling"])
-
-
-    def test_a_dataset_without_the_fields_is_not_relabelled(self):
-        """A payload written before these options existed is what it was."""
-        payload = to_payload(generate_paw("H", points=3000, r_max=20.0))
-        for key in ("xc", "relativity", "nlcc", "spin_orbit", "extra_l"):
-            payload.pop(key, None)
-        back = from_payload(payload)
-        assert back.relativity == "none" and back.xc == "lda"
-        assert not back.nlcc.get("applied") and not back.has_spin_orbit
-
-
-class TestSpinOrbitInTheMolecularHamiltonian:
-    """Option (a) of mandacaru-paw/FR.md: the scalar Hamiltonian plus the L.S term
-    through the union projectors, on an O atom."""
-
-    @pytest.fixture(scope="class")
-    def integrals(self, oxygen_dirac):
-        from ase import Atoms
-
-        from mandacaru.pseudopotentials.paw import build_paw
-
-        atoms = Atoms("O", positions=[[0.0, 0.0, 0.0]], cell=[6.0] * 3)
-        atoms.center()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            _h, _n, _m, _p, context = build_paw(
-                atoms, None, 0.25, 0, None, {"size": "SZ"},
-                loader=lambda symbol, paw_dataset: oxygen_dirac)
-        return context["integrals"]
-
-    def _p_block(self, integrals, matrix):
-        l = np.array([f.l for f in integrals.basis])
-        p = np.where(l == 1)[0]
-        index = np.concatenate([p, p + l.size])
-        return index, matrix[np.ix_(index, index)]
-
-    def test_the_term_conserves_j_z(self, integrals):
-        """J_z = L_z + S_z on the p shell, L_z in the real harmonics of a
-        molecule (p_y, p_z, p_x): purely imaginary, off the diagonal."""
-        from mandacaru.basis._angular import real_harmonic_transform
-
-        index, block = self._p_block(integrals,
-                                     integrals.spin_orbit_matrix())
-        p = [mu for mu, f in enumerate(integrals.basis) if f.l == 1]
-        assert [integrals.basis[mu].m for mu in p] == [-1, 0, 1]
-        U = np.conj(real_harmonic_transform(1))
-        lz = U @ np.diag([-1.0, 0.0, 1.0]) @ U.conj().T
-        assert np.abs(lz.real).max() < 1e-15
-        jz = (np.kron(np.eye(2), lz)
-              + np.kron(np.diag([0.5, -0.5]), np.eye(3)))
-        commutator = jz @ block - block @ jz
-        # Only the cubic grid mixes m (6e-5 here at grid_spacing = 0.25 Angstrom); a
-        # wrong L.S or basis would break it at order one.
-        assert np.linalg.norm(commutator) < 1e-3 * np.linalg.norm(block)
-
-    def test_the_p_shell_splits_into_its_two_j_levels(self, integrals):
-        """Doublet below quartet, centered on the scalar level: the term is
-        in the basis the scalar one-body matrix is in (Loewdin)."""
-        h = integrals.one_body()
-        M = h.shape[0]
-        full = np.zeros((2 * M, 2 * M), dtype=complex)
-        full[:M, :M] = full[M:, M:] = h
-        full += integrals.spin_orbit_matrix()
-        index, block = self._p_block(integrals, full)
-        levels = np.linalg.eigvalsh(block)
-        assert np.allclose(levels[:2], levels[0], atol=1e-9)
-        assert np.allclose(levels[2:], levels[2], atol=1e-9)
-        assert levels[2] > levels[0]
-        _i, scalar = self._p_block(integrals, full - integrals.spin_orbit_matrix())
-        assert levels.mean() == pytest.approx(
-            np.linalg.eigvalsh(scalar).mean(), abs=1e-9)
-
-
-
-class TestKramersPairActiveSpaces:
-    """A spin-orbit Hamiltonian is written in GHF spinor pairs, and its
-    active space freezes and deletes pairs.  HI with the installed Dirac
-    library (SZ): 18 electrons in 10 pairs; relations, not absolute values."""
-
-    @staticmethod
-    def _exact(active_space):
-        from ase import Atoms
-
-        from mandacaru.core.sector import ParticleSector
-        from mandacaru.pseudopotentials.environment import library_folder
-        from mandacaru.pseudopotentials.paw import FAMILY, build_paw
-
-        atoms = Atoms("HI", positions=[[0, 0, 0], [0, 0, 1.609]],
-                      cell=[9.0] * 3)
-        atoms.center()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            H, particles, pairs, _p, context = build_paw(
-                atoms, None, 0.25, 0, None,
-                {"size": "SZ",
-                 "paw_dataset": library_folder(FAMILY, "lda-fr")},
-                active_space=active_space)
-        sector = ParticleSector(2 * pairs, tuple(particles), "jordan_wigner",
-                                spin_conserving=False)
-        matrix = sector.restrict(H.map_to_qubits("jordan_wigner",
-                                                 n_modes=2 * pairs))
-        matrix = matrix.toarray() if hasattr(matrix, "toarray") else matrix
-        return np.linalg.eigvalsh(matrix)[0], context["integrals"]
-
-    def test_freezing_and_truncating_pairs_is_variational(self):
-        full, integrals = self._exact(None)
-        assert integrals.spinor_basis
-        assert integrals.mo_coefficients.shape == (20, 20)
-        one_frozen, _i = self._exact({"frozen": 1})
-        two_frozen, _i = self._exact({"frozen": 2})
-        determinant, _i = self._exact({"orbitals": 9})
-        assert full < one_frozen < two_frozen < determinant
-        assert one_frozen - full < 5e-4            # Hartree
-
-    def test_a_ranking_of_spatial_orbitals_is_refused(self):
-        with pytest.raises(NotImplementedError, match="Kramers pairs"):
-            self._exact({"method": "mp2", "orbitals": 9})

@@ -50,8 +50,9 @@ pub struct SpinOrbitInputs<'a> {
 }
 
 /// The crystals this stress does not differentiate, from the crystal itself: DFT+U (AS-7) and a k
-/// mesh reduced by space-group symmetry (the stress symmetrizer is CF-6; build with
-/// `symmetry=False`). A hybrid, float32 data, a meta-GGA, rVV10 and `spins != 1` are refused by
+/// mesh reduced by space-group symmetry whose operations the snapshot does not carry (CF-6: with
+/// them the stress is averaged over the group; a spin-orbit crystal or a hybrid needs the whole
+/// mesh). A hybrid, float32 data, a meta-GGA, rVV10 and `spins != 1` are refused by
 /// [`check_request`] from the layout.
 pub fn refuse(c: &Crystal) -> Result<()> {
     let no = |what: &str| {
@@ -74,7 +75,9 @@ pub fn refuse(c: &Crystal) -> Result<()> {
         (v - C64::new(want, 0.)).norm() < 1e-12
     });
     if !c.permutations.is_empty() || !identity {
-        return no("a k mesh reduced by space-group symmetry (use symmetry=False)");
+        if let Err(cause) = crate::periodic::gradient::scf::reduced_mesh(c) {
+            return no(&cause);
+        }
     }
     Ok(())
 }
@@ -185,7 +188,12 @@ pub fn crystal_strain<'a>(
         q: frozen.q,
         hubbard: None,
     };
-    let mut strain = StrainSetup::new(ctx, inputs, layout, operators)?;
+    let mut strain = StrainSetup::new(ctx, inputs, layout, operators)?.with_point_group(
+        crystal
+            .description
+            .as_ref()
+            .and_then(|d| d.point_group.clone()),
+    );
     if let Some(so) = spin_orbit {
         strain = strain.with_spin_orbit(so.projectors, so.couplings)?;
     }

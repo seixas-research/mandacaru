@@ -685,8 +685,13 @@ class TestFrozenPythonOutputs:
     @pytest.mark.parametrize("basis", ["raw", "dual"])
     def test_the_core_and_the_exact_terms(self, frozen, datasets, functional,
                                           symbol, basis):
-        """The V of a PBE dataset uses the atom solver's radial scheme (the
-        one the datasets were unscreened with), not the variational one."""
+        """The V of a PBE dataset uses the variational radial scheme (the
+        scheme of the reference atom and of the unscreening, XC-SW, D-2b).
+        The frozen PBE V blocks are the Rust output of that scheme on the
+        shipped PBE datasets (re-frozen 2026-11-03; the atom-solver scheme the
+        files were generated with is the test-only seam of the Rust tests,
+        which proves the port against the earlier Python numbers); K and D0
+        and every LDA block are the Python freeze, unchanged."""
         from mandacaru.pseudopotentials import get_paw
         try:
             dataset = (datasets[symbol] if functional == "lda"

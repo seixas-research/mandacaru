@@ -530,11 +530,8 @@ impl PyMeanField {
             }
         }
         out.set_item("scheme", gradient.scheme)?;
-        if let Some(step) = gradient.step {
-            out.set_item("step_bohr", step)?;
-        }
-        if let Some(estimate) = gradient.estimate {
-            out.set_item("step_error_estimate", estimate)?;
+        if let Some(stationarity) = gradient.stationarity {
+            out.set_item("stationarity", stationarity)?;
         }
         Ok(out)
     }

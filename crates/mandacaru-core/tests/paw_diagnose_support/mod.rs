@@ -79,8 +79,7 @@ impl LibraryCase {
                 .unwrap_or_else(|e| panic!("frozen lib_{set}_{element}.json is missing: {e}")),
         )
         .unwrap();
-        let restore =
-            format!("python test/migration/freeze_paw_generation.py run lib:{set}:{element}");
+        let restore = "cp test/migration/reference/paw_generate_archive/*.npz test/migration/reference/paw_generate/".to_string();
         let data = Npz::open(Path::new(&format!("{}_data.npz", base.display())), &restore);
         Self {
             set: set.into(),

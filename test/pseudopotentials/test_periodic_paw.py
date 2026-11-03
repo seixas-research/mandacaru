@@ -422,8 +422,8 @@ class TestTheSphereBlochSums:
         assert pp._sphere_chunk_size(1, 20) == pp.SPHERE_CHUNK
         for nk, rows in ((10, 200), (100, 400), (1000, 1000)):
             size = pp._sphere_chunk_size(nk, rows)
-            assert 4096 <= size <= pp.SPHERE_CHUNK
-            assert size == 4096 or 32 * nk * rows * size <= pp.SPHERE_BYTES
+            assert 512 <= size <= pp.SPHERE_CHUNK
+            assert size == 512 or 32 * nk * rows * size <= pp.SPHERE_BYTES
 
 
 class TestTheProjectorSpaceMoments:

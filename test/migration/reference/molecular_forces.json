@@ -1,0 +1,536 @@
+{
+ "about": "Forces of PAW-LCAO molecules from the retired finite-difference route (the symmetric Richardson difference, steps 1e-3 and 5e-4 Bohr, of the fixed-orthonormal-density energy expression; 'step_error_estimate' is its own Richardson error), frozen before the analytic gradient replaced it (package M, 2026-11-03). The analytic gradient reproduces these numbers (test_native_molecular_forces.py): the worst miss over the nine cases is 2.0e-7 eV/Angstrom.",
+ "units": {
+  "forces": "eV/Angstrom",
+  "energy": "eV"
+ },
+ "options_common": {
+  "project_translation": false,
+  "scf_options": {
+   "tolerance": 1e-11
+  }
+ },
+ "cases": {
+  "h2_pbe": {
+   "atoms": {
+    "symbols": "H2",
+    "positions_angstrom": [
+     [
+      2.5,
+      2.5,
+      2.1
+     ],
+     [
+      2.57,
+      2.5,
+      2.9
+     ]
+    ],
+    "cell_angstrom": [
+     5,
+     5,
+     5
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "dft",
+    "xc": "pbe",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "SZ"
+    },
+    "grid_spacing": 0.4
+   },
+   "energy_ev": -30.20346669515895,
+   "forces_ev_angstrom": [
+    [
+     -0.22203711289509637,
+     1.2864271727122234e-09,
+     -2.493287976850195
+    ],
+    [
+     0.22203709827625978,
+     3.672787638068922e-09,
+     2.493287987807662
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 4.977166826828731e-08
+   }
+  },
+  "h2_rhf": {
+   "atoms": {
+    "symbols": "H2",
+    "positions_angstrom": [
+     [
+      2.5,
+      2.5,
+      2.1
+     ],
+     [
+      2.57,
+      2.5,
+      2.9
+     ]
+    ],
+    "cell_angstrom": [
+     5,
+     5,
+     5
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "rhf",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "SZ"
+    },
+    "grid_spacing": 0.4
+   },
+   "energy_ev": -29.095997065648465,
+   "forces_ev_angstrom": [
+    [
+     -0.22300404572125804,
+     7.70714504361613e-10,
+     -2.5789216815378704
+    ],
+    [
+     0.22300403875818553,
+     1.824975826377252e-09,
+     2.578921686274435
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 4.94078851905518e-08
+   }
+  },
+  "lih_rhf": {
+   "atoms": {
+    "symbols": "LiH",
+    "positions_angstrom": [
+     [
+      2.5,
+      2.5,
+      1.85
+     ],
+     [
+      2.6,
+      2.5,
+      3.45
+     ]
+    ],
+    "cell_angstrom": [
+     5,
+     5,
+     5
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "rhf",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "SZ"
+    },
+    "grid_spacing": 0.4
+   },
+   "energy_ev": -20.04793460710151,
+   "forces_ev_angstrom": [
+    [
+     -0.022432571439319385,
+     2.3977784580139076e-10,
+     -0.7245876820338747
+    ],
+    [
+     0.04446561124093236,
+     -2.5252793760194087e-09,
+     1.0709953718091778
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 6.561066504910211e-09
+   }
+  },
+  "lih_pbe": {
+   "atoms": {
+    "symbols": "LiH",
+    "positions_angstrom": [
+     [
+      2.5,
+      2.5,
+      1.85
+     ],
+     [
+      2.6,
+      2.5,
+      3.45
+     ]
+    ],
+    "cell_angstrom": [
+     5,
+     5,
+     5
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "dft",
+    "xc": "pbe",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "SZ"
+    },
+    "grid_spacing": 0.4
+   },
+   "energy_ev": -21.162812161796584,
+   "forces_ev_angstrom": [
+    [
+     0.061705532551126395,
+     4.6433170139316934e-10,
+     -0.6146331784127028
+    ],
+    [
+     0.07377821961295039,
+     -4.597645043302857e-09,
+     1.2741437055524674
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 5.560163440776478e-09
+   }
+  },
+  "h2o_pbe": {
+   "atoms": {
+    "symbols": "OH2",
+    "positions_angstrom": [
+     [
+      3.0,
+      3.0,
+      3.0
+     ],
+     [
+      3.76,
+      3.0,
+      3.59
+     ],
+     [
+      2.24,
+      3.0,
+      3.59
+     ]
+    ],
+    "cell_angstrom": [
+     6,
+     6,
+     6
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "dft",
+    "xc": "pbe",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "DZP"
+    },
+    "grid_spacing": 0.3
+   },
+   "energy_ev": -466.25531938799725,
+   "forces_ev_angstrom": [
+    [
+     1.6362744677291096e-07,
+     1.4980406366258316e-08,
+     -1.8848536406999794
+    ],
+    [
+     1.0241813046176853,
+     -1.9614588986064245e-07,
+     0.8486015938966375
+    ],
+    [
+     -1.0241812049614454,
+     6.101775276012534e-08,
+     0.8486016687377734
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 1.5169317653847733e-07
+   }
+  },
+  "h2o_rhf": {
+   "atoms": {
+    "symbols": "OH2",
+    "positions_angstrom": [
+     [
+      3.0,
+      3.0,
+      3.0
+     ],
+     [
+      3.76,
+      3.0,
+      3.59
+     ],
+     [
+      2.24,
+      3.0,
+      3.59
+     ]
+    ],
+    "cell_angstrom": [
+     6,
+     6,
+     6
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "rhf",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "DZP"
+    },
+    "grid_spacing": 0.3
+   },
+   "energy_ev": -459.1343477680638,
+   "forces_ev_angstrom": [
+    [
+     1.38781894750824e-07,
+     1.0839481029243824e-08,
+     0.2749710349347332
+    ],
+    [
+     -0.2380471987926876,
+     -1.7063048226933254e-07,
+     -0.19712059210177368
+    ],
+    [
+     0.23804729546502545,
+     5.29185899686117e-08,
+     -0.19712051969647626
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 1.677549950803344e-07
+   }
+  },
+  "oh_upbe": {
+   "atoms": {
+    "symbols": "OH",
+    "positions_angstrom": [
+     [
+      3.0,
+      3.0,
+      3.0
+     ],
+     [
+      3.0,
+      3.1,
+      3.97
+     ]
+    ],
+    "cell_angstrom": [
+     6,
+     6,
+     6
+    ],
+    "magmoms": [
+     1,
+     0
+    ]
+   },
+   "options": {
+    "method": "dft",
+    "xc": "pbe",
+    "unrestricted": true,
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "DZP"
+    },
+    "grid_spacing": 0.3
+   },
+   "energy_ev": -447.4137807460609,
+   "forces_ev_angstrom": [
+    [
+     -1.7872964506084616e-08,
+     -0.5346608483874911,
+     -1.5813314306071826
+    ],
+    [
+     -2.143537821513385e-08,
+     0.16076246561253418,
+     1.4710255503269973
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 2.4597272367069917e-07
+   }
+  },
+  "h2o_r2scan": {
+   "atoms": {
+    "symbols": "OH2",
+    "positions_angstrom": [
+     [
+      3.0,
+      3.0,
+      3.0
+     ],
+     [
+      3.76,
+      3.0,
+      3.59
+     ],
+     [
+      2.24,
+      3.0,
+      3.59
+     ]
+    ],
+    "cell_angstrom": [
+     6,
+     6,
+     6
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "dft",
+    "xc": "r2scan",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "DZP"
+    },
+    "grid_spacing": 0.3
+   },
+   "energy_ev": -466.2475458241743,
+   "forces_ev_angstrom": [
+    [
+     1.674029963448948e-07,
+     1.175292044182055e-08,
+     -0.7354020353258743
+    ],
+    [
+     0.7935809807707908,
+     -1.9243123624949707e-07,
+     0.7454301745319715
+    ],
+    [
+     -0.7935808883002742,
+     6.162671236850982e-08,
+     0.745430253148657
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 2.3256478224690605e-07
+   }
+  },
+  "h2o_hse06": {
+   "atoms": {
+    "symbols": "OH2",
+    "positions_angstrom": [
+     [
+      3.0,
+      3.0,
+      3.0
+     ],
+     [
+      3.76,
+      3.0,
+      3.59
+     ],
+     [
+      2.24,
+      3.0,
+      3.59
+     ]
+    ],
+    "cell_angstrom": [
+     6,
+     6,
+     6
+    ],
+    "magmoms": null
+   },
+   "options": {
+    "method": "dft",
+    "xc": "hse06",
+    "basis": {
+     "name": "PAW-LCAO",
+     "size": "DZP"
+    },
+    "grid_spacing": 0.3
+   },
+   "energy_ev": -465.88419871083937,
+   "forces_ev_angstrom": [
+    [
+     1.7507588741053928e-07,
+     1.6320117504704182e-08,
+     -1.136983776125843
+    ],
+    [
+     0.6404682348845303,
+     -1.9151779683692036e-07,
+     0.5119210494611365
+    ],
+    [
+     -0.6404681446671643,
+     6.363627907617862e-08,
+     0.5119211292652932
+    ]
+   ],
+   "retired_details": {
+    "scheme": "Richardson-fixed-density-PAW",
+    "step_bohr": 0.001,
+    "step_error_estimate": 1.6130681975331149e-07
+   }
+  }
+ },
+ "stamp": {
+  "sources_sha256": {
+   "src/mandacaru/pseudopotentials/periodic_paw.py": "c22a9b2a024b4ebec80eabfd66841768ba35f8903ea9270136c94f2dbc64a1a2",
+   "src/mandacaru/integrations/paw.py": "1e27ee95051984d6a4e67c774fb5fd784c9ae699275d02284449d2113fab61c7"
+  },
+  "extension": {
+   "file": "_native.cpython-314-darwin.so",
+   "sha256": "56b680f4730a41cd5c1b5bfbb9962091ddc094870ab7d3cfb3070cb000067672",
+   "size": 8158992,
+   "mtime": "2026-11-03T18:22:16+00:00"
+  },
+  "datasets_sha256": {},
+  "git": {
+   "head": "d3793924e43ec0c011bbc93289181a85eb346fbc",
+   "dirty": true,
+   "n_dirty_files": 94,
+   "dirty_kernel_files": []
+  },
+  "versions": {
+   "python": "3.14.7",
+   "numpy": "2.5.3",
+   "scipy": "1.18.1"
+  },
+  "platform": "Darwin arm64",
+  "date": "2026-11-03",
+  "extra": {
+   "route": "Richardson-fixed-density-PAW",
+   "freeze": "package M, before M1"
+  }
+ }
+}

@@ -14,8 +14,8 @@
 mod paw_assemble_support;
 mod paw_generate_support;
 
-use mandacaru_core::paw::generate::energies::{AtomSolver, Variational};
-use mandacaru_core::paw::generate::reference::solve_reference;
+use mandacaru_core::models::xc_scheme::{AtomSolver, Variational};
+use mandacaru_core::paw::generate::reference::{solve_reference, solve_reference_with};
 use mandacaru_core::paw::generate::{generate, generate_with_atom};
 use mandacaru_core::paw::record::PawDataset;
 use mandacaru_core::{Context, Error};
@@ -34,7 +34,7 @@ fn parity(name: &str) {
     let data = Decimated::open(name);
     let recipe = recipe_of(&f);
     let ctx = context();
-    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
     compare_atom(&f, &atom).assert_within(&format!("{name} atom"));
     let started = std::time::Instant::now();
     let generated = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
@@ -94,75 +94,149 @@ fn the_sample_covers_every_frozen_scalar_relativistic_dataset() {
     assert_eq!(frozen, ours, "the Dirac sets are the spin-orbit package's");
 }
 
-/// The production path is the variational scheme. For LDA it equals the freeze wherever the two
-/// radial schemes agree (density at least 2e-12) and differs in the far tail by the documented
-/// 1.9e-4 Ha of `v_local`.
+/// Items whose value reads the all-electron potential beyond the density floor of the exchange
+/// kernel (about 14 Bohr): the local potential, and the waves of a reference above zero, whose
+/// outer part follows the box (the reference atom's tail potential differs from the atom-solver
+/// one by the uniform-gas continuation below a density of 2e-12).
+fn reads_the_tail(name: &str) -> bool {
+    name.contains("v_loc")
+        || (name.contains("wave") && name.rsplit('_').next().is_some_and(|k| k == "1"))
+}
+
+/// The round-off diagnostics of the generator (duality error, asymmetry, minimum overlap...) and
+/// the norm correction (a round-off array here) are compared by order of magnitude in the parity
+/// test, not value by value: a production run does not reproduce them to a gate and they are not
+/// part of what the scheme changes.
+fn is_round_off_diagnostic(name: &str) -> bool {
+    // `norm_correction` is the round-off of the smooth waves' norm condition (entries of 1e-14 to
+    // 1e-11 for these zero-deficit constructions): its maximum is noise, so it has no scale.
+    name.starts_with("diagnostic.") || name.contains("norm_correction")
+}
+
+/// The production path (variational scheme, atom included: D-2b) against the freeze of the
+/// atom-solver scheme, LDA. The two schemes differ for LDA only in the far tail (the atom-solver
+/// scheme continues the uniform gas below a density of 2e-12, a step of 1.86e-4 Ha at about 14
+/// Bohr; the kernel drops it), and the tail reaches the dataset through the reference atom: the
+/// eigenvalues move by 2.4e-10 Ha (oxygen), the bound-state quantities of the sphere by about
+/// that, and whatever follows a reference above zero (the second scattering reference, the
+/// couplings built on it) by more, since its wave is normalized over the box. The gates are the
+/// measured worst of each dataset rounded up (`sphere`: the items that do not read the tail,
+/// `tail`: those that do), in units of the maximum of the array. Measured worst over the three:
+/// oxygen 3.0e-10 and 9.5e-5, iron 2.3e-4 (a projector of the s channel, whose reference sits
+/// next to a box-sensitive second one) and 7.3e-4, unitary aluminum 1.8e-4 (the empty d channel's
+/// reference above zero) and 5.3e-5; "LDA unchanged at 1e-12" holds
+/// through the seam (`paw_generate` parity, `paw_one_center`, the exact terms), not for the
+/// production atom.
+const PRODUCTION_LDA: [(&str, f64, f64); 3] = [
+    ("lda-sr_O", 1e-9, 3e-4),
+    ("lda-sr_Fe", 1e-3, 3e-3),
+    ("upaw_Al", 1e-3, 3e-4),
+];
+
 #[test]
-fn the_production_path_equals_the_freeze_for_lda_outside_the_far_tail() {
-    for name in ["lda-sr_O", "lda-sr_Fe", "upaw_Al"] {
+fn the_production_path_equals_the_freeze_for_lda_to_the_size_of_the_far_tail() {
+    for (name, sphere_gate, tail_gate) in PRODUCTION_LDA {
         let f = Frozen::open(name);
         let data = Decimated::open(name);
         let recipe = recipe_of(&f);
         let ctx = context();
         let generated = generate(&ctx, &recipe).unwrap();
-        compare_dataset(&f, &data, &generated, Scheme::Production)
-            .assert_within(&format!("{name} (production)"));
-        // The variational potential and the freeze part ways below 2e-12 (printed, bounded).
-        let legacy = generate_with_atom(
-            &ctx,
-            &recipe,
-            &solve_reference(&ctx, &recipe).unwrap(),
-            &AtomSolver,
-        )
-        .unwrap();
-        let (a, b) = (arrays(&generated.dataset), arrays(&legacy.dataset));
-        let tail = a["v_local"]
+        let comparison = compare_dataset(&f, &data, &generated, Scheme::Production);
+        let (mut worst_sphere, mut worst_tail) = ((0f64, String::new()), (0f64, String::new()));
+        for item in comparison
+            .items
             .iter()
-            .zip(&b["v_local"])
-            .map(|(x, y)| (x - y).abs())
-            .fold(0., f64::max);
-        println!("{name}: production against legacy v_local {tail:.3e}");
-        // The upper bound only: whether this tail survives is the owner decision of XC-SW.
-        assert!(tail < 2.5e-4, "{name}: tail {tail:e}");
+            .filter(|i| !is_round_off_diagnostic(&i.name))
+        {
+            let (gate, slot) = if reads_the_tail(&item.name) {
+                (tail_gate, &mut worst_tail)
+            } else {
+                (sphere_gate, &mut worst_sphere)
+            };
+            assert!(
+                item.deviation <= gate,
+                "{name} {}: {:.3e} > {gate:.0e}",
+                item.name,
+                item.deviation
+            );
+            if item.deviation > slot.0 {
+                *slot = (item.deviation, item.name.clone());
+            }
+        }
+        println!("production LDA {name}: sphere {worst_sphere:?}, tail {worst_tail:?}");
+        let mut all = comparison
+            .items
+            .iter()
+            .filter(|i| !is_round_off_diagnostic(&i.name))
+            .map(|i| (i.deviation, i.name.as_str()))
+            .collect::<Vec<_>>();
+        all.sort_by(|a, b| b.0.total_cmp(&a.0));
+        println!(
+            "production LDA {name}: largest {:?}",
+            &all[..8.min(all.len())]
+        );
+        // The gates are not slack: each is within a factor of thirty of what was measured.
+        assert!(
+            worst_sphere.0 > sphere_gate / 30. && worst_tail.0 > tail_gate / 30.,
+            "{name}: tighten the gates"
+        );
     }
 }
 
-/// For PBE every table that does not depend on the radial scheme is the freeze's; `v_local` and
-/// the one-center constant carry the scheme (D-2: the variational one is the source of truth)
-/// and move by the amount measured in A2 (3.5e-5 Ha for oxygen), well inside the 4.9e-4 Ha scale
-/// of the plan.
 #[test]
-fn the_production_path_moves_only_the_scheme_dependent_pbe_numbers() {
+fn the_production_path_moves_the_pbe_dataset_by_the_measured_scheme_difference() {
     for (name, e1c_bounds) in [("pbe-sr_O", (1e-5, 1e-3)), ("pbe-sr_Cu", (1e-5, 1e-3))] {
         let f = Frozen::open(name);
         let data = Decimated::open(name);
         let recipe = recipe_of(&f);
         let ctx = context();
-        let atom = solve_reference(&ctx, &recipe).unwrap();
-        let production = generate_with_atom(&ctx, &recipe, &atom, &Variational).unwrap();
-        let comparison = compare_dataset(&f, &data, &production, Scheme::Legacy);
-        let scheme_dependent = |n: &str| {
-            n.contains("v_local") && !n.contains("screened")
-                || n == "scalar.one_center_energy"
-                || n.starts_with("energy.")
+        let production = generate(&ctx, &recipe).unwrap();
+        let seam = {
+            let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+            generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap()
         };
-        let moved = comparison
+        let comparison = compare_dataset(&f, &data, &production, Scheme::Legacy);
+        let worst = comparison
             .items
             .iter()
-            .filter(|i| scheme_dependent(&i.name))
-            .map(|i| (i.name.clone(), i.deviation))
+            .filter(|i| !reads_the_tail(&i.name) && !is_round_off_diagnostic(&i.name))
+            .fold((0f64, String::new()), |w, i| {
+                if i.deviation > w.0 {
+                    (i.deviation, i.name.clone())
+                } else {
+                    w
+                }
+            });
+        let mut movers = comparison
+            .items
+            .iter()
+            .filter(|i| !is_round_off_diagnostic(&i.name))
+            .map(|i| (i.deviation, i.name.as_str()))
             .collect::<Vec<_>>();
-        println!("{name}: scheme-dependent deviations {moved:?}");
-        let e1c = comparison.deviation("scalar.one_center_energy")
-            * production.dataset.one_center_energy.abs().max(1.);
+        movers.sort_by(|a, b| b.0.total_cmp(&a.0));
+        println!(
+            "{name}: largest movers {:?}",
+            &movers[..6.min(movers.len())]
+        );
+        let e1c = (production.dataset.one_center_energy - seam.dataset.one_center_energy).abs();
+        println!(
+            "{name}: worst moved item {worst:?} ({:.0}x the LDA gate); E1c moved by {e1c:.3e} Ha",
+            worst.0 / PRODUCTION_LDA[0].1
+        );
+        assert!(worst.0 / PRODUCTION_LDA[0].1 > 100.0, "{name}: {worst:?}");
+        assert!(worst.0 < 1.0, "{name}: {worst:?}");
         assert!(
             e1c > e1c_bounds.0 && e1c < e1c_bounds.1,
             "{name}: E1c moved by {e1c:e}"
         );
-        assert!(comparison.deviation("array.v_local") * 1e0 > 1e-6);
-        comparison
-            .without(scheme_dependent)
-            .assert_within(&format!("{name} (production, scheme-independent)"));
+        // The legacy seam is still the freeze: the port is proved by `parity`, and the tail of
+        // v_local is the freeze's to round-off in the sphere.
+        let still = compare_dataset(&f, &data, &seam, Scheme::Legacy);
+        assert!(
+            still.worst().ratio() <= 1.0,
+            "{name}: {}",
+            still.worst().name
+        );
     }
 }
 
@@ -317,7 +391,7 @@ fn an_explicit_core_radius_changes_only_what_reads_the_core() {
     use mandacaru_core::paw::generate::recipe::{Nlcc, Recipe};
     let ctx = context();
     let base = Recipe::for_dataset("O", "lda", Treatment::Scalar).unwrap();
-    let atom = solve_reference(&ctx, &base).unwrap();
+    let atom = solve_reference_with(&ctx, &base, &AtomSolver).unwrap();
     let default = generate_with_atom(&ctx, &base, &atom, &AtomSolver)
         .unwrap()
         .dataset;

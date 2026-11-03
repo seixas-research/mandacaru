@@ -67,6 +67,12 @@ pub const CUTOFF_GRID_FRACTION: f64 = 0.5;
 pub const REFERENCE_TOLERANCE: f64 = 1e-7;
 /// Mixing of the reference atom's SCF.
 pub const REFERENCE_MIXING: f64 = 0.25;
+/// Iterations the reference atom's SCF may take before the atom is refused as unconverged. An
+/// atom stops at its first converged iteration, so the cap changes no converged atom; it decides
+/// only whether a slow one is refused. The atom-solver scheme (the legacy seam) needs 251 for
+/// the PBE Dirac polonium atom (the generator's earlier cap of 200 refused it; the variational
+/// scheme converges in 27); an atom that does not converge in 600 is still refused by name.
+pub const REFERENCE_MAX_ITERATIONS: usize = 600;
 /// Radial extent of the reference atom (Bohr).
 pub const R_MAX: f64 = 30.0;
 

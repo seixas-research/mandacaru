@@ -8,15 +8,17 @@ use nalgebra::DMatrix;
 
 /// Nuclear gradient dE/dR in Hartree per Bohr, three components per atom.
 /// The analytic all-electron path splits it into Hellmann-Feynman and Pulay
-/// parts; the PAW path differentiates the whole energy at fixed densities and
-/// reports no split, its step, and the Richardson error estimate.
+/// parts; the PAW path reports its terms (`name`, `3 * atoms` values each, the
+/// name being `term/part`) and the stationarity of the state it differentiated:
+/// the largest element of `(1 - D) F D` in the orthonormal frame, which is
+/// zero for a converged state and bounds the error of the envelope theorem.
 pub struct Gradient {
     pub hellmann_feynman: Option<Buffer<f64>>,
     pub pulay: Option<Buffer<f64>>,
     pub total: Buffer<f64>,
     pub scheme: &'static str,
-    pub step: Option<f64>,
-    pub estimate: Option<f64>,
+    pub stationarity: Option<f64>,
+    pub terms: Vec<(&'static str, Buffer<f64>)>,
 }
 impl MolecularIntegrals {
     pub fn gradient(&self, state: &MeanField) -> Result<Gradient> {
@@ -291,8 +293,8 @@ impl MolecularIntegrals {
                 pulay: Some(pulay),
                 total: total_gradient,
                 scheme: "Analytic-Hellmann-Feynman-Pulay",
-                step: None,
-                estimate: None,
+                stationarity: None,
+                terms: Vec::new(),
             })
         })
     }

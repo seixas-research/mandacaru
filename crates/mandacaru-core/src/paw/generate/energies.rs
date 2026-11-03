@@ -4,79 +4,17 @@
 //! The one-center constant is the all-electron valence energy minus the smooth one, both
 //! written as the band energy less the double-counting terms, so it needs the energy and the
 //! `int rho v` of each functional on each density: [`xc_energies`] takes the functional as an
-//! [`XcSource`] because two radial schemes exist (D-2, `PAW_COMPLETION_PLAN.md`):
-//!
-//! * [`Variational`], the scheme of the molecular PAW path, whose potential is the exact
-//!   derivative of the discrete energy; the generator uses this one;
-//! * [`AtomSolver`], the scheme the shipped datasets were produced with (derivatives on subset
-//!   nodes, splined back). It exists to prove the port against the frozen Python numbers and is
-//!   deleted together with that freeze once D-3 is settled; nothing selects it at run time.
+//! [`XcSource`] (`models::xc_scheme`): the production path passes `Variational`, the scheme the
+//! reference atom is solved with; the legacy `AtomSolver` is the parity seam.
 use crate::{
     math::radial::integrate,
-    models::{radial_xc, spherical},
+    models::{
+        spherical,
+        xc_scheme::{XcField, XcSource},
+    },
     Context, Result,
 };
 use std::f64::consts::PI;
-
-/// Energy per electron and potential of a spherical density on a radial mesh.
-pub struct XcField {
-    pub per_particle: Vec<f64>,
-    pub potential: Vec<f64>,
-}
-
-/// A radial exchange-correlation scheme.
-pub trait XcSource {
-    fn evaluate(
-        &self,
-        ctx: &Context,
-        r: &[f64],
-        rho: &[f64],
-        functional: &str,
-        relativistic: bool,
-    ) -> Result<XcField>;
-}
-
-/// The variational radial scheme: the potential differentiates the discrete energy quadrature.
-pub struct Variational;
-
-impl XcSource for Variational {
-    fn evaluate(
-        &self,
-        ctx: &Context,
-        r: &[f64],
-        rho: &[f64],
-        functional: &str,
-        relativistic: bool,
-    ) -> Result<XcField> {
-        let out = spherical::exchange_correlation(ctx, r, rho, functional, relativistic)?;
-        Ok(XcField {
-            per_particle: out.per_particle.as_slice().to_vec(),
-            potential: out.potential.as_slice().to_vec(),
-        })
-    }
-}
-
-/// The scheme of the shipped datasets and of the frozen Python numbers (the legacy seam).
-#[doc(hidden)]
-pub struct AtomSolver;
-
-impl XcSource for AtomSolver {
-    fn evaluate(
-        &self,
-        ctx: &Context,
-        r: &[f64],
-        rho: &[f64],
-        functional: &str,
-        relativistic: bool,
-    ) -> Result<XcField> {
-        let (per_particle, potential) =
-            radial_xc::xc_potential(ctx, r, rho, functional, relativistic)?;
-        Ok(XcField {
-            per_particle,
-            potential,
-        })
-    }
-}
 
 /// `E_H[rho] = 1/2 int v_H rho d^3r` by the trapezoid rule on `r`.
 pub fn hartree_energy(ctx: &Context, r: &[f64], rho: &[f64]) -> Result<f64> {

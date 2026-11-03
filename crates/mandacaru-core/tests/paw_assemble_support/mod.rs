@@ -1,6 +1,6 @@
 //! Reader of the A0 freeze of the Python PAW generator
-//! (`test/migration/reference/paw_generate/gen_<set>_<element>{.json,_inputs.npz,_data.npz}`,
-//! `test/migration/freeze_paw_generation.py`): the tracked JSON carries every recorded function
+//! (`test/migration/reference/paw_generate/gen_<set>_<element>{.json,_inputs.npz,_data.npz}`; the
+//! generator that wrote them was deleted at A7, the `.npz` live in `paw_generate_archive/`): the tracked JSON carries every recorded function
 //! case, the git-ignored `.npz` files its inputs at full resolution and its large outputs
 //! decimated at `a[stride - 1::stride]`. Members are deflated, hence [`inflate`].
 #![allow(dead_code)]
@@ -42,8 +42,7 @@ impl Npz {
     pub fn open(path: &std::path::Path, restore: &str) -> Self {
         let bytes = std::fs::read(path).unwrap_or_else(|e| {
             panic!(
-                "frozen input {} is missing ({e}); restore it with `{restore}` or copy it back \
-                 from test/migration/reference/paw_generate_archive/",
+                "frozen input {} is missing ({e}); restore it with `{restore}`",
                 path.display()
             )
         });
@@ -173,10 +172,7 @@ pub fn datasets() -> Vec<String> {
 impl Frozen {
     pub fn open(name: &str) -> Self {
         let base = directory().join(format!("gen_{name}"));
-        let restore = format!(
-            "python test/migration/freeze_paw_generation.py run gen:{}",
-            name.replace('_', ":")
-        );
+        let restore = "cp test/migration/reference/paw_generate_archive/*.npz test/migration/reference/paw_generate/".to_string();
         let doc = serde_json::from_str(
             &std::fs::read_to_string(base.with_extension("json")).expect("frozen JSON"),
         )

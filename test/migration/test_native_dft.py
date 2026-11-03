@@ -118,8 +118,8 @@ def test_stationary_forces_match_independent_fixed_grid_scf_differences(method, 
 def test_paw_stationary_forces_match_independent_fixed_grid_scf_differences(symbols, method, xc, unrestricted):
     """PAW-LCAO mean-field forces in eV/Angstrom against converged energies in eV.
 
-    The native gradient is a fixed-density Richardson difference in Hartree per
-    Bohr; the conversion to the ASE unit happens once, in ``Result.forces``, so
+    The native gradient is analytic, in Hartree per Bohr; the conversion to the
+    ASE unit happens once, in ``Result.forces``, so
     agreement with a finite difference of ``get_potential_energy()`` over
     Angstrom displacements checks the unit as well as the derivative.
     """
@@ -134,8 +134,9 @@ def test_paw_stationary_forces_match_independent_fixed_grid_scf_differences(symb
     assert "forces" in atoms.calc.implemented_properties
     forces = atoms.get_forces()
     details = atoms.calc.result.force_details
-    assert details["scheme"] == "Richardson-fixed-density-PAW"
-    assert details["step_bohr"] == 1e-3 and details["step_error_estimate"] < 1e-5
+    assert details["scheme"] == "analytic"
+    assert details["stationarity"] < 1e-6
+    assert "step_bohr" not in details and "step_error_estimate" not in details
     for atom, axis in [(0, 0), (1, 2)]:
         energies = []
         step = 2e-5

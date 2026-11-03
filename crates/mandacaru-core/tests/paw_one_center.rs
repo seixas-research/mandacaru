@@ -6,12 +6,12 @@
 mod paw_assemble_support;
 
 use mandacaru_core::math::radial::local_derivatives;
+use mandacaru_core::models::xc_scheme::{AtomSolver, Variational, XcSource};
 use mandacaru_core::paw::generate::core::{
     augmented_density, core_density, pseudize_density, valence_sums, ChannelWaves, CoreShell,
 };
 use mandacaru_core::paw::generate::energies::{
-    one_center_energies, xc_energies, AtomSolver, EnergyDensities, OneCenterEnergies, Variational,
-    XcSource,
+    one_center_energies, xc_energies, EnergyDensities, OneCenterEnergies,
 };
 use mandacaru_core::Context;
 use paw_assemble_support::call::call;

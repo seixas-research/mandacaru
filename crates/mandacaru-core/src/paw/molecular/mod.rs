@@ -1,6 +1,7 @@
 //! Isolated PAW-LCAO integrals with exact valence one-center interactions.
 //! Dataset decoding and basis recipes are outside this numerical boundary.
 pub(super) mod data;
+pub mod gradient;
 pub(super) mod onecenter;
 mod screened;
 pub use screened::{Screened, SpinTerms};
@@ -27,6 +28,13 @@ use data::{count, table, Species};
 use nalgebra::DMatrix;
 use crate::paw::pair_tables::{angular_rule, harmonic, potential, shape};
 use std::{collections::BTreeMap, f64::consts::PI, sync::Arc};
+
+/// The quadrature rules `[radial, polar, azimuthal]` of the spheres around an atom, shared by
+/// the setup and its analytic gradient so that the gradient differentiates the rule in use.
+pub(crate) const PROJECTION: [usize; 3] = [64, 24, 48];
+pub(crate) const LOCAL: [usize; 3] = [64, 32, 64];
+pub(crate) const ELECTROSTATIC: [usize; 3] = [50, 24, 48];
+pub(crate) const IONIC: [usize; 3] = [48, 24, 48];
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
@@ -72,6 +80,41 @@ fn sphere(
     }
     Ok(())
 }
+/// The quadrature of the projections of one atom, offsets from its center: the
+/// projector values of every channel's sphere, already carrying the quadrature
+/// weight, one entry per projector of the atom.
+fn projection_points(
+    species: &Species,
+    terms: &onecenter::AtomTerms,
+    mut visit: impl FnMut([f64; 3], &[f64]) -> Result<()>,
+) -> Result<()> {
+    let mut target = vec![0.; terms.projectors.len()];
+    for (index, ch) in species.channels.iter().enumerate() {
+        sphere(
+            ch.radius.max(species.local_radius),
+            0.,
+            PROJECTION[0],
+            PROJECTION[1],
+            PROJECTION[2],
+            |offset, r, weight| {
+                target.fill(0.);
+                for (b, p) in terms
+                    .projectors
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.channel == index)
+                {
+                    let value = ch.projectors[p.radial].value_slope(r).0
+                        * harmonic(p.l, p.m, offset)
+                        * weight;
+                    target[b] = value;
+                }
+                visit(offset, &target)
+            },
+        )?;
+    }
+    Ok(())
+}
 fn projection(
     ctx: &Context,
     basis: &Basis,
@@ -88,37 +131,25 @@ fn projection(
     )?;
     let mut accumulator = PointAccumulator::new(ctx, m, p)?;
     let mut phi = vec![0.; m];
-    let mut target = vec![0.; p];
-    for (index, ch) in species.channels.iter().enumerate() {
-        sphere(
-            ch.radius.max(species.local_radius),
-            0.,
-            64,
-            24,
-            48,
-            |offset, r, weight| {
-                let point = std::array::from_fn(|i| center[i] + offset[i]);
-                for (value, orbital) in phi.iter_mut().zip(&basis.orbitals) {
-                    *value = orbital.evaluate(point);
-                }
-                target.fill(0.);
-                for (b, p) in terms
-                    .projectors
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| p.channel == index)
-                {
-                    let value = ch.projectors[p.radial].value_slope(r).0
-                        * harmonic(p.l, p.m, offset)
-                        * weight;
-                    target[b] = value;
-                }
-                accumulator.push(&phi, &target)
-            },
-        )?;
-    }
+    projection_points(species, terms, |offset, target| {
+        let point = std::array::from_fn(|i| center[i] + offset[i]);
+        for (value, orbital) in phi.iter_mut().zip(&basis.orbitals) {
+            *value = orbital.evaluate(point);
+        }
+        accumulator.push(&phi, target)
+    })?;
     let values = accumulator.finish()?;
     Ok(DMatrix::from_column_slice(m, p, values.as_slice()))
+}
+/// Radius of the sphere in which the short-range local potential of a species
+/// is integrated: the Gaussian-filtered compensation tail, the dataset's local
+/// radius or the radius past which its potential is its long-range tail.
+fn local_sphere_radius(species: &Species, sigma: f64) -> f64 {
+    let tail = (0..7701)
+        .map(|k| 0.3 + 7.7 * k as f64 / 7700.)
+        .rfind(|&r| (species.local(r) + species.charge / r).abs() > 1e-5)
+        .map_or(0., |r| r + 0.01);
+    (6.5 * sigma).max(species.local_radius).max(tail)
 }
 struct GlobalMultipole {
     atom: usize,
@@ -352,12 +383,8 @@ impl Setup {
         let mut local = PointAccumulator::new(ctx, m, m)?;
         for (a, &s) in atoms.iter().enumerate() {
             let sp = &species[s];
-            let tail = (0..7701)
-                .map(|k| 0.3 + 7.7 * k as f64 / 7700.)
-                .rfind(|&r| (sp.local(r) + sp.charge / r).abs() > 1e-5)
-                .map_or(0., |r| r + 0.01);
-            let radius = (6.5 * sigma).max(sp.local_radius).max(tail);
-            sphere(radius, sp.local_radius, 64, 32, 64, |offset, r, weight| {
+            let radius = local_sphere_radius(sp, sigma);
+            sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
                 let point = std::array::from_fn(|i| geometry.positions()[a][i] + offset[i]);
                 let weight = weight * (sp.local(r) - long_range(sp.charge, sigma, r));
                 for (value, orbital) in phi.iter_mut().zip(&basis.orbitals) {
@@ -421,9 +448,9 @@ impl Setup {
             sphere(
                 sp.compensation_radius,
                 0.,
-                50,
-                24,
-                48,
+                ELECTROSTATIC[0],
+                ELECTROSTATIC[1],
+                ELECTROSTATIC[2],
                 |offset, r, weight| {
                     let point: [f64; 3] =
                         std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
@@ -449,9 +476,9 @@ impl Setup {
             sphere(
                 sp.compensation_radius,
                 0.,
-                48,
-                24,
-                48,
+                IONIC[0],
+                IONIC[1],
+                IONIC[2],
                 |offset, r, weight| {
                     let point = std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
                     let value: f64 = atoms

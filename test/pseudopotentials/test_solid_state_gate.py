@@ -401,15 +401,6 @@ def test_a_declared_semicore_has_its_channel_and_partial_waves(library, symbol):
             f"{library} {symbol}: the l={l} channel holds one partial wave only")
 
 
-@pytest.mark.parametrize("library, symbol", _library_cases())
-def test_the_generator_table_semicore_is_what_the_dataset_declares(library, symbol):
-    from mandacaru.pseudopotentials.paw import DEFAULT_SEMICORE_SUBSHELLS
-    pp = _dataset(library, symbol)
-    declared = tuple(sorted(tuple(x) for x in pp.semicore_subshells))
-    tabulated = tuple(sorted(DEFAULT_SEMICORE_SUBSHELLS.get(symbol, ())))
-    assert declared == tabulated, f"{library} {symbol}: {declared} vs table {tabulated}"
-
-
 def _assert_one_center_bounded(library, symbol):
     from mandacaru.pseudopotentials.onecenter import exact_one_center_terms
     terms = exact_one_center_terms(_dataset(library, symbol))

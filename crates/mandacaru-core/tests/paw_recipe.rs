@@ -1,7 +1,7 @@
 //! The recipe of a PAW-LCAO / UPAW-LCAO dataset (`paw::generate::recipe` and the policy tables
 //! behind it, A3): every entry of every table against the frozen resolution of the Python
-//! generator (`test/migration/reference/paw_recipe/policy.json`, written by
-//! `test/migration/freeze_paw_recipe.py` from the live tables), the Bessel counts and norm
+//! generator (`test/migration/reference/paw_recipe/policy.json`, written from the live
+//! Python tables before they were deleted at A7), the Bessel counts and norm
 //! deficits against the parameters stored in the 184 shipped scalar-relativistic files
 //! (`census_<set>.json` of the A0 freeze), and the refusals.
 use mandacaru_core::models::configuration::{ground_state, valence_subshells};
@@ -20,7 +20,7 @@ fn reference(relative: &str) -> Value {
         .join(relative);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "frozen reference {} is missing ({e}); restore it with `python test/migration/freeze_paw_recipe.py`",
+            "frozen reference {} is missing ({e}); it is tracked: `git checkout` it",
             path.display()
         )
     });

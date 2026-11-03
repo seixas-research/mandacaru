@@ -1,11 +1,7 @@
 //! PAW local potentials, compact compensation charges and radial quadrature.
 use super::invalid;
 use crate::math::radial::{derivatives, gauss_legendre, validate};
-use crate::{
-    finite,
-    models::{spherical::hartree, xc},
-    Buffer, Context, Result,
-};
+use crate::{finite, Buffer, Context, Result};
 use nalgebra::{DMatrix, DVector};
 use std::f64::consts::PI;
 
@@ -135,41 +131,6 @@ pub fn local_potential(
     }
     finite(out.as_slice(), "local PAW potential")?;
     Ok(out)
-}
-
-/// Remove Hartree and XC screening from a PAW local potential in atomic units.
-pub fn unscreen(
-    ctx: &Context,
-    r: &[f64],
-    screened: &[f64],
-    smooth: &[f64],
-    core: &[f64],
-    radius: f64,
-    charge: f64,
-) -> Result<(Buffer<f64>, Buffer<f64>)> {
-    validate(r, screened)?;
-    validate(r, smooth)?;
-    validate(r, core)?;
-    if !radius.is_finite()
-        || radius <= 0.
-        || !charge.is_finite()
-        || smooth.iter().chain(core).any(|v| *v < 0.)
-    {
-        return Err(invalid("invalid PAW unscreening densities or compensation"));
-    }
-    let mut augmented = ctx.allocate::<f64>(r.len())?;
-    for i in 0..r.len() {
-        augmented.as_mut_slice()[i] = smooth[i] + charge * shape(r[i], radius);
-    }
-    let vh = hartree(ctx, r, augmented.as_slice())?;
-    let mut ionic = ctx.allocate::<f64>(r.len())?;
-    for i in 0..r.len() {
-        let density = 0.5 * (smooth[i] + core[i]);
-        let (_, partial) =
-            xc::point_partials("lda", [density, density, 0., 0., 0., 0., 0.], false)?;
-        ionic.as_mut_slice()[i] = screened[i] - vh.as_slice()[i] - 0.5 * (partial[0] + partial[1]);
-    }
-    Ok((ionic, vh))
 }
 
 #[cfg(test)]

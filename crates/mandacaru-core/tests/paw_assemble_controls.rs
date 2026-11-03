@@ -7,9 +7,8 @@
 mod paw_assemble_support;
 
 use mandacaru_core::math::radial::{derivatives, local_derivatives};
-use mandacaru_core::paw::generate::energies::{
-    hartree_energy, xc_energies, AtomSolver, Variational, XcSource,
-};
+use mandacaru_core::models::xc_scheme::{AtomSolver, Variational, XcSource};
+use mandacaru_core::paw::generate::energies::{hartree_energy, xc_energies};
 use mandacaru_core::Context;
 use paw_assemble_support::call::{call, outputs, reals};
 use paw_assemble_support::{directory, group_of, Frozen};

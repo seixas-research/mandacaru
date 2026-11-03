@@ -12,7 +12,8 @@ use super::{
     recipe::{Cutoffs, Recipe},
     shells::Shells,
     tables_elements::{
-        CUTOFF_GRID_FRACTION, FROZEN_SCATTERING_ENERGY, REFERENCE_MIXING, REFERENCE_TOLERANCE,
+        CUTOFF_GRID_FRACTION, FROZEN_SCATTERING_ENERGY, REFERENCE_MAX_ITERATIONS, REFERENCE_MIXING,
+        REFERENCE_TOLERANCE,
     },
 };
 use crate::{
@@ -20,7 +21,8 @@ use crate::{
         atom::{self, Atom, AtomModel, AtomOptions},
         relativity::solve_radial,
         relativity::Treatment,
-        selection::relaxed_configuration,
+        selection::relaxed_configuration_with,
+        xc_scheme::{Variational, XcSource},
     },
     paw::{
         checks::peak_radius,
@@ -64,20 +66,30 @@ pub fn branch_equation(recipe: &Recipe, kappa: i32) -> Equation {
 }
 
 /// Solve the reference atom of `recipe`: the relaxed configuration with the recipe's occupancy
-/// overrides laid over it, at the generator's tolerance and mixing.
+/// overrides laid over it, at the generator's tolerance and mixing, with the variational radial
+/// exchange-correlation scheme (the scheme the dataset is unscreened with, D-2b).
 pub fn solve_reference(ctx: &Context, recipe: &Recipe) -> Result<Atom> {
+    solve_reference_with(ctx, recipe, &Variational)
+}
+
+#[doc(hidden)]
+/// [`solve_reference`] with the radial exchange-correlation scheme as a parameter: the legacy
+/// `AtomSolver` reproduces the atom the shipped PBE datasets were generated on (the parity seam;
+/// the scheme also decides the relaxed configuration of an f element).
+pub fn solve_reference_with(ctx: &Context, recipe: &Recipe, source: &dyn XcSource) -> Result<Atom> {
     recipe.validate()?;
     let z = recipe.atomic_number;
     let configuration = if recipe.reference_configuration.is_empty() {
         None
     } else {
-        let mut occupations: Occupations = relaxed_configuration(
+        let mut occupations: Occupations = relaxed_configuration_with(
             ctx,
             z,
             &recipe.functional,
             recipe.relativity,
             recipe.r_max,
             Some(recipe.points),
+            source,
         )?;
         for &((n, l), q) in &recipe.reference_configuration {
             match occupations.iter_mut().find(|s| (s.0, s.1) == (n, l)) {
@@ -90,13 +102,13 @@ pub fn solve_reference(ctx: &Context, recipe: &Recipe) -> Result<Atom> {
         occupations.retain(|s| s.2 > 0.);
         Some(occupations)
     };
-    atom::solve_model(
+    atom::solve_model_with(
         ctx,
         z,
         &AtomOptions {
             points: recipe.points,
             r_max: recipe.r_max,
-            max_iterations: 200,
+            max_iterations: REFERENCE_MAX_ITERATIONS,
             tolerance: REFERENCE_TOLERANCE,
             mixing: REFERENCE_MIXING,
         },
@@ -107,6 +119,7 @@ pub fn solve_reference(ctx: &Context, recipe: &Recipe) -> Result<Atom> {
         },
         configuration.as_deref(),
         None,
+        source,
     )
 }
 

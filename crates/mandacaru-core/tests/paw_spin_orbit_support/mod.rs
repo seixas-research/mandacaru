@@ -7,9 +7,9 @@ pub mod items;
 use crate::paw_assemble_support::Frozen;
 use crate::paw_generate_support::recipe_of;
 use mandacaru_core::models::atom::Atom;
-use mandacaru_core::paw::generate::energies::AtomSolver;
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::generate::recipe::Recipe;
-use mandacaru_core::paw::generate::reference::solve_reference;
+use mandacaru_core::paw::generate::reference::solve_reference_with;
 use mandacaru_core::paw::generate::{generate_with_atom, Generated};
 use mandacaru_core::Context;
 
@@ -32,7 +32,7 @@ pub struct Case {
 pub fn open(ctx: &Context, name: &str) -> Case {
     let frozen = Frozen::open(name);
     let recipe = recipe_of(&frozen);
-    let atom = solve_reference(ctx, &recipe).unwrap();
+    let atom = solve_reference_with(ctx, &recipe, &AtomSolver).unwrap();
     Case {
         frozen,
         recipe,

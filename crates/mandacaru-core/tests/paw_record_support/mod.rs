@@ -1,6 +1,6 @@
 //! Helpers shared by the `paw_record*` test binaries: library discovery, the
 //! frozen A0 references and the dataset array walk in the order of the
-//! Python `dataset_arrays` of `test/migration/freeze_paw_generation.py`.
+//! Python `dataset_arrays` of the A0 freeze script (deleted at A7).
 #![allow(dead_code)]
 
 pub mod sha;

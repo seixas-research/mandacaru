@@ -33,28 +33,28 @@ pub fn eigenpair(
         return Err(invalid("invalid radial PAW channel dimensions"));
     }
     finite(channel.radii, "radial PAW nodes")?;
-    let h = channel.radii[0];
-    if h <= 0.
+    let radial_step = channel.radii[0];
+    if radial_step <= 0.
         || channel
             .radii
             .iter()
             .enumerate()
-            .any(|(i, &r)| (r - (i + 1) as f64 * h).abs() > 1e-10 * (1. + r.abs()))
+            .any(|(i, &r)| (r - (i + 1) as f64 * radial_step).abs() > 1e-10 * (1. + r.abs()))
     {
         return Err(invalid(
-            "radial PAW nodes must be uniformly spaced interior nodes starting at h",
+            "radial PAW nodes must be uniformly spaced interior nodes starting at radial_step",
         ));
     }
     let mut diagonal = ctx.allocate(n)?;
     let mut off = ctx.allocate(n - 1)?;
     let mut u = ctx.allocate(product(&[n, rank])?)?;
     for i in 0..n {
-        diagonal.as_mut_slice()[i] = 1. / h.powi(2) + channel.potential[i];
+        diagonal.as_mut_slice()[i] = 1. / radial_step.powi(2) + channel.potential[i];
         for j in 0..rank {
-            u.as_mut_slice()[i * rank + j] = h.sqrt() * channel.projectors[j * n + i];
+            u.as_mut_slice()[i * rank + j] = radial_step.sqrt() * channel.projectors[j * n + i];
         }
     }
-    off.as_mut_slice().fill(-0.5 / h.powi(2));
+    off.as_mut_slice().fill(-0.5 / radial_step.powi(2));
     let mut out = separable::eigenpair(
         ctx,
         Pencil {
@@ -70,7 +70,7 @@ pub fn eigenpair(
     )?;
     if let Some(vector) = out.vector.as_mut() {
         for v in vector.as_mut_slice() {
-            *v /= h.sqrt();
+            *v /= radial_step.sqrt();
         }
     }
     Ok(out)

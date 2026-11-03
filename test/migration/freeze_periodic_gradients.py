@@ -4,6 +4,7 @@ Run from the repository root with the conda python and ``MANDACARU_PAW_PATH`` se
 
     python test/migration/freeze_periodic_gradients.py list
     python test/migration/freeze_periodic_gradients.py case si [--output DIR]
+    python test/migration/freeze_periodic_gradients.py symmetry si111 [--output DIR]
 
 The collinear scalar LDA cases (``si``, ``al2``, ``lih``) use the ``lda-sr`` datasets; the hybrid cases (``lih_hse06``,
 ``si_hse06``, ``si_hse06_gb``) run HSE06 with the ``pbe-sr`` datasets and record the exact-exchange divergence treatment
@@ -19,6 +20,12 @@ moment) use the scalar-relativistic datasets. F2a (HSE06 with spin-orbit couplin
 ``si_hsefr_tr3`` (the displaced Si cell, ``pbe-fr`` datasets, 3x1x1 Gamma-centered: k = 0 and a +-1/3 pair, so the exchange runs at complex k) and its twin
 ``si_hsefr_tr3_b`` with the second step family. A case may override ``basis``, ``scf`` and ``width_ev``; an oracle energy must come from a converged SCF
 (the freeze raises otherwise).
+
+CF-6 (``symmetry``): a case of ``SYMMETRY_CASES`` writes TWO snapshots of the same crystal, ``<case>.full.snapshot.json`` (the
+whole k mesh, ``symmetry=False``) and ``<case>.reduced.snapshot.json`` (the mesh reduced by the space-group operations of the cell,
+whose ``setup`` block lists them), into ``reference/periodic_symmetry/`` with the manifest ``<case>.json`` (functional, SCF
+options, dataset files, the two free energies). There is no finite-difference oracle: the Rust test compares the force and the
+stress of the reduced snapshot with those of the whole-mesh one at the same gate as the engine's.
 
 For each case (a small displaced crystal, full k mesh, no symmetry) the Python setup exports the crystal snapshot of
 the undisplaced reference geometry (``<case>.snapshot.json``, the input of the Rust SCF) and the free energy of the
@@ -156,6 +163,32 @@ def beh_atoms():
     return atoms
 
 
+def si_at(displacement):
+    """Diamond Si in the circulant primitive cell, the second atom off its ideal site by ``displacement`` (Angstrom)."""
+    def build():
+        from ase import Atoms
+        a = SI_A
+        cell = [[a / 2, a / 2, 0], [0, a / 2, a / 2], [a / 2, 0, a / 2]]
+        atoms = Atoms("Si2", cell=cell, pbc=True, positions=[[0, 0, 0], [a / 4, a / 4, a / 4]])
+        atoms.positions[1] += displacement
+        return atoms
+    return build
+
+
+def al_primitive():
+    """One Al atom in the fcc primitive cell: cubic symmetry (the metal whose stress is the isotropic identity)."""
+    from ase.build import bulk
+    return bulk("Al", "fcc", a=4.05)
+
+
+#: CF-6: crystals whose k mesh the cell's space group reduces. ``si111`` (the second atom displaced along [111]: 6
+#: operations), ``si110`` (along [110]: 2 operations, the low-symmetry cell) and ``al_prim`` (cubic, the full point group).
+SYMMETRY_CASES = {
+    "si111": dict(atoms=si_at([0.03, 0.03, 0.03]), grid_spacing=0.5, kpts={"size": (2, 2, 2), "gamma": True}),
+    "si110": dict(atoms=si_at([0.04, 0.04, 0.0]), grid_spacing=0.5, kpts={"size": (2, 2, 2), "gamma": True}),
+    "al_prim": dict(atoms=al_primitive, grid_spacing=0.45, kpts={"size": (3, 3, 3), "gamma": True}, width_ev=0.3),
+}
+
 CASES = {
     "si": dict(atoms=si_atoms, grid_spacing=0.5, kpts={"size": (2, 2, 2), "gamma": True},
                moves=[(1, 0), (1, 1), (1, 2), (0, 1)]),
@@ -233,7 +266,7 @@ CASES = {
 DATASET_SETS = {"lda": "lda-sr", "pbe": "pbe-sr", "hse06": "pbe-sr"}
 
 
-def calculator(spec, save=None):
+def calculator(spec, save=None, symmetry=False):
     from mandacaru import Mandacaru
     options = dict(SCF, **spec.get("scf", {}), width_ha=spec.get("width_ev", WIDTH_EV) / 27.211386245988)
     hybrid = {"exxdiv_treatment": spec["exxdiv"]} if "exxdiv" in spec else {}
@@ -242,13 +275,13 @@ def calculator(spec, save=None):
         library["spin"] = True
     return Mandacaru(method="dft", xc=spec.get("xc", "lda"), basis=spec.get("basis", BASIS), grid_spacing=spec["grid_spacing"],
                      kpts=spec["kpts"], smearing={"method": "fermi-dirac", "width": spec.get("width_ev", WIDTH_EV)},
-                     periodic_scf_options=options, symmetry=False, save_crystal=save, **hybrid, **library)
+                     periodic_scf_options=options, symmetry=symmetry, save_crystal=save, **hybrid, **library)
 
 
-def free_energy_ha(atoms, spec, save=None):
+def free_energy_ha(atoms, spec, save=None, symmetry=False):
     from mandacaru._native import HARTREE_TO_EV
     atoms = atoms.copy()
-    atoms.calc = calculator(spec, save)
+    atoms.calc = calculator(spec, save, symmetry)
     ev = atoms.get_potential_energy(force_consistent=True)
     if not atoms.calc.result.periodic.converged:
         raise RuntimeError("an oracle energy needs a converged SCF: this one stopped at the iteration limit")
@@ -349,6 +382,37 @@ def freeze(case, output):
     print(f"{case}: manifest and snapshot written to {output}")
 
 
+def freeze_symmetry(case, output):
+    """CF-6: the whole-mesh and the symmetry-reduced snapshot of one crystal (see the module docstring)."""
+    spec = SYMMETRY_CASES[case]
+    atoms = spec["atoms"]()
+    output.mkdir(parents=True, exist_ok=True)
+    dataset_set = DATASET_SETS[spec.get("xc", "lda")]
+    energies, counts, operations = {}, {}, {}
+    for name, symmetry in (("full", False), ("reduced", True)):
+        path = output / f"{case}.{name}.snapshot.json"
+        energies[name], adapter, _ = free_energy_ha(atoms, spec, save=str(path), symmetry=symmetry)
+        counts[name] = len(adapter.kpoints)
+        operations[name] = 1 if adapter.symmetry is None else int(adapter.symmetry.n_operations)
+        payload = json.loads(path.read_text())
+        for entry in payload["sites"]["datasets"]:
+            entry["file"] = f"{dataset_set}/{entry['symbol']}.parquet"
+        path.write_text(json.dumps(payload))
+        print(f"{case} {name}: {counts[name]} k-points, {operations[name]} operations, free energy {energies[name]:.12f} Ha")
+    if abs(energies["full"] - energies["reduced"]) > 1e-8 or operations["full"] != 1 or operations["reduced"] < 2:
+        raise RuntimeError(f"{case}: the reduced and the whole-mesh free energies disagree, or nothing was reduced")
+    datasets = [str(Path(os.environ["MANDACARU_PAW_PATH"]) / dataset_set / f"{symbol}.parquet") for symbol in sorted(set(atoms.get_chemical_symbols()))]
+    manifest = dict(
+        stamp=stamp(datasets=datasets, extra={"case": case, "generator": "test/migration/freeze_periodic_gradients.py symmetry"}),
+        case=case, symbols=atoms.get_chemical_symbols(), cell_angstrom=atoms.cell.array.tolist(),
+        positions_angstrom=atoms.positions.tolist(), grid_spacing_A=spec["grid_spacing"], kpts=spec["kpts"],
+        functional=spec.get("xc", "lda"), k_points=counts, operations=operations, free_energy_ha=energies,
+        scf=dict(SCF, width_ev=spec.get("width_ev", WIDTH_EV),
+                 width_ha=spec.get("width_ev", WIDTH_EV) / 27.211386245988, smearing="fermi-dirac"))
+    (output / f"{case}.json").write_text(json.dumps(manifest))
+    print(f"{case}: two snapshots and the manifest written to {output}")
+
+
 def dump(case, scratch):
     """Write the undisplaced and every displaced snapshot of ``case`` into ``scratch`` (``<case>.<atom>.<axis>.<+|->.<step>.json``)
     plus ``<case>.index.json``: the Python setup only, the extension's SCF is stopped after one iteration (its answer is not
@@ -422,16 +486,20 @@ def assemble(case, energies_file, output):
 def main():
     root = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("action", choices=("list", "case", "dump", "assemble"))
+    parser.add_argument("action", choices=("list", "case", "dump", "assemble", "symmetry"))
     parser.add_argument("name", nargs="?")
     parser.add_argument("--scratch", type=Path, help="dump: the directory of the displaced snapshots")
     parser.add_argument("--energies", type=Path, help="assemble: the JSON of free energies the Rust SCF solved")
-    parser.add_argument("--output", type=Path, default=root / "reference" / "periodic_gradients")
+    parser.add_argument("--output", type=Path, default=None, help="default: reference/periodic_gradients (reference/periodic_symmetry for symmetry)")
     ns = parser.parse_args()
+    if ns.output is None:
+        ns.output = root / "reference" / ("periodic_symmetry" if ns.action == "symmetry" else "periodic_gradients")
     for name in ("MANDACARU_NUM_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[name] = "1"
     if ns.action == "list":
-        print("\n".join(CASES))
+        print("\n".join(list(CASES) + [f"{c} (symmetry)" for c in SYMMETRY_CASES]))
+    elif ns.action == "symmetry":
+        freeze_symmetry(ns.name, ns.output)
     elif ns.action == "dump":
         dump(ns.name, ns.scratch)
     elif ns.action == "assemble":

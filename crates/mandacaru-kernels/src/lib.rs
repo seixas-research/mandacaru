@@ -3,6 +3,7 @@
 
 pub mod bader;
 pub mod bloch;
+pub mod heap;
 pub mod localized;
 pub mod one_body;
 pub mod onecenter;

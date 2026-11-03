@@ -373,10 +373,11 @@ class Mandacaru(ASEProperties, Calculator):
         extension; an optimizer ``tol`` left unset resolves to the energy floor
         (it is ``1e-12`` in float64) and is written in the optimization setup
         of the run log. Refused with
-        ``ValueError``: forces of a PAW-LCAO molecule and forces of a quantum
-        method (the 1e-3 Bohr finite-difference step turns float32 rounding
-        into force noise; the analytic all-electron forces of the classical
-        methods are allowed), ``load_crystal`` with a precision other than
+        ``ValueError``: forces of a quantum method (the 1e-3 Bohr
+        finite-difference step turns float32 rounding into force noise; the
+        analytic forces of the classical methods, all-electron and PAW-LCAO,
+        are allowed), the forces and stress of a crystal (the
+        analytic derivative engines read float64 data only), ``load_crystal`` with a precision other than
         the one stored in the file, and ``hamiltonian``,
         ``load_hamiltonian`` or ``native_model`` on a circuit device
         (``shots > 0`` or a hardware device), which holds neither orbital
@@ -390,9 +391,12 @@ class Mandacaru(ASEProperties, Calculator):
     resources : dict, optional
         Per-calculator allocation, with keys ``threads`` (default chosen by the
         native context), ``memory_limit_bytes`` (default 34359738368, that is
-        32 GiB) and ``scratch_dir``. An unknown key raises ``TypeError``. A
-        calculation that needs more memory than the limit raises
-        ``MemoryError`` at ``run()``. Not allowed together with
+        32 GiB), ``disk_offload_bytes`` (the size from which a periodic
+        calculation keeps its bulk arrays, such as the Bloch orbital stacks,
+        in a scratch folder on disk instead of memory: default 8 MiB, ``0``
+        offloads every one) and ``scratch_dir``. An unknown key raises
+        ``TypeError``. A calculation that needs more memory than the limit
+        raises ``MemoryError`` at ``run()``. Not allowed together with
         ``native_model``, which carries its own context (``ValueError``).
     xc : str, optional
         Exchange-correlation functional, one of ``"lda"``, ``"pbe"``,
@@ -405,8 +409,10 @@ class Mandacaru(ASEProperties, Calculator):
         functional triggers a warning. A crystal supports every one of them,
         ``"hse06"`` included, on the whole k mesh (see ``kpts`` and
         ``symmetry``: a hybrid crystal on a symmetry-reduced mesh raises
-        ``NotImplementedError``); its forces and stress are central finite
-        differences of the energy through ASE, not analytic. With
+        ``NotImplementedError``); its forces and stress are analytic (Rust).
+        The forces and stress of an ``"r2scan"`` or ``"rvv10"`` crystal, of a
+        DFT+U crystal and, for the stress, of a spin-polarized one raise
+        ``NotImplementedError`` naming the cause. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
     vdw : str or bool, optional
         Van der Waals dispersion correction, one of ``"rvv10"``, ``"ts"``
@@ -1367,7 +1373,6 @@ class Mandacaru(ASEProperties, Calculator):
         self._periodic_two_body_requested = False
         self._requested_mapping = mapping
         self._save_hamiltonian = save_hamiltonian
-        self._periodic_atoms = None
         self.options = {
             "threads": self.context.threads,
             "memory_limit_bytes": self.context.memory_limit_bytes,
@@ -1428,7 +1433,6 @@ class Mandacaru(ASEProperties, Calculator):
             self.capabilities.forces
             and not self._execute_circuits
             and self._kinetic == "spectral"
-            and self._load_crystal is None
         ):
             values.append("forces")
         return values
@@ -1939,6 +1943,8 @@ class Mandacaru(ASEProperties, Calculator):
         )
         if self._save_crystal:
             self.periodic_problem.save(str(self._save_crystal))
+        # The setup's freed arrays go back to the system before the SCF takes its own.
+        self.context.release_freed_memory()
         periodic = self.periodic_problem.solve(**self._periodic_options)
         dispersion = (
             self.context.tkatchenko_scheffler(geometry.native(), self.xc)
@@ -2097,33 +2103,54 @@ class Mandacaru(ASEProperties, Calculator):
                 raise PropertyNotImplementedError(
                     "stress is only available for periodic structures"
                 )
-            if "forces" in properties and self._precision == "float32":
-                # Refused before any SCF or cached-result lookup: the PAW and
-                # variational forces difference the energy over a 1e-3 Bohr
-                # (Richardson) step, which float32 rounding turns into force
-                # noise of several meV/A; the analytic all-electron forces of
-                # the classical methods do not difference anything.
-                kind = (
-                    "quantum-method"
-                    if self.capabilities.quantum
-                    else "PAW-LCAO"
-                    if self._basis_spec is None
-                    else None
+            periodic_geometry = geometry is not None and any(geometry.pbc)
+            if (
+                ("forces" in properties or "stress" in properties)
+                and self._precision == "float32"
+                and periodic_geometry
+            ):
+                # Refused before any SCF or cached-result lookup, like the molecular case.
+                raise ValueError(
+                    "precision='float32' does not support crystal forces or stress: the "
+                    "analytic derivative engines read float64 data only (the float32 energy "
+                    "is unaffected); use precision='float64'"
                 )
-                if kind is not None:
-                    raise ValueError(
-                        f"precision='float32' does not support {kind} forces: they "
-                        "difference the energy over a 1e-3 Bohr step (Richardson "
-                        "extrapolation), which float32 rounding turns into force "
-                        "noise of several meV/A; use precision='float64'"
-                    )
+            if (
+                ("forces" in properties or "stress" in properties)
+                and periodic_geometry
+                and self._hubbard_u is not None
+            ):
+                # Whatever the symmetry: with symmetry=True the energy path would raise its own
+                # symmetry-table error first, hiding that the +U force and strain terms do not exist.
+                raise NotImplementedError(
+                    "crystal forces and stress are not available for a DFT+U crystal (hubbard_u): "
+                    "the +U terms of the analytic force and stress are not implemented; the DFT+U "
+                    "energy is available (with symmetry=False)"
+                )
+            if (
+                "forces" in properties
+                and self._precision == "float32"
+                and not periodic_geometry
+                and self.capabilities.quantum
+            ):
+                # Refused before any SCF or cached-result lookup: the variational
+                # forces difference the energy over a 1e-3 Bohr (Richardson) step,
+                # which float32 rounding turns into force noise of several meV/A;
+                # the analytic gradients of the mean-field methods, all-electron
+                # and PAW-LCAO, difference nothing.
+                raise ValueError(
+                    "precision='float32' does not support quantum-method forces: they "
+                    "difference the energy over a 1e-3 Bohr step (Richardson "
+                    "extrapolation), which float32 rounding turns into force "
+                    "noise of several meV/A; use precision='float64'"
+                )
             # Cleared ASE results never serve a property: the result is rerun.
             reusable = (
                 self.result is not None
                 and "energy" in self.results
                 and geometry.same_as(self._geometry)
             )
-            if "forces" in properties and self._force_grid is None:
+            if "forces" in properties and self._force_grid is None and not periodic_geometry:
                 self._force_grid = (
                     self.integrals.grid
                     if reusable and self.integrals is not None
@@ -2133,19 +2160,9 @@ class Mandacaru(ASEProperties, Calculator):
                 )
             result = self.result if reusable else self.run(geometry)
             if "forces" in properties:
-                is_periodic = (geometry is not None and any(geometry.pbc)) or (
-                    hasattr(self, "atoms") and self.atoms is not None and any(self.atoms.pbc)
-                )
-                if is_periodic:
+                if result.periodic is not None:
                     with self._stage("nuclear gradient (forces)"):
-                        from ase.calculators.fd import calculate_numerical_forces
-                        target_atoms = atoms if atoms is not None else self._attached_atoms
-                        forces = calculate_numerical_forces(target_atoms, eps=1e-3)
-                        self.results["forces"] = forces
-                        if hasattr(result, "_raw") and isinstance(result._raw, dict):
-                            result._raw["forces"] = forces
-                        if self.result is not None and hasattr(self.result, "_raw") and isinstance(self.result._raw, dict):
-                            self.result._raw["forces"] = forces
+                        self.results["forces"] = result.forces()
                 else:
                     project = self._project_translation is not False and len(geometry.numbers) > 1
                     internal = project and self.capabilities.quantum and self._basis_spec is None
@@ -2159,14 +2176,7 @@ class Mandacaru(ASEProperties, Calculator):
                 self._arm_exit_hook()
             if "stress" in properties:
                 with self._stage("stress tensor"):
-                    from ase.calculators.fd import calculate_numerical_stress
-                    target_atoms = atoms if atoms is not None else self._attached_atoms
-                    stress = calculate_numerical_stress(target_atoms, eps=1e-3, voigt=True)
-                    self.results["stress"] = stress
-                    if hasattr(result, "_raw") and isinstance(result._raw, dict):
-                        result._raw["stress"] = stress
-                    if self.result is not None and hasattr(self.result, "_raw") and isinstance(self.result._raw, dict):
-                        self.result._raw["stress"] = stress
+                    self.results["stress"] = result.stress()
             if self.trace or self.txt is not None:
                 from .integrations.reporting import write_performance
 
@@ -2263,13 +2273,20 @@ class Mandacaru(ASEProperties, Calculator):
             self.problem = None
             self.solver = None
             self._force_grid = None
-            for name in ("periodic_problem", "_crystal_adapter", "_crystal_metadata"):
-                if hasattr(self, name):
-                    delattr(self, name)
+            self._drop_crystal()
+
+    def _drop_crystal(self):
+        """Release the periodic problem and the setup adapter of the last geometry."""
+        for name in ("periodic_problem", "_crystal_adapter", "_crystal_metadata"):
+            if hasattr(self, name):
+                delattr(self, name)
 
     def close(self):
         with self.resources.lock:
             self.reset()
+            # A closed calculator is unusable: it lets go of the atoms it was attached to, which
+            # hold it in turn (``atoms.calc``), so the pair is freed without a collector pass.
+            self._attached_atoms = None
             self.resources.close()
 
     def __enter__(self):

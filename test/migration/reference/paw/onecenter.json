@@ -229,5 +229,22 @@
   "dC": "normal(32)",
   "contraction": "sum_k lambda_k G_k (x) G_k",
   "derivative_contraction": "2 sum_k lambda_k dG_k (x) G_k"
+ },
+ "xc_scheme_refreeze": {
+  "date": "2026-11-03",
+  "what": "exact_pbe_{O,Cu}_{raw,dual}_V_<l> only (the PBE V blocks of paw_exact_terms)",
+  "why": "XC-SW (D-2/D-2b): the reference atom, the unscreening and the one-center terms now use the variational radial exchange-correlation scheme (models::spherical::exchange_correlation); the earlier blocks were produced with the atom-solver scheme (derivatives on subset nodes, splined back)",
+  "unchanged": "every LDA block, and K and D0 of the PBE blocks (scheme independent: 0.0 difference); the atom-solver scheme is reachable only through the doc(hidden) AtomSolver seam of the Rust tests",
+  "port_proof": "the Rust legacy seam reproduces the earlier PBE V, K and D0 blocks of the shipped pbe-sr O and Cu datasets to 1.9e-13 of the block maximum before this re-freeze (scratch run, inputs captured from the live extension)",
+  "size_of_the_change": "V moves by up to 1.4e-3 of the block maximum (pbe O raw l=0: 2.5e-3 Ha of 1.82); Cu raw l=0 8.5e-5 (3.5e-3 Ha of 41.5); the higher-l blocks 1e-12 to 7e-7",
+  "independent_check": "tests/xc_scheme.rs: the new potential is the functional derivative of its own energy (finite differences, 3e-6) and is 12 to 1250 times closer to the sixth-order continuum derivative than the atom-solver potential"
+ },
+ "xc_scheme_refreeze_a7": {
+  "date": "2026-11-03",
+  "what": "the core orbitals of the PBE O and Cu datasets (core_pbe_*) and the frozen-core exchange blocks K (exact_pbe_*_K_*)",
+  "why": "the reference atom that core_orbitals solves again from the record is the production atom, solved with the variational radial scheme (XC-SW, D-2b); the earlier freeze was the atom-solver atom",
+  "size": "core orbitals 2.5e-4 and K 1.8e-4 of the array maximum; V and D0 unchanged (0 and 4e-15)",
+  "arrays": 14,
+  "previous_file": "scratch copy, not kept"
  }
 }

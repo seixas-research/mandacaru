@@ -13,9 +13,10 @@ mod paw_assemble_support;
 mod paw_diagnose_support;
 
 use mandacaru_core::models::atom::Atom;
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::diagnose::{
     ghosts::{ghost_errors, missing_states, reference_offsets, GHOST_TOLERANCE, MISSING_TOLERANCE},
-    reference::{reference_atom, AeLogs, AllElectron},
+    reference::{reference_atom_with, AeLogs, AllElectron},
     scattering::{scattering_errors, PHASE_TOLERANCE, RESONANCE_TOLERANCE},
     spectrum::{self, nodes},
     view::{Key, Smooth},
@@ -36,7 +37,7 @@ struct Bench {
 fn bench(set: &str, element: &str) -> Bench {
     let ctx = context();
     let ds = read(&ctx, &dataset_path(set, element));
-    let atom = reference_atom(&ctx, &ds).unwrap();
+    let atom = reference_atom_with(&ctx, &ds, &AtomSolver).unwrap();
     let smooth = smooth_of(&ctx, &ds);
     Bench { ctx, smooth, atom }
 }
@@ -95,7 +96,13 @@ fn deepest_ghost(b: &mut Bench, depth: f64) -> f64 {
         .v_local_screened
         .as_mut_slice()
         .copy_from_slice(&original);
-    found.values().copied().fold(0., f64::min)
+    found.values().copied().fold(0., |a, b| {
+        if a.is_nan() || b.is_nan() {
+            f64::NAN
+        } else {
+            a.min(b)
+        }
+    })
 }
 
 #[test]

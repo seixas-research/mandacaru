@@ -83,6 +83,33 @@ pub fn snapshot_of(case: &str, manifest: &Value) -> Value {
     snapshot
 }
 
+/// The `setup` block of the snapshot format (`periodic::description`) from the sidecar of a
+/// manifest: the radial tables, the function and projector lists and the ion width the Python
+/// setup wrote next to the frozen snapshot before the snapshot carried them itself.
+pub fn setup_block(manifest: &Value) -> Value {
+    let setup = &manifest["setup"];
+    let functions = setup["basis_functions"].as_array().unwrap();
+    let column = |key: &str| -> Vec<Value> { functions.iter().map(|f| f[key].clone()).collect() };
+    serde_json::json!({
+        "version": 1,
+        "sigma_bohr": setup["sigma_bohr"],
+        "tables": setup["basis_radial_tables"].as_array().unwrap().iter().map(|t| serde_json::json!({
+            "l": t["l"], "r": reals(&t["r"]["re"]), "values": reals(&t["values"]["re"]), "confinement": null,
+        })).collect::<Vec<_>>(),
+        "functions": {"atom": column("atom"), "m": column("m"), "table": column("table")},
+        "projectors": setup["projector_orbitals"],
+        "operations": null,
+    })
+}
+
+/// The snapshot of `case` with the dataset files joined to `MANDACARU_PAW_PATH` and the
+/// `setup` block the manifest's sidecar describes: what a snapshot written by the setup carries.
+pub fn snapshot_with_block(case: &str, manifest: &Value) -> Value {
+    let mut snapshot = snapshot_of(case, manifest);
+    snapshot["setup"] = setup_block(manifest);
+    snapshot
+}
+
 pub fn reals(v: &Value) -> Vec<f64> {
     v.as_array()
         .unwrap()

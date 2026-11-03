@@ -189,3 +189,55 @@ fn wrong_rankings_choose_another_attempt_by_a_wide_margin() {
     let flat = oracle(&|a, b| Badness::of(a).severity < Badness::of(b).severity);
     assert_ne!(flat, right);
 }
+
+/// A depth, a phase or a distance that is not a number is the worst of its kind: `f64::max` and
+/// `f64::min` return the other operand for a NaN, and an attempt whose defect cannot be measured
+/// would then outrank every attempt whose defect can.
+#[test]
+fn a_defect_that_is_not_a_number_is_the_worst_of_its_tier() {
+    let finite = ghosted(&[(0, -50.0)]);
+    let nan = ghosted(&[(0, f64::NAN)]);
+    assert!(better(&finite, &nan) && !better(&nan, &finite));
+    assert_eq!(Badness::of(&nan).tier, 2);
+    assert!(Badness::of(&nan).severity.is_infinite());
+    // Among several channels one NaN decides.
+    assert!(better(&finite, &ghosted(&[(0, -0.1), (1, f64::NAN)])));
+    // A branch ghost counts like a ghost, and ranks with them.
+    let branch = Diagnosis {
+        branch_ghosts: [(
+            Key {
+                l: 1,
+                kappa: Some(-2),
+            },
+            -3.74,
+        )]
+        .into(),
+        ..Diagnosis::default()
+    };
+    assert_eq!(Badness::of(&branch).tier, 2);
+    assert!(better(&ghosted(&[(1, -0.133)]), &branch));
+    assert!(better(&scattering(&[(0, [3.0, 3.0])], &[]), &branch));
+    // Scattering: a NaN phase, an unprojected NaN.
+    let nan_phase = scattering(&[(1, [f64::NAN, 0.1])], &[]);
+    let nan_wrong = Badness::of(&nan_phase);
+    assert!(nan_wrong.severity.is_infinite(), "{nan_wrong:?}");
+    assert!(better(&scattering(&[(1, [5.0, 5.0])], &[]), &nan_phase));
+    let nan_unprojected = scattering(&[], &[(2, f64::NAN)]);
+    assert!(Badness::of(&nan_unprojected).severity.is_infinite());
+    assert!(better(&scattering(&[], &[(2, 3.0)]), &nan_unprojected));
+    // A NaN missing distance only breaks a tie, and then loses.
+    let missing = |d: f64| Diagnosis {
+        missing: [(1, d)].into(),
+        ..Diagnosis::default()
+    };
+    assert!(better(&missing(0.02), &missing(f64::NAN)));
+    // The keeper never holds the NaN attempt against a measurable one, whatever the order.
+    for order in [[0usize, 1], [1, 0]] {
+        let items = [nan.clone(), finite.clone()];
+        let mut keeper = Keeper::new();
+        for i in order {
+            keeper.offer(Badness::of(&items[i]), i);
+        }
+        assert_eq!(keeper.into_best(), Some(1));
+    }
+}

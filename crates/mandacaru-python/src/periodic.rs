@@ -64,7 +64,7 @@ pub(super) fn input_arrays(
                 .ok_or_else(|| error(mandacaru_core::Error::Overflow))?;
         }
     }
-    let archive = sample_bytes > ctx.memory_limit() / 8;
+    let archive = ctx.offloads(sample_bytes);
     for (key, value) in values.iter() {
         let key: String = key.extract()?;
         let owned = if let Ok(array) = value.extract::<PyReadonlyArrayDyn<'_, f64>>() {
@@ -81,7 +81,7 @@ pub(super) fn input_arrays(
                     precision
                 };
                 let archive = if is_hat {
-                    product(&[array.len(), 16]).map_err(error)? > ctx.memory_limit() / 8
+                    ctx.offloads(product(&[array.len(), 16]).map_err(error)?)
                 } else {
                     archive
                 };
@@ -227,6 +227,41 @@ impl PyPeriodicResult {
             })
             .map_err(error)?;
         Ok(super::wannier::PyWannierSetup { inner: Some(inner) })
+    }
+    /// The analytic force `-dF/dtau` per atom, Hartree/Bohr, shape `(n_atoms, 3)`, of the
+    /// converged crystal, rebuilt in Rust from the crystal's own setup description. Raises
+    /// `NotImplementedError` naming the cause for everything the engine does not differentiate.
+    fn forces<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, f64>> {
+        let forces = py
+            .detach(|| mandacaru_core::periodic::response::forces(&self.crystal, &self.inner))
+            .map_err(error)?;
+        array(
+            py,
+            &[forces.len(), 3],
+            forces.into_iter().flatten().collect(),
+        )
+    }
+    /// The analytic stress at the pins of the crystal, Hartree/Bohr^3: `sigma = (g + g^T) / (2 Omega)`
+    /// with `g_ab = dF/d eps_ab` (`gradient`, Hartree, unsymmetrized), the antisymmetric part
+    /// `(g - g^T) / 2` (Hartree, a diagnostic) and the cell `volume` (Bohr^3). The 3x3 arrays are
+    /// row-major `[a][b]`; the Voigt order and units are the Python caller's.
+    fn stress<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let stress = py
+            .detach(|| mandacaru_core::periodic::response::stress(&self.crystal, &self.inner))
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        for (name, tensor) in [
+            ("sigma", stress.sigma),
+            ("gradient", stress.gradient),
+            ("antisymmetric", stress.antisymmetric),
+        ] {
+            out.set_item(
+                name,
+                array(py, &[3, 3], tensor.into_iter().flatten().collect())?,
+            )?;
+        }
+        out.set_item("volume", stress.volume)?;
+        Ok(out)
     }
     #[getter]
     fn spin_orbit_energy(&self) -> Option<f64> {

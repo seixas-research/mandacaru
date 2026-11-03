@@ -36,46 +36,64 @@ pub struct Badness {
     pub missing: f64,
 }
 
+/// The larger of two severities, a NaN kept: `f64::max` returns the other operand, and a defect
+/// whose size is not a number would then rank as no defect at all.
+fn worst(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
+/// A severity as the order sees it: a number that is not one is the worst there is.
+fn as_severity(x: f64) -> f64 {
+    if x.is_nan() {
+        f64::INFINITY
+    } else {
+        x
+    }
+}
+
 impl Badness {
-    /// The badness of a diagnosis, by the rules above.
+    /// The badness of a diagnosis, by the rules above. A depth, phase or distance that is not a
+    /// number makes the attempt the worst of its tier (`NaN` is never read as "no defect").
     pub fn of(diagnosis: &Diagnosis) -> Self {
-        let missing = diagnosis
-            .missing
-            .values()
-            .map(|d| d.abs())
-            .fold(0., f64::max);
-        if !diagnosis.ghosts.is_empty() {
-            let deepest = diagnosis
+        let missing = diagnosis.missing.values().map(|d| d.abs()).fold(0., worst);
+        if diagnosis.has_ghost() {
+            let depth = diagnosis
                 .ghosts
                 .values()
-                .copied()
-                .fold(f64::INFINITY, f64::min);
+                .chain(diagnosis.branch_ghosts.values())
+                .map(|e| -e)
+                .fold(f64::NEG_INFINITY, worst);
             return Self {
                 tier: 2,
-                severity: -deepest,
-                count: diagnosis.ghosts.len(),
+                severity: as_severity(depth),
+                count: diagnosis.ghosts.len() + diagnosis.branch_ghosts.len(),
                 missing,
             };
         }
         let phase = diagnosis
             .wrong_phases()
             .values()
-            .map(|[near, far]| (near / PHASE_TOLERANCE).max(far / RESONANCE_TOLERANCE))
-            .fold(0., f64::max);
+            .map(|[near, far]| worst(near / PHASE_TOLERANCE, far / RESONANCE_TOLERANCE))
+            .fold(0., worst);
         let unprojected = diagnosis
             .unprojected
             .values()
             .copied()
-            .filter(|&e| e > UNPROJECTED_TOLERANCE)
-            .fold(0., f64::max);
+            .filter(|&e| !(e <= UNPROJECTED_TOLERANCE))
+            .fold(0., worst);
         let s_miss = failed_acceptance(diagnosis.s_miss);
         Self {
             tier: u8::from(s_miss.is_some()),
-            severity: phase
-                .max(s_miss.unwrap_or(0.))
-                .max(unprojected / UNPROJECTED_TOLERANCE),
+            severity: as_severity(worst(
+                worst(phase, s_miss.unwrap_or(0.)),
+                unprojected / UNPROJECTED_TOLERANCE,
+            )),
             count: 0,
-            missing,
+            missing: as_severity(missing),
         }
     }
 
@@ -109,10 +127,20 @@ impl<T> Keeper<T> {
     /// Take `item` if `badness` is strictly less bad than the one held (the earlier attempt wins
     /// a tie); the loser is dropped.
     pub fn offer(&mut self, badness: Badness, item: T) {
+        self.offer_by(badness, item, Badness::compare);
+    }
+
+    /// [`offer`](Self::offer) with the order as a parameter (a control replaces the ranking).
+    pub fn offer_by(
+        &mut self,
+        badness: Badness,
+        item: T,
+        order: impl Fn(&Badness, &Badness) -> Ordering,
+    ) {
         let better = self
             .best
             .as_ref()
-            .map_or(true, |(held, _)| badness.compare(held) == Ordering::Less);
+            .map_or(true, |(held, _)| order(&badness, held) == Ordering::Less);
         if better {
             self.best = Some((badness, item));
         }

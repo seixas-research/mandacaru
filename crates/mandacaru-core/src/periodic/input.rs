@@ -1,6 +1,9 @@
 //! Validated portable density-independent crystal data. No Python dependency.
 use super::invalid;
-use crate::math::storage::{ComplexSamples, Precision};
+use crate::math::{
+    archive::Archive,
+    storage::{ComplexSamples, Precision},
+};
 use crate::{
     math::{linalg::eigen, SpatialGrid},
     product,
@@ -76,6 +79,41 @@ impl InputArrays {
         complex(ctx, v, n, name)
     }
 }
+/// The crystal snapshot's metadata text, kept for `Crystal::save`: in memory, or in the scratch
+/// folder when it reaches the context's offload threshold, so a long SCF carries no copy of it.
+enum Source {
+    Resident(String),
+    Archived(Archive<u8>),
+}
+impl Source {
+    fn keep(ctx: &Context, text: &str) -> Result<Self> {
+        if ctx.offloads(text.len()) {
+            let bytes = text.as_bytes();
+            Ok(Self::Archived(Archive::create(ctx, bytes.len(), |i| {
+                Ok(bytes[i])
+            })?))
+        } else {
+            Ok(Self::Resident(text.to_string()))
+        }
+    }
+    fn resident_bytes(&self) -> usize {
+        match self {
+            Self::Resident(text) => text.len(),
+            Self::Archived(_) => 0,
+        }
+    }
+    fn text(&self, ctx: &Context) -> Result<String> {
+        match self {
+            Self::Resident(text) => Ok(text.clone()),
+            Self::Archived(bytes) => {
+                let _reading = ctx.reserve(bytes.len())?;
+                let mut text = vec![0u8; bytes.len()];
+                bytes.read_range_into(0, &mut text)?;
+                String::from_utf8(text).map_err(|_| invalid("the crystal metadata text is damaged"))
+            }
+        }
+    }
+}
 pub struct KPoint {
     pub k: [f64; 3],
     pub fractional: [f64; 3],
@@ -126,7 +164,12 @@ pub struct Crystal {
     pub hubbard: Option<super::hubbard::Spec>,
     /// The PAW spheres of a hybrid crystal (its `sites` block); `None` for a semilocal one.
     pub hybrid: Option<super::hybrid_setup::Hybrid>,
-    source: String,
+    /// The `setup` block (radial tables, function and projector lists, symmetry operations) the
+    /// derivative engines rebuild the geometry from; `None` for a snapshot written without it.
+    pub description: Option<super::description::Description>,
+    /// Why the setup cannot be described (a `setup` block carrying `unavailable`), if so.
+    pub description_unavailable: Option<String>,
+    source: Source,
     _memory: Reservation,
 }
 pub(super) fn number(v: &Value, name: &str) -> Result<f64> {
@@ -372,16 +415,35 @@ impl Crystal {
                 .ok_or(crate::Error::Overflow)?,
             16,
         ])?;
+        let kept = Source::keep(ctx, source)?;
         let memory = ctx.reserve(
             matrices
                 .checked_add(product(&[permutation_count, n, 8])?)
-                .and_then(|n| n.checked_add(source.len()))
+                .and_then(|n| n.checked_add(kept.resident_bytes()))
                 .ok_or(crate::Error::Overflow)?,
         )?;
         let _matrix_work = ctx.reserve(product(&[m, m, 16, 12])?)?;
+        // The Bloch orbital stacks of all k-points go to the scratch folder together when their
+        // total reaches the offload threshold (a stack the caller already archived stays as is).
+        let archive_psi = ctx.offloads(product(&[
+            raw.len(),
+            m,
+            n,
+            if precision == Precision::Float32 { 8 } else { 16 },
+        ])?);
         let points = raw
             .iter()
-            .map(|v| kpoint_arrays(ctx, v, m, p, n, &mut arrays, precision))
+            .map(|v| {
+                let mut point = kpoint_arrays(ctx, v, m, p, n, &mut arrays, precision)?;
+                if archive_psi && !point.psi.archived() {
+                    point.psi = std::mem::replace(
+                        &mut point.psi,
+                        ComplexSamples::Float64(ctx.allocate(0)?),
+                    )
+                    .into_archived(ctx)?;
+                }
+                Ok(point)
+            })
             .collect::<Result<Vec<_>>>()?;
         if points.iter().any(|p| p.weight <= 0.)
             || (points.iter().map(|p| p.weight).sum::<f64>() - 1.).abs() > 1e-10
@@ -524,9 +586,7 @@ impl Crystal {
                 .ok_or_else(|| invalid("missing functional"))?,
         )?;
         if definition.screened_exchange.is_some() && !v["hubbard"].is_null() {
-            return Err(invalid(
-                "DFT+U is not available with hybrid functionals",
-            ));
+            return Err(invalid("DFT+U is not available with hybrid functionals"));
         }
         if definition.screened_exchange.is_some() {
             hybrid_needs_the_full_mesh(&points, permutations.len())?;
@@ -556,6 +616,32 @@ impl Crystal {
                 time_reversal,
             )?),
             None => None,
+        };
+        // The block serves the derivative engines only: a block that cannot be used (an analytic basis,
+        // or one the snapshot contradicts) leaves the energy intact and is refused, with its cause, when
+        // a force or a stress asks for it. Only an invalid block is set aside; a budget error is not.
+        let mut description_unavailable = v["setup"]["unavailable"].as_str().map(str::to_string);
+        let description = if v["setup"].is_null() || description_unavailable.is_some() {
+            None
+        } else {
+            let cell =
+                nalgebra::Matrix3::from_fn(|i, j| grid.index.shape()[j] as f64 * grid.step[(i, j)]);
+            match super::description::Description::parse(
+                ctx,
+                &v,
+                m,
+                p,
+                &cell,
+                grid.index.shape(),
+                &permutations,
+            ) {
+                Ok(d) => Some(d),
+                Err(crate::Error::Invalid(why)) => {
+                    description_unavailable = Some(format!("its 'setup' block is refused: {why}"));
+                    None
+                }
+                Err(other) => return Err(other),
+            }
         };
         let core_tau = if definition.requires_tau {
             let values = arrays.real(ctx, &v["core_tau"], n, "core kinetic density")?;
@@ -601,12 +687,19 @@ impl Crystal {
             phase: arrays.complex(ctx, &v["phase"], n, "Fourier phase")?,
             kerker: arrays.real(ctx, &v["kerker"], n, "Kerker factors")?,
             ion: arrays.complex(ctx, &v["ion"], n, "ionic reciprocal density")?,
-            hats: arrays.samples(
-                ctx,
-                &v["hats"],
-                product(&[channels, n])?,
-                Precision::Float64,
-            )?,
+            hats: {
+                let hats = arrays.samples(
+                    ctx,
+                    &v["hats"],
+                    product(&[channels, n])?,
+                    Precision::Float64,
+                )?;
+                if ctx.offloads(product(&[channels, n, 16])?) {
+                    hats.into_archived(ctx)?
+                } else {
+                    hats
+                }
+            },
             uion: arrays.complex(ctx, &v["uion"], channels, "compact ion couplings")?,
             linear: arrays.complex(ctx, &v["linear"], channels, "short-range moment couplings")?,
             eion: number(&v["eion"], "ionic energy")?,
@@ -625,7 +718,9 @@ impl Crystal {
             )?,
             hubbard,
             hybrid,
-            source: source.to_string(),
+            description,
+            description_unavailable,
+            source: kept,
             _memory: memory,
         };
         if !arrays.0.is_empty() {
@@ -649,8 +744,8 @@ impl Crystal {
         Self::from_json(ctx, &text)
     }
     pub fn save(&self, path: &str) -> Result<()> {
-        let mut value: Value =
-            serde_json::from_str(&self.source).map_err(|e| invalid(e.to_string()))?;
+        let mut value: Value = serde_json::from_str(&self.source.text(&self.context)?)
+            .map_err(|e| invalid(e.to_string()))?;
         value["functional"] = serde_json::json!(self.functional);
         value["precision"] = serde_json::json!(self.precision.name());
         value["spinor"] = serde_json::json!(self.spinor);

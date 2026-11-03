@@ -8,13 +8,23 @@ use crate::paw_generate_support::compare::{compare_atom, floor, lifted, relative
 use crate::paw_generate_support::dataset::compare_dataset_with;
 use crate::paw_generate_support::{base_recipe_of, Decimated};
 use mandacaru_core::models::atom::Atom;
-use mandacaru_core::paw::generate::energies::AtomSolver;
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::generate::recipe::Recipe;
-use mandacaru_core::paw::generate::reference::solve_reference;
+use mandacaru_core::paw::generate::reference::solve_reference_with;
 use mandacaru_core::paw::generate::search::{
     search_with_atom, Error, Mode, Options, Pinned, Searched, Tried, Why,
 };
 use mandacaru_core::Context;
+
+/// The smaller of two values with a NaN in either kept (`f64::min` returns the other operand, and
+/// a depth that is not a number would then rank as no ghost at all).
+pub fn nan_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b)
+    }
+}
 
 pub fn context() -> Context {
     Context::new(Some(1), 1 << 30).unwrap()
@@ -61,7 +71,7 @@ pub struct Case {
 pub fn open(ctx: &Context, name: &str) -> Case {
     let frozen = Frozen::open(name);
     let recipe = base_recipe_of(&frozen);
-    let atom = solve_reference(ctx, &recipe).unwrap();
+    let atom = solve_reference_with(ctx, &recipe, &AtomSolver).unwrap();
     Case {
         frozen,
         recipe,
@@ -100,12 +110,12 @@ impl Case {
 /// The selected attempt of a search against the Python search: same index, same label, the same
 /// failed attempts (`tried`, text for text), the selected construction's recorded parameters and
 /// the whole record against the freeze. Panics with the name on a miss.
-pub fn assert_same_selection(case: &Case, searched: &Searched, phase_tolerance: f64) {
+pub fn assert_same_selection(case: &Case, searched: &Searched, tolerance_of: &dyn Fn(&str) -> f64) {
     let name = &case.frozen.name;
     let frozen = outcome(&case.frozen);
     assert_eq!(searched.label, frozen.label, "{name}: selected label");
     assert_eq!(searched.index, frozen.index, "{name}: selected index");
-    assert_same_tried(name, &searched.tried, &frozen.tried, phase_tolerance);
+    assert_same_tried(name, &searched.tried, &frozen.tried, tolerance_of);
     if let Some(generated) = &frozen.generated {
         assert_selected_parameters(name, generated, searched);
     }
@@ -151,11 +161,21 @@ fn numbers(text: &str) -> (Vec<f64>, String) {
     (values, skeleton)
 }
 
+/// One printed unit of the third decimal: two phases within `tolerance` print this much apart at
+/// most when the rounding falls between them.
+const PRINTED_QUANTUM: f64 = 1.0e-3 + 1e-12;
+
 /// The failed attempts against the Python list, text for text, except that the numbers of an
-/// entry may differ by `tolerance` when the rest of the text is the same (`0.` demands the same
-/// text). Python reported a construction that could not be built as `label: ValueError`; the
-/// Rust text carries the cause instead, so those entries are compared by label and kind.
-pub fn assert_same_tried(name: &str, ours: &[Tried], frozen: &[String], tolerance: f64) {
+/// entry may differ by `tolerance_of(label)` (plus one printed quantum) when the rest of the text
+/// is the same; a label with tolerance `0.` demands the same text. A number that is not a number
+/// fails. Python reported a construction that could not be built as `label: ValueError`; the Rust
+/// text carries the cause instead, so those entries are compared by label and kind.
+pub fn assert_same_tried(
+    name: &str,
+    ours: &[Tried],
+    frozen: &[String],
+    tolerance_of: &dyn Fn(&str) -> f64,
+) {
     assert_eq!(
         ours.len(),
         frozen.len(),
@@ -178,30 +198,32 @@ pub fn assert_same_tried(name: &str, ours: &[Tried], frozen: &[String], toleranc
         if text == *want {
             continue;
         }
+        let tolerance = tolerance_of(&got.label);
         let ((a, shape_a), (b, shape_b)) = (numbers(&text), numbers(want));
         assert!(
             tolerance > 0. && shape_a == shape_b && a.len() == b.len(),
-            "{name}: a failed attempt: {text:?} against {want:?}"
+            "{name}: a failed attempt: {text:?} against {want:?} (tolerance {tolerance:e})"
         );
-        // Two values within `tolerance` print three decimals apart by at most one unit more.
         let entry = a
             .iter()
             .zip(&b)
             .map(|(x, y)| (x - y).abs())
-            .fold(0., f64::max);
-        println!("{name}: {text:?} against {want:?}: {entry:.1e}");
-        worst = worst.max(entry);
+            .fold(0., crate::paw_generate_support::compare::nan_max);
+        println!("{name}: {text:?} against {want:?}: {entry:.1e} (gate {tolerance:.1e})");
+        assert!(
+            entry <= tolerance + PRINTED_QUANTUM,
+            "{name}: {text:?} against {want:?}: {entry:.2e} > {tolerance:.1e} + one printed quantum"
+        );
+        worst = crate::paw_generate_support::compare::nan_max(worst, entry);
     }
     println!("{name}: worst numeric difference of the failed attempts {worst:.2e}");
-    assert!(
-        worst <= tolerance + 1.0e-3 + 1e-12,
-        "{name}: the failed attempts differ by {worst:.2e} (gate {tolerance:.1e})"
-    );
 }
 
 /// The recorded defects of a flagged search against the freeze: the same keys; the unprojected
-/// phases, the s miss and the ghosts within `tight`, the constructed channels' phases within
-/// `phase` (a sharp resonance moves with the last digits of the dataset).
+/// phases, the s miss (its value, relative to `max(1, |x|)`) and the ghosts within `tight`, the
+/// constructed channels' phases within `phase` (a sharp resonance moves with the last digits of
+/// the dataset). A deviation that is not a number fails (`!(d <= gate)`), and the keys the
+/// freeze cannot have (`missing`, `branch_ghosts`) must be empty on a scalar construction.
 pub fn assert_same_defects(f: &Frozen, searched: &Searched, tight: f64, phase: f64) {
     let name = &f.name;
     let want = &f.doc["scalars"]["defects"];
@@ -227,6 +249,10 @@ pub fn assert_same_defects(f: &Frozen, searched: &Searched, tight: f64, phase: f
         keys(want, "unprojected"),
         "{name}: unprojected keys"
     );
+    assert!(
+        got.missing.is_empty() && got.branch_ghosts.is_empty(),
+        "{name}: the freeze has no missing state or branch ghost: {got:?}"
+    );
     for (l, [near, far]) in &got.phases {
         let frozen = &want["phases"][l.to_string()];
         for (ours, theirs) in [(near, &frozen[0]), (far, &frozen[1])] {
@@ -246,11 +272,17 @@ pub fn assert_same_defects(f: &Frozen, searched: &Searched, tight: f64, phase: f
         let frozen = want["ghosts"][l.to_string()].as_f64().unwrap();
         assert!((e - frozen).abs() <= tight, "{name}: ghost l={l}");
     }
-    assert_eq!(
-        got.s_miss.is_some(),
-        !want["s_miss"].is_null(),
-        "{name}: s_miss recorded"
-    );
+    // The s miss: presence and value. The measured floor of the value is 2.1e-12 relative (A5,
+    // 31 shipped files against the A0 scan), so `tight` (1e-9) is 500 times the floor.
+    match (got.s_miss, want["s_miss"].as_f64()) {
+        (Some(ours), Some(theirs)) => {
+            let d = (ours - theirs).abs() / theirs.abs().max(1.);
+            println!("{name}: recorded s_miss {ours} against {theirs}: {d:.2e}");
+            assert!(d <= tight, "{name}: s_miss {ours} against {theirs}: {d:e}");
+        }
+        (None, None) => {}
+        (ours, theirs) => panic!("{name}: s_miss recorded {ours:?}, frozen {theirs:?}"),
+    }
 }
 
 /// `attempts[selected].generated` of the freeze: the radii, the local radius, the shift, the

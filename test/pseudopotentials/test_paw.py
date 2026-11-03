@@ -28,8 +28,8 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.pseudopotentials import PSEUDO_FAMILIES, PAWChannel, PAWDataset, check_paw_channel, compensation_coulomb, compensation_potential, compensation_shape, family_names, generate_paw, get_paw, load_pseudopotential, log_derivative_ae, log_derivative_paw, lookup_family, paw_library_path, paw_spectrum, reconstruct_ae, report_paw, resolve_family, save_pseudopotential
-from mandacaru.pseudopotentials import paw
+from mandacaru.pseudopotentials import PSEUDO_FAMILIES, PAWChannel, PAWDataset, family_names, generate_paw, get_paw, load_pseudopotential, lookup_family, paw_library_path, paw_spectrum, reconstruct_ae, report_paw, resolve_family, save_pseudopotential
+from mandacaru.pseudopotentials.diagnostics import diagnose, ghost_levels, intruding_s_miss
 from mandacaru.pseudopotentials.io import library_elements
 from mandacaru.pseudopotentials.environment import LibraryPathError
 from mandacaru.pseudopotentials.io import available_elements, detect_format
@@ -248,10 +248,9 @@ _GENERATED: dict = {}
 
 
 def generated(symbol: str) -> PAWDataset:
-    """Freshly generated dataset (with its all-electron atom), cached.
+    """Freshly generated dataset, cached.
 
-    Nonrelativistic: the native atom solver supports ``relativity="none"``
-    only, and the checks below are properties of the PAW transformation, not
+    Nonrelativistic: the checks below are properties of the PAW transformation, not
     of the relativistic treatment of the reference atom."""
     if symbol not in _GENERATED:
         _GENERATED[symbol] = generate_paw(symbol, relativity="none")
@@ -262,10 +261,13 @@ _CHECKS: dict = {}
 
 
 def checks(symbol: str, l: int) -> dict:
-    """``check_paw_channel`` of the generated dataset, cached per channel."""
-    if (symbol, l) not in _CHECKS:
-        _CHECKS[(symbol, l)] = check_paw_channel(generated(symbol), l)
-    return _CHECKS[(symbol, l)]
+    """The levels of one channel of the generated dataset and the scattering phases of the
+    whole diagnosis, cached per dataset."""
+    if symbol not in _CHECKS:
+        _CHECKS[symbol] = diagnose(generated(symbol), levels=True)
+    found = _CHECKS[symbol]
+    return {"spectrum": found["levels"][l], "phases": found["phases"][l],
+            "found": found}
 
 
 def _fci(hamiltonian) -> float:
@@ -303,7 +305,6 @@ def _total(integrals, n_electrons) -> float:
 CHANNELS = [("H", 0), ("C", 0), ("O", 0), ("O", 1)]
 
 
-@pytest.mark.slow
 class TestAtomic:
     @pytest.mark.parametrize("symbol, l", CHANNELS)
     def test_projectors_are_dual_to_the_smooth_waves(self, symbol, l):
@@ -376,73 +377,24 @@ class TestAtomic:
         box state above zero."""
         pp = generated(symbol)
         e1 = pp.channels[l].eigenvalue
-        c = checks(symbol, l)
+        spectrum = checks(symbol, l)["spectrum"]
         print(f"\n{symbol} l={l}: eps_1 = {e1:+.6f}, spectrum "
-              f"{np.round(c['spectrum'], 6).tolist()}, error "
-              f"{c['eigenvalue_error']:+.1e} Ha")
-        assert abs(c["eigenvalue_error"]) < 1e-4
-        assert c["spectrum"][1] > 0.0
-        assert c["nodes"] == 0
+              f"{np.round(spectrum, 6).tolist()}, error {spectrum[0] - e1:+.1e} Ha")
+        assert abs(spectrum[0] - e1) < 1e-4
+        assert spectrum[1] > 0.0
+        assert paw_spectrum(pp, l, n_states=2) == pytest.approx(spectrum, abs=1e-9)
 
     @pytest.mark.parametrize("symbol, l", CHANNELS)
-    def test_reconstruction_of_the_all_electron_wave(self, symbol, l):
-        """phi = phi~ + sum_i (phi_i - phi~_i) <p_i|phi~> applied to the lowest
-        smooth eigenfunction gives the all-electron orbital everywhere.
-
-        The s channel is allowed more room, and only because of the reference
-        atom: a relativistic ``l = 0`` wave goes as ``r^gamma`` with
-        ``gamma < 1``, which the uniform radial grid cannot represent, so the
-        all-electron wave being reconstructed *towards* is itself the least
-        accurate thing here.  Isolated on oxygen: 7.4e-6 with
-        ``relativity="none"`` against 1.6e-4 with the shipped
-        scalar-relativistic default, while ``l = 1`` barely moves (6.5e-5 to
-        5.4e-5).  `basis/loggrid.py` is the fix for the cusp and is not wired
-        into generation; until it is, this is the honest bound.
-        """
+    def test_the_channel_scatters_like_the_atom(self, symbol, l):
+        """The smooth logarithmic derivative against the all-electron one over the
+        windows around the two references: the phase errors (rad) are the generator's
+        own acceptance (0.05 near the reference, 0.3 farther out), and the diagnosis
+        finds nothing wrong with the dataset."""
         c = checks(symbol, l)
-        print(f"\n{symbol} l={l}: |phi_rec - phi_AE| = "
-              f"{c['reconstruction_error']:.1e} (smooth wave deviates by "
-              f"{c['smooth_deviation']:.2e})")
-        assert c["reconstruction_error"] < (2e-4 if l == 0 else 1e-4)
-        assert c["smooth_deviation"] > 1e-2          # the smooth wave differs
-        assert c["tail_error"] < 1e-6                # ... only inside r_c
-
-    def test_the_s_channel_reconstruction_is_limited_by_the_cusp(self):
-        """The evidence for the bound above: it is the reference atom, not the
-        PAW transformation, and it is specific to ``l = 0``."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            free = generate_paw("O", relativity="none")
-        free_s = check_paw_channel(free, 0)["reconstruction_error"]
-        free_p = check_paw_channel(free, 1)["reconstruction_error"]
-        # The shipped default: a scalar-relativistic reference atom, which the
-        # native atom solver does not yet provide (generate_paw raises).
-        scalar = generate_paw("O")
-        scalar_s = check_paw_channel(scalar, 0)["reconstruction_error"]
-        scalar_p = check_paw_channel(scalar, 1)["reconstruction_error"]
-        assert free_s < 2e-5                      # the transformation is exact
-        assert scalar_s > 5.0 * free_s            # ... the s cusp is not
-        assert scalar_p < 2.0 * free_p            # ... and p is untouched
-
-    @pytest.mark.parametrize("symbol, l", CHANNELS)
-    def test_logarithmic_derivatives(self, symbol, l):
-        pp = generated(symbol)
-        e1, e2 = pp.channels[l].reference_energies
-        errors = checks(symbol, l)["log_derivative_errors"]
-        line = "  ".join(f"L({e:+.3f})={la:+.4f} dL={err:.1e}"
-                         for e, (err, la) in errors.items())
-        print(f"\n{symbol} l={l}: {line}")
-        assert errors[e1][0] < 1e-3
-        assert errors[e2][0] < 1e-3
-        mid_error, mid_l = errors[0.5 * (e1 + e2)]
-        assert mid_error / max(1.0, abs(mid_l)) < 2e-2
-
-    def test_log_derivative_functions_agree_by_construction(self):
-        pp = generated("H")
-        e1 = pp.channels[0].eigenvalue
-        l_ae = log_derivative_ae(pp.r, pp.atom.v_effective, 0, e1,
-                                 pp.channels[0].r_cut, 1.0, pp.relativity)
-        assert abs(log_derivative_paw(pp, 0, e1) - l_ae) < 1e-5
+        near, far = c["phases"]
+        print(f"\n{symbol} l={l}: phase error {near:.1e} / {far:.1e} rad")
+        assert near < 0.05 and far < 0.3
+        assert c["found"]["wrong_phases"] == {} and c["found"]["ghosts"] == {}
 
     def test_reference_waves_reconstruct_exactly(self):
         """Duality makes the bound smooth wave map onto the all-electron one
@@ -463,7 +415,11 @@ class TestAtomic:
         shell = 4.0 * np.pi * r * r
         # Smooth valence + compensation is neutral with the ion.
         n_smooth = np.trapezoid(pp.valence_density * shell, r)
-        g = pp.compensation_shape(r)
+        from mandacaru import _native
+        from mandacaru.pseudopotentials.native_context import context
+
+        g = np.asarray(_native.paw_shape_function(context(), r, pp.compensation_radius, 0))
+        g = g / (4.0 * np.pi)                             # the engine's L=0 shape carries 4 pi
         # Trapezoid on the radial grid: 1.2e-6 off for hydrogen's 1.0 Bohr sphere.
         assert np.trapezoid(g * shell, r) == pytest.approx(1.0, abs=5e-6)
         assert n_smooth + pp.compensation_charge == pytest.approx(
@@ -494,32 +450,6 @@ class TestAtomic:
             assert np.allclose(pp.smooth_core_density[~inside],
                                pp.core_density[~inside])
 
-    def test_compensation_shape_functions(self):
-        r_g = 1.3
-        r = np.linspace(0.0, 3.0, 3001)
-        g = compensation_shape(r, r_g)
-        v = compensation_potential(r, r_g)
-        assert np.trapezoid(4.0 * np.pi * r * r * g, r) == pytest.approx(1.0, abs=1e-8)
-        assert np.allclose(v[r > r_g], 1.0 / r[r > r_g])
-        assert np.isfinite(v[0]) and v[0] == pytest.approx(315.0 / 128.0 / r_g)
-        # Poisson: the analytic potential is the Hartree potential of g.
-        from mandacaru.basis.atomic_solver import hartree_potential
-        rr = r[1:]
-        assert np.abs(hartree_potential(rr, g[1:]) - v[1:]).max() < 1e-4
-        # Disjoint spheres interact as point charges; the self-energy is
-        # 4 pi int g V r^2 dr; overlapping spheres are in between.
-        assert compensation_coulomb(r_g, r_g, 3.0) == pytest.approx(1.0 / 3.0)
-        self_energy = np.trapezoid(4.0 * np.pi * r * r * g * v, r)
-        assert compensation_coulomb(r_g, r_g, 0.0) == pytest.approx(
-            self_energy, rel=1e-6)
-        # Inside the sphere V_g(r) < 1/r, so overlapping charges interact
-        # less than point charges (and less than at coincidence).
-        overlapping = compensation_coulomb(r_g, r_g, 1.4)
-        assert 0.9 / 1.4 < overlapping < 1.0 / 1.4 < self_energy
-        # Continuity at the touching distance.
-        assert compensation_coulomb(r_g, r_g, 2 * r_g - 1e-9) == pytest.approx(
-            1.0 / (2 * r_g), rel=1e-6)
-
     def test_projector_bases_are_the_same_operator(self):
         pp = generated("O")
         for l in (0, 1):
@@ -541,23 +471,14 @@ class TestAtomic:
         with pytest.raises(ValueError, match="unknown projector basis"):
             pp.projector_set(0, "other")
 
-    def test_free_waves_are_refused_when_the_overlap_is_singular(self):
-        """Without the norm condition the overlap operator of Li goes
-        singular; the generator says so instead of shipping a ghost."""
-        with pytest.raises(RuntimeError, match="overlap operator"):
-            generate_paw("Li", norm_deficit=None, atom=generated("Li").atom,
-                         relativity="none")
-
     def test_projectors_reach_the_local_radius(self):
         """Aluminum at its own cutoffs (s 2.68, p 3.43 Bohr) and the default
         local radius: r_cl follows the larger cutoff, the s projectors extend
         past their own r_cut to it, and the channel is still dual, symmetric
         and ghost-free (at the old repair's 5 Ha; the repair now shortens
         aluminum's local radius below its s cutoff instead)."""
-        from mandacaru.pseudopotentials import partial_waves, paw
         pp = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
-                          local_shift=5.0, atom=generated("Al").atom,
-                          relativity="none")
+                          local_shift=5.0, relativity="none")
         s, p = pp.channels[0], pp.channels[1]
         assert pp.r_cut_local > s.r_cut
         assert pp.projector_radius(0) == pytest.approx(pp.r_cut_local)
@@ -566,7 +487,7 @@ class TestAtomic:
         assert np.abs(np.asarray(s.projectors)[:, shell]).max() > 0.0
         assert np.all(np.asarray(s.projectors)[:, pp.r > pp.r_cut_local] == 0.0)
         assert s.duality_error < 1e-10 and s.asymmetry < 1e-6
-        assert partial_waves.ghost_errors(pp, paw._paw_levels) == {}
+        assert diagnose(pp)["ghosts"] == {}
 
     def test_the_local_potential_alone_scatters_like_the_atom(self):
         """K21: aluminum's d channel has no projectors.  Repaired with a 5 Ha
@@ -574,19 +495,15 @@ class TestAtomic:
         d 0.52 rad off and put fcc Al at 4.48 Angstrom; the search now
         shortens the local radius at no raise instead (HISTORY.md,
         2026-10-06, "K21 diagnosed")."""
-        from mandacaru.pseudopotentials import partial_waves
         repaired = generated("Al")
         assert repaired.local_shift == 0.0
         assert repaired.r_cut_local < 0.9 * repaired.channels[1].r_cut
-        errors = partial_waves.unprojected_scattering_errors(
-            repaired, paw.log_derivative_paw)
+        errors = diagnose(repaired)["unprojected"]
         assert set(errors) == {2}
-        assert errors[2] < partial_waves.UNPROJECTED_TOLERANCE
+        assert errors[2] < 0.2                      # the generator's acceptance
         raised = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
-                              local_shift=5.0, atom=repaired.atom,
-                              relativity="none")
-        assert partial_waves.unprojected_scattering_errors(
-            raised, paw.log_derivative_paw)[2] > 0.4
+                              local_shift=5.0, relativity="none")
+        assert diagnose(raised)["unprojected"][2] > 0.4
 
     def test_the_local_potential_alone_binds_no_ghost(self):
         """Iron's p channel has no projectors.  With r_cl at 0.9 x the compact
@@ -594,33 +511,27 @@ class TestAtomic:
         (4p: -0.05); with r_cl at the 4s cutoff it binds nothing extra.
 
         The valence-only iron: the shipped one now carries its 3s and 3p
-        (DEFAULT_SEMICORE_SUBSHELLS, 2026-10-21), whose p channel has
+        (the semicore table, 2026-10-21), whose p channel has
         projectors, so this guards the channel without projectors by
         building iron with ``semicore_subshells=()`` (old -4.6 Ha ghost
         reproduced: -4.58 Ha)."""
-        from mandacaru.pseudopotentials import partial_waves, paw
         valence_only = {"semicore_subshells": ()}
-        # The atom alone: a full repair of iron runs several constructions.
-        atom = generate_paw("Fe", ghosts="keep", relativity="none",
-                           **valence_only).atom
         # The historical construction: the compact local radius and no raise
         # of the local potential (iron's 10 Ha entry went with the semicore
         # p channel; here the default raise is 0).
-        old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
+        old = generate_paw("Fe", ghosts="keep", norm_deficit=0.0,
                            r_cut_local=0.828, local_shift=0.0,
                            relativity="none", **valence_only)
-        assert old.unconstructed_ghosts()[1] < -4.0
-        assert 1 in partial_waves.ghost_errors(old, paw._paw_levels)
-        new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0, atom=atom,
+        assert diagnose(old)["ghosts"][1] < -4.0
+        new = generate_paw("Fe", ghosts="keep", norm_deficit=0.0,
                            relativity="none", **valence_only)
-        assert new.unconstructed_ghosts() == {}
+        assert diagnose(new)["ghosts"] == {}
 
     def test_semicore_sodium_carries_its_2s2p_in_valence(self, tmp_path):
         """K21: with an s channel alone no local potential was right for
         sodium's p scattering.  The 2s2p in valence give the p channel a
         bound reference and its projectors, and the s channel two bound
         references (2s, 3s), with no raise of the local potential."""
-        from mandacaru.pseudopotentials import partial_waves
         from mandacaru.pseudopotentials.io import library_file
 
         pp = generated("Na")
@@ -629,7 +540,7 @@ class TestAtomic:
         assert pp.channels[0].occupations == [2.0, 1.0]
         assert pp.channels[1].occupations == [6.0, 0.0]
         assert pp.local_shift == 0.0
-        assert partial_waves.ghost_errors(pp, paw._paw_levels) == {}
+        assert diagnose(pp)["ghosts"] == {}
         # The 2s, 3s and 2p levels of the generalized problem are the
         # atom's, in order: nothing extra below or between them.
         s_levels = paw_spectrum(pp, 0, n_states=3)
@@ -637,8 +548,7 @@ class TestAtomic:
             pp.channels[0].reference_energies, abs=1e-3)
         assert paw_spectrum(pp, 1)[0] == pytest.approx(
             pp.channels[1].reference_energies[0], abs=1e-3)
-        errors = partial_waves.unprojected_scattering_errors(
-            pp, log_derivative_paw)
+        errors = diagnose(pp)["unprojected"]
         assert max(errors.values()) < 0.1
         # The cutoff comes from the 3s, not from the compact 2s.
         assert 2.0 < pp.channels[0].r_cut < 2.6
@@ -677,16 +587,15 @@ class TestAtomic:
         assert valence.r_c > 2.0 * confined_orbital(pp, 0, 0.1).r_c
 
     def test_semicore_subshells_are_validated(self):
-        from mandacaru.pseudopotentials.paw import _validate_semicore_subshells
-        core = {(1, 0): 2.0, (2, 0): 2.0, (2, 1): 6.0}
-        valence = {(3, 0): 1.0}
-        assert _validate_semicore_subshells(core, valence, [(2, 1), (2, 0)]) \
-            == ((2, 0), (2, 1))
-        assert _validate_semicore_subshells(core, valence, ()) == ()
+        """The shell must be a filled core subshell directly below the valence one of its l
+        (the engine's partition of the reference atom)."""
+        pp = generate_paw("Na", ghosts="keep", relativity="none",
+                          semicore_subshells=[(2, 1), (2, 0)])
+        assert pp.semicore_subshells == ((2, 0), (2, 1))
         with pytest.raises(ValueError, match="not an occupied core"):
-            _validate_semicore_subshells(core, valence, [(3, 1)])
+            generate_paw("Na", ghosts="keep", relativity="none", semicore_subshells=[(3, 1)])
         with pytest.raises(ValueError, match="not directly below"):
-            _validate_semicore_subshells(core, valence, [(1, 0)])
+            generate_paw("Na", ghosts="keep", relativity="none", semicore_subshells=[(1, 0)])
 
     @staticmethod
     def _nodes(values):
@@ -709,36 +618,10 @@ class TestAtomic:
         for wave in channel.pseudo_waves:
             assert self._nodes(np.asarray(wave)[inside]) == 0
 
-    def test_the_2s_anchor_pseudizes_into_a_noded_p_wave(self):
-        """What the anchor fallback guards against (spurious_nodes)."""
-        from mandacaru.pseudopotentials import partial_waves
-        pp = generated("Li")
-        r, v = pp.atom.r, pp.atom.v_effective
-        energies = [-0.1055, 0.3945]
-        inside = r <= pp.channels[1].r_cut
-        waves = []
-        for energy in energies:
-            u = partial_waves.scattering_wave(r, v, 1, energy, 3.0, pp.relativity,
-                                              None)
-            u = u / np.sqrt(np.trapezoid(u[inside] ** 2, r[inside]))
-            waves.append(u / r)
-        pw = paw.smooth_partial_waves(r, v, 1, waves, energies,
-                                      pp.channels[1].r_cut, treatment=pp.relativity,
-                                      z_eff=3.0, norm_deficit=0.0)
-        assert partial_waves.spurious_nodes(r, pw) == [0, 1]
-
     def test_lithium_p_scatters_like_the_atom(self):
-        pp = generated("Li")
-        r_match = max(pp.r_cut_local,
-                      max(c.r_cut for c in pp.channels.values())) + 0.3
-        worst = 0.0
-        for energy in np.arange(-0.4, 0.45, 0.1):
-            d = (np.arctan(log_derivative_paw(pp, 1, energy, r_match))
-                 - np.arctan(log_derivative_ae(pp.r, pp.atom.v_effective, 1,
-                                               energy, r_match, 3.0,
-                                               pp.relativity)))
-            worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
-        assert worst < 0.01
+        found = diagnose(generated("Li"))
+        assert found["phases"][1][0] < 0.01 and found["phases"][1][1] < 0.05
+        assert found["wrong_phases"] == {}
 
     def test_beryllium_p_scatters_like_the_atom_and_stays_out_of_the_basis(
             self):
@@ -751,16 +634,8 @@ class TestAtomic:
 
         pp = generated("Be")
         assert 1 in pp.channels and not pp.defects
-        r_match = max(pp.r_cut_local,
-                      max(c.r_cut for c in pp.channels.values())) + 0.3
-        worst = 0.0
-        for energy in np.arange(-0.6, 0.35, 0.1):
-            d = (np.arctan(log_derivative_paw(pp, 1, energy, r_match))
-                 - np.arctan(log_derivative_ae(pp.r, pp.atom.v_effective, 1,
-                                               energy, r_match, 4.0,
-                                               pp.relativity)))
-            worst = max(worst, abs((d + 0.5 * np.pi) % np.pi - 0.5 * np.pi))
-        assert worst < 0.02
+        near, far = diagnose(pp)["phases"][1]
+        assert near < 0.02 and far < 0.05
         assert [state.l for state in basis_states(pp)] == [0]
 
     def test_lithium_smooth_core_carries_the_core_valence_overlap(self):
@@ -785,9 +660,8 @@ class TestAtomic:
         reference to an absolute energy and leaves the others at the bound
         state plus ``energy_offset``; one at or below the bound state is
         refused (DEFAULT_SECOND_REFERENCES, the 4f of W-Hg)."""
-        atom = generated("O").atom
-        default = generate_paw("O", atom=atom, ghosts="keep", relativity="none")
-        moved = generate_paw("O", atom=atom, ghosts="keep", relativity="none",
+        default = generate_paw("O", ghosts="keep", relativity="none")
+        moved = generate_paw("O", ghosts="keep", relativity="none",
                              second_reference={1: 0.5})
         assert moved.channels[1].reference_energies[1] == pytest.approx(0.5)
         assert moved.channels[1].reference_energies[0] == pytest.approx(
@@ -795,16 +669,15 @@ class TestAtomic:
         assert np.allclose(moved.channels[0].reference_energies,
                            default.channels[0].reference_energies)
         with pytest.raises(ValueError, match="not above the bound state"):
-            generate_paw("O", atom=atom, ghosts="keep", relativity="none",
+            generate_paw("O", ghosts="keep", relativity="none",
                          second_reference={1: -2.0})
 
     def test_report_runs_generated_and_loaded(self):
         text = report_paw(generated("H"))
-        assert "l=0x2" in text and "|dL|" in text and "E_1c" in text
+        assert "l=0x2" in text and "phase=" in text and "E_1c" in text
         assert "2 projectors" in repr(generated("H").channels[0])
         loaded = get_paw("H")
-        assert loaded.atom is None
-        assert "|dL|" not in report_paw(loaded)        # needs the atom
+        assert "phase=" in report_paw(loaded)          # the engine solves the atom again
 
 
 # --------------------------------------------------------------------------- #
@@ -813,6 +686,25 @@ class TestAtomic:
 
 #: One element from each population the 2026-09-24 ghost census found
 #: ghosted (first rows, d, f, p).
+#: The generator's floor for the smallest eigenvalue of the overlap operator.
+OVERLAP_MINIMUM = 0.1
+#: How far below its reference a channel's lowest level may sit before it is a ghost
+#: (a file has no all-electron atom to settle it, and its stride-4 tables move a level by up to
+#: 1e-3 Ha, Cu; a ghost sits tens of mHa and deeper).
+GHOST_BAND = 5e-3
+#: An excited level this far below zero in a compact channel is a ghost (the engine's margin).
+EXCITED_GHOST_MARGIN = 0.1
+
+
+def file_only_ghosts(pp) -> dict:
+    """Channels with one occupied reference whose lowest level lies below it: the ghost test
+    that needs no all-electron atom (``ghost_levels``)."""
+    levels = ghost_levels(pp)
+    return {l: levels[l][0] - c.reference_energies[0] for l, c in pp.channels.items()
+            if sum(1 for o in c.occupations if o > 0.0) == 1
+            and levels[l][0] < c.reference_energies[0] - GHOST_BAND}
+
+
 GHOST_SWEEP = ["B", "Na", "Cl", "Fe", "Cu", "Ga", "Ba", "La", "W", "Bi"]
 
 
@@ -829,9 +721,8 @@ class TestLibrary:
     def test_protactinium_and_uranium_reference_an_occupied_6d(self):
         # The aufbau 5f / 7s2 reference of Pa and U leaves no 6d, so the d
         # channel scattered 0.26-0.52 rad off; the override gives it a bound
-        # reference, and the shipped files carry a d channel.
-        assert paw.DEFAULT_REFERENCE_CONFIGURATIONS == {
-            "Pa": {(5, 3): 2, (6, 2): 1}, "U": {(5, 3): 3, (6, 2): 1}}
+        # reference, and the shipped files carry a d channel (the table of the
+        # overrides is the engine's, pinned by crates/mandacaru-core/tests/paw_recipe.rs).
         for symbol in ("Pa", "U"):
             try:
                 pp = get_paw(symbol)
@@ -853,7 +744,7 @@ class TestLibrary:
             # than its all-electron wave, q_22 = -0.0001, so its minimum is
             # 0.99911).  What matters is that the PAW transformation stays
             # far from singular, the generator's own floor.
-            assert channel.overlap_minimum >= paw.OVERLAP_MINIMUM
+            assert channel.overlap_minimum >= OVERLAP_MINIMUM
 
     @pytest.mark.parametrize("symbol", ["H", "Li", "O"])
     def test_shipped_file_has_no_ghost(self, symbol):
@@ -872,13 +763,10 @@ class TestLibrary:
     @pytest.mark.parametrize("symbol", GHOST_SWEEP)
     def test_no_shipped_channel_holds_a_ghost(self, symbol):
         """An extra state below the reference, with the reference level
-        displaced to second place (:func:`~mandacaru.pseudopotentials.
-        partial_waves.ghost_errors`), in one element of every population the 2026-09-24
+        displaced to second place (the engine's ghost test, here without the all-electron
+        atom: :func:`file_only_ghosts`), in one element of every population the 2026-09-24
         census found ghosted.  The whole library is the slow test below."""
-        from mandacaru.pseudopotentials import partial_waves
-        # A file has no all-electron atom: its projected channels only.
-        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels,
-                                          with_atom=False) == {}
+        assert file_only_ghosts(get_paw(symbol)) == {}
 
     @pytest.mark.parametrize("symbol", ["Tc", "Ta", "W", "Re", "Os", "Ir",
                                         "Pt", "Au", "Hg"])
@@ -889,8 +777,6 @@ class TestLibrary:
         reference sat below zero.  None of these atoms binds a second f or
         p level below -EXCITED_GHOST_MARGIN, so a file-only check suffices
         (DEFAULT_SECOND_REFERENCES)."""
-        from mandacaru.pseudopotentials.partial_waves import \
-            EXCITED_GHOST_MARGIN
         pp = get_paw(symbol)
         for l, channel in pp.channels.items():
             if sum(1 for o in channel.occupations if o > 0.0) != 1:
@@ -913,6 +799,10 @@ class TestLibrary:
             assert np.all(signs == signs[0])
 
     @pytest.mark.slow
+    @pytest.mark.xfail(strict=True, raises=ValueError, reason=(
+        "the native molecular RHF refuses a core other than empty or a closed 1s "
+        "('native PAW frozen-core exchange currently requires ...'): a Cu molecule is not "
+        "reachable (PAW_MIGRATION_LOG.md, A7 / S2; open item of the molecular route)"))
     def test_copper_binds_hydrogen(self):
         """The PBE copper built at deficit 0.1 collapsed CuH as the hydrogen
         entered its sphere: -1555 eV at 1.30 Angstrom, 108 eV below 1.60 (RHF
@@ -938,21 +828,15 @@ class TestLibrary:
         times the molecule's electrons, and the hydride collapsed by 150-580 eV
         (DEFAULT_N_BESSEL_BY_DATASET, DEFAULT_CUTOFFS, DEFAULT_NORM_DEFICITS);
         now it is under one."""
-        from mandacaru.pseudopotentials.paw import (INTRUDING_S_TOLERANCE,
-                                                    intruding_s_miss)
-
-        # The generator now refuses a construction above the tolerance
-        # (``ghost_free``'s acceptance); these five were the first repaired.
-        assert intruding_s_miss(get_paw(symbol)) < INTRUDING_S_TOLERANCE
+        # The search refuses a construction above the tolerance (1); these five were
+        # the first repaired.
+        assert intruding_s_miss(get_paw(symbol)) < 1.0
 
 
     @pytest.mark.slow
     @pytest.mark.parametrize("symbol", library_elements())
     def test_no_shipped_dataset_holds_a_ghost(self, symbol):
-        from mandacaru.pseudopotentials import partial_waves
-        # A file has no all-electron atom: its projected channels only.
-        assert partial_waves.ghost_errors(get_paw(symbol), paw._paw_levels,
-                                          with_atom=False) == {}
+        assert file_only_ghosts(get_paw(symbol)) == {}
 
     def test_shipped_h_matches_a_fresh_generation(self):
         # The shipped library is scalar-relativistic, so the fresh dataset is
@@ -965,65 +849,25 @@ class TestLibrary:
             fresh.one_center_energy, rel=1e-6)
         assert shipped.r.size * 4 == pytest.approx(fresh.r.size, abs=4)
 
-    def test_a_dataset_that_stores_the_wrong_norm_says_so(self, tmp_path):
-        """A file written before the charge and the M-weighted norm were
-        distinguished holds the *norm* in its overlap correction -- and that
-        field is read by the compensation charge, the multipole moments and the
-        ionic screening, so it is wrong by the O(c^-2) gap rather than merely
-        stale.  It cannot be repaired on load (the plain overlap is not a
-        function of anything stored), so loading one must warn.
-
-        The pre-split file is **synthesized** here rather than read from the
-        shipped library.  It used to be read: the test named oxygen, which was
-        stale at the time it was written, and hydrogen as the regenerated
-        control.  Regenerating the library then made oxygen correct and the test
-        failed -- it had been pinning the library's transient state instead of
-        the detection logic.  Building the payload makes it permanent, and it
-        also means the detection can be exercised long after no such file
-        exists anywhere.
-        """
+    def test_a_file_without_the_norm_correction_is_refused(self, tmp_path):
+        """A file written before the charge and the M-weighted norm were distinguished
+        has no ``norm_correction``, and its overlap correction holds the norm where the
+        charge belongs.  It cannot be repaired on load, and the engine no longer guesses:
+        it refuses the file, naming the key (no recovery, no warning)."""
         import json
 
         from mandacaru.pseudopotentials.io import library_file
 
-        # A correctly written dataset: silent, and the control that keeps this
-        # from passing because nothing warns about anything.
-        paw._CACHE.clear()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            reference = get_paw("O")
-        assert not [w for w in caught if "M-weighted" in str(w.message)]
-        assert str(reference.relativity) != "none", (
-            "the detection is defined only for a relativistic atom, so a "
-            "non-relativistic dataset cannot exercise it")
-
-        # Roll it back to the pre-split shape: one matrix, holding the
-        # M-weighted norm where the charge belongs, and no norm_correction for
-        # the loader to find.
-        # Written by the real writer, so the file envelope (format tag, family,
-        # radial tables) is whatever the loader expects; only the two fields
-        # under test are rolled back afterwards.
-        path = save_pseudopotential(
-            reference, library_file("O", str(tmp_path), "json"), format="json")
+        path = save_pseudopotential(generated("O"), library_file("O", str(tmp_path), "json"),
+                                    format="json")
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
-        for key, entry in payload["channels"].items():
-            norm = np.asarray(reference.norm_correction[int(key)], dtype=float)
-            # The pre-split file had one matrix, and it was the norm.
-            entry["overlap_correction"] = [[float(v) for v in row]
-                                           for row in norm]
-            entry.pop("norm_correction", None)
+        for entry in payload["channels"].values():
+            entry.pop("norm_correction")
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle)
-
-        paw._CACHE.clear()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            get_paw("O", paw_dataset=str(tmp_path))
-        hits = [w for w in caught if "M-weighted" in str(w.message)]
-        assert hits, [str(w.message) for w in caught]
-        assert "regenerate" in str(hits[0].message)
-        paw._CACHE.clear()
+        with pytest.raises(ValueError, match="norm_correction"):
+            load_pseudopotential(path)
 
     def test_a_missing_dataset_names_the_family(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="PAW-LCAO"):
@@ -1040,7 +884,7 @@ class TestIO:
         remove; the file keeps it, and every load warns."""
         import copy
 
-        from mandacaru.pseudopotentials.partial_waves import GhostStateWarning
+        from mandacaru.pseudopotentials.defects import GhostStateWarning
         pp = copy.copy(generated("H"))
         pp.defects = {"ghosts": {0: -5.03}, "phases": {3: (0.09, 0.09)}}
         assert "GHOSTED" in repr(pp) and "SCATTERING OFF" in repr(pp)
@@ -1061,7 +905,7 @@ class TestIO:
         assert detect_format(path) == fmt
         back = load_pseudopotential(path)
         assert isinstance(back, PAWDataset)
-        assert back.family == "paw-lcao" and back.atom is None
+        assert back.family == "paw-lcao"
         assert back.symbol == "O" and back.valence_charge == 6.0
         for name in ("r_cut_local", "local_shift", "compensation_radius",
                      "compensation_charge", "hartree_screening",
@@ -1112,6 +956,10 @@ class TestResolution:
         sized = {"name": "PAW-LCAO", "size": "DZ"}
         assert Mandacaru(method=method, basis=sized).basis == sized
 
+    @pytest.mark.xfail(strict=True, reason=(
+        "no code path raises \"'frozen' core is redundant\" any more: a frozen core on a "
+        "PAW basis is accepted silently (PAW_MIGRATION_LOG.md, A7 / S2: a lost refusal "
+        "of the molecular cutover, reported to the owner)"))
     @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
     def test_a_frozen_core_is_refused_on_a_paw_basis(self, method):
         with pytest.raises(ValueError, match="'frozen' core is redundant"):

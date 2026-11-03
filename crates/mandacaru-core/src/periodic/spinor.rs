@@ -5,7 +5,7 @@ use crate::{
     math::{
         fft::Fft3,
         linalg::eigen,
-        projection::{hermitian_density, ComplexProjector},
+        projection::{hermitian_density_tiles, ComplexProjector},
         storage::MatrixSource,
     },
     quantum::C64,
@@ -125,8 +125,7 @@ pub fn diagonalize_with_exchange(
     if let Some(soc) = &point.spin_orbit {
         h += soc;
     }
-    let samples = point.psi.read(&c.context)?;
-    let mut projector = ComplexProjector::new(&c.context, &samples, m, n)?;
+    let mut projector = ComplexProjector::streaming(&c.context, &point.psi, m, n)?;
     let mut scaled = c.context.allocate::<f64>(n)?;
     // Each projected Pauli component acts on its corresponding spin blocks.
     for a in 0..c.field_channels() {
@@ -159,7 +158,6 @@ pub fn diagonalize_with_exchange(
         }
     }
     drop(projector);
-    drop(samples);
     if let Some(k) = exchange {
         h -= k * C64::new(c.require_screened_exchange()?.1, 0.);
     }
@@ -194,7 +192,6 @@ pub fn density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f
         if d.shape() != (2 * c.m, 2 * c.m) {
             return Err(invalid("spinor matrix dimensions disagree with the basis"));
         }
-        let samples = point.psi.read(&c.context)?;
         for a in 0..c.field_channels() {
             let d = component(&d, c.m, a);
             if a == 0 {
@@ -203,7 +200,7 @@ pub fn density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f
                     * &point.projections
                     * C64::new(point.weight, 0.);
             }
-            let field = hermitian_density(&c.context, &samples, &d, n)?;
+            let field = hermitian_density_tiles(&c.context, &point.psi, &d, n)?;
             for k in 0..n {
                 rho.as_mut_slice()[a * n + k] += point.weight * field.as_slice()[k];
             }

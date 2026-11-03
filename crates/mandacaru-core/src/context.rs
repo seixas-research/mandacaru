@@ -1,4 +1,4 @@
-use crate::{product, Error, Result, WorkerStats};
+use crate::{math::archive::ScratchDir, product, Error, Result, WorkerStats};
 use std::cell::RefCell;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,9 +14,17 @@ impl Drop for ActiveContext {
     }
 }
 
+/// Size (bytes) at which a calculation's bulk arrays (Bloch orbital stacks, the mixing history,
+/// the band matrices of a finished run) leave memory for the scratch folder when the caller sets
+/// no threshold of its own.
+pub const DEFAULT_OFFLOAD_BYTES: usize = 8 << 20;
+
 #[derive(Debug)]
 struct Memory {
     limit: usize,
+    offload: usize,
+    /// Bytes ever written to the scratch folder by this context's archives.
+    archived: AtomicUsize,
     used: AtomicUsize,
     peak: AtomicUsize,
 }
@@ -28,6 +36,7 @@ pub struct Context {
     memory: Arc<Memory>,
     workers: Arc<WorkerStats>,
     execution: Arc<Mutex<()>>,
+    scratch: Arc<ScratchDir>,
 }
 
 #[derive(Debug)]
@@ -83,6 +92,15 @@ impl<T> Buffer<T> {
 
 impl Context {
     pub fn new(threads: Option<usize>, memory_bytes: usize) -> Result<Self> {
+        Self::with_offload(threads, memory_bytes, DEFAULT_OFFLOAD_BYTES)
+    }
+    /// A context whose bulk arrays of at least `offload_bytes` live on disk (`0`: every one does;
+    /// `usize::MAX`: none does, short of the memory-limit rule of [`Context::offloads`]).
+    pub fn with_offload(
+        threads: Option<usize>,
+        memory_bytes: usize,
+        offload_bytes: usize,
+    ) -> Result<Self> {
         let threads = threads.unwrap_or_else(mandacaru_kernels::runtime::thread_count);
         if threads == 0 || threads > mandacaru_kernels::runtime::MAX_THREADS {
             return Err(Error::Invalid("threads must be in 1..1024".into()));
@@ -96,11 +114,14 @@ impl Context {
             threads,
             memory: Arc::new(Memory {
                 limit: memory_bytes,
+                offload: offload_bytes,
+                archived: AtomicUsize::new(0),
                 used: AtomicUsize::new(0),
                 peak: AtomicUsize::new(0),
             }),
             workers: Arc::default(),
             execution: Arc::default(),
+            scratch: Arc::default(),
         })
     }
     pub fn threads(&self) -> usize {
@@ -108,6 +129,33 @@ impl Context {
     }
     pub fn memory_limit(&self) -> usize {
         self.memory.limit
+    }
+    /// The size from which bulk arrays are written to the scratch folder.
+    pub fn offload_threshold(&self) -> usize {
+        self.memory.offload
+    }
+    /// Whether a bulk array of `bytes` lives on disk: at the context's offload threshold, and
+    /// always above an eighth of the memory limit, which no stack may take.
+    pub fn offloads(&self, bytes: usize) -> bool {
+        bytes >= self.memory.offload || bytes > self.memory.limit / 8
+    }
+    /// Bytes this context's archives have written to the scratch folder (an evidence counter:
+    /// it never decreases when an archive is dropped).
+    pub fn archived_bytes(&self) -> usize {
+        self.memory.archived.load(Ordering::Relaxed)
+    }
+    pub(crate) fn note_archived(&self, bytes: usize) {
+        self.memory.archived.fetch_add(bytes, Ordering::Relaxed);
+    }
+    /// Returns the pages the allocator holds free to the operating system (see
+    /// [`mandacaru_kernels::heap`]); `false` where the platform has no such call. Live arrays,
+    /// the budget and every result are untouched.
+    pub fn release_freed_memory(&self) -> bool {
+        mandacaru_kernels::heap::release_freed_memory()
+    }
+    /// The calculation's scratch folder (created by the first archive, removed with the context).
+    pub fn scratch(&self) -> &Arc<ScratchDir> {
+        &self.scratch
     }
     pub fn memory_used(&self) -> usize {
         self.memory.used.load(Ordering::Acquire)

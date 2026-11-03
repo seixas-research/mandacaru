@@ -60,9 +60,9 @@ fn the_rule_integrates_the_ball_and_keeps_its_bins_sorted() {
     assert_eq!(chunks.len(), 5);
     assert_eq!(chunks.last().unwrap().end, sphere.len());
     assert!(chunks.windows(2).all(|w| w[0].end == w[1].start));
-    // The chunk size follows the sizes alone, between 4096 and 16384.
-    assert_eq!(chunk_size(1, 8), 16384);
-    assert_eq!(chunk_size(50, 2000), 4096);
+    // The chunk size follows the sizes alone, between 512 and 2048 points.
+    assert_eq!(chunk_size(1, 8), 2048);
+    assert_eq!(chunk_size(50, 2000), 512);
     assert!(matches!(
         Sphere::projector(&ctx, [0.; 3], 0.),
         Err(Error::Invalid(_))

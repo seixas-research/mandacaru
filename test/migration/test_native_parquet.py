@@ -264,8 +264,8 @@ def test_pseudopotential_fixture_loads_as_the_old_reader_loaded_it(name):
     text = table["metadata"]["mandacaru.pseudopotential"].encode("utf-8")
     assert (len(text), sha256_of(text)) == (recorded["bytes"], recorded["sha256"])
 
-    payload = pseudo_io._read_parquet(str(REFERENCE / name))
-    tables = payload.pop("radial_tables")
+    payload = json.loads(table["metadata"]["mandacaru.pseudopotential"])
+    tables = table["columns"]
     # The recorded digest covers what the dataset codec receives: the payload
     # without its radial tables and without the three identity keys.
     scalars = {key: value for key, value in payload.items()

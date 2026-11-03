@@ -42,13 +42,16 @@ def uniform_crystal(dtype):
 def test_streamed_bloch_cache_and_mixing_history_preserve_the_resident_solution(dtype):
     metadata, arrays = uniform_crystal(dtype)
     states = []
-    for budget in (64 << 20, 256 << 20):
-        context = _native.Context(threads=1, memory_limit_bytes=budget)
+    # The small budget streams (a stack above an eighth of it goes to disk); the large one keeps
+    # the stacks in memory by its own offload threshold, so the two legs differ in storage.
+    for budget, offload in ((64 << 20, None), (256 << 20, 1 << 40)):
+        context = _native.Context(threads=1, memory_limit_bytes=budget, disk_offload_bytes=offload)
         problem = context.periodic_problem(metadata, arrays)
         result = problem.solve(width_ha=.06)
         state = result.snapshot(include_matrices=False)
         assert state["converged"]
         assert context.memory_peak_bytes <= budget
+        assert (context.disk_archived_bytes > 0) == (offload is None)
         assert "coefficients" not in state
         explicit = result.snapshot()
         assert explicit["density_matrices"].shape == (1, 16, 1, 1)

@@ -41,6 +41,43 @@ struct Evaluation {
     energy: f64,
     hartree: f64,
     xc: f64,
+    fields: Option<Fields>,
+}
+/// The grid fields behind one evaluation that a derivative of the energy needs:
+/// the valence spin densities, the Hartree potential of their sum and the
+/// exchange-correlation potentials (`terms`) of the densities with the core.
+pub(super) struct Fields {
+    pub(super) valence: Buffer<f64>,
+    pub(super) hartree: Buffer<f64>,
+    pub(super) terms: xc::Xc,
+}
+/// The Fock matrices and grid fields of orthonormal-frame spin densities.
+pub(super) fn response(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    name: &str,
+) -> Result<(Vec<Matrix>, Fields)> {
+    let screened = integrals.screening(name)?;
+    let gradients = if crate::models::functional(name)?.requires_tau {
+        Some(orbital_gradients(integrals)?)
+    } else {
+        None
+    };
+    let mut poisson = Poisson::isolated(&integrals.context, &integrals.grid)?;
+    let evaluation = evaluate_with(
+        integrals,
+        &integrals.kohn_sham_core(),
+        d,
+        name,
+        &mut poisson,
+        gradients.as_ref(),
+        screened.as_ref(),
+        true,
+    )?;
+    let fields = evaluation
+        .fields
+        .ok_or_else(|| invalid("the evaluation retained no grid fields"))?;
+    Ok((evaluation.f, fields))
 }
 /// Orbital gradients `[axis][orbital][point]`, stored in the calculation's
 /// precision. Each row is differentiated in float64 from the widened stored
@@ -152,6 +189,28 @@ fn evaluate(
     orbital_gradients: Option<&RealSamples>,
     screened: Option<&Screening>,
 ) -> Result<Evaluation> {
+    evaluate_with(
+        integrals,
+        h,
+        d,
+        name,
+        poisson,
+        orbital_gradients,
+        screened,
+        false,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn evaluate_with(
+    integrals: &MolecularIntegrals,
+    h: &Matrix,
+    d: &[Matrix],
+    name: &str,
+    poisson: &mut Poisson,
+    orbital_gradients: Option<&RealSamples>,
+    screened: Option<&Screening>,
+    retain: bool,
+) -> Result<Evaluation> {
     let ctx = &integrals.context;
     let m = integrals.m();
     let n = integrals.grid.index.points();
@@ -167,6 +226,11 @@ fn evaluate(
     let mut kinetic = orbital_gradients
         .map(|gradient| grid_kinetic(integrals, d, gradient))
         .transpose()?;
+    let valence = if retain {
+        Some(ctx.copy_slice(rho.as_slice())?)
+    } else {
+        None
+    };
     if let Some(paw) = paw {
         for s in 0..2 {
             for k in 0..n {
@@ -341,11 +405,31 @@ fn evaluate(
     }
     let eone =
         d.iter().map(|d| (d * h).trace().re).sum::<f64>() * if d.len() == 1 { 2. } else { 1. };
+    let (energy, hartree_energy, xc_energy) = (
+        eone + eh + terms.energy + exact_energy + paw.map_or(0., |p| p.constant),
+        eh,
+        terms.energy + exact_energy,
+    );
+    let fields = match valence {
+        Some(valence) => {
+            let mut potential = ctx.allocate::<f64>(n)?;
+            for (to, from) in potential.as_mut_slice().iter_mut().zip(hartree.as_slice()) {
+                *to = from.re;
+            }
+            Some(Fields {
+                valence,
+                hartree: potential,
+                terms,
+            })
+        }
+        None => None,
+    };
     Ok(Evaluation {
         f,
-        energy: eone + eh + terms.energy + exact_energy + paw.map_or(0., |p| p.constant),
-        hartree: eh,
-        xc: terms.energy + exact_energy,
+        energy,
+        hartree: hartree_energy,
+        xc: xc_energy,
+        fields,
     })
 }
 /// A screened hybrid's exact exchange: the short-range pair integrals, the

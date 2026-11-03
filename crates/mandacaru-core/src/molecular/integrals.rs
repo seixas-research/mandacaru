@@ -452,7 +452,7 @@ pub(super) fn pair_integrals_with_solver<T: Sample>(
     }
     Ok(Eri::Packed { m, values })
 }
-fn laplacian_of(
+pub(super) fn laplacian_of(
     ctx: &Context,
     grid: &SpatialGrid,
     kinetic: &str,

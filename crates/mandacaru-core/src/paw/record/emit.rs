@@ -33,15 +33,76 @@ pub(crate) fn payload_text(
     ds: &PawDataset,
     stride: usize,
 ) -> Result<(String, Reservation)> {
+    text_of(ctx, ds, stride, true)
+}
+
+/// The payload text of `ds` as it is in memory: stride 1 and the spin-orbit projectors
+/// at full precision (the file rule of ten digits applies to what is stored, not to a record
+/// handed to a caller).
+pub(crate) fn payload_text_exact(
+    ctx: &Context,
+    ds: &PawDataset,
+) -> Result<(String, Reservation)> {
+    text_of(ctx, ds, 1, false)
+}
+
+fn text_of(
+    ctx: &Context,
+    ds: &PawDataset,
+    stride: usize,
+    round: bool,
+) -> Result<(String, Reservation)> {
     let mut counter = Counter(0);
-    payload(&mut counter, ds, stride)?;
+    payload(&mut counter, ds, stride, round)?;
     let memory = ctx.reserve(counter.0)?;
     let mut text = String::new();
     text.try_reserve_exact(counter.0)
         .map_err(|_| Error::Allocation)?;
-    payload(&mut text, ds, stride)?;
+    payload(&mut text, ds, stride, round)?;
     debug_assert_eq!(text.len(), counter.0);
     Ok((text, memory))
+}
+
+/// The text of a plain JSON dataset file: the payload with every radial table inline under
+/// `radial_tables`, at `stride` and ten digits (the file rule).
+pub(crate) fn json_file_text(
+    ctx: &Context,
+    ds: &PawDataset,
+    stride: usize,
+) -> Result<(String, Reservation)> {
+    let (head, _head_memory) = payload_text(ctx, ds, stride)?;
+    let mut counter = Counter(0);
+    tables_text(&mut counter, ds, stride)?;
+    let total = head
+        .len()
+        .checked_add(counter.0)
+        .and_then(|n| n.checked_add(24))
+        .ok_or(Error::Overflow)?;
+    let memory = ctx.reserve(total)?;
+    let mut text = String::new();
+    text.try_reserve_exact(total)
+        .map_err(|_| Error::Allocation)?;
+    text.push_str(&head[..head.len() - 1]);
+    text.push_str(",\"radial_tables\":");
+    tables_text(&mut text, ds, stride)?;
+    text.push('}');
+    Ok((text, memory))
+}
+
+fn tables_text<W: Write>(w: &mut W, ds: &PawDataset, stride: usize) -> Result<()> {
+    w.write_char('{').map_err(bad)?;
+    for (i, (name, values)) in ds.tables().into_iter().enumerate() {
+        if i > 0 {
+            w.write_char(',').map_err(bad)?;
+        }
+        key(w, &name)?;
+        list(
+            w,
+            values.iter().skip(stride - 1).step_by(stride),
+            |w, v| num(w, round_digits(*v), &name),
+        )?;
+    }
+    w.write_char('}').map_err(bad)
 }
 
 fn bad(_: std::fmt::Error) -> Error {
@@ -179,14 +240,20 @@ fn channel<W: Write>(w: &mut W, c: &Channel, l: u32) -> Result<()> {
     w.write_char('}').map_err(bad)
 }
 
-fn spin_orbit<W: Write>(w: &mut W, so: &SpinOrbit, l: u32, stride: usize) -> Result<()> {
+fn spin_orbit<W: Write>(
+    w: &mut W,
+    so: &SpinOrbit,
+    l: u32,
+    stride: usize,
+    round: bool,
+) -> Result<()> {
     w.write_str("{\"projectors\":").map_err(bad)?;
     let what = format!("spin_orbit.{l}.projectors");
     list(w, &so.projectors, |w, p| {
         list(
             w,
             p.as_slice().iter().skip(stride - 1).step_by(stride),
-            |w, v| num(w, round_digits(*v), &what),
+            |w, v| num(w, if round { round_digits(*v) } else { *v }, &what),
         )
     })?;
     w.write_char(',').map_err(bad)?;
@@ -205,7 +272,7 @@ fn spin_orbit<W: Write>(w: &mut W, so: &SpinOrbit, l: u32, stride: usize) -> Res
     w.write_char('}').map_err(bad)
 }
 
-fn payload<W: Write>(w: &mut W, ds: &PawDataset, stride: usize) -> Result<()> {
+fn payload<W: Write>(w: &mut W, ds: &PawDataset, stride: usize, round: bool) -> Result<()> {
     write!(
         w,
         "{{\"format\":\"{FORMAT_TAG}\",\"version\":{FORMAT_VERSION},\"family\":\"{}\",",
@@ -271,7 +338,7 @@ fn payload<W: Write>(w: &mut W, ds: &PawDataset, stride: usize) -> Result<()> {
             w.write_char(',').map_err(bad)?;
         }
         key(w, &l.to_string())?;
-        spin_orbit(w, so, *l, stride)?;
+        spin_orbit(w, so, *l, stride, round)?;
     }
     w.write_str("},\"channels\":{").map_err(bad)?;
     for (i, (l, c)) in ds.channels.iter().enumerate() {
@@ -328,6 +395,16 @@ fn defects<W: Write>(w: &mut W, ds: &PawDataset) -> Result<()> {
     if !d.unprojected.is_empty() {
         w.write_str(",\"unprojected\":").map_err(bad)?;
         object(w, &d.unprojected, |w, v| num(w, *v, "defects.unprojected"))?;
+    }
+    if !d.missing.is_empty() {
+        w.write_str(",\"missing\":").map_err(bad)?;
+        object(w, &d.missing, |w, v| num(w, *v, "defects.missing"))?;
+    }
+    if !d.branch_ghosts.is_empty() {
+        w.write_str(",\"branch_ghosts\":").map_err(bad)?;
+        object(w, &d.branch_ghosts, |w, v| {
+            num(w, *v, "defects.branch_ghosts")
+        })?;
     }
     w.write_str("},").map_err(bad)
 }

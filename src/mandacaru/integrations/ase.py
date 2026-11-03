@@ -44,9 +44,8 @@ class ASECalculator(ASEProperties, Calculator):
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
         try:
-            # The Atoms object itself, not its geometry: the interim finite-difference
-            # forces and stress of a crystal displace the Atoms the user attached the
-            # calculator to, and they need its calculator.
+            # The Atoms object itself, not its geometry: the calculation keeps the
+            # attached atoms to rerun for a changed geometry.
             self.calculation.calculate(
                 atoms if atoms is not None else self.atoms, properties=properties
             )

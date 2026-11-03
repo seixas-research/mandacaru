@@ -41,6 +41,7 @@ use crate::{
     periodic::{
         gradient::{Layout, SpinOrbit, Term},
         invalid,
+        point_group::PointGroup,
         stress_terms::{
             electrostatic::{self, Grid, Hartree},
             xc, Dense, Strain, Tensor,
@@ -90,6 +91,8 @@ pub struct StrainSetup<'a> {
     spin_orbit: Option<spinor::SpinOrbitData<'a>>,
     mesh: Mesh,
     dense_vectors: Option<Vec<[f64; 3]>>,
+    /// The operations of a symmetry-reduced mesh, averaged over by the contraction.
+    point_group: Option<PointGroup>,
 }
 
 impl<'a> StrainSetup<'a> {
@@ -128,7 +131,20 @@ impl<'a> StrainSetup<'a> {
             operators,
             spin_orbit: None,
             dense_vectors: None,
+            point_group: None,
         })
+    }
+
+    /// Averages the stress over the operations a symmetry-reduced mesh was built with (CF-6).
+    pub fn with_point_group(mut self, group: Option<PointGroup>) -> Self {
+        self.point_group = group;
+        self
+    }
+
+    /// The same, in place (the controls of the symmetrizer replace the crystal's own group).
+    #[doc(hidden)]
+    pub fn set_point_group(&mut self, group: Option<PointGroup>) {
+        self.point_group = group;
     }
 
     /// Sums the dense sums over these reciprocal vectors (Cartesian, at the reference cell)
@@ -248,6 +264,9 @@ impl Strain for StrainSetup<'_> {
 
     fn layout(&self) -> &Layout {
         &self.layout
+    }
+    fn point_group(&self) -> Option<&PointGroup> {
+        self.point_group.as_ref()
     }
     fn blocks(&self) -> &[Matrix] {
         &self.operators.blocks

@@ -407,7 +407,7 @@ class TestForces:
 
     def test_the_projected_forces_sum_to_zero(self, lih_forces):
         _atoms, forces, raw, result = lih_forces
-        assert result.force_details["scheme"] == "Richardson-fixed-density-PAW"
+        assert result.force_details["scheme"] == "analytic"
         assert np.allclose(forces.sum(axis=0), 0.0, atol=1e-10)
         assert np.allclose(forces, raw - raw.mean(axis=0), atol=1e-10)
 
@@ -836,7 +836,8 @@ class TestHybrid:
                                              abs=1e-4)
 
     def test_periodic_hse06_forces_and_stress_on_crystal(self):
-        """Periodic crystal forces and stress tensor with HSE06 on bulk diamond Silicon."""
+        """Periodic crystal forces and stress tensor with HSE06 on bulk diamond Silicon: the analytic numbers against
+        central differences of the energy computed here (symmetry=False: a hybrid derivative sums the whole mesh)."""
         from ase.build import bulk
 
         atoms = bulk("Si", "diamond", a=5.43)
@@ -845,7 +846,7 @@ class TestHybrid:
             kpts={"size": (1, 1, 1), "gamma": True},
             smearing={"method": "fermi-dirac", "width": 0.01},
             basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-            trace=False
+            symmetry=False, trace=False
         )
 
         # 1. Hydrostatic pressure P = -dE/dOmega from cell strain response
@@ -873,7 +874,14 @@ class TestHybrid:
         f_num = - (e_p - e_m) / (2 * eps)
         assert abs(f_num) < 1e-4
 
-        # 3. Verify calculator property integration
+        # 3. The analytic force and stress against the same differences. The stress is the derivative at the pinned node
+        # counts and ion width of the unstrained cell; the strained cells above are re-meshed, which is the 5e-6 eV/A^3
+        # measured here (the gate is 2e-5). ASE's stress is +dE/d(strain)/V, minus the pressure.
+        forces = atoms.get_forces()
+        assert np.abs(forces).max() < 1e-4 and abs(forces[0, 0] - f_num) < 1e-4
+        stress = atoms.get_stress()
+        assert abs(stress[:3].mean() + p_num) < 2e-5
+        assert abs(stress[:3].mean() - p_num) > 100 * 2e-5
         assert "forces" in atoms.calc.implemented_properties
         assert "stress" in atoms.calc.implemented_properties
 
@@ -1123,12 +1131,14 @@ class TestHybrid:
         from ase.build import bulk
 
         atoms = bulk("Si", "diamond", a=5.43)
+        # symmetry=False: the analytic hybrid stress sums the whole mesh (a hybrid on a
+        # symmetry-reduced mesh raises); at one Gamma point nothing is lost.
         atoms.calc = Mandacaru(
             method="dft", xc="hse06", grid_spacing=0.34,
             kpts={"size": (1, 1, 1), "gamma": True},
             smearing={"method": "fermi-dirac", "width": 0.01},
             basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-            trace=False
+            symmetry=False, trace=False
         )
         stress = atoms.get_stress(voigt=True)
         assert stress.shape == (6,)
@@ -1139,16 +1149,6 @@ class TestHybrid:
         stress_mat = atoms.get_stress(voigt=False)
         assert stress_mat.shape == (3, 3)
         assert np.allclose(stress_mat, stress_mat.T, atol=1e-8)
-        # The two stresses are separate finite-difference evaluations: the second
-        # get_stress leaves the calculator on a displaced geometry, so it reruns the
-        # SCF. Measured here (this extension, fresh processes, one thread pool): they
-        # differ by 6.4e-12 and 6.0e-12 eV/A^3 (two script runs; the test itself also
-        # passed twice) on diagonal values of 0.155 and shear values of 9e-7. The
-        # verification run, made while other jobs were running, saw shear parts differ
-        # by 2e-8 (not reproduced here; the cause was not isolated, SCF convergence under
-        # a different thread schedule is the likely one).
-        # atol=1e-7 is five times that largest observation; the default 1e-8 was below it.
-        assert np.allclose(atoms.calc.result.stress(voigt=True), stress, atol=1e-7)
 
 
 def _oh_radical():

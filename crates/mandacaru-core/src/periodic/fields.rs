@@ -255,15 +255,17 @@ fn orbital_gradient(
     let n = c.grid.index.points();
     let mut gradient = c.context.allocate::<C64>(product(&[c.m, n])?)?;
     let mut phase = c.context.allocate::<C64>(n)?;
-    let samples = data.psi.read(&c.context)?;
+    let mut staged = c.context.allocate::<C64>(n)?;
     for (k, value) in phase.as_mut_slice().iter_mut().enumerate() {
         let r = c.grid.point(k);
         *value = C64::from_polar(1., (0..3).map(|a| data.k[a] * r[a]).sum());
     }
     for a in 0..c.m {
+        // One orbital row at a time: a stack on disk is never read back whole.
+        let samples = data.psi.slice(a * n, staged.as_mut_slice())?;
         let row = &mut gradient.as_mut_slice()[a * n..(a + 1) * n];
         for (k, value) in row.iter_mut().enumerate() {
-            *value = samples[a * n + k] * phase.as_slice()[k].conj();
+            *value = samples[k] * phase.as_slice()[k].conj();
         }
         fft.transform(row, false)?;
         for (k, value) in row.iter_mut().enumerate() {

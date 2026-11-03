@@ -32,15 +32,17 @@ pub const PROJECTION_AZIMUTHAL: usize = 48;
 pub const SHORT_RANGE_RADIAL: usize = 32;
 pub const SHORT_RANGE_POLAR: usize = 16;
 pub const SHORT_RANGE_AZIMUTHAL: usize = 36;
-/// Points per chunk of a streamed sphere, and the bytes of Bloch sums one chunk may hold.
-pub const CHUNK_POINTS: usize = 16384;
+/// Points per chunk of a streamed sphere, and the bytes of Bloch sums one chunk may hold. A
+/// chunk of 2048 points holds an eighth of the Bloch sums a chunk of 16384 did, and the sums
+/// over the chunks are the same quadrature.
+pub const CHUNK_POINTS: usize = 2048;
 pub const CHUNK_BYTES: usize = 1 << 29;
 
 /// Points per chunk when `kpoints` x `functions` Bloch sums (and their conjugates) of that many
 /// points would pass [`CHUNK_BYTES`]: a function of the sizes alone, never of the thread count.
 pub fn chunk_size(kpoints: usize, functions: usize) -> usize {
     let fit = CHUNK_BYTES / (32 * kpoints.max(1) * functions.max(1));
-    CHUNK_POINTS.min(fit).max(4096)
+    CHUNK_POINTS.min(fit).max(512)
 }
 
 /// A product rule on a ball: points sorted into 1-Bohr bins, their weights (`w r^2 x` solid

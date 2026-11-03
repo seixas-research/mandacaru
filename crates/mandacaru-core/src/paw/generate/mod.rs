@@ -35,6 +35,7 @@ mod finish;
 pub mod ranking;
 pub mod recipe;
 pub mod reference;
+pub mod request;
 pub mod search;
 pub mod shells;
 pub mod spin_orbit;
@@ -46,15 +47,18 @@ pub mod waves;
 
 use self::{
     assemble::{assemble, Atomic, Partial, PawChannel},
-    energies::{Variational, XcSource},
     finish::{finish, Parts},
     recipe::Recipe,
-    reference::{check_atom, solve_reference},
+    reference::{check_atom, solve_reference_with},
     shells::{cutoff_table, partition},
     waves::{pseudize_channels, screened_local_potential},
 };
 use crate::{
-    models::{atom::Atom, relativity::Treatment},
+    models::{
+        atom::Atom,
+        relativity::Treatment,
+        xc_scheme::{Variational, XcSource},
+    },
     paw::pseudize::snap,
     paw::record::PawDataset,
     product, Context, Result,
@@ -79,10 +83,10 @@ pub fn generate(ctx: &Context, recipe: &Recipe) -> Result<Generated> {
 
 #[doc(hidden)]
 /// [`generate`] with the radial exchange-correlation scheme as a parameter. The production path
-/// passes [`Variational`]; [`energies::AtomSolver`] reproduces the numbers of the shipped
+/// passes [`Variational`]; [`crate::models::xc_scheme::AtomSolver`] (the reference atom solved with it too) reproduces the numbers of the shipped
 /// datasets and exists for the parity tests.
 pub fn generate_with(ctx: &Context, recipe: &Recipe, source: &dyn XcSource) -> Result<Generated> {
-    let atom = solve_reference(ctx, recipe)?;
+    let atom = solve_reference_with(ctx, recipe, source)?;
     generate_with_atom(ctx, recipe, &atom, source)
 }
 

@@ -9,7 +9,7 @@
 use super::{
     reference::AllElectron,
     spectrum::{ghost_levels, spectrum},
-    view::Smooth,
+    view::{Channel, Key, Smooth},
     Error, Outcome,
 };
 use crate::{
@@ -105,6 +105,28 @@ pub fn local_potential_ghosts(
     Ok(out)
 }
 
+/// The depth (Hartree, negative) of the extra state a bound channel holds below its references,
+/// from its lowest `levels`: the lowest level lies more than [`GHOST_TOLERANCE`] below the
+/// reference and the second one is closer to the reference than the first; a semicore channel's
+/// second bound reference must be its second level.
+fn extra_state(channel: &Channel, levels: &[f64]) -> Option<f64> {
+    let reference = channel.energies[0];
+    let (first, second) = (levels[0], levels[1]);
+    let mut found = (first - reference < -GHOST_TOLERANCE
+        && (second - reference).abs() < (first - reference).abs())
+    .then_some(first - reference);
+    let occupied = channel.occupied_energies();
+    if occupied.len() > 1 && levels.len() > 2 {
+        let (upper, third) = (levels[1], levels[2]);
+        if upper - occupied[1] < -GHOST_TOLERANCE
+            && (third - occupied[1]).abs() < (upper - occupied[1]).abs()
+        {
+            found = Some(found.unwrap_or(0.).min(upper - occupied[1]));
+        }
+    }
+    found
+}
+
 /// `{l: eps_0 - eps_ref}` for every channel holding a ghost state. A ghost is an *extra*
 /// state: the lowest level lies more than [`GHOST_TOLERANCE`] below the reference and the
 /// second one is closer to the reference than the first; a semicore channel's second
@@ -135,23 +157,8 @@ pub fn ghost_errors(
         }
         let levels = ghost_levels(ctx, smooth, channel)?;
         finite(smooth, &levels, &format!("an l={l} level"))?;
-        let (first, second) = (levels[0], levels[1]);
-        if first - reference < -GHOST_TOLERANCE
-            && (second - reference).abs() < (first - reference).abs()
-        {
-            out.insert(l, first - reference);
-        }
-        // A semicore channel's second bound reference must be its second level: an extra state
-        // between the two is a ghost too.
-        let occupied = channel.occupied_energies();
-        if occupied.len() > 1 && levels.len() > 2 {
-            let (upper, third) = (levels[1], levels[2]);
-            if upper - occupied[1] < -GHOST_TOLERANCE
-                && (third - occupied[1]).abs() < (upper - occupied[1]).abs()
-            {
-                let deepest = out.get(&l).copied().unwrap_or(0.).min(upper - occupied[1]);
-                out.insert(l, deepest);
-            }
+        if let Some(depth) = extra_state(channel, &levels) {
+            out.insert(l, depth);
         }
         if let Some(ae) = ae {
             let mut deep = levels
@@ -170,6 +177,35 @@ pub fn ghost_errors(
     }
     if let Some(ae) = ae {
         out.extend(local_potential_ghosts(smooth, ae)?);
+    }
+    Ok(out)
+}
+
+/// `{(l, kappa): eps_0 - eps_ref}` for every `j` branch of a fully relativistic dataset
+/// ([`super::kappa::branches`]) that holds a ghost: the same test as [`ghost_errors`] on each
+/// branch as a channel of its own, against its own Dirac reference energy.
+///
+/// Only a branch with an occupied *bound* reference is a candidate. A branch whose reference is a
+/// scattering energy (an empty f channel above the frozen 4f shell) has no bound pseudo state to
+/// compare with: its lowest level less the reference, `kappa::level_errors`, is the box
+/// continuum following the wall, not a ghost (Au and Pb f, -0.20 Ha), and is not reported here.
+/// There is no all-electron count for a branch, so the excited-ghost test of the scalar channels
+/// is not applied.
+pub fn branch_ghost_errors(ctx: &Context, branches: &Smooth) -> Outcome<BTreeMap<Key, f64>> {
+    let mut out = BTreeMap::new();
+    for (key, channel) in &branches.channels {
+        if key.kappa.is_none() || channel.energies[0] >= 0. {
+            continue;
+        }
+        let levels = ghost_levels(ctx, branches, channel)?;
+        finite(
+            branches,
+            &levels,
+            &format!("an l={} kappa={} level", key.l, key.kappa.unwrap_or(0)),
+        )?;
+        if let Some(depth) = extra_state(channel, &levels) {
+            out.insert(*key, depth);
+        }
     }
     Ok(out)
 }

@@ -63,6 +63,7 @@ pub mod xc;
 use super::{
     gradient::{Frozen, Layout, Matrix, SpinOrbit, Term},
     invalid,
+    point_group::PointGroup,
 };
 use crate::{models, quantum::C64, Error, Result};
 
@@ -86,6 +87,11 @@ pub trait Strain {
     type Fields;
 
     fn layout(&self) -> &Layout;
+    /// The operations a symmetry-reduced k mesh was built with (CF-6); the contraction averages
+    /// every term over them. `None`: a whole mesh.
+    fn point_group(&self) -> Option<&PointGroup> {
+        None
+    }
     /// The channel blocks `B_a` (`p x p`, strain independent).
     fn blocks(&self) -> &[Matrix];
     /// `q` with `S = S_grid + C q C^+`.
@@ -168,6 +174,31 @@ pub struct Breakdown {
 }
 
 impl Breakdown {
+    /// Replaces every term by its average over the operations of `group` (CF-6).
+    pub fn symmetrize(&mut self, group: &PointGroup) {
+        for term in [
+            &mut self.overlap,
+            &mut self.kinetic,
+            &mut self.local,
+            &mut self.short_range,
+            &mut self.projection,
+            &mut self.hartree,
+            &mut self.kernel,
+            &mut self.hats,
+            &mut self.ions,
+            &mut self.dense,
+            &mut self.linear,
+            &mut self.constants,
+            &mut self.xc_jacobian,
+            &mut self.xc_gradient,
+            &mut self.xc_core,
+            &mut self.spin_orbit,
+            &mut self.exchange,
+        ] {
+            group.tensor(term);
+        }
+    }
+
     pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 17] {
         [
             ("overlap", &self.overlap),
@@ -360,7 +391,7 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Breakdow
     let dense = electrostatic::dense_terms(&s.dense()?, &frozen.q)?;
     let constants = s.constants()?;
     let xc = s.xc(&frozen.fields)?;
-    Ok(Breakdown {
+    let mut breakdown = Breakdown {
         overlap: matrix.overlap,
         kinetic: matrix.kinetic,
         local: matrix.local,
@@ -379,5 +410,9 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Breakdow
         spin_orbit: matrix.spin_orbit,
         exchange: [[0.; 3]; 3],
         exchange_parts: None,
-    })
+    };
+    if let Some(group) = s.point_group() {
+        breakdown.symmetrize(group);
+    }
+    Ok(breakdown)
 }

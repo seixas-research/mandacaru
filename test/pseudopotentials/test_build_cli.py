@@ -146,15 +146,15 @@ def test_a_file_that_does_not_reproduce_its_dataset_is_not_written(
     """The file is read back before it is released: when what comes back
     (here a projector 1 % off) does not reproduce the generated levels, the
     build fails without leaving a file (or its staged copy) behind."""
-    from mandacaru.pseudopotentials import io
+    from mandacaru.pseudopotentials import record
 
-    read = io.load_pseudopotential
+    read = record.read_dataset
 
     def damaged(path, **options):
         pp = read(path, **options)
         pp.projectors[0][0] = 1.01 * pp.projectors[0][0]
         return pp
-    monkeypatch.setattr(io, "load_pseudopotential", damaged)
+    monkeypatch.setattr(record, "read_dataset", damaged)
     code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 1, out

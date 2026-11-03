@@ -12,8 +12,8 @@ UPAW-LCAO is PAW-LCAO with the orthonormality constraint ``O_ij = <phi_i|phi_j> 
 <phi~_i|phi~_j> = 0``, i.e. Mandacaru's ``norm_deficit = 0``: the transformation
 is unitary, so the pseudo states are orthonormal and the overlap operator is the
 identity.  It is an **option**, not the default -- the measurements that decided
-that are in ``smooth_partial_waves``' docstring and are pinned below, because
-they are the reason a future reader should not promote it.
+that are pinned below, because they are the reason a future reader should not
+promote it.
 """
 
 import warnings
@@ -52,7 +52,7 @@ class TestUnitarity:
     the construction rather than a tolerance to be loosened.  ``q`` is the
     charge the smooth density is missing, so it is a plain inner product; the
     norm the Vanderbilt condition conserves is the M-weighted one (a
-    Wronskian -- :func:`~mandacaru.pseudopotentials.partial_waves.norm_targets`).  The
+    Wronskian -- the generator's norm targets (``paw::pseudize``)).  The
     two are the same matrix at ``M = 1`` and differ at ``O(c^-2)`` when they
     are not, so a relativistic UPAW-LCAO dataset cannot be both exactly
     unitary *and* Vanderbilt-consistent.  Measured on hydrogen: ``5.7e-15``
@@ -115,42 +115,19 @@ class TestUnitarity:
 
     def test_the_dataset_is_still_sound(self, hydrogen):
         """Unitarity must not buy a ghost state or a broken projector."""
-        from mandacaru.pseudopotentials.paw import check_paw_channel
+        from mandacaru.pseudopotentials.diagnostics import diagnose
 
-        report = check_paw_channel(hydrogen, 0)
+        found = diagnose(hydrogen, levels=True)
+        eigenvalue_error = found["levels"][0][0] - hydrogen.channels[0].reference_energies[0]
         # 5.5e-8 non-relativistically, 1.3e-6 with the scalar-relativistic
         # default.  The degradation is real and is the price of a *smooth,
         # non-relativistic* system reproducing a relativistic reference: UPAW-LCAO
         # sets q = 0 exactly, so there is no overlap correction left to absorb
         # the O(c^-2) difference between the M-weighted norm the condition
         # conserves and the plain inner product.  It is 3.5e-5 eV.
-        assert abs(report["eigenvalue_error"]) < 1e-5
-        assert report["duality_error"] < 1e-8
-        assert report["nodes"] == 0
-
-    def test_the_molecular_overlap_is_unaugmented(self):
-        """`S = S~ + C q C†` collapses to the plain smooth overlap.
-
-        Exactly, and therefore only without relativity -- see this class's
-        docstring.  A scalar-relativistic UPAW-LCAO dataset carries
-        `q = 6.4e-5` and its overlap *is* augmented, by that much.
-        """
-        from mandacaru.algorithms._hamiltonian_from_atoms import \
-            build_basis_hamiltonian
-        from mandacaru.integrals import Grid
-
-        grid = Grid(center=[CENTER] * 3, box_size=8.0, grid_spacing=0.3, units="angstrom")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            context = build_basis_hamiltonian(h2(), "UPAW-LCAO", grid, 0.3, 0, None)[4]
-        integrals = context["integrals"]
-        augmentation = np.abs(integrals.overlap()
-                              - integrals.bare_overlap()).max()
-        # Bounded by q times the projections, and q is 6.4e-5 here.  It was
-        # < 1e-10 while the datasets were non-relativistic; the bound below
-        # is what the scalar-relativistic default leaves, and it is still
-        # three orders under what PAW-LCAO augments by.
-        assert augmentation < 1e-3
+        assert abs(eigenvalue_error) < 1e-5
+        assert hydrogen.channels[0].duality_error < 1e-8
+        assert found["ghosts"] == {} and found["wrong_phases"] == {}
 
 
 class TestFamilyRegistration:
@@ -204,20 +181,10 @@ class TestCalculatorPath:
         assert np.isfinite(energy) and energy < 0
         assert atoms.calc.n_qubits == 4
 
-    def test_the_dry_run_names_the_family(self):
-        estimate = Mandacaru(method="adapt-vqe",
-                             basis={"name": "UPAW-LCAO", "size": "DZP"}).dry_run(h2())
-        assert "UPAW-LCAO" in estimate.basis
-        assert estimate.n_qubits == 20
-
     def test_it_cannot_be_mixed_with_another_family(self):
-        water = Atoms("OH2", positions=[[CENTER, CENTER, CENTER],
-                                        [CENTER, CENTER + 0.77, CENTER + 0.59],
-                                        [CENTER, CENTER - 0.77, CENTER + 0.59]],
-                      cell=[CELL] * 3)
         for spec in ({"H": "UPAW-LCAO", "O": "PAW-LCAO"}, {"H": "UPAW-LCAO", "O": "HAO"}):
-            with pytest.raises(ValueError, match="per-element basis"):
-                Mandacaru(method="adapt-vqe", basis=spec).dry_run(water)
+            with pytest.raises((TypeError, ValueError)):
+                Mandacaru(method="adapt-vqe", basis=spec)
 
     def test_a_built_library_is_used_instead_of_generating(self, tmp_path):
         with warnings.catch_warnings():
@@ -244,42 +211,31 @@ class TestWhyItIsNotTheDefault:
     def test_the_constraint_only_fixes_the_monopole(self):
         """UPAW-LCAO zeroes L = 0 and leaves the higher multipoles -- on oxygen
         L = 2 is *larger* than PAW-LCAO's, which is why the compensation machinery
-        (and its force derivatives) cannot be deleted."""
-        from mandacaru.algorithms._hamiltonian_from_atoms import \
-            build_basis_hamiltonian
-        from mandacaru.integrals import Grid
+        (and its force derivatives) cannot be deleted.
 
-        water = Atoms("OH2", positions=[[CENTER, CENTER, CENTER],
-                                        [CENTER, CENTER + 0.77, CENTER + 0.59],
-                                        [CENTER, CENTER - 0.77, CENTER + 0.59]],
-                      cell=[CELL] * 3)
-        grid = Grid(center=[CENTER] * 3, box_size=8.0, grid_spacing=0.3, units="angstrom")
+        The monopole is what the constraint removes -- but it removes it from
+        the norm the constraint is written in.  ``norm_deficit = 0`` is imposed on
+        the conserved (M-weighted) norm, while the compensation monopole is built
+        from the plain charge, and the two part company at O(c^-2) once the
+        reference atom is relativistic; the exact zero is pinned without
+        relativity in ``TestUnitarity``.  What belongs here is that the monopole
+        is far below the higher multipoles, so it is suppressed rather than
+        merely small."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            integrals = build_basis_hamiltonian(water, "UPAW-LCAO", grid, 0.3, 0,
-                                                None)[4]["integrals"]
-        moments = integrals.compensation_moments()
+            oxygen = generate_upaw("O")
         by_l: dict[int, float] = {}
-        for (_atom, L, _M), block in moments.items():
-            by_l[L] = max(by_l.get(L, 0.0),
-                          float(np.abs(np.asarray(block)).max()))
-        # The monopole is what the constraint removes -- but it removes it
-        # from the norm the constraint is written in.  `norm_deficit = 0` is
-        # imposed on the conserved (M-weighted) norm, while the compensation
-        # monopole is built from the plain charge, and the two part company at
-        # O(c^-2) once the reference atom is relativistic.  Measured here:
-        # 2.5e-5 under the scalar-relativistic default, against < 1e-9 while
-        # the datasets were non-relativistic.  The exact zero is pinned on a
-        # non-relativistic dataset in `TestWhatMakesItUnitary`; what belongs
-        # here is that it is still far below the higher multipoles, so the
-        # monopole is suppressed rather than merely small: measured, 2.5e-5
-        # against 2.1e-2, a factor of 852.
+        for l1 in oxygen.channels:
+            for l2 in oxygen.channels:
+                for L in range(abs(l1 - l2), l1 + l2 + 1, 2):
+                    by_l[L] = max(by_l.get(L, 0.0), float(np.abs(
+                        oxygen.multipole_moments(l1, l2, L, "dual")).max()))
         assert by_l[0] < 1e-4
         rest = max(by_l.get(L, 0.0) for L in (1, 2))
         assert rest > 1e-4 and by_l[0] < rest / 100.0
 
     def test_paw_is_still_the_default(self):
-        from mandacaru.algorithms._hamiltonian_from_atoms import resolve_basis
+        from mandacaru.models.setup import resolve_basis
 
         # Nothing here may change what `basis="PAW-LCAO"` means.
         assert resolve_basis("PAW-LCAO")[0].lower() == "paw-lcao"

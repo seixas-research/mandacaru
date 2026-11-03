@@ -8,10 +8,10 @@ mod paw_generate_support;
 mod paw_spin_orbit_support;
 
 use mandacaru_core::models::relativity::Treatment;
-use mandacaru_core::paw::generate::energies::AtomSolver;
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::generate::generate_with_atom;
 use mandacaru_core::paw::generate::recipe::Recipe;
-use mandacaru_core::paw::generate::reference::solve_reference;
+use mandacaru_core::paw::generate::reference::solve_reference_with;
 use mandacaru_core::paw::generate::shells::partition;
 use mandacaru_core::paw::generate::spin_orbit::{branches, recover, Inputs};
 use mandacaru_core::paw::record::Array;
@@ -27,7 +27,7 @@ fn matrix(a: &Array) -> DMatrix<f64> {
 fn uranium_has_a_consistent_spin_orbit_block() {
     let ctx = context();
     let recipe = Recipe::for_dataset("U", "lda", Treatment::Dirac).unwrap();
-    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
     assert!(atom.converged);
     let generated = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
     let dataset = &generated.dataset;

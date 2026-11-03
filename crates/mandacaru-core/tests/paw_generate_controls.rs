@@ -6,10 +6,10 @@ mod paw_assemble_support;
 mod paw_generate_support;
 
 use mandacaru_core::models::relativity::Treatment;
-use mandacaru_core::paw::generate::energies::AtomSolver;
+use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::generate::generate_with_atom;
 use mandacaru_core::paw::generate::recipe::{Nlcc, Recipe};
-use mandacaru_core::paw::generate::reference::solve_reference;
+use mandacaru_core::paw::generate::reference::solve_reference_with;
 use mandacaru_core::Context;
 use paw_assemble_support::Frozen;
 use paw_generate_support::compare::{Comparison, Scheme};
@@ -25,7 +25,7 @@ fn bite(name: &str, edit: &dyn Fn(&mut Recipe)) -> (f64, String) {
     let ctx = Context::new(Some(1), 1 << 30).unwrap();
     // The atom is solved with the edited recipe too: the functional and the treatment are the
     // atom's.
-    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
     let generated = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
     let comparison: Comparison = compare_dataset(&f, &data, &generated, Scheme::Legacy);
     let numeric = comparison.without(|n| {

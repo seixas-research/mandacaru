@@ -1,5 +1,6 @@
 //! Periodic engine and portable crystal snapshots. Atomic units throughout.
 pub mod analysis;
+pub mod description;
 pub mod ewald;
 pub mod exchange_state;
 pub mod fields;
@@ -11,6 +12,8 @@ pub mod hubbard_table;
 pub mod hybrid_gradient;
 pub mod hybrid_setup;
 pub mod input;
+pub mod point_group;
+pub mod response;
 pub mod screening;
 pub mod screened_augmentation;
 pub mod screened_exchange;

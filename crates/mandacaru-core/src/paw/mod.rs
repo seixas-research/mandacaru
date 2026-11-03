@@ -1,10 +1,8 @@
 //! Projector augmented-wave datasets, potentials and projector construction.
 pub mod augmentation;
-pub mod channel;
 pub mod checks;
 pub mod confinement;
 pub mod core_correction;
-pub mod dataset;
 pub mod diagnose;
 pub mod digest;
 pub mod fields;

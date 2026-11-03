@@ -26,9 +26,9 @@ the grid must resolve then becomes the valence one (~1 Bohr), which existing
 grids already handle comfortably.
 
 This module holds what the families have in common: :class:`Channel` (one
-angular-momentum channel), :class:`PseudoPotential` (the per-element record
+angular-momentum channel) and :class:`PseudoPotential` (the per-element record
 the valence basis, the local potential sampler and the multiple-zeta hierarchy
-read), and two helpers of their generators.  The family itself --
+read).  The family itself --
 PAW-LCAO and its unitary variant (:mod:`.paw`) -- subclasses both.
 """
 
@@ -37,34 +37,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-
-from ..basis._config import ground_state_config, valence_subshells
-from ..basis.atomic_solver import AtomicResult
-
-
-def _local_derivatives(r: np.ndarray, values: np.ndarray, r0: float,
-                       order: int = 4, window: int = 25, degree: int = 8):
-    """Derivatives of ``values(r)`` at ``r0``, up to ``order``.
-
-    Fits a polynomial in ``(r - r0)`` over a window of grid points centered on
-    ``r0`` and reads the derivatives off its coefficients.  A local polynomial is
-    used rather than repeated finite differencing because matching a smooth
-    function at a cutoff needs derivatives up to the *fourth*, which naive
-    differencing renders useless.
-    """
-    index = int(np.argmin(np.abs(r - r0)))
-    low = max(index - window, 0)
-    high = min(index + window + 1, r.size)
-    shifted = r[low:high] - r0
-    coefficients = np.polyfit(shifted, values[low:high], degree)
-    # np.polyfit returns highest power first; derivative k at 0 is k! * a_k.
-    ascending = coefficients[::-1]
-    factorial = 1.0
-    out = []
-    for k in range(order + 1):
-        out.append(ascending[k] * factorial if k < ascending.size else 0.0)
-        factorial *= (k + 1)
-    return np.array(out)
 
 
 @dataclass
@@ -113,7 +85,6 @@ class PseudoPotential:
     family: str
     projectors: dict = field(default_factory=dict)   # l -> [chi(r), ...]
     valence_density: np.ndarray = None
-    atom: AtomicResult = None
     #: How the reference atom was solved.
     xc: str = "lda"
     relativity: str = "none"
@@ -132,36 +103,3 @@ class PseudoPotential:
     #: What its generator could not remove (``ghosts="flag"``):
     #: ``{"ghosts": {l: depth}, "phases": {l: (near, far)}}``.
     defects: dict = field(default_factory=dict)
-
-    def local_potential(self, radius) -> np.ndarray:
-        """Interpolate ``V_loc`` onto arbitrary radii (Bohr).
-
-        Beyond the grid the potential is the bare ionic tail
-        :math:`-Z_{\\text{ion}}/r`, which is what it decays to by construction.
-        """
-        radius = np.asarray(radius, dtype=float)
-        inside = radius <= self.r[-1]
-        out = np.where(inside,
-                       np.interp(np.clip(radius, self.r[0], self.r[-1]),
-                                 self.r, self.v_local),
-                       -self.valence_charge / np.maximum(radius, 1e-12))
-        # At r below the first grid point the potential is flat (finite).
-        return np.where(radius < self.r[0], self.v_local[0], out)
-
-
-def _valence_configuration(atomic_number: int, configuration=None):
-    """``(valence subshells, core subshells)`` of the reference atom.
-
-    ``configuration`` defaults to the aufbau filling; a generator that has
-    already solved its reference atom passes that atom's ``occupations``, so
-    the split describes the atom whose orbitals are about to be pseudized
-    rather than a different one.
-    """
-    configuration = (ground_state_config(atomic_number)
-                     if configuration is None
-                     else {k: v for k, v in configuration.items() if v > 0})
-    valence = set(valence_subshells(atomic_number,
-                                    configuration=configuration))
-    valence_config = {k: v for k, v in configuration.items() if k in valence}
-    core_config = {k: v for k, v in configuration.items() if k not in valence}
-    return valence_config, core_config

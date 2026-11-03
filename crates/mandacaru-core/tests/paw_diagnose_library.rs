@@ -16,14 +16,33 @@
 //! `MANDACARU_DIAGNOSE_ELEMENTS=Si,O` restricts the elements.) Every file appends a JSON line
 //! to the report. The equality is of keys (which channel is flagged, which defect) and of the
 //! recorded numbers to the gates below.
+//!
+//! The sweep is **resumable and non-fatal**. A file already in the report (status `ok` or
+//! `refused`) is skipped on the next run, so a killed process loses at most the file it was on
+//! (`MANDACARU_DIAGNOSE_REDO=1` diagnoses everything again); a file the diagnosis refuses (the
+//! reference atom does not converge, the record is not the one the atom asks for) is written to
+//! the report as `{"status": "refused", "cause": ...}` and the sweep goes on. The test ends by
+//! failing on the problems found, and on a refusal that is not one of [`DOCUMENTED_REFUSALS`].
+//!
+//! **The oracle atom is the atom the shipped files were made on**: the 431 files were generated
+//! with the atom-solver radial scheme (derivatives on subset nodes), so the sweep solves their
+//! reference atoms through that legacy seam (`reference_atom_with(.., &AtomSolver)`); the
+//! production scheme (variational, D-2b) would move the PBE atoms by the measured scheme
+//! difference (`PAW_MIGRATION_LOG.md`, XC-SW) and the stored defects of a PBE file would then be
+//! compared with a different atom. `MANDACARU_DIAGNOSE_SCHEME=variational` diagnoses the files
+//! against the production atom instead; every report line names its scheme, and the resume key
+//! includes it. The legacy atom of the heaviest PBE Dirac elements does not converge in the
+//! generator's 200 iterations (the legacy potential is not the derivative of an energy), so those
+//! files are refused by the legacy sweep and looked at by the variational one, labelled as such.
 
 mod paw_assemble_support;
 mod paw_diagnose_support;
 
+use mandacaru_core::models::xc_scheme::{AtomSolver, Variational, XcSource};
 use mandacaru_core::paw::diagnose::{
     ghosts::reference_offsets,
     kappa,
-    reference::{check_reference, reference_atom, AeLogs, AllElectron},
+    reference::{check_reference, reference_atom_with, AeLogs, AllElectron},
     Diagnosis,
 };
 use paw_diagnose_support::*;
@@ -69,14 +88,64 @@ fn files(set: &str) -> Vec<(String, PathBuf)> {
 struct Outcome {
     line: serde_json::Value,
     problems: Vec<String>,
+    /// Set when the diagnosis refused the file: the cause, as reported.
+    refusal: Option<String>,
+}
+
+/// The `(set, element)` pairs a report already holds with a final status, so a run can resume.
+fn done(path: &str) -> std::collections::HashSet<(String, String)> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|v| matches!(v["status"].as_str(), Some("ok") | Some("refused")))
+        // a line written before the scheme was named is the atom-solver one (the only one then)
+        .filter(|v| v["scheme"].as_str().unwrap_or("atom-solver (legacy)") == scheme().0)
+        .filter_map(|v| {
+            Some((
+                v["set"].as_str()?.to_string(),
+                v["element"].as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// The refusals the sweep documents instead of failing on, with the cause that makes each one
+/// not a property of the shipped file: `(set, element, cause prefix)`.
+const DOCUMENTED_REFUSALS: &[(&str, &str, &str)] = &[];
+
+/// A file the diagnosis cannot judge: the element, the stage and the cause.
+fn refused(set: &str, element: &str, stage: &str, cause: impl std::fmt::Display) -> Outcome {
+    let cause = format!("{cause}");
+    Outcome {
+        line: json!({"set": set, "element": element, "status": "refused", "scheme": scheme().0, "stage": stage, "cause": cause}),
+        problems: Vec::new(),
+        refusal: Some(format!("{set} {element}: {stage}: {cause}")),
+    }
+}
+
+/// The scheme the sweep diagnoses against: the atom-solver one the files were made with, unless
+/// `MANDACARU_DIAGNOSE_SCHEME=variational` asks for the production one.
+fn scheme() -> (&'static str, &'static dyn XcSource) {
+    match std::env::var("MANDACARU_DIAGNOSE_SCHEME").as_deref() {
+        Ok("variational") => ("variational", &Variational),
+        Ok("legacy") | Err(_) => ("atom-solver (legacy)", &AtomSolver),
+        Ok(other) => panic!("MANDACARU_DIAGNOSE_SCHEME is legacy or variational, not {other:?}"),
+    }
 }
 
 fn diagnose_file(set: &str, element: &str, path: &std::path::Path) -> Outcome {
     let ctx = context();
+    let (scheme_name, scheme) = scheme();
     let ds = read(&ctx, path);
     let started = Instant::now();
-    let atom = reference_atom(&ctx, &ds).unwrap_or_else(|e| panic!("{set} {element}: {e}"));
-    check_reference(&ds, &atom).unwrap();
+    let atom = match reference_atom_with(&ctx, &ds, scheme) {
+        Ok(atom) => atom,
+        Err(e) => return refused(set, element, "reference atom", e),
+    };
+    if let Err(e) = check_reference(&ds, &atom) {
+        return refused(set, element, "reference atom", e);
+    }
     let solved = started.elapsed().as_secs_f64();
     let smooth = smooth_of(&ctx, &ds);
     let ae = AllElectron::new(
@@ -86,10 +155,22 @@ fn diagnose_file(set: &str, element: &str, path: &std::path::Path) -> Outcome {
         &smooth.semicore,
     );
     let started = Instant::now();
-    let diagnosis = Diagnosis::run(&ctx, &smooth, &ae, &mut AeLogs::new())
-        .unwrap_or_else(|e| panic!("{set} {element}: {e}"));
+    let diagnosis = match Diagnosis::run(&ctx, &smooth, &ae, &mut AeLogs::new())
+        .and_then(|d| d.with_branches(&ctx, &ds))
+    {
+        Ok(d) => d,
+        Err(e) => return refused(set, element, "diagnosis", e),
+    };
     let offsets = reference_offsets(&ctx, &smooth).unwrap();
-    let got = diagnosis.defects();
+    // The stored defects never had the branch ghosts or the missing states: the scalar
+    // channels are compared as before (a branch ghost would also silence the other keys under
+    // the recording rule), and the new keys are reported beside.
+    let comparable = Diagnosis {
+        branch_ghosts: Default::default(),
+        missing: Default::default(),
+        ..diagnosis.clone()
+    };
+    let got = comparable.defects();
     let comparison = compare_defects(&ds.defects, &got);
     let mut problems = comparison
         .keys
@@ -108,11 +189,15 @@ fn diagnose_file(set: &str, element: &str, path: &std::path::Path) -> Outcome {
     }
     let mut level_dev = 0f64;
     if !ds.spin_orbit.is_empty() {
-        let levels = kappa::level_errors(&ctx, &ds).unwrap();
-        for (l, so) in &ds.spin_orbit {
-            for (b, &stored) in so.level_errors.data().iter().enumerate() {
-                level_dev = nan_max(level_dev, (levels[&(*l as usize)][b] - stored).abs());
+        match kappa::level_errors(&ctx, &ds) {
+            Ok(levels) => {
+                for (l, so) in &ds.spin_orbit {
+                    for (b, &stored) in so.level_errors.data().iter().enumerate() {
+                        level_dev = nan_max(level_dev, (levels[&(*l as usize)][b] - stored).abs());
+                    }
+                }
             }
+            Err(e) => return refused(set, element, "branch levels", e),
         }
         if !(level_dev <= LEVEL_GATE) {
             problems.push(format!(
@@ -121,7 +206,10 @@ fn diagnose_file(set: &str, element: &str, path: &std::path::Path) -> Outcome {
         }
     }
     let line = json!({
-        "set": set, "element": element,
+        "set": set, "element": element, "status": "ok", "scheme": scheme_name,
+        // The keys the file did not carry (a writer older than the current schema): a stored
+        // `defects` of such a file predates the checks the record now has.
+        "defaults_applied": ds.defaults_applied,
         "atom_seconds": solved, "diagnose_seconds": started.elapsed().as_secs_f64(),
         "stored": format!("{:?}", ds.defects), "found": format!("{got:?}"),
         "number_deviation": comparison.numbers(), "key_mismatches": comparison.keys,
@@ -130,38 +218,75 @@ fn diagnose_file(set: &str, element: &str, path: &std::path::Path) -> Outcome {
         "phases": diagnosis.phases.iter().map(|(k, v)| (format!("{}:{:?}", k.l, k.kappa), v.to_vec())).collect::<Vec<_>>(),
         "unprojected": diagnosis.unprojected.iter().map(|(l, v)| (*l, *v)).collect::<Vec<_>>(),
         "ghost_errors": diagnosis.ghosts.iter().map(|(l, v)| (*l, *v)).collect::<Vec<_>>(),
+        "branch_ghosts": diagnosis.branch_ghosts.iter().map(|(k, v)| (format!("{}:{:?}", k.l, k.kappa), *v)).collect::<Vec<_>>(),
         "reference_offsets": offsets.iter().map(|(l, v)| (*l, *v)).collect::<Vec<_>>(),
         "missing": diagnosis.missing.iter().map(|(l, v)| (*l, *v)).collect::<Vec<_>>(),
         "context_peak_mb": ctx.memory_peak() as f64 / 1048576.,
         "clean": diagnosis.is_clean(),
         "problems": problems,
     });
-    Outcome { line, problems }
+    Outcome {
+        line,
+        problems,
+        refusal: None,
+    }
 }
 
 fn sweep(sets: &[&str]) {
-    let report = std::env::var("MANDACARU_DIAGNOSE_REPORT").ok().map(|p| {
+    let path = std::env::var("MANDACARU_DIAGNOSE_REPORT").ok();
+    let redo = std::env::var("MANDACARU_DIAGNOSE_REDO").is_ok_and(|v| v == "1");
+    let finished = match (&path, redo) {
+        (Some(p), false) => done(p),
+        _ => Default::default(),
+    };
+    let mut report = path.as_ref().map(|p| {
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(p)
             .unwrap()
     });
-    let mut report = report;
     let mut problems = Vec::new();
-    let mut count = 0usize;
+    let mut refusals = Vec::new();
+    let (mut count, mut skipped) = (0usize, 0usize);
     for set in sets {
         for (element, path) in files(set) {
+            if finished.contains(&(set.to_string(), element.clone())) {
+                skipped += 1;
+                continue;
+            }
             let outcome = diagnose_file(set, &element, &path);
             eprintln!("{}", outcome.line);
             if let Some(file) = report.as_mut() {
                 writeln!(file, "{}", outcome.line).unwrap();
             }
             problems.extend(outcome.problems);
+            refusals.extend(
+                outcome
+                    .refusal
+                    .into_iter()
+                    .map(|cause| (set.to_string(), element.clone(), cause)),
+            );
             count += 1;
         }
     }
-    eprintln!("diagnosed {count} files, {} problems", problems.len());
+    eprintln!(
+        "diagnosed {count} files ({skipped} already in the report), {} problems, {} refusals",
+        problems.len(),
+        refusals.len()
+    );
+    for (set, element, cause) in &refusals {
+        let documented = DOCUMENTED_REFUSALS.iter().any(|(s, e, prefix)| {
+            *s == set.as_str() && *e == element.as_str() && cause.contains(prefix)
+        });
+        if !documented {
+            problems.push(format!("refused and not documented: {cause}"));
+        }
+    }
+    assert!(
+        count + skipped > 0,
+        "no file was selected: check MANDACARU_DIAGNOSE_SET/_ELEMENTS"
+    );
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
@@ -179,6 +304,7 @@ fn a_stratified_sample_of_the_library_diagnoses_to_its_stored_defects() {
     ] {
         let outcome = diagnose_file(set, element, &dataset_path(set, element));
         eprintln!("{}", outcome.line);
+        assert!(outcome.refusal.is_none(), "{:?}", outcome.refusal);
         assert!(
             outcome.problems.is_empty(),
             "{}",

@@ -14,6 +14,7 @@ use super::{
     atom::{self, Atom, AtomModel, AtomOptions},
     configuration::{self, valence_subshells, Configuration},
     relativity::Treatment,
+    xc_scheme::{Variational, XcSource},
 };
 use crate::{Context, Error, Result};
 
@@ -81,6 +82,21 @@ pub fn relaxed_configuration(
     r_max: f64,
     points: Option<usize>,
 ) -> Result<Configuration> {
+    relaxed_configuration_with(ctx, z, functional, relativity, r_max, points, &Variational)
+}
+
+#[doc(hidden)]
+/// [`relaxed_configuration`] with the radial exchange-correlation scheme as a parameter (the
+/// legacy `AtomSolver` is the parity seam of the shipped PBE datasets).
+pub fn relaxed_configuration_with(
+    ctx: &Context,
+    z: u8,
+    functional: &str,
+    relativity: Treatment,
+    r_max: f64,
+    points: Option<usize>,
+    scheme: &dyn XcSource,
+) -> Result<Configuration> {
     let candidates = configuration::rearrangements(z, 3)?;
     let aufbau = candidates[0].clone();
     if candidates.len() == 1
@@ -105,7 +121,7 @@ pub fn relaxed_configuration(
     // A candidate the solver cannot follow is skipped; a refused option or an exhausted
     // budget is not a candidate failing, and propagates.
     let solved = |candidate: &Configuration| -> Result<Option<Atom>> {
-        match atom::solve_model(ctx, z, &options, &model, Some(candidate), None) {
+        match atom::solve_model_with(ctx, z, &options, &model, Some(candidate), None, scheme) {
             Ok(atom) => Ok(Some(atom)),
             Err(Error::Kernel(_)) => Ok(None),
             Err(error) => Err(error),

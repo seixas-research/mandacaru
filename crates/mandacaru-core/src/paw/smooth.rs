@@ -1,16 +1,8 @@
-//! The Bessel basis of the smooth partial waves and the record a channel keeps
-//! of its expansion; the optimization itself is [`super::pseudize`].
+//! The Bessel basis of the smooth partial waves; the optimization itself is [`super::pseudize`].
 use super::invalid;
-use crate::{Buffer, Result};
+use crate::Result;
 use mandacaru_kernels::two_center::spherical_bessel as j;
-use nalgebra::DMatrix as M;
 
-pub struct SmoothWaves {
-    pub wavevectors: Vec<f64>,
-    pub coefficients: Buffer<f64>,
-    pub norms: M<f64>,
-    pub residuals: Vec<f64>,
-}
 pub fn bessel(l: usize, x: f64) -> [f64; 4] {
     let value = j(l as i32, x);
     let first = if l == 0 {

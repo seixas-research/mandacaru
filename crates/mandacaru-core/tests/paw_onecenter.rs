@@ -1,4 +1,8 @@
 use mandacaru_core::math::spline::simpson;
+use mandacaru_core::models::{
+    radial_xc,
+    xc_scheme::{AtomSolver, Variational, XcSource},
+};
 use mandacaru_core::paw::checks::interpolate_linear;
 use mandacaru_core::paw::multipole::shape_function;
 use mandacaru_core::paw::onecenter::{
@@ -13,8 +17,8 @@ use mandacaru_core::paw::onecenter_radial::{
     three_j_squared, MAX_RADIAL_L, MAX_THREE_J,
 };
 use mandacaru_core::paw::onecenter_terms::{
-    core_extent, core_orbital_tables, exact_one_center_terms, frozen_exchange_terms, CoreOrbital,
-    Occupied, ReferenceAtom,
+    core_extent, core_orbital_tables, exact_one_center_terms, exact_one_center_terms_with,
+    frozen_exchange_terms, CoreOrbital, Occupied, ReferenceAtom,
 };
 use mandacaru_core::Context;
 use nalgebra::DMatrix;
@@ -505,6 +509,128 @@ fn identical_smooth_and_all_electron_waves_freeze_nothing() {
 }
 
 /// A random real tensor with the 8-fold symmetry of a real basis.
+/// XC-SW: the frozen exchange-correlation block `V` of the exact one-center terms is the sphere's
+/// integral of the difference of the potentials of the two densities, and the potential is the
+/// scheme's. Recomputed here from the scheme alone (the trapezoid over the nodes of the sphere):
+/// the production block equals it for the variational scheme, the legacy seam for the atom-solver
+/// scheme, each to round-off, and the two schemes' blocks differ by far more (PBE; for LDA they
+/// are the same block, the potentials agreeing inside the sphere).
+#[test]
+fn the_frozen_xc_block_follows_the_scheme_it_is_given() {
+    let ctx = context();
+    let s =
+        Synthetic::new(|r| (-r).exp() * (1. - 0.4 * (-r * r).exp()) + 0.1 * (-3. * r * r).exp());
+    let occupations = [1.];
+    let density = s.ae.iter().map(|w| w * w / (4. * PI)).collect::<Vec<_>>();
+    let core_density =
+        s.r.iter()
+            .map(|r| 2. * (-4. * r).exp() / (4. * PI))
+            .collect::<Vec<_>>();
+    let smooth_core =
+        s.r.iter()
+            .map(|r| 0.3 * (-1.5 * r * r).exp())
+            .collect::<Vec<_>>();
+    let core = [CoreOrbital {
+        l: 0,
+        occupation: 2.,
+        radial: s.r.iter().map(|r| (-2. * r).exp()).collect(),
+    }];
+    let block = |functional: &str, scheme: &dyn XcSource| -> f64 {
+        let atom = ReferenceAtom {
+            r: &s.r,
+            channels: vec![occupied(&s, &occupations)],
+            core_density: &core_density,
+            valence_density: &density,
+            smooth_core: &smooth_core,
+            functional,
+            relativistic: false,
+            core: &core,
+        };
+        exact_one_center_terms_with(&ctx, &atom, Basis::Raw, scheme).unwrap()[0].1[(0, 0)]
+    };
+    // The sphere of the fixture is the projector radius 1.5: the nodes up to and including the
+    // first one at or beyond it (`searchsorted(r, radius) + 1`).
+    let inside = s.r.partition_point(|x| *x < 1.5) + 1;
+    let independent = |functional: &str, potential: &dyn Fn(&[f64]) -> Vec<f64>| -> f64 {
+        let all_electron = (0..s.r.len())
+            .map(|i| core_density[i] + s.ae[i] * s.ae[i] / (4. * PI))
+            .collect::<Vec<_>>();
+        let smooth = (0..s.r.len())
+            .map(|i| density[i] + smooth_core[i])
+            .collect::<Vec<_>>();
+        let _ = functional;
+        let (v_ae, v_ps) = (potential(&all_electron), potential(&smooth));
+        let integrand = (0..inside)
+            .map(|p| (v_ae[p] * s.ae[p] * s.ae[p] - v_ps[p] * s.ps[p] * s.ps[p]) * s.r[p] * s.r[p])
+            .collect::<Vec<_>>();
+        (1..inside)
+            .map(|p| 0.5 * (integrand[p] + integrand[p - 1]) * (s.r[p] - s.r[p - 1]))
+            .sum()
+    };
+    for functional in ["pbe", "lda"] {
+        let variational = |d: &[f64]| {
+            Variational
+                .evaluate(&ctx, &s.r, d, functional, false)
+                .unwrap()
+                .potential
+        };
+        let legacy = |d: &[f64]| {
+            radial_xc::xc_potential(&ctx, &s.r, d, functional, false)
+                .unwrap()
+                .1
+        };
+        let (new, old) = (
+            block(functional, &Variational),
+            block(functional, &AtomSolver),
+        );
+        let (want_new, want_old) = (
+            independent(functional, &variational),
+            independent(functional, &legacy),
+        );
+        println!("{functional}: production {new:.12e} (independent {want_new:.12e}), legacy seam {old:.12e} (independent {want_old:.12e})");
+        let scale = new.abs().max(1.);
+        assert!(
+            (new - want_new).abs() <= 1e-12 * scale,
+            "{functional}: {new} against {want_new}"
+        );
+        assert!(
+            (old - want_old).abs() <= 1e-12 * scale,
+            "{functional}: {old} against {want_old}"
+        );
+        // The production entry point is the variational scheme.
+        let atom = ReferenceAtom {
+            r: &s.r,
+            channels: vec![occupied(&s, &occupations)],
+            core_density: &core_density,
+            valence_density: &density,
+            smooth_core: &smooth_core,
+            functional,
+            relativistic: false,
+            core: &core,
+        };
+        let default = exact_one_center_terms(&ctx, &atom, Basis::Raw).unwrap()[0].1[(0, 0)];
+        assert_eq!(
+            default.to_bits(),
+            new.to_bits(),
+            "{functional}: the default is the variational scheme"
+        );
+        if functional == "pbe" {
+            // The control: the schemes' blocks differ by more than 100 round-off units.
+            assert!(
+                (new - old).abs() > 100. * 1e-12 * scale,
+                "{}",
+                (new - old).abs()
+            );
+        } else {
+            assert!(
+                (new - old).abs() <= 1e-12 * scale,
+                "LDA: {}",
+                (new - old).abs()
+            );
+        }
+    }
+}
+
 fn symmetric_tensor(n: usize, seed: u64) -> Vec<f64> {
     let mut state = seed;
     let mut next = || {

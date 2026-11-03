@@ -217,6 +217,17 @@ pub fn gaunt(level: [usize; 3], order: [i32; 3]) -> crate::Result<f64> {
     Ok(parity(m + x) * prefactor * wigner(j, [0, 0, 0]) * wigner(j, [-m, -x, y]))
 }
 
+/// Gradient of `u -> Y_lm(u / |u|)` for the real harmonic of [`cartesian`], with respect to the
+/// Cartesian components of `u`: tangential to the sphere and scaled by `1 / |u|`. Zero at the
+/// origin, where the harmonic has no limit.
+pub fn cartesian_gradient(l: usize, m: i32, u: [f64; 3]) -> [f64; 3] {
+    let r = u.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if r == 0. {
+        return [0.; 3];
+    }
+    tangential(l, m, u.map(|v| v / r)).map(|g| g / r)
+}
+
 /// Cartesian evaluation avoids recovering angles only to take their sines and
 /// cosines again. At the origin the polar-axis convention is used.
 pub fn cartesian(l: usize, m: i32, point: [f64; 3]) -> f64 {

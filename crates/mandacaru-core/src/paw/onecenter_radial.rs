@@ -176,10 +176,24 @@ pub fn long_range_shape_potential(
     if omega == 0. {
         return Ok(vec![0.; radius.len()]);
     }
+    let spline = long_range_shape_spline(ctx, radius.iter().fold(0_f64, |m, v| m.max(*v)), r_g, l, omega)?;
+    Ok(radius.iter().map(|&r| spline.value_slope(r).0).collect())
+}
+
+/// The spline of [`long_range_shape_potential`] for radii up to `largest`: its
+/// value is the potential and its slope is the exact derivative of that
+/// potential as the setup evaluates it.
+pub fn long_range_shape_spline(
+    ctx: &Context,
+    largest: f64,
+    r_g: f64,
+    l: usize,
+    omega: f64,
+) -> Result<Cubic> {
     if r_g.is_nan() || r_g <= 0. || !r_g.is_finite() {
         return Err(invalid("the compensation radius must be positive"));
     }
-    let reach = radius.iter().fold(0_f64, |m, v| m.max(*v)) + 1.;
+    let reach = largest + 1.;
     let r_max = reach.max(2. * r_g);
     // np.arange(0, r_max + step, step)
     let count = ((r_max + SHAPE_TABLE_STEP) / SHAPE_TABLE_STEP).ceil() as usize;
@@ -208,8 +222,7 @@ pub fn long_range_shape_potential(
                     .sum::<f64>()
         })
         .collect::<Vec<_>>();
-    let spline = Cubic::new(ctx, ctx.copy_slice(&table)?, ctx.copy_slice(&values)?)?;
-    Ok(radius.iter().map(|&r| spline.value_slope(r).0).collect())
+    Cubic::new(ctx, ctx.copy_slice(&table)?, ctx.copy_slice(&values)?)
 }
 
 /// `np.gradient(f, x)` with the default first-order edges.

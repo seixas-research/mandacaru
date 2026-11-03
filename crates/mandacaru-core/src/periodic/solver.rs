@@ -162,11 +162,13 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
     let volume = n as f64 * c.grid.index.dv();
     let rho = reciprocal(c, fft, rho)?;
     let mut hats = c.context.allocate::<C64>(n)?;
+    // One channel at a time: a stack on disk is read into this one reusable row.
+    let mut staged = c.context.allocate::<C64>(n)?;
     let mut potential = c.context.allocate::<C64>(n)?;
     let mut moments = c.context.allocate::<C64>(h)?;
     let mut energy = c.eion + c.ion_constant;
     for (a, &charge) in q.iter().enumerate().take(h) {
-        let table = c.hats.read_range(&c.context, a * n, n)?;
+        let table = c.hats.slice(a * n, staged.as_mut_slice())?;
         for k in 0..n {
             hats.as_mut_slice()[k] += charge * table[k];
         }
@@ -446,14 +448,14 @@ pub fn diagonalize_with_exchange(
     for (to, from) in field.as_mut_slice().iter_mut().zip(v) {
         *to = from * c.grid.index.dv();
     }
-    let samples = data.psi.read(&c.context)?;
-    let mut projector = crate::math::projection::ComplexProjector::new(&c.context, &samples, m, n)?;
+    // The orbital stack is streamed tile by tile: a stack on disk is never read back whole.
+    let mut projector =
+        crate::math::projection::ComplexProjector::streaming(&c.context, &data.psi, m, n)?;
     let local = projector.project(field.as_slice())?;
     let mut h = &data.fixed
         + &data.projections * operator * data.projections.adjoint()
         + Matrix::from_column_slice(m, m, local);
     drop(projector);
-    drop(samples);
     drop(field);
     if let Some(v) = kinetic_potential {
         let operator = super::fields::kinetic_operator(c, data, v)?;
@@ -488,12 +490,8 @@ pub(super) fn density(
             let d = matrices[s * c.points.len() + k].matrix(&c.context)?;
             projected +=
                 data.projections.adjoint() * &*d * &data.projections * C64::new(data.weight, 0.);
-            let contribution = crate::math::projection::hermitian_density(
-                &c.context,
-                &data.psi.read(&c.context)?,
-                &d,
-                n,
-            )?;
+            let contribution =
+                crate::math::projection::hermitian_density_tiles(&c.context, &data.psi, &d, n)?;
             for (to, from) in raw.as_mut_slice().iter_mut().zip(contribution.as_slice()) {
                 *to += data.weight * from;
             }
@@ -635,8 +633,9 @@ impl Mixer {
         let (mut x, mut r) = if warmup {
             (input, residual)
         } else {
-            let archive =
-                product(&[input.len(), 16, 2, options.history])? > c.context.memory_limit() / 8;
+            let archive = c
+                .context
+                .offloads(product(&[input.len(), 16, 2, options.history])?);
             self.history.push((
                 StoredMatrix::new(&c.context, Matrix::from_vec(input.len(), 1, input), archive)?,
                 StoredMatrix::new(
@@ -755,7 +754,7 @@ impl Crystal {
             let retained = product(&[options.max_iterations, 128])?
                 .checked_add(hub_bytes)
                 .ok_or(crate::Error::Overflow)?;
-            let archive_matrices = product(&[c.spins, nk, m, m, 32])? > ctx.memory_limit() / 8;
+            let archive_matrices = ctx.offloads(product(&[c.spins, nk, m, m, 32])?);
             // The mixed state: the fields, the moments and, for a hybrid, the exchange operators.
             let exchange_len = if hybrid.is_some() {
                 super::exchange_state::len(c)

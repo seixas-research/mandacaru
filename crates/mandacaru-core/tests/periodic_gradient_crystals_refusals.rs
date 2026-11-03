@@ -355,3 +355,34 @@ fn a_setup_of_another_cell_or_other_atoms_is_refused() {
         Err(Error::Invalid(m)) if m.contains("functional")
     ));
 }
+
+/// The moment average of the SCF crystal acts on exactly its channels: a vector of another length
+/// is a different crystal's moments and raises (it used to be left unaveraged without a word), and
+/// the right length is averaged by the crystal's own `qsym`.
+#[test]
+fn moments_of_the_wrong_length_are_refused_by_the_symmetrization() {
+    let data = Data::load("lih");
+    let cores = data.cores();
+    let provider = provider(&data, &cores);
+    let channels = data.crystal.channels;
+    assert!(channels >= 2);
+    for length in [0, channels - 1, channels + 1] {
+        let mut q = vec![num_complex::Complex64::new(1., 0.); length];
+        match provider.symmetrize_moments(&mut q) {
+            Err(Error::Invalid(m)) => assert!(
+                m.contains("moment symmetrization") && m.contains(&channels.to_string()),
+                "{m}"
+            ),
+            other => panic!("length {length}: expected Invalid, got {other:?}"),
+        }
+    }
+    // The control: the right length is averaged by `qsym` (the identity of a whole mesh: unchanged).
+    let mut q: Vec<_> = (0..channels)
+        .map(|a| num_complex::Complex64::new(a as f64 + 1., 0.5))
+        .collect();
+    let before = q.clone();
+    provider.symmetrize_moments(&mut q).unwrap();
+    for (a, b) in q.iter().zip(&before) {
+        assert!((a - b).norm() < 1e-12);
+    }
+}

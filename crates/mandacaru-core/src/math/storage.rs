@@ -1,6 +1,7 @@
 //! Calculation-owned sample storage with float64 accumulation views.
 use crate::{Buffer, Context, Error, Result};
 use num_complex::{Complex32, Complex64};
+type C64 = Complex64;
 use std::ops::Deref;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -421,12 +422,12 @@ impl ComplexSamples {
             }
             Self::ArchivedFloat64(values) => {
                 let mut out = ctx.allocate::<Complex64>(length)?;
-                values.read_range_into(start, out.as_mut_slice(), |v| v)?;
+                values.read_range_into(start, out.as_mut_slice())?;
                 Ok(ComplexRead::Expanded(out))
             }
             Self::ArchivedFloat32(values) => {
                 let mut out = ctx.allocate::<Complex64>(length)?;
-                values.read_range_into(start, out.as_mut_slice(), |v| {
+                values.read_range_with(start, out.as_mut_slice(), |v| {
                     Complex64::new(f64::from(v.re), f64::from(v.im))
                 })?;
                 Ok(ComplexRead::Expanded(out))
@@ -434,6 +435,179 @@ impl ComplexSamples {
         }
     }
 }
+/// Grid points per tile of every streamed projection, density accumulation and sample block.
+pub const TILE: usize = SampleBlocks::BLOCK;
+
+impl ComplexSamples {
+    /// The values `start..start + scratch.len()` as one slice: borrowed from a resident float64
+    /// stack, otherwise read (and widened) into `scratch`, which the caller reserved. Nothing is
+    /// allocated here, so a streaming loop holds exactly the scratch it reserved.
+    pub fn slice<'a>(&'a self, start: usize, scratch: &'a mut [C64]) -> Result<&'a [C64]> {
+        let end = start
+            .checked_add(scratch.len())
+            .filter(|end| *end <= self.len())
+            .ok_or_else(|| Error::Invalid("sample read range is out of bounds".into()))?;
+        match self {
+            Self::Float64(values) => Ok(&values.as_slice()[start..end]),
+            Self::Float32(values) => {
+                for (to, from) in scratch.iter_mut().zip(&values.as_slice()[start..end]) {
+                    *to = C64::new(f64::from(from.re), f64::from(from.im));
+                }
+                Ok(scratch)
+            }
+            Self::ArchivedFloat64(values) => {
+                values.read_range_into(start, scratch)?;
+                Ok(scratch)
+            }
+            Self::ArchivedFloat32(values) => {
+                values.read_range_with(start, scratch, |v| {
+                    C64::new(f64::from(v.re), f64::from(v.im))
+                })?;
+                Ok(scratch)
+            }
+        }
+    }
+    /// This stack written to the scratch folder, in its own precision (a stack already on disk
+    /// is returned as it is).
+    pub fn into_archived(self, ctx: &Context) -> Result<Self> {
+        use super::archive::Archive;
+        Ok(match self {
+            Self::Float64(values) => {
+                let values = values.as_slice();
+                Self::ArchivedFloat64(Archive::create(ctx, values.len(), |i| Ok(values[i]))?)
+            }
+            Self::Float32(values) => {
+                let values = values.as_slice();
+                Self::ArchivedFloat32(Archive::create(ctx, values.len(), |i| Ok(values[i]))?)
+            }
+            archived => archived,
+        })
+    }
+    /// Whether the stack is on disk.
+    pub fn archived(&self) -> bool {
+        matches!(self, Self::ArchivedFloat64(_) | Self::ArchivedFloat32(_))
+    }
+}
+
+/// Points `start..start + count` of every row of a row-major `(rows, points)` stack.
+#[derive(Clone, Copy)]
+pub struct Tile<'a> {
+    data: &'a [C64],
+    base: usize,
+    stride: usize,
+    count: usize,
+}
+impl<'a> Tile<'a> {
+    /// Row `row` of the tile (`count` values).
+    pub fn row(&self, row: usize) -> &'a [C64] {
+        let begin = self.base + row * self.stride;
+        &self.data[begin..begin + self.count]
+    }
+    pub fn count(&self) -> usize {
+        self.count
+    }
+}
+
+/// A row-major `(rows, points)` complex stack that is read one grid tile at a time, so a
+/// projection or a density never needs the whole stack in memory.
+pub trait ComplexTiles {
+    /// Number of values of the whole stack.
+    fn len(&self) -> usize;
+    /// Whether every value is finite. A stack on disk was checked when it was archived.
+    fn finite(&self) -> bool;
+    /// Scratch values [`tile`](Self::tile) needs for a tile of `rows` rows and `count` points:
+    /// zero when tiles are views of resident memory.
+    fn scratch_len(&self, rows: usize, count: usize) -> usize;
+    /// The tile of points `start..start + count`; `scratch` holds `scratch_len` values.
+    fn tile<'a>(
+        &'a self,
+        rows: usize,
+        points: usize,
+        start: usize,
+        count: usize,
+        scratch: &'a mut [C64],
+    ) -> Result<Tile<'a>>;
+}
+fn check_tile(len: usize, rows: usize, points: usize, start: usize, count: usize) -> Result<()> {
+    if rows.checked_mul(points) != Some(len) || start.checked_add(count).is_none_or(|e| e > points) {
+        return Err(Error::Invalid(
+            "sample tile is outside the (rows, points) stack".into(),
+        ));
+    }
+    Ok(())
+}
+impl ComplexTiles for [C64] {
+    fn len(&self) -> usize {
+        <[C64]>::len(self)
+    }
+    fn finite(&self) -> bool {
+        self.iter().all(|v| v.re.is_finite() && v.im.is_finite())
+    }
+    fn scratch_len(&self, _rows: usize, _count: usize) -> usize {
+        0
+    }
+    fn tile<'a>(
+        &'a self,
+        rows: usize,
+        points: usize,
+        start: usize,
+        count: usize,
+        _scratch: &'a mut [C64],
+    ) -> Result<Tile<'a>> {
+        check_tile(self.len(), rows, points, start, count)?;
+        Ok(Tile {
+            data: self,
+            base: start,
+            stride: points,
+            count,
+        })
+    }
+}
+impl ComplexTiles for ComplexSamples {
+    fn len(&self) -> usize {
+        ComplexSamples::len(self)
+    }
+    fn finite(&self) -> bool {
+        ComplexSamples::finite(self)
+    }
+    fn scratch_len(&self, rows: usize, count: usize) -> usize {
+        match self {
+            Self::Float64(_) => 0,
+            _ => rows * count,
+        }
+    }
+    fn tile<'a>(
+        &'a self,
+        rows: usize,
+        points: usize,
+        start: usize,
+        count: usize,
+        scratch: &'a mut [C64],
+    ) -> Result<Tile<'a>> {
+        check_tile(self.len(), rows, points, start, count)?;
+        if let Self::Float64(values) = self {
+            return Ok(Tile {
+                data: values.as_slice(),
+                base: start,
+                stride: points,
+                count,
+            });
+        }
+        if scratch.len() < rows * count {
+            return Err(Error::Invalid("sample tile scratch is too small".into()));
+        }
+        for (row, to) in scratch[..rows * count].chunks_exact_mut(count).enumerate() {
+            self.slice(row * points + start, to)?;
+        }
+        Ok(Tile {
+            data: &scratch[..rows * count],
+            base: 0,
+            stride: count,
+            count,
+        })
+    }
+}
+
 pub enum ComplexRead<'a> {
     Borrowed(&'a [Complex64]),
     Expanded(Buffer<Complex64>),

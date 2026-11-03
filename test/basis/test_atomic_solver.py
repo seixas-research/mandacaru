@@ -51,32 +51,35 @@ class TestFrozenPythonAtoms:
         case = INPUTS["cases"][key]
         assert atom.converged == case["converged"]
         assert atom.xc == xc and atom.relativity == relativity
-        assert atom.total_energy == pytest.approx(case["total_energy"], rel=2e-8)
         nl = ARRAYS[key + "/nl"]
         frozen = ARRAYS[key + "/eigenvalues"]
         assert sorted(atom.eigenvalues) == sorted(map(tuple, nl.tolist()))
-        for (n, l), want in zip(nl.tolist(), frozen):
-            assert atom.eigenvalues[(n, l)] == pytest.approx(want, rel=2e-8)
         assert [atom.occupations[tuple(k)] for k in nl.tolist()] == \
             ARRAYS[key + "/occupations"].tolist()
+        if relativity == "dirac":
+            assert len(atom.eigenvalues_j) == len(ARRAYS[key + "/nlk"])
+        else:
+            assert not atom.eigenvalues_j
+        if xc == "pbe":
+            return self._pbe_moves_by_the_scheme_difference(key, atom, case, nl, frozen)
+        assert atom.total_energy == pytest.approx(case["total_energy"], rel=2e-8)
+        for (n, l), want in zip(nl.tolist(), frozen):
+            assert atom.eigenvalues[(n, l)] == pytest.approx(want, rel=2e-8)
         if relativity == "dirac":
             for (n, l, k), want in zip(ARRAYS[key + "/nlk"].tolist(),
                                        ARRAYS[key + "/eigenvalues_j"]):
                 assert atom.eigenvalues_j[(n, l, k)] == pytest.approx(want, rel=2e-8)
-        else:
-            assert not atom.eigenvalues_j
         # Fields on every 20th node: the grid is r_i = i h, h = r_max / (points + 1).
         # The far tail (rho < 1e-8) is not controlled by the SCF test, which weighs the
         # change by 4 pi r^2, so there only absolute agreement at 5e-6 Hartree is asked.
-        # PBE between the kernel's two density floors (1e-12 < rho < 2e-12) applies the
-        # uniform-gas exchange without the enhancement factor: that window (a handful of
-        # nodes, up to 1e-4 Hartree in v_xc) is excluded from the potentials, widened to
-        # 0.5-4e-12 because the unconverged tail moves it between runs.
+        # Below the exchange floor (rho < 2e-12, beyond about 14 Bohr) the variational
+        # scheme drops exchange where the atom-solver scheme of the freeze continued the
+        # uniform gas: a step of 1.86e-4 Hartree in v_xc and v_effective that belongs to
+        # the production scheme (PAW_MIGRATION_LOG.md, "G0 / XC-SW"); that window (rho
+        # below 4e-12, as for PBE's two density floors) is excluded from the potentials.
         stride = slice(0, None, 20)
         rho = ARRAYS[key + "/density"]
-        keep = np.ones_like(rho, dtype=bool)
-        if xc == "pbe":
-            keep = ~((rho > 0.5e-12) & (rho < 4e-12))
+        keep = rho > 4e-12
         for name in ("density", "v_effective", "v_hartree", "v_xc"):
             got = np.asarray(getattr(atom, name))[stride]
             want = ARRAYS[key + "/" + name]
@@ -89,6 +92,33 @@ class TestFrozenPythonAtoms:
         want = ARRAYS[key + "/u_last"]
         np.testing.assert_allclose(got, want, rtol=1e-5,
                                    atol=1e-7 * float(np.max(np.abs(want))))
+
+    @staticmethod
+    def _pbe_moves_by_the_scheme_difference(key, atom, case, nl, frozen):
+        """A PBE atom is solved with the variational radial scheme (the scheme of the
+        molecular PAW path, D-2b), and the freeze is the atom-solver scheme (kept
+        unchanged: the Rust seam reproduces it, ``crates/.../tests/atom_solver.rs``).  The
+        two differ by a measured amount (``PAW_MIGRATION_LOG.md``, "G0 / XC-SW" and "A7 /
+        S2"): the total energy by 1.5e-7 (helium) to 6.8e-5 relative, the eigenvalues by up to 4.2e-4,
+        the density by 1.5e-3 of its maximum, v_hartree by 1.3e-4.  So the test asserts the
+        move is inside 3 times that and above round-off: an atom still solved with the old
+        scheme would sit at 1e-12, a broken one far outside."""
+        energy = abs(atom.total_energy / case["total_energy"] - 1.0)
+        assert 1e-8 < energy < 2e-4, energy
+        eigenvalues = max(abs(atom.eigenvalues[(n, l)] / w - 1.0)
+                          for (n, l), w in zip(nl.tolist(), frozen))
+        assert 1e-8 < eigenvalues < 1.3e-3, eigenvalues
+        stride = slice(0, None, 20)
+        # The first node (where the atom-solver scheme extrapolates: 24 Ha apart for oxygen) and
+        # the tail below the exchange floor are not part of the comparison of v_effective.
+        inside = ARRAYS[key + "/density"] > 4e-12
+        inside[0] = False
+        for name, bound in (("density", 5e-3), ("v_hartree", 4e-4), ("v_effective", 8e-3)):
+            got = np.asarray(getattr(atom, name))[stride]
+            want = ARRAYS[key + "/" + name]
+            mask = inside if name == "v_effective" else np.ones_like(inside)
+            scale = float(np.max(np.abs(want)))
+            assert float(np.max(np.abs(got - want)[mask])) / scale < bound, name
 
 
 class TestRelaxedConfiguration:

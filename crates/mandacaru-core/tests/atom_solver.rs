@@ -8,6 +8,7 @@ use mandacaru_core::{
         numerov,
         relativity::{self, Treatment},
         selection,
+        xc_scheme::AtomSolver,
     },
     Context,
 };
@@ -31,8 +32,38 @@ fn relative(a: f64, b: f64) -> f64 {
     (a - b).abs() / b.abs().max(1e-300)
 }
 
+/// The relative difference of a solved atom from a frozen case: total energy, the `(n, l)`
+/// eigenvalues and the `(2j+1)`-resolved levels of a Dirac atom.
+fn distance(atom: &atom::Atom, case: &serde_json::Value) -> (f64, f64) {
+    let energy = relative(atom.energy, case["total_energy"].as_f64().unwrap());
+    let mut eigenvalues: f64 = 0.;
+    for (i, &(n, l, _)) in atom.occupations.iter().enumerate() {
+        let want = case["eigenvalues"][format!("{n},{l}")].as_f64().unwrap();
+        eigenvalues = nan_max(eigenvalues, relative(atom.eigenvalues[i], want));
+    }
+    for level in &atom.j_states {
+        let want = case["eigenvalues_j"][format!("{},{},{}", level.n, level.l, level.kappa)]
+            .as_f64()
+            .unwrap();
+        eigenvalues = nan_max(eigenvalues, relative(level.eigenvalue, want));
+    }
+    (energy, eigenvalues)
+}
+
+fn nan_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 /// Frozen cases: eigenvalues, `(2j+1)`-resolved levels and total energy against the Python
-/// solver, with the largest relative difference per case printed (`--nocapture`).
+/// solver, with the largest relative difference per case printed (`--nocapture`). The frozen
+/// numbers are the Python atom-solver radial scheme's, so a PBE case is the parity gate of the
+/// legacy seam (`AtomSolver`); the production atom (the variational scheme, XC-SW) is compared
+/// with the same numbers in `the_production_pbe_atoms_move_by_the_scheme_difference`, and LDA,
+/// whose schemes differ only in the far tail, equals them through both.
 #[test]
 fn matches_the_frozen_python_atoms() {
     let frozen = reference();
@@ -57,26 +88,20 @@ fn matches_the_frozen_python_atoms() {
             relativity: Treatment::parse(parts[2]).unwrap(),
             polish: frozen["polish"].as_u64().unwrap() as usize,
         };
-        let atom = atom::solve_model(&ctx, z, &options, &model, None, None).unwrap();
+        // PBE through the legacy seam (the scheme of the Python freeze), the rest through the
+        // production entry point.
+        let atom = if parts[1] == "pbe" {
+            atom::solve_model_with(&ctx, z, &options, &model, None, None, &AtomSolver).unwrap()
+        } else {
+            atom::solve_model(&ctx, z, &options, &model, None, None).unwrap()
+        };
         assert_eq!(
             atom.converged,
             case["converged"].as_bool().unwrap(),
             "{key}"
         );
-        let mut diff = relative(atom.energy, case["total_energy"].as_f64().unwrap());
-        let energy_diff = diff;
-        let mut eig_diff: f64 = 0.;
-        for (i, &(n, l, _)) in atom.occupations.iter().enumerate() {
-            let want = case["eigenvalues"][format!("{n},{l}")].as_f64().unwrap();
-            eig_diff = eig_diff.max(relative(atom.eigenvalues[i], want));
-        }
-        for level in &atom.j_states {
-            let want = case["eigenvalues_j"][format!("{},{},{}", level.n, level.l, level.kappa)]
-                .as_f64()
-                .unwrap();
-            eig_diff = eig_diff.max(relative(level.eigenvalue, want));
-        }
-        diff = diff.max(eig_diff);
+        let (energy_diff, eig_diff) = distance(&atom, case);
+        let diff = nan_max(energy_diff, eig_diff);
         println!(
             "{key:>14}  iterations {:>2}/{:>2}  energy {energy_diff:.2e}  eigenvalues {eig_diff:.2e}",
             atom.iterations,
@@ -84,13 +109,62 @@ fn matches_the_frozen_python_atoms() {
         );
         worst.insert(key.clone(), diff);
     }
-    let max = worst.values().cloned().fold(0., f64::max);
+    let max = worst.values().cloned().fold(0., nan_max);
     println!(
         "largest relative difference over {} cases: {max:.3e}",
         worst.len()
     );
     for (key, diff) in &worst {
         assert!(*diff < 1e-6, "{key}: {diff:e}");
+    }
+}
+
+/// XC-SW: the production PBE atoms (variational scheme) against the frozen Python ones. The
+/// scheme changes the atom (the eigenvalues by 1e-5 to 1e-3 relative, the energy by up to a few
+/// 1e-4), every case converges, and the legacy seam, run beside it, is the frozen number to the
+/// parity gate of `matches_the_frozen_python_atoms`. The control is the seam itself: the change
+/// is 40 to 260 times the parity gate (energy 4.0e-5 to 6.2e-5, eigenvalues 1.0e-4 to 2.6e-4
+/// relative, against 1e-6), so the gate can tell the schemes apart.
+#[test]
+fn the_production_pbe_atoms_move_by_the_scheme_difference() {
+    const PARITY_GATE: f64 = 1e-6;
+    let frozen = reference();
+    let ctx = context();
+    let options = AtomOptions {
+        points: frozen["points"].as_u64().unwrap() as usize,
+        r_max: frozen["r_max"].as_f64().unwrap(),
+        max_iterations: frozen["max_iterations"].as_u64().unwrap() as usize,
+        tolerance: frozen["tolerance"].as_f64().unwrap(),
+        mixing: frozen["mixing"].as_f64().unwrap(),
+    };
+    let mut moved = BTreeMap::new();
+    for key in [
+        "8/pbe/scalar",
+        "14/pbe/scalar",
+        "29/pbe/scalar",
+        "8/pbe/dirac",
+        "26/pbe/none",
+    ] {
+        let case = &frozen["cases"][key];
+        let parts = key.split('/').collect::<Vec<_>>();
+        let model = AtomModel {
+            functional: "pbe".into(),
+            relativity: Treatment::parse(parts[2]).unwrap(),
+            polish: frozen["polish"].as_u64().unwrap() as usize,
+        };
+        let z: u8 = parts[0].parse().unwrap();
+        let atom = atom::solve_model(&ctx, z, &options, &model, None, None).unwrap();
+        assert!(atom.converged, "{key}");
+        let (energy, eigenvalues) = distance(&atom, case);
+        println!("{key:>14}  production against the frozen Python atom: energy {energy:.2e}  eigenvalues {eigenvalues:.2e}");
+        moved.insert(key, nan_max(energy, eigenvalues));
+    }
+    for (key, diff) in &moved {
+        assert!(*diff < 1e-2, "{key}: {diff:e}");
+        assert!(
+            *diff > PARITY_GATE,
+            "{key}: the parity gate would not tell the schemes apart"
+        );
     }
 }
 

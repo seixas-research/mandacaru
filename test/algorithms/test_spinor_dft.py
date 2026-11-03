@@ -161,15 +161,29 @@ class TestASpinOrbitCrystal:
         gamma = calc.get_eigenvalues(kpt=0)
         assert np.allclose(gamma[0::2], gamma[1::2], atol=1e-8)
 
-    def test_spinor_crystal_forces_and_stress(self, spinor_silicon):
-        calc = spinor_silicon.calc
-        forces = calc.get_forces(spinor_silicon)
+    @pytest.mark.slow
+    def test_spinor_crystal_forces(self, spinor_silicon):
+        """The analytic spinor force (Rust); the ideal crystal's vanish by symmetry. Measured 48 s
+        (the SCF of the shared fixture is charged to the first test that uses it)."""
+        forces = spinor_silicon.calc.get_forces(spinor_silicon)
         assert forces.shape == (2, 3)
         assert np.allclose(forces, 0.0, atol=1e-6)
-        stress = calc.get_stress(spinor_silicon)
+
+    def test_spinor_crystal_stress(self):
+        """The analytic spinor stress (Rust) of ideal Si on its own Gamma-only crystal. The 2x2x2 mesh took 138 s idle and
+        191-211 s under load (over the 180 s budget); its stress against the reconverged finite difference is gated in
+        ``test/migration/test_native_periodic_response.py``.
+
+        The whole-mesh model is cubic only to the quadrature error of its sphere rules, which keep the lab z axis (see
+        ``dev_plan/PAW_MIGRATION_LOG.md``, P2 / 3c-i): the shears (2e-13 measured) and ``xx - yy`` (0) vanish, ``zz - xx`` is
+        3.4e-5 eV/A^3 of a stress of -0.405 (measured at grid 0.34), and the gate on it is 1e-4."""
+        atoms = _silicon(kpts=(1, 1, 1))
+        stress = atoms.calc.get_stress(atoms)
         assert stress.shape == (6,)
-        # Shear components are zero by cubic symmetry
-        assert np.allclose(stress[3:], 0.0, atol=1e-5)
+        assert np.allclose(stress[3:], 0.0, atol=1e-10)
+        assert abs(stress[0] - stress[1]) < 1e-10
+        assert abs(stress[2] - stress[0]) < 1e-4
+        assert stress[0] < -0.1
 
     def test_wannier_functions_with_the_term(self, spinor_silicon):
         """The SOC crystal's valence: eight spinor functions whose

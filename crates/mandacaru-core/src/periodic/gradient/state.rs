@@ -89,6 +89,8 @@ pub fn moments<D: Derivatives>(d: &D, state: &State) -> Result<Vec<C64>> {
             }
         }
     }
+    // The k-sum visited one point per star: the moments the potentials are made of are the group average.
+    d.symmetrize_moments(&mut q)?;
     Ok(q)
 }
 

@@ -22,7 +22,6 @@ pub fn solve<'py>(
         .as_ref()
         .map(|v| copy(&context.inner, v))
         .transpose()?;
-    let points = options.points;
     let atom = py
         .detach(|| {
             atom::solve_model(
@@ -35,6 +34,16 @@ pub fn solve<'py>(
             )
         })
         .map_err(error)?;
+    describe(py, atomic_number, &atom)
+}
+
+/// The solved atom as the dict the Python side reads (grid, potentials, orbitals, levels).
+pub(crate) fn describe<'py>(
+    py: Python<'py>,
+    atomic_number: u8,
+    atom: &atom::Atom,
+) -> PyResult<Bound<'py, PyDict>> {
+    let points = atom.r.as_slice().len();
     let out = PyDict::new(py);
     out.set_item("atomic_number", atomic_number)?;
     for (name, values) in [

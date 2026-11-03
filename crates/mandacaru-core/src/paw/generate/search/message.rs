@@ -5,7 +5,7 @@
 //! refuses an element reads the same words. Numbers use the `%g` family of that text: depths
 //! `+.3g`, phases `.3f`, unprojected phases and misses `.2f`.
 use crate::paw::diagnose::{
-    intruding::failed_acceptance, scattering::UNPROJECTED_TOLERANCE, Diagnosis,
+    intruding::failed_acceptance, scattering::UNPROJECTED_TOLERANCE, view::Key, Diagnosis,
 };
 use std::collections::BTreeMap;
 
@@ -54,6 +54,22 @@ pub fn describe_levels(levels: &BTreeMap<usize, f64>) -> String {
         .join(", ")
 }
 
+/// `l=1 kappa=-2 -3.74 Ha`: the `j` branches that hold a ghost.
+pub fn describe_branches(branches: &BTreeMap<Key, f64>) -> String {
+    branches
+        .iter()
+        .map(|(k, e)| {
+            format!(
+                "l={} kappa={} {} Ha",
+                k.l,
+                k.kappa.unwrap_or(0),
+                general(*e, 3, true)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// `l=1 0.123/0.456 rad`: the near and far phase errors of the channels outside tolerance.
 pub fn describe_phases(phases: &BTreeMap<usize, [f64; 2]>) -> String {
     phases
@@ -68,7 +84,7 @@ pub fn describe_incomplete(diagnosis: &Diagnosis) -> String {
     let mut parts = diagnosis
         .unprojected
         .iter()
-        .filter(|(_, &e)| e > UNPROJECTED_TOLERANCE)
+        .filter(|(_, &e)| !(e <= UNPROJECTED_TOLERANCE))
         .map(|(l, e)| format!("l={l} unprojected phase error {e:.2} rad"))
         .collect::<Vec<_>>();
     if let Some(miss) = failed_acceptance(diagnosis.s_miss) {
@@ -92,6 +108,9 @@ pub enum Why {
     /// A bound level below the reference that the atom does not have (or an excited or local
     /// ghost): `{l: eps_0 - eps_ref}`.
     Ghost(BTreeMap<usize, f64>),
+    /// A `j` branch of a fully relativistic dataset holds a ghost: `{(l, kappa): eps_0 - eps_ref}`.
+    /// The scalar generator never looked at branches, so this text has no counterpart in it.
+    BranchGhost(BTreeMap<Key, f64>),
     /// Channels whose scattering is outside `PHASE_TOLERANCE` near or `RESONANCE_TOLERANCE` far.
     Phase(BTreeMap<usize, [f64; 2]>),
     /// An unprojected channel outside its tolerance or a failed s completeness (carried as the
@@ -112,6 +131,9 @@ impl Why {
         if !diagnosis.ghosts.is_empty() {
             return Some(Self::Ghost(diagnosis.ghosts.clone()));
         }
+        if !diagnosis.branch_ghosts.is_empty() {
+            return Some(Self::BranchGhost(diagnosis.branch_ghosts.clone()));
+        }
         let wrong = diagnosis.wrong_phases();
         if !wrong.is_empty() {
             return Some(Self::Phase(wrong));
@@ -127,6 +149,7 @@ impl Why {
     pub fn short(&self) -> String {
         match self {
             Self::Ghost(levels) => format!("ghost {}", describe_levels(levels)),
+            Self::BranchGhost(branches) => format!("ghost {}", describe_branches(branches)),
             Self::Phase(phases) => format!("phase {}", describe_phases(phases)),
             Self::Incomplete(text) => text.clone(),
             Self::Missing(missing) => format!("missing state {}", describe_missing(missing)),
@@ -143,6 +166,10 @@ impl Why {
                     describe_levels(levels)
                 )
             }
+            Self::BranchGhost(branches) => format!(
+                "ghost state below the reference ({})",
+                describe_branches(branches)
+            ),
             Self::Phase(phases) => format!("wrong scattering ({})", describe_phases(phases)),
             Self::Incomplete(text) => format!("an incomplete construction ({text})"),
             Self::Missing(missing) => format!(

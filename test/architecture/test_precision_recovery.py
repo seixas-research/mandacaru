@@ -97,16 +97,29 @@ class TestRouteRefusals:
         assert not ran
         assert calc.result is None and calc.integrals is None and calc.results == {}
 
-    def test_a_cached_energy_does_not_let_float32_forces_through(self):
+    def test_a_cached_energy_does_not_let_float32_quantum_forces_through(self):
         """The refusal precedes the cached-result lookup."""
         atoms = _h2()
-        atoms.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO"},
-                               precision="float32", grid_spacing=.5,
+        atoms.calc = Mandacaru(method="vqe", precision="float32", shots=100,
                                resources={"threads": 1})
         atoms.calc.result = object()
         atoms.calc.results = {"energy": 0.0}
-        with pytest.raises(ValueError, match="PAW-LCAO forces"):
+        with pytest.raises(ValueError, match="quantum-method forces"):
             atoms.calc.calculate(atoms, properties=("energy", "forces"))
+
+    def test_float32_forces_of_a_mean_field_paw_molecule_are_not_refused(self, monkeypatch):
+        calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO"}, precision="float32",
+                         grid_spacing=.5, resources={"threads": 1})
+        reached = []
+
+        def stop(*args, **kwargs):
+            reached.append(1)
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr(calc, "run", stop)
+        with pytest.raises(RuntimeError, match="stop"):
+            calc.calculate(_h2(), properties=("energy", "forces"))
+        assert reached
 
     def test_float64_forces_pass_the_refusal(self, monkeypatch):
         calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO"}, precision="float64",

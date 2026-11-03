@@ -645,7 +645,17 @@ impl MolecularIntegrals {
 impl MolecularIntegrals {
     /// Electronic Hartree-Fock energy of orthonormal-frame spin densities,
     /// which need not be idempotent. Nuclear repulsion is not included.
-    pub(super) fn hartree_fock_energy(&self, method: &str, d: &[Matrix]) -> Result<f64> {
+    pub fn hartree_fock_energy(&self, method: &str, d: &[Matrix]) -> Result<f64> {
+        let (h, f) = self.hartree_fock_operators(method, d)?;
+        Ok(energy(d, &f, &h, method))
+    }
+    /// The core operator and the Fock matrices (one per spin channel) of
+    /// orthonormal-frame densities, for the collinear methods.
+    pub(super) fn hartree_fock_operators(
+        &self,
+        method: &str,
+        d: &[Matrix],
+    ) -> Result<(Matrix, Vec<Matrix>)> {
         let m = self.m();
         let channels = if method == "rhf" { 1 } else { 2 };
         if !["rhf", "uhf"].contains(&method)
@@ -658,7 +668,7 @@ impl MolecularIntegrals {
         }
         let h = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
         let f = fock(self.eri()?.as_ref(), &h, d, method);
-        Ok(energy(d, &f, &h, method))
+        Ok((h, f))
     }
 }
 impl MeanField {

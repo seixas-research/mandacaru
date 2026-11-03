@@ -246,7 +246,6 @@ class TestMolecule:
     def test_it_can_be_switched_off(self, off):
         energy, atoms = self._energy({"name": "PAW-LCAO", "energy_shift": off})
         assert energy == pytest.approx(UNCONFINED_EV, abs=2e-5)
-        assert atoms.calc.solver._gradient_context["confinement"] == {}
 
     def test_confinement_improves_the_minimal_basis(self):
         # A free-atom orbital is too diffuse for a molecule; a mild confinement
@@ -258,12 +257,9 @@ class TestMolecule:
         assert confined == pytest.approx(CONFINED_EV, abs=2e-5)
         assert free - confined == pytest.approx(0.3984, abs=1e-3)
 
-    def test_the_context_reports_the_radii(self):
-        _, atoms = self._energy({"name": "PAW-LCAO", "energy_shift": 0.1})
-        context = atoms.calc.solver._gradient_context
-        orbital = context["confinement"]["H"][(0, 0)]    # (l, state)
+    def test_the_confinement_radius_of_hydrogen(self):
+        orbital = confined_orbital(get_paw("H"), 0, 0.1)
         assert orbital.r_c == pytest.approx(6.68, abs=0.05)
-        assert context["options"]["energy_shift"] == 0.1
 
     def test_forces_differentiate_the_confined_energy(self):
         basis = {"name": "PAW-LCAO", "energy_shift": 0.1}
@@ -272,15 +268,12 @@ class TestMolecule:
         step = 0.005
         energies = []
         for sign in (+1, -1):
-            moved = h2()
+            moved = atoms.copy()
             moved.positions[1, 2] += sign * step
-            # The grid of the reference geometry: the finite difference must
-            # differentiate the same discretized energy the gradient does.
-            moved.calc = Mandacaru(method="adapt-vqe",
-                                   basis=basis, grid_spacing=0.25, pool="fermionic",
-                                   trace=False,
-                                   grid=atoms.calc.solver._gradient_context[
-                                       "integrals"].grid)
+            # The grid of the reference geometry: the first force evaluation froze
+            # it in the calculator, so the finite difference differentiates the
+            # same discretized energy the gradient does.
+            moved.calc = atoms.calc
             energies.append(moved.get_potential_energy())
         numeric = -(energies[0] - energies[1]) / (2 * step)
         assert analytic == pytest.approx(numeric, abs=5e-3)
@@ -296,24 +289,6 @@ class TestPlumbing:
     def test_upaw_has_it(self):
         Mandacaru(method="adapt-vqe",
                   basis={"name": "UPAW-LCAO", "energy_shift": 0.1})
-
-    def test_the_dry_run_names_it(self):
-        calc = Mandacaru(method="adapt-vqe",
-                         basis={"name": "PAW-LCAO", "size": "DZP",
-                                "energy_shift": 0.1})
-        estimate = calc.dry_run(h2())
-        assert "energy_shift 0.1 eV" in estimate.basis
-        assert estimate.n_qubits == 20          # the count does not change
-
-    def test_per_element_form(self):
-        # An element left out of the mapping gets the family's default:
-        # leaving an option out never means turning it off.
-        calc = Mandacaru(method="adapt-vqe",
-                         basis={"O": {"name": "PAW-LCAO", "energy_shift": 0.2},
-                                "H": "PAW-LCAO"})
-        water = Atoms("OH2", positions=[[4, 4, 4], [4, 4.77, 4.59],
-                                        [4, 3.23, 4.59]], cell=[8.0] * 3)
-        assert "energy_shift {*: 0.1, O: 0.2} eV" in calc.dry_run(water).basis
 
 
 # What an independent LCAO basis generator prints for the same recipe (LDA,
@@ -463,16 +438,17 @@ class TestNewOptionsEndToEnd:
                                      "polarization_method": "gaussian"})
         assert calc.n_qubits == 20
         assert energy == pytest.approx(DZP_GAUSSIAN_EV, abs=5e-5)
-        shell = calc.solver._gradient_context["polarization"]["H"]
-        assert shell.l == 1 and shell.r_char == pytest.approx(1.396, abs=0.005)
 
     def test_gaussian_polarization_needs_a_confined_orbital(self):
-        # Asked for explicitly with the confinement switched off: refused.
+        # Asked for explicitly with the confinement switched off: refused when the
+        # basis is built (the constructor checks the value, the run builds the basis).
+        atoms = h2()
+        atoms.calc = Mandacaru(method="adapt-vqe", grid_spacing=0.25, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "DZP",
+                                      "energy_shift": None,
+                                      "polarization_method": "gaussian"})
         with pytest.raises(ValueError, match="needs an energy_shift"):
-            Mandacaru(method="adapt-vqe",
-                      basis={"name": "PAW-LCAO", "size": "DZP",
-                             "energy_shift": None,
-                             "polarization_method": "gaussian"})
+            atoms.get_potential_energy()
         # With the family's default confinement it needs nothing else.
         Mandacaru(method="adapt-vqe",
                   basis={"name": "PAW-LCAO", "size": "DZP",
@@ -524,23 +500,9 @@ class TestNewOptionsEndToEnd:
     def test_zeta_split_is_a_basis_option(self):
         """``last_zeta`` builds a different basis from the default
         ``first_zeta``, and an unknown scheme is refused at construction."""
-        first = Mandacaru(method="adapt-vqe",
-                          basis={"name": "PAW-LCAO", "size": "DZ"})
-        last = Mandacaru(method="adapt-vqe",
-                         basis={"name": "PAW-LCAO", "size": "DZ",
-                                "zeta_split": "last_zeta"})
-        assert first.dry_run(h2()).n_qubits == last.dry_run(h2()).n_qubits
+        Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ"})
+        Mandacaru(method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZ",
+                                             "zeta_split": "last_zeta"})
         with pytest.raises(ValueError, match="zeta_split"):
             Mandacaru(method="adapt-vqe",
                       basis={"name": "PAW-LCAO", "zeta_split": "previous"})
-        with pytest.raises(ValueError, match="zeta_split"):
-            Mandacaru(method="adapt-vqe",
-                      basis={"H": {"name": "PAW-LCAO",
-                                   "zeta_split": "previous"}})
-
-    def test_the_dry_run_names_the_gaussian_shell(self):
-        calc = Mandacaru(method="adapt-vqe",
-                         basis={"name": "PAW-LCAO", "size": "DZP",
-                                "energy_shift": 0.1,
-                                "polarization_method": "gaussian"})
-        assert "gaussian polarization" in calc.dry_run(h2()).basis

@@ -99,10 +99,7 @@ pub struct Decimated {
 impl Decimated {
     pub fn open(name: &str) -> Self {
         let path = directory().join(format!("gen_{name}_data.npz"));
-        let restore = format!(
-            "python test/migration/freeze_paw_generation.py run gen:{}",
-            name.replace('_', ":")
-        );
+        let restore = "cp test/migration/reference/paw_generate_archive/*.npz test/migration/reference/paw_generate/".to_string();
         Self {
             npz: Npz::open(&path, &restore),
         }

@@ -8,17 +8,14 @@
 use super::{view::Key, Outcome};
 use crate::{
     models::{
-        atom::{self, Atom, AtomModel, AtomOptions},
+        atom::Atom,
         configuration::valence_subshells,
         relativity::Treatment,
-        selection::relaxed_configuration,
+        xc_scheme::{Variational, XcSource},
     },
     paw::{
         checks::log_derivatives_ae,
-        generate::{
-            recipe::Recipe,
-            tables_elements::{REFERENCE_MIXING, REFERENCE_TOLERANCE},
-        },
+        generate::{recipe::Recipe, reference::solve_reference_with},
         invalid,
         record::{Family, PawDataset},
     },
@@ -26,67 +23,30 @@ use crate::{
 };
 use std::collections::HashMap;
 
-/// A configuration as the atom solver takes it.
-type Occupations = Vec<(usize, usize, f64)>;
-
-/// The recipe-independent facts of a record that fix its reference atom.
+/// The recipe a record was generated from: its element, functional and treatment, with the
+/// family's policy tables laid over the defaults.
 fn recipe_of(ds: &PawDataset) -> Result<Recipe> {
-    // The tables know no Dirac recipe yet; only the grid, the radius and the occupancy overlay
-    // are read from it, and the atom below is solved with the record's own treatment.
-    let table_treatment = match Treatment::parse(&ds.relativity)? {
-        Treatment::Dirac => Treatment::Scalar,
-        other => other,
-    };
+    let treatment = Treatment::parse(&ds.relativity)?;
     match ds.family {
-        Family::PawLcao => Recipe::for_dataset(&ds.symbol, &ds.xc, table_treatment),
-        Family::UpawLcao => Recipe::upaw(&ds.symbol, &ds.xc, table_treatment),
+        Family::PawLcao => Recipe::for_dataset(&ds.symbol, &ds.xc, treatment),
+        Family::UpawLcao => Recipe::upaw(&ds.symbol, &ds.xc, treatment),
     }
 }
 
 /// The self-consistent atom a record was generated on: the relaxed ground state with the
-/// element's occupancy overrides, in the record's functional and relativistic treatment.
+/// element's occupancy overrides, in the record's functional and relativistic treatment, solved
+/// by the generator's own routine so a diagnosis and a generation cannot disagree on the atom.
 pub fn reference_atom(ctx: &Context, ds: &PawDataset) -> Result<Atom> {
-    let recipe = recipe_of(ds)?;
-    let treatment = Treatment::parse(&ds.relativity)?;
-    let z = recipe.atomic_number;
-    let configuration = if recipe.reference_configuration.is_empty() {
-        None
-    } else {
-        let mut occupations: Occupations = relaxed_configuration(
-            ctx,
-            z,
-            &recipe.functional,
-            treatment,
-            recipe.r_max,
-            Some(recipe.points),
-        )?;
-        for &((n, l), q) in &recipe.reference_configuration {
-            match occupations.iter_mut().find(|s| (s.0, s.1) == (n, l)) {
-                Some(state) => state.2 = q,
-                None => occupations.push((n, l, q)),
-            }
-        }
-        occupations.retain(|s| s.2 > 0.);
-        Some(occupations)
-    };
-    atom::solve_model(
-        ctx,
-        z,
-        &AtomOptions {
-            points: recipe.points,
-            r_max: recipe.r_max,
-            max_iterations: 200,
-            tolerance: REFERENCE_TOLERANCE,
-            mixing: REFERENCE_MIXING,
-        },
-        &AtomModel {
-            functional: recipe.functional.clone(),
-            relativity: treatment,
-            polish: atom::POLISH_ROUNDS,
-        },
-        configuration.as_deref(),
-        None,
-    )
+    reference_atom_with(ctx, ds, &Variational)
+}
+
+#[doc(hidden)]
+/// [`reference_atom`] with the radial exchange-correlation scheme as a parameter: the shipped PBE
+/// datasets were generated on an atom solved with the legacy `AtomSolver`, so diagnosing one of
+/// them against its own atom takes that scheme (the library sweep); a freshly generated record
+/// takes the production one.
+pub fn reference_atom_with(ctx: &Context, ds: &PawDataset, scheme: &dyn XcSource) -> Result<Atom> {
+    solve_reference_with(ctx, &recipe_of(ds)?, scheme)
 }
 
 /// The reference atom and the equation the comparisons integrate on it.
@@ -112,7 +72,7 @@ impl<'a> AllElectron<'a> {
             .iter()
             .filter(|s| s.2 > 0.)
             .copied()
-            .collect::<Occupations>();
+            .collect::<Vec<(usize, usize, f64)>>();
         let valence = valence_subshells(&occupied);
         let mut core = occupied
             .iter()

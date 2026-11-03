@@ -9,10 +9,10 @@
 r"""On-disk pseudopotential library.
 
 Generating a pseudopotential means running a self-consistent all-electron atom
-and solving a nonlinear fit per channel -- a second or two per element.  That is
-far too slow to repeat inside a geometry optimization, and it is also pure
-overhead: the result depends only on the element, never on the molecule.  So each
-family's library is generated once and kept in a repository of its own
+and solving a nonlinear fit per channel -- seconds per element.  That is far too
+slow to repeat inside a geometry optimization, and it is also pure overhead: the
+result depends only on the element, never on the molecule.  So each family's
+library is generated once and kept in a repository of its own
 (``$MANDACARU_PAW_PATH/lda-sr/``; :mod:`.environment`).
 
 File formats
@@ -23,15 +23,16 @@ what the libraries use -- the radial tables are thousands of floats per
 element and columnar compression matters across the whole periodic table.
 **JSON** (``<symbol>.json``) is the same content as plain text and is what to
 write when a dataset has to be inspected, plotted or diffed by hand.  Both are
-read and written by the native engine; no Python Parquet package is involved.  :func:`load_pseudopotential` auto-detects which it was given
-(extension first, then magic bytes), so the two are drop-in equivalents.
+read and written by the native engine (``mandacaru-core``: ``paw::record``, which
+owns the schema, the storage rule of :data:`STRIDE` and :data:`DIGITS`, and every
+refusal); no Python Parquet package is involved.  :func:`load_pseudopotential`
+detects which it was given (extension first, then magic bytes), so the two are
+drop-in equivalents.
 
 Every file carries ``"format": "mandacaru-pseudopotential"``, the schema
-``"version"`` and the ``"family"``; the family's own module writes and reads
-the rest (``to_payload`` / ``from_payload``, :data:`TABLE_FAMILIES`).  Its
-scalars sit beside the family, and every radial table under
-``"radial_tables"``; in a Parquet file the tables are the columns and the
-scalars the key/value metadata.
+``"version"`` and the ``"family"``.  The scalars sit beside the family, and
+every radial table under ``"radial_tables"``; in a Parquet file the tables are
+the columns and the scalars the key/value metadata.
 
 Both formats are self-describing and readable without Mandacaru: a pseudopotential
 is a physical object that people need to inspect, plot and diff, which is why the
@@ -41,10 +42,7 @@ text format is kept as a first-class alternative rather than an export.
 from __future__ import annotations
 
 from functools import lru_cache
-import json
 import os
-
-import numpy as np
 
 from .dataset import PseudoPotential
 
@@ -53,32 +51,6 @@ FORMAT_TAG = "mandacaru-pseudopotential"
 #: Current schema version.  Version 2 added the ``family`` field, which every
 #: readable file carries.
 FORMAT_VERSION = 2
-#: Family whose files carry partial waves, projectors and one-center matrices
-#: (see :mod:`.paw`).
-PAW_FAMILY = "paw-lcao"
-#: The unitary variant of the same record (``norm_deficit = 0``): a distinct
-#: family with the *same* layout, hence the same codec.
-UPAW_FAMILY = "upaw-lcao"
-#: Families whose payload keeps every radial table under ``"radial_tables"``
-#: and whose record is (de)serialized by the family's own module
-#: (``to_payload`` / ``from_payload``).  Several families may share one codec
-#: (UPAW-LCAO *is* a :class:`~.paw.PAWDataset`), so this maps family -> layout and
-#: is not invertible.
-TABLE_FAMILIES = {PAW_FAMILY: ".paw", UPAW_FAMILY: ".paw"}
-
-
-def _codec(family: str):
-    """The module holding ``to_payload``/``from_payload`` for ``family``."""
-    import importlib
-    return importlib.import_module(TABLE_FAMILIES[family], __package__)
-
-
-def _table_record(pp) -> str | None:
-    """The table family ``pp`` is an instance of, or ``None``."""
-    from .paw import PAWDataset
-    if isinstance(pp, PAWDataset):
-        return PAW_FAMILY
-    return None
 
 #: File formats understood by ``format=``.
 PSEUDO_FORMATS = ("parquet", "json")
@@ -148,26 +120,12 @@ LIBRARY_ELEMENTS = library_elements()
 #: This is deliberately *not* the default of :func:`save_pseudopotential`.
 #: Decimating on every write would make a load-then-save cycle lossy and
 #: compound with each round trip; it belongs at generation time, where the fine
-#: grid actually exists (each family's ``build_*_library``).
+#: grid actually exists (each family's ``build_*_library``).  The rule itself
+#: (which points, how many digits) is the engine's: ``paw::record::digits``.
 STRIDE = 4
 #: Significant digits written per number.  Double precision would store 17,
 #: which is meaningless here and triples the file size.
 DIGITS = 10
-
-
-def _table(values, stride=1):
-    """Subsample and round a radial table for compact storage.
-
-    The kept points are ``stride - 1, 2 stride - 1, ...``: the generation grid
-    starts one step ``h`` from the origin, so these are the radii
-    ``stride h, 2 stride h, ...`` -- a grid that again starts one (coarser)
-    step from the origin.  Keeping ``0, stride, ...`` instead stored
-    ``h, (stride + 1) h, ...``, whose first step differs from every other,
-    and every Numerov diagnostic of a loaded dataset (which prepends ``r = 0``
-    and takes ``r[1] - r[0]`` as the step) integrated with the wrong step.
-    """
-    return [float(f"%.{DIGITS}g" % v)
-            for v in np.asarray(values, dtype=float)[stride - 1::stride]]
 
 
 def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
@@ -185,150 +143,37 @@ def save_pseudopotential(pp: PseudoPotential, path, stride: int = 1,
         tables as given, so save-load-save is idempotent; a library is
         generated once at :data:`STRIDE`.
     """
-    if format is None:
-        extension = os.path.splitext(os.fspath(path))[1].lower()
-        format = _EXTENSION_FORMATS.get(extension, DEFAULT_FORMAT)
-    format = resolve_format(format)
+    from .paw import PAWDataset
+    from .record import write_dataset
 
-    family = str(getattr(pp, "family", ""))
-    layout = _table_record(pp)
-    if layout is None:
+    if not isinstance(pp, PAWDataset):
         raise TypeError(
             f"cannot write a {type(pp).__name__}: only PAW-LCAO and UPAW-LCAO "
             "datasets have a file layout")
-    # PAW-LCAO records carry several projectors per channel, coupling
-    # matrices, partial waves...; their payload is assembled by their own
-    # module and every radial table lives under ``radial_tables``.  A
-    # record may declare a *variant* of that layout's family (UPAW-LCAO is a
-    # PAWDataset), and then it keeps its own name -- the layout only
-    # chooses the codec.
-    stored = (family if TABLE_FAMILIES.get(family) == TABLE_FAMILIES[layout]
-              else layout)
-    payload = {"format": FORMAT_TAG, "version": FORMAT_VERSION,
-               "family": stored,
-               **_codec(layout).to_payload(pp, stride)}
-    return _write_payload(path, payload, format)
-
-
-def _defects_record(defects):
-    from .partial_waves import defects_record
-    return defects_record(defects)
-
-
-def _read_defects(record):
-    from .partial_waves import read_defects
-    return read_defects(record)
-
-
-def _warn_defects(dataset, family):
-    from .partial_waves import warn_defects
-    warn_defects(dataset, family)
-
-
-def _write_payload(path, payload, format) -> str:
-    path = os.fspath(path)
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    if format == "json":
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle)
-            handle.write("\n")
-    else:
-        _write_parquet(path, payload)
-    return path
-
-
-def _radial_columns(payload):
-    """The payload's radial tables, one column each."""
-    return dict(payload["radial_tables"])
-
-
-def _write_parquet(path, payload):
-    """Radial tables as columns; everything scalar as key/value metadata."""
-    from .. import _native
-    from .native_context import context
-
-    columns = {name: np.ascontiguousarray(values, dtype=np.float64)
-               for name, values in _radial_columns(payload).items()}
-    scalars = {k: v for k, v in payload.items() if k != "radial_tables"}
-    metadata = {"mandacaru.pseudopotential": json.dumps(scalars)}
-    _native.write_parquet(context(), path, columns, metadata)
-
-
-@lru_cache(maxsize=1)
-def _reader_context():
-    """The context library files are read with: default threads, so the
-    columns of a large atom decode in parallel (the shared radial context is
-    single-threaded because dataset builds parallelize across processes)."""
-    from .. import _native
-
-    return _native.Context()
-
-
-def _read_parquet(path):
-    """Reassemble the JSON-shaped payload from a Parquet file."""
-    from .. import _native
-
-    table = _native.read_parquet(_reader_context(), path)
-    raw = table["metadata"]
-    if "mandacaru.pseudopotential" not in raw:
-        raise ValueError(
-            f"{path!r} is not a Mandacaru pseudopotential Parquet file")
-    columns = table["columns"]
-    for name, values in columns.items():
-        if not isinstance(values, np.ndarray):
-            raise ValueError(
-                f"{path!r}: radial table {name!r} is not a float64 column")
-    payload = json.loads(raw["mandacaru.pseudopotential"])
-    payload["radial_tables"] = columns
-    return payload
+    return write_dataset(pp, path, stride=stride, format=format)
 
 
 @lru_cache(maxsize=128)
-def _load_pseudopotential_cached(path: str, mtime_ns: int,
-                                 format: str | None) -> PseudoPotential:
-    if format == "json":
-        with open(path, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    else:
-        payload = _read_parquet(path)
-    if payload.get("format") != FORMAT_TAG:
-        raise ValueError(f"{path!r} is not a Mandacaru pseudopotential file")
-    if int(payload.get("version", 0)) > FORMAT_VERSION:
-        raise ValueError(
-            f"{path!r} uses pseudopotential format version "
-            f"{payload['version']}, newer than this build ({FORMAT_VERSION})")
+def _load_pseudopotential_cached(path: str, mtime_ns: int) -> PseudoPotential:
+    from .record import read_dataset
 
-    from .families import canonical_family_name
-    if "family" not in payload or "radial_tables" not in payload:
-        raise ValueError(
-            f"{path!r} is not a PAW-LCAO or UPAW-LCAO dataset (no family, or "
-            "no radial tables); this build cannot read it")
-    family = canonical_family_name(payload["family"])
-    if family not in TABLE_FAMILIES:
-        raise ValueError(
-            f"{path!r} declares family {family!r}, which this build cannot "
-            f"read (it reads {', '.join(sorted(TABLE_FAMILIES))})")
-    # The codec reads the family back off the payload, so hand it the
-    # canonical spelling rather than the one on disk.
-    return _codec(family).from_payload({**payload, "family": family})
+    return read_dataset(path)
 
 
 def load_pseudopotential(path, format: str | None = None) -> PseudoPotential:
     """Read a pseudopotential written by :func:`save_pseudopotential`.
 
     The format is **detected automatically** (:func:`detect_format`), so Parquet
-    and JSON files load through the same call.
-
-    The all-electron atom is *not* stored (it is large and only needed while
-    generating), so :attr:`PseudoPotential.atom` is ``None`` on a loaded object.
+    and JSON files load through the same call; ``format`` only asserts it.
     """
     path = os.fspath(path)
     if not os.path.exists(path):
         raise FileNotFoundError(f"no such pseudopotential file: {path!r}")
-    format = detect_format(path) if format is None else resolve_format(format)
+    found = detect_format(path)
+    if format is not None and resolve_format(format) != found:
+        raise ValueError(f"{path!r} is a {found} file, not {resolve_format(format)}")
     real_path = os.path.realpath(path)
-    mtime_ns = os.stat(real_path).st_mtime_ns
-    return _load_pseudopotential_cached(real_path, mtime_ns, format)
+    return _load_pseudopotential_cached(real_path, os.stat(real_path).st_mtime_ns)
 
 
 # --------------------------------------------------------------------------- #

@@ -101,3 +101,36 @@ hostile payload, of a footer declaring 2^40 rows and of byte-mutated dataset
 files never exceed `Context::memory_peak()` plus a fixed 1 MiB. Like the
 others it is a separate test binary because a `#[global_allocator]` owns its
 whole test binary, and it never ships in a library build.
+
+`archive_tile_memory.rs` is a seventh, with thread-local counters only (the same
+contract as `periodic_load_memory.rs`, one test per binary). It measures the heap
+of a scratch-array read: a tile of a Bloch orbital stack read from disk
+(`ComplexTiles::tile`) allocates nothing (live growth and total bytes both zero,
+for the float64 and the float32 archive), and the projection and the density
+accumulation over a stack on disk take no more heap than the same products over
+the stack in memory, plus the one tile of scratch they reserve from the
+`Context`. The scratch arrays themselves (`mandacaru-core/src/math/archive.rs`)
+use no `unsafe`: positional reads go through `FileExt::read_exact_at` into a
+fixed stack block, and the descriptor count is bounded by `MAX_OPEN_HANDLES`.
+
+`periodic_description_memory.rs` is an eighth, thread-local counters only (the contract of
+`periodic_load_memory.rs`, one test per binary). It measures the heap of
+`Description::parse` and `PointGroup::parse` on a reduced-mesh snapshot that carries a `setup`
+block against the bytes they reserve from the `Context`, and that a `Context` too small for them
+is refused with zero bytes of heap taken (the reservation precedes the first allocation).
+
+## Returning freed heap pages
+
+`mandacaru-kernels/src/heap.rs` declares one foreign function per supported
+platform and calls it with no pointer from this program: on macOS
+`malloc_zone_pressure_relief(NULL, 0)` (a null zone is every zone of the
+process, a zero goal is as much as possible) and on glibc Linux
+`malloc_trim(0)` (no slack kept at the top of the heap). Both only hand pages
+the allocator already holds free back to the operating system: they read and
+write allocator metadata under the allocator's own lock, never program data, so
+live allocations, their addresses and their contents are untouched, and a later
+allocation simply takes new pages. They are called from any thread and may be
+called concurrently with allocation and deallocation (the allocator
+synchronizes them). Any other platform compiles a function that does nothing
+and reports `false`. The unit test in the same file keeps a large live vector
+across the call and checks it afterwards.

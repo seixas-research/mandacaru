@@ -82,7 +82,7 @@ already there), leaving
               + 2M(V - \varepsilon)\Big] W .
 
 That has the shape :math:`W'' = fW` that
-:func:`~mandacaru.pseudopotentials.partial_waves.numerov_outward` already integrates, so
+the engine's outward Numerov integration (``models::numerov``) already integrates, so
 scattering states and logarithmic derivatives come for free
 (:func:`relativistic_f`), and the bound-state problem stays a **symmetric
 tridiagonal eigenproblem** -- :math:`\tilde H = M^{-1/2}AM^{-1/2}` with
@@ -338,7 +338,7 @@ def relativistic_f(r, potential, l: int, kappa: int, energy: float,
 
     which is :math:`2[V + l(l+1)/2r^2 - \varepsilon]` exactly when
     ``treatment="none"`` -- the same array
-    :func:`~mandacaru.pseudopotentials.partial_waves._radial_f` builds.  The solution is
+    the engine's radial equation builds.  The solution is
     :math:`W`; multiply by :math:`M^{1/2}` for :math:`P = rg`
     (:func:`large_component`).
     """
