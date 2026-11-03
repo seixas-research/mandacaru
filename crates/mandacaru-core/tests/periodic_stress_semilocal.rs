@@ -35,7 +35,8 @@ fn the_stress_is_the_derivative_of_the_frozen_energy() {
         stress(setup, frozen).unwrap()
     });
     let b = &result.breakdown;
-    let mut fd: Vec<Tensor> = vec![[[0.; 3]; 3]; 15];
+    let terms = result.breakdown.terms();
+    let mut fd: Vec<Tensor> = vec![[[0.; 3]; 3]; terms.len()];
     for a in 0..3 {
         for c in 0..3 {
             let mut put = |slot: usize, x: f64| fd[slot][a][c] = x;
@@ -65,6 +66,14 @@ fn the_stress_is_the_derivative_of_the_frozen_energy() {
     }
     let mut total: Tensor = [[0.; 3]; 3];
     for (i, (name, term)) in b.terms().iter().enumerate() {
+        // A scalar-relativistic semilocal crystal has no spin-orbit and no exchange term: exactly zero.
+        if matches!(*name, "spin_orbit" | "exchange") {
+            assert!(
+                term.iter().flatten().all(|x| *x == 0.),
+                "{name} must vanish"
+            );
+            continue;
+        }
         let gate_for = if matches!(*name, "dense" | "linear") {
             DENSE_GATE
         } else {
@@ -78,6 +87,9 @@ fn the_stress_is_the_derivative_of_the_frozen_energy() {
     println!("  sum miss {m:.2e}");
     // A single missing term in the sum is far above the gate.
     for (i, (name, _)) in b.terms().iter().enumerate() {
+        if matches!(*name, "spin_orbit" | "exchange") {
+            continue;
+        }
         let without = map(&sum, |a, c, x| x - b.terms()[i].1[a][c]);
         bites(&format!("sum without {name}"), &without, &total, DENSE_GATE);
     }
@@ -113,10 +125,6 @@ fn what_is_not_differentiated_yet_raises_with_its_cause() {
             Box::new(|l: &mut mandacaru_core::periodic::gradient::Layout| {
                 l.request.single_precision = true
             }),
-        ),
-        (
-            "spinor",
-            Box::new(|l: &mut mandacaru_core::periodic::gradient::Layout| l.request.spinor = true),
         ),
         (
             "spin polarized",

@@ -6,6 +6,7 @@
 use mandacaru_core::{
     periodic::{
         gradient::{scf, spin_orbit::SpinOrbit, Bands, Dense, Derivatives, Layout, State, Term},
+        hybrid_gradient,
         setup::{
             provider::{Fields, SetupDerivatives},
             pulay::Matrix,
@@ -23,6 +24,9 @@ pub enum Wrong {
     NoTransverse,
     /// The `m_x` and `m_y` fields exchanged (`sigma_x` and `sigma_y` swapped): a wrong Pauli channel.
     XySwapped,
+    /// The three magnetization fields permuted cyclically (`m_x -> m_y -> m_z -> m_x`): every Pauli
+    /// channel on the wrong spin blocks, the charge channel kept.
+    PauliCycled,
     /// The diagonal spin blocks of the local term exchanged (`m_z` of the other sign).
     FlippedMz,
     /// Only the charge channel of the local term (the magnetization fields dropped).
@@ -98,6 +102,22 @@ impl<'a> SpinorAltered<'a> {
                 let g2 = (&ab - &ba) * (i * 0.5);
                 out.view_mut((0, m), (m, m)).copy_from(&(&g2 - &g1 * i));
                 out.view_mut((m, 0), (m, m)).copy_from(&(&g2 + &g1 * i));
+            }
+            Wrong::PauliCycled => {
+                // G0 = (aa + bb) / 2, G3 = (aa - bb) / 2, G1 = (ab + ba) / 2, G2 = i (ab - ba) / 2.
+                let i = C64::i();
+                let (aa, bb, ab, ba) = (block(0, 0), block(1, 1), block(0, 1), block(1, 0));
+                let half = C64::new(0.5, 0.);
+                let g0 = (&aa + &bb) * half;
+                let g3 = (&aa - &bb) * half;
+                let g1 = (&ab + &ba) * half;
+                let g2 = (&ab - &ba) * (i * 0.5);
+                // The cycle: the slot of G1 holds G3, that of G2 holds G1, that of G3 holds G2.
+                let (n1, n2, n3) = (g3, g1, g2);
+                out.view_mut((0, 0), (m, m)).copy_from(&(&g0 + &n3));
+                out.view_mut((m, m), (m, m)).copy_from(&(&g0 - &n3));
+                out.view_mut((0, m), (m, m)).copy_from(&(&n1 - &n2 * i));
+                out.view_mut((m, 0), (m, m)).copy_from(&(&n1 + &n2 * i));
             }
             Wrong::FlippedMz => {
                 out.view_mut((0, 0), (m, m)).copy_from(&block(1, 1));
@@ -206,6 +226,9 @@ impl Derivatives for SpinorAltered<'_> {
     }
     fn spin_orbit(&self) -> Result<&SpinOrbit> {
         self.inner.spin_orbit()
+    }
+    fn exchange_gradient(&self, state: &State) -> Result<hybrid_gradient::Gradient> {
+        self.inner.exchange_gradient(state)
     }
     fn spin_orbit_projection(&self, k: usize) -> Result<Matrix> {
         self.inner.spin_orbit_projection(k)

@@ -226,3 +226,43 @@ fn test_error_handling() {
     let err = find(&close_cell, 1e-5).unwrap_err();
     assert!(err.to_string().contains("too close distance between atoms"));
 }
+
+#[test]
+fn test_million_length_axis_sparse_grid() {
+    use mandacaru_core::periodic::space_group::search::SparseGrid;
+    let lat = Matrix3::new(2.5, 0.0, 0.0, 0.0, 2.5, 0.0, 0.0, 0.0, 1e6);
+    let frac = [[0.0, 0.0, 0.0]];
+    let labels = [1];
+    let grid = SparseGrid::new(&frac, &lat, 1e-5).unwrap();
+    let matched = grid.find_match(&[0.0, 0.0, 0.0], 1, &frac, &labels, &lat, 1e-5);
+    assert_eq!(matched, Some(0));
+}
+
+#[test]
+fn test_find_with_context_respects_budget() {
+    use mandacaru_core::periodic::space_group::find_with_context;
+    use mandacaru_core::{Context, Error};
+
+    let lat = Matrix3::new(2.5, 0.0, 0.0, 0.0, 2.5, 0.0, 0.0, 0.0, 12.0);
+    let frac = [[0.0, 0.0, 0.0]];
+    let labels = [1];
+    let cell = Cell {
+        lattice: lat,
+        fractional: &frac,
+        labels: &labels,
+    };
+
+    // Tiny 64-byte budget must return Error::Budget
+    let ctx_tiny = Context::new(Some(1), 64);
+    let err = find_with_context(&ctx_tiny, &cell, 1e-5).unwrap_err();
+    match err {
+        Error::Budget { .. } => {}
+        other => panic!("expected Error::Budget, got {:?}", other),
+    }
+
+    // Sufficient budget succeeds
+    let ctx_ok = Context::new(Some(1), 10_000_000);
+    let ops = find_with_context(&ctx_ok, &cell, 1e-5).unwrap();
+    assert_eq!(ops.rotations.len(), 16);
+}
+

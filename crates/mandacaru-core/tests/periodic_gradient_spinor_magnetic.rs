@@ -1,16 +1,17 @@
-//! CS-3: the four-channel local term on a MAGNETIC spinor (not time-reversal symmetric), where the
-//! magnetization fields `m_x, m_y, m_z` are live: a high-spin N atom (3 Bohr magnetons) with a Ne atom
-//! next to it, in a box (`nne_ldafr`).
+//! CS-3 / F2b: the four-channel local term on a MAGNETIC spinor (not time-reversal symmetric), where
+//! the magnetization fields `m_x, m_y, m_z` are live: a high-spin N atom (3 Bohr magnetons) with a Ne
+//! atom next to it, in a box (`nne_ldafr`), with the spin-orbit coupling on.
 //!
-//! * the force of the converged state started along `z` (spin-orbit coupling on) equals the
-//!   Richardson reconverged central difference of the same discretized spinor free energy;
-//! * with the spin-orbit coupling off the problem is invariant under a global spin rotation: the
-//!   state started along `x` converges to the same energy and the same force as the one started
-//!   along `z`, and its converged moment is asserted to be transverse FIRST, so the comparison
-//!   cannot be vacuous (with the coupling on, the two differ by the magnetic anisotropy);
-//! * each wrong Pauli structure moves the force by more than 100 gates, in the state where it can:
-//!   dropping or transposing the transverse blocks on the `x` state, flipping `m_z` on the `z`
-//!   state, and the dropped magnetization fields and spin block on both.
+//! * the force of the state started along `z` equals the Richardson reconverged central difference of
+//!   the same discretized spinor free energy, both step families, every coordinate of both atoms. The
+//!   oracle energies are solved by the crate's SCF (`periodic_gradient_spinor_freeze.rs`), because
+//!   the spin-orbit anisotropy (about 7e-7 Ha) tilts the converged moment 0.15 rad from its start:
+//!   the transverse spin blocks carry 0.45 Bohr magnetons, where the earlier oracle (a state that had
+//!   not finished rotating, stopped at a density residual of 1e-6) had 1e-4. Each wrong Pauli
+//!   structure moves the force by more than 100 gates on this state;
+//! * with the spin-orbit coupling off the problem is invariant under a global spin rotation: the state
+//!   started along `x` converges to the same energy and the same force as the one started along `z`,
+//!   and its converged moment is asserted to be transverse FIRST, so the comparison cannot be vacuous.
 //!
 //! Needs `MANDACARU_PAW_PATH`.
 mod periodic_gradient_crystals_support;
@@ -20,7 +21,7 @@ use mandacaru_core::periodic::gradient::gradient;
 use periodic_gradient_crystals_support::gates::*;
 use periodic_gradient_spinor_support::{
     altered::{SpinorAltered, Wrong},
-    moment, oracle, Axis, Spinor,
+    moment, Axis, Spinor,
 };
 
 const CASE: &str = "nne_ldafr";
@@ -72,49 +73,42 @@ fn largest_gap(a: &[[f64; 3]], b: &[[f64; 3]]) -> f64 {
         .fold(0f64, f64::max)
 }
 
-fn against_the_oracle(run: &Run, label: &str) {
-    oracle::against_the_oracle(&run.spinor.data, run.result.free_energy, &run.forces, label);
-}
-
 #[test]
 fn the_magnetic_spinor_force_is_the_reconverged_finite_difference() {
     let z = run(Spinor::load(CASE));
-    // FIRST: the state is magnetic and collinear along z, not a collapsed or a rotated one.
-    assert!(z.moment[2] > MOMENT_FLOOR, "{:?}", z.moment);
-    // (With the spin-orbit coupling on the moment tilts by the anisotropy: 1e-4 of 3 here.)
+    // FIRST: the state is magnetic and canted by the anisotropy: the transverse components of the
+    // moment are above a floor (0.45 of 3 Bohr magnetons), not the 1e-4 of a state that stalled.
+    let size = (z.moment[0].powi(2) + z.moment[1].powi(2) + z.moment[2].powi(2)).sqrt();
     assert!(
-        z.moment[0].abs() < 1e-3 && z.moment[1].abs() < 1e-3,
+        size > MOMENT_FLOOR && z.moment[2] > 0.9 * size,
         "{:?}",
         z.moment
     );
-    against_the_oracle(&z, "z");
-    // Controls acting on the magnetic state: a wrong m_z, the magnetization fields dropped, or one
-    // spin block moves the force by far more than a gate. The transverse channels are empty in it.
+    assert!(
+        z.moment[0].abs() > 0.1 && z.moment[1].abs() > 0.1,
+        "the transverse blocks must be populated: {:?}",
+        z.moment
+    );
+    let family = second_family(CASE);
+    let worst = compare(CASE, &z.spinor.data, Some(&family), &z.forces);
+    eprintln!("{CASE}: worst miss {worst:.3} gates");
+    // Controls: a wrong m_z, the magnetization fields dropped, the transverse blocks dropped, a
+    // wrong Pauli channel or one spin block each move the force by far more than a gate.
     let data = &z.spinor.data;
-    for (wrong, name, must_bite) in [
-        (Wrong::FlippedMz, "m_z of the other sign", true),
+    for (wrong, name) in [
+        (Wrong::FlippedMz, "m_z of the other sign"),
+        (Wrong::ChargeChannelOnly, "magnetization fields dropped"),
+        (Wrong::OneSpinBlock, "alpha spin block only"),
+        (Wrong::NoTransverse, "transverse blocks dropped"),
+        (Wrong::XySwapped, "m_x and m_y exchanged"),
         (
-            Wrong::ChargeChannelOnly,
-            "magnetization fields dropped",
-            true,
-        ),
-        (Wrong::OneSpinBlock, "alpha spin block only", true),
-        (
-            Wrong::NoTransverse,
-            "transverse blocks dropped (empty here)",
-            false,
+            Wrong::PauliCycled,
+            "magnetization fields permuted cyclically",
         ),
     ] {
-        let gates = bite(data, &variant(&z, wrong));
+        let gates = bite_families(data, Some(&family), &variant(&z, wrong));
         eprintln!("z, {name}: bites {gates:.2e} gates");
-        if must_bite {
-            assert!(gates > 100., "{name}: {gates:e}");
-        } else {
-            assert!(
-                gates < 1.0,
-                "{name} must not move a z-oriented state: {gates:e}"
-            );
-        }
+        assert!(gates > 100., "{name}: {gates:e}");
     }
 }
 

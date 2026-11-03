@@ -24,15 +24,18 @@
 //! dataset ([`tables_cutoffs`], [`tables_elements`], [`tables_repairs`], [`tables_upaw`]).
 //!
 //! This is the first construction of the ghost search: the result is returned unexamined. The
-//! search that repairs a construction binding a ghost state or scattering wrongly and the spectrum
-//! and scattering diagnostics are separate pieces. A Dirac recipe adds the j-resolved spin-orbit
+//! search that repairs a construction binding a ghost state, scattering wrongly or missing a
+//! bound state ([`search`], ranked by [`ranking`]) and the diagnostics it reads
+//! ([`crate::paw::diagnose`]) are separate pieces. A Dirac recipe adds the j-resolved spin-orbit
 //! term ([`spin_orbit`]) to the scalar construction.
 pub mod assemble;
 pub mod core;
 pub mod energies;
 mod finish;
+pub mod ranking;
 pub mod recipe;
 pub mod reference;
+pub mod search;
 pub mod shells;
 pub mod spin_orbit;
 pub mod tables_cutoffs;

@@ -101,21 +101,13 @@ fn metadata_bytes(metadata: &BTreeMap<String, String>) -> usize {
     })
 }
 
-/// Reads a Parquet file: `{"num_rows", "columns": {name: float64 ndarray |
-/// list[str]}, "metadata": {str: str}}`, columns in file order.
-///
-/// The float64 columns move into the arrays without a copy. The Python
-/// objects built here (the `str` of a text column, the metadata dict) are
-/// charged to the context before they are built.
-#[pyfunction]
-fn read_parquet<'py>(
-    context: PyRef<'_, PyContext>,
+pub(crate) fn read_parquet_with_ctx<'py>(
+    ctx: &Context,
     py: Python<'py>,
     path: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let ctx = context.inner.clone();
     let Table { columns, metadata } = py
-        .detach(|| parquet::read_table(&ctx, Path::new(path)))
+        .detach(|| parquet::read_table(ctx, Path::new(path)))
         .map_err(error)?;
     let mut guards = Vec::with_capacity(columns.len() + 1);
     guards.push(ctx.reserve(metadata_bytes(&metadata)).map_err(error)?);
@@ -153,17 +145,28 @@ fn read_parquet<'py>(
     Ok(out)
 }
 
-/// Trailer and footer only: `{"num_rows", "num_row_groups", "columns":
-/// [(name, kind)], "metadata"}`. No data page is read.
+/// Reads a Parquet file: `{"num_rows", "columns": {name: float64 ndarray |
+/// list[str]}, "metadata": {str: str}}`, columns in file order.
+///
+/// The float64 columns move into the arrays without a copy. The Python
+/// objects built here (the `str` of a text column, the metadata dict) are
+/// charged to the context before they are built.
 #[pyfunction]
-fn read_parquet_metadata<'py>(
+fn read_parquet<'py>(
     context: PyRef<'_, PyContext>,
     py: Python<'py>,
     path: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let ctx = context.inner.clone();
+    read_parquet_with_ctx(&context.inner, py, path)
+}
+
+pub(crate) fn read_parquet_metadata_with_ctx<'py>(
+    ctx: &Context,
+    py: Python<'py>,
+    path: &str,
+) -> PyResult<Bound<'py, PyDict>> {
     let footer = py
-        .detach(|| parquet::read_metadata(&ctx, Path::new(path)))
+        .detach(|| parquet::read_metadata(ctx, Path::new(path)))
         .map_err(error)?;
     let names = footer.columns.iter().fold(0usize, |total, (name, _)| {
         total
@@ -191,6 +194,46 @@ fn read_parquet_metadata<'py>(
     Ok(out)
 }
 
+/// Trailer and footer only: `{"num_rows", "num_row_groups", "columns":
+/// [(name, kind)], "metadata"}`. No data page is read.
+#[pyfunction]
+fn read_parquet_metadata<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    path: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    read_parquet_metadata_with_ctx(&context.inner, py, path)
+}
+
+pub(crate) fn write_parquet_with_ctx(
+    ctx: &Context,
+    py: Python<'_>,
+    path: &str,
+    columns: &Bound<'_, PyDict>,
+    metadata: &Bound<'_, PyDict>,
+    compression: &str,
+) -> PyResult<()> {
+    let codec = Codec::parse(compression).map_err(error)?;
+    let metadata = metadata_from(metadata)?;
+    let mut table = Table {
+        columns: Vec::with_capacity(columns.len()),
+        metadata,
+    };
+    for (key, value) in columns.iter() {
+        let name = key
+            .extract::<String>()
+            .map_err(|_| PyValueError::new_err("parquet column names must be str"))?;
+        let column = column_from(ctx, &name, &value)?;
+        table.columns.push((name, column));
+    }
+    let options = WriteOptions {
+        codec,
+        ..WriteOptions::default()
+    };
+    py.detach(|| parquet::write_table(ctx, Path::new(path), &table, &options))
+        .map_err(error)
+}
+
 /// Writes `columns` (name to float64 ndarray or list of str, in order) and the
 /// footer `metadata` to `path`, atomically.
 #[pyfunction]
@@ -203,26 +246,14 @@ fn write_parquet(
     metadata: &Bound<'_, PyDict>,
     compression: &str,
 ) -> PyResult<()> {
-    let ctx = context.inner.clone();
-    let codec = Codec::parse(compression).map_err(error)?;
-    let metadata = metadata_from(metadata)?;
-    let mut table = Table {
-        columns: Vec::with_capacity(columns.len()),
+    write_parquet_with_ctx(
+        &context.inner,
+        py,
+        path,
+        columns,
         metadata,
-    };
-    for (key, value) in columns.iter() {
-        let name = key
-            .extract::<String>()
-            .map_err(|_| PyValueError::new_err("parquet column names must be str"))?;
-        let column = column_from(&ctx, &name, &value)?;
-        table.columns.push((name, column));
-    }
-    let options = WriteOptions {
-        codec,
-        ..WriteOptions::default()
-    };
-    py.detach(|| parquet::write_table(&ctx, Path::new(path), &table, &options))
-        .map_err(error)
+        compression,
+    )
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

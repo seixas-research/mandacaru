@@ -5,7 +5,7 @@
 //! `Z = H_C C^+ D - q C^+ W` (`p x m`, `H_C = D_ion + sum_a m_a B_a (+ O_s)`):
 //! `dE_C = 2 Re sum_{mu,p} dC_ab[mu,p] Z[p,mu]`. Nothing is owner-masked; the +U operator joins
 //! `D_ion` here and nowhere else, so `-W dS` carries it through the bands.
-use super::{Strain, Tensor};
+use super::{spin_orbit, Strain, Tensor};
 use crate::{
     periodic::gradient::{Frozen, Matrix, Term},
     quantum::C64,
@@ -19,6 +19,8 @@ pub struct Terms {
     pub local: Tensor<f64>,
     pub short_range: Tensor<f64>,
     pub projection: Tensor<f64>,
+    /// SO-1 (spinor requests; zero otherwise).
+    pub spin_orbit: Tensor<f64>,
 }
 
 /// `Re sum_{ij} left[i, j] right[j, i]` (`Re tr[left right]`).
@@ -57,6 +59,7 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Terms> {
         local: [[0.; 3]; 3],
         short_range: [[0.; 3]; 3],
         projection: [[0.; 3]; 3],
+        spin_orbit: [[0.; 3]; 3],
     };
     for k in 0..l.weights.len() {
         let c = s.projection(k)?;
@@ -89,6 +92,14 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Terms> {
                     // `Re tr[dC Z]` with `dC` (m x p) and `Z` (p x m).
                     out.projection[a][b] += 2. * w * trace(&dc[a][b], &z);
                 }
+            }
+        }
+        if l.request.spinor {
+            // The spin-orbit matrix moves with the strain only through its own projections: no
+            // `dS`, no hat, no `W`. `D` is the spinor density in the doubled frame.
+            for bands in frozen.state.bands.iter().map(|spin| &spin[k]) {
+                let w = l.degeneracy * l.weights[k];
+                spin_orbit::add_k(s, &mut out.spin_orbit, w, k, &bands.density())?;
             }
         }
     }

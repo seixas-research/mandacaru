@@ -96,7 +96,6 @@ fn occupied(r: &PeriodicResult) -> Vec<f64> {
 }
 
 #[test]
-#[ignore = "blocked: periodic::fields::evaluate takes its spin layout from the crystal (SH-2 log, open prerequisite); green in a copy with that edit"]
 fn a_spinor_without_spin_orbit_along_z_is_the_unrestricted_hybrid() {
     let (_, scalar) = solve(&|_| {});
     let (c, along_z) = solve(&spinor([0., 0., 1.]));
@@ -144,7 +143,6 @@ fn a_spinor_without_spin_orbit_along_z_is_the_unrestricted_hybrid() {
 }
 
 #[test]
-#[ignore = "blocked: periodic::fields::evaluate takes its spin layout from the crystal (SH-2 log, open prerequisite); green in a copy with that edit"]
 fn the_moment_direction_does_not_change_the_energy() {
     let (cz, along_z) = solve(&spinor([0., 0., 1.]));
     let reference = moment(&cz, &along_z);
@@ -189,7 +187,6 @@ fn the_moment_direction_does_not_change_the_energy() {
 }
 
 #[test]
-#[ignore = "blocked: periodic::fields::evaluate takes its spin layout from the crystal (SH-2 log, open prerequisite); green in a copy with that edit"]
 fn the_remainder_is_what_the_moment_direction_test_depends_on() {
     // At the converged state the non-collinear remainder of the sphere is -a P: its size, against
     // the 1e-9 gate above, is what a spinor run that dropped it would miss by.
@@ -232,18 +229,10 @@ fn the_remainder_is_what_the_moment_direction_test_depends_on() {
 }
 
 #[test]
-fn a_magnetic_spinor_hybrid_is_refused_with_its_cause_until_the_grid_functional_takes_it() {
-    // The sphere remainder is in place (see `periodic_screened_onecenter_spinor`); the refusal
-    // names what is still missing, and goes away with the three tests above being un-ignored.
-    let ctx = Context::new(Some(1), 768 << 20).unwrap();
-    let mut v = periodic_screened_augmentation_support::fixture(FIXTURE);
-    v["functional"] = json!("hse06");
-    v["sites"] = sites(&v, library_of(FIXTURE));
-    spinor([0., 0., 1.])(&mut v);
-    let message = Crystal::from_json(&ctx, &v.to_string())
-        .err()
-        .expect("a magnetic spinor hybrid must be refused")
-        .to_string();
-    println!("refusal: {message}");
-    assert!(message.contains("grid functional") && message.contains("spin-density functional"));
+fn a_magnetic_spinor_hybrid_is_built_and_keeps_its_sphere_remainder() {
+    // The refusal of SH-2 is lifted (F2b): the grid functional takes the two eigenframe spin
+    // fields of the four non-collinear ones, and the crystal is not flagged time-reversal
+    // symmetric, so the spheres evaluate the remainder at every call.
+    let (c, _) = hybrid(&spinor([0., 0., 1.]));
+    assert!(c.spinor && !c.time_reversal && c.screened_exchange().unwrap().is_some());
 }

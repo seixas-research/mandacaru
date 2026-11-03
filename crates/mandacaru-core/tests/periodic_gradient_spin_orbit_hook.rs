@@ -4,14 +4,14 @@
 //! `spin_orbit_rows` / `spin_orbit_columns`. The provider is the spinor toy in the doubled frame
 //! (`periodic_gradient_spin_orbit_support/spinor.rs`), whose scalar part is empty, so the whole
 //! engine total is the spin-orbit term and its oracle is the exact `dC_X` of the toy through
-//! `models::spin_orbit::pair`. `gradient()` refuses a spinor HYBRID request (stage 3), through the
-//! engine and through a hand-built state alike.
+//! `models::spin_orbit::pair`. `contract()` refuses a spinor HYBRID request whose provider has no
+//! exchange (a hand-built state included).
 mod hubbard_gradient_support;
 mod periodic_gradient_spin_orbit_support;
 
 use hubbard_gradient_support::{Matrix, Toy};
 use mandacaru_core::{
-    periodic::gradient::{contract, gradient, spin_orbit::SpinOrbit, Breakdown},
+    periodic::gradient::{contract, spin_orbit::SpinOrbit, Breakdown},
     Error,
 };
 use periodic_gradient_spin_orbit_support::{spinor::*, *};
@@ -96,19 +96,16 @@ fn the_engine_refuses_a_spinor_hybrid_and_a_provider_without_spin_orbit_data() {
     let toy = Toy::two_site();
     let so = spin_orbit(&ctx, &toy, &LAMBDA);
     let state = frozen(&toy, 3);
-    // A spinor hybrid request is refused, by gradient() and by contract() on a hand-built state:
-    // the exact exchange of a spin-orbit crystal is not differentiated, and must never be dropped.
+    // A spinor hybrid request whose provider carries no screened exchange is refused by
+    // contract() on a hand-built state: the exact exchange of a spin-orbit
+    // crystal is differentiated (F2a) only by a provider that has it, and must never be dropped.
     let mut provider = SpinorToy::new(&toy, so.clone(), true, true);
     provider.layout.request.functional = "hse06".into();
-    for err in [
-        gradient(&provider, &state.state, None).err().unwrap(),
-        contract(&provider, &state).err().unwrap(),
-    ] {
-        assert!(
-            matches!(&err, Error::Unsupported(m) if m.contains("spinor hybrid")),
-            "{err:?}"
-        );
-    }
+    let err = contract(&provider, &state).err().unwrap();
+    assert!(
+        matches!(&err, Error::Unsupported(m) if m.contains("screened exact exchange")),
+        "{err:?}"
+    );
     provider.layout.request.functional = "lda".into();
     // A spinor request whose provider has no spin-orbit data raises, never a zero term.
     let bare = SpinorToy::new(&toy, so, true, false);

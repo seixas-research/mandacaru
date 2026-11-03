@@ -140,3 +140,141 @@ fn test_catalog_closure_and_centering() {
         }
     }
 }
+
+fn to_i8_ops(ops: &'static [([i32; 9], [i32; 3])]) -> Vec<([[i8; 3]; 3], [i8; 3])> {
+    ops.iter()
+        .map(|(r, t)| {
+            (
+                [
+                    [r[0] as i8, r[1] as i8, r[2] as i8],
+                    [r[3] as i8, r[4] as i8, r[5] as i8],
+                    [r[6] as i8, r[7] as i8, r[8] as i8],
+                ],
+                [t[0] as i8, t[1] as i8, t[2] as i8],
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn test_catalog_snf_invariant_factors_divide_24() {
+    for g in iter_groups() {
+        let rots: Vec<[[i8; 3]; 3]> = g
+            .operations
+            .iter()
+            .map(|(r, _)| [
+                [r[0] as i8, r[1] as i8, r[2] as i8],
+                [r[3] as i8, r[4] as i8, r[5] as i8],
+                [r[6] as i8, r[7] as i8, r[8] as i8],
+            ])
+            .collect();
+
+        let m_l: [[i32; 3]; 3] = match g.centering {
+            'P' => [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            'A' => [[1, 0, 0], [0, 1, 1], [0, -1, 1]],
+            'B' => [[1, 0, 1], [0, 1, 0], [-1, 0, 1]],
+            'C' => [[1, 1, 0], [-1, 1, 0], [0, 0, 1]],
+            'I' => [[0, 1, 1], [1, 0, 1], [1, 1, 0]],
+            'F' => [[-1, 1, 1], [1, -1, 1], [1, 1, -1]],
+            'R' => [[2, 1, 1], [-1, 1, 1], [-1, -2, 1]],
+            _ => panic!("unknown centering"),
+        };
+
+        let factors = mandacaru_core::periodic::space_group::shift::invariant_factors_for_group(
+            &rots,
+            &m_l,
+        );
+
+        for &factor in &factors {
+            assert!(
+                factor > 0 && 24 % factor == 0,
+                "SG {} ({}) invariant factor {} does not divide 24",
+                g.number,
+                g.symbol,
+                factor
+            );
+        }
+    }
+}
+
+#[test]
+fn test_catalog_affine_inequivalence_and_enantiomorphic_pairs() {
+    let groups: Vec<_> = iter_groups().collect();
+    let expected_enantiomorphic = vec![
+        (76, 78),
+        (91, 95),
+        (92, 96),
+        (144, 145),
+        (151, 153),
+        (152, 154),
+        (169, 170),
+        (171, 172),
+        (178, 179),
+        (180, 181),
+        (212, 213),
+    ];
+
+    let mut proper_equiv = Vec::new();
+    let mut improper_equiv = Vec::new();
+
+    for i in 0..groups.len() {
+        for j in (i + 1)..groups.len() {
+            let g1 = groups[i];
+            let g2 = groups[j];
+
+            if g1.crystal_system != g2.crystal_system
+                || g1.point_group != g2.point_group
+                || g1.centering != g2.centering
+            {
+                continue;
+            }
+
+            let ops1 = to_i8_ops(g1.operations);
+            let ops2 = to_i8_ops(g2.operations);
+
+            let is_proper = mandacaru_core::periodic::space_group::matching::are_groups_affine_equivalent(
+                &ops1,
+                &ops2,
+                g1.crystal_system,
+                g2.crystal_system,
+                g1.centering,
+                g2.centering,
+                false,
+            );
+            if is_proper {
+                proper_equiv.push((g1.number, g2.number));
+            }
+
+            let is_improper = mandacaru_core::periodic::space_group::matching::are_groups_affine_equivalent(
+                &ops1,
+                &ops2,
+                g1.crystal_system,
+                g2.crystal_system,
+                g1.centering,
+                g2.centering,
+                true,
+            );
+            if is_improper {
+                improper_equiv.push((g1.number, g2.number));
+            }
+        }
+    }
+
+    assert_eq!(
+        proper_equiv,
+        Vec::<(usize, usize)>::new(),
+        "Expected 0 proper affine equivalent pairs, found {:?}",
+        proper_equiv
+    );
+    assert_eq!(
+        improper_equiv,
+        expected_enantiomorphic,
+        "Improper affine equivalent pairs mismatch"
+    );
+    assert_eq!(
+        230 - improper_equiv.len(),
+        219,
+        "Expected 219 affine classes"
+    );
+}
+

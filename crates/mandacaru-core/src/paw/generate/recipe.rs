@@ -43,7 +43,7 @@ pub enum Nlcc {
 }
 
 /// Every choice of the generator that does not depend on the solved atom.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Recipe {
     pub symbol: String,
     pub atomic_number: u8,

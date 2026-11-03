@@ -177,12 +177,13 @@ fn h2_hse06_force_is_the_reconverged_finite_difference() {
     check("h2_hse06");
 }
 
-/// The spin-scaling remainder is active and resolved: the response of the model with the
-/// remainder minus the model without it, chained to the atoms, is the force the remainder adds.
-/// It is far above the gate on at least one coordinate, and the force WITHOUT it (the total
-/// force minus that contribution) misses the oracle by more than 100 gates.
+/// The projection response is resolved by the gate, part by part: the response of the model with
+/// the spin-scaling remainder minus the model without it, chained to the atoms, is the force the
+/// remainder adds; the compensation charges and the one-center terms (remainder included) give the
+/// other two. Each is far above the gate on at least one coordinate, and the force WITHOUT it (the
+/// total force minus that contribution) misses the oracle by more than 100 gates.
 #[test]
-fn the_spin_scaling_remainder_is_resolved_by_the_gate() {
+fn the_projection_response_and_the_spin_scaling_remainder_are_resolved_by_the_gate() {
     let case = "h2_hse06";
     let data = Data::load(case);
     let result = data.solve();
@@ -214,33 +215,47 @@ fn the_spin_scaling_remainder_is_resolved_by_the_gate() {
         "the remainder is not active on this crystal"
     );
     let nk = crystal.points.len();
-    let response: Vec<Matrix> = a.sphere.iter().zip(&b.sphere).map(|(x, y)| x - y).collect();
+    let layout = data.layout();
     let gradients: Vec<_> = (0..nk)
         .map(|k| provider.projection_gradient(k).unwrap())
         .collect();
-    let layout = data.layout();
-    let chain = projection_forces(
-        &response,
-        &gradients,
-        &layout.row_owner,
-        &layout.projector_owner,
-        layout.atoms,
-    )
-    .unwrap()
-    .total();
-    // The remainder's share of the gradient, and the force without it.
-    let without_forces: Vec<[f64; 3]> = right
-        .forces()
-        .iter()
-        .zip(&chain)
-        .map(|(f, r)| [f[0] + r[0], f[1] + r[1], f[2] + r[2]])
-        .collect();
-    let resolved = in_gates(&data, Some(&other), &chain);
-    let bite = bite_families(&data, Some(&other), &without_forces);
-    eprintln!("remainder force {chain:?}: largest {resolved:.1} gates; force without it misses by {bite:.1} gates");
-    assert!(resolved > 100., "the remainder is {resolved:.1} gates");
-    assert!(
-        bite > 100.,
-        "the force without the remainder bites {bite:.1}"
-    );
+    let chain = |z: &[Matrix]| -> Vec<[f64; 3]> {
+        projection_forces(
+            z,
+            &gradients,
+            &layout.row_owner,
+            &layout.projector_owner,
+            layout.atoms,
+        )
+        .unwrap()
+        .total()
+    };
+    // The remainder's own response, and the two halves of the projection response.
+    let remainder: Vec<Matrix> = a.sphere.iter().zip(&b.sphere).map(|(x, y)| x - y).collect();
+    let remainder = chain(&remainder);
+    let compensation = chain(&a.compensation);
+    let one_center = chain(&a.sphere);
+    let minus = |force: &[[f64; 3]], term: &[[f64; 3]]| -> Vec<[f64; 3]> {
+        force
+            .iter()
+            .zip(term)
+            .map(|(f, t)| [f[0] + t[0], f[1] + t[1], f[2] + t[2]])
+            .collect()
+    };
+    let forces = right.forces();
+    let report = [
+        ("spin-scaling remainder", &remainder),
+        ("compensation response", &compensation),
+        ("one-center response", &one_center),
+    ]
+    .map(|(name, term)| {
+        let size = in_gates(&data, Some(&other), term);
+        let bite = bite_families(&data, Some(&other), &minus(&forces, term));
+        eprintln!("{name}: {term:?}: largest {size:.1} gates; the force without it misses by {bite:.1} gates");
+        (name, size, bite)
+    });
+    for (name, size, bite) in report {
+        assert!(size > 100., "{name} is {size:.1} gates");
+        assert!(bite > 100., "the force without the {name} bites {bite:.1}");
+    }
 }

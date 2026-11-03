@@ -2,6 +2,8 @@
 use crate::math::lattice::{det3, unimodular_inverse};
 use crate::periodic::space_group::catalog::{centering_vectors, iter_groups};
 use crate::periodic::space_group::classify::CrystalSystem;
+use crate::periodic::space_group::shift;
+use crate::periodic::space_group::standard::StandardFrame;
 use crate::Result;
 use nalgebra::Matrix3;
 use std::collections::HashMap;
@@ -83,24 +85,17 @@ pub fn hexagonal_transforms() -> Vec<Matrix3<i32>> {
 /// Proper monoclinic transforms preserving unique axis b (y-axis).
 pub fn monoclinic_transforms() -> Vec<Matrix3<i32>> {
     let mut out = Vec::new();
-    let ac_maps = [
-        [1, 0, 0, 1],
-        [-1, 0, 0, -1],
-        [0, 1, -1, 0],
-        [0, -1, 1, 0],
-        [1, 1, 0, 1],
-        [1, -1, 0, 1],
-        [1, 0, 1, 1],
-        [1, 0, -1, 1],
-    ];
-    for &[a, b, c, d] in &ac_maps {
-        let m = Matrix3::new(a, 0, b, 0, 1, 0, c, 0, d);
-        if det3(&m) == 1 {
-            out.push(m);
-        }
-        let m_flip = Matrix3::new(-a, 0, -b, 0, -1, 0, c, 0, d);
-        if det3(&m_flip) == 1 {
-            out.push(m_flip);
+    for a in -2..=2 {
+        for b in -2..=2 {
+            for c in -2..=2 {
+                for d in -2..=2 {
+                    let det2: i32 = a * d - b * c;
+                    if det2.abs() == 1 {
+                        let m = Matrix3::new(a, 0, b, 0, det2, 0, c, 0, d);
+                        out.push(m);
+                    }
+                }
+            }
         }
     }
     out
@@ -118,25 +113,26 @@ pub fn candidate_transforms(system: CrystalSystem) -> Vec<Matrix3<i32>> {
     }
 }
 
-/// Match conventional operations against the 230 space-group catalog.
-pub fn match_space_group(
-    conv_ops: &[(Matrix3<i32>, [i32; 3])],
+/// Match standardized conventional operations against the 230 space-group catalog.
+pub fn match_standard_frame(
+    frame: &StandardFrame,
     system: CrystalSystem,
     point_group: &str,
-    centering: char,
 ) -> Result<Identity> {
     let transforms = candidate_transforms(system);
     let mut matches = Vec::new();
 
     for row in iter_groups() {
-        if row.crystal_system != system || row.point_group != point_group || row.centering != centering {
+        if row.crystal_system != system || row.point_group != point_group {
+            continue;
+        }
+        let c_trans = centering_vectors(row.centering);
+        if c_trans.len() != frame.centering_vectors.len() {
             continue;
         }
 
-        let c_trans = centering_vectors(row.centering);
-        let row_ops = row.operations;
         let mut row_map: HashMap<[i32; 9], [i32; 3]> = HashMap::new();
-        for (r, t) in row_ops {
+        for (r, t) in row.operations {
             row_map.insert(*r, *t);
         }
 
@@ -148,7 +144,122 @@ pub fn match_space_group(
                 Err(_) => continue,
             };
 
-            // Conjugate data operations: W' = C * W * C^-1, t' = C * t
+            // Transform centering filter: C must map frame.centering_vectors onto c_trans mod 24
+            let mut cents_match = true;
+            for cv in &frame.centering_vectors {
+                let mapped = [
+                    (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2]).rem_euclid(24),
+                    (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2]).rem_euclid(24),
+                    (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2]).rem_euclid(24),
+                ];
+                if !c_trans.contains(&mapped) {
+                    cents_match = false;
+                    break;
+                }
+            }
+            if !cents_match {
+                continue;
+            }
+
+            // Conjugate operations: W' = C * W * C^-1, t' = C * t
+            let mut transformed_ops = Vec::with_capacity(frame.conv_operations_f64.len());
+            let mut rot_match = true;
+
+            for (w, t) in &frame.conv_operations_f64 {
+                let w_prime = c_mat * w * c_inv;
+                let t_prime = [
+                    (c_mat[(0, 0)] as f64 * t[0] + c_mat[(0, 1)] as f64 * t[1] + c_mat[(0, 2)] as f64 * t[2]).rem_euclid(1.0),
+                    (c_mat[(1, 0)] as f64 * t[0] + c_mat[(1, 1)] as f64 * t[1] + c_mat[(1, 2)] as f64 * t[2]).rem_euclid(1.0),
+                    (c_mat[(2, 0)] as f64 * t[0] + c_mat[(2, 1)] as f64 * t[1] + c_mat[(2, 2)] as f64 * t[2]).rem_euclid(1.0),
+                ];
+                let key = [
+                    w_prime[(0, 0)], w_prime[(0, 1)], w_prime[(0, 2)],
+                    w_prime[(1, 0)], w_prime[(1, 1)], w_prime[(1, 2)],
+                    w_prime[(2, 0)], w_prime[(2, 1)], w_prime[(2, 2)],
+                ];
+                if !row_map.contains_key(&key) {
+                    rot_match = false;
+                    break;
+                }
+                transformed_ops.push((w_prime, t_prime));
+            }
+
+            if !rot_match || transformed_ops.len() != row_map.len() {
+                continue;
+            }
+
+            if shift::solve_origin_shift_f64(&transformed_ops, &row_map, c_trans, 1e-4).is_some() {
+                row_matched = true;
+                break;
+            }
+        }
+
+        if row_matched {
+            matches.push(Identity {
+                number: row.number,
+                symbol: row.symbol,
+            });
+        }
+    }
+
+    if matches.is_empty() {
+        return Err(crate::periodic::invalid("space-group identification failed: no catalog match"));
+    }
+
+    let first = matches[0];
+    if matches.iter().all(|m| m.number == first.number) {
+        Ok(first)
+    } else {
+        Err(crate::periodic::invalid("space-group identification failed: multiple catalog matches"))
+    }
+}
+
+/// Match conventional operations against the 230 space-group catalog using exact operations.
+pub fn match_space_group(
+    conv_ops: &[(Matrix3<i32>, [i32; 3])],
+    system: CrystalSystem,
+    point_group: &str,
+    centering: char,
+) -> Result<Identity> {
+    let transforms = candidate_transforms(system);
+    let mut matches = Vec::new();
+    let c_frame = centering_vectors(centering);
+
+    for row in iter_groups() {
+        if row.crystal_system != system || row.point_group != point_group || row.centering != centering {
+            continue;
+        }
+
+        let c_trans = centering_vectors(row.centering);
+        let mut row_map: HashMap<[i32; 9], [i32; 3]> = HashMap::new();
+        for (r, t) in row.operations {
+            row_map.insert(*r, *t);
+        }
+
+        let mut row_matched = false;
+
+        for c_mat in &transforms {
+            let c_inv = match unimodular_inverse(c_mat) {
+                Ok(inv) => inv,
+                Err(_) => continue,
+            };
+
+            let mut cents_match = true;
+            for cv in c_frame {
+                let mapped = [
+                    (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2]).rem_euclid(24),
+                    (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2]).rem_euclid(24),
+                    (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2]).rem_euclid(24),
+                ];
+                if !c_trans.contains(&mapped) {
+                    cents_match = false;
+                    break;
+                }
+            }
+            if !cents_match {
+                continue;
+            }
+
             let mut transformed_ops = Vec::with_capacity(conv_ops.len());
             let mut rot_match = true;
 
@@ -175,94 +286,8 @@ pub fn match_space_group(
                 continue;
             }
 
-            // Find origin shift s in (Z/24Z)^3
-            // Condition for all ops k: (I - W'_k) s == C t_k - t_{row, k} + c (mod 24)
-            // Filter on first operation with W'_k != I
-            let non_trivial = transformed_ops
-                .iter()
-                .find(|(w, _)| *w != Matrix3::identity());
-
-            let mut candidate_shifts = Vec::new();
-
-            if let Some((w_first, t_first)) = non_trivial {
-                let key_first = [
-                    w_first[(0, 0)], w_first[(0, 1)], w_first[(0, 2)],
-                    w_first[(1, 0)], w_first[(1, 1)], w_first[(1, 2)],
-                    w_first[(2, 0)], w_first[(2, 1)], w_first[(2, 2)],
-                ];
-                let t_row_first = row_map[&key_first];
-
-                for sx in 0..24 {
-                    for sy in 0..24 {
-                        for sz in 0..24 {
-                            let s = [sx, sy, sz];
-                            let ws = [
-                                (w_first[(0, 0)] * s[0] + w_first[(0, 1)] * s[1] + w_first[(0, 2)] * s[2] - s[0] + t_first[0]).rem_euclid(24),
-                                (w_first[(1, 0)] * s[0] + w_first[(1, 1)] * s[1] + w_first[(1, 2)] * s[2] - s[1] + t_first[1]).rem_euclid(24),
-                                (w_first[(2, 0)] * s[0] + w_first[(2, 1)] * s[1] + w_first[(2, 2)] * s[2] - s[2] + t_first[2]).rem_euclid(24),
-                            ];
-                            let mut ok = false;
-                            for c in c_trans {
-                                let expected = [
-                                    (t_row_first[0] + c[0]).rem_euclid(24),
-                                    (t_row_first[1] + c[1]).rem_euclid(24),
-                                    (t_row_first[2] + c[2]).rem_euclid(24),
-                                ];
-                                if ws == expected {
-                                    ok = true;
-                                    break;
-                                }
-                            }
-                            if ok {
-                                candidate_shifts.push(s);
-                            }
-                        }
-                    }
-                }
-            } else {
-                candidate_shifts.push([0, 0, 0]);
-            }
-
-            // Test candidate shifts on all remaining operations
-            for s in candidate_shifts {
-                let mut all_ok = true;
-                for (w, t) in &transformed_ops {
-                    let key = [
-                        w[(0, 0)], w[(0, 1)], w[(0, 2)],
-                        w[(1, 0)], w[(1, 1)], w[(1, 2)],
-                        w[(2, 0)], w[(2, 1)], w[(2, 2)],
-                    ];
-                    let t_row = row_map[&key];
-                    let ws = [
-                        (w[(0, 0)] * s[0] + w[(0, 1)] * s[1] + w[(0, 2)] * s[2] - s[0] + t[0]).rem_euclid(24),
-                        (w[(1, 0)] * s[0] + w[(1, 1)] * s[1] + w[(1, 2)] * s[2] - s[1] + t[1]).rem_euclid(24),
-                        (w[(2, 0)] * s[0] + w[(2, 1)] * s[1] + w[(2, 2)] * s[2] - s[2] + t[2]).rem_euclid(24),
-                    ];
-                    let mut op_ok = false;
-                    for c in c_trans {
-                        let expected = [
-                            (t_row[0] + c[0]).rem_euclid(24),
-                            (t_row[1] + c[1]).rem_euclid(24),
-                            (t_row[2] + c[2]).rem_euclid(24),
-                        ];
-                        if ws == expected {
-                            op_ok = true;
-                            break;
-                        }
-                    }
-                    if !op_ok {
-                        all_ok = false;
-                        break;
-                    }
-                }
-
-                if all_ok {
-                    row_matched = true;
-                    break;
-                }
-            }
-
-            if row_matched {
+            if shift::solve_origin_shift_exact(&transformed_ops, &row_map, c_trans).is_some() {
+                row_matched = true;
                 break;
             }
         }
@@ -275,15 +300,118 @@ pub fn match_space_group(
         }
     }
 
-    if matches.len() == 1 {
-        Ok(matches[0])
-    } else if matches.is_empty() {
-        Ok(Identity {
-            number: 1,
-            symbol: "P1",
-        })
-    } else {
-        // Deterministic resolution if enantiomorphs or origin choices
-        Ok(matches[0])
+    if matches.is_empty() {
+        return Err(crate::periodic::invalid("space-group identification failed: no catalog match"));
     }
+
+    let first = matches[0];
+    if matches.iter().all(|m| m.number == first.number) {
+        Ok(first)
+    } else {
+        Err(crate::periodic::invalid("space-group identification failed: multiple catalog matches"))
+    }
+}
+
+/// Determine whether two catalog group operations are affine equivalent.
+/// If `allow_improper` is false, only proper (det = +1) orientation-preserving transforms are tested.
+/// If `allow_improper` is true, improper (det = -1) transforms are also tested.
+pub fn are_groups_affine_equivalent(
+    ops1: &[([[i8; 3]; 3], [i8; 3])],
+    ops2: &[([[i8; 3]; 3], [i8; 3])],
+    system1: CrystalSystem,
+    system2: CrystalSystem,
+    centering1: char,
+    centering2: char,
+    allow_improper: bool,
+) -> bool {
+    if system1 != system2 || centering1 != centering2 {
+        return false;
+    }
+    let a_cents = centering_vectors(centering1);
+    let b_cents = centering_vectors(centering2);
+    if a_cents.len() != b_cents.len() {
+        return false;
+    }
+
+    let proper_transforms = candidate_transforms(system1);
+    let mut transforms = proper_transforms.clone();
+    if allow_improper {
+        for m in &proper_transforms {
+            transforms.push(-m);
+        }
+    }
+
+    let mut b_map: HashMap<[i32; 9], [i32; 3]> = HashMap::new();
+    for (r, t) in ops2 {
+        let key = [
+            r[0][0] as i32, r[0][1] as i32, r[0][2] as i32,
+            r[1][0] as i32, r[1][1] as i32, r[1][2] as i32,
+            r[2][0] as i32, r[2][1] as i32, r[2][2] as i32,
+        ];
+        b_map.insert(key, [t[0] as i32, t[1] as i32, t[2] as i32]);
+    }
+
+    for c_mat in &transforms {
+        let det_c = det3(c_mat);
+        if det_c.abs() != 1 {
+            continue;
+        }
+        let c_inv = match unimodular_inverse(c_mat) {
+            Ok(inv) => inv,
+            Err(_) => continue,
+        };
+
+        let mut cents_match = true;
+        for cv in a_cents {
+            let mapped = [
+                (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2]).rem_euclid(24),
+                (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2]).rem_euclid(24),
+                (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2]).rem_euclid(24),
+            ];
+            if !b_cents.contains(&mapped) {
+                cents_match = false;
+                break;
+            }
+        }
+        if !cents_match {
+            continue;
+        }
+
+        let mut transformed_ops = Vec::with_capacity(ops1.len());
+        let mut rot_match = true;
+
+        for (r, t) in ops1 {
+            let w = Matrix3::new(
+                r[0][0] as i32, r[0][1] as i32, r[0][2] as i32,
+                r[1][0] as i32, r[1][1] as i32, r[1][2] as i32,
+                r[2][0] as i32, r[2][1] as i32, r[2][2] as i32,
+            );
+            let w_prime = c_mat * w * c_inv;
+            let t_prime = [
+                (c_mat[(0, 0)] * t[0] as i32 + c_mat[(0, 1)] * t[1] as i32 + c_mat[(0, 2)] * t[2] as i32).rem_euclid(24),
+                (c_mat[(1, 0)] * t[0] as i32 + c_mat[(1, 1)] * t[1] as i32 + c_mat[(1, 2)] * t[2] as i32).rem_euclid(24),
+                (c_mat[(2, 0)] * t[0] as i32 + c_mat[(2, 1)] * t[1] as i32 + c_mat[(2, 2)] * t[2] as i32).rem_euclid(24),
+            ];
+            let key = [
+                w_prime[(0, 0)], w_prime[(0, 1)], w_prime[(0, 2)],
+                w_prime[(1, 0)], w_prime[(1, 1)], w_prime[(1, 2)],
+                w_prime[(2, 0)], w_prime[(2, 1)], w_prime[(2, 2)],
+            ];
+            if !b_map.contains_key(&key) {
+                rot_match = false;
+                break;
+            }
+            transformed_ops.push((w_prime, t_prime));
+        }
+
+        if !rot_match || transformed_ops.len() != b_map.len() {
+            continue;
+        }
+
+        if shift::solve_origin_shift_exact(&transformed_ops, &b_map, b_cents).is_some() {
+            return true;
+        }
+    }
+
+    false
 }

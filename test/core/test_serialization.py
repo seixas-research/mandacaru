@@ -16,6 +16,7 @@ energy *and* bypass the molecular integrals and the fermion-to-qubit mapping.
 from __future__ import annotations
 
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -30,9 +31,12 @@ from mandacaru import Mandacaru, _native
 from mandacaru.core import PauliSum
 from mandacaru.core.serialization import (DEFAULT_FILENAME, DEFAULT_FORMAT,
                                           FILE_EXTENSIONS, FORMAT_TAG,
-                                          HAMILTONIAN_FORMATS, detect_format,
-                                          load_hamiltonian, resolve_format,
-                                          resolve_save_path, save_hamiltonian)
+                                          HAMILTONIAN_FORMATS,
+                                          HamiltonianHeader, detect_format,
+                                          load_hamiltonian,
+                                          read_hamiltonian_header,
+                                          resolve_format, resolve_save_path,
+                                          save_hamiltonian)
 
 #: Frozen foreign-writer files (fastparquet, pyarrow) and hand-made negatives.
 PARQUET_REFERENCE = Path(__file__).parents[1] / "migration/reference/parquet"
@@ -720,3 +724,86 @@ class TestZeroHamiltonianWidth:
         save_hamiltonian(path, PauliSum({"ZIII": 0.0}),
                          num_particles=(1, 1), n_spatial_orbitals=2)
         assert load_hamiltonian(path).hamiltonian.num_qubits == 4
+
+
+class TestHamiltonianHeader:
+    def test_parquet_and_json_headers_match_record(self, tmp_path):
+        pauli = PauliSum({"IIII": -1.0, "ZIII": 0.5, "IZII": -0.25, "ZZII": 0.1})
+        headers = {}
+        for fmt in ("parquet", "json"):
+            path = save_hamiltonian(tmp_path / f"h.{fmt}", pauli,
+                                    num_particles=(1, 1), n_spatial_orbitals=2,
+                                    metadata={"molecule": "H2"}, format=fmt)
+            record = load_hamiltonian(path)
+            header = read_hamiltonian_header(path)
+            assert isinstance(header, HamiltonianHeader)
+            headers[fmt] = header
+
+            assert header.num_qubits == record.hamiltonian.num_qubits == 4
+            assert header.mapping == record.mapping == "jordan_wigner"
+            assert header.num_particles == record.num_particles == (1, 1)
+            assert header.n_spatial_orbitals == record.n_spatial_orbitals == 2
+            assert header.metadata["molecule"] == "H2"
+            assert header.metadata["energy_unit"] == "Ha"
+            assert header.metadata == record.metadata
+            assert header.n_terms == len(record.hamiltonian.terms)
+
+        assert headers["parquet"] == headers["json"]
+
+    def test_parquet_header_does_not_read_data_pages(self, tmp_path):
+        pauli = PauliSum({"IIII": -1.0, "ZIII": 0.5, "IZII": -0.25, "ZZII": 0.1})
+        path = Path(save_hamiltonian(
+            tmp_path / "valid.parquet", pauli,
+            num_particles=(1, 1), n_spatial_orbitals=2,
+            metadata={"molecule": "H2"}, compression="zstd"))
+        expected_header = read_hamiltonian_header(path)
+
+        raw = bytearray(path.read_bytes())
+        # Corrupt a byte inside the data page region well before the footer.
+        assert len(raw) > 32
+        raw[16] ^= 0xFF
+        corrupted = tmp_path / "corrupted.parquet"
+        corrupted.write_bytes(raw)
+
+        with pytest.raises(ValueError):
+            load_hamiltonian(corrupted)
+
+        header = read_hamiltonian_header(corrupted)
+        assert header == expected_header
+
+    def test_header_refuses_invalid_metadata(self, tmp_path):
+        missing = tmp_path / "missing.parquet"
+        with pytest.raises(FileNotFoundError):
+            read_hamiltonian_header(missing)
+
+        ctx = _native.Context(threads=1)
+        not_hamiltonian = tmp_path / "not_hamiltonian.parquet"
+        _native.write_parquet(
+            ctx, str(not_hamiltonian),
+            {"col": np.array([1.0, 2.0], dtype=np.float64)},
+            {"mandacaru.format": "other-format"})
+        with pytest.raises(ValueError):
+            read_hamiltonian_header(not_hamiltonian)
+
+        bad_version = tmp_path / "bad_version.parquet"
+        _native.write_parquet(
+            ctx, str(bad_version),
+            {"pauli": ["IIII"],
+             "real": np.array([1.0], dtype=np.float64),
+             "imag": np.array([0.0], dtype=np.float64)},
+            {"mandacaru.format": FORMAT_TAG,
+             "mandacaru.version": "999",
+             "mandacaru.num_qubits": "4"})
+        with pytest.raises(ValueError):
+            read_hamiltonian_header(bad_version)
+
+        bad_version_json = tmp_path / "bad_version.json"
+        bad_version_json.write_text(json.dumps({
+            "format": FORMAT_TAG,
+            "version": 999,
+            "num_qubits": 4,
+            "mapping": "jordan_wigner",
+            "terms": [["IIII", 1.0, 0.0]],
+        }))
+        with pytest.raises(ValueError):
+            read_hamiltonian_header(bad_version_json)

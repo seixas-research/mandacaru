@@ -11,10 +11,18 @@
 //! gradients and the flux) are handed in by the caller, who owns the state (a real SCF crystal
 //! fills them in AS-6; a test builds them from a density it holds).
 //!
+//! A spinor crystal (`Layout::request.spinor`, described by the SCALAR `M` functions and `P`
+//! projectors) is presented in the doubled frame of the force engine (`spinor`, a child module):
+//! `2M`, `2P`, `I2 x (.)` operators, projections and matrix tangents, the Pauli sum of the local
+//! term's channel tangents, and the spin-orbit union-projector term of
+//! [`StrainSetup::with_spin_orbit`].
+//!
 //! The dense sums run over the ball `|G| <= dense_cutoff` of the REFERENCE cell, or over a
 //! caller-supplied list of reciprocal vectors ([`StrainSetup::with_dense_vectors`], the pinned
 //! integer triples of the plan's section 2 at the reference cell): the derivative of a
 //! re-enumerated list would add a jump that is not a derivative.
+mod spinor;
+
 use super::{
     basis_gradient::ShortRange,
     electrostatics::{hats, ion_charge},
@@ -29,8 +37,9 @@ use super::{
     strain_sums::CouplingsStrainSum,
 };
 use crate::{
+    models,
     periodic::{
-        gradient::{Layout, Term},
+        gradient::{Layout, SpinOrbit, Term},
         invalid,
         stress_terms::{
             electrostatic::{self, Grid, Hartree},
@@ -73,8 +82,12 @@ pub struct StrainFields {
 pub struct StrainSetup<'a> {
     ctx: &'a Context,
     inputs: Inputs<'a>,
+    /// The layout the contraction reads: the scalar one, or its doubled frame for a spinor.
     layout: Layout,
+    /// The number of basis functions of one spin block (`layout.m` is `2M` for a spinor).
+    functions: usize,
     operators: Operators,
+    spin_orbit: Option<spinor::SpinOrbitData<'a>>,
     mesh: Mesh,
     dense_vectors: Option<Vec<[f64; 3]>>,
 }
@@ -104,12 +117,16 @@ impl<'a> StrainSetup<'a> {
                 "crystal stress: the layout, the operators and the setup disagree",
             ));
         }
+        let functions = layout.m;
+        let (layout, operators) = spinor::frame_of(layout, operators)?;
         Ok(Self {
             ctx,
             mesh: Mesh::new(ctx, inputs.grid)?,
             inputs,
             layout,
+            functions,
             operators,
+            spin_orbit: None,
             dense_vectors: None,
         })
     }
@@ -135,7 +152,13 @@ impl<'a> StrainSetup<'a> {
 
     fn check_fields(&self, fields: &StrainFields) -> Result<()> {
         let n = self.mesh.len();
-        let fine = fields.local.iter().all(|v| v.len() == n)
+        let channels = if self.layout.request.spinor {
+            matches!(fields.local.len(), 1 | 4)
+        } else {
+            fields.local.len() == self.layout.spins
+        };
+        let fine = channels
+            && fields.local.iter().all(|v| v.len() == n)
             && fields.weights.len() == n
             && fields.density.len() == n
             && fields.xc.potential.len() == n
@@ -148,59 +171,16 @@ impl<'a> StrainSetup<'a> {
             ))
         }
     }
-}
 
-fn collect<T>(f: impl Fn(usize, usize) -> T) -> Tensor<T> {
-    std::array::from_fn(|a| std::array::from_fn(|b| f(a, b)))
-}
-
-impl Strain for StrainSetup<'_> {
-    type Fields = StrainFields;
-
-    fn layout(&self) -> &Layout {
-        &self.layout
-    }
-    fn blocks(&self) -> &[Matrix] {
-        &self.operators.blocks
-    }
-    fn augmentation(&self) -> &Matrix {
-        &self.operators.augmentation
-    }
-    fn ion_operator(&self) -> &Matrix {
-        &self.operators.ion_operator
-    }
-    fn volume(&self) -> f64 {
-        self.mesh.volume
-    }
-
-    fn projection(&self, k: usize) -> Result<Matrix> {
-        projection(
-            self.ctx,
-            self.inputs.shells,
-            self.lattice(),
-            self.kpoint(k)?,
-            self.inputs.projectors,
-        )
-    }
-
-    fn projection_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
-        projection_strain(
-            self.ctx,
-            self.inputs.shells,
-            self.lattice(),
-            self.kpoint(k)?,
-            self.inputs.projectors,
-        )
-    }
-
-    fn matrix_strain(
+    /// The matrix tangent of one term in the SCALAR frame (`M x M`) for the potential of channel
+    /// `spin`.
+    fn scalar_strain(
         &self,
         spin: usize,
         k: usize,
         term: Term,
         fields: &StrainFields,
-    ) -> Result<Tensor<Matrix>> {
-        self.check_fields(fields)?;
+    ) -> Result<Matrices> {
         let (ctx, shells, kpoint) = (self.ctx, self.inputs.shells, self.kpoint(k)?);
         let strain = || StrainSamples::new(shells, self.lattice(), &self.mesh, kpoint);
         let values = || bloch_values(ctx, shells, self.lattice(), &self.mesh, kpoint);
@@ -243,7 +223,7 @@ impl Strain for StrainSetup<'_> {
                     })
                     .collect();
                 let per_sphere = short_range_strain(ctx, shells, self.lattice(), kpoint, &spheres)?;
-                let m = self.layout.m;
+                let m = self.functions;
                 let mut total: Matrices = collect(|_, _| Matrix::zeros(m, m));
                 for sphere in &per_sphere {
                     for a in 0..3 {
@@ -256,6 +236,64 @@ impl Strain for StrainSetup<'_> {
             }
         };
         Ok(tensor)
+    }
+}
+
+fn collect<T>(f: impl Fn(usize, usize) -> T) -> Tensor<T> {
+    std::array::from_fn(|a| std::array::from_fn(|b| f(a, b)))
+}
+
+impl Strain for StrainSetup<'_> {
+    type Fields = StrainFields;
+
+    fn layout(&self) -> &Layout {
+        &self.layout
+    }
+    fn blocks(&self) -> &[Matrix] {
+        &self.operators.blocks
+    }
+    fn augmentation(&self) -> &Matrix {
+        &self.operators.augmentation
+    }
+    fn ion_operator(&self) -> &Matrix {
+        &self.operators.ion_operator
+    }
+    fn volume(&self) -> f64 {
+        self.mesh.volume
+    }
+
+    fn projection(&self, k: usize) -> Result<Matrix> {
+        Ok(self.frame(projection(
+            self.ctx,
+            self.inputs.shells,
+            self.lattice(),
+            self.kpoint(k)?,
+            self.inputs.projectors,
+        )?))
+    }
+
+    fn projection_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
+        Ok(self.frame_tensor(projection_strain(
+            self.ctx,
+            self.inputs.shells,
+            self.lattice(),
+            self.kpoint(k)?,
+            self.inputs.projectors,
+        )?))
+    }
+
+    fn matrix_strain(
+        &self,
+        spin: usize,
+        k: usize,
+        term: Term,
+        fields: &StrainFields,
+    ) -> Result<Tensor<Matrix>> {
+        self.check_fields(fields)?;
+        if self.layout.request.spinor && term == Term::Local {
+            return self.spinor_local(k, fields);
+        }
+        Ok(self.frame_tensor(self.scalar_strain(spin, k, term, fields)?))
     }
 
     fn moments<'f>(&self, fields: &'f StrainFields) -> &'f [C64] {
@@ -328,8 +366,43 @@ impl Strain for StrainSetup<'_> {
         ion_constants_strain(&self.inputs.sites)
     }
 
+    fn spin_orbit(&self) -> Result<&SpinOrbit> {
+        Ok(&self.spin_orbit_data()?.operator)
+    }
+
+    fn spin_orbit_projection(&self, k: usize) -> Result<Matrix> {
+        projection(
+            self.ctx,
+            self.inputs.shells,
+            self.lattice(),
+            self.kpoint(k)?,
+            self.spin_orbit_data()?.projectors,
+        )
+    }
+
+    fn spin_orbit_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
+        projection_strain(
+            self.ctx,
+            self.inputs.shells,
+            self.lattice(),
+            self.kpoint(k)?,
+            self.spin_orbit_data()?.projectors,
+        )
+    }
+
     fn xc(&self, fields: &StrainFields) -> Result<xc::Terms> {
         self.check_fields(fields)?;
+        // A gradient functional without its gradients and flux would give a silently zero term.
+        let gga = matches!(
+            models::functional(&self.layout.request.functional)?.semilocal,
+            "pbe" | "hse06"
+        );
+        if gga != fields.xc.gradients.is_some() || gga != fields.xc.flux.is_some() {
+            return Err(invalid(
+                "crystal stress: a gradient functional needs the gradients and the flux of its \
+                 rotated spin channels, a local one has none",
+            ));
+        }
         let (ctx, grid) = (self.ctx, self.inputs.grid);
         let n = self.mesh.len();
         let mut core = [[0.; 3]; 3];

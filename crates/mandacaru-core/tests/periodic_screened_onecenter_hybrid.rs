@@ -47,12 +47,10 @@ fn a_hybrid_crystal_without_its_spheres_is_refused_and_never_runs_unaugmented() 
         refused(&|v| v["sites"]["datasets"] = json!([v["sites"]["datasets"][0].clone()]))
             .contains("one dataset per atom")
     );
-    // A magnetic spinor hybrid needs the spin-density functional of the spheres.
-    let message = gamma(&ctx, "si_so.json", &|v| v["time_reversal"] = json!(false))
-        .err()
-        .expect("a magnetic spinor hybrid must be refused")
-        .to_string();
-    assert!(message.contains("spin-density functional"), "{message}");
+    // A magnetic spinor hybrid is built: the spheres evaluate the spin-density functional.
+    let magnetic = gamma(&ctx, "si_so.json", &|v| v["time_reversal"] = json!(false))
+        .expect("a magnetic spinor hybrid is built");
+    assert!(magnetic.spinor && !magnetic.time_reversal);
     // The same hybrid with its spheres loads, and the plain functional needs none.
     assert!(gamma(&ctx, "si_crystal.json", &|_| {}).is_ok());
     assert!(gamma(&ctx, "si_crystal.json", &|v| {

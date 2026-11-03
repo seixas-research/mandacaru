@@ -29,11 +29,11 @@ use crate::{
     Buffer, Error, Result,
 };
 
-/// What this engine cannot differentiate, from the crystal itself: a meta-GGA, rVV10, a spinor
-/// hybrid, float32 data, DFT+U, a hybrid without the PAW spheres its
-/// projections were built from, and a mesh that is not the whole one (space-group permutations, a
-/// nontrivial moment symmetrization). A collinear spin-polarized crystal (`spins = 2`), hybrid or not, is
-/// differentiated.
+/// What this engine cannot differentiate, from the crystal itself: a meta-GGA, rVV10, float32 data,
+/// DFT+U, a hybrid without the PAW spheres its projections were built from, and a mesh that is not
+/// the whole one (space-group permutations, a nontrivial moment symmetrization). A collinear
+/// spin-polarized crystal (`spins = 2`) and a spinor, magnetic or not, hybrid or not, are
+/// differentiated (the one-center operator the model returns carries the non-collinear remainder).
 pub fn refuse(c: &Crystal) -> Result<()> {
     super::check_request(&request(c))?;
     let no = |what: &str| {
@@ -110,11 +110,10 @@ pub fn hybrid_state_energy(
     let definition = models::functional(&c.functional)?;
     if definition.screened_exchange.is_none()
         || definition.requires_tau
-        || c.spinor
         || c.hubbard.as_ref().is_some_and(|h| h.is_active())
     {
         return Err(Error::Unsupported(
-            "hybrid_state_energy covers the collinear hybrid crystal without DFT+U".into(),
+            "hybrid_state_energy covers the hybrid crystal without DFT+U".into(),
         ));
     }
     if densities.len() != c.spins * c.points.len() {

@@ -70,13 +70,29 @@ pub struct Terms {
     pub energy: f64,
     pub potential: Buffer<f64>,
     pub kinetic_potential: Option<Buffer<f64>>,
+    /// `partial_c n_s` of the two rotated spin channels, `(6, n)` with row `3 s + c`, of the
+    /// densities the functional saw (half core included): the gradient correction of a GGA only
+    /// (the crystal stress differentiates the spectral gradient).
+    pub gradients: Option<Buffer<f64>>,
+    /// `d f / d (partial_c n_s)`, the same layout: the flux whose divergence is in `potential`.
+    pub flux: Option<Buffer<f64>>,
 }
 
-pub fn evaluate(c: &Crystal, fft: &mut Fft3, rho: &[f64], tau: Option<&[f64]>) -> Result<Terms> {
+/// The semilocal functional of the spin layout `spins` of `rho` (and `tau`): one block holds the
+/// total, two the spin channels. `spins` is an argument because a magnetic spinor crystal
+/// (`c.spins = 1`) hands the two eigenframe spin fields of its four-field density; every other
+/// caller passes `c.spins`.
+pub fn evaluate(
+    c: &Crystal,
+    fft: &mut Fft3,
+    rho: &[f64],
+    tau: Option<&[f64]>,
+    spins: usize,
+) -> Result<Terms> {
     let ctx = &c.context;
     let definition = models::functional(&c.functional)?;
     let n = c.grid.index.points();
-    if rho.len() != product(&[c.spins, n])?
+    if rho.len() != product(&[spins, n])?
         || rho.iter().any(|v| !v.is_finite())
         || tau.is_some_and(|v| v.len() != rho.len() || v.iter().any(|v| !v.is_finite()))
         || (definition.requires_tau && (tau.is_none() || c.core_tau.is_none()))
@@ -89,20 +105,14 @@ pub fn evaluate(c: &Crystal, fft: &mut Fft3, rho: &[f64], tau: Option<&[f64]>) -
     let mut kinetic = ctx.allocate::<f64>(2 * n)?;
     for s in 0..2 {
         for k in 0..n {
-            densities.as_mut_slice()[s * n + k] = (if c.spins == 1 {
+            densities.as_mut_slice()[s * n + k] = (if spins == 1 {
                 0.5 * rho[k]
             } else {
                 rho[s * n + k]
             } + 0.5 * c.core.as_slice()[k])
                 .max(0.);
             kinetic.as_mut_slice()[s * n + k] = tau
-                .map_or(0., |t| {
-                    if c.spins == 1 {
-                        0.5 * t[k]
-                    } else {
-                        t[s * n + k]
-                    }
-                })
+                .map_or(0., |t| if spins == 1 { 0.5 * t[k] } else { t[s * n + k] })
                 .max(0.)
                 + 0.5 * c.core_tau.as_ref().map_or(0., |t| t.as_slice()[k]);
         }
@@ -152,7 +162,7 @@ pub fn evaluate(c: &Crystal, fft: &mut Fft3, rho: &[f64], tau: Option<&[f64]>) -
     let mut local = ctx.allocate::<f64>(2 * n)?;
     let mut vtau = definition
         .requires_tau
-        .then(|| ctx.allocate::<f64>(c.spins * n))
+        .then(|| ctx.allocate::<f64>(spins * n))
         .transpose()?;
     let mut flux = ctx.allocate::<f64>(6 * n)?;
     let mut energy = nonlocal.as_ref().map_or(0., |t| t.energy);
@@ -181,7 +191,7 @@ pub fn evaluate(c: &Crystal, fft: &mut Fft3, rho: &[f64], tau: Option<&[f64]>) -
         local.as_mut_slice()[k] = partial[0];
         local.as_mut_slice()[n + k] = partial[1];
         if let Some(v) = &mut vtau {
-            for s in 0..c.spins {
+            for s in 0..spins {
                 v.as_mut_slice()[s * n + k] = if tau.unwrap()[s * n + k] < 0. {
                     0.
                 } else {
@@ -211,10 +221,10 @@ pub fn evaluate(c: &Crystal, fft: &mut Fft3, rho: &[f64], tau: Option<&[f64]>) -
             }
         }
     }
-    let mut potential = ctx.allocate::<f64>(c.spins * n)?;
-    for s in 0..c.spins {
+    let mut potential = ctx.allocate::<f64>(spins * n)?;
+    for s in 0..spins {
         for k in 0..n {
-            let raw = if c.spins == 1 {
+            let raw = if spins == 1 {
                 rho[k] + c.core.as_slice()[k]
             } else {
                 rho[s * n + k] + 0.5 * c.core.as_slice()[k]
@@ -230,6 +240,8 @@ pub fn evaluate(c: &Crystal, fft: &mut Fft3, rho: &[f64], tau: Option<&[f64]>) -
         energy,
         potential,
         kinetic_potential: vtau,
+        gradients: Some(gradients),
+        flux: Some(flux),
     })
 }
 

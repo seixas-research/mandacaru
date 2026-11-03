@@ -1,11 +1,12 @@
 //! F1 negative controls of the spin-polarized HSE06 force: a force with ONE thing wrong must miss
 //! the frozen reconverged finite-difference oracle (both step families) by more than 100x the
 //! gate of its coordinate. Each variant is compared with the oracle: the exchange derivative of
-//! each spin taken from the other spin's density (`K` of the wrong spin), the spin densities
+//! the spin-down channel taken from the spin-up density, the spin densities
 //! summed before the exchange contraction, the spin-down bands replaced by the spin-up ones, the
 //! Hamiltonian diagonalized without its exchange, and the exchange terms dropped one by one. The
-//! control of the spheres' spin-scaling remainder is in `periodic_gradient_polarized_hybrid.rs`
-//! (it needs the model, not the provider). Needs `MANDACARU_PAW_PATH`.
+//! controls of the projection response (the compensation charges and the spheres, the
+//! spin-scaling remainder among them) are in `periodic_gradient_polarized_hybrid.rs`: they need the
+//! model, not the provider. Needs `MANDACARU_PAW_PATH`.
 mod periodic_gradient_crystals_support;
 
 use mandacaru_core::periodic::gradient::{gradient, Breakdown};
@@ -35,8 +36,6 @@ fn h2_hse06_wrong_exchange_handling_misses_the_oracle_by_more_than_100_gates() {
     for (name, term) in [
         ("no exchange phase", &right.exchange_phase),
         ("no exchange basis functions", &right.exchange_functions),
-        ("no exchange projection rows", &right.exchange_rows),
-        ("no exchange projection columns", &right.exchange_columns),
     ] {
         report.push((
             name,
@@ -44,7 +43,10 @@ fn h2_hse06_wrong_exchange_handling_misses_the_oracle_by_more_than_100_gates() {
         ));
     }
     for (name, wrong) in [
-        ("K of the wrong spin", Wrong::ExchangeWrongSpin),
+        (
+            "spin-down exchange from the spin-up density",
+            Wrong::ExchangeSpinUp,
+        ),
         (
             "spin densities summed before the exchange contraction",
             Wrong::ExchangeSummedDensity,

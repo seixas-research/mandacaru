@@ -24,7 +24,7 @@
 //! before it is built, and the reservation travels with the `Document`.
 
 use crate::{
-    parquet::{Column, Table, Utf8Column},
+    parquet::{Column, ColumnKind, Footer, Table, Utf8Column},
     persistence::{integer, HAMILTONIAN, MAX_FILE_QUBITS},
     product, Context, Error, Reservation, Result,
 };
@@ -230,6 +230,118 @@ pub(crate) fn payload_from_table(
     payload.insert("n_spatial_orbitals".into(), n_spatial_orbitals);
     payload.insert("metadata".into(), metadata);
     payload.insert("terms".into(), Value::Array(terms));
+    Ok((Value::Object(payload), memory))
+}
+
+/// Builds the Hamiltonian payload from a Parquet `footer`, reserving memory first.
+///
+/// `source` names the file in messages. Verifies footer format, version, qubit count,
+/// mapping and column types without reading any data pages.
+pub(crate) fn header_from_footer(
+    ctx: &Context,
+    footer: &Footer,
+    kind: &str,
+    source: &str,
+) -> Result<(Value, Reservation)> {
+    if kind != HAMILTONIAN {
+        return Err(invalid(format!(
+            "{source} is a Parquet file; only a qubit Hamiltonian is stored as Parquet, not a {kind} snapshot"
+        )));
+    }
+    if footer.metadata.get(KEY_FORMAT).map(String::as_str) != Some(HAMILTONIAN) {
+        return Err(invalid(format!(
+            "{source} is not a Mandacaru qubit-Hamiltonian Parquet file (expected {KEY_FORMAT} = '{HAMILTONIAN}')"
+        )));
+    }
+    let version = unsigned_key(
+        source,
+        KEY_VERSION,
+        footer.metadata.get(KEY_VERSION).map(String::as_str),
+    )?;
+    if version > VERSION {
+        return Err(invalid(format!(
+            "{source} uses Hamiltonian format version {version}, but this build understands up to {VERSION}"
+        )));
+    }
+    let num_qubits = unsigned_key(
+        source,
+        KEY_NUM_QUBITS,
+        footer.metadata.get(KEY_NUM_QUBITS).map(String::as_str),
+    )?;
+    let mapping = footer
+        .metadata
+        .get(KEY_MAPPING)
+        .map(String::as_str)
+        .unwrap_or("jordan_wigner");
+
+    let mut sorted: Vec<&str> = footer.columns.iter().map(|(n, _)| n.as_str()).collect();
+    sorted.sort_unstable();
+    let require = |name: &str| {
+        footer
+            .columns
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, kind)| *kind)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "{source} is missing the '{name}' column (found {})",
+                    listing(&sorted)
+                ))
+            })
+    };
+    let (pauli, real, imag) = (
+        require(COLUMN_PAULI)?,
+        require(COLUMN_REAL)?,
+        require(COLUMN_IMAG)?,
+    );
+    if pauli != ColumnKind::Utf8 {
+        return Err(invalid(format!(
+            "{source}: the '{COLUMN_PAULI}' column must hold UTF-8 text"
+        )));
+    }
+    if real != ColumnKind::Double {
+        return Err(invalid(format!(
+            "{source}: the '{COLUMN_REAL}' column must hold float64 values"
+        )));
+    }
+    if imag != ColumnKind::Double {
+        return Err(invalid(format!(
+            "{source}: the '{COLUMN_IMAG}' column must hold float64 values"
+        )));
+    }
+
+    let metadata_bytes: usize = footer
+        .metadata
+        .values()
+        .map(String::len)
+        .try_fold(0usize, usize::checked_add)
+        .ok_or(Error::Overflow)?;
+    let memory = ctx.reserve(
+        product(&[metadata_bytes, KV_FACTOR])?.max(256),
+    )?;
+
+    let num_particles = match footer.metadata.get(KEY_NUM_PARTICLES).map(String::as_str) {
+        Some(text) => small_json_key(source, KEY_NUM_PARTICLES, text)?,
+        None => Value::Null,
+    };
+    let n_spatial_orbitals = match footer.metadata.get(KEY_N_SPATIAL_ORBITALS).map(String::as_str) {
+        Some(text) => small_json_key(source, KEY_N_SPATIAL_ORBITALS, text)?,
+        None => Value::Null,
+    };
+    let metadata = match footer.metadata.get(KEY_METADATA).map(String::as_str) {
+        Some(text) => json_key(source, KEY_METADATA, text)?,
+        None => json!({}),
+    };
+    let mut payload = Map::new();
+    payload.insert("format".into(), json!(HAMILTONIAN));
+    payload.insert("version".into(), json!(version));
+    payload.insert("num_qubits".into(), json!(num_qubits));
+    payload.insert("mapping".into(), json!(mapping));
+    payload.insert("num_particles".into(), num_particles);
+    payload.insert("n_spatial_orbitals".into(), n_spatial_orbitals);
+    payload.insert("metadata".into(), metadata);
+    payload.insert("terms".into(), json!([]));
+    payload.insert("n_terms".into(), json!(footer.num_rows));
     Ok((Value::Object(payload), memory))
 }
 
@@ -956,5 +1068,206 @@ mod tests {
             compared += 1;
         }
         assert!(compared >= 20, "only {compared} fixtures compared");
+    }
+
+    #[test]
+    fn read_header_on_valid_parquet_and_json() {
+        let ctx = context();
+        let dir = Directory::new();
+        let original = document(&ctx, &payload());
+        let json_path = dir.file("h.json");
+        original.save(&json_path).unwrap();
+
+        for (name, codec) in [
+            ("zstd.parquet", Codec::Zstd),
+            ("none.parquet", Codec::Uncompressed),
+        ] {
+            let path = dir.file(name);
+            original.save_parquet(&ctx, &path, codec).unwrap();
+
+            let header = Document::read_header(&ctx, &path, HAMILTONIAN).unwrap();
+            let p = header.payload();
+            assert_eq!(p["format"], HAMILTONIAN);
+            assert_eq!(p["version"], 1);
+            assert_eq!(p["num_qubits"], 4);
+            assert_eq!(p["mapping"], "jordan_wigner");
+            assert_eq!(p["num_particles"], json!([1, 1]));
+            assert_eq!(p["n_spatial_orbitals"], 2);
+            assert_eq!(p["n_terms"], 4);
+            assert_eq!(p["terms"], json!([]));
+            assert_eq!(p["metadata"], payload()["metadata"]);
+        }
+
+        let json_header = Document::read_header(&ctx, &json_path, HAMILTONIAN).unwrap();
+        let jp = json_header.payload();
+        assert_eq!(jp["format"], HAMILTONIAN);
+        assert_eq!(jp["version"], 1);
+        assert_eq!(jp["num_qubits"], 4);
+        assert_eq!(jp["mapping"], "jordan_wigner");
+        assert_eq!(jp["num_particles"], json!([1, 1]));
+        assert_eq!(jp["n_spatial_orbitals"], 2);
+        assert_eq!(jp["n_terms"], 4);
+        assert_eq!(jp["terms"], json!([]));
+        assert_eq!(jp["metadata"], payload()["metadata"]);
+
+        drop((original, json_header));
+        assert_eq!(ctx.memory_used(), 0);
+    }
+
+    #[test]
+    fn read_header_never_reads_data_pages_even_if_corrupted() {
+        let ctx = context();
+        let dir = Directory::new();
+        let original = document(&ctx, &payload());
+        let path = dir.file("valid.parquet");
+        original.save_parquet(&ctx, &path, Codec::Zstd).unwrap();
+
+        let mut bytes = fs::read(&path).unwrap();
+        let len = bytes.len();
+        assert!(len > 12);
+        let footer_len = u32::from_le_bytes(bytes[len - 8..len - 4].try_into().unwrap()) as usize;
+        let data_end = len - 8 - footer_len;
+        assert!(data_end > 4);
+        // Overwrite all data pages in the middle of the file with 0xFF.
+        for b in &mut bytes[4..data_end] {
+            *b = 0xFF;
+        }
+        let corrupt_path = dir.file("corrupt.parquet");
+        fs::write(&corrupt_path, &bytes).unwrap();
+
+        // Reading the full document must fail because data pages are garbage.
+        assert!(Document::read(&ctx, &corrupt_path, HAMILTONIAN).is_err());
+
+        // But read_header must succeed because it only parses the footer trailer!
+        let header = Document::read_header(&ctx, &corrupt_path, HAMILTONIAN).unwrap();
+        let p = header.payload();
+        assert_eq!(p["format"], HAMILTONIAN);
+        assert_eq!(p["num_qubits"], 4);
+        assert_eq!(p["n_terms"], 4);
+        assert_eq!(p["terms"], json!([]));
+        assert_eq!(p["mapping"], "jordan_wigner");
+
+        drop(original);
+        drop(header);
+        assert_eq!(ctx.memory_used(), 0);
+    }
+
+    #[test]
+    fn read_header_rejects_invalid_headers() {
+        let ctx = context();
+
+        // 1. Missing column (fixture missing imag)
+        let err = Document::read_header(
+            &ctx,
+            &fixtures().join("negative/hamiltonian_missing_imag.parquet"),
+            HAMILTONIAN,
+        )
+        .err()
+        .expect("missing imag should fail");
+        assert!(
+            err.to_string()
+                .contains("is missing the 'imag' column (found ['pauli', 'real'])"),
+            "{err}"
+        );
+
+        // 2. Version 0
+        let err = Document::read_header(
+            &ctx,
+            &fixtures().join("negative/hamiltonian_kv_version_0.parquet"),
+            HAMILTONIAN,
+        )
+        .err()
+        .expect("version 0 should fail");
+        assert!(
+            err.to_string()
+                .contains("unsupported snapshot schema version"),
+            "{err}"
+        );
+
+        // 3. More than 50 qubits
+        let err = Document::read_header(
+            &ctx,
+            &fixtures().join("negative/hamiltonian_qubits_51.parquet"),
+            HAMILTONIAN,
+        )
+        .err()
+        .expect("51 qubits should fail");
+        assert!(
+            err.to_string()
+                .contains("Pauli-string files support at most 50 qubits"),
+            "{err}"
+        );
+
+        // 4. Bad mapping
+        let err = Document::read_header(
+            &ctx,
+            &fixtures().join("negative/hamiltonian_kv_unknown_mapping.parquet"),
+            HAMILTONIAN,
+        )
+        .err()
+        .expect("bad mapping should fail");
+        assert!(
+            err.to_string().contains("unsupported snapshot mapping"),
+            "{err}"
+        );
+
+        // Also test programmatic creation for wrong column type and wrong format
+        let dir = Directory::new();
+        // Wrong column type: real is Utf8
+        let mut meta = BTreeMap::new();
+        meta.insert(KEY_FORMAT.into(), HAMILTONIAN.into());
+        meta.insert(KEY_VERSION.into(), "1".into());
+        meta.insert(KEY_NUM_QUBITS.into(), "4".into());
+        let bad_type_table = Table {
+            columns: vec![
+                (
+                    COLUMN_PAULI.into(),
+                    Column::Utf8(Utf8Column::from_strs(&ctx, &["IIII"]).unwrap()),
+                ),
+                (
+                    COLUMN_REAL.into(),
+                    Column::Utf8(Utf8Column::from_strs(&ctx, &["not-a-double"]).unwrap()),
+                ),
+                (
+                    COLUMN_IMAG.into(),
+                    Column::Double(ctx.copy_slice(&[0.0]).unwrap()),
+                ),
+            ],
+            metadata: meta,
+        };
+        let bad_type_path = dir.file("bad_type.parquet");
+        parquet::write_table(
+            &ctx,
+            &bad_type_path,
+            &bad_type_table,
+            &parquet::WriteOptions::default(),
+        )
+        .unwrap();
+        let err = Document::read_header(&ctx, &bad_type_path, HAMILTONIAN)
+            .err()
+            .expect("bad real column type should fail");
+        assert!(
+            err.to_string()
+                .contains("the 'real' column must hold float64 values"),
+            "{err}"
+        );
+        drop(bad_type_table);
+
+        // Wrong snapshot kind:
+        let valid_path = dir.file("valid.parquet");
+        document(&ctx, &payload())
+            .save_parquet(&ctx, &valid_path, Codec::Zstd)
+            .unwrap();
+        let err = Document::read_header(&ctx, &valid_path, "mandacaru-wavefunction-checkpoint")
+            .err()
+            .expect("wrong snapshot kind should fail");
+        assert!(
+            err.to_string().contains(
+                "is a Parquet file; only a qubit Hamiltonian is stored as Parquet"
+            ),
+            "{err}"
+        );
+
+        assert_eq!(ctx.memory_used(), 0);
     }
 }

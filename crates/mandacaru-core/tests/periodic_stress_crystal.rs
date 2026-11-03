@@ -36,9 +36,8 @@ const DENSE_GATE: f64 = 1e-7;
 const SCF_TOLERANCE: f64 = 1e-13;
 const SCF_DENSITY_TOLERANCE: f64 = 1e-11;
 const STEP: f64 = 1e-5;
-/// The step of the nonlinear difference: the kinks of the shape tables are crossed by a number of
-/// frequencies that grows with the step, and nothing is held at zero there.
-const FREE_STEP: f64 = 2.5e-6;
+/// The steps of the nonlinear difference: the kinks of the shape tables are crossed by a number
+/// of frequencies that grows with the step, and nothing is held at zero there.
 const FREE_STEPS: [f64; 4] = [2.5e-6, 5e-6, 1e-5, 2e-5];
 const DENSE_STEP: f64 = 2e-5;
 /// Rebuilt-versus-SCF energy: the quantity differs only by roundoff of two assemblies.
@@ -269,7 +268,7 @@ fn the_stress_of_a_converged_lih_state() {
         "the oracle's xc evaluation is not the production one: {tie:.2e}"
     );
     fields.xc.potential = output.xc.as_slice().to_vec();
-    let got = w.with_setup(Some(vectors), |setup, frozen| {
+    let got = w.with_setup(Some(vectors.clone()), |setup, frozen| {
         let frozen = mandacaru_core::periodic::gradient::Frozen {
             state: frozen.state.clone(),
             fields: fields.clone(),
@@ -347,10 +346,6 @@ fn the_stress_of_a_converged_lih_state() {
         (f0 - scf_energy).abs() < 1e-7,
         "the strained functional at eps = 0 is not the SCF energy"
     );
-    // The central difference of the whole functional has a roundoff floor (the carried state is a
-    // chain of an eigendecomposition and sums of 1 Ha, noise about 1e-15 over the step) that falls
-    // with the step and a table-kink floor that grows with it; the sweep reports both and the
-    // gate is the best step.
     // Stationarity of F in the orbitals: rotating an occupied orbital into a virtual one must not
     // change F at first order (the Lowdin-carry identity the analytic route rests on needs
     // H C = S C eps for the operator that is the exact derivative of this energy).
@@ -380,8 +375,10 @@ fn the_stress_of_a_converged_lih_state() {
             "  stationarity: worst dF/d(rotation) {worst:.2e} Ha over {occupied} occupied orbitals"
         );
     }
-    let mut best = f64::INFINITY;
-    let mut chosen = [[0.; 3]; 3];
+    // The central difference of the whole functional has a roundoff floor (an eigendecomposition
+    // and sums of 1 Ha, noise about 1e-15 over the step: it falls with the step) and a table-kink
+    // floor that grows with it; every step of the sweep must meet the gate.
+    let mut last = [[0.; 3]; 3];
     for step in FREE_STEPS {
         let mut free = [[0.; 3]; 3];
         for a in 0..3 {
@@ -393,22 +390,34 @@ fn the_stress_of_a_converged_lih_state() {
                 free[a][b] = (plus - minus) / (2. * step);
             }
         }
-        let m = periodic_stress_support::gates::miss(&analytic.gradient, &free);
-        println!(
-            "  step {step:.1e}: miss {m:.2e} of the peak {:.3e}",
-            periodic_stress_support::gates::peak(&free)
+        gate(
+            &format!("converged LiH stress against the nonlinear F(eps), step {step:.1e}"),
+            &analytic.gradient,
+            &free,
+            DENSE_GATE,
         );
-        if m < best {
-            best = m;
-            chosen = free;
-        }
+        last = free;
     }
-    gate(
-        "converged LiH stress against the nonlinear F(eps), best step",
-        &analytic.gradient,
-        &chosen,
-        DENSE_GATE,
-    );
+    // A stress without any one of its terms misses the whole functional.
+    for (name, term) in analytic.breakdown.terms() {
+        if periodic_stress_support::gates::peak(term) == 0. {
+            // The local functional has no gradient term, a scalar semilocal crystal no spin-orbit and
+            // no exchange term: nothing to remove.
+            assert!(
+                matches!(name, "xc_gradient" | "spin_orbit" | "exchange"),
+                "{name}"
+            );
+            continue;
+        }
+        let without =
+            periodic_stress_support::gates::map(&analytic.gradient, |a, b, x| x - term[a][b]);
+        periodic_stress_support::gates::bites(
+            &format!("stress without {name} against F(eps)"),
+            &without,
+            &last,
+            DENSE_GATE,
+        );
+    }
     println!(
         "  pressure of that functional {:.6e} Ha/Bohr^3",
         analytic.pressure()

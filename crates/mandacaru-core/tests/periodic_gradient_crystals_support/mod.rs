@@ -48,6 +48,7 @@ pub const SIGMA_FACTOR: f64 = 1.4;
 pub mod altered;
 pub mod build;
 pub mod gates;
+pub mod mesh;
 
 pub fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

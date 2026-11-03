@@ -1,5 +1,5 @@
 //! CF-4 refusals: what the crystal force engine does not differentiate raises with the cause,
-//! taken from the crystal itself (a hybrid without its PAW spheres, meta-GGA, rVV10, a spinor hybrid,
+//! taken from the crystal itself (a hybrid without its PAW spheres, meta-GGA, rVV10, a magnetic spinor hybrid,
 //! float32, DFT+U, a k mesh reduced by space-group symmetry; collinear spin-polarized crystals are
 //! differentiated since F1), the same
 //! refusals on a real HYBRID crystal (HX-W lifts only the plain hybrid), and a geometry that
@@ -97,8 +97,12 @@ fn what_is_not_differentiated_raises_with_the_cause() {
 fn a_hybrid_crystal_is_differentiated_and_its_other_refusals_stand() {
     let mut data = Data::load("lih_hse06");
     scf::refuse(&data.crystal).expect("the hybrid crystal with its spheres is supported");
+    // A spinor hybrid is differentiated, time-reversal symmetric (F2a) or magnetic (F2b).
     data.crystal.spinor = true;
-    assert!(cause(scf::refuse(&data.crystal)).contains("spinor hybrid"));
+    scf::refuse(&data.crystal).expect("a magnetic spinor hybrid is supported");
+    data.crystal.time_reversal = true;
+    scf::refuse(&data.crystal).expect("a time-reversal-symmetric spinor hybrid is supported");
+    data.crystal.time_reversal = false;
     data.crystal.spinor = false;
     data.crystal.precision = Precision::Float32;
     assert!(cause(scf::refuse(&data.crystal)).contains("float32"));

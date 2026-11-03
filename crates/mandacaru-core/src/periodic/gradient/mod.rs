@@ -58,9 +58,10 @@
 //!
 //! Atomic units; derivatives and the [`Breakdown`] are `dE/dtau` (the force is the negative);
 //! every contraction is per spin channel times `Layout::degeneracy`. The collinear
-//! scalar-relativistic LDA/PBE/HSE06 case (restricted or collinear spin-polarized) and the spinor (spin-orbit) LDA/PBE case with float64
-//! data are supported; [`gradient`] raises `Unsupported` for meta-GGA, rVV10, a spinor hybrid and
-//! float32 requests. Derivative data are requested one k-point at a time and dropped after use.
+//! scalar-relativistic LDA/PBE/HSE06 case (restricted or collinear spin-polarized) and the spinor
+//! (spin-orbit) LDA/PBE/HSE06 case with float64 data are supported (a spinor hybrid only for the
+//! time-reversal-symmetric crystal [`Crystal`](crate::periodic::Crystal) can build); [`gradient`]
+//! raises `Unsupported` for meta-GGA, rVV10 and float32 requests. Derivative data are requested one k-point at a time and dropped after use.
 //!
 //! # The spinor frame (the contract of a spinor provider)
 //!
@@ -74,8 +75,9 @@
 //! [`Derivatives::spin_orbit_projection`], and [`SpinOrbit::add_k`] contracts them with the
 //! full `2M x 2M` density of the frozen state, once per k-point, in [`pulay::contract`]
 //! (`Breakdown::spin_orbit_rows` / `spin_orbit_columns`). A provider without spin-orbit data
-//! raises `Unsupported`, never a zero term. [`gradient`] differentiates the LDA/PBE spinor;
-//! a spinor hybrid (stage 3), DFT+U, a meta-GGA and float32 raise with their cause.
+//! raises `Unsupported`, never a zero term. [`gradient`] differentiates the LDA/PBE/HSE06
+//! spinor; DFT+U, a meta-GGA and float32 raise with their cause. The exact-exchange response of
+//! a spinor is in the scalar frame of one spin block ([`exchange`]).
 pub mod core;
 pub mod electrostatic;
 pub mod exchange;
@@ -341,9 +343,6 @@ pub fn check_request(request: &Request) -> Result<()> {
         )))
     };
     let definition = models::functional(&request.functional)?;
-    if request.spinor && is_hybrid(request)? {
-        return refuse("a spinor hybrid (HSE06 with spin-orbit coupling)");
-    }
     if request.single_precision {
         return refuse("float32 data");
     }
@@ -392,12 +391,6 @@ pub fn gradient<D: Derivatives>(
 pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Breakdown> {
     validate(d)?;
     frozen.state.check(d)?;
-    // Reached directly with a hand-built state, a spinor hybrid would drop its exact exchange.
-    if d.layout().request.spinor && is_hybrid(&d.layout().request)? {
-        return Err(Error::Unsupported(
-            "crystal forces are not available for a spinor hybrid".into(),
-        ));
-    }
     let matrix = pulay::contract(d, frozen)?;
     let explicit = hellmann_feynman::explicit(d, frozen)?;
     let exchange = if is_hybrid(&d.layout().request)? {

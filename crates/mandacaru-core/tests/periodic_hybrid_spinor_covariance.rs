@@ -19,6 +19,17 @@ fn fixture() -> (Crystal, Rig) {
     (c, rig)
 }
 
+/// The same crystal NOT flagged time-reversal symmetric: the one a magnetic density (every spin
+/// block populated) may be fed to, because its spheres evaluate the non-collinear remainder (a
+/// flagged crystal raises on a magnetized sphere).
+fn magnetic_fixture() -> (Crystal, Rig) {
+    let c = hybrid(&context(), NAME, &|v| {
+        v["time_reversal"] = serde_json::json!(false)
+    });
+    let rig = Rig::new(NAME, &c);
+    (c, rig)
+}
+
 fn worst(c: &Crystal, a: &[Matrix], b: &[Matrix]) -> f64 {
     (0..c.points.len())
         .map(|k| relative(&a[k], &b[k]))
@@ -52,9 +63,8 @@ fn transverse(c: &Crystal, d: &[Matrix]) -> f64 {
 }
 
 #[test]
-#[ignore = "blocked by the SH-2 time-reversal guard: a magnetic D on a time-reversal-flagged crystal is refused, and an unflagged spinor hybrid is refused until periodic::fields::evaluate takes the spin layout (SH-2 log, section 4); green in the scratch copy with that edit"]
 fn the_exchange_is_su2_covariant_with_every_spin_block_populated() {
-    let (c, _) = fixture();
+    let (c, _) = magnetic_fixture();
     let m = c.m;
     let (u, w) = (su2(0.0), su2(1.3));
     let d = rotated_polarized(&c, 5, 3, &u);
@@ -177,6 +187,8 @@ fn the_energy_is_the_trace_and_needs_the_cross_spin_blocks() {
 /// translated by `shift`.
 fn translated(shift: [f64; 3], with_atoms: bool) -> Crystal {
     hybrid(&context(), NAME, &|v| {
+        // A magnetic density is fed to it: not flagged time-reversal symmetric, as `magnetic_fixture`.
+        v["time_reversal"] = serde_json::json!(false);
         for a in 0..3 {
             let origin = v["grid"]["origin"][a].as_f64().unwrap();
             v["grid"]["origin"][a] = serde_json::json!(origin + shift[a]);
@@ -190,10 +202,9 @@ fn translated(shift: [f64; 3], with_atoms: bool) -> Crystal {
 }
 
 #[test]
-#[ignore = "blocked by the SH-2 time-reversal guard: a magnetic D on a time-reversal-flagged crystal is refused, and an unflagged spinor hybrid is refused until periodic::fields::evaluate takes the spin layout (SH-2 log, section 4); green in the scratch copy with that edit"]
 fn translating_the_crystal_leaves_the_complex_k_operator_unchanged() {
     // The Bloch phases of the pair densities and of the compensation charges must cancel (plan g-S6).
-    let (c, _) = fixture();
+    let (c, _) = magnetic_fixture();
     let shift = [0.37, -0.91, 1.43];
     let moved = translated(shift, true);
     let d = rotated_polarized(&c, 5, 3, &su2(0.2));

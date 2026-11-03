@@ -42,9 +42,9 @@ pub const HEAVY: [&str; 5] = [
     "lda-sr_U",
 ];
 
-/// The recipe the frozen dataset was generated with: its options, and the remedy of the ghost
-/// search when the selected attempt was not the first construction.
-pub fn recipe_of(f: &Frozen) -> Recipe {
+/// The recipe of the first construction of a frozen dataset: its options, no remedy (the start
+/// of the ghost search).
+pub fn base_recipe_of(f: &Frozen) -> Recipe {
     let doc = &f.doc;
     let (set, element) = (
         doc["set"].as_str().unwrap(),
@@ -56,12 +56,19 @@ pub fn recipe_of(f: &Frozen) -> Recipe {
         Some("dirac") => Treatment::Dirac,
         other => panic!("{set} {element}: relativity {other:?} is not in the freeze"),
     };
-    let mut recipe = if set == "upaw" {
+    if set == "upaw" {
         Recipe::upaw(element, functional, relativity)
     } else {
         Recipe::for_dataset(element, functional, relativity)
     }
-    .unwrap();
+    .unwrap()
+}
+
+/// The recipe the frozen dataset was generated with: its options, and the remedy of the ghost
+/// search when the selected attempt was not the first construction.
+pub fn recipe_of(f: &Frozen) -> Recipe {
+    let mut recipe = base_recipe_of(f);
+    let doc = &f.doc;
     let search = &doc["ghost_free"];
     let selected = search["selected_index"].as_u64().unwrap();
     let attempt = search["attempts"]

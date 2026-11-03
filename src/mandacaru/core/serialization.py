@@ -410,37 +410,10 @@ def read_hamiltonian_header(path, format: str | None = None, *,
     path = os.fspath(path)
     if not os.path.exists(path):
         raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
-    format = _checked_format(path, format)
-    from .._native import Context, read_parquet_metadata
-    context = Context(**dict(resources or {}))
-    if format == "json":
-        payload = json.loads(context.read_snapshot(path, FORMAT_TAG).json)
-        n_terms = len(payload["terms"])
-    else:
-        footer = read_parquet_metadata(context, path)
-        meta = footer["metadata"]
-        if meta.get("mandacaru.format") != FORMAT_TAG:
-            raise ValueError(
-                f"{path!r} is not a Mandacaru qubit-Hamiltonian Parquet file "
-                f"(expected mandacaru.format = {FORMAT_TAG!r})")
-        for key in ("mandacaru.version", "mandacaru.num_qubits"):
-            if key not in meta:
-                raise ValueError(f"{path!r} lacks the {key!r} metadata")
-        if int(meta["mandacaru.version"]) != FORMAT_VERSION:
-            raise ValueError(
-                f"{path!r} uses Hamiltonian format version "
-                f"{meta['mandacaru.version']}, but this build understands "
-                f"version {FORMAT_VERSION}")
-        payload = {
-            "num_qubits": int(meta["mandacaru.num_qubits"]),
-            "mapping": meta.get("mandacaru.mapping", "jordan_wigner"),
-            "num_particles": json.loads(
-                meta.get("mandacaru.num_particles", "null")),
-            "n_spatial_orbitals": json.loads(
-                meta.get("mandacaru.n_spatial_orbitals", "null")),
-            "metadata": json.loads(meta.get("mandacaru.metadata", "{}")),
-        }
-        n_terms = int(footer["num_rows"])
+    _checked_format(path, format)
+    from .._native import Context
+    snapshot = Context(**dict(resources or {})).read_snapshot_header(path, FORMAT_TAG)
+    payload = json.loads(snapshot.json)
     n_orbitals = payload["n_spatial_orbitals"]
     return HamiltonianHeader(
         num_qubits=int(payload["num_qubits"]),
@@ -448,4 +421,4 @@ def read_hamiltonian_header(path, format: str | None = None, *,
         num_particles=_particles(payload["num_particles"]),
         n_spatial_orbitals=None if n_orbitals is None else int(n_orbitals),
         metadata=payload["metadata"],
-        n_terms=n_terms)
+        n_terms=int(payload["n_terms"]))

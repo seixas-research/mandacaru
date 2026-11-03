@@ -1,7 +1,7 @@
 //! Python bindings for crystal symmetry detection and space group identification.
 use crate::arrays::{array, error, layout};
 use crate::context::PyContext;
-use mandacaru_core::periodic::space_group::{find, identify, Cell};
+use mandacaru_core::periodic::space_group::{find, find_with_context, identify, Cell};
 use nalgebra::Matrix3;
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -66,14 +66,22 @@ pub fn crystal_symmetry<'py>(
     let num_slice = numbers.as_slice()?;
     let labels: Vec<u32> = num_slice.iter().map(|&z| z as u32).collect();
 
-    let crystal_cell = Cell {
-        lattice: lat_matrix,
-        fractional: &frac_positions,
-        labels: &labels,
-    };
-
-    let ops = find(&crystal_cell, symprec).map_err(error)?;
-    let id = identify(&ops, &crystal_cell).map_err(error)?;
+    let ctx_opt = _context.map(|c| c.borrow().inner.clone());
+    let (ops, id) = py
+        .detach(|| {
+            let crystal_cell = Cell {
+                lattice: lat_matrix,
+                fractional: &frac_positions,
+                labels: &labels,
+            };
+            let ops = match &ctx_opt {
+                Some(ctx) => find_with_context(ctx, &crystal_cell, symprec)?,
+                None => find(&crystal_cell, symprec)?,
+            };
+            let id = identify(&ops, &crystal_cell)?;
+            Ok::<_, mandacaru_core::Error>((ops, id))
+        })
+        .map_err(error)?;
 
     let n_ops = ops.rotations.len();
     let mut rot_flat = Vec::with_capacity(n_ops * 9);
@@ -97,10 +105,13 @@ pub fn crystal_symmetry<'py>(
     let py_rotations = array(py, &[n_ops, 3, 3], rot_flat)?;
     let py_translations = array(py, &[n_ops, 3], trans_flat)?;
 
+    let pg_symbol = mandacaru_core::periodic::space_group::catalog::lookup(id.number)
+        .map(|g| g.point_group)
+        .unwrap_or(ops.point_group.symbol);
     let dict = PyDict::new(py);
     dict.set_item("number", id.number)?;
     dict.set_item("international", id.symbol)?;
-    dict.set_item("point_group", ops.point_group.symbol)?;
+    dict.set_item("point_group", pg_symbol)?;
     dict.set_item("rotations", py_rotations)?;
     dict.set_item("translations", py_translations)?;
     dict.set_item("n_operations", n_ops)?;

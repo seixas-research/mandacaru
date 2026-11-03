@@ -145,6 +145,71 @@ impl Spinor {
         }
     }
 
+    /// The scalar SPIN-POLARIZED frozen case `scalar` (`spins = 2`) as a MAGNETIC spinor crystal
+    /// (`time_reversal = false`: four live fields, the eigenframe functional) with no spin-orbit
+    /// coupling, whose initial magnetization points along `direction`. With the coupling off the
+    /// energy is invariant under a global spin rotation, so every converged state is the scalar
+    /// unrestricted one turned to `direction`: the free energy and the force are the scalar oracle's
+    /// whatever the direction (F2b gates).
+    pub fn magnetic_twin(scalar: &'static str, direction: [f64; 3]) -> Self {
+        let manifest = manifest_of(scalar);
+        let mut snapshot = snapshot_of(scalar, &manifest);
+        assert_eq!(
+            snapshot["spins"].as_u64(),
+            Some(2),
+            "{scalar} is spin-polarized"
+        );
+        let (m, n) = (
+            snapshot["m"].as_u64().unwrap() as usize,
+            snapshot["initial"].as_array().unwrap().len(),
+        );
+        let scalar_m: Vec<f64> = snapshot["initial_m"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let norm = direction.iter().map(|x| x * x).sum::<f64>().sqrt();
+        snapshot["spinor"] = json!(true);
+        snapshot["time_reversal"] = json!(false);
+        snapshot["spins"] = json!(1);
+        snapshot["initial_m"] = json!(direction
+            .iter()
+            .flat_map(|d| scalar_m.iter().map(move |v| v * d / norm))
+            .collect::<Vec<f64>>());
+        assert_eq!(snapshot["initial_m"].as_array().unwrap().len(), 3 * n);
+        for point in snapshot["kpoints"].as_array_mut().unwrap() {
+            point["spin_orbit"] = json!(vec![[0.0, 0.0]; 4 * m * m]);
+        }
+        let data = Data::build(scalar, manifest, snapshot);
+        let ctx = &data.crystal.context;
+        // The `lda-fr` Si record is a stand-in for the union projector list on every center (any
+        // list gives `B = 0` at zero coupling); its coupling is zeroed, as in `zero_soc_twin`.
+        let library = PawDataset::read(ctx, &paw_root().join("lda-fr/Si.parquet")).unwrap();
+        let refs: Vec<&PawDataset> = data.atoms.iter().map(|_| &library).collect();
+        let (projectors, mut couplings) = union_list(ctx, &refs, &data.centers());
+        for c in couplings.values_mut() {
+            c.values.iter_mut().for_each(|v| *v = 0.0);
+        }
+        Self {
+            data,
+            projectors,
+            couplings,
+        }
+    }
+
+    /// A time-reversal-symmetric spinor case (`case`) flagged MAGNETIC (`time_reversal = false`) with
+    /// a zero initial moment: the four-field branch of the functional and of the spheres runs, the
+    /// moment stays zero, and the answer is the time-reversal crystal's.
+    pub fn magnetic_flagged(case: &'static str) -> Self {
+        let manifest = manifest_of(case);
+        let mut snapshot = snapshot_of(case, &manifest);
+        let n = snapshot["initial"].as_array().unwrap().len();
+        snapshot["time_reversal"] = json!(false);
+        snapshot["initial_m"] = json!(vec![0.0; 3 * n]);
+        Self::from_data(Data::build(case, manifest, snapshot))
+    }
+
     /// The provider tied to the crystal, with the spin-orbit data. `cores` must outlive it.
     pub fn provider<'a>(&'a self, cores: &'a [Option<Core<'a>>]) -> SetupDerivatives<'a> {
         provider(&self.data, cores)
@@ -206,4 +271,45 @@ pub fn moment(data: &Data, result: &PeriodicResult) -> [f64; 3] {
             })
             .sum()
     })
+}
+
+/// The length of a vector.
+pub fn norm(v: [f64; 3]) -> f64 {
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+/// The converged `moment` is a magnetic state pointing along `direction` (the start of the SCF),
+/// asserted before any comparison so that it cannot be vacuous: its norm is above `size`, its unit
+/// direction equals the start's to `tolerance`, and every Cartesian component the start has is
+/// above `floor` of the unit vector (so the transverse spin blocks are populated).
+pub fn assert_direction(
+    moment: [f64; 3],
+    direction: [f64; 3],
+    size: f64,
+    floor: f64,
+    tolerance: f64,
+) {
+    let length = norm(moment);
+    assert!(length > size, "the moment must survive: {moment:?}");
+    let unit = direction.map(|d| d / norm(direction));
+    for a in 0..3 {
+        let along = moment[a] / length;
+        assert!(
+            (along - unit[a]).abs() < tolerance,
+            "component {a} of the converged direction {along} against the start {}",
+            unit[a]
+        );
+        assert!(
+            unit[a] == 0. || along.abs() > floor,
+            "component {a} of the direction is below the floor: {along}"
+        );
+    }
+}
+
+/// The largest entry of the difference of two force lists.
+pub fn largest_gap(a: &[[f64; 3]], b: &[[f64; 3]]) -> f64 {
+    a.iter()
+        .zip(b)
+        .flat_map(|(a, b)| (0..3).map(move |i| (a[i] - b[i]).abs()))
+        .fold(0f64, f64::max)
 }

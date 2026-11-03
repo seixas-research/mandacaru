@@ -32,16 +32,36 @@
 //!   E-6 short-range ion compensation, E-7 ion constants.
 //! * [`xc`]: X-1 Jacobian, X-3 GGA spectral gradient, X-4 partial core (X-2, the xc potential
 //!   through `rho_i`, is inside S-3).
+//! * [`spin_orbit`] (AS-8): SO-1, the spin-orbit union-projector term of a spinor crystal.
+//! * [`hybrid`] (AS-9, AS-10): H-1..H-6, the explicit derivative of the screened exact exchange at
+//!   fixed `D` of a scalar collinear or a spinor hybrid, entered through [`stress_hybrid`] (the
+//!   semilocal terms are those above, with `W` from the bands of the hybrid Hamiltonian; a
+//!   spinor adds SO-1 and the `2m` rows of the pair pass, and no term of its own).
 //!
-//! [`stress`] raises `Unsupported` for hybrids, spin-orbit, meta-GGA, rVV10, float32 and
-//! `spins != 1` until their packages; a missing term would give a silently wrong stress, so a
+//! # The spinor frame (AS-8)
+//!
+//! A spinor request is presented in the DOUBLED frame of the force engine
+//! ([`gradient::spinor`](super::gradient::spinor)): `Layout::m = 2M`, `p = 2P`, the overlap, the
+//! kinetic and short-range matrices, the projections, `B_a`, `q` and `D_ion` as `I2 x (.)`, the local
+//! term as the Pauli sum of the four channel tangents (SO-2), `W` the `2M x 2M` one built with
+//! `blockdiag(L, L)`. The contraction algebra of [`pulay`] is unchanged: `tr[D (I2 x dS)]` is the
+//! spin trace, `tr[D pauli_sum(dV)] = sum_a tr[component_a(D) dV^a]`. The spin-orbit matrix is
+//! not of that form (its projections stay in the scalar frame) and is contracted separately
+//! (SO-1). The xc terms are the scalar ones on the arrays of the local eigenframe
+//! (`n_up/dn = (n +- |m|)/2`, SO-3): the pointwise rotation holds the node values fixed, and the
+//! spectral gradient strain acts after it. The strain acts on space only (`T (x) I2`).
+//!
+//! [`stress`] raises `Unsupported` for hybrids (they go through [`stress_hybrid`]), meta-GGA, rVV10, float32 and `spins != 1` until their packages; a missing term would give a silently wrong stress, so a
 //! provider that cannot supply a term raises, it never returns zero.
+pub mod crystal;
 pub mod electrostatic;
+pub mod hybrid;
 pub mod pulay;
+pub mod spin_orbit;
 pub mod xc;
 
 use super::{
-    gradient::{Frozen, Layout, Matrix, Term},
+    gradient::{Frozen, Layout, Matrix, SpinOrbit, Term},
     invalid,
 };
 use crate::{models, quantum::C64, Error, Result};
@@ -99,6 +119,25 @@ pub trait Strain {
     fn constants(&self) -> Result<Tensor<f64>>;
     /// X-1, X-3, X-4.
     fn xc(&self, fields: &Self::Fields) -> Result<xc::Terms>;
+
+    /// The spin-orbit operator `B` of a spinor crystal ([`SpinOrbit`]). A provider without
+    /// spin-orbit data raises `Unsupported` (never an empty operator).
+    fn spin_orbit(&self) -> Result<&SpinOrbit> {
+        Err(no_spin_orbit())
+    }
+    /// `C^SO_k` (`m x p_so`): the projections of the Bloch sums on the spin-orbit union
+    /// projectors, in the scalar frame.
+    fn spin_orbit_projection(&self, _k: usize) -> Result<Matrix> {
+        Err(no_spin_orbit())
+    }
+    /// `dC^SO_ab` (`m x p_so`), the quadrature spheres rigid about their atoms.
+    fn spin_orbit_strain(&self, _k: usize) -> Result<Tensor<Matrix>> {
+        Err(no_spin_orbit())
+    }
+}
+
+fn no_spin_orbit() -> Error {
+    Error::Unsupported("this strain provider carries no spin-orbit projectors".into())
 }
 
 /// `dF/d eps_ab` term by term, so a caller can report, gate or damage one term.
@@ -119,10 +158,17 @@ pub struct Breakdown {
     pub xc_jacobian: Tensor<f64>,
     pub xc_gradient: Tensor<f64>,
     pub xc_core: Tensor<f64>,
+    /// SO-1, zero for a scalar crystal.
+    pub spin_orbit: Tensor<f64>,
+    /// H-1..H-6, the explicit derivative of the screened exact exchange at fixed `D` (AS-9): the
+    /// sum of `exchange_parts`, zero for a semilocal crystal.
+    pub exchange: Tensor<f64>,
+    /// The terms of `exchange`, `None` for a semilocal crystal.
+    pub exchange_parts: Option<hybrid::Terms>,
 }
 
 impl Breakdown {
-    pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 15] {
+    pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 17] {
         [
             ("overlap", &self.overlap),
             ("kinetic", &self.kinetic),
@@ -139,6 +185,8 @@ impl Breakdown {
             ("xc_jacobian", &self.xc_jacobian),
             ("xc_gradient", &self.xc_gradient),
             ("xc_core", &self.xc_core),
+            ("spin_orbit", &self.spin_orbit),
+            ("exchange", &self.exchange),
         ]
     }
 
@@ -195,8 +243,19 @@ impl Stress {
     }
 }
 
-/// Raises for everything this module does not differentiate yet.
+/// Raises for everything this module does not differentiate yet. A hybrid functional is refused
+/// here: its exchange terms enter through [`stress_hybrid`].
 pub fn check_request(layout: &Layout) -> Result<()> {
+    check(layout, false)
+}
+
+/// The request of [`stress_hybrid`]: a hybrid (scalar collinear or spinor), and the refusals of
+/// [`check_request`] otherwise.
+pub fn check_hybrid_request(layout: &Layout) -> Result<()> {
+    check(layout, true)
+}
+
+fn check(layout: &Layout, hybrid: bool) -> Result<()> {
     let refuse = |what: &str| {
         Err(Error::Unsupported(format!(
             "the analytic crystal stress is not available for {what}"
@@ -204,11 +263,12 @@ pub fn check_request(layout: &Layout) -> Result<()> {
     };
     let request = &layout.request;
     let definition = models::functional(&request.functional)?;
-    if definition.screened_exchange.is_some() {
-        return refuse("a hybrid functional (the hybrid strain terms are AS-9)");
-    }
-    if request.spinor {
-        return refuse("a spinor crystal (the spin-orbit strain terms are AS-8)");
+    if definition.screened_exchange.is_some() != hybrid {
+        return refuse(if hybrid {
+            "a functional without screened exact exchange through the hybrid entry"
+        } else {
+            "a hybrid functional through the semilocal entry (its exchange terms enter through stress_hybrid)"
+        });
     }
     if request.single_precision {
         return refuse("float32 data");
@@ -276,6 +336,22 @@ pub fn stress<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Stress> {
     Ok(Stress::new(contract(s, frozen)?, s.volume()))
 }
 
+/// The stress of a scalar collinear HYBRID crystal (AS-9): every semilocal term of [`contract`]
+/// (with `W` built from the bands of the hybrid Hamiltonian, which is the frozen state's job)
+/// plus the explicit derivative of the screened exact exchange, [`hybrid::exchange_terms`].
+pub fn stress_hybrid<S: Strain>(
+    s: &S,
+    frozen: &Frozen<S::Fields>,
+    exchange: hybrid::Terms,
+) -> Result<Stress> {
+    check_hybrid_request(s.layout())?;
+    validate(s, frozen)?;
+    let mut breakdown = contract(s, frozen)?;
+    breakdown.exchange = exchange.total();
+    breakdown.exchange_parts = Some(exchange);
+    Ok(Stress::new(breakdown, s.volume()))
+}
+
 /// The term-by-term contraction on a consistent frozen state.
 pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Breakdown> {
     validate(s, frozen)?;
@@ -300,5 +376,8 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Breakdow
         xc_jacobian: xc.jacobian,
         xc_gradient: xc.gradient,
         xc_core: xc.core,
+        spin_orbit: matrix.spin_orbit,
+        exchange: [[0.; 3]; 3],
+        exchange_parts: None,
     })
 }

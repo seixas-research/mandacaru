@@ -78,15 +78,6 @@ impl Hybrid {
                  snapshot has no 'sites' block (atom centers, projector basis, dataset files)",
             ));
         }
-        if spinor && !time_reversal {
-            return Err(invalid(
-                "a magnetic spinor hybrid is not available: the spin-density functional of the \
-                 spheres (the non-collinear remainder) is implemented, but the grid functional of \
-                 a screened hybrid cannot take the four non-collinear fields yet \
-                 (periodic::fields::evaluate reads its spin layout from the crystal's single \
-                 spinor block)",
-            ));
-        }
         let centers = sites["centers"]
             .as_array()
             .ok_or_else(|| invalid("the sites block needs the atom centers"))?;

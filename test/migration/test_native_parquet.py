@@ -761,3 +761,44 @@ def test_the_native_parquet_path_imports_no_python_parquet_package():
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
     assert "ok" in done.stdout
+
+
+def test_context_parquet_methods_match_module_functions(tmp_path):
+    ctx = _native.Context(threads=1)
+    columns = special_columns()
+    metadata = {"key1": "val1", "key2": "val2", "desc": "Context parquet parity"}
+    path_ctx = tmp_path / "from_ctx.parquet"
+    path_mod = tmp_path / "from_mod.parquet"
+
+    ctx.write_parquet(str(path_ctx), columns, metadata)
+    _native.write_parquet(ctx, str(path_mod), columns, metadata)
+
+    # Deterministic output: both methods emit bit-identical files.
+    assert path_ctx.read_bytes() == path_mod.read_bytes()
+
+    # read_parquet_metadata parity.
+    meta_from_ctx = ctx.read_parquet_metadata(str(path_ctx))
+    meta_from_mod = _native.read_parquet_metadata(ctx, str(path_ctx))
+    assert meta_from_ctx == meta_from_mod
+
+    # read_parquet parity.
+    table_from_ctx = ctx.read_parquet(str(path_ctx))
+    table_from_mod = _native.read_parquet(ctx, str(path_ctx))
+    assert table_from_ctx["num_rows"] == table_from_mod["num_rows"]
+    assert table_from_ctx["metadata"] == table_from_mod["metadata"]
+    assert list(table_from_ctx["columns"]) == list(table_from_mod["columns"])
+    for col_name in columns:
+        col_ctx = table_from_ctx["columns"][col_name]
+        col_mod = table_from_mod["columns"][col_name]
+        if isinstance(col_ctx, list):
+            assert col_ctx == col_mod
+        else:
+            np.testing.assert_array_equal(col_ctx, col_mod)
+
+    # Cross-reading: Context method reads module-written file and vice versa.
+    cross_table = ctx.read_parquet(str(path_mod))
+    assert cross_table["num_rows"] == table_from_mod["num_rows"]
+    cross_meta = _native.read_parquet_metadata(ctx, str(path_mod))
+    assert cross_meta == meta_from_ctx
+
+    assert ctx.memory_used_bytes == 0

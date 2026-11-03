@@ -49,9 +49,10 @@ pub enum Wrong {
     DegeneracyTwo,
     /// Spin-polarized: the spin-down bands replaced by the spin-up ones.
     BandsSpinUp,
-    /// Spin-polarized hybrid: the exchange derivative of each spin taken from the OTHER spin's density
-    /// (`K` of the wrong spin).
-    ExchangeWrongSpin,
+    /// Spin-polarized hybrid: the exchange derivative of the spin-down channel taken from the spin-UP
+    /// density (the exchange of the wrong spin; swapping the two channels would change nothing, the
+    /// explicit terms being spin sums and the projection chain symmetric in the spin label).
+    ExchangeSpinUp,
     /// Spin-polarized hybrid: the spin densities summed BEFORE the exchange contraction (both channels
     /// contracted with `D_up + D_dn`, as if the exchange acted across spins).
     ExchangeSummedDensity,
@@ -268,8 +269,8 @@ impl Derivatives for Altered<'_> {
     }
     fn exchange_gradient(&self, state: &State) -> Result<hybrid_gradient::Gradient> {
         let state = match self.wrong {
-            Wrong::ExchangeWrongSpin => State {
-                bands: state.bands.iter().rev().cloned().collect(),
+            Wrong::ExchangeSpinUp => State {
+                bands: state.bands.iter().map(|_| state.bands[0].clone()).collect(),
             },
             Wrong::ExchangeSummedDensity => State {
                 bands: summed(&state.bands),

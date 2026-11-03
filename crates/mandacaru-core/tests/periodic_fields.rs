@@ -29,7 +29,7 @@ fn periodic_meta_and_nonlocal_potentials_are_derivatives_of_the_same_energy() {
         for name in ["r2scan", "pbe+rvv10", "r2scan+rvv10"] {
             c.functional = name.into();
             let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
-            let terms = fields::evaluate(&c, &mut fft, &rho, Some(&tau)).unwrap();
+            let terms = fields::evaluate(&c, &mut fft, &rho, Some(&tau), c.spins).unwrap();
             for varying_tau in [false, true] {
                 if varying_tau && terms.kinetic_potential.is_none() {
                     continue;
@@ -47,6 +47,7 @@ fn periodic_meta_and_nonlocal_potentials_are_derivatives_of_the_same_energy() {
                         &mut fft,
                         if varying_tau { &rho } else { &moved },
                         Some(if varying_tau { &moved } else { &tau }),
+                        c.spins,
                     )
                     .unwrap()
                     .energy

@@ -19,12 +19,9 @@ use mandacaru_core::periodic::gradient::gradient;
 use periodic_gradient_crystals_support::{gates::*, *};
 use serde_json::Value;
 
-/// The converged moment (Bohr magnetons) of the radical: one unpaired electron.
-const MOMENT: f64 = 1.0;
-
 /// One case: the SCF, the engine, the comparison with the frozen oracle on every coordinate, the
 /// sum rules and the egg-box ripple. One SCF serves all of it.
-fn check(case: &'static str) {
+fn check(case: &'static str, moment: f64) {
     let start = std::time::Instant::now();
     let data = Data::load(case);
     assert_eq!(data.crystal.spins, 2, "{case}: a spin-polarized snapshot");
@@ -37,7 +34,7 @@ fn check(case: &'static str) {
     );
     // The magnetic state, not a collapsed one: the moment is asserted, not assumed.
     assert!(
-        (result.magnetization - MOMENT).abs() < 0.05,
+        (result.magnetization - moment).abs() < 0.05,
         "{case}: moment {}",
         result.magnetization
     );
@@ -84,12 +81,22 @@ fn check(case: &'static str) {
 
 #[test]
 fn beh_lda_force_is_the_reconverged_finite_difference() {
-    check("beh_lda");
+    check("beh_lda", 1.0);
+}
+
+/// A metal on a 2x2x2 mesh (8 k-points, the whole mesh) with two spin channels: the common Fermi
+/// level, the partial occupations and the complex phases of the mesh through the polarized route.
+/// The SCF started with a ferromagnetic moment (1 + 1) converges to moment 0 (asserted: the
+/// frozen oracle is that non-magnetic state; a ferromagnetic Fe cell did not converge), so this is
+/// the restricted limit on a mesh, not a magnetic gate.
+#[test]
+fn ni2_lda_zero_moment_mesh_force_is_the_reconverged_finite_difference() {
+    check("ni2_lda", 0.0);
 }
 
 #[test]
 fn beh_pbe_force_is_the_reconverged_finite_difference() {
-    check("beh_pbe");
+    check("beh_pbe", 1.0);
 }
 
 /// A snapshot with another start: `initial_m` scaled (zero keeps the two spin densities equal for

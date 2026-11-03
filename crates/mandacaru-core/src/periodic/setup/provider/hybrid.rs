@@ -30,8 +30,10 @@ struct Moving<'p, 'a> {
 }
 
 impl Motion for Moving<'_, '_> {
+    /// The owners of the `M` functions of one spin block: the first `M` entries of a spinor's
+    /// doubled list (the center derivatives are scalar, a bra row `(sigma, mu)` is `owner[mu]`).
     fn owner(&self) -> &[usize] {
-        &self.provider.layout.row_owner
+        &self.provider.layout.row_owner[..self.provider.functions]
     }
 
     fn center_derivative(&self, c: &Crystal, k: usize) -> Result<[Buffer<C64>; 3]> {

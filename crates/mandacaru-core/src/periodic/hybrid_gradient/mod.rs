@@ -30,8 +30,13 @@
 //! response with [`projection_forces`] in `gradient::exchange`.
 //!
 //! The pair assembly is [`crate::periodic::screened_exchange`]'s own (`weighted_pairs`), called
-//! with tangent inputs, so a change of the energy is a change of this derivative. A spinor
-//! crystal raises: a crystal with both a hybrid functional and spin-orbit coupling is a refusal.
+//! with tangent inputs, so a change of the energy is a change of this derivative.
+//!
+//! A spinor crystal (time-reversal symmetric: [`Crystal`] only builds a spinor hybrid in that
+//! case) is the same pass with the rows doubled (`2m`, `D_spin = D`, occupation 1; SH-F1). The
+//! motion's owners and the responses are always in the SCALAR frame of one spin block: `owner`
+//! names an atom for each of the `m` functions (a bra row `(sigma, mu)` goes to `owner[mu]`) and
+//! every `Z` is `p x m`, summed over the two components because `dC/dR` is spin diagonal.
 mod chain;
 mod pass;
 mod sphere;
@@ -41,7 +46,7 @@ use super::{
     screened_exchange::{ExxDivTreatment, Screening},
     Crystal,
 };
-use crate::{math::storage::MatrixSource, quantum::C64, Buffer, Error, Result};
+use crate::{math::storage::MatrixSource, quantum::C64, Buffer, Result};
 use nalgebra::DMatrix;
 
 pub use chain::{projection_forces, ProjectionForces};
@@ -74,6 +79,23 @@ pub struct Gradient {
     pub compensation: Vec<Matrix>,
     /// The same for the one-center terms (`-a w_k O C^+ D`).
     pub sphere: Vec<Matrix>,
+    /// The terms above split by the spin component of the pair rows that produced them (one
+    /// entry, or two for a spinor): `phase`, `functions` and `compensation` are their sums. The
+    /// split is how a test builds a wrong variant (a component dropped or mislabeled) from the
+    /// production pieces.
+    pub components: Vec<Component>,
+}
+
+/// What the pair rows of ONE spin component contribute (a row `(sigma, mu)` of a spinor belongs to
+/// component `sigma`; a scalar crystal has the single component 0).
+pub struct Component {
+    pub phase: Vec<[f64; 3]>,
+    /// Per atom: the bra functions of the rows of this component moving.
+    pub bra: Vec<[f64; 3]>,
+    /// Per atom: the ket functions (the state's own component) moving.
+    pub ket: Vec<[f64; 3]>,
+    /// `Z` per (spin, k), `p x m`: this component's part of the response of the compensation moments.
+    pub compensation: Vec<Matrix>,
 }
 
 /// The basis functions of the grid pair `conj(u_m(k)) u_n(q)` moving: the bra slot (the target
@@ -115,12 +137,6 @@ pub fn explicit<M: MatrixSource>(
     augmentation: &Augmentation,
     motion: Option<&dyn Motion>,
 ) -> Result<Gradient> {
-    if c.spinor {
-        return Err(Error::Unsupported(
-            "the hybrid force of a spinor crystal: a hybrid with spin-orbit coupling is a refusal"
-                .into(),
-        ));
-    }
     if let Some(motion) = motion {
         if motion.owner().len() != c.m
             || motion
@@ -135,12 +151,33 @@ pub fn explicit<M: MatrixSource>(
     }
     let grid = pass::run(c, matrices, screening, exxdiv, augmentation, motion)?;
     let (sphere, one_center_energy) = sphere::response(c, matrices, screening, augmentation)?;
+    let atoms = augmentation.sites().atoms.len();
+    let add = |pick: &dyn Fn(&Component) -> &Vec<[f64; 3]>| -> Vec<[f64; 3]> {
+        (0..atoms)
+            .map(|atom| {
+                std::array::from_fn(|a| grid.components.iter().map(|p| pick(p)[atom][a]).sum())
+            })
+            .collect()
+    };
+    let functions = motion.map(|_| Functions {
+        bra: add(&|p| &p.bra),
+        ket: add(&|p| &p.ket),
+    });
+    let phase = add(&|p| &p.phase);
+    let compensation = (0..c.spins * c.points.len())
+        .map(|at| {
+            grid.components
+                .iter()
+                .fold(Matrix::zeros(c.p, c.m), |z, p| z + &p.compensation[at])
+        })
+        .collect();
     Ok(Gradient {
         energy: grid.energy,
         one_center_energy,
-        phase: grid.phase,
-        functions: grid.functions,
-        compensation: grid.response,
+        phase,
+        functions,
+        compensation,
         sphere,
+        components: grid.components,
     })
 }

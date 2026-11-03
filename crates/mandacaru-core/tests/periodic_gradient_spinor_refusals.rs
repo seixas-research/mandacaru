@@ -1,7 +1,7 @@
 //! CS-3 refusals and ties: what the spinor force does not differentiate raises with its cause, and
 //! the spin-orbit data of the provider must be the crystal's own.
 //!
-//! * a spinor hybrid (stage 3), a meta-GGA, rVV10 and float32 data raise with the cause named;
+//! * a hybrid without its PAW spheres, a meta-GGA, rVV10 and float32 data raise with the cause named;
 //! * a spinor request whose provider carries no spin-orbit projectors raises, never a zero term;
 //!   a scalar provider refuses spin-orbit data, and a scalar layout tied to a spinor crystal (or
 //!   the reverse) is refused;
@@ -36,7 +36,7 @@ fn refused_by_the_crystal(crystal: &mut Crystal) {
     scf::refuse(crystal).expect("a spinor LDA crystal is supported");
     let original = crystal.functional.clone();
     for (functional, word) in [
-        ("hse06", "spinor hybrid"),
+        ("hse06", "PAW spheres"),
         ("r2scan", "meta-GGA"),
         ("pbe+rvv10", "rVV10"),
     ] {

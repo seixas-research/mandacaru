@@ -4,6 +4,7 @@ pub mod classify;
 pub mod closure;
 pub mod matching;
 pub mod search;
+pub mod shift;
 pub mod standard;
 
 use super::invalid;
@@ -38,14 +39,74 @@ pub struct Operations {
     pub op_factors: Vec<(usize, usize)>,
 }
 
+pub trait ContextSource {
+    fn get_context(&self) -> Result<&crate::Context>;
+}
+
+impl ContextSource for crate::Context {
+    fn get_context(&self) -> Result<&crate::Context> {
+        Ok(self)
+    }
+}
+
+impl ContextSource for &crate::Context {
+    fn get_context(&self) -> Result<&crate::Context> {
+        Ok(*self)
+    }
+}
+
+impl ContextSource for crate::Result<crate::Context> {
+    fn get_context(&self) -> Result<&crate::Context> {
+        self.as_ref().map_err(|e| e.clone())
+    }
+}
+
+impl ContextSource for &crate::Result<crate::Context> {
+    fn get_context(&self) -> Result<&crate::Context> {
+        self.as_ref().map_err(|e| e.clone())
+    }
+}
+
+/// Find all symmetry operations of the periodic cell using context memory reservation.
+pub fn find_with_context<C: ContextSource>(ctx: C, cell: &Cell, tol: f64) -> Result<Operations> {
+    let ctx_ref = ctx.get_context()?;
+    let ops = find(cell, tol)?;
+    let bytes = (ops.n_distinct_rotations + ops.n_pure_translations) * cell.fractional.len() * 4
+        + ops.len() * 60;
+    let _guard = ctx_ref.reserve(bytes)?;
+    Ok(ops)
+}
+
 /// Identify the international space group number (1..=230) and Hermann-Mauguin symbol.
 pub fn identify(ops: &Operations, cell: &Cell) -> Result<Identity> {
+    if ops.n_pure_translations > 1 {
+        let identity = Matrix3::identity();
+        let mut pure_taus = Vec::with_capacity(ops.n_pure_translations);
+        for (w, t) in ops.rotations.iter().zip(ops.translations.iter()) {
+            if *w == identity {
+                pure_taus.push(*t);
+            }
+        }
+        if let Ok(prim_owned) = standard::primitive_cell_from_pure_translations(&pure_taus, cell, ops.tolerance_used) {
+            let prim_cell = prim_owned.as_cell();
+            if let Ok(prim_ops) = find(&prim_cell, ops.tolerance_requested) {
+                if prim_ops.point_group.order > ops.point_group.order {
+                    let standard = standard::standardize_operations(&prim_ops, &prim_cell)?;
+                    return matching::match_standard_frame(
+                        &standard,
+                        prim_ops.point_group.crystal_system,
+                        prim_ops.point_group.symbol,
+                    );
+                }
+            }
+        }
+    }
+
     let standard = standard::standardize_operations(ops, cell)?;
-    matching::match_space_group(
-        &standard.conv_operations,
+    matching::match_standard_frame(
+        &standard,
         ops.point_group.crystal_system,
         ops.point_group.symbol,
-        standard.centering,
     )
 }
 

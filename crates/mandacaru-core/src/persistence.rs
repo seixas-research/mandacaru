@@ -159,6 +159,33 @@ impl Document {
         }
         Self::parse_inner(ctx, &text, kind, memory)
     }
+    /// Reads only the header/metadata of a snapshot, returning a validated `Document`
+    /// whose payload has an empty `terms` array and `n_terms` set to the term count.
+    /// For Parquet files, never reads data pages.
+    pub fn read_header(ctx: &Context, path: &Path, kind: &str) -> Result<Self> {
+        let file = File::open(path).map_err(|e| invalid(format!("cannot open snapshot: {e}")))?;
+        drop(file);
+        if parquet::is_parquet(path)? {
+            let source = format!("'{}'", path.display());
+            let footer = parquet::read_metadata(ctx, path)?;
+            let (payload, memory) =
+                snapshot_table::header_from_footer(ctx, &footer, kind, &source)?;
+            let doc = Self {
+                payload,
+                _memory: memory,
+            };
+            doc.validate(ctx, kind)?;
+            Ok(doc)
+        } else {
+            let mut doc = Self::read(ctx, path, kind)?;
+            let n_terms = doc.payload["terms"].as_array().map_or(0, Vec::len);
+            if let Some(obj) = doc.payload.as_object_mut() {
+                obj.insert("n_terms".into(), json!(n_terms));
+                obj.insert("terms".into(), json!([]));
+            }
+            Ok(doc)
+        }
+    }
     /// Reads a Hamiltonian stored as Parquet. The table is released before the
     /// payload is validated, so the peak is the larger of the two, not their sum.
     fn read_parquet(ctx: &Context, path: &Path, kind: &str) -> Result<Self> {

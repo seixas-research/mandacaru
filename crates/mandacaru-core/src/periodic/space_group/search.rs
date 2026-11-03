@@ -13,6 +13,9 @@ pub struct SparseGrid {
 
 impl SparseGrid {
     pub fn new(xb: &[[f64; 3]], b: &Matrix3<f64>, tol: f64) -> Result<Self> {
+        if xb.len() > i32::MAX as usize {
+            return Err(invalid("too many atoms for sparse grid"));
+        }
         let b_inv = b
             .try_inverse()
             .ok_or_else(|| invalid("singular reduced basis"))?;
@@ -31,9 +34,14 @@ impl SparseGrid {
         }
 
         let mut cells: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+        let mut total_inserted = 0;
         for (idx, p) in xb.iter().enumerate() {
             let key = Self::bin_key(p, &bin_sizes, &n_bins);
             cells.entry(key).or_default().push(idx);
+            total_inserted += 1;
+        }
+        if total_inserted != xb.len() {
+            return Err(invalid("sparse grid entry count mismatch"));
         }
 
         Ok(Self {

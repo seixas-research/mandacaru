@@ -456,6 +456,54 @@ impl PyContext {
             inner,
         })
     }
+    fn read_snapshot_header(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        kind: &str,
+    ) -> PyResult<persistence::PySnapshot> {
+        let inner = py
+            .detach(|| {
+                mandacaru_core::persistence::Document::read_header(
+                    &self.inner,
+                    std::path::Path::new(path),
+                    kind,
+                )
+            })
+            .map_err(error)?;
+        Ok(persistence::PySnapshot {
+            context: self.inner.clone(),
+            inner,
+        })
+    }
+    fn read_parquet<'py>(&self, py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
+        super::parquet::read_parquet_with_ctx(&self.inner, py, path)
+    }
+    fn read_parquet_metadata<'py>(
+        &self,
+        py: Python<'py>,
+        path: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::parquet::read_parquet_metadata_with_ctx(&self.inner, py, path)
+    }
+    #[pyo3(signature = (path, columns, metadata, compression = "zstd"))]
+    fn write_parquet(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        columns: &Bound<'_, PyDict>,
+        metadata: &Bound<'_, PyDict>,
+        compression: &str,
+    ) -> PyResult<()> {
+        super::parquet::write_parquet_with_ctx(
+            &self.inner,
+            py,
+            path,
+            columns,
+            metadata,
+            compression,
+        )
+    }
     fn parse_snapshot(
         &self,
         py: Python<'_>,

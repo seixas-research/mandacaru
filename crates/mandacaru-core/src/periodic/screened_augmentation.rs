@@ -33,6 +33,10 @@
 //! at the others) and moves `K` by 2e-8 (Si) of itself. The tail of the shapes beyond the box
 //! (the on-site `tail` of the Hartree `U`) is not added: 4e-9 of `K`, 4e-7 of the
 //! compensation's own effect.
+mod strain;
+
+pub use strain::ShapeStrain;
+
 use super::{invalid, Crystal, KPoint};
 use crate::{
     math::{fft::frequency, reciprocal},

@@ -6,6 +6,14 @@
 //! The response `Z` of the projections carries its own weights (`w_k`, the spin factor, `-a/2`),
 //! so it is contracted with `dC/dR` here, one k-point at a time, by the ownership identity
 //! `dC_X = P_X G_C - G_C Q_X` of [`super::pulay`], and never joins the engine's own `z`.
+//!
+//! A spinor crystal (SH-F2) is presented to the engine in the doubled frame (`2M` rows, owners
+//! repeated per spin, `dC = I2 x dC^0`), but the exchange response is already summed over the
+//! two spin components in the scalar frame of one block ([`crate::periodic::hybrid_gradient`]:
+//! `Z` is `P x M`). It is therefore contracted with the scalar block `G_C^0` of the doubled
+//! gradient (its upper left `M x P` corner, the lower right one is the same matrix) and the
+//! scalar owners (the first `M` and `P` entries of the doubled ones): the spin trace is in `Z`,
+//! so no factor 2 enters here.
 use super::{Derivatives, State};
 use crate::{
     periodic::{hybrid_gradient::projection_forces, invalid},
@@ -36,6 +44,12 @@ impl Terms {
 pub fn contract<D: Derivatives>(d: &D, state: &State) -> Result<Terms> {
     let l = d.layout();
     let nk = l.weights.len();
+    // One spin block of the frame the response is in.
+    let (m, p) = if l.request.spinor {
+        (l.m / 2, l.p / 2)
+    } else {
+        (l.m, l.p)
+    };
     let gradient = d.exchange_gradient(state)?;
     let functions = gradient.functions.as_ref().ok_or_else(|| {
         invalid("crystal gradient: the exchange derivative must carry the basis-function terms")
@@ -45,7 +59,7 @@ pub fn contract<D: Derivatives>(d: &D, state: &State) -> Result<Terms> {
         || functions.bra.len() != l.atoms
         || functions.ket.len() != l.atoms
         || response.len() != l.spins * nk
-        || response.iter().any(|z| z.shape() != (l.p, l.m))
+        || response.iter().any(|z| z.shape() != (p, m))
     {
         return Err(invalid(
             "crystal gradient: the exchange derivative disagrees with the layout \
@@ -56,9 +70,20 @@ pub fn contract<D: Derivatives>(d: &D, state: &State) -> Result<Terms> {
     out.phase.clone_from(&gradient.phase);
     out.functions = functions.total();
     for k in 0..nk {
-        let gc = [d.projection_gradient(k)?];
+        let mut gc = d.projection_gradient(k)?;
+        if l.request.spinor {
+            for g in gc.iter_mut() {
+                *g = g.view((0, 0), (m, p)).into_owned();
+            }
+        }
         let z: Vec<_> = (0..l.spins).map(|s| response[s * nk + k].clone()).collect();
-        let chain = projection_forces(&z, &gc, &l.row_owner, &l.projector_owner, l.atoms)?;
+        let chain = projection_forces(
+            &z,
+            &[gc],
+            &l.row_owner[..m],
+            &l.projector_owner[..p],
+            l.atoms,
+        )?;
         for atom in 0..l.atoms {
             for a in 0..3 {
                 out.rows[atom][a] += chain.rows[atom][a];

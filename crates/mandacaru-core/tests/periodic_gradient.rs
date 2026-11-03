@@ -426,13 +426,6 @@ fn unsupported_requests_raise() {
             Box::new(|d| d.layout.request.functional = "pbe+rvv10".into()),
         ),
         (
-            "spinor hybrid",
-            Box::new(|d| {
-                d.layout.request.spinor = true;
-                d.layout.request.functional = "hse06".into();
-            }),
-        ),
-        (
             "float32",
             Box::new(|d| d.layout.request.single_precision = true),
         ),
@@ -447,9 +440,6 @@ fn unsupported_requests_raise() {
                 // it raises (never a zero term).
                 if name == "hse06" {
                     assert!(message.contains("screened exact exchange"), "{message}");
-                }
-                if name == "spinor hybrid" {
-                    assert!(message.contains("spinor hybrid"), "{message}");
                 }
             }
             other => panic!(

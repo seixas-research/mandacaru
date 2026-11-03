@@ -222,7 +222,7 @@ pub(super) fn collinear_xc(
     spins: usize,
 ) -> Result<super::fields::Terms> {
     if !matches!(c.functional.as_str(), "lda" | "pbe") {
-        return super::fields::evaluate(c, fft, rho, tau);
+        return super::fields::evaluate(c, fft, rho, tau, spins);
     }
     let n = c.grid.index.points();
     let ctx = &c.context;
@@ -319,6 +319,8 @@ pub(super) fn collinear_xc(
         energy: energy * c.grid.index.dv(),
         potential: result,
         kinetic_potential: None,
+        gradients: (c.functional == "pbe").then_some(gradients),
+        flux: (c.functional == "pbe").then_some(flux),
     })
 }
 pub(super) struct LocalPotential {
@@ -728,7 +730,9 @@ impl Crystal {
         };
         let hybrid = c.screened_exchange()?;
         if c.spinor && c.functional != "lda" && c.functional != "pbe" && hybrid.is_none() {
-            return Err(invalid("periodic spinor XC currently requires LDA, PBE or HSE06"));
+            return Err(invalid(
+                "periodic spinor XC currently requires LDA, PBE or HSE06",
+            ));
         }
         if options.max_iterations == 0
             || options.history == 0
@@ -886,6 +890,30 @@ impl Crystal {
                         StoredMatrix::new(ctx, d, archive_matrices)
                     })
                     .collect::<Result<Vec<_>>>()?;
+                // A magnetic spinor: the output state at the spin-orbit-optimal rigid orientation.
+                let (coefficients, matrices) = match super::spinor::optimal_rotation(c, &matrices)?
+                {
+                    Some(u) => {
+                        let mut turned = Vec::with_capacity(coefficients.len());
+                        for coefficient in &coefficients {
+                            turned.push(StoredMatrix::new(
+                                ctx,
+                                super::spinor::rotate_rows(&*coefficient.matrix(ctx)?, c.m, &u),
+                                archive_matrices,
+                            )?);
+                        }
+                        let mut rotated = Vec::with_capacity(matrices.len());
+                        for matrix in &matrices {
+                            rotated.push(StoredMatrix::new(
+                                ctx,
+                                super::spinor::rotate_density(&*matrix.matrix(ctx)?, c.m, &u),
+                                archive_matrices,
+                            )?);
+                        }
+                        (turned, rotated)
+                    }
+                    None => (coefficients, matrices),
+                };
                 let (output, qout) = density(c, &matrices)?;
                 let hub_out = match hub {
                     Some(h) if active => Some(h.occupations(c, &matrices)?),
