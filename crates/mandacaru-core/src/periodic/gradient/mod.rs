@@ -260,6 +260,11 @@ pub trait Derivatives {
             "this geometry provider carries no screened exact exchange".into(),
         ))
     }
+
+    /// The +U hook of this geometry provider, `None` when the provider carries no active DFT+U.
+    fn hubbard(&self) -> Option<&dyn Hubbard> {
+        None
+    }
 }
 
 fn no_spin_orbit() -> Error {
@@ -432,6 +437,7 @@ pub fn gradient<D: Derivatives>(
 ) -> Result<Breakdown> {
     check_request(&d.layout().request)?;
     validate(d)?;
+    let hubbard = hubbard.or_else(|| d.hubbard());
     contract(d, &freeze(d, input, hubbard)?)
 }
 

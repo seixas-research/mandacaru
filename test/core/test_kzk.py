@@ -215,7 +215,6 @@ class TestTheIntegratedCorrection:
         assert abs(large.correction) < abs(small.correction)
 
 
-@pytest.mark.skip(reason="TestOnARun waits for native correlated periodic state (dev_plan/FINITE_SIZE_PLAN.md)")
 class TestOnARun:
     @pytest.fixture(scope="class")
     def solved_chain(self):

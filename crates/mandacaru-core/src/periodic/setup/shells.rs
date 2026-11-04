@@ -16,7 +16,13 @@
 //! 1-Bohr bins, which does not change a value but lets the kernel cull images per block of 256
 //! consecutive points.
 use super::images::{reaching, Images, Region};
-use crate::{basis::table, kernels, kernels::ShellImages, product, Buffer, Context, Error, Result};
+use crate::{
+    basis::table,
+    kernels,
+    kernels::ShellImages,
+    math::storage::{ComplexArchiveWriter, ComplexSamples},
+    product, Buffer, Context, Error, Result,
+};
 use nalgebra::Matrix3;
 use num_complex::Complex64;
 use std::sync::Arc;
@@ -135,6 +141,62 @@ impl RowSink for DenseRows<'_> {
         let start = (k * self.functions + row) * self.points;
         self.out[start..start + self.points].copy_from_slice(values);
         Ok(())
+    }
+}
+
+/// A row sink writing directly into a resident or archived [`ComplexSamples`].
+pub struct ComplexSamplesRows<'a> {
+    samples: &'a mut ComplexSamples,
+    functions: usize,
+    points: usize,
+}
+impl<'a> ComplexSamplesRows<'a> {
+    pub fn new(samples: &'a mut ComplexSamples, functions: usize, points: usize) -> Self {
+        Self {
+            samples,
+            functions,
+            points,
+        }
+    }
+    pub fn functions(&self) -> usize {
+        self.functions
+    }
+    pub fn points(&self) -> usize {
+        self.points
+    }
+}
+impl RowSink for ComplexSamplesRows<'_> {
+    fn put(&mut self, k: usize, row: usize, values: &[Complex64]) -> Result<()> {
+        let index = k.checked_mul(self.functions).ok_or(Error::Overflow)? + row;
+        self.samples.fill_row(index, self.points, values)
+    }
+}
+
+/// A row sink writing into an archived [`ComplexArchiveWriter`].
+pub struct ArchiveRows<'a> {
+    writer: &'a ComplexArchiveWriter,
+    functions: usize,
+    points: usize,
+}
+impl<'a> ArchiveRows<'a> {
+    pub fn new(writer: &'a ComplexArchiveWriter, functions: usize, points: usize) -> Self {
+        Self {
+            writer,
+            functions,
+            points,
+        }
+    }
+    pub fn functions(&self) -> usize {
+        self.functions
+    }
+    pub fn points(&self) -> usize {
+        self.points
+    }
+}
+impl RowSink for ArchiveRows<'_> {
+    fn put(&mut self, k: usize, row: usize, values: &[Complex64]) -> Result<()> {
+        let index = k.checked_mul(self.functions).ok_or(Error::Overflow)? + row;
+        self.writer.write_row(index, values)
     }
 }
 

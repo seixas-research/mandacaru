@@ -110,6 +110,7 @@ pub fn freeze<D: Derivatives>(
     input: &State,
     hubbard: Option<&dyn Hubbard>,
 ) -> Result<Frozen<D::Fields>> {
+    let hubbard = hubbard.or_else(|| d.hubbard());
     input.check(d)?;
     let l = d.layout();
     let q = moments(d, input)?;

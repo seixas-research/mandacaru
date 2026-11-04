@@ -152,9 +152,8 @@ with `unrestricted=True` and **nonzero** initial magnetic moments: only a spin-p
 keeps the whole mesh, and zero moments do not (a spin-orbit crystal has no such option).
 One Gamma point needs neither. PAW geometry
 and dataset assembly still go through a Python adapter. Forces and stress of crystals are computed via `atoms.get_forces()` and
-`atoms.get_stress()` as central finite differences of the energy through ASE (one SCF per
-displacement, so they cost many SCFs and are not analytic); for a hybrid the energy
-includes the one-center screened terms, and there is no analytic hybrid derivative.
+`atoms.get_stress()` as analytic Rust gradients of the converged Kohn–Sham state for LDA, PBE, and
+HSE06 (restricted and collinear spin-polarized forces; restricted stress, scalar and spinor; for a hybrid the analytic force and stress carry the one-center screened and compensation terms). Forces and stress for a DFT+U crystal, r2SCAN/rVV10 functionals, or spin-polarized stress currently raise `NotImplementedError` naming the cause.
 
 A hybrid crystal is built from its PAW spheres. The setup records the atom centers,
 the projector basis and, per atom, the dataset file with its SHA-256 digest; Rust

@@ -49,7 +49,7 @@ use crate::{
         gradient::{
             scf::{self, OutputFields},
             spinor::{doubled, doubled_layout},
-            Bands, Dense, Derivatives, Layout, SpinOrbit, State, Term,
+            Bands, Dense, Derivatives, Hubbard, Layout, SpinOrbit, State, Term,
         },
         hybrid_gradient, invalid,
         point_group::PointGroup,
@@ -454,6 +454,10 @@ fn axis_of(axis: usize) -> Result<usize> {
 impl Derivatives for SetupDerivatives<'_> {
     type Fields = Fields;
 
+    fn hubbard(&self) -> Option<&dyn Hubbard> {
+        self.scf.as_ref().and_then(|(c, _)| c.hubbard_hook())
+    }
+
     fn point_group(&self) -> Option<&PointGroup> {
         self.point_group.as_ref()
     }
@@ -557,7 +561,8 @@ impl Derivatives for SetupDerivatives<'_> {
         let densities = scf::densities(crystal, &state.bands)?;
         let output = scf::output_fields(crystal, &densities, q)?;
         let exchange = scf::exchange_operators(crystal, &densities, options.exxdiv_treatment)?;
-        let bands = scf::rediagonalize(crystal, &output, options, &exchange)?;
+        let hubbard = scf::hubbard_operators(crystal, &densities)?;
+        let bands = scf::rediagonalize(crystal, &output, options, &exchange, &hubbard)?;
         let OutputFields {
             local,
             moments,
@@ -584,7 +589,12 @@ impl Derivatives for SetupDerivatives<'_> {
         fields: &Fields,
         hubbard: Option<&Matrix>,
     ) -> Result<Bands> {
-        if hubbard.is_some() {
+        if hubbard.is_some()
+            && !self
+                .scf
+                .as_ref()
+                .is_some_and(|(c, _)| c.hubbard.as_ref().is_some_and(|h| h.is_active()))
+        {
             return Err(Error::Unsupported(
                 "crystal forces are not available for a DFT+U crystal".into(),
             ));

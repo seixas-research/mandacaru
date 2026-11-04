@@ -188,9 +188,7 @@ def configure(driver, atoms):
     from ..structure import initial_moments
 
     if driver._load_crystal is not None:
-        raise ValueError(
-            "a cached crystal uses run(); it cannot be recomputed for ASE atoms"
-        )
+        raise ValueError("a cached crystal uses run(); it cannot be recomputed for ASE atoms")
     if (
         driver._active_spec is not None
         or driver._save_hamiltonian
@@ -219,6 +217,8 @@ def configure(driver, atoms):
 
     options = with_functional_set(family.name, options, driver.xc)
     spinor = bool(spin_orbit_symbols(atoms, options, family.name))
+    if driver.method == "dft" and any(atoms.get_initial_magnetic_moments()):
+        driver._unrestricted = True
     moments = initial_moments(atoms, spinor=spinor, unrestricted=driver._unrestricted)
     time_reversal = spinor and not driver._unrestricted and not np.any(moments)
     for axis, periodic in enumerate(atoms.pbc):

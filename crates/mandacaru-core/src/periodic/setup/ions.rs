@@ -107,6 +107,13 @@ impl LocalPotential {
             cutoff,
         })
     }
+    pub fn clone_with(&self, ctx: &Context) -> Result<Self> {
+        Ok(Self {
+            spline: self.spline.clone_with(ctx)?,
+            charge: self.charge,
+            cutoff: self.cutoff,
+        })
+    }
     pub fn value(&self, radius: f64) -> f64 {
         let knots = self.spline.knots.as_slice();
         if radius <= knots[knots.len() - 1] {

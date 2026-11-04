@@ -42,11 +42,16 @@ pub fn refuse(c: &Crystal) -> Result<()> {
             "crystal forces are not available for {what}"
         )))
     };
+    if c.hubbard.as_ref().is_some_and(|h| h.is_active()) {
+        if c.screened_exchange()?.is_some() {
+            return no("a DFT+U hybrid crystal");
+        }
+        if c.spinor {
+            return no("a DFT+U spinor crystal");
+        }
+    }
     if c.screened_exchange()?.is_some() && c.hybrid.is_none() {
         return no("a hybrid crystal without the PAW spheres of its sites block");
-    }
-    if c.hubbard.as_ref().is_some_and(|h| h.is_active()) {
-        return no("a DFT+U crystal");
     }
     if c.spins != 1 && c.spins != 2 {
         return no("a crystal with more than two spin channels");
@@ -121,12 +126,9 @@ pub fn request(c: &Crystal) -> Request {
 /// energies have more terms.
 pub fn state_energy(c: &Crystal, densities: &[StoredMatrix]) -> Result<f64> {
     let definition = models::functional(&c.functional)?;
-    if definition.screened_exchange.is_some()
-        || definition.requires_tau
-        || c.hubbard.as_ref().is_some_and(|h| h.is_active())
-    {
+    if definition.screened_exchange.is_some() || definition.requires_tau {
         return Err(Error::Unsupported(
-            "state_energy covers the semilocal crystal without DFT+U".into(),
+            "state_energy covers the semilocal crystal without exact exchange or meta-GGA".into(),
         ));
     }
     if densities.len() != c.spins * c.points.len() {
@@ -135,7 +137,14 @@ pub fn state_energy(c: &Crystal, densities: &[StoredMatrix]) -> Result<f64> {
     let (rho, q) = solver::density(c, densities)?;
     let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
     let terms = solver::energy(c, &mut fft, densities, rho.as_slice(), q.as_slice(), None)?;
-    Ok(terms.iter().sum())
+    let hubbard_energy = match &c.hubbard {
+        Some(h) if h.is_active() => {
+            let n = h.occupations(c, densities)?;
+            h.energy(c, &n)?
+        }
+        _ => 0.0,
+    };
+    Ok(terms.iter().sum::<f64>() + hubbard_energy)
 }
 
 /// `E = band + electrostatic + xc + exact exchange + constant` (Hartree) of a hybrid crystal, with
@@ -176,6 +185,18 @@ pub fn exchange_operators(
         return Ok(Vec::new());
     }
     Ok(c.hybrid_exchange(densities, exxdiv)?.operators)
+}
+
+/// The +U operators `O_s` (`p x p`, one per spin channel) of the density matrices `densities`;
+/// empty when the crystal has no active +U shells.
+pub fn hubbard_operators(c: &Crystal, densities: &[StoredMatrix]) -> Result<Vec<Matrix>> {
+    match &c.hubbard {
+        Some(h) if h.is_active() => {
+            let n = h.occupations(c, densities)?;
+            h.operators(c, &n)
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 /// The fields of an output density, on the mesh.
@@ -239,6 +260,9 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
 /// `(spin, k)` for a hybrid crystal (a hybrid refuses an empty list, never a silent semilocal
 /// Hamiltonian), empty otherwise.
 ///
+/// `hubbard` is [`hubbard_operators`] of the density the fields come from: one `p x p` matrix per
+/// spin channel for a DFT+U crystal, empty otherwise.
+///
 /// The returned bands hold `spins * nk * (16 m^2 + 16 m)` bytes (coefficients, eigenvalues,
 /// occupations) outside the `Context`'s buffers; the caller that keeps them reserves that size
 /// from the `Context` first (`SetupDerivatives::fields` does, before this call).
@@ -247,12 +271,19 @@ pub fn rediagonalize(
     fields: &OutputFields,
     options: &Options,
     exchange: &[Matrix],
+    hubbard: &[Matrix],
 ) -> Result<Vec<Vec<Bands>>> {
     let n = c.grid.index.points();
     let hybrid = c.screened_exchange()?.is_some();
     if exchange.len() != if hybrid { c.spins * c.points.len() } else { 0 } {
         return Err(invalid(
             "one exchange matrix per spin and k-point for a hybrid crystal, none otherwise",
+        ));
+    }
+    let active_hubbard = c.hubbard.as_ref().is_some_and(|h| h.is_active());
+    if hubbard.len() != if active_hubbard { c.spins } else { 0 } {
+        return Err(invalid(
+            "one Hubbard matrix per spin channel for a DFT+U crystal, none otherwise",
         ));
     }
     let mut eigenvalues = Vec::new();
@@ -271,7 +302,7 @@ pub fn rediagonalize(
                 local,
                 fields.moments.as_slice(),
                 None,
-                None,
+                hubbard.get(s),
                 exchange.get(s * c.points.len() + k),
             )?;
             eigenvalues.push(eps);
@@ -322,4 +353,22 @@ pub fn densities(c: &Crystal, bands: &[Vec<Bands>]) -> Result<Vec<StoredMatrix>>
         .flatten()
         .map(|b| StoredMatrix::new(&c.context, b.density() * degeneracy, false))
         .collect()
+}
+
+impl super::Hubbard for Crystal {
+    fn operators(&self, state: &super::State) -> Result<Vec<Matrix>> {
+        let densities = densities(self, &state.bands)?;
+        hubbard_operators(self, &densities)
+    }
+}
+
+impl Crystal {
+    /// The +U hook of this crystal, `None` when the crystal carries no active DFT+U.
+    pub fn hubbard_hook(&self) -> Option<&dyn super::Hubbard> {
+        if self.hubbard.as_ref().is_some_and(|h| h.is_active()) {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }

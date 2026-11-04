@@ -8,6 +8,7 @@ pub mod execution;
 pub mod expressibility;
 pub mod hva;
 pub mod optimizer;
+pub mod periodic_response;
 pub mod pools;
 pub mod properties;
 pub mod search;

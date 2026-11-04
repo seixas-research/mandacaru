@@ -251,16 +251,15 @@ class PAWDataset(PseudoPotential):
         fall to 0.76 while the raw ones stay within 10 %).
         """
         channel = self.channels[int(l)]
-        D = np.asarray(channel.coupling, dtype=float)
-        q = np.asarray(channel.overlap_correction, dtype=float)
-        if basis == "dual":
-            return list(channel.projectors), D, q
-        if basis == "raw":
-            B_inv = np.linalg.inv(np.asarray(channel.vanderbilt, dtype=float))
-            return (list(channel.raw_projectors), B_inv @ D @ B_inv.T,
-                    B_inv @ q @ B_inv.T)
-        raise ValueError(f"unknown projector basis {basis!r}; use 'dual' or "
-                         "'raw'")
+        D, q = _native.paw_projector_basis_transform(
+            context(),
+            np.ascontiguousarray(channel.vanderbilt, dtype=np.float64),
+            np.ascontiguousarray(channel.coupling, dtype=np.float64),
+            np.ascontiguousarray(channel.overlap_correction, dtype=np.float64),
+            basis,
+        )
+        functions = list(channel.raw_projectors) if basis == "raw" else list(channel.projectors)
+        return functions, D, q
 
     def multipole_moments(self, l1: int, l2: int, L: int,
                           basis: str = DEFAULT_PROJECTOR_BASIS) -> np.ndarray:
@@ -290,11 +289,12 @@ class PAWDataset(PseudoPotential):
             else:
                 delta = radial_moments(self, l1, l2, L)
             if basis == "raw":
-                b1 = np.linalg.inv(np.asarray(
-                    self.channels[int(l1)].vanderbilt, dtype=float))
-                b2 = np.linalg.inv(np.asarray(
-                    self.channels[int(l2)].vanderbilt, dtype=float))
-                delta = b1 @ delta @ b2.T
+                delta = _native.paw_multipole_transform(
+                    context(),
+                    np.ascontiguousarray(self.channels[int(l1)].vanderbilt, dtype=np.float64),
+                    np.ascontiguousarray(self.channels[int(l2)].vanderbilt, dtype=np.float64),
+                    np.ascontiguousarray(delta, dtype=np.float64),
+                )
             elif basis != "dual":
                 raise ValueError(f"unknown projector basis {basis!r}")
             cache[key] = delta
@@ -426,8 +426,6 @@ def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:
     :math:`L = 0` term of the augmentation identical to the monopole-only code
     it replaces.  Channels that carry no moment are omitted.
     """
-    from .multipoles import gaunt, multipole_range
-
     per_atom: dict = {}
     for position, projector in enumerate(projectors):
         per_atom.setdefault(projector.atom_index, []).append(
@@ -438,23 +436,25 @@ def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:
         dataset = datasets_by_atom[atom]
         basis = getattr(entries[0][1], "projector_basis",
                         DEFAULT_PROJECTOR_BASIS)
-        n = len(entries)
-        levels = sorted({L for _p, a in entries for _q, b in entries
-                         for L in multipole_range(a.l, b.l)})
-        dtype = float if entries[0][1].real else complex
-        for L in levels:
-            for M in range(-L, L + 1):
-                matrix = np.zeros((n, n), dtype=dtype)
-                for a, (_pa, pa) in enumerate(entries):
-                    for b, (_pb, pb) in enumerate(entries):
-                        angular = gaunt(L, M, pa.l, pa.m, pb.l, pb.m,
-                                        real=pa.real)
-                        if angular == 0:
-                            continue
-                        delta = dataset.multipole_moments(pa.l, pb.l, L, basis)
-                        matrix[a, b] = delta[pa.index, pb.index] * angular
-                if np.any(np.abs(matrix) > 1e-14):
-                    blocks[(atom, L, M)] = matrix
+        real = bool(entries[0][1].real)
+        l_list = [int(pa.l) for _, pa in entries]
+        m_list = [int(pa.m) for _, pa in entries]
+        idx_list = [int(pa.index) for _, pa in entries]
+        unique_l = sorted(set(l_list))
+        deltas = {}
+        strides = {}
+        for l1 in unique_l:
+            for l2 in unique_l:
+                strides[(l1, l2)] = (len(dataset.channels[l1].projectors), len(dataset.channels[l2].projectors))
+                for L in _native.paw_multipole_range(l1, l2):
+                    deltas[(l1, l2, L)] = np.ascontiguousarray(
+                        dataset.multipole_moments(l1, l2, L, basis), dtype=np.float64
+                    )
+        atom_blocks = _native.paw_atom_multipole_blocks(
+            l_list, m_list, idx_list, real, deltas, strides
+        )
+        for L, M, mat in atom_blocks:
+            blocks[(atom, L, M)] = mat
     return blocks
 
 
@@ -467,34 +467,14 @@ def paw_overlap_blocks(projectors, symbols, datasets) -> dict:
 def _projector_sphere(projector, *, split_radial: bool = False):
     """Quadrature points (Bohr, a coordinate triple) and weights over the
     sphere of radius ``projector.r_cut`` around ``projector.center``."""
-    x, wx = np.polynomial.legendre.leggauss(PROJECTION_RADIAL_POINTS)
-    t, wt = np.polynomial.legendre.leggauss(PROJECTION_POLAR_POINTS)
-    n_phi = PROJECTION_AZIMUTHAL_POINTS
-    azimuth = 2.0 * np.pi * (np.arange(n_phi) + 0.5) / n_phi
-    sin_t = np.sqrt(1.0 - t * t)
-    directions = np.stack([(sin_t[:, None] * np.cos(azimuth)[None, :]).ravel(),
-                           (sin_t[:, None] * np.sin(azimuth)[None, :]).ravel(),
-                           np.repeat(t, n_phi)])
-    angular = np.repeat(wt, n_phi) * (2.0 * np.pi / n_phi)
     r_cut = float(projector.r_cut)
     channel_cut = float(getattr(projector, "channel_r_cut", r_cut))
-    # A projector continued from its own cutoff to the local radius
-    # changes formula at channel_cut.  Put that junction on a panel boundary
-    # so the radial rule sees smooth functions on both sides.
-    edges = ([0.0, channel_cut, r_cut]
-             if split_radial and 0.0 < channel_cut < r_cut else [0.0, r_cut])
-    radii, radial_weights = [], []
-    for lo, hi in zip(edges[:-1], edges[1:]):
-        half = 0.5 * (hi - lo)
-        nodes = lo + half * (x + 1.0)
-        radii.append(nodes)
-        radial_weights.append(half * wx * nodes * nodes)
-    radii = np.concatenate(radii)
-    weights = np.concatenate(radial_weights)[:, None] * angular[None, :]
-    center = np.asarray(projector.center, dtype=float)
-    points = tuple(center[i] + radii[:, None] * directions[i][None, :]
-                   for i in range(3))
-    return points, weights
+    panel = channel_cut if (split_radial and 0.0 < channel_cut < r_cut) else 0.0
+    center = [float(x) for x in projector.center]
+    return _native.paw_projector_sphere(
+        context(), center, r_cut, panel,
+        PROJECTION_RADIAL_POINTS, PROJECTION_POLAR_POINTS, PROJECTION_AZIMUTHAL_POINTS,
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -239,3 +239,66 @@ pub fn initial_charges(sites: &Sites, compensation_charges: &[f64]) -> Result<Ve
         })
         .collect())
 }
+
+/// Constant energy shift of a species (Hartree): `one_center_energy + core_correction_offset`.
+pub fn species_constant(
+    ctx: &Context,
+    one_center_energy: f64,
+    r: &[f64],
+    valence: &[f64],
+    core: Option<&[f64]>,
+    xc: &str,
+    relativistic: bool,
+) -> Result<f64> {
+    let Some(core) = core else {
+        return Ok(one_center_energy);
+    };
+    let n = r.len();
+    if valence.len() != n || core.len() != n {
+        return Ok(one_center_energy);
+    }
+    let mut dressed_rho = ctx.allocate::<f64>(n)?;
+    for i in 0..n {
+        dressed_rho.as_mut_slice()[i] = valence[i] + core[i];
+    }
+    let bare_xc = crate::models::spherical::exchange_correlation(ctx, r, valence, xc, relativistic)?;
+    let dressed_xc =
+        crate::models::spherical::exchange_correlation(ctx, r, dressed_rho.as_slice(), xc, relativistic)?;
+
+    let valence_potential = |potential: &[f64]| -> Result<f64> {
+        let values: Vec<f64> = (0..n)
+            .map(|k| 4. * PI * r[k].powi(2) * valence[k] * potential[k])
+            .collect();
+        crate::math::radial::integrate(r, &values)
+    };
+    let bare_term = bare_xc.energy - valence_potential(bare_xc.potential.as_slice())?;
+    let dressed_term = dressed_xc.energy - valence_potential(dressed_xc.potential.as_slice())?;
+    let core_offset = bare_term - dressed_term;
+    Ok(one_center_energy + core_offset)
+}
+
+/// The sum of species constants for all atoms of the crystal.
+pub fn constant(
+    ctx: &Context,
+    atoms_species: &[usize],
+    species_tables: &[Tables<'_>],
+    one_center_energies: &[f64],
+    xc: &str,
+    relativistic: bool,
+) -> Result<f64> {
+    let mut per_species = Vec::with_capacity(species_tables.len());
+    for (i, table) in species_tables.iter().enumerate() {
+        let e1 = one_center_energies.get(i).copied().unwrap_or(0.0);
+        per_species.push(species_constant(
+            ctx,
+            e1,
+            table.radius,
+            table.valence_density,
+            table.core,
+            xc,
+            relativistic,
+        )?);
+    }
+    let total: f64 = atoms_species.iter().map(|&s| per_species.get(s).copied().unwrap_or(0.0)).sum();
+    Ok(total)
+}

@@ -92,7 +92,7 @@ pub fn diagonalize(
              use diagonalize_with_exchange",
         ));
     }
-    diagonalize_with_exchange(c, point, fields, moments, None)
+    diagonalize_with_exchange(c, point, fields, moments, None, None)
 }
 
 pub fn diagonalize_with_exchange(
@@ -100,6 +100,7 @@ pub fn diagonalize_with_exchange(
     point: &KPoint,
     fields: &[f64],
     moments: &[C64],
+    hubbard: Option<&Matrix>,
     exchange: Option<&Matrix>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
     let m = c.m;
@@ -112,11 +113,14 @@ pub fn diagonalize_with_exchange(
             "spinor Hamiltonian needs four local potential fields and all moment potentials",
         ));
     }
-    let operator = Matrix::from_fn(c.p, c.p, |i, j| {
+    let mut operator = Matrix::from_fn(c.p, c.p, |i, j| {
         (0..c.channels)
             .map(|a| moments[a] * c.blocks.as_slice()[(a * c.p + i) * c.p + j])
             .sum()
     });
+    if let Some(extra) = hubbard {
+        operator += extra;
+    }
     let fixed = &point.fixed + &point.projections * operator * point.projections.adjoint();
     let mut h = Matrix::zeros(2 * m, 2 * m);
     for s in 0..2 {

@@ -70,7 +70,18 @@ impl Species {
         }
     }
     pub fn parse(ctx: &Context, v: &Value, arrays: &mut Arrays, raw: bool) -> Result<Self> {
-        if v["spin_orbit"].as_bool() != Some(false) {
+        Self::parse_with_options(ctx, v, arrays, raw, false, false)
+    }
+
+    pub fn parse_with_options(
+        ctx: &Context,
+        v: &Value,
+        arrays: &mut Arrays,
+        raw: bool,
+        allow_spin_orbit: bool,
+        allow_heavy_dft: bool,
+    ) -> Result<Self> {
+        if !allow_spin_orbit && v["spin_orbit"].as_bool() != Some(false) {
             return Err(invalid(
                 "native molecular PAW spin-orbit projector terms are not yet implemented",
             ));
@@ -115,7 +126,7 @@ impl Species {
             && ((atomic_number as f64 - charge) - 2.).abs() < 1e-8
             && (core_charge - 2.).abs() < 0.02
             && !occupied_1s;
-        if core_charge > 1e-6 && !closed_1s {
+        if !allow_heavy_dft && core_charge > 1e-6 && !closed_1s {
             return Err(invalid("native PAW frozen-core exchange currently requires an empty core or a single closed 1s shell"));
         }
         if core.as_slice().iter().any(|v| *v < 0.) {

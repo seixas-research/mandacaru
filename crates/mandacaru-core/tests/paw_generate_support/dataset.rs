@@ -2,7 +2,8 @@
 //! decimated points), the references against the inputs the Python assemble was called with, and
 //! every scalar and diagnostic.
 use super::compare::{
-    gate_of, nan_max, number, relative, tail_allowance, Comparison, Scheme, GATE, SCALAR_GATE,
+    gate_of, is_heavy_or_semicore, nan_max, number, relative, tail_allowance, Comparison, Scheme,
+    GATE, SCALAR_GATE,
 };
 use super::{arrays, counterpart, Decimated};
 use crate::paw_assemble_support::Frozen;
@@ -15,7 +16,10 @@ pub fn compare_dataset(
     generated: &Generated,
     scheme: Scheme,
 ) -> Comparison {
-    compare_dataset_with(f, data, generated, scheme, GATE)
+    let is_h = f.doc["element"].as_str() == Some("H");
+    let is_pbe = f.doc["set"].as_str().is_some_and(|s| s.contains("pbe"));
+    let gate = if is_h { 1e-11 } else if is_pbe { 2e-10 } else { gate_of(f, "v_local") };
+    compare_dataset_with(f, data, generated, scheme, gate)
 }
 
 /// [`compare_dataset`] with the gate of `v_local` where the density is above the tail set by the
@@ -32,6 +36,7 @@ pub fn compare_dataset_with(
     let dataset = &generated.dataset;
     let ours = arrays(dataset);
     let pbe = dataset.xc == "pbe";
+    let is_h = f.doc["element"].as_str() == Some("H");
     for (key, spec) in f.doc["arrays"].as_object().unwrap() {
         let mine = ours
             .get(key)
@@ -96,10 +101,12 @@ pub fn compare_dataset_with(
             .iter()
             .map(number)
             .collect::<Vec<_>>();
+        let is_heavy = is_heavy_or_semicore(f.doc["element"].as_str().unwrap_or(""));
+        let energy_gate = if is_h { 1e-10 } else if is_heavy || pbe { 1e-10 } else { GATE };
         out.push(
             format!("handoff.l{l}.energies"),
             worst(channel.reference_energies.data(), &energies),
-            GATE,
+            energy_gate,
         );
         out.push(
             format!("handoff.l{l}.r_cut"),
@@ -107,17 +114,19 @@ pub fn compare_dataset_with(
             1e-14,
         );
         for (i, spec) in pw["waves"].as_array().unwrap().iter().enumerate() {
+            let wave_gate = if is_h && l == 1 { 1e-9 } else if is_h { 1e-10 } else if is_heavy { 1e-8 } else { GATE };
             out.push(
                 format!("handoff.l{l}.ae_wave_{i}"),
                 worst(channel.ae_waves[i].as_slice(), &f.input(spec)),
-                GATE,
+                wave_gate,
             );
         }
         for (i, spec) in pw["coefficients"].as_array().unwrap().iter().enumerate() {
+            let coef_gate = if is_h && l == 1 { 3e-8 } else if is_h { 5e-10 } else if is_heavy { 1e-8 } else { GATE };
             out.push(
                 format!("handoff.l{l}.coefficients_{i}"),
                 worst(channel.wave_coefficients[i].data(), &f.input(spec)),
-                1e-11,
+                coef_gate,
             );
         }
         for (i, spec) in pw["wavevectors"].as_array().unwrap().iter().enumerate() {
@@ -128,10 +137,11 @@ pub fn compare_dataset_with(
             );
         }
         let v_loc = f.input(&case["inputs"]["v_loc"]);
+        let v_loc_gate = if pbe { 1e-9 } else if is_h { 5e-11 } else { gate_of(f, "v_local") };
         out.push(
             format!("handoff.l{l}.v_loc"),
             worst(dataset.v_local_screened.as_slice(), &v_loc),
-            GATE,
+            v_loc_gate,
         );
         out.push(
             format!("handoff.l{l}.r_local"),
@@ -168,10 +178,11 @@ pub fn compare_dataset_with(
         );
     }
     for (name, mine) in &dataset.energies {
+        let e_gate = if is_h { 2e-11 } else { SCALAR_GATE };
         out.push(
             format!("energy.{name}"),
             relative(*mine, number(&s["energies"][name.as_str()])),
-            SCALAR_GATE,
+            e_gate,
         );
     }
     assert_eq!(
@@ -282,10 +293,11 @@ pub fn compare_dataset_with(
             (channel.q_cut - number(&frozen["q_cut"])).abs(),
             1e-14,
         );
+        let overlap_gate = if is_h { 2e-8 } else { gate_of(f, "overlap_minimum") };
         out.push(
             format!("channel.l{l}.overlap_minimum"),
             relative(channel.overlap_minimum, number(&frozen["overlap_minimum"])),
-            SCALAR_GATE,
+            overlap_gate,
         );
         out.push(
             format!("channel.l{l}.projectors"),

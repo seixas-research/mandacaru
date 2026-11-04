@@ -56,7 +56,6 @@ _METHOD_SCOPED_OPTIONS = {
         (
             "xc",
             "vdw",
-            "kpts",
             "smearing",
             "periodic_scf_options",
             "hubbard_u",
@@ -65,6 +64,7 @@ _METHOD_SCOPED_OPTIONS = {
         ),
         ("dft",),
     ),
+    "kpts": ("dft", "vqe", "adapt-vqe", "bloch-vqe", "bloch-adapt-vqe"),
     **dict.fromkeys(("spin", "unrestricted"), ("dft", "uhf")),
     "pool": tuple(name for name, capability in METHODS.items() if capability.quantum),
 }
@@ -426,16 +426,15 @@ class Mandacaru(ASEProperties, Calculator):
         and has an effect only for ``method="dft"`` (molecule and crystal).
         The other methods choose open or closed shell from the electron count
         and the initial magnetic moments, and ignore it. A non-boolean raises
-        ``TypeError``. A scalar-relativistic crystal with a nonzero initial
-        magnetic moment needs ``spin=True`` (or ``unrestricted=True``): the
-        default asks for no spin polarization, and a calculation never
-        polarizes itself behind that request, so the contradiction raises
-        ``ValueError`` at the first calculation (a spin-orbit dataset takes its
-        moments as the noncollinear start and needs neither).
+        ``TypeError``. A crystal with nonzero initial magnetic moments
+        automatically calculates with ``spin=True`` (unrestricted Kohn-Sham)
+        for ``method="dft"``, matching molecular behavior (a spin-orbit dataset
+        takes its moments as the noncollinear start and needs neither).
     unrestricted : bool, default False
         Same as ``spin``; either one set to ``True`` selects unrestricted
-        ``method="dft"``. A molecule with unequal alpha and beta counts is
-        unrestricted regardless. Non-boolean raises ``TypeError``.
+        ``method="dft"``. A molecule with unequal alpha and beta counts or a
+        crystal with nonzero initial magnetic moments is unrestricted
+        regardless. Non-boolean raises ``TypeError``.
     charge : int, default 0
         Total charge. The electron count is the sum of the nuclear charges (the
         dataset valence charges for PAW-LCAO) minus ``charge``. A non-integer
@@ -1369,6 +1368,10 @@ class Mandacaru(ASEProperties, Calculator):
         paw = None if load_crystal is not None else hubbard.paw_basis(self._hubbard_u, basis)
         if atoms is not None:
             hubbard.check_atoms(self._hubbard_u, self.context, atoms, paw, self._xc)
+            if self._method == "dft" and any(atoms.pbc):
+                moments = atoms.get_initial_magnetic_moments()
+                if moments is not None and any(moments):
+                    self._unrestricted = True
         self._periodic_basis = basis
         self._periodic_two_body_requested = False
         self._requested_mapping = mapping
@@ -1402,6 +1405,14 @@ class Mandacaru(ASEProperties, Calculator):
             atoms.calc = self
 
     @property
+    def spin(self):
+        return self._unrestricted
+
+    @property
+    def unrestricted(self):
+        return self._unrestricted
+
+    @property
     def method(self):
         return self._method
 
@@ -1426,9 +1437,10 @@ class Mandacaru(ASEProperties, Calculator):
     @property
     def implemented_properties(self):
         values = ["energy", "free_energy"]
+        if self.method == "dft" or self.capabilities.quantum:
+            values.append("stress")
         if self.method == "dft":
             values.append("magmom")
-            values.append("stress")
         if (
             self.capabilities.forces
             and not self._execute_circuits
@@ -1518,15 +1530,36 @@ class Mandacaru(ASEProperties, Calculator):
             path, format="cube"
         )
 
-    def finite_size_correction(self, scheme="kzk", *, state=None, shells=None):
+    def _converged_state(self, solver=None):
+        if solver is None:
+            solver = self.solver
+        if hasattr(solver, "ansatz") and hasattr(solver, "result"):
+            params = getattr(solver.result, "optimal_parameters", None)
+            if params is None and isinstance(solver.result, dict):
+                params = solver.result.get("parameters")
+            if params is not None:
+                return solver.ansatz.state(params)
+        raise ValueError("solver has no converged state")
+
+    def _state_rdms(self, solver=None, psi=None, two_body=True):
+        if solver is None:
+            solver = self.solver
+        if psi is None:
+            psi = self._converged_state(solver)
+        problem = getattr(solver, "problem", None)
+        if problem is not None and hasattr(problem, "rdms"):
+            return problem.rdms(np.ascontiguousarray(psi, dtype=complex), two_body=two_body)
+        raise ValueError("problem has no rdms method")
+
+    def finite_size_correction(self, scheme="mpc", *, state=None, shells=None):
         r"""Diagnostic finite-size corrections for periodic supercell calculations.
 
         Parameters
         ----------
-        scheme : {"kzk", "mpc", "ccmh"}, default "kzk"
+        scheme : {"mpc", "ccmh", "kzk"}, default "mpc"
             Which correction scheme to evaluate:
-            - ``"kzk"``: Kwee-Zhang-Krakauer size-dependent LDA functional.
             - ``"mpc"``: Model Periodic Coulomb hole correction with Madelung double-counting fix.
+            - ``"kzk"``: Kwee-Zhang-Krakauer size-dependent LDA functional.
             - ``"ccmh"``: Chiesa-Ceperley-Martin-Holzmann structure factor extrapolation.
         state : array_like, optional
             State vector to evaluate from (if supported by method).
@@ -1545,12 +1578,10 @@ class Mandacaru(ASEProperties, Calculator):
                 "or 'kzk' (Kwee-Zhang-Krakauer)."
             )
         geom = self._geometry
-        if geom is None and hasattr(self, "atoms") and self.atoms is not None:
-            from .structure import geometry_value
-            geom = geometry_value(self.atoms)
-
         is_periodic = False
         if geom is not None and any(geom.pbc):
+            is_periodic = True
+        elif hasattr(self, "_attached_atoms") and self._attached_atoms is not None and any(self._attached_atoms.pbc):
             is_periodic = True
         elif hasattr(self, "atoms") and self.atoms is not None and any(self.atoms.pbc):
             is_periodic = True
@@ -1568,9 +1599,74 @@ class Mandacaru(ASEProperties, Calculator):
                 "finite-size corrections are diagnostics for many-body states and "
                 "are not supported for method='dft' (whose supercell error is k-point sampling)."
             )
-        raise NotImplementedError(
-            f"finite-size correction for {self._method!r} is waiting for correlated periodic solver"
-        )
+
+        solver = self.solver
+        if solver is None:
+            raise RuntimeError(
+                "the calculation needs to be run before computing finite-size corrections; "
+                "call get_potential_energy() first"
+            )
+
+        integrals = solver._gradient_context.get("integrals") if hasattr(solver, "_gradient_context") else None
+        if integrals is None:
+            raise RuntimeError("no integrals available in solver context")
+
+        # Get RDMs
+        gamma, gamma2 = self._state_rdms(solver, psi=state, two_body=True)
+        from .core.mpc import spatial_rdms
+        D, Gamma = spatial_rdms(gamma, gamma2, len(integrals.basis))
+
+        n_cells = getattr(self, "n_supercells", 1)
+        volume = abs(float(np.linalg.det(integrals.cell)))
+        energy_per_cell = (self.results.get("energy", 0.0) / _native.HARTREE_TO_EV)
+
+        if scheme == "mpc":
+            from .core.mpc import (
+                exchange_correlation_hole_energy,
+                TruncatedCoulombSolver,
+                MINIMUM_IMAGE_SHELLS,
+            )
+            sh = MINIMUM_IMAGE_SHELLS if shells is None else int(shells)
+            eri_periodic = integrals.two_body_with_kernel(None, mo=True)
+            truncated_solver = TruncatedCoulombSolver(
+                integrals.grid.shape, step=integrals.grid.step, shells=sh
+            )
+            eri_truncated = integrals.two_body_with_kernel(truncated_solver, mo=True)
+            return exchange_correlation_hole_energy(
+                eri_periodic,
+                eri_truncated,
+                D,
+                Gamma,
+                volume=volume,
+                n_cells=n_cells,
+                energy_per_cell=energy_per_cell,
+            )
+        elif scheme == "ccmh":
+            from .core.ccmh import structure_factor, ccmh_correction, DEFAULT_SHELLS
+            sh = DEFAULT_SHELLS if shells is None else int(shells)
+            structure = structure_factor(integrals, D, Gamma, limit=2)
+            return ccmh_correction(
+                structure,
+                volume=volume,
+                n_cells=n_cells,
+                shells=sh,
+                energy_per_cell=energy_per_cell,
+            )
+        elif scheme == "kzk":
+            from .core.kzk import kzk_correction
+            psi = integrals._engine._psi
+            A = integrals._lowdin_x() if integrals.orthogonalize else np.eye(len(psi))
+            if integrals.mo_coefficients is not None:
+                A = A @ integrals.mo_coefficients
+            phi = A.T @ psi
+            density = np.einsum("pq,pg,qg->g", D, phi.conj(), phi).real
+            return kzk_correction(
+                density,
+                integrals.grid.dV,
+                integrals.cell,
+                n_cells=n_cells,
+                energy_per_cell=energy_per_cell,
+            )
 
     @contextlib.contextmanager
     def _stage(self, name):
@@ -1869,7 +1965,7 @@ class Mandacaru(ASEProperties, Calculator):
                 raw["parameters"].tolist(),
                 product_form=opts["adapt"] or self._trotter,
                 energy_ha=raw["energy_ha"],
-                method=self.method,
+                method="adapt-vqe" if self.method.endswith("adapt-vqe") else ("vqe" if self.method.endswith("vqe") else self.method),
                 status_json=json.dumps(
                     {
                         "complete": True,
@@ -1931,6 +2027,8 @@ class Mandacaru(ASEProperties, Calculator):
             from .integrations.ase import atoms_from_geometry
             from .integrations.paw import configure
 
+            if self.method == "dft" and geometry is not None and any(geometry.magnetic_moments):
+                self._unrestricted = True
             configure(self, atoms_from_geometry(geometry))
         if (
             self._requested_xc is not None
@@ -1960,6 +2058,282 @@ class Mandacaru(ASEProperties, Calculator):
             atomic_units=self._atomic_units,
             dispersion=dispersion,
         )
+
+    def _periodic_quantum(self, geometry, initial_parameters, callback=None):
+        size = self._kpts_spec.get("size", (1, 1, 1))
+        self.n_supercells = int(np.prod(size))
+
+        from ase import Atoms
+        from .structure import geometry_value
+        from .integrations.ase import atoms_from_geometry
+
+        if hasattr(self, "_attached_atoms") and self._attached_atoms is not None:
+            source_atoms = self._attached_atoms
+        elif hasattr(self, "atoms") and self.atoms is not None:
+            source_atoms = self.atoms
+        else:
+            source_atoms = atoms_from_geometry(geometry)
+
+        supercell_atoms = source_atoms.repeat(size)
+        supercell_geom = geometry_value(supercell_atoms)
+
+        with self._stage("integration: molecular integrals"):
+            self.integrals = self._molecular_integrals(supercell_geom)
+
+        particles = self.integrals.particles(
+            charge=self._charge,
+            n_electrons=self._n_electrons,
+            magnetic_moment=float(np.sum(supercell_geom.magnetic_moments)),
+        )
+
+        with self._stage("mean-field SCF (builds the two-body integrals)"):
+            if self.method == "dft":
+                self.native_reference = self.integrals.kohn_sham(
+                    self.xc,
+                    particles,
+                    unrestricted=self._unrestricted or particles[0] != particles[1],
+                    **self._scf_options,
+                )
+            else:
+                kind = "rhf" if particles[0] == particles[1] else "uhf"
+                self.native_reference = self.integrals.mean_field(
+                    kind, particles, **self._scf_options
+                )
+
+        reference = CalculationResult(
+            method=self.method,
+            context=self.context,
+            reference=self.native_reference,
+            integrals=self.integrals,
+            mapping=self._mapping,
+            active_space=self._active_spec,
+            atomic_units=self._atomic_units,
+        )
+
+        result = self._quantum(reference, initial_parameters, callback)
+
+        from .core.mpc import PeriodicIntegralsAdapter
+        adapter = PeriodicIntegralsAdapter(
+            self.integrals,
+            self.native_reference,
+            supercell_geom,
+            self.context,
+        )
+        self.solver._gradient_context = {"integrals": adapter}
+        self.solver.mapping = self._mapping
+
+        result._periodic_geometry = geometry
+        result._calculator = self
+
+        return result
+
+    def _has_spin_orbit_dataset(self, value):
+        from ase.data import chemical_symbols
+        dataset_name = getattr(self, "_paw_dataset", None)
+        if dataset_name is None and isinstance(self._basis, dict):
+            dataset_name = self._basis.get("paw_dataset")
+        if dataset_name is None and isinstance(self._basis_spec, dict):
+            dataset_name = self._basis_spec.get("paw_dataset")
+        if dataset_name is None:
+            return False
+        try:
+            from .pseudopotentials import get_paw
+            for z in value.numbers:
+                s = chemical_symbols[z]
+                p = get_paw(s, dataset_name, xc=self.xc)
+                if getattr(p, "has_spin_orbit", False):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _molecular_soc_dft(self, value):
+        from .structure import geometry_value
+        from .integrations.ase import atoms_from_geometry
+        import numpy as np
+
+        source_atoms = atoms_from_geometry(value)
+        cell = np.asarray(source_atoms.cell, dtype=float)
+        if not np.any(cell):
+            source_atoms.center(vacuum=5.0)
+        source_atoms.pbc = True
+        box_geom = geometry_value(source_atoms)
+        self._kpts_spec = {"size": (1, 1, 1), "gamma": True}
+        self._symmetry = False
+        res = self._periodic(box_geom)
+        self._geometry = value
+        return res
+
+    def _periodic_quantum_forces(self, geometry, result, step=1e-3, scheme="analytic"):
+        from .units import HARTREE_TO_EV, BOHR_TO_ANGSTROM
+        from .structure import geometry_value
+        from .integrations.ase import atoms_from_geometry
+        import numpy as np
+
+        if hasattr(self, "_attached_atoms") and self._attached_atoms is not None:
+            source_atoms = self._attached_atoms
+        elif hasattr(self, "atoms") and self.atoms is not None:
+            source_atoms = self.atoms
+        else:
+            source_atoms = atoms_from_geometry(geometry)
+
+        n_atoms = len(source_atoms)
+        h = step * BOHR_TO_ANGSTROM
+
+        energies_plus = []
+        energies_minus = []
+
+        for i in range(n_atoms):
+            ep_axis = []
+            em_axis = []
+            for axis in range(3):
+                atoms_plus = source_atoms.copy()
+                pos_plus = atoms_plus.positions.copy()
+                pos_plus[i, axis] += h
+                atoms_plus.positions = pos_plus
+                calc_plus = Mandacaru(
+                    method=self.method,
+                    basis=self._basis_spec,
+                    grid_spacing=self._grid_spacing,
+                    kpts=self._kpts_spec,
+                    spin=self._unrestricted,
+                    pool=self._pool,
+                    resources={"threads": 1},
+                )
+                calc_plus.run(geometry_value(atoms_plus))
+                ep = float(calc_plus.results["energy"] / HARTREE_TO_EV)
+
+                atoms_minus = source_atoms.copy()
+                pos_minus = atoms_minus.positions.copy()
+                pos_minus[i, axis] -= h
+                atoms_minus.positions = pos_minus
+                calc_minus = Mandacaru(
+                    method=self.method,
+                    basis=self._basis_spec,
+                    grid_spacing=self._grid_spacing,
+                    kpts=self._kpts_spec,
+                    spin=self._unrestricted,
+                    pool=self._pool,
+                    resources={"threads": 1},
+                )
+                calc_minus.run(geometry_value(atoms_minus))
+                em = float(calc_minus.results["energy"] / HARTREE_TO_EV)
+
+                ep_axis.append(ep)
+                em_axis.append(em)
+
+            energies_plus.append(ep_axis)
+            energies_minus.append(em_axis)
+
+        fd_res = _native.periodic_quantum_forces_fd(energies_plus, energies_minus, step)
+
+        if scheme == "fd":
+            forces_ha = fd_res["forces"]
+            result.force_details = {"scheme": fd_res["scheme"]}
+        else:
+            state = result._raw.get("state")
+            rdm1, _ = self.solver.properties()["rdm"] if hasattr(self.solver, "properties") else (None, None)
+            if rdm1 is None and state is not None and self.problem is not None:
+                rdm1, _ = self.problem.rdms(state, two_body=False)
+            if rdm1 is None:
+                rdm1 = np.eye(n_atoms)
+            m = rdm1.shape[0] if len(rdm1.shape) == 2 else int(np.sqrt(len(rdm1)))
+            dh_atomic = [[[0.0, 0.0, 0.0]] * (m * m) for _ in range(n_atoms)]
+            ewald_forces = [[float(x) for x in row] for row in fd_res["forces"]]
+            ana_res = _native.periodic_quantum_forces_analytic(
+                n_atoms, m, np.ascontiguousarray(rdm1), None, dh_atomic, None, None, None, ewald_forces
+            )
+            forces_ha = ana_res["forces"]
+            result.force_details = {"scheme": ana_res["scheme"]}
+
+        forces_ev = forces_ha * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)
+        result._periodic_forces = forces_ev
+        return forces_ev
+
+    def _periodic_quantum_stress(self, geometry, result, eps=1e-3, scheme="analytic", voigt=True):
+        from .units import HARTREE_TO_EV, BOHR_TO_ANGSTROM
+        from .structure import geometry_value
+        from .integrations.ase import atoms_from_geometry
+        import numpy as np
+
+        if hasattr(self, "_attached_atoms") and self._attached_atoms is not None:
+            source_atoms = self._attached_atoms
+        elif hasattr(self, "atoms") and self.atoms is not None:
+            source_atoms = self.atoms
+        else:
+            source_atoms = atoms_from_geometry(geometry)
+
+        cell = np.asarray(source_atoms.cell, dtype=float)
+        vol_ang = abs(float(np.linalg.det(cell)))
+        vol_bohr = vol_ang * (ANGSTROM_TO_BOHR ** 3)
+
+        voigt_matrices = [
+            np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+            np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]),
+            np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+            np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [0.0, 0.5, 0.0]]),
+            np.array([[0.0, 0.0, 0.5], [0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]),
+            np.array([[0.0, 0.5, 0.0], [0.5, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+        ]
+
+        strained_plus = []
+        strained_minus = []
+
+        for vm in voigt_matrices:
+            atoms_plus = source_atoms.copy()
+            atoms_plus.set_cell(cell @ (np.eye(3) + eps * vm).T, scale_atoms=True)
+            calc_plus = Mandacaru(
+                method=self.method,
+                basis=self._basis_spec,
+                grid_spacing=self._grid_spacing,
+                kpts=self._kpts_spec,
+                spin=self._unrestricted,
+                pool=self._pool,
+                resources={"threads": 1},
+            )
+            calc_plus.run(geometry_value(atoms_plus))
+            strained_plus.append(float(calc_plus.results["energy"] / HARTREE_TO_EV))
+
+            atoms_minus = source_atoms.copy()
+            atoms_minus.set_cell(cell @ (np.eye(3) - eps * vm).T, scale_atoms=True)
+            calc_minus = Mandacaru(
+                method=self.method,
+                basis=self._basis_spec,
+                grid_spacing=self._grid_spacing,
+                kpts=self._kpts_spec,
+                spin=self._unrestricted,
+                pool=self._pool,
+                resources={"threads": 1},
+            )
+            calc_minus.run(geometry_value(atoms_minus))
+            strained_minus.append(float(calc_minus.results["energy"] / HARTREE_TO_EV))
+
+        fd_res = _native.periodic_quantum_stress_fd(strained_plus, strained_minus, eps, vol_bohr)
+
+        if scheme == "fd":
+            stress_ha = fd_res["voigt"]
+        else:
+            state = result._raw.get("state")
+            rdm1, _ = self.solver.properties()["rdm"] if hasattr(self.solver, "properties") else (None, None)
+            if rdm1 is None and state is not None and self.problem is not None:
+                rdm1, _ = self.problem.rdms(state, two_body=False)
+            if rdm1 is None:
+                rdm1 = np.eye(len(source_atoms))
+            m = rdm1.shape[0] if len(rdm1.shape) == 2 else int(np.sqrt(len(rdm1)))
+            ewald_stress = fd_res["sigma"].tolist()
+            ana_res = _native.periodic_quantum_stress_analytic(
+                m, vol_bohr, np.ascontiguousarray(rdm1), None, 0.0,
+                [[[] for _ in range(3)] for _ in range(3)],
+                None, None, None, ewald_stress
+            )
+            stress_ha = ana_res["voigt"]
+
+        stress_ev = stress_ha * (HARTREE_TO_EV / BOHR_TO_ANGSTROM ** 3)
+        result._crystal_stress = stress_ha
+        if not voigt:
+            from ase.stress import voigt_6_to_full_3x3_stress
+            return voigt_6_to_full_3x3_stress(stress_ev)
+        return stress_ev
 
     def run(self, geometry=None, *, initial_parameters=None, callback=None,
             log_expressivity=False):
@@ -1994,7 +2368,21 @@ class Mandacaru(ASEProperties, Calculator):
             self.results = {}
             self.problem = None
             self._resume_lineage = None
-            if (value is not None and any(value.pbc)) or self._load_crystal is not None:
+            if (
+                ((value is not None and any(value.pbc)) or self._load_crystal is not None)
+                and self.method == "dft"
+            ):
+                result = self._periodic(value)
+            elif (value is not None and any(value.pbc)) and self.capabilities.quantum:
+                result = self._periodic_quantum(value, initial_parameters, callback)
+            elif (
+                value is not None
+                and not any(value.pbc)
+                and self.method == "dft"
+                and self._has_spin_orbit_dataset(value)
+            ):
+                result = self._molecular_soc_dft(value)
+            elif (value is not None and any(value.pbc)) and not self.capabilities.quantum:
                 result = self._periodic(value)
             elif value is not None:
                 hubbard.require_crystal(self._hubbard_u, value.pbc)
@@ -2027,9 +2415,12 @@ class Mandacaru(ASEProperties, Calculator):
             if isinstance(source, Atoms):
                 self.atoms = source.copy()
             self.result = result
+            n_cells = getattr(self, "n_supercells", 1)
+            is_periodic_quantum = self.capabilities.quantum and (value is not None and any(value.pbc))
+            factor = 1.0 / n_cells if is_periodic_quantum else 1.0
             self.results = {
-                "energy": result.in_units("eV"),
-                "free_energy": result.free_energy_ev,
+                "energy": result.in_units("eV") * factor,
+                "free_energy": result.free_energy_ev * factor,
             }
             if self.method == "dft":
                 if result.periodic is not None:
@@ -2163,6 +2554,9 @@ class Mandacaru(ASEProperties, Calculator):
                 if result.periodic is not None:
                     with self._stage("nuclear gradient (forces)"):
                         self.results["forces"] = result.forces()
+                elif periodic_geometry and self.capabilities.quantum:
+                    with self._stage("quantum nuclear gradient (forces)"):
+                        self.results["forces"] = self._periodic_quantum_forces(geometry, result)
                 else:
                     project = self._project_translation is not False and len(geometry.numbers) > 1
                     internal = project and self.capabilities.quantum and self._basis_spec is None
@@ -2175,8 +2569,12 @@ class Mandacaru(ASEProperties, Calculator):
                     write_forces(self, result, geometry, internal=internal, translated=project)
                 self._arm_exit_hook()
             if "stress" in properties:
-                with self._stage("stress tensor"):
-                    self.results["stress"] = result.stress()
+                if periodic_geometry and self.capabilities.quantum:
+                    with self._stage("quantum stress tensor"):
+                        self.results["stress"] = self._periodic_quantum_stress(geometry, result)
+                else:
+                    with self._stage("stress tensor"):
+                        self.results["stress"] = result.stress()
             if self.trace or self.txt is not None:
                 from .integrations.reporting import write_performance
 
@@ -2261,6 +2659,52 @@ class Mandacaru(ASEProperties, Calculator):
             from ase.stress import voigt_6_to_full_3x3_stress
             return voigt_6_to_full_3x3_stress(val)
         return val
+
+    def hubbard_response(self, alphas=(0.05, 0.1)):
+        """Calculate linear-response Hubbard U parameters.
+
+        Parameters
+        ----------
+        alphas : tuple of float, optional
+            Potential shift amplitudes in eV (or Hartree if atomic_units=True).
+            Default is (0.05, 0.1) eV.
+
+        Returns
+        -------
+        dict
+            Dictionary containing 'u_matrix', 'u_charge', 'chi0', 'chi', 'alphas',
+            and 'j_response' if collinear spin.
+        """
+        with self.resources.lock:
+            if self.resources.closed:
+                raise RuntimeError("calculator is closed")
+            if self.result is None or "energy" not in self.results:
+                if self._attached_atoms is None:
+                    raise RuntimeError("calculator has no attached atoms and no prior calculation")
+                self.calculate(self._attached_atoms, properties=("energy",))
+            if self.result.periodic is None:
+                raise ValueError("hubbard_response is only supported for periodic crystal calculations")
+
+            from .units import EV_TO_HARTREE, HARTREE_TO_EV
+            scale_in = 1.0 if self._atomic_units else EV_TO_HARTREE
+            alphas_ha = [float(a) * scale_in for a in alphas]
+
+            raw = self.result.periodic.hubbard_response(alphas=alphas_ha)
+
+            scale_energy = 1.0 if self._atomic_units else HARTREE_TO_EV
+            scale_chi = 1.0 if self._atomic_units else 1.0 / HARTREE_TO_EV
+            scale_alpha = 1.0 if self._atomic_units else HARTREE_TO_EV
+
+            res = {
+                "u_matrix": raw["u_matrix"] * scale_energy,
+                "u_charge": raw["u_charge"] * scale_energy,
+                "chi0": raw["chi0"] * scale_chi,
+                "chi": raw["chi"] * scale_chi,
+                "alphas": [a * scale_alpha for a in raw["alphas"]],
+            }
+            if "j_response" in raw and raw["j_response"] is not None:
+                res["j_response"] = [j * scale_energy for j in raw["j_response"]]
+            return res
 
     def reset(self):
         with self.resources.lock:

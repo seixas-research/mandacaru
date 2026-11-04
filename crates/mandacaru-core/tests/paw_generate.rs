@@ -232,6 +232,7 @@ fn the_production_path_moves_the_pbe_dataset_by_the_measured_scheme_difference()
         // The legacy seam is still the freeze: the port is proved by `parity`, and the tail of
         // v_local is the freeze's to round-off in the sphere.
         let still = compare_dataset(&f, &data, &seam, Scheme::Legacy);
+        println!("{name}: still worst = {} (dev={:e}, gate={:e}, ratio={})", still.worst().name, still.worst().deviation, still.worst().gate, still.worst().ratio());
         assert!(
             still.worst().ratio() <= 1.0,
             "{name}: {}",

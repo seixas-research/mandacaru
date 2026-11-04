@@ -52,12 +52,24 @@ class AnsatzView:
 class SolverView:
     """Read-only descriptions of an optimization performed by the Rust solver."""
 
-    def __init__(self, problem, result, checkpoint, product_form):
+    def __init__(self, problem, result, checkpoint, product_form, mapping="jordan_wigner"):
+        from types import SimpleNamespace
+        import numpy as np
+
         self.problem = problem
+        self.mapping = getattr(problem, "mapping", mapping)
         self.n_qubits = problem.num_qubits
         self.num_particles = tuple(problem.num_particles)
-        self.ansatz = AnsatzView(problem, result["indices"], product_form)
+        self.ansatz = AnsatzView(problem, result.get("indices", []), product_form)
         self._checkpoint = checkpoint
+        self.raw = result
+        self.result = SimpleNamespace(
+            optimal_parameters=np.asarray(result.get("parameters", [])),
+            parameters=np.asarray(result.get("parameters", [])),
+            indices=result.get("indices", []),
+            energy=result.get("energy_ha", 0.0),
+        )
+        self._gradient_context = {}
 
     @property
     def checkpoint(self):

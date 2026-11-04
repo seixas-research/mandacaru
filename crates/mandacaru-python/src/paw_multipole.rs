@@ -276,6 +276,139 @@ fn paw_partial_core_density<'py>(
     Ok(result)
 }
 
+#[pyfunction]
+fn paw_projector_basis_transform<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    vanderbilt: PyReadonlyArray2<'py, f64>,
+    coupling: PyReadonlyArray2<'py, f64>,
+    overlap: PyReadonlyArray2<'py, f64>,
+    basis: &str,
+) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
+    let n = vanderbilt.shape()[0];
+    let (v, _a) = copy(&context.inner, &vanderbilt)?;
+    let (c, _b) = copy(&context.inner, &coupling)?;
+    let (o, _c) = copy(&context.inner, &overlap)?;
+    let (d_raw, q_raw) = py
+        .detach(|| mandacaru_core::paw::basis_blocks::projector_basis_transform(&v, &c, &o, n, basis))
+        .map_err(error)?;
+    Ok((array(py, &[n, n], d_raw)?, array(py, &[n, n], q_raw)?))
+}
+
+#[pyfunction]
+fn paw_multipole_transform<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    b1: PyReadonlyArray2<'py, f64>,
+    b2: PyReadonlyArray2<'py, f64>,
+    delta: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Array<'py, f64>> {
+    let n1 = b1.shape()[0];
+    let n2 = b2.shape()[0];
+    let (b1_buf, _a) = copy(&context.inner, &b1)?;
+    let (b2_buf, _b) = copy(&context.inner, &b2)?;
+    let (delta_buf, _c) = copy(&context.inner, &delta)?;
+    let res = py
+        .detach(|| mandacaru_core::paw::basis_blocks::multipole_transform(&b1_buf, n1, &b2_buf, n2, &delta_buf))
+        .map_err(error)?;
+    array(py, &[n1, n2], res)
+}
+
+#[pyfunction]
+fn paw_projector_sphere<'py>(
+    _context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    center: [f64; 3],
+    r_cut: f64,
+    panel: f64,
+    radial_points: usize,
+    polar_points: usize,
+    azimuthal_points: usize,
+) -> PyResult<(
+    (Array<'py, f64>, Array<'py, f64>, Array<'py, f64>),
+    Array<'py, f64>,
+)> {
+    let (points, weights) = py
+        .detach(|| {
+            mandacaru_core::paw::basis_blocks::projector_sphere(
+                center,
+                r_cut,
+                panel,
+                radial_points,
+                polar_points,
+                azimuthal_points,
+            )
+        })
+        .map_err(error)?;
+    let [x, y, z] = points;
+    let n_ang = polar_points * azimuthal_points;
+    let n_rad = weights.len() / n_ang.max(1);
+    Ok((
+        (
+            array(py, &[n_rad, n_ang], x)?,
+            array(py, &[n_rad, n_ang], y)?,
+            array(py, &[n_rad, n_ang], z)?,
+        ),
+        array(py, &[n_rad, n_ang], weights)?,
+    ))
+}
+
+#[pyfunction]
+fn paw_atom_multipole_blocks<'py>(
+    py: Python<'py>,
+    l_list: Vec<usize>,
+    m_list: Vec<i32>,
+    index_list: Vec<usize>,
+    real: bool,
+    deltas_dict: &Bound<'py, PyDict>,
+    strides_dict: &Bound<'py, PyDict>,
+) -> PyResult<Vec<(usize, i32, pyo3::Py<pyo3::PyAny>)>> {
+    let n = l_list.len();
+    if m_list.len() != n || index_list.len() != n {
+        return Err(PyValueError::new_err("projector property lengths mismatch"));
+    }
+    let mut specs = Vec::with_capacity(n);
+    for i in 0..n {
+        specs.push(mandacaru_core::paw::basis_blocks::ProjectorSpec {
+            l: l_list[i],
+            m: m_list[i],
+            index: index_list[i],
+        });
+    }
+
+    let mut deltas = std::collections::BTreeMap::new();
+    for (k, v) in deltas_dict {
+        let key_tuple: (usize, usize, usize) = k.extract()?;
+        let arr: PyReadonlyArray2<'py, f64> = v.extract()?;
+        let slice = arr.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+        deltas.insert(key_tuple, slice.to_vec());
+    }
+
+    let mut strides = std::collections::BTreeMap::new();
+    for (k, v) in strides_dict {
+        let key_tuple: (usize, usize) = k.extract()?;
+        let val_tuple: (usize, usize) = v.extract()?;
+        strides.insert(key_tuple, val_tuple);
+    }
+
+    let blocks = py
+        .detach(|| mandacaru_core::paw::basis_blocks::atom_multipole_blocks(&specs, real, &deltas, &strides))
+        .map_err(error)?;
+
+    let mut out = Vec::with_capacity(blocks.len());
+    for (l, m, mat) in blocks {
+        if real {
+            let real_mat: Vec<f64> = mat.iter().map(|c| c.re).collect();
+            let py_arr = array(py, &[n, n], real_mat)?;
+            out.push((l, m, py_arr.into_any().unbind()));
+        } else {
+            let py_arr = array(py, &[n, n], mat)?;
+            out.push((l, m, py_arr.into_any().unbind()));
+        }
+    }
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_shape_function, m)?)?;
     m.add_function(wrap_pyfunction!(paw_shape_potential, m)?)?;
@@ -288,5 +421,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_crossover_radius, m)?)?;
     m.add_function(wrap_pyfunction!(paw_smooth_core_density, m)?)?;
     m.add_function(wrap_pyfunction!(paw_partial_core_density, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_projector_basis_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_multipole_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_projector_sphere, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_atom_multipole_blocks, m)?)?;
     Ok(())
 }

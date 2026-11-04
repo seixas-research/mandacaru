@@ -831,6 +831,28 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevB.57.1505}
 }""", "the on-site Hubbard correction (hubbard_u) of a Kohn-Sham calculation",
          verified=False, topics=("dft", "hubbard")),
+    _ref("Liechtenstein1995", """
+@article{Liechtenstein1995,
+  author  = {Liechtenstein, A. I. and Anisimov, V. I. and Zaanen, J.},
+  title   = {Density-functional theory and strong interactions: Orbital ordering in {Mott-Hubbard} insulators},
+  journal = {Phys. Rev. B},
+  volume  = {52},
+  pages   = {R5467--R5470},
+  year    = {1995},
+  doi     = {10.1103/PhysRevB.52.R5467}
+}""", "the rotationally invariant DFT+U method with Slater integrals (Liechtenstein form)",
+         verified=False, topics=("dft", "hubbard")),
+    _ref("Cococcioni2005", """
+@article{Cococcioni2005,
+  author  = {Cococcioni, M. and de Gironcoli, S.},
+  title   = {Linear response approach to the calculation of the effective interaction parameters in the {LDA+U} method},
+  journal = {Phys. Rev. B},
+  volume  = {71},
+  pages   = {035105},
+  year    = {2005},
+  doi     = {10.1103/PhysRevB.71.035105}
+}""", "the linear response determination of Hubbard parameters",
+         verified=False, topics=("dft", "hubbard", "response")),
 ]
 
 # --------------------------------------------------------------------------- #

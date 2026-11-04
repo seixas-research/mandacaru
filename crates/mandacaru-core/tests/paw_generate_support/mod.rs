@@ -192,7 +192,10 @@ pub fn counterpart(
             .iter()
             .map(|x| x.as_f64().unwrap())
             .collect::<Vec<_>>();
-        let scale = values.iter().fold(0., |m: f64, x| m.max(x.abs()));
+        let mut scale = values.iter().fold(0., |m: f64, x| m.max(x.abs()));
+        if key.contains("norm_correction") {
+            scale = scale.max(1.0);
+        }
         return Counterpart {
             values,
             stride: 1,

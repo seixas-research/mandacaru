@@ -61,7 +61,15 @@ pub fn refuse(c: &Crystal) -> Result<()> {
         )))
     };
     if c.hubbard.as_ref().is_some_and(|h| h.is_active()) {
-        return no("a DFT+U crystal (the +U strain wiring is AS-7)");
+        if c.screened_exchange()?.is_some() {
+            return no("a DFT+U hybrid crystal");
+        }
+        if c.spinor {
+            return no("a DFT+U spinor crystal");
+        }
+    }
+    if c.spins != 1 && c.spins != 2 {
+        return no("a crystal with more than two spin channels");
     }
     if c.screened_exchange()?.is_some() && c.hybrid.is_none() {
         return no("a hybrid crystal without the PAW spheres of its sites block");
@@ -164,7 +172,7 @@ pub fn crystal_strain<'a>(
         forces = forces.with_spin_orbit(so.projectors, so.couplings)?;
     }
     let forces = forces.with_scf(crystal, options.clone())?;
-    let frozen = freeze(&forces, state, None)?;
+    let frozen = freeze(&forces, state, crystal.hubbard_hook())?;
     drop(forces);
     let n = crystal.grid.index.points();
     // The copies the strain terms keep: the density, the xc gradients and flux (a GGA).
@@ -186,7 +194,7 @@ pub fn crystal_strain<'a>(
         state: frozen.state,
         fields,
         q: frozen.q,
-        hubbard: None,
+        hubbard: frozen.hubbard,
     };
     let mut strain = StrainSetup::new(ctx, inputs, layout, operators)?.with_point_group(
         crystal

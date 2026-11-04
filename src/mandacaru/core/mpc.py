@@ -101,11 +101,12 @@ from .._native import voxel_self_potential, wigner_seitz_kernel as _native_wigne
 
 __all__ = ["TruncatedCoulombSolver", "wigner_seitz_kernel",
            "FiniteSizeCorrection", "exchange_correlation_hole_energy",
-           "voxel_self_potential", "PeriodicPoissonSolver"]
+           "voxel_self_potential", "PeriodicPoissonSolver", "spatial_rdms",
+           "PeriodicIntegralsAdapter", "MolecularIntegrals", "minimal_hao_basis"]
 
 
 class PeriodicPoissonSolver:
-    """Fourier-space Poisson solver on a periodic grid (interface reference)."""
+    """Fourier-space Poisson solver on a periodic grid."""
 
     def __init__(self, shape, step=None, spacing=None, workers: int = -1):
         self.shape = tuple(int(s) for s in shape)
@@ -125,12 +126,38 @@ class PeriodicPoissonSolver:
         self.L = self.shape
         self.workers = workers
 
+        reciprocal = 2.0 * np.pi * np.linalg.inv(self.cell).T
+        kx = np.fft.fftfreq(self.shape[0]) * self.shape[0]
+        ky = np.fft.fftfreq(self.shape[1]) * self.shape[1]
+        kz = np.fft.fftfreq(self.shape[2]) * self.shape[2]
+
+        K = np.zeros(self.shape, dtype=float)
+        for i in range(self.shape[0]):
+            for j in range(self.shape[1]):
+                for k in range(self.shape[2]):
+                    m = np.array([kx[i], ky[j], kz[k]])
+                    kvec = reciprocal @ m
+                    g2 = float(np.dot(kvec, kvec))
+                    if g2 > 0:
+                        K[i, j, k] = (4.0 * np.pi / g2) / self.dV
+        self._kernel = K
+
     def solve(self, rho_flat: np.ndarray) -> np.ndarray:
         return self.solve_stack(rho_flat[None, :])[0]
 
     def solve_stack(self, rho_stack: np.ndarray,
                     out: np.ndarray | None = None) -> np.ndarray:
-        return np.zeros_like(rho_stack)
+        rho_stack = np.asarray(rho_stack, dtype=float)
+        P = rho_stack.shape[0]
+        N = int(np.prod(self.shape))
+        if out is None:
+            out = np.empty((P, N), dtype=float)
+        for p in range(P):
+            rho_3d = rho_stack[p].reshape(self.shape)
+            r_fft = sfft.fftn(rho_3d, workers=self.workers)
+            pot_3d = sfft.ifftn(r_fft * self._kernel, workers=self.workers).real * self.dV
+            out[p] = pot_3d.ravel()
+        return out
 
 
 #: Lattice shells searched when deciding which translation minimizes the
@@ -418,3 +445,149 @@ def exchange_correlation_hole_energy(eri_periodic, eri_truncated, D, Gamma,
         volume=float(volume),
         energy_per_cell=(None if energy_per_cell is None
                          else float(energy_per_cell)))
+
+
+def spatial_rdms(gamma, gamma2, n_orbitals: int):
+    r"""Spin-summed spatial RDMs from spin-blocked spin-orbital ones.
+
+    Spin-orbital ``P = p + sigma * M`` (alpha block first).  The one-body RDM
+    sums the two spin blocks; the two-body RDM sums the four blocks in which
+    electron 1 keeps its spin and electron 2 keeps its spin.
+    """
+    m = int(n_orbitals)
+    if gamma.shape != (2 * m, 2 * m):
+        raise ValueError(
+            f"expected a {2 * m}x{2 * m} one-body RDM "
+            f"(frozen orbitals are not supported here), got {gamma.shape}"
+        )
+    a, b = slice(0, m), slice(m, 2 * m)
+    d = gamma[a, a] + gamma[b, b]
+    if gamma2 is None:
+        return d, None
+    g = (
+        gamma2[a, a, a, a]
+        + gamma2[a, b, a, b]
+        + gamma2[b, a, b, a]
+        + gamma2[b, b, b, b]
+    )
+    return d, g
+
+
+class PeriodicIntegralsAdapter:
+    """Adapts native MolecularIntegrals to the interface expected by finite-size corrections."""
+
+    def __init__(self, integrals, reference, geometry, context=None):
+        from types import SimpleNamespace
+        from ..units import ANGSTROM_TO_BOHR
+
+        self._integrals = integrals
+        self._reference = reference
+        self._geometry = geometry
+        self.context = context
+
+        snap = integrals.snapshot(include_samples=True)
+        self._psi = snap["samples"]  # (M, ngrid)
+        self._lowdin = snap["lowdin"]  # (M, M)
+        self.orthogonalize = True
+        self.basis = list(range(snap["samples"].shape[0]))
+
+        ref_snap = reference.snapshot()
+        self.mo_coefficients = ref_snap["coefficients"][0]  # (M, M)
+
+        native_grid = integrals.grid
+
+        class GridAdapter:
+            def __init__(self, g):
+                self.shape = tuple(g.shape)
+                self.step = np.asarray(g.step_bohr, dtype=float)
+                self.dV = float(g.dv_bohr3)
+
+        self.grid = GridAdapter(native_grid)
+        self.cell = np.asarray(geometry.cell, dtype=float) * ANGSTROM_TO_BOHR
+        self._engine = SimpleNamespace(_psi=self._psi)
+        self._cached_periodic = None
+
+    def _lowdin_x(self):
+        return self._lowdin
+
+    def two_body_with_kernel(self, solver=None, *, mo: bool = True) -> np.ndarray:
+        if mo and self.mo_coefficients is None:
+            raise ValueError(
+                "no molecular-orbital rotation is available yet: call "
+                "molecular_hamiltonian() first, or pass mo=False to get the "
+                "tensor in the Loewdin-orthonormalized basis."
+            )
+        if solver is None and self._cached_periodic is not None:
+            return self._cached_periodic.copy()
+
+        if solver is None:
+            solver = PeriodicPoissonSolver(self.grid.shape, step=self.grid.step)
+
+        psi = self._psi
+        M, ngrid = psi.shape
+        dV = self.grid.dV
+
+        rho_stack = np.empty((M * M, ngrid), dtype=float)
+        for b in range(M):
+            for d in range(M):
+                rho_stack[b * M + d] = np.real(np.conj(psi[b]) * psi[d])
+
+        phi_stack = solver.solve_stack(rho_stack)
+        eri_raw = (rho_stack @ phi_stack.T) * dV
+        eri_4d = eri_raw.reshape(M, M, M, M)
+        eri = np.transpose(eri_4d, (0, 2, 1, 3))
+
+        if self.orthogonalize:
+            X = self._lowdin_x()
+            eri = np.einsum(
+                "ap,bq,cr,ds,abcd->pqrs",
+                X.conj(), X.conj(), X, X, eri, optimize=True
+            )
+        if mo and self.mo_coefficients is not None:
+            V = self.mo_coefficients
+            eri = np.einsum(
+                "ap,bq,cr,ds,abcd->pqrs",
+                V.conj(), V.conj(), V, V, eri, optimize=True
+            )
+
+        if solver is None or isinstance(solver, PeriodicPoissonSolver):
+            self._cached_periodic = eri.copy()
+
+        return eri
+
+
+class MolecularIntegrals:
+    """Mock/wrapper for legacy MolecularIntegrals interface."""
+
+    def __init__(self, nuclei, basis, grid, units="angstrom", softening=1e-12, orthogonalize=True, **kwargs):
+        self.nuclei = nuclei
+        self.basis = list(basis)
+        self.grid = grid
+        self.units = units
+        self.softening = softening
+        self.orthogonalize = orthogonalize
+        self.mo_coefficients = None
+        self._kwargs = kwargs
+
+    def two_body_with_kernel(self, solver=None, *, mo: bool = True):
+        if mo and self.mo_coefficients is None:
+            raise ValueError(
+                "no molecular-orbital rotation is available yet: call "
+                "molecular_hamiltonian() first, or pass mo=False to get the "
+                "tensor in the Loewdin-orthonormalized basis."
+            )
+        raise NotImplementedError("two_body_with_kernel without mo is not implemented for standalone MolecularIntegrals")
+
+
+def minimal_hao_basis(nuclei, grid_units: str = "angstrom"):
+    from ..basis import HydrogenicAtomicOrbital
+
+    basis = []
+    for Z, R in nuclei:
+        z_eff = HydrogenicAtomicOrbital.slater_effective_charge(int(round(Z)), 1, 0)
+        basis.append(
+            HydrogenicAtomicOrbital(1, 0, 0, Z=z_eff, center=R, units=grid_units)
+        )
+    return basis
+
+

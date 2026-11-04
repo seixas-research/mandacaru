@@ -42,6 +42,7 @@ pub struct NodeMap {
     pub shift: [i64; 3],
 }
 
+#[derive(Clone)]
 pub struct Symmetry {
     ops: Operations,
     lattice: Matrix3<f64>,
@@ -283,6 +284,30 @@ impl Symmetry {
     /// The lattice vectors (columns, Bohr) the operations were found for.
     pub fn lattice(&self) -> &Matrix3<f64> {
         &self.lattice
+    }
+
+    /// Convert the kept symmetry operations to a [`PointGroup`](crate::periodic::point_group::PointGroup).
+    pub fn to_point_group(&self, n_atoms: usize) -> Result<crate::periodic::point_group::PointGroup> {
+        let n = self.len();
+        let inv_lattice = self.lattice.try_inverse().ok_or_else(|| {
+            crate::periodic::invalid("singular lattice in symmetry")
+        })?;
+        let mut cartesian = Vec::with_capacity(n);
+        let mut atom_maps = Vec::with_capacity(n);
+        for k in 0..n {
+            let w_i32 = self.rotation(k);
+            let w = Matrix3::new(
+                w_i32[(0, 0)] as f64, w_i32[(0, 1)] as f64, w_i32[(0, 2)] as f64,
+                w_i32[(1, 0)] as f64, w_i32[(1, 1)] as f64, w_i32[(1, 2)] as f64,
+                w_i32[(2, 0)] as f64, w_i32[(2, 1)] as f64, w_i32[(2, 2)] as f64,
+            );
+            let r = self.lattice * w * inv_lattice;
+            cartesian.push(r);
+            let mut map = vec![0; n_atoms];
+            self.atom_map(k, &mut map);
+            atom_maps.push(map);
+        }
+        Ok(crate::periodic::point_group::PointGroup::from_parts(cartesian, atom_maps))
     }
 }
 

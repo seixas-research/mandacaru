@@ -619,6 +619,38 @@ impl PyContext {
             inner: Arc::new(inner),
         })
     }
+    #[doc(hidden)]
+    fn _periodic_problem_from_request(
+        &self,
+        py: Python<'_>,
+        request_json: &str,
+        dataset_paths: Vec<String>,
+    ) -> PyResult<periodic::PyCrystal> {
+        let v: serde_json::Value = serde_json::from_str(request_json)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let mut input = mandacaru_core::periodic::setup::parse_input_json(&v).map_err(error)?;
+        if input.dataset_files.is_none() && !dataset_paths.is_empty() {
+            let mut files = Vec::with_capacity(dataset_paths.len());
+            for p in &dataset_paths {
+                let digest = mandacaru_core::paw::digest::sha256_file(std::path::Path::new(p)).unwrap_or_default();
+                files.push((p.clone(), digest));
+            }
+            input.dataset_files = Some(files);
+        }
+        let mut datasets = Vec::with_capacity(dataset_paths.len());
+        for p in &dataset_paths {
+            datasets.push(std::sync::Arc::new(
+                mandacaru_core::paw::record::PawDataset::read(&self.inner, std::path::Path::new(p))
+                    .map_err(error)?,
+            ));
+        }
+        let setup = mandacaru_core::periodic::setup::create_setup(&self.inner, input, datasets)
+            .map_err(error)?;
+        let crystal = py.detach(|| setup.build(&self.inner)).map_err(error)?;
+        Ok(periodic::PyCrystal {
+            inner: std::sync::Arc::new(crystal),
+        })
+    }
     fn load_crystal(&self, py: Python<'_>, path: &str) -> PyResult<PyCrystal> {
         let inner = py
             .detach(|| Crystal::load(&self.inner, path))

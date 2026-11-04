@@ -16,12 +16,14 @@ METHODS = {
     "uhf": Capability(False, True),
     "ghf": Capability(False, False),
     "dft": Capability(False, True, True),
-    "vqe": Capability(True, True),
-    "adapt-vqe": Capability(True, True),
+    "vqe": Capability(True, True, True),
+    "adapt-vqe": Capability(True, True, True),
     "subspace-vqe": Capability(True, False),
     "subspace-adapt-vqe": Capability(True, False),
     "mcas-vqe": Capability(True, True),
     "valqa": Capability(True, True),
+    "bloch-vqe": Capability(True, True, True),
+    "bloch-adapt-vqe": Capability(True, True, True),
 }
 from ._native import FUNCTIONALS as _FUNCTIONALS
 

@@ -132,7 +132,7 @@ pub fn forces_with_group(
         provider = provider.with_spin_orbit(&so_projectors, &so_couplings)?;
     }
     provider.set_point_group(group);
-    Ok(gradient(&provider, &state(c, r)?, None)?.forces())
+    Ok(gradient(&provider, &state(c, r)?, c.hubbard_hook())?.forces())
 }
 
 /// The analytic stress of the converged crystal `r` at the pins of its snapshot (node counts, ion

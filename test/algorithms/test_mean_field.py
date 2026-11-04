@@ -302,7 +302,7 @@ class TestTheDeterminantDensity:
 
 
 class TestInitialMomentsOfACrystal:
-    """A crystal polarizes when asked, never because its atoms carry a moment."""
+    """A crystal with nonzero initial magnetic moments automatically calculates with spin=True."""
 
     @staticmethod
     def hydrogen():
@@ -311,25 +311,29 @@ class TestInitialMomentsOfACrystal:
         return atom
 
     @pytest.mark.parametrize("option", [{}, {"spin": False}, {"unrestricted": False}])
-    def test_a_moment_without_spin_polarization_is_a_contradiction(self, option):
+    def test_a_crystal_with_nonzero_moments_automatically_runs_unrestricted(self, option):
         atom = self.hydrogen()
         atom.calc = Mandacaru(method="dft", trace=False, grid_spacing=0.7,
                               basis={"name": "PAW-LCAO", "size": "SZ"}, **option)
-        with pytest.raises(ValueError, match=r"spin=True.*unrestricted=True"):
-            atom.get_potential_energy()
+        energy = atom.get_potential_energy()
+        assert np.isfinite(energy)
+        assert atom.calc.spin is True
+        assert atom.calc.unrestricted is True
+        assert atom.calc._unrestricted is True
+        assert atom.calc.periodic_problem.spins == 2
+        assert atom.calc.results["magmom"] == pytest.approx(1.0, abs=1e-4)
 
     def test_the_check_passes_when_polarization_is_asked_or_the_dataset_is_spinor(self):
         from mandacaru.structure import initial_moments
 
         atom = self.hydrogen()
-        for spinor, unrestricted in ((False, True), (True, False), (True, True)):
+        for spinor, unrestricted in ((False, True), (True, False), (True, True), (False, False)):
             moments = initial_moments(atom, spinor=spinor, unrestricted=unrestricted)
             assert moments.tolist() == [1.0]
         atom.set_initial_magnetic_moments([0.0])
         assert initial_moments(atom, spinor=False, unrestricted=False).tolist() == [0.0]
-        with pytest.raises(ValueError, match="spin=False"):
-            atom.set_initial_magnetic_moments([0.5])
-            initial_moments(atom, spinor=False, unrestricted=False)
+        atom.set_initial_magnetic_moments([0.5])
+        assert initial_moments(atom, spinor=False, unrestricted=False).tolist() == [0.5]
 
     def test_noncollinear_moments_are_still_refused(self):
         from mandacaru.structure import initial_moments

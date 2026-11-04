@@ -8,6 +8,7 @@ pub mod finite_size;
 pub mod gradient;
 pub mod hubbard;
 pub mod hubbard_gradient;
+pub mod hubbard_response;
 pub mod hubbard_table;
 pub mod hybrid_gradient;
 pub mod hybrid_setup;
@@ -30,5 +31,6 @@ use crate::Error;
 pub(crate) fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
 }
+pub use hubbard_response::{hubbard_response, PeriodicProbe, ResponseResult};
 pub use input::{Crystal, KPoint};
 pub use solver::{Options, PeriodicResult};

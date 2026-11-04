@@ -182,7 +182,7 @@ impl Derivatives for SpinorAltered<'_> {
         if let Some((crystal, without, options)) = &self.scalar {
             let densities = scf::densities(crystal, &state.bands)?;
             let output = scf::output_fields(crystal, &densities, q)?;
-            *self.spectrum.borrow_mut() = scf::rediagonalize(without, &output, options, &[])?;
+            *self.spectrum.borrow_mut() = scf::rediagonalize(without, &output, options, &[], &[])?;
         }
         self.inner.fields(state, q)
     }
@@ -235,5 +235,8 @@ impl Derivatives for SpinorAltered<'_> {
     }
     fn spin_orbit_projection_gradient(&self, k: usize) -> Result<[Matrix; 3]> {
         self.inner.spin_orbit_projection_gradient(k)
+    }
+    fn hubbard(&self) -> Option<&dyn mandacaru_core::periodic::gradient::Hubbard> {
+        self.inner.hubbard()
     }
 }

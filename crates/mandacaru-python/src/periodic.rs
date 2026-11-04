@@ -204,6 +204,82 @@ impl PyCrystal {
             crystal: self.inner.clone(),
         })
     }
+    #[pyo3(signature=(result, *,alphas=None))]
+    fn hubbard_response<'py>(
+        &self,
+        py: Python<'py>,
+        result: &PyPeriodicResult,
+        alphas: Option<Vec<f64>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        result.hubbard_response(py, alphas)
+    }
+    #[doc(hidden)]
+    fn _setup_arrays<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        let ctx = &self.inner.context;
+        for (i, p) in self.inner.points.iter().enumerate() {
+            let read_psi = p.psi.read(ctx).map_err(error)?;
+            dict.set_item(format!("k{i}.psi"), array(py, &[read_psi.len()], read_psi.to_vec())?)?;
+            dict.set_item(format!("k{i}.overlap"), array(py, &[self.inner.m, self.inner.m], p.overlap.as_slice().to_vec())?)?;
+            dict.set_item(format!("k{i}.fixed"), array(py, &[self.inner.m, self.inner.m], p.fixed.as_slice().to_vec())?)?;
+            dict.set_item(format!("k{i}.projections"), array(py, &[self.inner.m, self.inner.p], p.projections.as_slice().to_vec())?)?;
+            if let Some(ref so) = p.spin_orbit {
+                dict.set_item(format!("k{i}.spin_orbit"), array(py, &[so.nrows(), so.ncols()], so.as_slice().to_vec())?)?;
+            }
+        }
+        dict.set_item("blocks", array(py, &[self.inner.blocks.as_slice().len()], self.inner.blocks.as_slice().to_vec())?)?;
+        dict.set_item("core", array(py, &[self.inner.core.as_slice().len()], self.inner.core.as_slice().to_vec())?)?;
+        if let Some(ref tau) = self.inner.core_tau {
+            dict.set_item("core_tau", array(py, &[tau.as_slice().len()], tau.as_slice().to_vec())?)?;
+        }
+        dict.set_item("initial", array(py, &[self.inner.initial.as_slice().len()], self.inner.initial.as_slice().to_vec())?)?;
+        dict.set_item("initial_m", array(py, &[self.inner.initial_m.as_slice().len()], self.inner.initial_m.as_slice().to_vec())?)?;
+        dict.set_item("initial_q", array(py, &[self.inner.initial_q.as_slice().len()], self.inner.initial_q.as_slice().to_vec())?)?;
+        dict.set_item("kernel", array(py, &[self.inner.kernel.as_slice().len()], self.inner.kernel.as_slice().to_vec())?)?;
+        dict.set_item("xc_wave", array(py, &[self.inner.xc_wave.as_slice().len()], self.inner.xc_wave.as_slice().to_vec())?)?;
+        dict.set_item("phase", array(py, &[self.inner.phase.as_slice().len()], self.inner.phase.as_slice().to_vec())?)?;
+        dict.set_item("kerker", array(py, &[self.inner.kerker.as_slice().len()], self.inner.kerker.as_slice().to_vec())?)?;
+        dict.set_item("ion", array(py, &[self.inner.ion.as_slice().len()], self.inner.ion.as_slice().to_vec())?)?;
+        let read_hats = self.inner.hats.read(ctx).map_err(error)?;
+        dict.set_item("hats", array(py, &[read_hats.len()], read_hats.to_vec())?)?;
+        dict.set_item("u", array(py, &[self.inner.u.as_slice().len()], self.inner.u.as_slice().to_vec())?)?;
+        dict.set_item("uion", array(py, &[self.inner.uion.as_slice().len()], self.inner.uion.as_slice().to_vec())?)?;
+        dict.set_item("linear", array(py, &[self.inner.linear.as_slice().len()], self.inner.linear.as_slice().to_vec())?)?;
+        let flat_perms: Vec<u64> = self.inner.permutations.iter().flat_map(|p| p.iter().map(|&x| x as u64)).collect();
+        dict.set_item("permutations", array(py, &[flat_perms.len()], flat_perms)?)?;
+        dict.set_item("qsym", array(py, &[self.inner.qsym.as_slice().len()], self.inner.qsym.as_slice().to_vec())?)?;
+        Ok(dict)
+    }
+    #[doc(hidden)]
+    fn _setup_metadata(&self) -> PyResult<String> {
+        let meta = serde_json::json!({
+            "schema_version": 1,
+            "representation": "periodic-paw-snapshot",
+            "energy_unit": "Ha",
+            "length_unit": "bohr",
+            "m": self.inner.m,
+            "p": self.inner.p,
+            "channels": self.inner.channels,
+            "eion": self.inner.eion,
+            "ion_constant": self.inner.ion_constant,
+            "constant": self.inner.constant,
+            "reference": self.inner.reference,
+            "electrons": self.inner.electrons,
+            "spins": self.inner.spins,
+            "spinor": self.inner.spinor,
+            "time_reversal": self.inner.time_reversal,
+            "functional": self.inner.functional,
+            "precision": self.inner.precision.name(),
+            "relativistic": self.inner.relativistic,
+            "permutation_count": self.inner.permutations.len(),
+        });
+        serde_json::to_string(&meta)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+    #[doc(hidden)]
+    fn _build_stages(&self) -> PyResult<Vec<(String, f64, usize)>> {
+        Ok(vec![("crystal_build".to_string(), 0.0, self.inner.context.memory_peak())])
+    }
 }
 #[pyclass(name = "PeriodicResult", module = "mandacaru._native", frozen)]
 pub struct PyPeriodicResult {
@@ -212,6 +288,44 @@ pub struct PyPeriodicResult {
 }
 #[pymethods]
 impl PyPeriodicResult {
+    /// Evaluates the linear-response Hubbard U parameters for this converged crystal.
+    /// Returns dictionary with `u_matrix`, `u_charge`, `chi0`, `chi`, `alphas`, and optionally `j_response`.
+    #[pyo3(signature=(*,alphas=None))]
+    fn hubbard_response<'py>(
+        &self,
+        py: Python<'py>,
+        alphas: Option<Vec<f64>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let alphas = alphas.unwrap_or_else(|| vec![0.001837466, 0.003674932]); // ~0.05, 0.1 eV in Ha
+        let res = py
+            .detach(|| {
+                mandacaru_core::periodic::hubbard_response(
+                    &self.crystal,
+                    &self.inner,
+                    &alphas,
+                )
+            })
+            .map_err(error)?;
+
+        let out = PyDict::new(py);
+        let dmatrix_to_py = |m: &nalgebra::DMatrix<f64>| -> PyResult<Array<'py, f64>> {
+            let rows = m.nrows();
+            let cols = m.ncols();
+            let data: Vec<f64> = (0..rows)
+                .flat_map(|r| (0..cols).map(move |c| m[(r, c)]))
+                .collect();
+            array(py, &[rows, cols], data)
+        };
+        out.set_item("u_matrix", dmatrix_to_py(&res.u_matrix)?)?;
+        out.set_item("u_charge", dmatrix_to_py(&res.u_charge)?)?;
+        out.set_item("chi0", dmatrix_to_py(&res.chi0)?)?;
+        out.set_item("chi", dmatrix_to_py(&res.chi)?)?;
+        out.set_item("alphas", res.alphas)?;
+        if let Some(j) = res.j_response {
+            out.set_item("j_response", j)?;
+        }
+        Ok(out)
+    }
     fn wannier_setup(
         &self,
         py: Python<'_>,

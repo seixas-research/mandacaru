@@ -1313,3 +1313,81 @@ class TestHubbardResultView:
         first = corrected.hubbard[0]["n"]
         first[:] = 0.0
         assert np.abs(corrected.hubbard[0]["n"]).max() > 0.0
+
+
+class TestPeriodicInitialMomentsAutomaticSpin:
+    """A crystal with nonzero initial magnetic moments automatically calculates with spin=True."""
+
+    def test_crystal_with_nonzero_moments_sets_spin_at_construction(self):
+        atom = Atoms("H", positions=[[2.0, 2.0, 2.0]], cell=[4.0] * 3, pbc=True)
+        atom.set_initial_magnetic_moments([1.0])
+        calc = Mandacaru(method="dft", atoms=atom, trace=False, spin=False)
+        assert calc.spin is True
+        assert calc.unrestricted is True
+        assert calc._unrestricted is True
+
+    def test_crystal_with_zero_moments_retains_spin_false(self):
+        atom = Atoms("H", positions=[[2.0, 2.0, 2.0]], cell=[4.0] * 3, pbc=True)
+        atom.set_initial_magnetic_moments([0.0])
+        calc = Mandacaru(
+            method="dft", trace=False, grid_spacing=0.7,
+            basis={"name": "PAW-LCAO", "size": "SZ"}, spin=False,
+        )
+        atom.calc = calc
+        atom.get_potential_energy()
+        assert calc.spin is False
+        assert calc.unrestricted is False
+        assert calc._unrestricted is False
+        assert calc.periodic_problem.spins == 1
+
+    def test_crystal_with_ferromagnetic_moments_runs_unrestricted(self):
+        atom = Atoms("H", positions=[[2.0, 2.0, 2.0]], cell=[4.0] * 3, pbc=True)
+        atom.set_initial_magnetic_moments([1.0])
+        calc = Mandacaru(
+            method="dft", trace=False, grid_spacing=0.7,
+            basis={"name": "PAW-LCAO", "size": "SZ"}, spin=False,
+        )
+        atom.calc = calc
+        energy = atom.get_potential_energy()
+        assert np.isfinite(energy)
+        assert calc.spin is True
+        assert calc.unrestricted is True
+        assert calc._unrestricted is True
+        assert calc.periodic_problem.spins == 2
+        assert calc.results["magmom"] == pytest.approx(1.0, abs=1e-4)
+
+    def test_crystal_with_antiferromagnetic_moments_runs_unrestricted(self):
+        atoms = Atoms("H2", positions=[[1.0, 2.0, 2.0], [3.0, 2.0, 2.0]], cell=[4.0] * 3, pbc=True)
+        atoms.set_initial_magnetic_moments([1.0, -1.0])
+        calc = Mandacaru(
+            method="dft", trace=False, grid_spacing=0.7,
+            basis={"name": "PAW-LCAO", "size": "SZ"}, spin=False,
+        )
+        atoms.calc = calc
+        energy = atoms.get_potential_energy()
+        assert np.isfinite(energy)
+        assert calc.spin is True
+        assert calc.unrestricted is True
+        assert calc._unrestricted is True
+        assert calc.periodic_problem.spins == 2
+
+    def test_geometry_with_nonzero_moments_runs_unrestricted(self):
+        from mandacaru.structure import Geometry
+
+        geom = Geometry(
+            numbers=(1,),
+            positions=np.array([[2.0, 2.0, 2.0]]),
+            cell=np.array([[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]),
+            pbc=(True, True, True),
+            magnetic_moments=np.array([1.0]),
+        )
+        calc = Mandacaru(
+            method="dft", trace=False, grid_spacing=0.7,
+            basis={"name": "PAW-LCAO", "size": "SZ"}, spin=False,
+        )
+        result = calc.run(geom)
+        assert result.success
+        assert calc.spin is True
+        assert calc.unrestricted is True
+        assert calc._unrestricted is True
+        assert calc.periodic_problem.spins == 2

@@ -32,7 +32,7 @@ relax: a converged optimizer is not evidence that the model has a minimum.
 | `vqe`, `adapt-vqe`, `mcas-vqe`, `valqa` on the local state-vector simulator | [displaced energies of the converged state](#forces-variational) |
 | `ghf`, `subspace-vqe`, `subspace-adapt-vqe` | not available |
 | any run with `shots > 0` or a device other than `AER_simulator` | not available |
-| `dft` on periodic structures (crystals) | finite difference of total energy; stress tensor via `get_stress()` |
+| `dft` on periodic structures (crystals) | analytic Rust gradient for LDA, PBE and HSE06; stress tensor via `get_stress()` (restricted scalar and spinor); DFT+U crystal forces/stress raise `NotImplementedError` |
 
 Forces require the default `kinetic="spectral"`. Asking for forces where they are not available raises ASE's
 `PropertyNotImplementedError` or `NotImplementedError`. An SCF that does not

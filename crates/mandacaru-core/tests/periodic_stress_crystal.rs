@@ -249,7 +249,7 @@ fn the_stress_of_a_converged_lih_state() {
     );
     // The production fields of the output density and the bands re-diagonalized with them.
     let output = scf::output_fields(crystal, &densities, &q).unwrap();
-    let rediagonalized = scf::rediagonalize(crystal, &output, &data.options, &[]).unwrap();
+    let rediagonalized = scf::rediagonalize(crystal, &output, &data.options, &[], &[]).unwrap();
     w.bands = vec![rediagonalized[0][0].clone()];
     w.local = output.local.as_slice()[..n].to_vec();
     w.moments = output.moments.as_slice().to_vec();

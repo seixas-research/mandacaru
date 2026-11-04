@@ -6,7 +6,7 @@ use mandacaru_core::{
     },
     Context, Reservation,
 };
-use numpy::{Complex32, PyReadonlyArray1, PyUntypedArrayMethods};
+use numpy::{Complex32, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
@@ -1129,3 +1129,170 @@ impl PyProblem {
         )
     }
 }
+
+#[pyfunction]
+pub fn periodic_quantum_forces_fd<'py>(
+    py: Python<'py>,
+    energies_plus: Vec<[f64; 3]>,
+    energies_minus: Vec<[f64; 3]>,
+    h: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = py
+        .detach(|| {
+            mandacaru_core::quantum::periodic_response::periodic_quantum_forces_fd(
+                &energies_plus,
+                &energies_minus,
+                h,
+            )
+        })
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    let n = result.forces.len();
+    out.set_item(
+        "forces",
+        array(py, &[n, 3], result.forces.into_iter().flatten().collect())?,
+    )?;
+    out.set_item("scheme", result.scheme)?;
+    Ok(out)
+}
+
+#[pyfunction]
+pub fn periodic_quantum_stress_fd<'py>(
+    py: Python<'py>,
+    strained_plus: [f64; 6],
+    strained_minus: [f64; 6],
+    eps: f64,
+    volume: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = py
+        .detach(|| {
+            mandacaru_core::quantum::periodic_response::periodic_quantum_stress_fd(
+                &strained_plus,
+                &strained_minus,
+                eps,
+                volume,
+            )
+        })
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item(
+        "sigma",
+        array(py, &[3, 3], result.sigma.into_iter().flatten().collect())?,
+    )?;
+    out.set_item(
+        "voigt",
+        array(py, &[6], result.voigt.to_vec())?,
+    )?;
+    out.set_item("volume", result.volume)?;
+    out.set_item("scheme", result.scheme)?;
+    Ok(out)
+}
+
+#[pyfunction]
+#[pyo3(signature = (n_atoms, m, rdm1, rdm2=None, dh_atomic=Vec::new(), dg_atomic=None, ds_atomic=None, w_matrix=None, ewald_forces=Vec::new()))]
+pub fn periodic_quantum_forces_analytic<'py>(
+    py: Python<'py>,
+    n_atoms: usize,
+    m: usize,
+    rdm1: PyReadonlyArrayDyn<'_, C64>,
+    rdm2: Option<PyReadonlyArrayDyn<'_, C64>>,
+    dh_atomic: Vec<Vec<[f64; 3]>>,
+    dg_atomic: Option<Vec<Vec<[f64; 3]>>>,
+    ds_atomic: Option<Vec<Vec<[f64; 3]>>>,
+    w_matrix: Option<PyReadonlyArrayDyn<'_, C64>>,
+    ewald_forces: Vec<[f64; 3]>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let rdm1_slice = rdm1.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let rdm2_slice = match &rdm2 {
+        Some(a) => Some(a.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        None => None,
+    };
+    let w_slice = match &w_matrix {
+        Some(w) => Some(w.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        None => None,
+    };
+    let dg_ref = dg_atomic.as_deref();
+    let ds_ref = ds_atomic.as_deref();
+
+    let result = py
+        .detach(|| {
+            mandacaru_core::quantum::periodic_response::periodic_quantum_forces_analytic(
+                n_atoms,
+                m,
+                rdm1_slice,
+                rdm2_slice,
+                &dh_atomic,
+                dg_ref,
+                ds_ref,
+                w_slice,
+                &ewald_forces,
+            )
+        })
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    let n = result.forces.len();
+    out.set_item(
+        "forces",
+        array(py, &[n, 3], result.forces.into_iter().flatten().collect())?,
+    )?;
+    out.set_item("scheme", result.scheme)?;
+    Ok(out)
+}
+
+#[pyfunction]
+#[pyo3(signature = (m, volume, rdm1, rdm2=None, electronic_energy=0.0, dh_strain=[[Vec::new(), Vec::new(), Vec::new()], [Vec::new(), Vec::new(), Vec::new()], [Vec::new(), Vec::new(), Vec::new()]], dg_strain=None, ds_strain=None, w_matrix=None, ewald_stress=[[0.0; 3]; 3]))]
+pub fn periodic_quantum_stress_analytic<'py>(
+    py: Python<'py>,
+    m: usize,
+    volume: f64,
+    rdm1: PyReadonlyArrayDyn<'_, C64>,
+    rdm2: Option<PyReadonlyArrayDyn<'_, C64>>,
+    electronic_energy: f64,
+    dh_strain: [[Vec<f64>; 3]; 3],
+    dg_strain: Option<[[Vec<f64>; 3]; 3]>,
+    ds_strain: Option<[[Vec<f64>; 3]; 3]>,
+    w_matrix: Option<PyReadonlyArrayDyn<'_, C64>>,
+    ewald_stress: [[f64; 3]; 3],
+) -> PyResult<Bound<'py, PyDict>> {
+    let rdm1_slice = rdm1.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let rdm2_slice = match &rdm2 {
+        Some(a) => Some(a.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        None => None,
+    };
+    let w_slice = match &w_matrix {
+        Some(w) => Some(w.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        None => None,
+    };
+    let dg_ref = dg_strain.as_ref();
+    let ds_ref = ds_strain.as_ref();
+
+    let result = py
+        .detach(|| {
+            mandacaru_core::quantum::periodic_response::periodic_quantum_stress_analytic(
+                m,
+                volume,
+                rdm1_slice,
+                rdm2_slice,
+                electronic_energy,
+                &dh_strain,
+                dg_ref,
+                ds_ref,
+                w_slice,
+                &ewald_stress,
+            )
+        })
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item(
+        "sigma",
+        array(py, &[3, 3], result.sigma.into_iter().flatten().collect())?,
+    )?;
+    out.set_item(
+        "voigt",
+        array(py, &[6], result.voigt.to_vec())?,
+    )?;
+    out.set_item("volume", result.volume)?;
+    out.set_item("scheme", result.scheme)?;
+    Ok(out)
+}
+

@@ -41,7 +41,7 @@ use nalgebra::DMatrix;
 use std::mem::size_of;
 
 pub use kernel::{Group, Kernel};
-pub use states::{sum_over_states, StateBlock, StateSum};
+pub use states::{sum_over_states, StateBlock, StateSum, DEGENERATE, NO_SLOPE};
 
 /// Largest condition number of `chi0` or `chi` that is inverted.
 pub const CONDITION_LIMIT: f64 = 1e8;

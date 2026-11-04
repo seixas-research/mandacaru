@@ -5,7 +5,19 @@ import runpy
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
+
+# On Read the Docs and in installed environments, mandacaru and its compiled
+# Rust extension (_native) are installed into site-packages. We only prepend
+# ROOT / "src" if mandacaru is not already importable with its native binary,
+# preventing an in-tree source checkout from shadowing the installed extension.
+try:
+    import mandacaru._native  # noqa: F401
+except ImportError:
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        import mandacaru._native  # noqa: F401
+    except ImportError:
+        autodoc_mock_imports = ["mandacaru._native"]
 
 project = "Mandacaru"
 author = "Leandro Seixas Rocha"

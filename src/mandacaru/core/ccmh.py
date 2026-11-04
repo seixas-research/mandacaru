@@ -100,9 +100,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import fft as sfft
+from .mpc import spatial_rdms
 
 __all__ = ["StructureFactor", "CCMHCorrection", "structure_factor",
-           "ccmh_correction"]
+           "ccmh_correction", "spatial_rdms"]
 
 #: Reciprocal-lattice shells used to extrapolate ``S(k)/k^2`` to ``k = 0``.
 #: The fit needs the small-k region where ``S ~ k^2`` holds; too many shells

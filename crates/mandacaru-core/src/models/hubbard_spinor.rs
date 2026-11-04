@@ -272,7 +272,7 @@ pub struct Evaluation {
 pub fn evaluate(ctx: &Context, h: &Hubbard, n: &Occupation) -> Result<Evaluation> {
     if h.form != Form::DudarevFll {
         return Err(Error::Unsupported(format!(
-            "the noncollinear Hubbard model implements only the '{}' form, not '{}'",
+            "Liechtenstein is collinear: the noncollinear Hubbard model implements only the '{}' form, not '{}'",
             Form::DudarevFll.name(),
             h.form.name()
         )));

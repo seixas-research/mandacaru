@@ -49,6 +49,10 @@ class CalculationResult:
         return self._dispersion
 
     @property
+    def reference(self):
+        return self._reference
+
+    @property
     def success(self):
         return bool(self._raw.get("converged", self._raw.get("success", False)))
 
@@ -527,6 +531,8 @@ class CalculationResult:
         """
         if type(extrapolate) is not bool:
             raise TypeError("extrapolate must be a boolean")
+        if hasattr(self, "_periodic_forces"):
+            return self._periodic_forces
         if self._problem is not None:
             if self._reference is None or self._model is None or "state" not in self._raw:
                 raise ValueError("variational forces need a single molecular state and its retained reference")
@@ -578,6 +584,17 @@ class CalculationResult:
         The analytic stress of the Rust engine at the pins of the crystal (node counts, ion width,
         basis): ``sigma = (g + g^T) / (2 Omega)`` with ``g_ab = dF/d eps_ab``, the sign ASE uses.
         """
+        if hasattr(self, "_crystal_stress"):
+            s = self._crystal_stress
+            if s.shape == (6,):
+                from ase.stress import voigt_6_to_full_3x3_stress
+                full = voigt_6_to_full_3x3_stress(s) * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3)
+                return s * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3) if voigt else full
+            else:
+                full = s * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3)
+                if not voigt:
+                    return np.array(full, copy=True)
+                return np.array([full[0, 0], full[1, 1], full[2, 2], full[1, 2], full[0, 2], full[0, 1]])
         if self.periodic is None:
             raise ValueError("stress tensor requires a periodic crystal calculation")
         if self._dispersion is not None:

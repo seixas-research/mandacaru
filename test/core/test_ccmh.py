@@ -31,11 +31,10 @@ Three checks carry this file.
 import numpy as np
 import pytest
 
-pytest.importorskip("mandacaru.algorithms.pseudo_forces")
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.algorithms.pseudo_forces import spatial_rdms
+from mandacaru.core.mpc import spatial_rdms
 from mandacaru.core.ccmh import (QUADRATIC_REGIME_SPREAD, CCMHCorrection,
                                  ccmh_correction, structure_factor)
 from mandacaru.core.mpc import FiniteSizeCorrection

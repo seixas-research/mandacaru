@@ -34,6 +34,7 @@ from mandacaru.core.mpc import (
     PeriodicPoissonSolver,
     TruncatedCoulombSolver,
     exchange_correlation_hole_energy,
+    spatial_rdms,
     voxel_self_potential,
     wigner_seitz_kernel,
 )
@@ -62,7 +63,6 @@ def step_of(cell, n):
 @pytest.fixture(scope="module")
 def solved_chain():
     """A solved 4-qubit periodic H chain, shared by the state-level tests."""
-    pytest.importorskip("mandacaru.algorithms.pseudo_forces")
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=np.diag([2.0, 10.0, 10.0]), pbc=[True, False, False])
     atoms.calc = Mandacaru(method="bloch-adapt-vqe",

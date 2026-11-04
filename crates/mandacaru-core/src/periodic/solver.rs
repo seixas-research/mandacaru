@@ -428,7 +428,7 @@ pub fn diagonalize_with_exchange(
     exchange: Option<&Matrix>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
     if c.spinor {
-        return super::spinor::diagonalize_with_exchange(c, data, v, w, exchange);
+        return super::spinor::diagonalize_with_exchange(c, data, v, w, hubbard, exchange);
     }
     let m = c.m;
     let p = c.p;
@@ -715,6 +715,15 @@ impl Mixer {
 }
 impl Crystal {
     pub fn solve(&self, options: &Options) -> Result<PeriodicResult> {
+        self.solve_with(options, None, None)
+    }
+
+    pub fn solve_with(
+        &self,
+        options: &Options,
+        initial: Option<&PeriodicResult>,
+        shifts: Option<&[Matrix]>,
+    ) -> Result<PeriodicResult> {
         let c = self;
         let ctx = &c.context;
         let n = c.grid.index.points();
@@ -732,6 +741,11 @@ impl Crystal {
             return Err(invalid(
                 "periodic spinor XC currently requires LDA, PBE or HSE06",
             ));
+        }
+        if let Some(sh) = shifts {
+            if sh.len() != c.spins || sh.iter().any(|m| m.nrows() != c.p || m.ncols() != c.p) {
+                return Err(invalid("shift operators must match spins and projector dimension"));
+            }
         }
         if options.max_iterations == 0
             || options.history == 0
@@ -777,35 +791,60 @@ impl Crystal {
             let mut fft = Fft3::new(ctx, c.grid.index.shape())?;
             let mut rho = ctx.allocate::<f64>(c.field_channels() * n)?;
             let mut q = ctx.allocate::<C64>(c.channels)?;
-            for k in 0..n {
-                if c.spinor {
-                    rho.as_mut_slice()[k] = c.initial.as_slice()[k];
-                    if !c.time_reversal {
-                        for a in 0..3 {
-                            rho.as_mut_slice()[(a + 1) * n + k] = c.initial_m.as_slice()[a * n + k];
-                        }
-                    }
-                } else if c.spins == 1 {
-                    rho.as_mut_slice()[k] = c.initial.as_slice()[k];
-                } else {
-                    rho.as_mut_slice()[k] =
-                        0.5 * (c.initial.as_slice()[k] + c.initial_m.as_slice()[k]);
-                    rho.as_mut_slice()[n + k] =
-                        0.5 * (c.initial.as_slice()[k] - c.initial_m.as_slice()[k]);
+            if let Some(init) = initial {
+                if init.density.as_slice().len() != c.field_channels() * n
+                    || init.moments.as_slice().len() != c.channels
+                {
+                    return Err(invalid("initial result does not match crystal dimensions"));
                 }
-            }
-            q.as_mut_slice().copy_from_slice(c.initial_q.as_slice());
-            let mut tau = if meta {
-                Some(super::fields::initial_kinetic_density(c, options)?)
+                rho.as_mut_slice().copy_from_slice(init.density.as_slice());
+                q.as_mut_slice().copy_from_slice(init.moments.as_slice());
             } else {
-                None
+                for k in 0..n {
+                    if c.spinor {
+                        rho.as_mut_slice()[k] = c.initial.as_slice()[k];
+                        if !c.time_reversal {
+                            for a in 0..3 {
+                                rho.as_mut_slice()[(a + 1) * n + k] = c.initial_m.as_slice()[a * n + k];
+                            }
+                        }
+                    } else if c.spins == 1 {
+                        rho.as_mut_slice()[k] = c.initial.as_slice()[k];
+                    } else {
+                        rho.as_mut_slice()[k] =
+                            0.5 * (c.initial.as_slice()[k] + c.initial_m.as_slice()[k]);
+                        rho.as_mut_slice()[n + k] =
+                            0.5 * (c.initial.as_slice()[k] - c.initial_m.as_slice()[k]);
+                    }
+                }
+                q.as_mut_slice().copy_from_slice(c.initial_q.as_slice());
+            }
+            let mut tau = match (initial, meta) {
+                (Some(init), true) => {
+                    if let Some(k) = &init.kinetic_density {
+                        let mut t = ctx.allocate::<f64>(k.as_slice().len())?;
+                        t.as_mut_slice().copy_from_slice(k.as_slice());
+                        Some(t)
+                    } else {
+                        Some(super::fields::initial_kinetic_density(c, options)?)
+                    }
+                }
+                (None, true) => Some(super::fields::initial_kinetic_density(c, options)?),
+                _ => None,
             };
             let mut previous = None;
             let mut history = vec![];
             let mut mixer = Mixer { history: vec![] };
             // DFT+U: the shell occupations that define the operator are part of the mixed state.
-            let mut hub_in = match hub {
-                Some(h) if active => h.seed(c.spins)?,
+            let mut hub_in = match (hub, initial) {
+                (Some(h), Some(init)) if active => {
+                    if let Some(rep) = &init.hubbard {
+                        rep.occupations.clone()
+                    } else {
+                        h.seed(c.spins)?
+                    }
+                }
+                (Some(h), _) if active => h.seed(c.spins)?,
                 _ => vec![],
             };
             // Exact exchange of a hybrid: K_in defines the diagonalization, is mixed with the density
@@ -831,6 +870,17 @@ impl Crystal {
                     Some(h) if active => Some(h.operators(c, &hub_in)?),
                     _ => None,
                 };
+                let effective_operators: Option<Vec<Matrix>> = match (hub_operators, shifts) {
+                    (Some(mut ops), Some(sh)) => {
+                        for (op, s) in ops.iter_mut().zip(sh) {
+                            *op += s;
+                        }
+                        Some(ops)
+                    }
+                    (None, Some(sh)) => Some(sh.to_vec()),
+                    (Some(ops), None) => Some(ops),
+                    (None, None) => None,
+                };
                 let mut eigenvalues = vec![];
                 let mut coefficients = vec![];
                 for s in 0..c.spins {
@@ -847,7 +897,7 @@ impl Crystal {
                             kinetic_potential
                                 .as_ref()
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
-                            hub_operators.as_ref().map(|o| &o[s]),
+                            effective_operators.as_ref().map(|o| &o[s]),
                             hybrid.map(|_| &exchange_in[s * c.points.len() + k_idx]),
                         )?;
                         eigenvalues.push(eps);
@@ -1066,7 +1116,7 @@ impl Crystal {
                     };
                     let hubbard = match hub {
                         Some(h) => {
-                            let (n, operators) = match (hub_out, hub_operators) {
+                            let (n, operators) = match (hub_out, effective_operators) {
                                 (Some(n), Some(o)) => (n, o),
                                 _ => {
                                     let n = h.occupations(c, &matrices)?;
@@ -1133,6 +1183,107 @@ impl Crystal {
                 previous = Some(free);
             }
             unreachable!()
+        })
+    }
+
+    pub fn frozen_occupations(
+        &self,
+        ground_state: &PeriodicResult,
+        shifts: Option<&[Matrix]>,
+    ) -> Result<Vec<Vec<C64>>> {
+        let c = self;
+        let hub = c.hubbard.as_ref().ok_or_else(|| {
+            invalid("frozen_occupations needs a crystal with a hubbard specification")
+        })?;
+        let ctx = &c.context;
+        let n = c.grid.index.points();
+        let nk = c.points.len();
+        let m = c.bands();
+        let v = ground_state.potential.as_slice();
+        let w = ground_state.moment_potential.as_slice();
+        let kinetic_potential = ground_state
+            .kinetic_potential
+            .as_ref()
+            .map(|k| k.as_slice());
+        ctx.run(|| {
+            let archive_matrices = ctx.offloads(product(&[c.spins, nk, m, m, 32])?);
+            let _projector_work = ctx.reserve(product(&[c.p, c.p, 16, 12])?)?;
+            let _matrix_work = ctx.reserve(product(&[m, m, 16, 16])?)?;
+
+            let base_operators = ground_state.hubbard.as_ref().map(|h| &h.operators);
+            let mut eigenvalues = Vec::with_capacity(c.spins * nk);
+            let mut coefficients = Vec::with_capacity(c.spins * nk);
+
+            for s in 0..c.spins {
+                let mut op = base_operators.and_then(|ops| ops.get(s)).cloned();
+                if let Some(sh) = shifts.and_then(|s_ops| s_ops.get(s)) {
+                    if let Some(existing) = &mut op {
+                        *existing += sh;
+                    } else {
+                        op = Some(sh.clone());
+                    }
+                }
+                for data in &c.points {
+                    let (eps, coeff, _) = diagonalize_with_exchange(
+                        c,
+                        data,
+                        if c.spinor {
+                            v
+                        } else {
+                            &v[s * n..(s + 1) * n]
+                        },
+                        w,
+                        kinetic_potential.map(|v| &v[s * n..(s + 1) * n]),
+                        op.as_ref(),
+                        None,
+                    )?;
+                    eigenvalues.push(eps);
+                    coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
+                }
+            }
+
+            let weights: Vec<_> = (0..c.spins)
+                .flat_map(|_| c.points.iter().map(|p| p.weight))
+                .collect();
+            let degeneracy = c.degeneracy();
+            let mu = spectrum::fermi(
+                &eigenvalues,
+                &weights,
+                c.electrons,
+                ground_state.options.smearing,
+                ground_state.options.width,
+                degeneracy,
+            )?;
+            let occupations: Vec<Vec<f64>> = eigenvalues
+                .iter()
+                .map(|e| {
+                    e.iter()
+                        .map(|e| {
+                            degeneracy
+                                * ground_state
+                                    .options
+                                    .smearing
+                                    .occupation((e - mu) / ground_state.options.width)
+                        })
+                        .collect()
+                })
+                .collect();
+            let matrices = coefficients
+                .iter()
+                .zip(&occupations)
+                .map(|(c, f)| {
+                    let c = c.matrix(ctx)?;
+                    let d = &*c
+                        * Matrix::from_diagonal(&nalgebra::DVector::from_iterator(
+                            m,
+                            f.iter().map(|f| C64::new(*f, 0.)),
+                        ))
+                        * c.adjoint();
+                    StoredMatrix::new(ctx, d, archive_matrices)
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            hub.occupations(c, &matrices)
         })
     }
 }

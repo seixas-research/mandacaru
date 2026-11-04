@@ -1,5 +1,5 @@
 //! Calculation-owned sample storage with float64 accumulation views.
-use crate::{Buffer, Context, Error, Result};
+use crate::{product, Buffer, Context, Error, Result};
 use num_complex::{Complex32, Complex64};
 type C64 = Complex64;
 use std::ops::Deref;
@@ -361,6 +361,99 @@ impl ComplexSamples {
             }
         }
     }
+    /// A zero complex sample stack of `len` values.
+    pub fn zeros(ctx: &Context, precision: Precision, len: usize) -> Result<Self> {
+        Ok(match precision {
+            Precision::Float64 => Self::Float64(ctx.allocate::<Complex64>(len)?),
+            Precision::Float32 => Self::Float32(ctx.allocate::<Complex32>(len)?),
+        })
+    }
+    /// Round `values` once into the stack starting at `offset`.
+    pub fn fill_range(&mut self, offset: usize, values: &[Complex64]) -> Result<()> {
+        let end = offset
+            .checked_add(values.len())
+            .filter(|end| *end <= self.len())
+            .ok_or_else(|| Error::Invalid("sample range is out of bounds".into()))?;
+        match self {
+            Self::Float64(to) => {
+                if values
+                    .iter()
+                    .any(|v| !v.re.is_finite() || !v.im.is_finite())
+                {
+                    return Err(Error::Invalid("Bloch samples must be finite".into()));
+                }
+                to.as_mut_slice()[offset..end].copy_from_slice(values);
+            }
+            Self::Float32(to) => {
+                for (to, &from) in to.as_mut_slice()[offset..end].iter_mut().zip(values) {
+                    let v = Complex32::new(from.re as f32, from.im as f32);
+                    if !v.re.is_finite() || !v.im.is_finite() {
+                        return Err(Error::Invalid(
+                            "Bloch samples exceed the finite range of float32".into(),
+                        ));
+                    }
+                    *to = v;
+                }
+            }
+            Self::ArchivedFloat64(archive) => {
+                if values
+                    .iter()
+                    .any(|v| !v.re.is_finite() || !v.im.is_finite())
+                {
+                    return Err(Error::Invalid("Bloch samples must be finite".into()));
+                }
+                archive.write_range(offset, values)?;
+            }
+            Self::ArchivedFloat32(archive) => {
+                let mut buf = [Complex32::new(0.0, 0.0); 512];
+                for (chunk_idx, chunk) in values.chunks(512).enumerate() {
+                    for (to, &from) in buf[..chunk.len()].iter_mut().zip(chunk) {
+                        let v = Complex32::new(from.re as f32, from.im as f32);
+                        if !v.re.is_finite() || !v.im.is_finite() {
+                            return Err(Error::Invalid(
+                                "Bloch samples exceed the finite range of float32".into(),
+                            ));
+                        }
+                        *to = v;
+                    }
+                    archive.write_range(offset + chunk_idx * 512, &buf[..chunk.len()])?;
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Row `row` of a stack with `points` values per row.
+    pub fn fill_row(&mut self, row: usize, points: usize, values: &[Complex64]) -> Result<()> {
+        if values.len() != points {
+            return Err(Error::Invalid(
+                "a sample row must hold one value per grid point".into(),
+            ));
+        }
+        self.fill_range(row.checked_mul(points).ok_or(Error::Overflow)?, values)
+    }
+    /// Sequential and random-access row writer into an archive.
+    pub fn archive_writer(
+        ctx: &Context,
+        precision: Precision,
+        rows: usize,
+        points: usize,
+    ) -> Result<ComplexArchiveWriter> {
+        let total = product(&[rows, points])?;
+        Ok(match precision {
+            Precision::Float64 => ComplexArchiveWriter::Float64 {
+                archive: super::archive::Archive::create_empty(ctx, total)?,
+                rows,
+                points,
+                next_row: 0,
+            },
+            Precision::Float32 => ComplexArchiveWriter::Float32 {
+                archive: super::archive::Archive::create_empty(ctx, total)?,
+                rows,
+                points,
+                next_row: 0,
+            },
+        })
+    }
     pub fn len(&self) -> usize {
         match self {
             Self::Float64(v) => v.as_slice().len(),
@@ -690,6 +783,114 @@ impl MatrixSource for StoredMatrix {
                     value,
                     _memory: memory,
                 })
+            }
+        }
+    }
+}
+
+/// A row-at-a-time archive writer for complex sample stacks.
+pub enum ComplexArchiveWriter {
+    Float64 {
+        archive: super::archive::Archive<Complex64>,
+        rows: usize,
+        points: usize,
+        next_row: usize,
+    },
+    Float32 {
+        archive: super::archive::Archive<Complex32>,
+        rows: usize,
+        points: usize,
+        next_row: usize,
+    },
+}
+
+impl ComplexArchiveWriter {
+    pub fn precision(&self) -> Precision {
+        match self {
+            Self::Float64 { .. } => Precision::Float64,
+            Self::Float32 { .. } => Precision::Float32,
+        }
+    }
+    pub fn rows(&self) -> usize {
+        match self {
+            Self::Float64 { rows, .. } | Self::Float32 { rows, .. } => *rows,
+        }
+    }
+    pub fn points(&self) -> usize {
+        match self {
+            Self::Float64 { points, .. } | Self::Float32 { points, .. } => *points,
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.rows() * self.points()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Write row `row` positional without requiring strict sequential order.
+    pub fn write_row(&self, row: usize, values: &[Complex64]) -> Result<()> {
+        let (rows, points) = (self.rows(), self.points());
+        if row >= rows {
+            return Err(Error::Invalid("archive row index is out of bounds".into()));
+        }
+        if values.len() != points {
+            return Err(Error::Invalid(
+                "a sample row must hold one value per grid point".into(),
+            ));
+        }
+        let offset = row.checked_mul(points).ok_or(Error::Overflow)?;
+        match self {
+            Self::Float64 { archive, .. } => {
+                if values
+                    .iter()
+                    .any(|v| !v.re.is_finite() || !v.im.is_finite())
+                {
+                    return Err(Error::Invalid("Bloch samples must be finite".into()));
+                }
+                archive.write_range(offset, values)?;
+            }
+            Self::Float32 { archive, .. } => {
+                let mut buf = [Complex32::new(0.0, 0.0); 512];
+                for (chunk_idx, chunk) in values.chunks(512).enumerate() {
+                    for (to, &from) in buf[..chunk.len()].iter_mut().zip(chunk) {
+                        let v = Complex32::new(from.re as f32, from.im as f32);
+                        if !v.re.is_finite() || !v.im.is_finite() {
+                            return Err(Error::Invalid(
+                                "Bloch samples exceed the finite range of float32".into(),
+                            ));
+                        }
+                        *to = v;
+                    }
+                    archive.write_range(offset + chunk_idx * 512, &buf[..chunk.len()])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Push row sequentially, incrementing the internal row counter.
+    pub fn push_row(&mut self, values: &[Complex64]) -> Result<()> {
+        let row = match self {
+            Self::Float64 { next_row, .. } | Self::Float32 { next_row, .. } => *next_row,
+        };
+        self.write_row(row, values)?;
+        match self {
+            Self::Float64 { next_row, .. } | Self::Float32 { next_row, .. } => *next_row += 1,
+        }
+        Ok(())
+    }
+
+    /// Finish writing and return the immutable [`ComplexSamples`].
+    pub fn finish(self) -> Result<ComplexSamples> {
+        match self {
+            Self::Float64 { archive, .. } => {
+                archive.finish()?;
+                Ok(ComplexSamples::ArchivedFloat64(archive))
+            }
+            Self::Float32 { archive, .. } => {
+                archive.finish()?;
+                Ok(ComplexSamples::ArchivedFloat32(archive))
             }
         }
     }

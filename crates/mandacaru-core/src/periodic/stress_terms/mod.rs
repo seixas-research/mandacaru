@@ -310,10 +310,8 @@ fn check(layout: &Layout, hybrid: bool) -> Result<()> {
     if definition.nonlocal_b.is_some() {
         return refuse(&format!("the rVV10 correction of {}", definition.name));
     }
-    if layout.spins != 1 {
-        return refuse(
-            "a spin-polarized crystal (the partial core is differentiated against one xc potential)",
-        );
+    if layout.spins != 1 && layout.spins != 2 {
+        return refuse("a crystal with more than two spin channels");
     }
     Ok(())
 }

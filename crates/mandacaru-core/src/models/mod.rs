@@ -4,6 +4,7 @@ pub mod configuration;
 pub mod dispersion;
 pub mod elements;
 pub mod hubbard;
+pub mod hubbard_liechtenstein;
 pub mod hubbard_request;
 pub mod hubbard_response;
 pub mod hubbard_slater;

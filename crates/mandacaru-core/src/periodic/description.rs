@@ -399,4 +399,62 @@ impl Description {
             _memory: memory,
         })
     }
+
+    /// Construct a [`Description`] directly from pre-validated parts and reserve memory.
+    pub fn from_parts(
+        ctx: &Context,
+        sigma: f64,
+        tables: Vec<Table>,
+        function_atom: Vec<usize>,
+        function_m: Vec<i32>,
+        function_table: Vec<usize>,
+        projectors: Vec<(usize, usize, i32, usize)>,
+        point_group: Option<PointGroup>,
+        centers: Vec<[f64; 3]>,
+        datasets: Vec<(String, String)>,
+        projector_basis: String,
+        channels: Vec<(usize, usize, i32)>,
+    ) -> Result<Self> {
+        let mut bytes = 0;
+        for t in &tables {
+            bytes += t.r.len() * 8 + t.values.len() * 8;
+        }
+        bytes += function_atom.len() * 8 + function_m.len() * 4 + function_table.len() * 8;
+        bytes += projectors.len() * 32;
+        bytes += centers.len() * 24 + datasets.len() * 128 + channels.len() * 24;
+        let memory = ctx.reserve(bytes)?;
+        Ok(Self {
+            sigma,
+            tables,
+            function_atom,
+            function_m,
+            function_table,
+            projectors,
+            point_group,
+            centers,
+            datasets,
+            projector_basis,
+            channels,
+            _memory: memory,
+        })
+    }
+
+    /// Clone this description using `ctx` to reserve memory for the clone.
+    pub fn try_clone(&self, ctx: &Context) -> Result<Self> {
+        let memory = ctx.reserve(self._memory.bytes())?;
+        Ok(Self {
+            sigma: self.sigma,
+            tables: self.tables.clone(),
+            function_atom: self.function_atom.clone(),
+            function_m: self.function_m.clone(),
+            function_table: self.function_table.clone(),
+            projectors: self.projectors.clone(),
+            point_group: self.point_group.clone(),
+            centers: self.centers.clone(),
+            datasets: self.datasets.clone(),
+            projector_basis: self.projector_basis.clone(),
+            channels: self.channels.clone(),
+            _memory: memory,
+        })
+    }
 }

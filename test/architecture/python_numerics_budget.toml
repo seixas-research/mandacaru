@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 9527
+zero_sloc = 9511
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -49,7 +49,7 @@ zero_sloc = 9527
 "basis/sto_ng.py" = { np = 14, scipy = 2, matmul = 1, dloops = 1, bi = 2, arith = 31, arithmax = 10, sloc = 92, wave = "BF", dies = "2027-07-16" }
 "basis/xc.py" = { np = 33, scipy = 1, meth = 1, arith = 207, arithmax = 90, sloc = 207, wave = "W4", dies = "2027-07-16" }
 "basis/xc_spin.py" = { np = 2, arith = 6, arithmax = 6, sloc = 27, wave = "W4", dies = "2027-07-16" }
-"calculation.py" = { np = 2 }
+"calculation.py" = { np = 14, matmul = 4, meth = 1, dloops = 1 }
 "circuits/pools.py" = { math = 4, dloops = 3, dcomp = 1 }
 "core/augmentation.py" = { np = 1, matmul = 2, meth = 1, dloops = 1 }
 "core/ccmh.py" = { np = 21, scipy = 1, matmul = 2, meth = 4, dloops = 4, dcomp = 2 }
@@ -59,7 +59,7 @@ zero_sloc = 9527
 "core/kzk.py" = { np = 14, meth = 5 }
 "core/mapping.py" = { np = 18, matmul = 4, meth = 1, dloops = 10, dcomp = 4 }
 "core/matrix_free.py" = { np = 9, scipy = 2, matmul = 1, dloops = 4 }
-"core/mpc.py" = { np = 17, scipy = 1, matmul = 2 }
+"core/mpc.py" = { np = 27, scipy = 1, matmul = 4, meth = 4, dloops = 6 }
 "core/pauli_algebra.py" = { np = 14, meth = 4, dloops = 3, dcomp = 1 }
 "core/sector.py" = { np = 31, scipy = 1, matmul = 2, meth = 2, math = 9, dloops = 5 }
 "core/serialization.py" = { dcomp = 1 }
@@ -94,7 +94,7 @@ zero_sloc = 9527
 "pseudopotentials/defects.py" = { sloc = 91, category = "validation" }
 "pseudopotentials/diagnostics.py" = { sloc = 75, category = "hand-off" }
 "pseudopotentials/diffuse.py" = { math = 1, dloops = 3, dcomp = 1, bi = 13, aloops = 3, acomp = 2, arith = 10, arithmax = 4, sloc = 342, wave = "W4", dies = "2027-07-16" }
-"pseudopotentials/environment.py" = { sloc = 189, category = "hand-off" }
+"pseudopotentials/environment.py" = { sloc = 196, category = "hand-off" }
 "pseudopotentials/families.py" = { sloc = 173, category = "validation" }
 "pseudopotentials/generation.py" = { sloc = 125, category = "validation" }
 "pseudopotentials/io.py" = { sloc = 136, wave = "3a", dies = "2027-03-26" }
@@ -104,7 +104,7 @@ zero_sloc = 9527
 "pseudopotentials/native_context.py" = { sloc = 6, category = "hand-off" }
 "pseudopotentials/onecenter.py" = { np = 1, dloops = 4, dcomp = 1, bi = 9, sloc = 264, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/orbitals.py" = { dloops = 2, bi = 5, arith = 1, arithmax = 1, sloc = 294, wave = "3b", dies = "2027-05-07" }
-"pseudopotentials/paw.py" = { np = 14, matmul = 6, dloops = 9, dcomp = 3, bi = 8, aloops = 3, acomp = 1, arith = 17, arithmax = 16, sloc = 403, wave = "3a/3b", dies = "2027-05-07" }
+"pseudopotentials/paw.py" = { np = 2, dloops = 7, dcomp = 3, bi = 8, sloc = 387, wave = "3a/3b", dies = "2027-05-07" }
 "pseudopotentials/periodic_paw.py" = { np = 167, scipy = 4, matmul = 37, meth = 27, dloops = 45, dcomp = 9, bi = 29, aloops = 12, acomp = 4, arith = 217, arithmax = 16, sloc = 1391, wave = "3b", dies = "2027-05-07" }
 "pseudopotentials/record.py" = { sloc = 190, category = "hand-off" }
 "results.py" = { np = 1 }

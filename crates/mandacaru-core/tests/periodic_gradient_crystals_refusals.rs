@@ -79,7 +79,10 @@ fn what_is_not_differentiated_raises_with_the_cause() {
         form: Form::DudarevFll,
         shells: vec![shell(0.1)],
     });
+    scf::refuse(&data.crystal).expect("DFT+U on a semilocal crystal is supported");
+    data.crystal.spinor = true;
     assert!(cause(scf::refuse(&data.crystal)).contains("DFT+U"));
+    data.crystal.spinor = false;
     data.crystal.hubbard = None;
     data.crystal.permutations = vec![vec![0]];
     assert!(cause(scf::refuse(&data.crystal)).contains("space-group"));

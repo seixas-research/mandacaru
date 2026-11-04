@@ -64,6 +64,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantum::state_norm_squared, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::state_inner, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::require_normalized_state, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_fd, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_fd, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_analytic, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_analytic, m)?)?;
     paw_diagnose::register(m)?;
     paw_generate::register(m)?;
     paw_multipole::register(m)?;

@@ -25,7 +25,7 @@ pub struct Cell<'a> {
 }
 
 /// Space group operations and metadata found for a crystal.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Operations {
     pub rotations: Vec<Matrix3<i32>>,
     pub translations: Vec<[f64; 3]>,

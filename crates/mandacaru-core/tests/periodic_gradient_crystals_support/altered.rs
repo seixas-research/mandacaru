@@ -336,4 +336,7 @@ impl Derivatives for Altered<'_> {
             value
         })
     }
+    fn hubbard(&self) -> Option<&dyn mandacaru_core::periodic::gradient::Hubbard> {
+        self.inner.hubbard()
+    }
 }

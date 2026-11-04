@@ -239,6 +239,19 @@ fn read_at(file: &File, offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
     file.read_exact(bytes)
 }
 
+#[cfg(unix)]
+fn write_at(file: &File, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(bytes, offset)
+}
+#[cfg(not(unix))]
+fn write_at(file: &File, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(bytes)
+}
+
 /// An immutable array of `T` on disk.
 pub struct Archive<T> {
     _scratch: Arc<ScratchDir>,
@@ -314,6 +327,51 @@ impl<T: Scalar> Archive<T> {
         ctx.note_archived(length * T::BYTES);
         Ok(out)
     }
+    /// Create an empty archive of the given length, preallocating the required disk file.
+    pub fn create_empty(ctx: &Context, length: usize) -> Result<Self> {
+        if T::BYTES == 0 || T::BYTES > BLOCK {
+            return Err(Error::Invalid("invalid scratch scalar size".into()));
+        }
+        let total_bytes = product(&[length, T::BYTES])?
+            .checked_add(HEADER)
+            .ok_or(Error::Overflow)?;
+        let memory = ctx.reserve(512)?;
+        let scratch = ctx.scratch().clone();
+        let directory = scratch.path()?;
+        let (mut file, path) = loop {
+            let path = directory.join(format!("array-{}.bin", NEXT.fetch_add(1, Ordering::Relaxed)));
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(file) => break (file, path),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(io(e)),
+            }
+        };
+        let mut out = Self {
+            _scratch: scratch,
+            held: None,
+            path,
+            length,
+            _scalar: PhantomData,
+            _memory: memory,
+        };
+        let mut header = [0u8; HEADER];
+        header[..4].copy_from_slice(b"MCAR");
+        header[4..8].copy_from_slice(&T::TAG);
+        header[8..].copy_from_slice(&(length as u64).to_le_bytes());
+        file.write_all(&header).map_err(io)?;
+        file.set_len(total_bytes as u64).map_err(io)?;
+        file.flush().map_err(io)?;
+        out.held = Held::acquire(file);
+        ctx.note_archived(length * T::BYTES);
+        Ok(out)
+    }
     pub fn len(&self) -> usize {
         self.length
     }
@@ -339,6 +397,62 @@ impl<T: Scalar> Archive<T> {
                 let file = File::open(&self.path).map_err(io)?;
                 read_at(&file, offset, bytes).map_err(io)
             }
+        }
+    }
+    fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<()> {
+        match &self.held {
+            #[cfg(unix)]
+            Some(held) => write_at(&held.file, offset, bytes).map_err(io),
+            #[cfg(not(unix))]
+            Some(held) => {
+                let _cursor = held.cursor.lock().map_err(|_| {
+                    Error::Invalid("scratch array lock was poisoned".into())
+                })?;
+                write_at(&held.file, offset, bytes).map_err(io)
+            }
+            None => {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .open(&self.path)
+                    .map_err(io)?;
+                write_at(&file, offset, bytes).map_err(io)
+            }
+        }
+    }
+    /// Positional write of `values` into elements `start..start + values.len()`.
+    pub fn write_range(&self, start: usize, values: &[T]) -> Result<()> {
+        if start
+            .checked_add(values.len())
+            .is_none_or(|end| end > self.length)
+        {
+            return Err(Error::Invalid("scratch write range is out of bounds".into()));
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        let mut offset = u64::try_from(
+            product(&[start, T::BYTES])?
+                .checked_add(HEADER)
+                .ok_or(Error::Overflow)?,
+        )
+        .map_err(|_| Error::Overflow)?;
+        let mut bytes = [0u8; BLOCK];
+        let block = BLOCK / T::BYTES;
+        for chunk in values.chunks(block) {
+            let want = chunk.len() * T::BYTES;
+            for (i, &v) in chunk.iter().enumerate() {
+                v.encode(&mut bytes[i * T::BYTES..(i + 1) * T::BYTES]);
+            }
+            self.write_bytes(offset, &bytes[..want])?;
+            offset += want as u64;
+        }
+        Ok(())
+    }
+    /// Flush any pending writes to disk.
+    pub fn finish(&self) -> Result<()> {
+        match &self.held {
+            Some(held) => held.file.sync_data().map_err(io),
+            None => Ok(()),
         }
     }
     /// Fills `output` with the elements `start..start + output.len()`, converted by `convert`.

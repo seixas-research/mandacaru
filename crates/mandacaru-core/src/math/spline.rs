@@ -53,6 +53,13 @@ impl Cubic {
             second,
         })
     }
+    pub fn clone_with(&self, ctx: &Context) -> Result<Self> {
+        Ok(Self {
+            knots: ctx.copy_slice(self.knots.as_slice())?,
+            values: ctx.copy_slice(self.values.as_slice())?,
+            second: ctx.copy_slice(self.second.as_slice())?,
+        })
+    }
     /// Second derivatives at the knots (the spline's curvature).
     pub fn curvature(&self) -> &[f64] {
         self.second.as_slice()
