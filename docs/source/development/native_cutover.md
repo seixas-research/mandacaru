@@ -224,6 +224,10 @@ matrices are copied only when explicitly requested from the native snapshot.
 The Python setup adapter releases its mesh samples after native transfer.
 Compensation form factors also use this storage and are read by channel,
 keeping their cache out of the Bloch projection workspace.
+The adapter's dense compensation and ion coupling sum runs in Rust over
+bounded reciprocal-vector blocks. It reuses the adapter's cached radial tables,
+and does not materialize the full reciprocal lattice or channel-by-vector
+intermediates in Python. The rest of the geometry setup still uses the adapter.
 
 Molecular PAW spherical contractions use bounded matrix batches with the same
 quadrature nodes and weights. Shared angular mathematics evaluates Cartesian

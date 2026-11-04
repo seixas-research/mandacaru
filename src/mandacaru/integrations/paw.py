@@ -100,7 +100,7 @@ def crystal_input(
     initial, moments = c.initial_density()
     core = c.core_density()
     u, uion, eion = c.dense_coulomb()
-    hats = c.compensation_grid()
+    hats = c.compensation_grid_array()
     short, onsite = c.short_range_ion_compensation(), c.onsite_ion_compensation()
     magnetization = c.initial_magnetization(magnetic_moments)
     if c.has_spin_orbit:
@@ -147,7 +147,7 @@ def crystal_input(
         phase=hold("phase", phase, complex),
         kerker=hold("kerker", kerker),
         ion=hold("ion", c.ion_charge(), complex),
-        hats=hold("hats", np.array([hats[ch] for ch in channels]), complex),
+        hats=hold("hats", hats, complex),
         u=hold("u", u, complex),
         uion=hold("uion", uion, complex),
         linear=hold(
@@ -277,10 +277,15 @@ def configure(driver, atoms):
     # Explicitly retain the adapter for off-mesh PAW matrices only. The Rust
     # solver retains no callback or reference to this Python object.
     driver._crystal_adapter, driver._crystal_metadata = crystal, context
-    driver.periodic_problem = driver.context.periodic_problem(metadata, arrays)
+    crystal.kpoint_data.clear()
+    crystal._compensation_grid = None
+    crystal._compensation_values = None
+    driver.periodic_problem = driver.context.periodic_problem(metadata, arrays, consume=True)
     # This adapter owns recipes for new k-points. The SCF mesh and its samples
     # have been transferred to the native owner and need no Python duplicate.
-    crystal.kpoint_data.clear()
+    # The native problem owns its copy. Keep the adapter's lazy recipe for
+    # later off-mesh work, but release the full reciprocal-grid cache now.
+    del arrays
     driver._geometry_seconds = perf_counter() - start
     driver._orbital_groups = [
         (int(a), int(f.l)) for a, f in zip(crystal.atom_of_orbital, crystal.basis)

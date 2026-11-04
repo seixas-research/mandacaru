@@ -25,6 +25,60 @@ SILICON_BASIS = {"size": "SZ", "filter_cutoff": 200}
 class TestCompensationTransforms:
     """Shared transforms retain phases, multipoles and arbitrary vector shapes."""
 
+    def test_native_dense_couplings_match_the_previous_grid_sum(self):
+        from types import SimpleNamespace
+
+        crystal = pp.PeriodicPAW.__new__(pp.PeriodicPAW)
+        crystal.lattice = np.array([[6.0, 0.7, 0.2], [0.0, 5.8, 0.4], [0.0, 0.0, 6.2]])
+        crystal.volume = abs(np.linalg.det(crystal.lattice))
+        crystal.centers = [np.array([0.1, 0.2, 0.3]), np.array([1.2, 1.6, 2.0])]
+        crystal.charges = np.array([1.0, 3.0])
+        crystal.datasets = [SimpleNamespace(compensation_radius=r) for r in (1.2, 1.6)]
+        crystal.channels = [(0, 0, 0), (0, 1, -1), (0, 1, 0), (0, 1, 1), (1, 0, 0)]
+        crystal.sigma = 0.7
+        crystal._native_context = None
+        crystal._compensation_coulomb = None
+
+        vectors = rc.lattice_translations(rc.reciprocal_vectors(crystal.lattice),
+                                          pp.COMPENSATION_CUTOFF).T
+        vectors = vectors[:, np.sum(vectors * vectors, axis=0) > 0.0]
+        kernel = 4 * np.pi / np.sum(vectors * vectors, axis=0)
+        shapes = crystal.compensation_transforms(vectors)
+        ion = crystal._ion_transform(vectors)
+        expected_u = (shapes.conj() * kernel) @ shapes.T / crystal.volume
+        expected_ion = (shapes.conj() * kernel) @ ion / crystal.volume
+        expected_energy = 0.5 * np.sum(kernel * np.abs(ion) ** 2) / crystal.volume
+        for a, (atom, degree, _) in enumerate(crystal.channels):
+            expected_u[a, a] += crystal._tail(atom, degree)
+        u, u_ion, energy = crystal.dense_coulomb()
+        np.testing.assert_allclose(u, expected_u, rtol=1e-10, atol=1e-11)
+        np.testing.assert_allclose(u_ion, expected_ion, rtol=1e-10, atol=1e-11)
+        assert energy == pytest.approx(expected_energy, rel=1e-10, abs=1e-11)
+
+    def test_cached_grid_array_shares_channel_storage_and_can_be_rebuilt(self, monkeypatch):
+        crystal = pp.PeriodicPAW.__new__(pp.PeriodicPAW)
+        crystal.channels = [(0, 0, 0), (1, 0, 0)]
+        crystal.grid = object()
+        crystal._compensation_grid = None
+        crystal._compensation_values = None
+        values = np.arange(16, dtype=float).reshape(2, 2, 2, 2).astype(complex)
+        calls = []
+
+        def alias_mean(grid, function):
+            calls.append(grid)
+            return values.copy()
+
+        monkeypatch.setattr(rc, "alias_mean", alias_mean)
+        grid = crystal.compensation_grid()
+        array = crystal.compensation_grid_array()
+        assert len(calls) == 1
+        for index, channel in enumerate(crystal.channels):
+            assert np.shares_memory(array, grid[channel])
+            np.testing.assert_array_equal(array[index], grid[channel])
+        crystal._compensation_grid = crystal._compensation_values = None
+        np.testing.assert_array_equal(crystal.compensation_grid_array(), values)
+        assert len(calls) == 2
+
     @pytest.mark.parametrize("shape", [(), (13,), (2, 3, 4), (0,)])
     def test_matches_the_channel_transforms(self, shape, monkeypatch):
         from collections import Counter
@@ -399,7 +453,8 @@ class TestTheSphereBlochSums:
 
     def test_k_points_evaluated_together_equal_one_by_one(self, crystal):
         kpoints = crystal.cartesian_kpoints(
-            np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.25, 0.5, 0.0]]))
+            np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.25, 0.5, 0.0],
+                      [0.0, 0.25, 0.5], [0.25, 0.25, 0.25]]))
         together = crystal.kpoint_matrices(kpoints)
         for i, k in enumerate(kpoints):
             alone = crystal.kpoint_matrices(k[None, :])[0]

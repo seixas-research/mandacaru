@@ -213,6 +213,49 @@ fn key(radius: f64, l: usize) -> (i64, usize) {
     ((radius * 1e12).round() as i64, l)
 }
 impl Shapes {
+    /// Reuse precomputed shape tables, preserving their exact interpolation nodes.
+    pub fn from_tables(
+        ctx: &Context,
+        sites: &Sites,
+        source: Vec<(f64, usize, Vec<f64>, Vec<f64>)>,
+    ) -> Result<Self> {
+        sites.check()?;
+        let mut tables = BTreeMap::new();
+        let mut bytes = 0usize;
+        let mut top = f64::INFINITY;
+        for (radius, l, q, f) in source {
+            if !(radius.is_finite() && radius > 0.)
+                || q.len() < 2
+                || q.len() != f.len()
+                || q.iter().chain(&f).any(|v| !v.is_finite())
+                || q.windows(2).any(|v| v[0] >= v[1])
+                || q[0] > 0.
+            {
+                return Err(invalid("invalid compensation shape table"));
+            }
+            bytes = bytes
+                .checked_add(crate::product(&[q.len(), 16])?)
+                .ok_or(crate::Error::Overflow)?;
+            top = top.min(*q.last().unwrap());
+            if tables.insert(key(radius, l), ShapeTable { q, f }).is_some() {
+                return Err(invalid("duplicate compensation shape table"));
+            }
+        }
+        for &(atom, l, _) in sites.channels {
+            if !tables.contains_key(&key(sites.atoms[atom].compensation_radius, l)) {
+                return Err(invalid("missing compensation shape table"));
+            }
+        }
+        if tables.is_empty() {
+            top = SHAPE_TABLE_MAX;
+        }
+        let storage = ctx.reserve(bytes)?;
+        Ok(Self {
+            tables,
+            top,
+            _storage: storage,
+        })
+    }
     /// Tables on `[0, max(q_max, 15, 120)]` at step 0.01 for every distinct
     /// (radius, L) of the channels.
     pub fn new(ctx: &Context, sites: &Sites, q_max: f64) -> Result<Self> {

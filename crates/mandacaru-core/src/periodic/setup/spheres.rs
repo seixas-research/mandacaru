@@ -77,7 +77,7 @@ impl Sphere {
         let (r, w_r) = radial_rule(radius, panel, radial)?;
         let (directions, w_ang) = angular_rule(polar, azimuthal)?;
         let n = r.len() * w_ang.len();
-        let held = ctx.reserve(product(&[n, 6, 8])?)?;
+        let mut held = ctx.reserve(product(&[n, 6, 8])?)?;
         // Radial major, as the rule is generated; then the stable sort into bins.
         let at = |j: usize| (j / w_ang.len(), j % w_ang.len());
         let coordinate = |j: usize, axis: usize| {
@@ -85,11 +85,14 @@ impl Sphere {
             center[axis] + r[i] * directions[axis][a]
         };
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by_key(|&j| {
+        // Include the original index as a tie breaker to retain the stable
+        // quadrature order without allocating a stable sort's scratch buffer.
+        order.sort_unstable_by_key(|&j| {
             (
                 coordinate(j, 0).floor() as i64,
                 coordinate(j, 1).floor() as i64,
                 coordinate(j, 2).floor() as i64,
+                j,
             )
         });
         let points = [0, 1, 2].map(|axis| order.iter().map(|&j| coordinate(j, axis)).collect());
@@ -101,6 +104,8 @@ impl Sphere {
             })
             .collect();
         let radii = order.iter().map(|&j| r[at(j).0]).collect();
+        drop(order);
+        held.shrink_to(product(&[n, 5, 8])?)?;
         Ok(Self {
             center,
             radius,

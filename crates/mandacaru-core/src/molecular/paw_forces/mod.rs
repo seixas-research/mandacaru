@@ -16,7 +16,7 @@
 //!   in `paw::molecular::gradient`, which owns the setup's quadrature rules;
 //! * the ion-ion repulsion is added here.
 use super::{
-    dft, forces::Gradient, integrals::laplacian_of, invalid, MeanField, MolecularIntegrals,
+    dft, forces::Gradient, integrals::laplacian_of, invalid, scf, MeanField, MolecularIntegrals,
 };
 use crate::math::fft::Poisson;
 use crate::models::xc;
@@ -28,13 +28,6 @@ mod frame;
 mod grid;
 
 impl MolecularIntegrals {
-    /// Electronic energy of the densities of `state` on these integrals.
-    fn state_energy(&self, state: &MeanField) -> Result<f64> {
-        match state.functional.as_deref() {
-            Some(name) => self.kohn_sham_energy(name, &state.densities),
-            None => self.hartree_fock_energy(&state.method, &state.densities),
-        }
-    }
     /// The energy-weighted density `W = sum_i f_i eps_i a_i a_i^T` of the
     /// occupied orbitals of a converged state in the atomic-orbital basis: the
     /// weight of the overlap derivative, `-tr[W dS]`, in the gradient.
@@ -102,19 +95,22 @@ impl MolecularIntegrals {
         let atoms = self.geometry.numbers().len();
         let hf = state.functional.is_none();
         let _workspace = ctx.reserve(product(&[3 * atoms, 64])?)?;
-        let reference = self.state_energy(state)?;
-        if (reference - state.electronic_energy).abs() > 1e-7 {
-            return Err(invalid(
-                "the SCF state does not reproduce its energy on these integrals; it was not computed with them",
-            ));
-        }
         // The Fock matrices and grid potentials of the converged densities.
         let mut poisson = Poisson::isolated(ctx, &self.grid)?;
-        let (fock, valence, hartree, xc) = if let Some(name) = state.functional.as_deref() {
-            let (fock, fields) = dft::response(self, &state.densities, name)?;
-            (fock, fields.valence, fields.hartree, Some(fields.terms))
+        let (fock, valence, hartree, xc, reference) = if let Some(name) =
+            state.functional.as_deref()
+        {
+            let (fock, fields, energy) = dft::response_with_energy(self, &state.densities, name)?;
+            (
+                fock,
+                fields.valence,
+                fields.hartree,
+                Some(fields.terms),
+                energy,
+            )
         } else {
-            let (_, fock) = self.hartree_fock_operators(&state.method, &state.densities)?;
+            let (core, fock) = self.hartree_fock_operators(&state.method, &state.densities)?;
+            let energy = scf::energy(&state.densities, &fock, &core, &state.method);
             let valence = dft::grid_densities(self, &state.densities)?;
             let mut source = ctx.allocate::<C64>(n)?;
             let mut solved = ctx.allocate::<C64>(n)?;
@@ -127,8 +123,13 @@ impl MolecularIntegrals {
             for (to, from) in hartree.as_mut_slice().iter_mut().zip(solved.as_slice()) {
                 *to = from.re;
             }
-            (fock, valence, hartree, None)
+            (fock, valence, hartree, None, energy)
         };
+        if (reference - state.electronic_energy).abs() > 1e-7 {
+            return Err(invalid(
+                "the SCF state does not reproduce its energy on these integrals; it was not computed with them",
+            ));
+        }
         let frame = frame::occupied(self, state, &fock)?;
         let nocc = frame.orbitals.len();
         let occupied: &[Occupied] = &frame.orbitals;
@@ -156,6 +157,7 @@ impl MolecularIntegrals {
         for k in 0..n {
             rho.as_mut_slice()[k] = valence.as_slice()[k] + valence.as_slice()[n + k];
         }
+        drop(valence);
         let response = setup.response(
             self,
             occupied,
@@ -172,19 +174,11 @@ impl MolecularIntegrals {
         let points = grid::points(self)?;
         let mut terms: Vec<(&'static str, Vec<f64>)> = Vec::new();
         let mut action = ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?;
-        let mut contract = |name: &'static str, action: &Buffer<f64>| {
-            terms.push((
+        let contract = |name: &'static str, action: &Buffer<f64>| {
+            (
                 name,
                 grid::contract(self, occupied, points.as_slice(), action.as_slice()),
-            ));
-        };
-        // Local operators: the action is a multiplication of the orbital.
-        let multiply = |action: &mut Buffer<f64>, field: &dyn Fn(usize, usize) -> f64| {
-            for (i, o) in occupied.iter().enumerate() {
-                for k in 0..n {
-                    action.as_mut_slice()[i * n + k] = field(o.spin, k) * psi.as_slice()[i * n + k];
-                }
-            }
+            )
         };
         for i in 0..nocc {
             let lap = laplacian_of(
@@ -197,16 +191,24 @@ impl MolecularIntegrals {
                 action.as_mut_slice()[i * n + k] = -0.5 * lap.as_slice()[k];
             }
         }
-        contract("kinetic/basis", &action);
-        multiply(&mut action, &|_, k| corrections.external.as_slice()[k]);
-        contract("external/basis", &action);
-        multiply(&mut action, &|_, k| hartree.as_slice()[k]);
-        contract("hartree/basis", &action);
+        terms.push(contract("kinetic/basis", &action));
+        let coulomb = response.coulomb_potential()?;
+        let [external_term, hartree_term, xc_term, coulomb_term, pulay_term] = grid::contract_local(
+            self,
+            occupied,
+            points.as_slice(),
+            psi.as_slice(),
+            corrections.external.as_slice(),
+            hartree.as_slice(),
+            xc.as_ref().map(|fields| fields.potentials.as_slice()),
+            coulomb.as_slice(),
+        );
+        drop(hartree);
+        drop(coulomb);
+        terms.push(("external/basis", external_term));
+        terms.push(("hartree/basis", hartree_term));
         if let Some(fields) = xc.as_ref() {
-            multiply(&mut action, &|spin, k| {
-                fields.potentials.as_slice()[spin * n + k]
-            });
-            contract("xc/basis", &action);
+            terms.push(("xc/basis", xc_term));
             if let Some(tau) = fields.tau_potentials.as_ref() {
                 kinetic_density_action(
                     self,
@@ -215,7 +217,7 @@ impl MolecularIntegrals {
                     tau.as_slice(),
                     &mut action,
                 )?;
-                contract("xc/tau_basis", &action);
+                terms.push(contract("xc/tau_basis", &action));
             }
             if let Some(flux) = fields.gradient_potentials.as_ref() {
                 density_gradient_action(
@@ -225,23 +227,16 @@ impl MolecularIntegrals {
                     flux.as_slice(),
                     &mut action,
                 )?;
-                contract("xc/gradient_basis", &action);
+                terms.push(contract("xc/gradient_basis", &action));
             }
         }
-        let coulomb = response.coulomb_potential()?;
-        multiply(&mut action, &|_, k| coulomb.as_slice()[k]);
-        contract("pairs_coulomb/compensation_basis", &action);
-        for (i, o) in occupied.iter().enumerate() {
-            for k in 0..n {
-                action.as_mut_slice()[i * n + k] = -o.energy * psi.as_slice()[i * n + k];
-            }
-        }
-        contract("pulay_grid/basis", &action);
+        terms.push(("pairs_coulomb/compensation_basis", coulomb_term));
+        terms.push(("pulay_grid/basis", pulay_term));
         if hf {
             contract_exchange(self, occupied, psi.as_slice(), &mut poisson, &mut action)?;
-            contract("exchange/basis", &action);
+            terms.push(contract("exchange/basis", &action));
             let compensation = response.exchange_action()?;
-            contract("pairs_exchange/compensation_basis", &compensation);
+            terms.push(contract("pairs_exchange/compensation_basis", &compensation));
         }
         // A screened hybrid adds `fraction` times the exchange form under
         // `erfc(omega r) / r`: its grid pairs here, the rest in the PAW setup.
@@ -258,11 +253,12 @@ impl MolecularIntegrals {
             for v in action.as_mut_slice() {
                 *v *= fraction;
             }
-            contract("hybrid_grid/basis", &action);
+            terms.push(contract("hybrid_grid/basis", &action));
             let compensation = screened.exchange_action()?;
-            contract("hybrid_pairs/compensation_basis", &compensation);
+            terms.push(contract("hybrid_pairs/compensation_basis", &compensation));
         }
-        drop(contract);
+        drop(action);
+        drop(points);
         let core = xc
             .as_ref()
             .map(|fields| core_fields(self, fields))

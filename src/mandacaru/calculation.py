@@ -394,7 +394,8 @@ class Mandacaru(ASEProperties, Calculator):
         32 GiB), ``disk_offload_bytes`` (the size from which a periodic
         calculation keeps its bulk arrays, such as the Bloch orbital stacks,
         in a scratch folder on disk instead of memory: default 8 MiB, ``0``
-        offloads every one) and ``scratch_dir``. An unknown key raises
+        offloads every one) and ``scratch_dir`` (parent directory for both
+        Python scratch and native archived arrays). An unknown key raises
         ``TypeError``. A calculation that needs more memory than the limit
         raises ``MemoryError`` at ``run()``. Not allowed together with
         ``native_model``, which carries its own context (``ValueError``).

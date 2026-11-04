@@ -45,7 +45,7 @@ impl PyWannierSetup {
                     "transfer one full-mesh Wannier k-point at a time",
                 )
             })?;
-        let mut arrays = input_arrays(&c.context, values, metadata_json, Some(c.precision))?;
+        let mut arrays = input_arrays(&c.context, values, metadata_json, Some(c.precision), false)?;
         let _work = c
             .context
             .reserve(

@@ -21,6 +21,76 @@ pub(super) fn points(integrals: &MolecularIntegrals) -> Result<Buffer<f64>> {
     }
     Ok(out)
 }
+
+/// Contract the local actions together so each basis gradient is evaluated
+/// once per point. The five small accumulators preserve the named force terms.
+pub(super) fn contract_local(
+    integrals: &MolecularIntegrals,
+    occupied: &[Occupied],
+    points: &[f64],
+    psi: &[f64],
+    external: &[f64],
+    hartree: &[f64],
+    xc: Option<&[f64]>,
+    coulomb: &[f64],
+) -> [Vec<f64>; 5] {
+    let n = integrals.grid.index.points();
+    let dv = integrals.grid.index.dv();
+    let atoms = integrals.geometry.numbers().len();
+    let mut out: [Vec<f64>; 5] = std::array::from_fn(|_| vec![0.; 3 * atoms]);
+    let mut weight = vec![0.; occupied.len()];
+    for (a, orbital) in integrals.basis.orbitals.iter().enumerate() {
+        for (w, o) in weight.iter_mut().zip(occupied) {
+            *w = 2. * o.weight * o.ao[a];
+        }
+        if weight.iter().all(|w| *w == 0.) {
+            continue;
+        }
+        let support2 = match &orbital.radial {
+            Radial::Tabulated(table) => table
+                .knots
+                .as_slice()
+                .last()
+                .map_or(f64::INFINITY, |r| r * r),
+            _ => f64::INFINITY,
+        };
+        let mut sum = [[0.; 3]; 5];
+        for k in 0..n {
+            let point = [points[3 * k], points[3 * k + 1], points[3 * k + 2]];
+            let r2: f64 = (0..3).map(|i| (point[i] - orbital.center[i]).powi(2)).sum();
+            if r2 > support2 {
+                continue;
+            }
+            let mut t = [0.; 5];
+            for (i, o) in occupied.iter().enumerate() {
+                let v = psi[i * n + k];
+                let w = weight[i];
+                t[0] += w * (external[k] * v);
+                t[1] += w * (hartree[k] * v);
+                if let Some(xc) = xc {
+                    t[2] += w * (xc[o.spin * n + k] * v);
+                }
+                t[3] += w * (coulomb[k] * v);
+                t[4] += w * (-o.energy * v);
+            }
+            if t.iter().all(|&v| v == 0.) {
+                continue;
+            }
+            let gradient = orbital.gradient(point);
+            for term in 0..5 {
+                for axis in 0..3 {
+                    sum[term][axis] += gradient[axis] * t[term];
+                }
+            }
+        }
+        for term in 0..5 {
+            for axis in 0..3 {
+                out[term][3 * orbital.atom + axis] -= dv * sum[term][axis];
+            }
+        }
+    }
+    out
+}
 /// The force on every atom from one action (`nocc * n` values).
 pub(super) fn contract(
     integrals: &MolecularIntegrals,

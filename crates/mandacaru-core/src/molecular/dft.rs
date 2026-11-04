@@ -19,7 +19,9 @@ pub(super) fn grid_densities(integrals: &MolecularIntegrals, d: &[Matrix]) -> Re
     for start in (0..n).step_by(blocks.block()) {
         let count = blocks.load(start)?;
         let (phi, w) = (blocks.values(), blocks.stride());
-        for s in 0..2 {
+        // A restricted state stores one spin density; evaluating it twice
+        // gives exactly the same values and doubles the matrix contraction.
+        for s in 0..if d.len() == 1 { 1 } else { 2 } {
             let density = &d[if d.len() == 1 { 0 } else { s }];
             for i in 0..count {
                 let value = (0..m)
@@ -31,6 +33,11 @@ pub(super) fn grid_densities(integrals: &MolecularIntegrals, d: &[Matrix]) -> Re
                     .sum::<f64>();
                 // Roundoff in a positive semidefinite density may be slightly negative.
                 rho.as_mut_slice()[s * n + start + i] = value.max(0.);
+            }
+        }
+        if d.len() == 1 {
+            for i in 0..count {
+                rho.as_mut_slice()[n + start + i] = rho.as_slice()[start + i];
             }
         }
     }
@@ -57,6 +64,15 @@ pub(super) fn response(
     d: &[Matrix],
     name: &str,
 ) -> Result<(Vec<Matrix>, Fields)> {
+    let (fock, fields, _) = response_with_energy(integrals, d, name)?;
+    Ok((fock, fields))
+}
+/// The same evaluation also provides the energy, without repeating the SCF work.
+pub(super) fn response_with_energy(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    name: &str,
+) -> Result<(Vec<Matrix>, Fields, f64)> {
     let screened = integrals.screening(name)?;
     let gradients = if crate::models::functional(name)?.requires_tau {
         Some(orbital_gradients(integrals)?)
@@ -77,7 +93,7 @@ pub(super) fn response(
     let fields = evaluation
         .fields
         .ok_or_else(|| invalid("the evaluation retained no grid fields"))?;
-    Ok((evaluation.f, fields))
+    Ok((evaluation.f, fields, evaluation.energy))
 }
 /// Orbital gradients `[axis][orbital][point]`, stored in the calculation's
 /// precision. Each row is differentiated in float64 from the widened stored
@@ -384,7 +400,8 @@ fn evaluate_with(
         if let Some(screening) = screened {
             let spins = if d.len() == 1 { 2. } else { 1. };
             let (_, exchange) = scf::jk(&screening.eri, m, &d[s]);
-            exact_energy -= 0.5 * screening.fraction * (d[s].clone() * &exchange).trace().re * spins;
+            exact_energy -=
+                0.5 * screening.fraction * (d[s].clone() * &exchange).trace().re * spins;
             fock -= exchange * C64::new(screening.fraction, 0.);
             if let Some(frozen) = &screening.one_body {
                 let frozen = frozen.map(|v| C64::new(v, 0.));
@@ -517,13 +534,8 @@ impl MolecularIntegrals {
     pub fn kohn_sham_energy(&self, functional: &str, d: &[Matrix]) -> Result<f64> {
         let definition = crate::models::functional(functional)?;
         let m = self.m();
-        if d.is_empty()
-            || d.len() > 2
-            || d.iter().any(|d| d.shape() != (m, m))
-        {
-            return Err(invalid(
-                "Kohn-Sham energy needs one or two spin densities",
-            ));
+        if d.is_empty() || d.len() > 2 || d.iter().any(|d| d.shape() != (m, m)) {
+            return Err(invalid("Kohn-Sham energy needs one or two spin densities"));
         }
         let ctx = &self.context;
         let screened = self.screening(functional)?;

@@ -23,6 +23,84 @@ pub(crate) struct PyContext {
 }
 #[pymethods]
 impl PyContext {
+    /// Dense reciprocal-space compensation and ion couplings for a periodic cell.
+    fn periodic_compensation_couplings<'py>(
+        &self,
+        py: Python<'py>,
+        lattice: [[f64; 3]; 3],
+        centers: Vec<[f64; 3]>,
+        charges: Vec<f64>,
+        radii: Vec<f64>,
+        channels: Vec<(usize, usize, i32)>,
+        tables: Vec<(
+            f64,
+            usize,
+            PyReadonlyArray1<'py, f64>,
+            PyReadonlyArray1<'py, f64>,
+        )>,
+        sigma: f64,
+        cutoff: f64,
+    ) -> PyResult<(Array<'py, Complex64>, Array<'py, Complex64>, f64)> {
+        use mandacaru_core::periodic::setup::{electrostatics, shapes};
+        if centers.len() != charges.len() || centers.len() != radii.len() {
+            return Err(PyValueError::new_err(
+                "centers, charges and radii must have equal lengths",
+            ));
+        }
+        let atoms: Vec<_> = centers
+            .into_iter()
+            .zip(charges)
+            .zip(radii)
+            .map(|((center, charge), compensation_radius)| shapes::Atom {
+                center,
+                charge,
+                compensation_radius,
+            })
+            .collect();
+        let cell = nalgebra::Matrix3::from_fn(|i, j| lattice[i][j]);
+        let count = channels.len();
+        let mut table_bytes = 0usize;
+        for (_, _, q, f) in &tables {
+            let elements = q
+                .len()
+                .checked_add(f.len())
+                .ok_or_else(|| error(Error::Overflow))?;
+            table_bytes = table_bytes
+                .checked_add(product(&[elements, 8]).map_err(error)?)
+                .ok_or_else(|| error(Error::Overflow))?;
+        }
+        let table_reservation = self.inner.reserve(table_bytes).map_err(error)?;
+        let mut owned_tables = Vec::with_capacity(tables.len());
+        for (radius, l, q, f) in &tables {
+            super::layout(q)?;
+            super::layout(f)?;
+            owned_tables.push((*radius, *l, q.as_slice()?.to_vec(), f.as_slice()?.to_vec()));
+        }
+        drop(tables);
+        let result = py
+            .detach(|| {
+                let sites = shapes::Sites {
+                    atoms: &atoms,
+                    channels: &channels,
+                    lattice: cell,
+                    sigma,
+                };
+                drop(table_reservation);
+                let tables = shapes::Shapes::from_tables(&self.inner, &sites, owned_tables)?;
+                if tables.top() < cutoff {
+                    return Err(mandacaru_core::Error::Invalid(
+                        "compensation table does not reach the cutoff".into(),
+                    ));
+                }
+                electrostatics::couplings(&self.inner, &tables, &sites, cutoff)
+            })
+            .map_err(error)?;
+        Ok((
+            array(py, &[count, count], result.u.as_slice().to_vec())?,
+            array(py, &[count], result.u_ion.as_slice().to_vec())?,
+            result.e_ion,
+        ))
+    }
     #[pyo3(signature=(l,*,real=false))]
     fn spin_orbit_angular<'py>(
         &self,
@@ -602,14 +680,18 @@ impl PyContext {
         .map_err(error)
     }
 
+    /// With consume=True, remove input arrays as they are copied, including if
+    /// validation of a later array fails. The default leaves the dictionary intact.
+    #[pyo3(signature = (metadata_json, arrays, *, consume=false))]
     fn periodic_problem(
         &self,
         py: Python<'_>,
         metadata_json: &str,
         arrays: &Bound<'_, PyDict>,
+        consume: bool,
     ) -> PyResult<PyCrystal> {
         let snapshot_json = metadata_json;
-        let arrays = periodic::input_arrays(&self.inner, arrays, metadata_json, None)?;
+        let arrays = periodic::input_arrays(&self.inner, arrays, metadata_json, None, consume)?;
         let _input = self.inner.reserve(snapshot_json.len()).map_err(error)?;
         let owned = snapshot_json.to_owned();
         let inner = py
@@ -1253,17 +1335,19 @@ impl PyContext {
         Ok(quantum::PyProblem { inner })
     }
     #[new]
-    #[pyo3(signature = (threads=None, memory_limit_bytes=34359738368, disk_offload_bytes=None))]
+    #[pyo3(signature = (threads=None, memory_limit_bytes=34359738368, disk_offload_bytes=None, scratch_dir=None))]
     fn new(
         threads: Option<usize>,
         memory_limit_bytes: usize,
         disk_offload_bytes: Option<usize>,
+        scratch_dir: Option<std::path::PathBuf>,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: Context::with_offload(
+            inner: Context::with_offload_and_scratch(
                 threads,
                 memory_limit_bytes,
                 disk_offload_bytes.unwrap_or(mandacaru_core::context::DEFAULT_OFFLOAD_BYTES),
+                scratch_dir,
             )
             .map_err(error)?,
         })

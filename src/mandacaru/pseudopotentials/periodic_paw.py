@@ -108,6 +108,9 @@ REMAINDER_TABLE_MAX = 12.0
 
 #: Memory (bytes) one block of k-points' Bloch sums may occupy.
 KPOINT_BLOCK_BYTES = 1 << 30
+# Keep the shared backing allocation bounded so transferred k-point arrays can
+# be released in groups instead of retaining an entire mesh until handoff ends.
+KPOINT_BLOCK_MAX = 4
 
 #: Lattice-sum reach (in Gaussian widths) of the short-range ion pair term.
 ION_PAIR_REACH = 12.0
@@ -833,6 +836,7 @@ class PeriodicPAW:
         #: so they commute with the operations as the kinetic matrix does.
         self.kernel = rc.alias_mean(grid, rc.coulomb_kernel)
         self._compensation_grid = None
+        self._compensation_values = None
         self._compensation_coulomb = None
         #: The spin-orbit projectors and couplings (empty without the term).
         self.spin_orbit_projectors = list(spin_orbit_projectors or [])
@@ -965,7 +969,7 @@ class PeriodicPAW:
     def kpoint_block(self) -> int:
         """How many k-points' Bloch sums fit :data:`KPOINT_BLOCK_BYTES`."""
         largest = max(self.grid.size, 131072)
-        return max(1, int(KPOINT_BLOCK_BYTES // (16 * self.M * largest)))
+        return min(KPOINT_BLOCK_MAX, max(1, int(KPOINT_BLOCK_BYTES // (16 * self.M * largest))))
 
     def _periodic_part(self, psi, k):
         """``u = e^{-i k.r} chi`` on the grid, transformed: ``(M, n1, n2, n3)``."""
@@ -1265,8 +1269,14 @@ class PeriodicPAW:
         (:func:`~mandacaru.integrals.reciprocal.alias_mean`)."""
         if self._compensation_grid is None:
             transforms = rc.alias_mean(self.grid, self.compensation_transforms)
+            self._compensation_values = transforms
             self._compensation_grid = dict(zip(self.channels, transforms))
         return self._compensation_grid
+
+    def compensation_grid_array(self) -> np.ndarray:
+        """Compensation transforms in channel order, without copying the cache."""
+        self.compensation_grid()
+        return self._compensation_values
 
     def compensation_transforms(self, vectors) -> np.ndarray:
         r"""``(n_ch, ...)``: every channel's compensation shape,
@@ -1528,28 +1538,22 @@ class PeriodicPAW:
         """
         if self._compensation_coulomb is not None:
             return self._compensation_coulomb
-        B = rc.reciprocal_vectors(self.lattice)
-        Gs = rc.lattice_translations(B, COMPENSATION_CUTOFF).T
-        Gs = Gs[:, np.sum(Gs * Gs, axis=0) > 0.0]
-        n = len(self.channels)
-        U = np.zeros((n, n), dtype=complex)
-        U_ion = np.zeros(n, dtype=complex)
-        E_ion = 0.0
-        for start in range(0, Gs.shape[1], DENSE_BLOCK):
-            G = Gs[:, start:start + DENSE_BLOCK]
-            norm = np.sqrt(np.sum(G * G, axis=0))
-            kernel = 4.0 * np.pi / norm ** 2
-            F = self.compensation_transforms(G)
-            ion = self._ion_transform(G)
-            U += (F.conj() * kernel) @ F.T
-            U_ion += (F.conj() * kernel) @ ion
-            E_ion += 0.5 * float(np.sum(kernel * np.abs(ion) ** 2))
-        U /= self.volume
-        U_ion /= self.volume
-        E_ion /= self.volume
-        for a, (atom, L, _M) in enumerate(self.channels):
-            U[a, a] += self._tail(atom, L)
-        self._compensation_coulomb = (U, U_ion, E_ion)
+        context = self._native_context
+        if context is None:
+            from .. import _native
+            context = _native.Context(threads=1)
+        tables = {}
+        for atom, L, _ in self.channels:
+            radius = float(self.datasets[atom].compensation_radius)
+            key = (round(radius, 12), L)
+            if key not in tables:
+                q, f = self._shape_table(atom, L, SHAPE_TABLE_MAX)
+                tables[key] = (radius, L, q, f)
+        self._compensation_coulomb = context.periodic_compensation_couplings(
+            self.lattice.tolist(), [center.tolist() for center in self.centers],
+            self.charges.tolist(),
+            [float(dataset.compensation_radius) for dataset in self.datasets],
+            self.channels, list(tables.values()), self.sigma, COMPENSATION_CUTOFF)
         return self._compensation_coulomb
 
     def _tail(self, atom, L, kernel=None) -> float:

@@ -61,7 +61,7 @@ pub(super) fn density(c: &Matrix, n: usize) -> Matrix {
 pub(super) fn hermitian(m: Matrix) -> Matrix {
     (&m + m.adjoint()) * C64::new(0.5, 0.)
 }
-fn energy(d: &[Matrix], f: &[Matrix], h: &Matrix, method: &str) -> f64 {
+pub(super) fn energy(d: &[Matrix], f: &[Matrix], h: &Matrix, method: &str) -> f64 {
     let multiplier = if method == "rhf" { 1. } else { 0.5 };
     d.iter()
         .zip(f)

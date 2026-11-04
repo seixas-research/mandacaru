@@ -3,8 +3,8 @@
 //! An archive is written once, on creation, into the calculation's scratch directory and is then
 //! read by positional I/O only: no seek, no per-read `open`, and no heap allocation (a read goes
 //! through a fixed stack block into the caller's slice). The file lives in a per-calculation
-//! folder under the OS temporary directory ([`ScratchDir`]: `TMPDIR` is honored, the working
-//! directory and any folder named `.mandacaru` are refused) and is removed with its owner.
+//! folder under the configured scratch directory or OS temporary directory ([`ScratchDir`]:
+//! `TMPDIR` is honored and folders named `.mandacaru` are refused) and is removed with its owner.
 //!
 //! Descriptors are bounded: an archive keeps its file open for its whole life while fewer than
 //! [`MAX_OPEN_HANDLES`] archives of the process do, and opens the file for the duration of a
@@ -121,14 +121,21 @@ fn io(error: std::io::Error) -> Error {
 }
 
 /// The scratch folder of one calculation: created by the first archive under
-/// `std::env::temp_dir()`, never in the working directory (a relative `TMPDIR` is refused) and
-/// never under a folder named `.mandacaru`, and removed when its last owner (the [`Context`] and
+/// its configured parent or `std::env::temp_dir()` (a relative parent is refused), never under a
+/// folder named `.mandacaru`, and removed when its last owner (the [`Context`] and
 /// every archive) is gone.
 #[derive(Debug, Default)]
 pub struct ScratchDir {
     path: Mutex<Option<PathBuf>>,
+    base: Option<PathBuf>,
 }
 impl ScratchDir {
+    pub(crate) fn with_base(base: Option<PathBuf>) -> Self {
+        Self {
+            path: Mutex::new(None),
+            base,
+        }
+    }
     /// The folder, created on first use.
     pub fn path(&self) -> Result<PathBuf> {
         let mut guard = self
@@ -138,7 +145,7 @@ impl ScratchDir {
         if let Some(path) = guard.as_ref() {
             return Ok(path.clone());
         }
-        let base = std::env::temp_dir();
+        let base = self.base.clone().unwrap_or_else(std::env::temp_dir);
         if !base.is_absolute() {
             return Err(Error::Invalid(format!(
                 "scratch arrays need an absolute temporary directory, not {}: set TMPDIR to one",
@@ -154,6 +161,7 @@ impl ScratchDir {
                 base.display()
             )));
         }
+        std::fs::create_dir_all(&base).map_err(io)?;
         let path = loop {
             let path = base.join(format!(
                 "mandacaru-scratch-{}-{}",

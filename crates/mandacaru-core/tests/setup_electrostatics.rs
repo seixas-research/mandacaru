@@ -109,6 +109,30 @@ fn the_dense_sums_equal_the_frozen_crystal_and_obey_their_identities() {
     assert_eq!(ctx.memory_used(), 0);
 }
 
+#[test]
+fn reused_tables_preserve_dense_sums_and_reject_missing_tables() {
+    let si = Silicon::load();
+    let ctx = Context::new(Some(1), 256 << 20).unwrap();
+    let sites = sites(&si);
+    let generated = Shapes::new(&ctx, &sites, 20.).unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut tables = Vec::new();
+    for &(atom, l, _) in sites.channels {
+        let radius = sites.atoms[atom].compensation_radius;
+        if seen.insert(((radius * 1e12).round() as i64, l)) {
+            let table = generated.table(radius, l).unwrap();
+            tables.push((radius, l, table.q.clone(), table.f.clone()));
+        }
+    }
+    assert!(Shapes::from_tables(&ctx, &sites, Vec::new()).is_err());
+    let reused = Shapes::from_tables(&ctx, &sites, tables).unwrap();
+    let expected = couplings(&ctx, &generated, &sites, COMPENSATION_CUTOFF).unwrap();
+    let actual = couplings(&ctx, &reused, &sites, COMPENSATION_CUTOFF).unwrap();
+    assert_eq!(actual.u.as_slice(), expected.u.as_slice());
+    assert_eq!(actual.u_ion.as_slice(), expected.u_ion.as_slice());
+    assert_eq!(actual.e_ion, expected.e_ion);
+}
+
 /// A trapezoid-free reference: Gauss-Legendre on `[0, r_g]` of `g_L j_L(qr) r^2`.
 fn quadrature(l: usize, radius: f64, q: f64) -> f64 {
     use mandacaru_core::math::radial::gauss_legendre;

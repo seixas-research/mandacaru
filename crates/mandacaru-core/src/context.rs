@@ -101,6 +101,15 @@ impl Context {
         memory_bytes: usize,
         offload_bytes: usize,
     ) -> Result<Self> {
+        Self::with_offload_and_scratch(threads, memory_bytes, offload_bytes, None)
+    }
+    /// Select the parent directory for this context's private scratch folder.
+    pub fn with_offload_and_scratch(
+        threads: Option<usize>,
+        memory_bytes: usize,
+        offload_bytes: usize,
+        scratch_parent: Option<std::path::PathBuf>,
+    ) -> Result<Self> {
         let threads = threads.unwrap_or_else(mandacaru_kernels::runtime::thread_count);
         if threads == 0 || threads > mandacaru_kernels::runtime::MAX_THREADS {
             return Err(Error::Invalid("threads must be in 1..1024".into()));
@@ -121,7 +130,7 @@ impl Context {
             }),
             workers: Arc::default(),
             execution: Arc::default(),
-            scratch: Arc::default(),
+            scratch: Arc::new(ScratchDir::with_base(scratch_parent)),
         })
     }
     pub fn threads(&self) -> usize {

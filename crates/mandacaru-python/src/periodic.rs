@@ -17,6 +17,7 @@ pub(super) fn input_arrays(
     values: &Bound<'_, PyDict>,
     metadata: &str,
     precision: Option<mandacaru_core::math::storage::Precision>,
+    consume: bool,
 ) -> PyResult<mandacaru_core::periodic::input::InputArrays> {
     use mandacaru_core::math::storage::{ComplexSamples, Precision};
     use mandacaru_core::periodic::input::{InputArray, InputArrays};
@@ -65,8 +66,13 @@ pub(super) fn input_arrays(
         }
     }
     let archive = ctx.offloads(sample_bytes);
-    for (key, value) in values.iter() {
-        let key: String = key.extract()?;
+    // A private, disposable handoff dictionary can release each Python array
+    // as soon as Rust has copied or archived it. Public callers keep ownership.
+    for py_key in values.keys().iter() {
+        let value = values.get_item(&py_key)?.ok_or_else(|| {
+            pyo3::exceptions::PyKeyError::new_err("input array disappeared during transfer")
+        })?;
+        let key: String = py_key.extract()?;
         let owned = if let Ok(array) = value.extract::<PyReadonlyArrayDyn<'_, f64>>() {
             super::layout(&array)?;
             InputArray::Real(ctx.copy_slice(array.as_slice()?).map_err(error)?)
@@ -116,6 +122,9 @@ pub(super) fn input_arrays(
             )));
         };
         out.0.insert(key, owned);
+        if consume {
+            values.del_item(&py_key)?;
+        }
     }
     Ok(out)
 }
@@ -640,7 +649,7 @@ impl PyPeriodicResult {
         arrays: &Bound<'_, PyDict>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let c = &self.crystal;
-        let mut arrays = input_arrays(&c.context, arrays, data_json, Some(c.precision))?;
+        let mut arrays = input_arrays(&c.context, arrays, data_json, Some(c.precision), false)?;
         let _parse = c
             .context
             .reserve(product(&[data_json.len(), 32]).map_err(error)?)

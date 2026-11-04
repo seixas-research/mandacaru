@@ -306,6 +306,34 @@ def test_periodic_typed_transfer_owns_buffers_and_roundtrips(tmp_path):
     assert ctx.memory_used_bytes == 0
 
 
+def test_periodic_transfer_can_consume_arrays_and_use_requested_scratch(tmp_path):
+    metadata, arrays = typed_crystal()
+    scratch = tmp_path / "custom-scratch"
+    ctx = _native.Context(threads=1, disk_offload_bytes=0, scratch_dir=str(scratch))
+    problem = ctx.periodic_problem(metadata, arrays, consume=True)
+    assert not arrays
+    assert ctx.disk_archived_bytes > 0
+    assert list(scratch.rglob("*"))
+    assert problem.solve(width_ha=0.06).snapshot()["converged"]
+    del problem, ctx
+    gc.collect()
+    assert not list(scratch.iterdir())
+
+
+def test_periodic_compensation_rejects_invalid_tables():
+    ctx = _native.Context(threads=1)
+    args = (np.eye(3).tolist(), [[0., 0., 0.]], [1.], [1.], [(0, 0, 0)])
+    with pytest.raises(ValueError, match="missing compensation shape table"):
+        ctx.periodic_compensation_couplings(*args, [], 1., 2.)
+    with pytest.raises(ValueError, match="invalid compensation shape table"):
+        ctx.periodic_compensation_couplings(*args, [(1., 0, np.array([0., 2., 1.]), np.ones(3))], 1., 2.)
+    assert ctx.memory_used_bytes == 0
+    limited = _native.Context(threads=1, memory_limit_bytes=16)
+    with pytest.raises(MemoryError):
+        limited.periodic_compensation_couplings(*args, [(1., 0, np.array([0., 2.]), np.ones(2))], 1., 2.)
+    assert limited.memory_used_bytes == 0
+
+
 @pytest.mark.parametrize(
     "defect", ["dtype", "nan", "size", "missing", "extra", "stride"]
 )

@@ -31,6 +31,7 @@ class CalculationResources:
                 threads=threads,
                 memory_limit_bytes=memory_limit_bytes,
                 disk_offload_bytes=disk_offload_bytes,
+                scratch_dir=None if scratch_dir is None else str(Path(scratch_dir).absolute()),
             )
         )
         self.lock = RLock()
