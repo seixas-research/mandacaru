@@ -286,6 +286,9 @@ fn paw_projector_basis_transform<'py>(
     basis: &str,
 ) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
     let n = vanderbilt.shape()[0];
+    if vanderbilt.shape() != [n, n] || coupling.shape() != [n, n] || overlap.shape() != [n, n] {
+        return Err(pyo3::exceptions::PyValueError::new_err("projector matrices must be square and have the same shape"));
+    }
     let (v, _a) = copy(&context.inner, &vanderbilt)?;
     let (c, _b) = copy(&context.inner, &coupling)?;
     let (o, _c) = copy(&context.inner, &overlap)?;
@@ -305,6 +308,9 @@ fn paw_multipole_transform<'py>(
 ) -> PyResult<Array<'py, f64>> {
     let n1 = b1.shape()[0];
     let n2 = b2.shape()[0];
+    if b1.shape() != [n1, n1] || b2.shape() != [n2, n2] || delta.shape() != [n1, n2] {
+        return Err(pyo3::exceptions::PyValueError::new_err("multipole matrices have incompatible shapes"));
+    }
     let (b1_buf, _a) = copy(&context.inner, &b1)?;
     let (b2_buf, _b) = copy(&context.inner, &b2)?;
     let (delta_buf, _c) = copy(&context.inner, &delta)?;

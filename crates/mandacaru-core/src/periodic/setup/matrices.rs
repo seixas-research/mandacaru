@@ -45,6 +45,8 @@ pub struct MatrixAssembly<'a> {
     pub weights: &'a [f64],
     pub operators: &'a Operators,
     pub spin_orbit_couplings: Option<&'a BTreeMap<(usize, usize), Coupling>>,
+    /// The spin-orbit dataset projectors; distinct from scalar raw projectors.
+    pub spin_orbit_projectors: Option<&'a [Projector]>,
     pub sigma: f64,
     pub precision: Precision,
 }
@@ -71,7 +73,9 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
                 assembly.shells,
                 assembly.lattice,
                 assembly.kpoints_cart,
-                assembly.projectors,
+                assembly.spin_orbit_projectors.ok_or_else(|| {
+                    crate::Error::Invalid("spin-orbit couplings need their own projectors".into())
+                })?,
                 couplings,
             )?)
         } else {

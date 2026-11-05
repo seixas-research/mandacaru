@@ -2,6 +2,7 @@ use mandacaru_core::paw::basis_blocks::{
     atom_multipole_blocks, multipole_transform, projector_basis_transform, projector_sphere,
     ProjectorSpec,
 };
+use nalgebra::DMatrix;
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
@@ -41,6 +42,35 @@ fn multipole_transform_evaluates_inverse_sandwich() {
     let out = multipole_transform(&b1, 2, &b2, 2, &delta).unwrap();
     assert!((out[0] - 1.0).abs() < 1e-12);
     assert!((out[3] - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn multipole_transform_preserves_rectangular_matrix_order() {
+    let b1 = [2., 1., 0., 1.];
+    let b2 = [1., 0., 1., 0., 2., 1., 0., 0., 3.];
+    let delta = [1., 2., 4., 8., 16., 32.];
+    let raw = multipole_transform(&b1, 2, &b2, 3, &delta).unwrap();
+    let reconstructed = DMatrix::from_row_slice(2, 2, &b1)
+        * DMatrix::from_row_slice(2, 3, &raw)
+        * DMatrix::from_row_slice(3, 3, &b2).transpose();
+    let expected = DMatrix::from_row_slice(2, 3, &delta);
+    assert!(
+        (&reconstructed - expected).norm() < 1e-12,
+        "{reconstructed}"
+    );
+}
+
+#[test]
+fn projector_transform_preserves_general_matrix_order() {
+    let b = [2., 1., 0., 1.];
+    let d = [1., 2., 3., 5.];
+    let q = [4., 6., 7., 9.];
+    let (raw_d, raw_q) = projector_basis_transform(&b, &d, &q, 2, "raw").unwrap();
+    let b_matrix = DMatrix::from_row_slice(2, 2, &b);
+    for (raw, expected) in [(raw_d, d), (raw_q, q)] {
+        let reconstructed = &b_matrix * DMatrix::from_row_slice(2, 2, &raw) * b_matrix.transpose();
+        assert!((reconstructed - DMatrix::from_row_slice(2, 2, &expected)).norm() < 1e-12);
+    }
 }
 
 #[test]

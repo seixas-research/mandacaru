@@ -229,11 +229,11 @@ impl PyCrystal {
         for (i, p) in self.inner.points.iter().enumerate() {
             let read_psi = p.psi.read(ctx).map_err(error)?;
             dict.set_item(format!("k{i}.psi"), array(py, &[read_psi.len()], read_psi.to_vec())?)?;
-            dict.set_item(format!("k{i}.overlap"), array(py, &[self.inner.m, self.inner.m], p.overlap.as_slice().to_vec())?)?;
-            dict.set_item(format!("k{i}.fixed"), array(py, &[self.inner.m, self.inner.m], p.fixed.as_slice().to_vec())?)?;
-            dict.set_item(format!("k{i}.projections"), array(py, &[self.inner.m, self.inner.p], p.projections.as_slice().to_vec())?)?;
+            dict.set_item(format!("k{i}.overlap"), array(py, &[self.inner.m, self.inner.m], matrix_values(&p.overlap))?)?;
+            dict.set_item(format!("k{i}.fixed"), array(py, &[self.inner.m, self.inner.m], matrix_values(&p.fixed))?)?;
+            dict.set_item(format!("k{i}.projections"), array(py, &[self.inner.m, self.inner.p], matrix_values(&p.projections))?)?;
             if let Some(ref so) = p.spin_orbit {
-                dict.set_item(format!("k{i}.spin_orbit"), array(py, &[so.nrows(), so.ncols()], so.as_slice().to_vec())?)?;
+                dict.set_item(format!("k{i}.spin_orbit"), array(py, &[so.nrows(), so.ncols()], matrix_values(so))?)?;
             }
         }
         dict.set_item("blocks", array(py, &[self.inner.blocks.as_slice().len()], self.inner.blocks.as_slice().to_vec())?)?;
@@ -280,6 +280,7 @@ impl PyCrystal {
             "functional": self.inner.functional,
             "precision": self.inner.precision.name(),
             "relativistic": self.inner.relativistic,
+            "datasets": self.inner.description.as_ref().map(|d| &d.datasets),
             "permutation_count": self.inner.permutations.len(),
         });
         serde_json::to_string(&meta)

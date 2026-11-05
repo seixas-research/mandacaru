@@ -714,10 +714,16 @@ impl PyContext {
         if input.dataset_files.is_none() && !dataset_paths.is_empty() {
             let mut files = Vec::with_capacity(dataset_paths.len());
             for p in &dataset_paths {
-                let digest = mandacaru_core::paw::digest::sha256_file(std::path::Path::new(p)).unwrap_or_default();
+                let digest = mandacaru_core::paw::digest::sha256_file(std::path::Path::new(p)).map_err(error)?;
                 files.push((p.clone(), digest));
             }
-            input.dataset_files = Some(files);
+            // The supplied paths are indexed by species. Store them in atom
+            // order, including when the species and atom counts happen to match.
+            input.dataset_files = Some(input.atoms.iter().map(|atom| {
+                files.get(atom.species).cloned().ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err("atom dataset index is out of range")
+                })
+            }).collect::<PyResult<Vec<_>>>()?);
         }
         let mut datasets = Vec::with_capacity(dataset_paths.len());
         for p in &dataset_paths {

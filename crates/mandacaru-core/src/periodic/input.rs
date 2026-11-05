@@ -397,7 +397,27 @@ pub struct CrystalComponents {
 
 impl Crystal {
     pub(crate) fn from_components(ctx: &Context, c: CrystalComponents) -> Result<Self> {
-        let memory = ctx.reserve(4096)?;
+        let labels = c.description.as_ref()
+            .ok_or_else(|| invalid("native crystal needs channel labels"))?.channels.clone();
+        let step: Vec<f64> = (0..3).flat_map(|i| (0..3).map(move |j| c.grid.step[(i, j)])).collect();
+        let points: Vec<Value> = c.points.iter().map(|p| serde_json::json!({
+            "k": p.k, "fractional": p.fractional, "weight": p.weight,
+        })).collect();
+        let metadata = serde_json::json!({
+            "schema_version": 1, "representation": "periodic-paw-snapshot",
+            "energy_unit": "Ha", "length_unit": "bohr",
+            "grid": {"shape": c.grid.index.shape(), "origin": c.grid.origin, "step": step},
+            "m": c.m, "p": c.p, "channels": c.channels, "channel_labels": labels,
+            "kpoints": points, "eion": c.eion, "ion_constant": c.ion_constant,
+            "constant": c.constant, "reference": c.reference, "electrons": c.electrons,
+            "spins": c.spins, "spinor": c.spinor, "time_reversal": c.time_reversal,
+            "functional": c.functional, "precision": c.precision.name(),
+            "relativistic": c.relativistic,
+            "setup": {"unavailable": c.description_unavailable.as_deref().unwrap_or(
+                "native setup description serialization is not yet available")},
+        }).to_string();
+        let source = Source::keep(ctx, &metadata)?;
+        let memory = ctx.reserve(4096usize.checked_add(source.resident_bytes()).ok_or(crate::Error::Overflow)?)?;
         Ok(Self {
             context: ctx.clone(),
             grid: c.grid,
@@ -437,7 +457,7 @@ impl Crystal {
             hybrid: c.hybrid,
             description: c.description,
             description_unavailable: c.description_unavailable,
-            source: Source::Resident("{\"schema_version\":1,\"representation\":\"periodic-paw-snapshot\"}".to_string()),
+            source,
             _memory: memory,
         })
     }

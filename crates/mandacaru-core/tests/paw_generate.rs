@@ -242,6 +242,18 @@ fn the_production_path_moves_the_pbe_dataset_by_the_measured_scheme_difference()
 }
 
 #[test]
+#[ignore = "heavy PBE cerium production generator convergence check"]
+fn production_pbe_cerium_generates_a_finite_dataset() {
+    let frozen = Frozen::open("pbe-sr_Ce");
+    let recipe = recipe_of(&frozen);
+    let ctx = context();
+    let generated = generate(&ctx, &recipe).unwrap();
+    assert_eq!(generated.dataset.symbol, "Ce");
+    assert!(generated.dataset.one_center_energy.is_finite());
+    assert!(generated.dataset.tables().iter().all(|(_, values)| values.iter().all(|x| x.is_finite())));
+}
+
+#[test]
 fn a_generated_dataset_survives_the_record_round_trip() {
     let f = Frozen::open("lda-sr_Na");
     let recipe = recipe_of(&f);

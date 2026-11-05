@@ -27,7 +27,7 @@ fn test_kpoint_matrices_properties() {
     let ctx = context();
     let (cell, basis) = silicon(&ctx);
     let ds = Arc::new(dataset(&ctx, "lda-sr", "Si"));
-    let datasets = vec![ds.clone()];
+    let datasets = vec![ds.clone(); cell.centers.len()];
 
     let projectors = projector_list(&ctx, &ds, &cell.centers, false);
     let n_atoms = cell.centers.len();
@@ -73,6 +73,7 @@ fn test_kpoint_matrices_properties() {
         weights: &weights,
         operators: &ops,
         spin_orbit_couplings: None,
+        spin_orbit_projectors: None,
         sigma: 0.7,
         precision: Precision::Float64,
     };
@@ -108,6 +109,50 @@ fn test_kpoint_matrices_properties() {
     let identity = DMatrix::identity(m, m);
     let lowdin_diff = (eye - identity).norm();
     assert!(lowdin_diff < 1e-10, "Lowdin metric error: {lowdin_diff}");
+}
+
+#[test]
+fn skew_lih_native_setup_response_matches_active_setup() {
+    use mandacaru_core::{paw::digest::sha256_file, periodic::{response, solver::Options}};
+    let ctx = context();
+    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
+        .join("lda-sr");
+    let files: Vec<_> = ["Li", "H"].iter().map(|symbol| {
+        let path = root.join(format!("{symbol}.parquet"));
+        (path.to_string_lossy().into_owned(), sha256_file(&path).unwrap())
+    }).collect();
+    let input = SetupInput {
+        lattice: Matrix3::from_row_slice(&[8., 1., 0.5, 0., 9., 1., 0., 0., 10.]),
+        grid_shape: [8, 9, 10],
+        atoms: vec![
+            AtomSpec { species: 1, symbol: "Li".into(), fractional: [0.1, 0.2, 0.3], moment: 0. },
+            AtomSpec { species: 0, symbol: "H".into(), fractional: [0.55, 0.6, 0.7], moment: 0. },
+        ],
+        kpoints_frac: vec![[-0.25, 0., 0.], [0.25, 0., 0.]],
+        weights: vec![0.5, 0.5], functional: "lda".into(), precision: "float64".into(),
+        basis_size: "SZ".into(), spinor: false, spin: false, symmetry: false,
+        filter_cutoff: None, sigma: None, dataset_files: Some(files),
+    };
+    let setup = create_setup(&ctx, input, vec![Arc::new(dataset(&ctx, "lda-sr", "H")),
+        Arc::new(dataset(&ctx, "lda-sr", "Li"))]).unwrap();
+    let mut crystal = setup.build(&ctx).unwrap();
+    let result = crystal.solve(&Options::default()).unwrap();
+    assert!(result.converged);
+    // Only this test bypasses the capability gate; production responses remain refused.
+    crystal.description_unavailable = None;
+    let forces = response::forces(&crystal, &result).unwrap();
+    let expected = [[-0.0015693448701201258, -0.00041682012015089383, 0.005480404682238612],
+        [-0.0011635448014300955, -0.00167223430420251, -0.004134832194651231]];
+    for (got, want) in forces.iter().flatten().zip(expected.iter().flatten()) {
+        assert!((got - want).abs() < 1e-7, "force {got} differs from active setup {want}");
+    }
+    let stress = response::stress(&crystal, &result).unwrap();
+    let expected_stress = [[1.11316890e-4, 2.08964592e-6, 1.31574895e-6],
+        [2.08964592e-6, 1.78219533e-4, -2.84853462e-6],
+        [1.31574895e-6, -2.84853462e-6, 2.12973502e-4]];
+    for (got, want) in stress.sigma.iter().flatten().zip(expected_stress.iter().flatten()) {
+        assert!((got - want).abs() < 1e-10, "stress {got} differs from active setup {want}");
+    }
 }
 
 #[test]
@@ -196,7 +241,9 @@ fn test_periodic_setup_build_and_with_cell() {
         weights: vec![0.5, 0.5],
         functional: "lda".to_string(),
         precision: "float64".to_string(),
+        basis_size: "SZ".to_string(),
         spinor: false,
+        spin: false,
         symmetry: true,
         filter_cutoff: None,
         sigma: None,
@@ -216,6 +263,26 @@ fn test_periodic_setup_build_and_with_cell() {
     assert!(crystal.u.as_slice().len() > 0);
     assert!(crystal.ion.as_slice().len() > 0);
     assert!(crystal.description.is_some(), "crystal description should be populated");
+    assert!(crystal.description_unavailable.as_deref().unwrap().contains("parity"));
+    // Each identical atom must receive its own copy of the nonzero monopole
+    // operator, even though the setup stores only one Si dataset by species.
+    let monopole0 = setup.channels.iter().position(|&c| c == (0, 0, 0)).unwrap();
+    let monopole1 = setup.channels.iter().position(|&c| c == (1, 0, 0)).unwrap();
+    let first: Vec<_> = setup.projectors.iter().enumerate()
+        .filter(|(_, p)| p.atom == 0).map(|(i, _)| i).collect();
+    let second: Vec<_> = setup.projectors.iter().enumerate()
+        .filter(|(_, p)| p.atom == 1).map(|(i, _)| i).collect();
+    assert_eq!(first.len(), second.len());
+    let mut largest = 0f64;
+    for (&i, &ii) in first.iter().zip(&second) {
+        for (&j, &jj) in first.iter().zip(&second) {
+            let a = crystal.blocks.as_slice()[(monopole0 * crystal.p + i) * crystal.p + j];
+            let b = crystal.blocks.as_slice()[(monopole1 * crystal.p + ii) * crystal.p + jj];
+            largest = largest.max(a.norm());
+            assert!((a - b).norm() < 1e-12);
+        }
+    }
+    assert!(largest > 1e-10, "the monopole block must not vanish");
     let desc = crystal.description.as_ref().unwrap();
     assert_eq!(desc.centers.len(), 2);
     assert_eq!(desc.function_atom.len(), crystal.m);
@@ -255,4 +322,31 @@ fn test_periodic_setup_build_and_with_cell() {
     let eye_off = off_kpoints[0].lowdin.adjoint() * &off_kpoints[0].overlap * &off_kpoints[0].lowdin;
     let id_off = DMatrix::identity(crystal.m, crystal.m);
     assert!((eye_off - id_off).norm() < 1e-10);
+
+    // A mesh point rebuilt through the off-mesh entry point uses the same
+    // per-atom operators as the original crystal assembly.
+    let rebuilt = setup.matrices_at(&ctx, &[[0., 0., 0.]], &[1.0]).unwrap();
+    assert!((&rebuilt[0].overlap - &crystal.points[0].overlap).norm() < 1e-10);
+    assert!((&rebuilt[0].fixed - &crystal.points[0].fixed).norm() < 1e-10);
+}
+
+#[test]
+fn polarized_hydrogen_setup_builds_crystal_matrices() {
+    let ctx = context();
+    let ds = Arc::new(dataset(&ctx, "lda-sr", "H"));
+    let input = serde_json::json!({
+        "lattice": [8.,0.,0., 0.,8.,0., 0.,0.,8.],
+        "grid_shape": [8,8,8],
+        "atoms": [{"species":0,"symbol":"H","fractional":[0.,0.,0.]}],
+        "basis_size": "DZP", "symmetry": false
+    });
+    let setup = create_setup(&ctx, mandacaru_core::periodic::setup::parse_input_json(&input).unwrap(), vec![ds]).unwrap();
+    assert_eq!(setup.shells.functions(), 5);
+    let crystal = setup.build(&ctx).unwrap();
+    assert_eq!(crystal.m, 5);
+    assert_eq!(crystal.electrons, 1.);
+    assert!(crystal.description_unavailable.is_some());
+    let point = &crystal.points[0];
+    let eye = point.lowdin.adjoint() * &point.overlap * &point.lowdin;
+    assert!((eye - DMatrix::identity(5, 5)).norm() < 1e-10);
 }

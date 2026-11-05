@@ -16,6 +16,13 @@ use nalgebra::DMatrix;
 use num_complex::Complex64;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Return the matrix in the row-major layout used by the public array boundary.
+fn row_major(matrix: &DMatrix<f64>) -> Vec<f64> {
+    (0..matrix.nrows())
+        .flat_map(|i| (0..matrix.ncols()).map(move |j| matrix[(i, j)]))
+        .collect()
+}
+
 /// Transforms coupling and overlap blocks from the dual projector basis to the raw projector basis:
 /// $D_{raw} = B^{-1} D B^{-T}$ and $q_{raw} = B^{-1} q B^{-T}$.
 pub fn projector_basis_transform(
@@ -37,7 +44,7 @@ pub fn projector_basis_transform(
             let q = DMatrix::from_row_slice(n, n, overlap);
             let d_raw = &b_inv * d * b_inv.transpose();
             let q_raw = &b_inv * q * b_inv.transpose();
-            Ok((d_raw.as_slice().to_vec(), q_raw.as_slice().to_vec()))
+            Ok((row_major(&d_raw), row_major(&q_raw)))
         }
         _ => Err(invalid(format!("unknown projector basis {basis:?}"))),
     }
@@ -61,7 +68,7 @@ pub fn multipole_transform(
     let b2_inv = mat_b2.try_inverse().ok_or_else(|| invalid("singular Vanderbilt matrix B2"))?;
     let d = DMatrix::from_row_slice(n1, n2, delta);
     let res = &b1_inv * d * b2_inv.transpose();
-    Ok(res.as_slice().to_vec())
+    Ok(row_major(&res))
 }
 
 /// Evaluates atom-centered spherical quadrature points and weights over the sphere

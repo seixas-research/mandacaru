@@ -22,7 +22,7 @@ use super::{
 use crate::{
     paw::{
         multipole::{gaunt, gaunt_grid},
-        multipole_pairs::{radial_moments, Pair},
+        multipole_pairs::{radial_moments, smooth_waves, ChannelWaves, Pair},
         record::PawDataset,
     },
     product, Buffer, Context, Result,
@@ -39,14 +39,35 @@ pub fn multipole_blocks(
     channels: &[Channel],
 ) -> Result<Buffer<Complex64>> {
     let p = projectors.len();
-    let n_ch = channels.len();
-    let total = product(&[n_ch, p, p])?;
+    let total = product(&[channels.len(), p, p])?;
+    let mut out = ctx.allocate::<Complex64>(total)?;
+    let matrices = multipole_matrices(projectors, datasets, channels)?;
+    let slice = out.as_mut_slice();
+    for (a, mat) in matrices.iter().enumerate() {
+        let offset = a * p * p;
+        for i in 0..p {
+            for j in 0..p {
+                slice[offset + i * p + j] = mat[(i, j)];
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Store already assembled multipole matrices in the crystal's row-major layout.
+pub fn store_multipole_blocks(
+    ctx: &Context,
+    matrices: &[Matrix],
+    p: usize,
+) -> Result<Buffer<Complex64>> {
+    if matrices.iter().any(|m| m.nrows() != p || m.ncols() != p) {
+        return Err(crate::periodic::invalid("multipole block dimensions do not match projectors"));
+    }
+    let total = product(&[matrices.len(), p, p])?;
     let mut out = ctx.allocate::<Complex64>(total)?;
     let slice = out.as_mut_slice();
-    slice.fill(Complex64::new(0., 0.));
 
-    let matrices = multipole_matrices(projectors, datasets, channels)?;
-    for (a, mat) in matrices.into_iter().enumerate() {
+    for (a, mat) in matrices.iter().enumerate() {
         let offset = a * p * p;
         for i in 0..p {
             for j in 0..p {
@@ -63,6 +84,13 @@ pub fn multipole_matrices(
     datasets: &[Arc<PawDataset>],
     channels: &[Channel],
 ) -> Result<Vec<Matrix>> {
+    if projectors.iter().any(|p| p.atom >= datasets.len())
+        || channels.iter().any(|&(atom, _, _)| atom >= datasets.len())
+    {
+        return Err(crate::periodic::invalid(
+            "projector and multipole operators need one dataset per atom",
+        ));
+    }
     let p = projectors.len();
     let grid = gaunt_grid()?;
     let mut matrices = Vec::with_capacity(channels.len());
@@ -163,22 +191,24 @@ fn calculate_radial_moments(
     let r = ds.r.as_slice();
     let nr = r.len();
     let mut ae1 = Vec::with_capacity(n1 * nr);
-    let mut ps1 = Vec::with_capacity(n1 * nr);
     for w in &ch1.ae_waves {
         ae1.extend_from_slice(w.as_slice());
     }
-    for w in &ch1.pseudo_waves {
-        ps1.extend_from_slice(w.as_slice());
-    }
 
     let mut ae2 = Vec::with_capacity(n2 * nr);
-    let mut ps2 = Vec::with_capacity(n2 * nr);
     for w in &ch2.ae_waves {
         ae2.extend_from_slice(w.as_slice());
     }
-    for w in &ch2.pseudo_waves {
-        ps2.extend_from_slice(w.as_slice());
-    }
+    let reconstruct = |ch: &crate::paw::record::Channel, l: u32, ae: &[f64]| -> Result<Vec<f64>> {
+        let coefficients: Vec<f64> = ch.wave_coefficients.iter().flat_map(|a| a.data().iter().copied()).collect();
+        let wavevectors: Vec<f64> = ch.wavevectors.iter().flat_map(|a| a.data().iter().copied()).collect();
+        smooth_waves(r, &ChannelWaves {
+            l: l as usize, r_cut: ch.r_cut, ae, coefficients: &coefficients,
+            wavevectors: &wavevectors, waves: ch.ae_waves.len(),
+        })
+    };
+    let ps1 = reconstruct(ch1, l1, &ae1)?;
+    let ps2 = reconstruct(ch2, l2, &ae2)?;
 
     let pair = Pair {
         r,
@@ -264,4 +294,59 @@ pub fn operators(
         augmentation,
         ion_operator,
     })
+}
+
+/// Assemble the same operators in the raw projector basis. Each radial block
+/// is transformed independently, so no additional `P x P` matrix is needed.
+pub fn raw_operators(
+    projectors: &[Projector],
+    datasets: &[Arc<PawDataset>],
+    channels: &[Channel],
+) -> Result<Operators> {
+    let mut result = operators(projectors, datasets, channels)?;
+    let mut groups: HashMap<(usize, usize, i32), Vec<(usize, usize)>> = HashMap::new();
+    for (column, projector) in projectors.iter().enumerate() {
+        groups.entry((projector.atom, projector.l, projector.m))
+            .or_default().push((column, projector.index));
+    }
+    let mut transforms = Vec::with_capacity(groups.len());
+    for ((atom, l, _), members) in groups {
+        let channel = datasets[atom].channels.get(&(l as u32))
+            .ok_or_else(|| crate::periodic::invalid("projector channel is missing"))?;
+        let n = channel.projectors.len();
+        if members.len() != n || channel.vanderbilt.data().len() != n * n {
+            return Err(crate::periodic::invalid("incomplete projector channel"));
+        }
+        let mut ordered = vec![usize::MAX; n];
+        for (column, index) in members {
+            if index >= n || ordered[index] != usize::MAX {
+                return Err(crate::periodic::invalid("invalid projector radial index"));
+            }
+            ordered[index] = column;
+        }
+        let inverse = DMatrix::from_row_slice(n, n, channel.vanderbilt.data())
+            .try_inverse().ok_or_else(|| crate::periodic::invalid("singular Vanderbilt matrix"))?;
+        transforms.push((atom, ordered, inverse));
+    }
+    for matrix in std::iter::once(&mut result.augmentation)
+        .chain(std::iter::once(&mut result.ion_operator))
+        .chain(result.blocks.iter_mut())
+    {
+        for (atom_a, columns_a, inv_a) in &transforms {
+            for (atom_b, columns_b, inv_b) in &transforms {
+                if atom_a != atom_b { continue; }
+                let mut block = DMatrix::zeros(columns_a.len(), columns_b.len());
+                for (i, &a) in columns_a.iter().enumerate() {
+                    for (j, &b) in columns_b.iter().enumerate() { block[(i, j)] = matrix[(a, b)]; }
+                }
+                let a = inv_a.map(|x| Complex64::new(x, 0.));
+                let b = inv_b.map(|x| Complex64::new(x, 0.));
+                let transformed = a * block * b.transpose();
+                for (i, &a) in columns_a.iter().enumerate() {
+                    for (j, &b) in columns_b.iter().enumerate() { matrix[(a, b)] = transformed[(i, j)]; }
+                }
+            }
+        }
+    }
+    Ok(result)
 }

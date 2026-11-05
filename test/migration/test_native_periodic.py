@@ -79,6 +79,239 @@ def reference_fermi_level(levels,weights,electrons,method,width,degeneracy):
     return brentq(excess,levels.min()-60*width,levels.max()+60*width,xtol=1e-15,rtol=1e-15,maxiter=500)
 
 
+def _active_paw_snapshot(active, electrons, functional="lda", **options):
+    from mandacaru.integrals.exchange_correlation import core_correction_offset
+    from mandacaru.integrations.paw import crystal_input
+    from mandacaru.models.datasets import _datasets_relativistic
+
+    return crystal_input(active, electrons, functional,
+        constant=sum(d.one_center_energy + core_correction_offset(d) for d in active.datasets),
+        relativistic=_datasets_relativistic(active.datasets), **options)
+
+
+@pytest.mark.parametrize("option,value", [
+    ("charge", 1.0), ("hubbard_u", {"Si": 3.0}),
+    ("energy_shift", 0.2), ("size", "DZP"), ("functional", "hse06"),
+])
+def test_native_comparison_refuses_unimplemented_options(option, value):
+    request = {"lattice": [8., 0., 0., 0., 8., 0., 0., 0., 8.],
+               "grid_shape": [8, 8, 8],
+               "atoms": [{"species": 0, "symbol": "H", "fractional": [0., 0., 0.]}]}
+    request[option] = value
+    ctx = _native.Context(threads=1, memory_limit_bytes=64 << 20)
+    with pytest.raises(NotImplementedError):
+        ctx._periodic_problem_from_request(json.dumps(request), [])
+
+
+def _assert_raw_setup_arrays(active, metadata, arrays, native):
+    expected_meta = json.loads(metadata)
+    actual_meta = json.loads(native._setup_metadata())
+    for key in ("constant", "eion", "ion_constant", "reference", "electrons"):
+        assert actual_meta[key] == pytest.approx(expected_meta[key], abs=1e-10), key
+    for key in ("relativistic", "time_reversal", "spins", "spinor"):
+        assert actual_meta[key] == expected_meta[key], key
+    actual = native._setup_arrays()
+    points = [f"k{i}.{field}" for i in range(len(active.weights))
+              for field in ("psi", "overlap", "fixed", "projections")]
+    if native.spinor:
+        points.extend(f"k{i}.spin_orbit" for i in range(len(active.weights)))
+    for key in (*points, "blocks", "core", "initial", "initial_q", "kernel",
+                "ion", "hats", "u", "uion", "linear"):
+        expected = np.asarray(arrays[key]).reshape(-1)
+        value = np.asarray(actual[key]).reshape(-1)
+        np.testing.assert_allclose(value, expected, rtol=1e-9, atol=1e-9, err_msg=key)
+
+
+@pytest.mark.parametrize("functional", ["lda", "pbe"])
+def test_raw_dzp_hydrogen_setup_matches_active_crystal(functional):
+    """Compare the complete small setup before routing production through Rust."""
+    import os
+    from ase import Atoms
+    from mandacaru.integrals import Grid
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+    from mandacaru.units import BOHR_TO_ANGSTROM
+
+    root = os.environ.get("MANDACARU_PAW_PATH")
+    if not root:
+        pytest.skip("MANDACARU_PAW_PATH is not set")
+    cell = np.eye(3) * (8.0 * BOHR_TO_ANGSTROM)
+    atoms = Atoms("H", positions=[[0., 0., 0.]], cell=cell, pbc=True)
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
+                grid_spacing=BOHR_TO_ANGSTROM, units="angstrom", cell=cell, periodic=True)
+    ctx = _native.Context(threads=1, memory_limit_bytes=1 << 30)
+    active, _ = build_crystal(atoms, BOHR_TO_ANGSTROM,
+        {"size": "DZP", "paw_dataset": "lda-sr"}, kpts=(1, 1, 1),
+        grid=grid, symmetry=False, native_context=ctx)
+    metadata, arrays = _active_paw_snapshot(active, 1.0, functional)
+    request = {
+        "lattice": (np.eye(3) * 8.0).reshape(-1).tolist(),
+        "grid_shape": list(grid.shape),
+        "atoms": [{"species": 0, "symbol": "H", "fractional": [0., 0., 0.]}],
+        "basis_size": "DZP", "symmetry": False, "functional": functional,
+    }
+    native = ctx._periodic_problem_from_request(
+        json.dumps(request), [str(Path(root) / "lda-sr" / "H.parquet")])
+    assert native.n_orbitals == active.M == 5
+    _assert_raw_setup_arrays(active, metadata, arrays, native)
+
+
+def test_collinear_magnetic_hydrogen_setup_matches_active_crystal():
+    import os
+    from ase import Atoms
+    from mandacaru.integrals import Grid
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+    from mandacaru.units import BOHR_TO_ANGSTROM
+
+    root = os.environ.get("MANDACARU_PAW_PATH")
+    if not root:
+        pytest.skip("MANDACARU_PAW_PATH is not set")
+    cell = np.eye(3) * (8.0 * BOHR_TO_ANGSTROM)
+    atoms = Atoms("H", positions=[[0., 0., 0.]], cell=cell, pbc=True)
+    atoms.set_initial_magnetic_moments([0.7])
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.0,
+                grid_spacing=BOHR_TO_ANGSTROM, units="angstrom", cell=cell, periodic=True)
+    ctx = _native.Context(threads=1, memory_limit_bytes=1 << 30)
+    active, _ = build_crystal(atoms, BOHR_TO_ANGSTROM,
+        {"size": "DZP", "paw_dataset": "lda-sr"}, kpts=(1, 1, 1),
+        grid=grid, symmetry=False, full_mesh=True, native_context=ctx)
+    metadata, arrays = _active_paw_snapshot(active, 1.0,
+        magnetic_moments=np.array([0.7]), unrestricted=True)
+    request = {
+        "lattice": (np.eye(3) * 8.0).reshape(-1).tolist(),
+        "grid_shape": list(grid.shape),
+        "atoms": [{"species": 0, "symbol": "H", "fractional": [0., 0., 0.], "moment": 0.7}],
+        "basis_size": "DZP", "symmetry": True,
+    }
+    native = ctx._periodic_problem_from_request(
+        json.dumps(request), [str(Path(root) / "lda-sr" / "H.parquet")])
+    assert native.spins == 2
+    _assert_raw_setup_arrays(active, metadata, arrays, native)
+    expected_result = ctx.periodic_problem(metadata, arrays).solve()
+    actual_result = native.solve()
+    assert expected_result.converged and actual_result.converged
+    assert actual_result.snapshot(include_matrices=False)["energy"] == pytest.approx(
+        expected_result.snapshot(include_matrices=False)["energy"], abs=1e-8)
+
+
+@pytest.mark.parametrize("magnetic", [False, True])
+def test_spinor_silicon_setup_matches_active_crystal(magnetic, tmp_path):
+    import os
+    from ase import Atoms
+    from mandacaru.integrals import Grid
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+    from mandacaru.units import BOHR_TO_ANGSTROM
+
+    root = os.environ.get("MANDACARU_PAW_PATH")
+    if not root:
+        pytest.skip("MANDACARU_PAW_PATH is not set")
+    cell = np.eye(3) * (8.0 * BOHR_TO_ANGSTROM)
+    atoms = Atoms("Si", positions=[[0., 0., 0.]], cell=cell, pbc=True)
+    moment = 0.4 if magnetic else 0.0
+    atoms.set_initial_magnetic_moments([moment])
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.,
+                grid_spacing=BOHR_TO_ANGSTROM, units="angstrom", cell=cell, periodic=True)
+    ctx = _native.Context(threads=1, memory_limit_bytes=1 << 30)
+    active, setup = build_crystal(atoms, BOHR_TO_ANGSTROM,
+        {"size": "SZ", "paw_dataset": "lda-fr"}, kpts=(2, 1, 1),
+        grid=grid, symmetry=False, spin_orbit=True, full_mesh=magnetic, native_context=ctx)
+    metadata, arrays = _active_paw_snapshot(active, 4.0, magnetic_moments=np.array([moment]),
+        time_reversal=not magnetic, unrestricted=magnetic)
+    request = {
+        "lattice": (np.eye(3) * 8.0).reshape(-1).tolist(), "grid_shape": list(grid.shape),
+        "atoms": [{"species": 0, "symbol": "Si", "fractional": [0., 0., 0.], "moment": moment}],
+        "basis_size": "SZ", "spinor": True, "symmetry": False,
+        "kpoints": [{"fractional": k.tolist(), "weight": float(w)}
+                    for k, w in zip(setup["kpoints_fractional"], active.weights)],
+    }
+    native = ctx._periodic_problem_from_request(
+        json.dumps(request), [str(Path(root) / "lda-fr" / "Si.parquet")])
+    assert native.spinor and native.time_reversal == (not magnetic)
+    _assert_raw_setup_arrays(active, metadata, arrays, native)
+    expected_result = ctx.periodic_problem(metadata, arrays).solve(
+        max_iterations=1000, tolerance=1e-10, density_tolerance=1e-7)
+    actual_result = native.solve(max_iterations=1000, tolerance=1e-10, density_tolerance=1e-7)
+    assert expected_result.converged and actual_result.converged
+    assert actual_result.snapshot(include_matrices=False)["energy"] == pytest.approx(
+        expected_result.snapshot(include_matrices=False)["energy"], abs=1e-8)
+    snapshot = tmp_path / "spinor-comparison.json"
+    native.save(str(snapshot))
+    loaded = ctx.load_crystal(str(snapshot))
+    _assert_raw_setup_arrays(active, metadata, arrays, loaded)
+    loaded_result = loaded.solve(max_iterations=1000, tolerance=1e-10, density_tolerance=1e-7)
+    assert loaded_result.converged
+    assert loaded_result.snapshot(include_matrices=False)["energy"] == pytest.approx(
+        actual_result.snapshot(include_matrices=False)["energy"], abs=1e-8)
+    with pytest.raises(NotImplementedError, match="parity"):
+        loaded_result.forces()
+
+
+@pytest.mark.parametrize("functional", ["lda", "pbe"])
+@pytest.mark.parametrize("magnetic", [False, True])
+def test_raw_lih_skew_multik_setup_matches_active_crystal(functional, magnetic, tmp_path):
+    import hashlib
+    import os
+    from ase import Atoms
+    from mandacaru.integrals import Grid
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+    from mandacaru.units import BOHR_TO_ANGSTROM
+
+    root = os.environ.get("MANDACARU_PAW_PATH")
+    if not root:
+        pytest.skip("MANDACARU_PAW_PATH is not set")
+    lattice = np.array([[8., 0., 0.], [1., 9., 0.], [.5, 1., 10.]])
+    cell = lattice * BOHR_TO_ANGSTROM
+    fractional = np.array([[.1, .2, .3], [.55, .6, .7]])
+    atoms = Atoms("LiH", scaled_positions=fractional, cell=cell, pbc=True)
+    moments = np.array([0.7, -0.2]) if magnetic else np.zeros(2)
+    atoms.set_initial_magnetic_moments(moments)
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.,
+                grid_spacing=BOHR_TO_ANGSTROM, units="angstrom", cell=cell, periodic=True)
+    ctx = _native.Context(threads=1, memory_limit_bytes=1 << 30)
+    active, setup = build_crystal(atoms, BOHR_TO_ANGSTROM,
+        {"size": "SZ", "paw_dataset": "lda-sr"}, kpts=(2, 1, 1),
+        grid=grid, symmetry=False, full_mesh=True, native_context=ctx)
+    metadata, arrays = _active_paw_snapshot(active, 2., functional,
+        magnetic_moments=moments, unrestricted=magnetic)
+    request = {
+        "lattice": lattice.T.reshape(-1).tolist(), "grid_shape": list(grid.shape),
+        "atoms": [{"species": 1, "symbol": "Li", "fractional": fractional[0].tolist(), "moment": float(moments[0])},
+                  {"species": 0, "symbol": "H", "fractional": fractional[1].tolist(), "moment": float(moments[1])}],
+        "basis_size": "SZ", "symmetry": False, "functional": functional,
+        "kpoints": [{"fractional": k.tolist(), "weight": float(w)}
+                    for k, w in zip(setup["kpoints_fractional"], active.weights)],
+    }
+    folder = Path(root) / "lda-sr"
+    native = ctx._periodic_problem_from_request(
+        json.dumps(request), [str(folder / "H.parquet"), str(folder / "Li.parquet")])
+    assert native.n_orbitals == active.M == 2
+    provenance = json.loads(native._setup_metadata())["datasets"]
+    for (filename, digest), symbol in zip(provenance, ("Li", "H")):
+        path = folder / f"{symbol}.parquet"
+        assert Path(filename) == path
+        with path.open("rb") as stream:
+            assert digest == hashlib.file_digest(stream, "sha256").hexdigest()
+    _assert_raw_setup_arrays(active, metadata, arrays, native)
+    expected_result = ctx.periodic_problem(metadata, arrays).solve()
+    actual_result = native.solve()
+    assert expected_result.converged and actual_result.converged
+    expected_energy = expected_result.snapshot(include_matrices=False)
+    actual_energy = actual_result.snapshot(include_matrices=False)
+    for key in ("energy", "free_energy", "extrapolated_energy"):
+        assert actual_energy[key] == pytest.approx(expected_energy[key], abs=1e-8), key
+    with pytest.raises(NotImplementedError, match="parity"):
+        actual_result.forces()
+    snapshot = tmp_path / "comparison-crystal.json"
+    native.save(str(snapshot))
+    loaded = ctx.load_crystal(str(snapshot))
+    _assert_raw_setup_arrays(active, metadata, arrays, loaded)
+    loaded_result = loaded.solve()
+    assert loaded_result.converged
+    assert loaded_result.snapshot(include_matrices=False)["energy"] == pytest.approx(
+        actual_energy["energy"], abs=1e-8)
+    with pytest.raises(NotImplementedError, match="parity"):
+        loaded_result.forces()
+
+
 @pytest.mark.parametrize('method',['fermi-dirac','gaussian','methfessel-paxton'])
 @pytest.mark.parametrize('degeneracy',[1.,2.])
 def test_metallic_fermi_occupations_entropy_and_variational_free_energy(method,degeneracy):

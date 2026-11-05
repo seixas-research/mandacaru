@@ -26,6 +26,23 @@ use std::f64::consts::PI;
 
 const T1: f64 = 1e-10;
 
+#[test]
+fn shared_local_potential_keeps_one_accounted_spline() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let r = [0.1, 0.2, 0.3, 0.4, 0.5];
+    let v = [-2., -1.8, -1.5, -1.2, -1.];
+    let first = LocalPotential::new(&ctx, &r, &v, 1., 0.4).unwrap();
+    let held = ctx.memory_used();
+    assert!(held > 0);
+    let second = first.clone();
+    assert_eq!(ctx.memory_used(), held);
+    assert_eq!(first.value(0.25), second.value(0.25));
+    drop(first);
+    assert_eq!(ctx.memory_used(), held);
+    drop(second);
+    assert_eq!(ctx.memory_used(), 0);
+}
+
 fn sites(si: &Silicon, sigma: f64) -> Sites<'_> {
     Sites {
         atoms: &si.atoms,

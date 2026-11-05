@@ -344,6 +344,10 @@ def test_bloch_sums_are_the_image_sums():
     kpoints = crystal.cartesian_kpoints(rng.random((3, 3)))
     values = pp.bloch_values(crystal.basis, crystal.lattice, kpoints,
                              tuple(points.T), center, radius)
+    order = np.lexsort(tuple(np.floor(points[:, axis]) for axis in (2, 1, 0)))
+    ordered = pp.bloch_values(crystal.basis, crystal.lattice, kpoints,
+                              tuple(points[order].T), center, radius, presorted=True)
+    np.testing.assert_array_equal(values[:, :, order], ordered)
     reach = max(pp._support(f) for f in crystal.basis) + 2 * radius
     expected = np.zeros_like(values)
     for R in rc.lattice_translations(crystal.lattice, reach + radius):

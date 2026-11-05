@@ -5,6 +5,7 @@ use super::{
     MeanField, MolecularIntegrals, ScfOptions,
 };
 use crate::math::fft::Poisson;
+use crate::math::gemm::{self, MatrixMut, MatrixRef};
 use crate::math::storage::{with_rows, RealSamples, SampleBlocks};
 use crate::models::xc;
 use crate::{product, quantum::C64, Buffer, Result};
@@ -16,23 +17,58 @@ pub(super) fn grid_densities(integrals: &MolecularIntegrals, d: &[Matrix]) -> Re
     let n = integrals.grid.index.points();
     let mut rho = integrals.context.allocate::<f64>(2 * n)?;
     let mut blocks = SampleBlocks::new(&integrals.context, &integrals.orthonormal_samples, m, n)?;
+    // A small point tile bounds the extra workspace while allowing a BLAS
+    // contraction of the density matrix with all orbitals in that tile.
+    let tile = 256.min(blocks.block());
+    let mut contracted = integrals.context.allocate::<f64>(product(&[tile, m])?)?;
+    let mut density = integrals
+        .context
+        .allocate::<f64>(product(&[m, m, d.len()])?)?;
+    for (spin, matrix) in d.iter().enumerate() {
+        for b in 0..m {
+            for a in 0..m {
+                density.as_mut_slice()[spin * m * m + a + b * m] = matrix[(a, b)].re;
+            }
+        }
+    }
     for start in (0..n).step_by(blocks.block()) {
         let count = blocks.load(start)?;
         let (phi, w) = (blocks.values(), blocks.stride());
         // A restricted state stores one spin density; evaluating it twice
         // gives exactly the same values and doubles the matrix contraction.
         for s in 0..if d.len() == 1 { 1 } else { 2 } {
-            let density = &d[if d.len() == 1 { 0 } else { s }];
-            for i in 0..count {
-                let value = (0..m)
-                    .map(|a| {
-                        (0..m)
-                            .map(|b| density[(a, b)].re * phi[a * w + i] * phi[b * w + i])
-                            .sum::<f64>()
-                    })
-                    .sum::<f64>();
-                // Roundoff in a positive semidefinite density may be slightly negative.
-                rho.as_mut_slice()[s * n + start + i] = value.max(0.);
+            let matrix = &density.as_slice()[s * m * m..(s + 1) * m * m];
+            for offset in (0..count).step_by(tile) {
+                let width = tile.min(count - offset);
+                gemm::multiply(
+                    MatrixRef {
+                        values: &phi[offset..],
+                        rows: width,
+                        columns: m,
+                        leading: w,
+                    },
+                    MatrixRef {
+                        values: matrix,
+                        rows: m,
+                        columns: m,
+                        leading: m,
+                    },
+                    MatrixMut {
+                        values: contracted.as_mut_slice(),
+                        rows: width,
+                        columns: m,
+                        leading: tile,
+                    },
+                    1.,
+                    0.,
+                )?;
+                for i in 0..width {
+                    let value = (0..m)
+                        .map(|a| phi[a * w + offset + i] * contracted.as_slice()[a * tile + i])
+                        .sum::<f64>();
+                    // Roundoff in a positive semidefinite density may be slightly negative.
+                    rho.as_mut_slice()[s * n + start + offset + i] = value.max(0.);
+                }
             }
         }
         if d.len() == 1 {

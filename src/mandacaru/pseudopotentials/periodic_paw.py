@@ -426,9 +426,11 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
             out[:, mu, :] += (images.T @ phases.T).T
     if order is None or np.array_equal(order, np.arange(order.size)):
         return out
-    restored = np.empty_like(out)
-    restored[:, :, order] = out
-    return restored
+    # Restore one row at a time. A second full (k, basis, grid) stack would
+    # otherwise coexist with the original during every k-point block.
+    for row in out.reshape(-1, x.size):
+        row[order] = row.copy()
+    return out
 
 
 @profile_stage('integration: crystal basis projection')

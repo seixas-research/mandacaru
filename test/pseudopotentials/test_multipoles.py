@@ -49,6 +49,21 @@ class TestPartialWaves:
 
 
 class TestCrossMoments:
+    def test_rectangular_native_transform_and_shape_validation(self):
+        from mandacaru import _native
+        from mandacaru.pseudopotentials.native_context import context
+
+        b1 = np.array([[2., 1.], [0., 1.]])
+        b2 = np.array([[1., 0., 1.], [0., 2., 1.], [0., 0., 3.]])
+        delta = np.array([[1., 2., 4.], [8., 16., 32.]])
+        raw = _native.paw_multipole_transform(context(), b1, b2, delta)
+        np.testing.assert_allclose(b1 @ raw @ b2.T, delta, rtol=1e-12, atol=1e-12)
+        with pytest.raises(ValueError, match="shapes"):
+            _native.paw_multipole_transform(context(), b1, b2, delta.reshape(3, 2))
+        with pytest.raises(ValueError, match="shape"):
+            _native.paw_projector_basis_transform(
+                context(), b1, np.eye(2).reshape(1, 4), np.eye(2), "raw")
+
     def test_s_d_quadrupoles_are_of_the_size_of_the_d_moments(self, copper):
         """The divergent expansion put them at 20-40; the correct ones are
         a few tenths, like the d-d moments of the same shell."""
@@ -56,6 +71,15 @@ class TestCrossMoments:
         own = np.abs(radial_moments(copper, 2, 2, 2)).max()
         assert cross < 1.0
         assert cross < 20.0 * max(own, 1e-2)
+
+    @pytest.mark.parametrize("l1,l2,L", [(0, 1, 1), (1, 0, 1), (0, 0, 0)])
+    def test_raw_moments_reconstruct_the_dual_moments(self, l1, l2, L):
+        silicon = get_paw("Si")
+        b1 = np.asarray(silicon.channels[l1].vanderbilt)
+        b2 = np.asarray(silicon.channels[l2].vanderbilt)
+        dual = silicon.multipole_moments(l1, l2, L, "dual")
+        raw = silicon.multipole_moments(l1, l2, L, "raw")
+        np.testing.assert_allclose(b1 @ raw @ b2.T, dual, rtol=1e-11, atol=1e-11)
 
 
 class TestTheRemainderBeyondTheMultipoles:

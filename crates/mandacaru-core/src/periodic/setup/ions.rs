@@ -17,6 +17,7 @@ use crate::{
 use nalgebra::Vector3;
 use num_complex::Complex64;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 /// Gaussian widths of the short-range sphere, the tail scan and its tolerance.
 const RADIUS_SIGMAS: f64 = 6.5;
@@ -87,8 +88,9 @@ pub fn onsite_ion_compensation(sites: &Sites) -> Result<Vec<f64>> {
 
 /// A species' ionic local potential: the dataset's cubic spline inside its
 /// table, flat below it, `-Z / r` beyond it.
+#[derive(Clone)]
 pub struct LocalPotential {
-    spline: Cubic,
+    spline: Arc<Cubic>,
     pub charge: f64,
     /// Radius of the dataset's own local cutoff (`r_cut_local`).
     pub cutoff: f64,
@@ -102,14 +104,14 @@ impl LocalPotential {
         cutoff: f64,
     ) -> Result<Self> {
         Ok(Self {
-            spline: Cubic::new(ctx, ctx.copy_slice(r)?, ctx.copy_slice(v_local)?)?,
+            spline: Arc::new(Cubic::new(ctx, ctx.copy_slice(r)?, ctx.copy_slice(v_local)?)?),
             charge,
             cutoff,
         })
     }
     pub fn clone_with(&self, ctx: &Context) -> Result<Self> {
         Ok(Self {
-            spline: self.spline.clone_with(ctx)?,
+            spline: Arc::new(self.spline.clone_with(ctx)?),
             charge: self.charge,
             cutoff: self.cutoff,
         })

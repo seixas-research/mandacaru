@@ -68,6 +68,8 @@ pub struct PeriodicSetup {
     pub lattice: Matrix3<f64>,
     pub shells: shells::Shells,
     pub projectors: Vec<spheres::Projector>,
+    pub spin_orbit_projectors: Vec<spheres::Projector>,
+    pub spin_orbit_couplings: std::collections::BTreeMap<(usize, usize), spin_orbit::Coupling>,
     pub potentials: Vec<ions::LocalPotential>,
     pub datasets: Vec<Arc<PawDataset>>,
     pub kpoints_cart: Vec<[f64; 3]>,
@@ -80,6 +82,8 @@ pub struct PeriodicSetup {
     pub functional: String,
     pub precision: Precision,
     pub relativistic: bool,
+    pub spins: usize,
+    pub moments: Vec<f64>,
     pub spinor: bool,
     pub time_reversal: bool,
     pub pins: Pins,
@@ -89,6 +93,21 @@ pub struct PeriodicSetup {
 }
 
 impl PeriodicSetup {
+    /// Dataset for each atom, in atom order. Setup stores datasets by species,
+    /// whereas the projector and multipole assemblers index them by atom.
+    fn atom_datasets(&self) -> Result<Vec<Arc<PawDataset>>> {
+        self.atoms_species.iter().map(|&species| {
+            self.datasets.get(species).cloned()
+                .ok_or_else(|| invalid("atom dataset index is out of range"))
+        }).collect()
+    }
+
+    /// Build the nonlocal and multipole operators for the setup's atoms.
+    pub fn operators(&self) -> Result<Operators> {
+        let datasets = self.atom_datasets()?;
+        blocks::raw_operators(&self.projectors, &datasets, &self.channels)
+    }
+
     /// Build the full [`Crystal`] structure ready for the Kohn-Sham SCF solver.
     pub fn build(&self, ctx: &Context) -> Result<Crystal> {
         let m = self.shells.functions();
@@ -96,7 +115,8 @@ impl PeriodicSetup {
         let n_ch = self.channels.len();
 
         // 1. Build state-independent operators
-        let ops = blocks::operators(&self.projectors, &self.datasets, &self.channels)?;
+        let datasets_by_atom = self.atom_datasets()?;
+        let ops = blocks::raw_operators(&self.projectors, &datasets_by_atom, &self.channels)?;
 
         // 2. Build k-point matrices
         let assembly = MatrixAssembly {
@@ -110,14 +130,17 @@ impl PeriodicSetup {
             kpoints_frac: &self.kpoints_frac,
             weights: &self.weights,
             operators: &ops,
-            spin_orbit_couplings: None,
+            spin_orbit_couplings: self.spinor.then_some(&self.spin_orbit_couplings),
+            spin_orbit_projectors: self.spinor.then_some(self.spin_orbit_projectors.as_slice()),
             sigma: self.sigma,
             precision: self.precision,
         };
         let points = matrices::kpoint_matrices(ctx, &assembly)?;
 
         // 3. Compensation multipole blocks
-        let blocks = blocks::multipole_blocks(ctx, &self.projectors, &self.datasets, &self.channels)?;
+        // Reuse the operators already assembled for the k-point matrices.
+        let blocks = blocks::store_multipole_blocks(ctx, &ops.blocks, p)?;
+        drop(ops);
 
         // 4. Sites and Shapes
         let atoms: Vec<shapes::Atom> = self
@@ -164,16 +187,15 @@ impl PeriodicSetup {
         let species_tables: Vec<fields::Tables<'_>> = self
             .datasets
             .iter()
-            .map(|ds| fields::Tables {
+            .map(|ds| Ok(fields::Tables {
                 radius: ds.r.as_slice(),
                 valence_density: ds.valence_density.as_slice(),
-                core: if ds.smooth_core_density.as_slice().is_empty() {
-                    None
-                } else {
-                    Some(ds.smooth_core_density.as_slice())
-                },
-            })
-            .collect();
+                core: fields::core_table(
+                    ds.nlcc.applied, ds.nlcc.source.as_deref().unwrap_or(""),
+                    ds.smooth_core_density.as_slice(),
+                )?,
+            }))
+            .collect::<Result<Vec<_>>>()?;
 
         let placed_atoms: Vec<fields::Placed> = self
             .centers
@@ -196,15 +218,22 @@ impl PeriodicSetup {
             .iter()
             .map(|&s| self.datasets[s].valence_charge)
             .collect();
-        let moments = vec![0.0; placed_atoms.len()];
-        let initial_m = fields::initial_magnetization(
+        let scalar_m = fields::initial_magnetization(
             ctx,
             &self.grid,
             &species_tables,
             &placed_atoms,
             &charges,
-            &moments,
+            &self.moments,
         )?;
+        let initial_m = if self.spinor {
+            let n = scalar_m.as_slice().len();
+            let mut vector = ctx.allocate::<f64>(product(&[3, n])?)?;
+            vector.as_mut_slice()[2 * n..].copy_from_slice(scalar_m.as_slice());
+            vector
+        } else {
+            scalar_m
+        };
 
         let comp_charges: Vec<f64> = self
             .atoms_species
@@ -220,19 +249,22 @@ impl PeriodicSetup {
         let reference = fields::reference(&sites);
         let xc_wave = crate::math::reciprocal::symmetric_wavevectors(ctx, &self.grid)?;
 
-        let one_center_energies: Vec<f64> = self
-            .datasets
-            .iter()
-            .map(|ds| ds.one_center_energy)
-            .collect();
-        let total_constant = fields::constant(
-            ctx,
-            &self.atoms_species,
-            &species_tables,
-            &one_center_energies,
-            &self.functional,
-            self.relativistic,
-        )?;
+        // The core offset belongs to the dataset's own functional and
+        // exchange convention, which may differ from the requested functional.
+        let mut constants = vec![None; self.datasets.len()];
+        let mut total_constant = 0.;
+        for &species in &self.atoms_species {
+            if constants[species].is_none() {
+                let ds = &self.datasets[species];
+                let table = &species_tables[species];
+                let xc = if ds.xc.is_empty() { "lda" } else { &ds.xc };
+                constants[species] = Some(fields::species_constant(
+                    ctx, ds.one_center_energy, table.radius, table.valence_density,
+                    table.core, xc, ds.relativistic_exchange,
+                )?);
+            }
+            total_constant += constants[species].unwrap();
+        }
 
         // 8. Symmetry
         let qsym = if let Some(ref sym) = self.symmetry {
@@ -263,8 +295,6 @@ impl PeriodicSetup {
             .map(|&s| self.datasets[s].valence_charge)
             .sum();
 
-        let spins = 1;
-
         let components = CrystalComponents {
             grid: self.grid.clone(),
             m,
@@ -292,7 +322,7 @@ impl PeriodicSetup {
             constant: total_constant,
             reference,
             electrons,
-            spins,
+            spins: self.spins,
             spinor: self.spinor,
             time_reversal: self.time_reversal,
             functional: self.functional.clone(),
@@ -306,7 +336,9 @@ impl PeriodicSetup {
             } else {
                 None
             },
-            description_unavailable: None,
+            description_unavailable: Some(
+                "native comparison setup has not passed force and stress parity validation".into(),
+            ),
         };
 
         Crystal::from_components(ctx, components)
@@ -331,7 +363,7 @@ impl PeriodicSetup {
             cart.push([k[0], k[1], k[2]]);
         }
 
-        let ops = blocks::operators(&self.projectors, &self.datasets, &self.channels)?;
+        let ops = self.operators()?;
 
         let assembly = MatrixAssembly {
             grid: &self.grid,
@@ -344,7 +376,8 @@ impl PeriodicSetup {
             kpoints_frac: fractional_k,
             weights,
             operators: &ops,
-            spin_orbit_couplings: None,
+            spin_orbit_couplings: self.spinor.then_some(&self.spin_orbit_couplings),
+            spin_orbit_projectors: self.spinor.then_some(self.spin_orbit_projectors.as_slice()),
             sigma: self.sigma,
             precision: self.precision,
         };
@@ -408,6 +441,11 @@ impl PeriodicSetup {
             p_new.center = new_centers[p.atom];
             projectors.push(p_new);
         }
+        let spin_orbit_projectors = self.spin_orbit_projectors.iter().map(|p| {
+            let mut moved = p.clone();
+            moved.center = new_centers[p.atom];
+            moved
+        }).collect();
 
         let potentials = self
             .potentials
@@ -428,6 +466,8 @@ impl PeriodicSetup {
             lattice: *new_lattice,
             shells,
             projectors,
+            spin_orbit_projectors,
+            spin_orbit_couplings: self.spin_orbit_couplings.clone(),
             potentials,
             datasets: self.datasets.clone(),
             kpoints_cart: new_kpoints_cart,
@@ -440,6 +480,8 @@ impl PeriodicSetup {
             functional: self.functional.clone(),
             precision: self.precision,
             relativistic: self.relativistic,
+            spins: self.spins,
+            moments: self.moments.clone(),
             spinor: self.spinor,
             time_reversal: self.time_reversal,
             pins: self.pins.clone(),
