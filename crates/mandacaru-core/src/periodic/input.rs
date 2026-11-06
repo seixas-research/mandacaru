@@ -399,6 +399,12 @@ impl Crystal {
     pub(crate) fn from_components(ctx: &Context, c: CrystalComponents) -> Result<Self> {
         let labels = c.description.as_ref()
             .ok_or_else(|| invalid("native crystal needs channel labels"))?.channels.clone();
+        // Components must satisfy the same DFT+U capability and table checks as
+        // a loaded snapshot, including the refusal of symmetry-reduced meshes.
+        let hubbard = super::hubbard::Spec::parse(
+            &c.hubbard.as_ref().map_or(Value::Null, |h| h.to_json()),
+            c.p, c.spins, c.spinor, c.precision, c.permutations.len(),
+        )?;
         let step: Vec<f64> = (0..3).flat_map(|i| (0..3).map(move |j| c.grid.step[(i, j)])).collect();
         let points: Vec<Value> = c.points.iter().map(|p| serde_json::json!({
             "k": p.k, "fractional": p.fractional, "weight": p.weight,
@@ -413,6 +419,7 @@ impl Crystal {
             "spins": c.spins, "spinor": c.spinor, "time_reversal": c.time_reversal,
             "functional": c.functional, "precision": c.precision.name(),
             "relativistic": c.relativistic,
+            "hubbard": c.hubbard.as_ref().map(|h| h.to_json()),
             "setup": {"unavailable": c.description_unavailable.as_deref().unwrap_or(
                 "native setup description serialization is not yet available")},
         }).to_string();
@@ -453,7 +460,7 @@ impl Crystal {
             relativistic: c.relativistic,
             permutations: c.permutations,
             qsym: c.qsym,
-            hubbard: c.hubbard,
+            hubbard,
             hybrid: c.hybrid,
             description: c.description,
             description_unavailable: c.description_unavailable,

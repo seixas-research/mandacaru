@@ -32,6 +32,11 @@ use num_complex::Complex64;
 
 pub type Matrix = DMatrix<Complex64>;
 
+/// `a^H a` without forming an owned adjoint of the grid-sized input.
+fn hermitian_gram(a: &Matrix) -> Result<Matrix> {
+    crate::math::gemm::complex_gram(a.as_slice(), a.nrows(), a.ncols(), 1.)
+}
+
 /// The grid nodes of the home cell as the Bloch kernels read them, and the ball that bounds
 /// them.
 pub struct Mesh {
@@ -208,6 +213,9 @@ pub(crate) fn periodic_parts(
     count: usize,
 ) -> Result<(Matrix, Reservation)> {
     let n = mesh.len();
+    if rows.len() != product(&[n, count])? {
+        return Err(invalid("orbital samples do not match the grid and function count"));
+    }
     let held = ctx.reserve(product(&[n, count, 16])?)?;
     let [x, y, z] = mesh.points();
     let phase: Vec<Complex64> = (0..n)
@@ -268,6 +276,84 @@ pub fn kinetic_form(
         }
     }
     Ok(a.adjoint() * b)
+}
+
+/// Kinetic matrix with the same orbitals on both sides. Weighting the single
+/// transform by sqrt(w) gives the same bilinear form while avoiding a second
+/// full orbital-grid transform and its workspace.
+pub fn kinetic_self(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    mesh: &Mesh,
+    k: [f64; 3],
+    samples: &[Complex64],
+    functions: usize,
+) -> Result<Matrix> {
+    let mut fft = Fft3::new(ctx, grid.index.shape())?;
+    let mut weights = kinetic_weights(ctx, grid, mesh, k)?;
+    for weight in &mut weights {
+        *weight = weight.sqrt();
+    }
+    let (mut transformed, _held) = periodic_parts(ctx, &mut fft, mesh, k, samples, functions)?;
+    for mut column in transformed.column_iter_mut() {
+        for (value, weight) in column.iter_mut().zip(&weights) {
+            *value *= *weight;
+        }
+    }
+    hermitian_gram(&transformed)
+}
+
+/// Same-basis kinetic matrix without materializing the mesh coordinate arrays.
+pub fn kinetic_grid(
+    ctx: &Context, grid: &SpatialGrid, k: [f64; 3],
+    samples: &[Complex64], functions: usize,
+) -> Result<Matrix> {
+    kinetic_grid_typed(ctx, grid, k, samples, functions, |x| x)
+}
+
+/// Float32 sample variant of [`kinetic_grid`].
+pub fn kinetic_grid_f32(
+    ctx: &Context, grid: &SpatialGrid, k: [f64; 3],
+    samples: &[num_complex::Complex32], functions: usize,
+) -> Result<Matrix> {
+    kinetic_grid_typed(ctx, grid, k, samples, functions,
+        |x| Complex64::new(x.re as f64, x.im as f64))
+}
+
+fn kinetic_grid_typed<T: Copy>(
+    ctx: &Context, grid: &SpatialGrid, k: [f64; 3], samples: &[T],
+    functions: usize, convert: impl Fn(T) -> Complex64,
+) -> Result<Matrix> {
+    let n = grid.index.points();
+    if samples.len() != product(&[n, functions])? {
+        return Err(invalid("orbital samples do not match the grid and function count"));
+    }
+    let dv = grid.step.determinant().abs();
+    let symbols = reciprocal::bloch(ctx, grid, k)?;
+    let _weights_held = ctx.reserve(product(&[n, 8])?)?;
+    let weights: Vec<f64> = symbols.squares.as_slice().iter()
+        .map(|s| (0.5 * s / (dv * n as f64)).sqrt() * dv).collect();
+    drop(symbols);
+    let mut phase = ctx.allocate::<Complex64>(n)?;
+    for (j, value) in phase.as_mut_slice().iter_mut().enumerate() {
+        let r = grid.point(j);
+        let angle = -(k[0] * r[0] + k[1] * r[1] + k[2] * r[2]);
+        *value = Complex64::new(angle.cos(), angle.sin());
+    }
+    let _held = ctx.reserve(product(&[n, functions, 16])?)?;
+    let mut transformed = vec![Complex64::new(0., 0.); n * functions];
+    let mut fft = Fft3::new(ctx, grid.index.shape())?;
+    for (to, from) in transformed.chunks_mut(n).zip(samples.chunks(n)) {
+        for ((target, source), factor) in to.iter_mut().zip(from).zip(phase.as_slice()) {
+            *target = convert(*source) * factor;
+        }
+        fft.transform(to, false)?;
+        for (target, factor) in to.iter_mut().zip(&weights) {
+            *target *= *factor;
+        }
+    }
+    let transformed = Matrix::from_vec(n, functions, transformed);
+    hermitian_gram(&transformed)
 }
 
 /// P2: `G^a = -sum_G conj(FFT[e^{-ik.r} d_a chi_mu]) w(G) FFT[e^{-ik.r} chi_nu]`, the derivative

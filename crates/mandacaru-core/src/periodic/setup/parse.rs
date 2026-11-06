@@ -52,6 +52,7 @@ pub struct SetupInput {
     pub filter_cutoff: Option<f64>,
     pub sigma: Option<f64>,
     pub dataset_files: Option<Vec<(String, String)>>,
+    pub hubbard_u: Option<crate::models::hubbard_request::Request>,
 }
 
 /// Construct a [`PeriodicSetup`] from structured inputs and loaded datasets.
@@ -70,6 +71,9 @@ pub fn create_setup(
         return Err(crate::Error::Unsupported(
             "native periodic setup does not yet build hybrid PAW spheres".into(),
         ));
+    }
+    if let Some(request) = &input.hubbard_u {
+        request.require_scope(&input.functional, &input.precision)?;
     }
     let (zeta_count, polarization_count) = match input.basis_size.to_ascii_uppercase().as_str() {
         "SZ" => (1, 0), "SZP" => (1, 1),
@@ -104,6 +108,11 @@ pub fn create_setup(
         return Err(invalid("atom symbol does not match its PAW dataset"));
     }
     let has_spin_orbit = input.atoms.iter().any(|a| !datasets[a.species].spin_orbit.is_empty());
+    if let Some(request) = &input.hubbard_u {
+        if has_spin_orbit {
+            crate::periodic::hubbard_table::check_datasets(request, true, &[])?;
+        }
+    }
     if has_spin_orbit && !input.spinor {
         return Err(crate::Error::Unsupported(
             "native periodic setup cannot omit a dataset's spin-orbit operators".into(),
@@ -458,6 +467,21 @@ pub fn create_setup(
             .collect(),
     };
 
+    let hubbard = if let Some(ref request) = input.hubbard_u {
+        use crate::periodic::hubbard_table::{build_paw, PawLayout, Projector as HubbardProjector};
+        let labels: Vec<_> = projectors.iter().map(|p| HubbardProjector {
+            symbol: datasets[atoms_species[p.atom]].symbol.clone(), basis: "raw".into(),
+            atom: p.atom, l: p.l, m: p.m as i64, index: p.index,
+        }).collect();
+        let sources: Vec<_> = (0..datasets.len()).map(|species| {
+            atoms_species.iter().position(|&s| s == species)
+                .map(|atom| dataset_files[atom].0.clone()).unwrap_or_default()
+        }).collect();
+        Some(build_paw(ctx, request, &PawLayout { projectors: &labels,
+            species_of_atom: &atoms_species, species: &datasets, sources: &sources,
+            moments: &moments, spin_orbit: has_spin_orbit })?)
+    } else { None };
+
     let description = Some(crate::periodic::description::Description::from_parts(
         ctx,
         sigma,
@@ -500,6 +524,7 @@ pub fn create_setup(
         constant: 0.0,
         sigma,
         description,
+        hubbard,
     })
 }
 
@@ -560,7 +585,7 @@ fn confined_orbital(ctx: &Context, ds: &PawDataset, l: u32, state: usize, shift:
 
 /// Parse a JSON `"periodic-paw-input"` specification into [`SetupInput`].
 pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
-    for name in ["hubbard", "hubbard_u", "ghosts", "diffuse", "energy_shift",
+    for name in ["hubbard", "ghosts", "diffuse", "energy_shift",
                  "confinement_potential", "polarization_method", "zeta_split", "size", "basis"] {
         if v.get(name).is_some() {
             return Err(crate::Error::Unsupported(format!(
@@ -715,5 +740,8 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
         filter_cutoff,
         sigma,
         dataset_files,
+        hubbard_u: v.get("hubbard_u").filter(|v| !v.is_null())
+            .map(|v| crate::models::hubbard_request::Request::parse(&v.to_string()))
+            .transpose()?,
     })
 }

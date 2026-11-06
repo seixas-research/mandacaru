@@ -15,6 +15,83 @@ fn request() -> Value {
 }
 
 #[test]
+fn native_hubbard_setup_keeps_its_table_in_saved_crystal() {
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let path = PathBuf::from(root).join("lda-sr/Fe.parquet");
+    let dataset = Arc::new(PawDataset::read(&ctx, &path).unwrap());
+    let mut raw = request();
+    raw["atoms"][0]["symbol"] = json!("Fe");
+    raw["atoms"][0]["moment"] = json!(2.);
+    raw["symmetry"] = json!(false);
+    raw["hubbard_u"] = json!({"Fe": {"l": "d", "U": 4.0}});
+    let setup = create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]).unwrap();
+    let expected = setup.hubbard.as_ref().unwrap().to_json();
+    assert_eq!(setup.with_cell(&ctx, &setup.lattice).unwrap().hubbard.unwrap().to_json(), expected);
+    let crystal = setup.build(&ctx).unwrap();
+    assert_eq!(crystal.hubbard.as_ref().unwrap().to_json(), expected);
+    let file = std::env::temp_dir().join(format!("mandacaru-native-hubbard-{}.json", std::process::id()));
+    crystal.save(file.to_str().unwrap()).unwrap();
+    let loaded = mandacaru_core::periodic::Crystal::load(&ctx, file.to_str().unwrap()).unwrap();
+    std::fs::remove_file(file).unwrap();
+    assert_eq!(loaded.hubbard.unwrap().to_json(), expected);
+}
+
+#[test]
+fn native_hubbard_rejects_invalid_option_and_single_precision() {
+    let mut raw = request();
+    raw["hubbard_u"] = json!({"Fe": 4.});
+    assert!(parse_input_json(&raw).is_err());
+    raw["hubbard_u"] = json!({"Fe": {"l": "d", "U": 4.}});
+    raw["precision"] = json!("float32");
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let path = PathBuf::from(root).join("lda-sr/Fe.parquet");
+    let dataset = Arc::new(PawDataset::read(&ctx, &path).unwrap());
+    raw["atoms"][0]["symbol"] = json!("Fe");
+    let error = match create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]) {
+        Ok(_) => panic!("single-precision DFT+U was accepted"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("float64"));
+}
+
+#[test]
+fn native_hubbard_refuses_spin_orbit_before_building_the_setup() {
+    let ctx = Context::new(Some(1), 128 << 20).unwrap();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let path = PathBuf::from(root).join("lda-fr/Fe.parquet");
+    let dataset = Arc::new(PawDataset::read(&ctx, &path).unwrap());
+    let mut raw = request();
+    raw["atoms"][0]["symbol"] = json!("Fe");
+    raw["spinor"] = json!(true);
+    raw["hubbard_u"] = json!({"Fe": {"l": "d", "U": 4.}});
+    let error = match create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]) {
+        Ok(_) => panic!("spin-orbit DFT+U was accepted"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("spin-orbit"));
+}
+
+#[test]
+fn native_hubbard_refuses_symmetry_averaging_before_scf() {
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let path = PathBuf::from(root).join("lda-sr/Fe.parquet");
+    let dataset = Arc::new(PawDataset::read(&ctx, &path).unwrap());
+    let mut raw = request();
+    raw["atoms"][0]["symbol"] = json!("Fe");
+    raw["symmetry"] = json!(true);
+    raw["hubbard_u"] = json!({"Fe": {"l": "d", "U": 4.}});
+    let setup = create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]).unwrap();
+    let error = match setup.build(&ctx) {
+        Ok(_) => panic!("symmetry-averaged DFT+U was accepted"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("symmetrized"));
+}
+
+#[test]
 fn malformed_vectors_and_values_are_errors_not_panics_or_defaults() {
     let mut cases = Vec::new();
     for shape in [
@@ -71,7 +148,6 @@ fn malformed_vectors_and_values_are_errors_not_panics_or_defaults() {
 fn unsupported_calculation_options_are_not_silently_ignored() {
     for name in [
         "hubbard",
-        "hubbard_u",
         "ghosts",
         "diffuse",
         "energy_shift",

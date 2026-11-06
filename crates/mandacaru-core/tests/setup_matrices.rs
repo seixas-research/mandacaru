@@ -23,6 +23,55 @@ use setup_shells_support::*;
 use std::sync::Arc;
 
 #[test]
+fn fused_projector_products_match_general_complex_matrix_products() {
+    use mandacaru_core::periodic::setup::matrices::projector_products;
+    use num_complex::Complex64;
+    let ctx = context();
+    let (m, p) = (3, 4);
+    let c = DMatrix::from_fn(m, p, |i, j| Complex64::new((i + 2 * j) as f64 * 0.13, (2 * i + j) as f64 * 0.07));
+    let q = DMatrix::from_fn(p, p, |i, j| Complex64::new((i + j) as f64 * 0.11, (i as f64 - j as f64) * 0.03));
+    let d = DMatrix::from_fn(p, p, |i, j| Complex64::new((i * j) as f64 * 0.05, (i + j) as f64 * 0.04));
+    let (actual_q, actual_d) = projector_products(&ctx, m, p,
+        |i, j| c[(i, j)], |i, j| q[(i, j)], |i, j| d[(i, j)]).unwrap();
+    assert!((&actual_q - &c * &q * c.adjoint()).norm() < 1e-12);
+    assert!((&actual_d - &c * &d * c.adjoint()).norm() < 1e-12);
+    let hermitian_q = (&q + q.adjoint()) * Complex64::new(0.5, 0.);
+    let hermitian_d = (&d + d.adjoint()) * Complex64::new(0.5, 0.);
+    let (actual_q, actual_d) = projector_products(&ctx, m, p,
+        |i, j| c[(i, j)], |i, j| hermitian_q[(i, j)], |i, j| hermitian_d[(i, j)]).unwrap();
+    assert!((&actual_q - &c * &hermitian_q * c.adjoint()).norm() < 1e-12);
+    assert!((&actual_d - &c * &hermitian_d * c.adjoint()).norm() < 1e-12);
+    let mut sparse_q = DMatrix::zeros(p, p);
+    let mut sparse_d = DMatrix::zeros(p, p);
+    sparse_q[(0, p - 1)] = Complex64::new(0.4, -0.2);
+    sparse_d[(p - 1, 0)] = Complex64::new(-0.3, 0.7);
+    let (actual_q, actual_d) = projector_products(&ctx, m, p,
+        |i, j| c[(i, j)], |i, j| sparse_q[(i, j)], |i, j| sparse_d[(i, j)]).unwrap();
+    assert!((&actual_q - &c * &sparse_q * c.adjoint()).norm() < 1e-12);
+    assert!((&actual_d - &c * &sparse_d * c.adjoint()).norm() < 1e-12);
+    let (empty_q, empty_d) = projector_products(&ctx, m, 0, |_, _| unreachable!(),
+        |_, _| unreachable!(), |_, _| unreachable!()).unwrap();
+    assert_eq!(empty_q.norm(), 0.);
+    assert_eq!(empty_d.norm(), 0.);
+}
+
+#[test]
+fn tiled_projector_products_match_general_complex_matrix_products() {
+    use mandacaru_core::periodic::setup::matrices::projector_products;
+    use num_complex::Complex64;
+    let ctx = context();
+    let (m, p) = (32, 96);
+    let c = DMatrix::from_fn(m, p, |i, j| Complex64::new(((i + 2*j) as f64 * 0.13).sin(), ((2*i + j) as f64 * 0.07).cos()));
+    let q = DMatrix::from_fn(p, p, |i, j| if i / 3 == j / 3 { Complex64::new((i+j) as f64 * 0.01, (i as f64-j as f64) * 0.003) } else { Complex64::new(0., 0.) });
+    let d = DMatrix::from_fn(p, p, |i, j| if i == j || (i == 0 && j == p-1) { Complex64::new((i+j) as f64 * 0.005, (i+j) as f64 * 0.002) } else { Complex64::new(0., 0.) });
+    let (actual_q, actual_d) = projector_products(&ctx, m, p,
+        |i, j| c[(i, j)], |i, j| q[(i, j)], |i, j| d[(i, j)]).unwrap();
+    assert!(ctx.memory_peak() < 2 * m * p * std::mem::size_of::<Complex64>());
+    assert!((&actual_q - &c * &q * c.adjoint()).norm() < 1e-10);
+    assert!((&actual_d - &c * &d * c.adjoint()).norm() < 1e-10);
+}
+
+#[test]
 fn test_kpoint_matrices_properties() {
     let ctx = context();
     let (cell, basis) = silicon(&ctx);
@@ -61,7 +110,7 @@ fn test_kpoint_matrices_properties() {
     let k_frac = [[0.05, 0.1, 0.15]];
     let weights = [1.0];
 
-    let assembly = MatrixAssembly {
+    let mut assembly = MatrixAssembly {
         grid: &grid,
         shells: &basis.shells,
         projectors: &projectors,
@@ -109,6 +158,27 @@ fn test_kpoint_matrices_properties() {
     let identity = DMatrix::identity(m, m);
     let lowdin_diff = (eye - identity).norm();
     assert!(lowdin_diff < 1e-10, "Lowdin metric error: {lowdin_diff}");
+
+    // The archived and narrowed paths retain the same assembly matrices; the
+    // samples differ only by their requested storage precision.
+    let archived_ctx = mandacaru_core::Context::with_offload(Some(1), 1 << 30, 1).unwrap();
+    for precision in [Precision::Float64, Precision::Float32] {
+        assembly.precision = precision;
+        let stored = kpoint_matrices(&archived_ctx, &assembly).unwrap();
+        assert!(stored[0].psi.archived());
+        assert!((&stored[0].overlap - &kp.overlap).norm() < 1e-12);
+        assert!((&stored[0].fixed - &kp.fixed).norm() < 1e-12);
+        let reference = kp.psi.read(&ctx).unwrap();
+        let actual = stored[0].psi.read(&archived_ctx).unwrap();
+        let tolerance = if precision == Precision::Float32 { 1e-7 } else { 0. };
+        for (got, want) in actual.iter().zip(reference.iter()) {
+            assert!((got - want).norm() <= tolerance);
+        }
+    }
+    assembly.precision = Precision::Float32;
+    let narrowed = kpoint_matrices(&ctx, &assembly).unwrap();
+    assert!(!narrowed[0].psi.archived());
+    assert!((&narrowed[0].fixed - &kp.fixed).norm() < 1e-12);
 }
 
 #[test]
@@ -131,12 +201,14 @@ fn skew_lih_native_setup_response_matches_active_setup() {
         kpoints_frac: vec![[-0.25, 0., 0.], [0.25, 0., 0.]],
         weights: vec![0.5, 0.5], functional: "lda".into(), precision: "float64".into(),
         basis_size: "SZ".into(), spinor: false, spin: false, symmetry: false,
-        filter_cutoff: None, sigma: None, dataset_files: Some(files),
+        filter_cutoff: None, sigma: None, dataset_files: Some(files), hubbard_u: None,
     };
-    let setup = create_setup(&ctx, input, vec![Arc::new(dataset(&ctx, "lda-sr", "H")),
-        Arc::new(dataset(&ctx, "lda-sr", "Li"))]).unwrap();
+    let datasets = vec![Arc::new(dataset(&ctx, "lda-sr", "H")),
+        Arc::new(dataset(&ctx, "lda-sr", "Li"))];
+    let setup = create_setup(&ctx, input.clone(), datasets.clone()).unwrap();
     let mut crystal = setup.build(&ctx).unwrap();
-    let result = crystal.solve(&Options::default()).unwrap();
+    let options = Options { tolerance: 1e-11, density_tolerance: 1e-8, ..Options::default() };
+    let result = crystal.solve(&options).unwrap();
     assert!(result.converged);
     // Only this test bypasses the capability gate; production responses remain refused.
     crystal.description_unavailable = None;
@@ -153,6 +225,20 @@ fn skew_lih_native_setup_response_matches_active_setup() {
     for (got, want) in stress.sigma.iter().flatten().zip(expected_stress.iter().flatten()) {
         assert!((got - want).abs() < 1e-10, "stress {got} differs from active setup {want}");
     }
+    // Displace Li in Cartesian x with the lattice and all grid pins fixed.
+    let h = 2e-3;
+    let mut displaced_energy = [0.; 2];
+    for (energy, sign) in displaced_energy.iter_mut().zip([-1., 1.]) {
+        let mut displaced = input.clone();
+        displaced.atoms[0].fractional[0] += sign * h / 8.;
+        let moved = create_setup(&ctx, displaced, datasets.clone()).unwrap().build(&ctx).unwrap();
+        let state = moved.solve(&options).unwrap();
+        assert!(state.converged);
+        *energy = state.free_energy;
+    }
+    let finite_difference = -(displaced_energy[1] - displaced_energy[0]) / (2. * h);
+    assert!((forces[0][0] - finite_difference).abs() < 5e-5,
+        "analytic force {} differs from finite difference {finite_difference}", forces[0][0]);
 }
 
 #[test]
@@ -248,6 +334,7 @@ fn test_periodic_setup_build_and_with_cell() {
         filter_cutoff: None,
         sigma: None,
         dataset_files: None,
+        hubbard_u: None,
     };
 
     let setup = create_setup(&ctx, input, vec![ds.clone()]).unwrap();

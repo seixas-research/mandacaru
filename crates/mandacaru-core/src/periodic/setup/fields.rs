@@ -4,7 +4,7 @@
 use super::shapes::Sites;
 use crate::{
     math::{reciprocal, spline::Cubic, SpatialGrid},
-    paw::fields::{place, sample_many, RadialSource},
+    paw::fields::{place_with_support, sample_many, RadialSource},
     periodic::invalid,
     Buffer, Context, Result,
 };
@@ -79,24 +79,30 @@ pub fn reference(sites: &Sites) -> f64 {
 /// reach to 1e-14 of the peak.
 pub const SUPPORT_TOLERANCE: f64 = 1e-12;
 
-/// The profile of a valence density: a not-a-knot spline of the table cut after
-/// its last significant radius, so that the placement's own support is that radius.
-fn profile(ctx: &Context, radius: &[f64], values: &[f64]) -> Result<Cubic> {
-    if radius.len() != values.len() {
+/// The full not-a-knot spline and the independent significant-radius cutoff.
+fn profile(ctx: &Context, radius: &[f64], values: &[f64]) -> Result<(Cubic, f64)> {
+    if radius.len() != values.len() || radius.len() < 4 {
         return Err(invalid("a radial table needs one value per radius"));
     }
     let peak = values.iter().fold(0f64, |m, v| m.max(v.abs()));
     let last = values
         .iter()
         .rposition(|v| v.abs() > SUPPORT_TOLERANCE * peak)
-        .unwrap_or(0)
-        .max(3)
-        .min(values.len() - 1);
-    Cubic::new(
+        .map_or(0., |index| radius[index]);
+    let curve = Cubic::new(
         ctx,
-        ctx.copy_slice(&radius[..=last])?,
-        ctx.copy_slice(&values[..=last])?,
-    )
+        ctx.copy_slice(radius)?,
+        ctx.copy_slice(values)?,
+    )?;
+    Ok((curve, last))
+}
+
+/// Place one species' complete valence spline using the production cutoff.
+pub fn valence_field(
+    ctx: &Context, grid: &SpatialGrid, radius: &[f64], values: &[f64], center: [f64; 3],
+) -> Result<Buffer<f64>> {
+    let (curve, support) = profile(ctx, radius, values)?;
+    place_with_support(ctx, grid, &curve, &[center], support)
 }
 
 /// The smooth valence densities of the placed atoms summed over their images.
@@ -112,12 +118,15 @@ pub fn superposed_valence(
     }
     let mut total = ctx.allocate::<f64>(grid.index.points())?;
     for (species, table) in tables.iter().enumerate() {
+        if !atoms.iter().zip(weights).any(|(a, &w)| a.species == species && w != 0.) {
+            continue;
+        }
+        let (curve, support) = profile(ctx, table.radius, table.valence_density)?;
         for (atom, &weight) in atoms.iter().zip(weights) {
             if atom.species != species || weight == 0. {
                 continue;
             }
-            let curve = profile(ctx, table.radius, table.valence_density)?;
-            let field = place(ctx, grid, &curve, &[atom.center])?;
+            let field = place_with_support(ctx, grid, &curve, &[atom.center], support)?;
             for (to, from) in total.as_mut_slice().iter_mut().zip(field.as_slice()) {
                 *to += weight * from;
             }
@@ -227,12 +236,19 @@ pub fn initial_charges(sites: &Sites, compensation_charges: &[f64]) -> Result<Ve
     if compensation_charges.len() != sites.atoms.len() {
         return Err(invalid("one compensation charge per atom"));
     }
-    Ok(sites
-        .channels
+    initial_monopoles(sites.channels, compensation_charges)
+}
+
+/// Reference compensation moments in the caller's channel order.
+pub fn initial_monopoles(channels: &[(usize, usize, i32)], charges: &[f64]) -> Result<Vec<Complex64>> {
+    if charges.iter().any(|z| !z.is_finite()) || channels.iter().any(|(a, _, _)| *a >= charges.len()) {
+        return Err(invalid("compensation channels need a finite charge for each atom"));
+    }
+    Ok(channels
         .iter()
         .map(|&(atom, l, m)| {
             if l == 0 && m == 0 {
-                Complex64::new(compensation_charges[atom] / (4. * PI).sqrt(), 0.)
+                Complex64::new(charges[atom] / (4. * PI).sqrt(), 0.)
             } else {
                 Complex64::default()
             }

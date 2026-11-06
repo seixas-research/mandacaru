@@ -86,6 +86,34 @@ pub fn place_by(
     centers: &[[f64; 3]],
     sample: &dyn Fn(f64, [f64; 3]) -> f64,
 ) -> Result<Buffer<f64>> {
+    place_by_support(ctx, grid, radial, centers, None, sample)
+}
+
+/// Place a radial field using an explicit cutoff while retaining its complete
+/// spline table. This separates the support rule from spline boundary data.
+pub fn place_with_support(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    radial: &Cubic,
+    centers: &[[f64; 3]],
+    support: f64,
+) -> Result<Buffer<f64>> {
+    if !support.is_finite() || support < 0. || support > *radial.knots.as_slice().last().unwrap() {
+        return Err(invalid("radial field support is outside its table"));
+    }
+    place_by_support(ctx, grid, radial, centers, Some(support), &|distance, _| {
+        radial.value_slope(distance).0
+    })
+}
+
+fn place_by_support(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    radial: &Cubic,
+    centers: &[[f64; 3]],
+    explicit_support: Option<f64>,
+    sample: &dyn Fn(f64, [f64; 3]) -> f64,
+) -> Result<Buffer<f64>> {
     if radial.knots.as_slice()[0] < 0. {
         return Err(invalid("radial field nodes must be nonnegative"));
     }
@@ -98,14 +126,14 @@ pub fn place_by(
         .iter()
         .map(|v| v.abs())
         .fold(0f64, f64::max);
-    let support = radial
+    let support = explicit_support.unwrap_or_else(|| radial
         .knots
         .as_slice()
         .iter()
         .zip(radial.values.as_slice())
         .filter_map(|(&r, &v)| (v.abs() > 1e-14 * peak).then_some(r))
         .next_back()
-        .unwrap_or(0.);
+        .unwrap_or(0.));
     let shape = grid.index.shape();
     let origin = Vector3::from(grid.origin);
     let step_inverse = grid

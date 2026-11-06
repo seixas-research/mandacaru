@@ -18,6 +18,61 @@ use crate::{
 };
 use nalgebra::DMatrix;
 
+/// Cartesian Bloch gradients for row-major complex128 orbital samples.
+pub fn bloch_gradients(
+    ctx: &crate::Context, grid: &crate::math::SpatialGrid, k: [f64; 3],
+    samples: &[C64], functions: usize,
+) -> Result<Buffer<C64>> {
+    bloch_gradients_typed(ctx, grid, k, samples, functions, |v| v)
+}
+
+/// As [`bloch_gradients`], promoting complex64 inputs while forming FFT rows.
+pub fn bloch_gradients_f32(
+    ctx: &crate::Context, grid: &crate::math::SpatialGrid, k: [f64; 3],
+    samples: &[num_complex::Complex32], functions: usize,
+) -> Result<Buffer<C64>> {
+    bloch_gradients_typed(ctx, grid, k, samples, functions,
+        |v| C64::new(v.re as f64, v.im as f64))
+}
+
+fn bloch_gradients_typed<T: Copy>(
+    ctx: &crate::Context, grid: &crate::math::SpatialGrid, k: [f64; 3],
+    samples: &[T], functions: usize, convert: impl Fn(T) -> C64,
+) -> Result<Buffer<C64>> {
+    let n = grid.index.points();
+    if functions == 0 || samples.len() != product(&[functions, n])?
+        || k.iter().any(|x| !x.is_finite()) {
+        return Err(invalid("Bloch gradients need finite k and matching nonempty orbital samples"));
+    }
+    let symbols = reciprocal::bloch(ctx, grid, k)?;
+    let mut fft = Fft3::new(ctx, grid.index.shape())?;
+    let mut phase = ctx.allocate::<C64>(n)?;
+    for (index, value) in phase.as_mut_slice().iter_mut().enumerate() {
+        let r = grid.point(index);
+        *value = C64::from_polar(1., k[0] * r[0] + k[1] * r[1] + k[2] * r[2]);
+    }
+    let mut transformed = ctx.allocate::<C64>(n)?;
+    let mut gradients = ctx.allocate::<C64>(product(&[3, functions, n])?)?;
+    for orbital in 0..functions {
+        for j in 0..n {
+            transformed.as_mut_slice()[j] = convert(samples[orbital * n + j]) * phase.as_slice()[j].conj();
+        }
+        fft.transform(transformed.as_mut_slice(), false)?;
+        for axis in 0..3 {
+            let start = (axis * functions + orbital) * n;
+            let row = &mut gradients.as_mut_slice()[start..start + n];
+            for j in 0..n {
+                row[j] = transformed.as_slice()[j] * C64::new(0., symbols.vectors.as_slice()[axis * n + j]);
+            }
+            fft.transform(row, true)?;
+            for j in 0..n {
+                row[j] *= phase.as_slice()[j];
+            }
+        }
+    }
+    Ok(gradients)
+}
+
 /// A kinetic-density guess from actual core-Hamiltonian Bloch orbitals.
 /// Each SCF iteration replaces it with the new occupied orbital density.
 pub(super) fn initial_kinetic_density(

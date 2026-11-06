@@ -73,6 +73,17 @@ pub struct Layout<'a> {
     pub spin_orbit: bool,
 }
 
+/// Layout backed directly by already-loaded PAW records.
+pub struct PawLayout<'a> {
+    pub projectors: &'a [Projector],
+    pub species_of_atom: &'a [usize],
+    pub species: &'a [std::sync::Arc<crate::paw::record::PawDataset>],
+    /// Dataset file for each species, used in diagnostic messages.
+    pub sources: &'a [String],
+    pub moments: &'a [f64],
+    pub spin_orbit: bool,
+}
+
 /// What the geometry check needs of one element's dataset: the file it came from and the
 /// reference occupations of each channel.
 pub struct Dataset<'a> {
@@ -192,8 +203,78 @@ struct Slots {
 
 /// Builds the table of `layout` for `request`.
 pub fn build(ctx: &Context, request: &Request, layout: &Layout<'_>) -> Result<Spec> {
-    let projectors = layout.projectors;
     check_datasets(request, layout.spin_orbit, &datasets_of(layout)?)?;
+    build_table(request, layout.projectors, layout.species_of_atom, layout.moments,
+        |species_index, l, basis, entry| {
+            let species = layout.species.get(species_index)
+                .ok_or_else(|| invalid("hubbard_u: atom has no dataset"))?;
+            let set = dataset_set(&species.source);
+            let named = |error: Error| match error {
+                Error::Invalid(message) => invalid(format!(
+                    "hubbard_u: the '{}' shell of {} in the {set} dataset set: {message}",
+                    entry.letter(), entry.symbol)),
+                other => other,
+            };
+            let channel = species.channels.get(&l).ok_or_else(|| invalid(format!(
+                "hubbard_u: the {} dataset has no '{}' channel (dataset set {set})",
+                entry.symbol, entry.letter())))?;
+            let view = Channel { l, waves: channel.waves, ae: &channel.ae, ps: &[],
+                vanderbilt: &channel.vanderbilt, r_cut: channel.r_cut };
+            let weights = shell::weights(ctx, &view, &species.r, &channel.occupations,
+                Basis::parse(basis)?).map_err(named)?;
+            let electrons = shell::reference_electrons(&channel.occupations).map_err(named)?;
+            Ok((weights, electrons))
+        })
+}
+
+/// Build the same table while borrowing radial arrays from PAW records.
+pub fn build_paw(ctx: &Context, request: &Request, layout: &PawLayout<'_>) -> Result<Spec> {
+    if layout.sources.len() != layout.species.len() {
+        return Err(invalid("hubbard_u: one dataset source per species is required"));
+    }
+    let mut datasets = Vec::new();
+    for p in layout.projectors {
+        let index = *layout.species_of_atom.get(p.atom)
+            .ok_or_else(|| invalid(format!("hubbard_u: atom {} has no dataset", p.atom)))?;
+        let ds = layout.species.get(index)
+            .ok_or_else(|| invalid(format!("hubbard_u: atom {} has no dataset", p.atom)))?;
+        if p.symbol != ds.symbol {
+            return Err(invalid("hubbard_u: projector symbol disagrees with its dataset"));
+        }
+        if datasets.iter().any(|d: &Dataset<'_>| d.symbol == p.symbol) { continue; }
+        datasets.push(Dataset { symbol: &ds.symbol, source: &layout.sources[index],
+            occupations: ds.channels.iter().map(|(&l, c)| (l as usize, c.occupations.data())).collect() });
+    }
+    check_datasets(request, layout.spin_orbit, &datasets)?;
+    build_table(request, layout.projectors, layout.species_of_atom, layout.moments,
+        |species_index, l, basis, entry| {
+            let ds = layout.species.get(species_index)
+                .ok_or_else(|| invalid("hubbard_u: atom has no dataset"))?;
+            let set = dataset_set(&layout.sources[species_index]);
+            let channel = ds.channels.get(&(l as u32)).ok_or_else(|| invalid(format!(
+                "hubbard_u: the {} dataset has no '{}' channel (dataset set {set})",
+                entry.symbol, entry.letter())))?;
+            let named = |error: Error| match error {
+                Error::Invalid(message) => invalid(format!(
+                    "hubbard_u: the '{}' shell of {} in the {set} dataset set: {message}",
+                    entry.letter(), entry.symbol)),
+                other => other,
+            };
+            let weights = shell::dataset_weights(ctx, channel, ds.r.as_slice(), Basis::parse(basis)?)
+                .map_err(named)?;
+            let electrons = shell::reference_electrons(channel.occupations.data()).map_err(named)?;
+            Ok((weights, electrons))
+        })
+}
+
+fn build_table(
+    request: &Request,
+    projectors: &[Projector],
+    species_of_atom: &[usize],
+    moments: &[f64],
+    weights_for: impl Fn(usize, usize, &str, &crate::models::hubbard_request::Entry)
+        -> Result<(Vec<f64>, f64)>,
+) -> Result<Spec> {
     // The shells in order of the first projector of each atom, as the crystal lists them.
     let mut shells: Vec<Slots> = Vec::new();
     let mut at: HashMap<usize, usize> = HashMap::new();
@@ -236,56 +317,15 @@ pub fn build(ctx: &Context, request: &Request, layout: &Layout<'_>) -> Result<Sp
             .entry(&first.symbol)
             .ok_or_else(|| invalid("hubbard_u: a projector names an element the option lacks"))?;
         let (atom, l, basis) = (slots.atom, entry.l, first.basis.as_str());
-        let species_index = *layout
-            .species_of_atom
+        let species_index = *species_of_atom
             .get(atom)
             .ok_or_else(|| invalid(format!("hubbard_u: atom {atom} has no dataset")))?;
-        let species = layout
-            .species
-            .get(species_index)
-            .ok_or_else(|| invalid(format!("hubbard_u: atom {atom} has no dataset")))?;
-        let set = dataset_set(&species.source);
-        let no_channel = || {
-            invalid(format!(
-                "hubbard_u: the {} dataset has no '{}' channel (dataset set {set})",
-                entry.symbol,
-                entry.letter()
-            ))
-        };
-        // A refusal of the weights names the element, the shell and the dataset set.
-        let named = |error: Error| match error {
-            Error::Invalid(message) => invalid(format!(
-                "hubbard_u: the '{}' shell of {} in the {set} dataset set: {message}",
-                entry.letter(),
-                entry.symbol
-            )),
-            other => other,
-        };
-        let channel = species.channels.get(&l).ok_or_else(no_channel)?;
         let key = (species_index, l, basis);
         if !cache.contains_key(&key) {
-            let view = Channel {
-                l,
-                waves: channel.waves,
-                ae: &channel.ae,
-                ps: &[],
-                vanderbilt: &channel.vanderbilt,
-                r_cut: channel.r_cut,
-            };
-            let weights = shell::weights(
-                ctx,
-                &view,
-                &species.r,
-                &channel.occupations,
-                Basis::parse(basis)?,
-            )
-            .map_err(named)?;
-            let electrons = shell::reference_electrons(&channel.occupations).map_err(named)?;
-            cache.insert(key, (weights, electrons));
+            cache.insert(key, weights_for(species_index, l, basis, entry)?);
         }
         let (weights, electrons) = &cache[&key];
-        let moment = *layout
-            .moments
+        let moment = *moments
             .get(atom)
             .filter(|m| m.is_finite())
             .ok_or_else(|| {

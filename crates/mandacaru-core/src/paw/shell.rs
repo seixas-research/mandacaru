@@ -45,6 +45,25 @@ fn reference<'a>(
     occupations: &[f64],
 ) -> Result<Reference<'a>> {
     let grid = r.len();
+    if channel.ae.len() != channel.waves.saturating_mul(grid) {
+        return Err(invalid(
+            "PAW shell: partial waves, Vanderbilt matrix or occupations do not match the grid \
+             (occupations hold one number per partial wave; a library entry that stores only the \
+             scalar channel occupation means [occupation, 0, ...])",
+        ));
+    }
+    reference_parts(channel, r, occupations, |i| {
+        &channel.ae[i * grid..(i + 1) * grid]
+    })
+}
+
+fn reference_parts<'a>(
+    channel: &Channel<'_>,
+    r: &[f64],
+    occupations: &[f64],
+    wave: impl Fn(usize) -> &'a [f64],
+) -> Result<Reference<'a>> {
+    let grid = r.len();
     let waves = channel.waves;
     if waves == 0 || waves > MAX_WAVES {
         return Err(invalid(format!(
@@ -56,9 +75,9 @@ fn reference<'a>(
             "PAW shell: the radial grid must be finite and strictly increasing",
         ));
     }
-    if channel.ae.len() != waves.saturating_mul(grid)
-        || channel.vanderbilt.len() != waves.saturating_mul(waves)
+    if channel.vanderbilt.len() != waves.saturating_mul(waves)
         || occupations.len() != waves
+        || (0..waves).any(|i| wave(i).len() != grid)
     {
         return Err(invalid(
             "PAW shell: partial waves, Vanderbilt matrix or occupations do not match the grid \
@@ -87,7 +106,7 @@ fn reference<'a>(
     })?;
     Ok(Reference {
         inside,
-        chi: &channel.ae[occupied * grid..(occupied + 1) * grid],
+        chi: wave(occupied),
     })
 }
 
@@ -152,7 +171,42 @@ pub fn weights(
     basis: Basis,
 ) -> Result<Vec<f64>> {
     let reference = reference(channel, r, occupations)?;
-    let (grid, count) = (r.len(), reference.inside);
+    let grid = r.len();
+    weights_parts(ctx, channel, r, reference, basis, |i| {
+        &channel.ae[i * grid..(i + 1) * grid]
+    })
+}
+
+/// Shell weights directly from a PAW record's separately owned radial waves.
+/// This borrows the dataset tables and does not flatten or duplicate them.
+pub fn dataset_weights(
+    ctx: &Context,
+    channel: &super::record::Channel,
+    r: &[f64],
+    basis: Basis,
+) -> Result<Vec<f64>> {
+    let view = Channel {
+        l: 0,
+        waves: channel.ae_waves.len(),
+        ae: &[],
+        ps: &[],
+        vanderbilt: channel.vanderbilt.data(),
+        r_cut: channel.r_cut,
+    };
+    let wave = |i: usize| channel.ae_waves[i].as_slice();
+    let reference = reference_parts(&view, r, channel.occupations.data(), wave)?;
+    weights_parts(ctx, &view, r, reference, basis, wave)
+}
+
+fn weights_parts<'a>(
+    ctx: &Context,
+    channel: &Channel<'_>,
+    r: &[f64],
+    reference: Reference<'a>,
+    basis: Basis,
+    wave: impl Fn(usize) -> &'a [f64],
+) -> Result<Vec<f64>> {
+    let count = reference.inside;
     if channel.vanderbilt.iter().any(|x| !x.is_finite()) {
         return Err(invalid("PAW shell: the Vanderbilt matrix is not finite"));
     }
@@ -180,9 +234,9 @@ pub fn weights(
         let work = scratch.as_mut_slice();
         for p in 0..count {
             let wave = match &transform {
-                None => channel.ae[i * grid + p],
+                None => wave(i)[p],
                 Some(t) => {
-                    (0..channel.waves).fold(0., |s, k| s + t[(i, k)] * channel.ae[k * grid + p])
+                    (0..channel.waves).fold(0., |s, k| s + t[(i, k)] * wave(k)[p])
                 }
             };
             work[p] = reference.chi[p] * wave * (r[p] * r[p]);

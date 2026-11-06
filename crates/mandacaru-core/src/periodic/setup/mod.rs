@@ -90,6 +90,7 @@ pub struct PeriodicSetup {
     pub constant: f64,
     pub sigma: f64,
     pub description: Option<crate::periodic::description::Description>,
+    pub hubbard: Option<crate::periodic::hubbard::Spec>,
 }
 
 impl PeriodicSetup {
@@ -329,7 +330,7 @@ impl PeriodicSetup {
             relativistic: self.relativistic,
             permutations,
             qsym,
-            hubbard: None,
+            hubbard: self.hubbard.clone(),
             hybrid: None,
             description: if let Some(ref d) = self.description {
                 Some(d.try_clone(ctx)?)
@@ -488,6 +489,7 @@ impl PeriodicSetup {
             constant: self.constant,
             sigma: self.pins.sigma,
             description,
+            hubbard: self.hubbard.clone(),
         })
     }
 }

@@ -2,7 +2,26 @@
 //! Platform math kernels execute on the calling thread; they never change
 //! a process-wide thread setting or introduce a second scientific engine.
 use crate::{Error, Result};
-use nalgebra::{DMatrixView, DMatrixViewMut};
+use nalgebra::{DMatrix, DMatrixView, DMatrixViewMut};
+use num_complex::Complex64;
+
+/// Hermitian Gram matrix of column-major complex samples, with no adjoint copy.
+pub fn complex_gram(values: &[Complex64], rows: usize, columns: usize, scale: f64) -> Result<DMatrix<Complex64>> {
+    validate(values.len(), rows, columns, rows)?;
+    if rows == 0 || columns == 0 || !scale.is_finite() {
+        return Err(Error::Invalid("invalid complex Gram dimensions or scale".into()));
+    }
+    let mut out = DMatrix::zeros(columns, columns);
+    let input = DMatrixView::from_slice(values, rows, columns);
+    for i in 0..columns {
+        for j in i..columns {
+            let value = input.column(i).dotc(&input.column(j)) * scale;
+            out[(i, j)] = value;
+            out[(j, i)] = value.conj();
+        }
+    }
+    Ok(out)
+}
 
 pub struct MatrixRef<'a> {
     pub values: &'a [f64],

@@ -916,15 +916,14 @@ class PeriodicPAW:
                     weight = all_weights[start + i]
                     psi_raw, C = psi_all[i], C_wide[shift + i]
                     psi = psi_raw
-                    S = (psi.conj() @ psi.T) * dV + C @ self.q_overlap \
-                        @ C.conj().T
-                    fixed = (self._kinetic(psi, k) + V_wide[shift + i]
-                             + C @ self.D_ion @ C.conj().T)
+                    context = self._field_backend()[0]
+                    S, fixed = context.periodic_paw_matrices(
+                        C, self.q_overlap, self.D_ion, context.periodic_overlap(psi, dV),
+                        self._kinetic(psi, k), V_wide[shift + i])
                     out.append(KPointMatrices(
                         k=np.asarray(k, float), weight=float(weight),
                         psi=psi.astype(np.complex64) if self.precision == "float32" else psi,
-                        overlap=0.5 * (S + S.conj().T),
-                        fixed=0.5 * (fixed + fixed.conj().T), projections=C,
+                        overlap=S, fixed=fixed, projections=C,
                         spin_orbit=SO_wide[shift + i]))
         return out
 
@@ -973,12 +972,12 @@ class PeriodicPAW:
         largest = max(self.grid.size, 131072)
         return min(KPOINT_BLOCK_MAX, max(1, int(KPOINT_BLOCK_BYTES // (16 * self.M * largest))))
 
-    def _periodic_part(self, psi, k):
-        """``u = e^{-i k.r} chi`` on the grid, transformed: ``(M, n1, n2, n3)``."""
-        g = self.grid
-        phase = np.exp(-1j * (k[0] * g.X + k[1] * g.Y + k[2] * g.Z)).ravel()
-        u = (psi * phase[None, :]).reshape(len(psi), *g.shape)
-        return np.fft.fftn(u, axes=(1, 2, 3)) * g.dV
+    def _orbital_samples(self, psi):
+        samples = np.asarray(psi)
+        if samples.dtype.kind in "fc" and samples.dtype.itemsize > {"f": 8, "c": 16}[samples.dtype.kind]:
+            raise ValueError("orbital samples above float64 precision are not supported")
+        dtype = {np.dtype(np.complex64): np.complex64}.get(samples.dtype, np.complex128)
+        return np.ascontiguousarray(samples, dtype=dtype), dtype
 
     @profile_stage('integration: crystal kinetic matrices')
     def _kinetic(self, psi, k) -> np.ndarray:
@@ -992,10 +991,10 @@ class PeriodicPAW:
         axes (hcp, fcc), and a wedge symmetrized to the full mesh missed it
         by 1.6e-4 Ha on semicore hcp Mg (HISTORY 2026-10-11, K13b).
         """
-        transform = self._periodic_part(psi, k).reshape(len(psi), -1)
-        _vectors, squares = rc.bloch_aliases(self.grid, k)
-        weight = 0.5 * squares.ravel() / self.volume
-        return (transform.conj() * weight) @ transform.T
+        context, grid = self._field_backend()
+        samples, dtype = self._orbital_samples(psi)
+        method = {np.complex64: context.periodic_kinetic_f32, np.complex128: context.periodic_kinetic}[dtype]
+        return method(grid, k, samples)
 
     def bloch_gradients(self, psi, k) -> np.ndarray:
         r""":math:`\nabla\chi` on the grid, ``(3, M, ngrid)``: the periodic
@@ -1003,16 +1002,11 @@ class PeriodicPAW:
         k)` of :func:`~mandacaru.integrals.reciprocal.bloch_aliases`, so a
         kinetic-energy density summed over the wedge and symmetrized is the
         full mesh's."""
-        g = self.grid
-        transform = self._periodic_part(psi, k)
-        vectors, _squares = rc.bloch_aliases(g, k)
-        phase = np.exp(1j * (k[0] * g.X + k[1] * g.Y + k[2] * g.Z)).ravel()
-        out = []
-        for c in range(3):
-            u = np.fft.ifftn(transform * (1j * vectors[c])[None],
-                             axes=(1, 2, 3)) / g.dV
-            out.append(u.reshape(len(psi), -1) * phase[None, :])
-        return np.stack(out)
+        context, grid = self._field_backend()
+        samples, dtype = self._orbital_samples(psi)
+        method = {np.complex64: context.periodic_bloch_gradients_f32,
+                  np.complex128: context.periodic_bloch_gradients}[dtype]
+        return method(grid, k, samples)
 
     @profile_stage('integration: crystal projector quadrature')
     def _projections(self, kpoints, only=None, projectors=None) -> np.ndarray:
@@ -1789,17 +1783,11 @@ class PeriodicPAW:
 
         return self._place_cores(xc_core_density, kinetic_density=True)
 
-    def _native_radial_fields(self, tables, *, kinetic_density=False):
+    def _field_backend(self):
         from .. import _native
 
-        if not tables:
-            return None
-        context = getattr(self, "_native_context", None)
-        if context is None:
-            context = getattr(self, "_field_context", None)
-            if context is None:
-                context = _native.Context(threads=1)
-                self._field_context = context
+        context = getattr(self, "_native_context", None) or getattr(self, "_field_context", None) or _native.Context(threads=1)
+        self._field_context = context
         grid = self.__dict__.get("_field_grid")
         if grid is None:
             grid = _native.SpatialGrid(
@@ -1807,6 +1795,12 @@ class PeriodicPAW:
                 np.ascontiguousarray(self.grid.step), periodic=True,
             )
             self._field_grid = grid
+        return context, grid
+
+    def _native_radial_fields(self, tables, *, kinetic_density=False):
+        if not tables:
+            return None
+        context, grid = self._field_backend()
         return context.radial_fields(grid, tables, kinetic_density=kinetic_density)
 
     def _place_cores(self, table, *, kinetic_density=False) -> np.ndarray | None:
@@ -1845,80 +1839,39 @@ class PeriodicPAW:
     def _superposed_valence(self, dataset, center) -> np.ndarray:
         """One atom's smooth valence density summed over its images on the
         cell grid (flat)."""
-        from scipy.interpolate import CubicSpline
-        gx, gy, gz = self._grid_points()
-        out = np.zeros(self.grid.size)
-        r = np.asarray(dataset.r, dtype=float)
-        values = np.asarray(dataset.valence_density, dtype=float)
-        peak = float(np.max(np.abs(values)))
-        significant = np.nonzero(np.abs(values) > 1e-12 * peak)[0]
-        support = float(r[significant[-1]])
-        support2 = support * support
-        spline = CubicSpline(r, values)
-        cell_center, cell_radius = self._cell_region()
-        reach = support + cell_radius
-        for R in rc.lattice_translations(self.lattice,
-                                         support + 2.0 * cell_radius):
-            pos = center + R
-            if np.linalg.norm(pos - cell_center) > reach:
-                continue
-            cand = np.flatnonzero(np.abs(gx - pos[0]) <= support)
-            if not cand.size:
-                continue
-            cand = cand[np.abs(gy[cand] - pos[1]) <= support]
-            if not cand.size:
-                continue
-            cand = cand[np.abs(gz[cand] - pos[2]) <= support]
-            if not cand.size:
-                continue
-            dx = gx[cand] - pos[0]
-            dy = gy[cand] - pos[1]
-            dz = gz[cand] - pos[2]
-            r2 = dx * dx + dy * dy + dz * dz
-            in_ball = r2 <= support2
-            if np.any(in_ball):
-                idx = cand[in_ball]
-                out[idx] += spline(np.sqrt(r2[in_ball]))
-        return out
+        context, grid = self._field_backend()
+        return context.periodic_valence_field(
+            grid, np.ascontiguousarray(dataset.r, dtype=float),
+            np.ascontiguousarray(dataset.valence_density, dtype=float), center)
+
+    def _valence_sources(self):
+        return [(np.ascontiguousarray(d.r, dtype=float),
+                 np.ascontiguousarray(d.valence_density, dtype=float), center)
+                for d, center in zip(self.datasets, self.centers)]
 
     def initial_density(self) -> tuple[np.ndarray, dict]:
         """Superposed smooth valence densities and reference monopoles."""
-        rho = np.zeros(self.grid.size)
-        for dataset, center in zip(self.datasets, self.centers):
-            rho += self._superposed_valence(dataset, center)
-        q = {c: 0.0j for c in self.channels}
-        for atom, dataset in enumerate(self.datasets):
-            if (atom, 0, 0) in q:
-                q[(atom, 0, 0)] = dataset.compensation_charge / np.sqrt(4.0
-                                                                       * np.pi)
-        return rho, q
+        context, grid = self._field_backend()
+        rho = context.periodic_initial_valence(grid, self._valence_sources())
+        charges = [float(d.compensation_charge) for d in self.datasets]
+        return rho, dict(zip(self.channels, context.periodic_initial_monopoles(self.channels, charges)))
 
     def initial_magnetization(self, moments) -> np.ndarray:
         r"""The starting magnetization :math:`n_\uparrow - n_\downarrow`:
         each atom's superposed valence density weighted by its initial moment
         over its valence charge (clamped to that charge, so neither spin
         density starts negative)."""
-        m = np.zeros(self.grid.size)
-        moments = np.zeros(len(self.datasets)) if moments is None else \
-            np.asarray(moments, dtype=float)
-        for dataset, center, moment in zip(self.datasets, self.centers,
-                                           moments):
-            charge = float(dataset.valence_charge)
-            if moment == 0.0 or charge <= 0.0:
-                continue
-            fraction = float(np.clip(moment / charge, -1.0, 1.0))
-            m += fraction * self._superposed_valence(dataset, center)
-        return m
+        context, grid = self._field_backend()
+        charges = [float(d.valence_charge) for d in self.datasets]
+        return context.periodic_initial_valence(
+            grid, self._valence_sources(), charges=charges, moments=moments, magnetization=True)
 
     def valence_shares(self) -> np.ndarray:
         r"""``(N, ngrid)``: each atom's share of the superposed valence
         density, :math:`w_A = n_A/\sum_B n_B` (zero where the sum is), the
         Hirshfeld weights of the free atoms' smooth valence densities."""
-        pieces = np.stack([self._superposed_valence(d, c)
-                           for d, c in zip(self.datasets, self.centers)])
-        total = np.sum(pieces, axis=0)
-        return np.divide(pieces, total, out=np.zeros_like(pieces),
-                         where=total > 0.0)
+        context, grid = self._field_backend()
+        return context.periodic_valence_shares(grid, self._valence_sources())
 
     @property
     def n_electrons_neutral(self) -> float:

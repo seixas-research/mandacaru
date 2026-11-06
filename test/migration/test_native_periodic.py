@@ -89,8 +89,208 @@ def _active_paw_snapshot(active, electrons, functional="lda", **options):
         relativistic=_datasets_relativistic(active.datasets), **options)
 
 
+@pytest.mark.parametrize("dtype", [np.complex128, np.complex64])
+def test_borrowed_native_kinetic_matches_numpy_for_skew_grid(dtype):
+    from mandacaru.integrals import Grid, reciprocal as rc
+    from mandacaru.pseudopotentials.periodic_paw import PeriodicPAW
+
+    cell = np.array([[8., 0., 0.], [1., 9., 0.], [.5, 1., 10.]])
+    grid = Grid(center=[5., 4., 6.], box_size=0., grid_spacing=1., units="bohr",
+                cell=cell, periodic=True)
+    crystal = object.__new__(PeriodicPAW)
+    crystal.grid = grid
+    crystal.volume = rc.cell_volume(grid)
+    rng = np.random.default_rng(792)
+    psi = np.asarray(rng.normal(size=(4, grid.size)) + 1j * rng.normal(size=(4, grid.size)),
+                     dtype=dtype, order="C")
+    k = [0.13, -0.07, 0.11]
+    phase = np.exp(-1j * (k[0] * grid.X + k[1] * grid.Y + k[2] * grid.Z)).ravel()
+    transform = np.fft.fftn((psi * phase[None, :]).reshape(len(psi), *grid.shape),
+                           axes=(1, 2, 3)).reshape(len(psi), -1) * grid.dV
+    _, squares = rc.bloch_aliases(grid, k)
+    expected = (transform.conj() * (0.5 * squares.ravel() / crystal.volume)) @ transform.T
+    native_grid = _native.SpatialGrid(grid.shape, rc.grid_origin(grid),
+                                     np.ascontiguousarray(grid.step), periodic=True)
+    ctx = _native.Context(threads=1)
+    method = ctx.periodic_kinetic_f32 if dtype == np.complex64 else ctx.periodic_kinetic
+    actual = method(native_grid, k, psi)
+    assert np.allclose(actual, expected, rtol=2e-12, atol=2e-10)
+    crystal._native_context = ctx
+    assert np.allclose(crystal._kinetic(psi, k), expected, rtol=2e-12, atol=2e-10)
+    with pytest.raises(ValueError, match="C-contiguous"):
+        method(native_grid, k, psi[:, ::-1])
+
+
+@pytest.mark.parametrize("dtype", [np.complex128, np.complex64])
+@pytest.mark.parametrize("k", [[0., 0., 0.], [0.13, -0.07, 0.11]])
+def test_native_bloch_gradients_match_numpy_on_skew_grid(dtype, k):
+    from mandacaru.integrals import Grid, reciprocal as rc
+    from mandacaru.pseudopotentials.periodic_paw import PeriodicPAW
+
+    cell = np.array([[8., 0., 0.], [1., 9., 0.], [.5, 1., 10.]])
+    grid = Grid(center=[5., 4., 6.], box_size=0., grid_spacing=1., units="bohr",
+                cell=cell, periodic=True)
+    crystal = object.__new__(PeriodicPAW)
+    crystal.grid = grid
+    crystal._native_context = _native.Context(threads=1)
+    rng = np.random.default_rng(918)
+    psi = np.asarray(rng.normal(size=(4, grid.size)) + 1j * rng.normal(size=(4, grid.size)),
+                     dtype=dtype, order="C")
+    phase = np.exp(1j * (k[0] * grid.X + k[1] * grid.Y + k[2] * grid.Z)).ravel()
+    transform = np.fft.fftn((psi * phase.conj()[None, :]).reshape(len(psi), *grid.shape),
+                            axes=(1, 2, 3))
+    vectors, _ = rc.bloch_aliases(grid, k)
+    expected = np.stack([np.fft.ifftn(transform * (1j * vectors[axis])[None],
+                                       axes=(1, 2, 3)).reshape(len(psi), -1) * phase[None, :]
+                         for axis in range(3)])
+    actual = crystal.bloch_gradients(psi, k)
+    assert actual.shape == (3, len(psi), grid.size)
+    assert np.allclose(actual, expected, rtol=2e-12, atol=2e-12)
+    from types import SimpleNamespace
+    crystal.M, crystal.symmetry = len(psi), None
+    crystal.kpoint_data = [SimpleNamespace(psi=psi, k=k, weight=1.)]
+    a = rng.normal(size=(len(psi), len(psi))) + 1j * rng.normal(size=(len(psi), len(psi)))
+    density = a @ a.conj().T
+    expected_tau = sum(0.5 * np.real(np.sum(g * (density @ g.conj()), axis=0)) for g in expected)
+    assert np.allclose(crystal.kinetic_energy_density([density]), expected_tau, rtol=2e-12, atol=2e-12)
+
+
+def test_orbitals_above_float64_precision_are_not_silently_narrowed():
+    from mandacaru.pseudopotentials.periodic_paw import PeriodicPAW
+
+    crystal = object.__new__(PeriodicPAW)
+    if np.dtype(np.clongdouble).itemsize <= np.dtype(np.complex128).itemsize:
+        pytest.skip("platform has no wider complex dtype")
+    with pytest.raises(ValueError, match="above float64 precision"):
+        crystal._orbital_samples(np.ones((1, 2), dtype=np.clongdouble))
+
+
+def test_native_grid_overlap_matches_numpy_without_copying_samples():
+    rng = np.random.default_rng(314)
+    psi = np.ascontiguousarray(rng.normal(size=(5, 431)) + 1j * rng.normal(size=(5, 431)))
+    ctx = _native.Context(threads=1)
+    expected = (psi.conj() @ psi.T) * 0.17
+    assert np.allclose(ctx.periodic_overlap(psi, 0.17), expected, rtol=2e-13, atol=2e-12)
+    with pytest.raises(ValueError, match="C-contiguous"):
+        ctx.periodic_overlap(psi[:, ::-1], 0.17)
+    with pytest.raises(ValueError, match="volume"):
+        ctx.periodic_overlap(psi, -1.)
+
+
+@pytest.mark.parametrize("symbol", ["Si", "Fe"])
+@pytest.mark.parametrize("center", [[0., 0., 0.], [2.2, 3.1, 4.4]])
+def test_native_valence_field_matches_full_scipy_spline_and_images(symbol, center):
+    import os
+    from scipy.interpolate import CubicSpline
+    from mandacaru.integrals import Grid, reciprocal as rc
+    from mandacaru.pseudopotentials.periodic_paw import PeriodicPAW
+    from mandacaru.pseudopotentials.record import read_dataset
+
+    root = os.environ.get("MANDACARU_PAW_PATH")
+    if not root:
+        pytest.skip("MANDACARU_PAW_PATH is not set")
+    dataset = read_dataset(Path(root) / "lda-sr" / f"{symbol}.parquet", warn=False)
+    cell = np.array([[8., 0., 0.], [1., 9., 0.], [.5, 1., 10.]])
+    grid = Grid(center=[5., 4., 6.], box_size=0., grid_spacing=1., units="bohr",
+                cell=cell, periodic=True)
+    crystal = object.__new__(PeriodicPAW)
+    crystal.grid, crystal.lattice = grid, rc.lattice_vectors(grid)
+    crystal._native_context = _native.Context(threads=1, memory_limit_bytes=1 << 28)
+    center = np.asarray(center)
+    values, radius = np.asarray(dataset.valence_density), np.asarray(dataset.r)
+    support = radius[np.flatnonzero(np.abs(values) > 1e-12 * np.max(np.abs(values)))[-1]]
+    spline = CubicSpline(radius, values)
+    points = np.stack(crystal._grid_points(), axis=1)
+    midpoint, bound = crystal._cell_region()
+    expected = np.zeros(grid.size)
+    for translation in rc.lattice_translations(crystal.lattice, support + 2. * bound):
+        position = center + translation
+        if np.linalg.norm(position - midpoint) <= support + bound:
+            distance = np.linalg.norm(points - position, axis=1)
+            inside = distance <= support
+            expected[inside] += spline(distance[inside])
+    actual = crystal._superposed_valence(dataset, center)
+    assert np.allclose(actual, expected, rtol=2e-12, atol=2e-13)
+
+
+def test_native_initial_density_and_magnetization_assemble_each_atom():
+    import os
+    from mandacaru.integrals import Grid, reciprocal as rc
+    from mandacaru.pseudopotentials.periodic_paw import PeriodicPAW
+    from mandacaru.pseudopotentials.record import read_dataset
+
+    root = os.environ.get("MANDACARU_PAW_PATH")
+    if not root:
+        pytest.skip("MANDACARU_PAW_PATH is not set")
+    folder = Path(root) / "lda-sr"
+    datasets = [read_dataset(folder / f"{s}.parquet", warn=False) for s in ("Li", "H")]
+    grid = Grid(center=[4., 4.5, 5.], box_size=0., grid_spacing=1., units="bohr",
+                cell=np.diag([8., 9., 10.]), periodic=True)
+    crystal = object.__new__(PeriodicPAW)
+    crystal.grid, crystal.lattice = grid, rc.lattice_vectors(grid)
+    crystal._native_context = _native.Context(threads=1, memory_limit_bytes=1 << 28)
+    crystal.datasets, crystal.centers = datasets, [np.array([1., 2., 3.]), np.array([4., 5., 6.])]
+    crystal.channels = [(0, 0, 0), (0, 1, -1), (1, 0, 0)]
+    parts = [crystal._superposed_valence(d, c) for d, c in zip(datasets, crystal.centers)]
+    rho, charges = crystal.initial_density()
+    assert np.allclose(rho, parts[0] + parts[1], rtol=2e-13, atol=2e-14)
+    assert charges[(0, 0, 0)] == pytest.approx(datasets[0].compensation_charge / np.sqrt(4. * np.pi))
+    assert charges[(0, 1, -1)] == 0.
+    assert charges[(1, 0, 0)] == pytest.approx(datasets[1].compensation_charge / np.sqrt(4. * np.pi))
+    moments = [0.4, -100.]
+    expected = (np.clip(moments[0] / datasets[0].valence_charge, -1., 1.) * parts[0]
+                - parts[1])
+    assert np.allclose(crystal.initial_magnetization(moments), expected, rtol=2e-13, atol=2e-14)
+    assert not np.any(crystal.initial_magnetization(None))
+    pieces = np.stack(parts)
+    total = pieces.sum(axis=0)
+    shares = np.divide(pieces, total, out=np.zeros_like(pieces), where=total > 0.)
+    assert np.allclose(crystal.valence_shares(), shares, rtol=2e-13, atol=2e-14)
+    with pytest.raises(ValueError, match="one charge and one moment"):
+        crystal.initial_magnetization([1.])
+
+
+@pytest.mark.parametrize("q_complex,d_complex", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("m,p", [(4, 0), (4, 5), (24, 72)])
+def test_native_paw_matrix_products_match_complex_reference(q_complex, d_complex, m, p):
+    rng = np.random.default_rng(319)
+    def complex_matrix(shape):
+        return np.ascontiguousarray(rng.normal(size=shape) + 1j * rng.normal(size=shape))
+    c = complex_matrix((m, p))
+    q = complex_matrix((p, p)) if q_complex else np.ascontiguousarray(rng.normal(size=(p, p)))
+    d = complex_matrix((p, p)) if d_complex else np.ascontiguousarray(rng.normal(size=(p, p)))
+    s0, kinetic, local = (complex_matrix((m, m)) for _ in range(3))
+    ctx = _native.Context(threads=1)
+    s, h = ctx.periodic_paw_matrices(c, q, d, s0, kinetic, local)
+    expected_s = s0 + c @ q @ c.conj().T
+    expected_h = kinetic + local + c @ d @ c.conj().T
+    assert np.allclose(s, 0.5 * (expected_s + expected_s.conj().T), rtol=2e-13, atol=2e-12)
+    assert np.allclose(h, 0.5 * (expected_h + expected_h.conj().T), rtol=2e-13, atol=2e-12)
+
+
+def test_native_paw_matrix_products_reject_invalid_shapes_and_layout():
+    ctx = _native.Context(threads=1)
+    c = np.ones((3, 4), dtype=np.complex128)
+    operator = np.eye(4)
+    base = np.eye(3, dtype=np.complex128)
+    with pytest.raises(ValueError, match="operator shape"):
+        ctx.periodic_paw_matrices(c, np.eye(3), operator, base, base, base)
+    with pytest.raises(ValueError, match="C-contiguous"):
+        ctx.periodic_paw_matrices(c[:, ::-1], operator, operator, base, base, base)
+    with pytest.raises(ValueError, match="functions, functions"):
+        ctx.periodic_paw_matrices(c, operator, operator, base[:2, :2].copy(), base, base)
+    invalid = operator.copy()
+    invalid[0, 1] = np.nan
+    with pytest.raises(ValueError, match="operators must be finite"):
+        ctx.periodic_paw_matrices(c, invalid, operator, base, base, base)
+    invalid_c = c.copy()
+    invalid_c[0, 1] = np.nan
+    with pytest.raises(ValueError, match="projections must be finite"):
+        ctx.periodic_paw_matrices(invalid_c, operator, operator, base, base, base)
+
+
 @pytest.mark.parametrize("option,value", [
-    ("charge", 1.0), ("hubbard_u", {"Si": 3.0}),
+    ("charge", 1.0),
     ("energy_shift", 0.2), ("size", "DZP"), ("functional", "hse06"),
 ])
 def test_native_comparison_refuses_unimplemented_options(option, value):
@@ -243,6 +443,51 @@ def test_spinor_silicon_setup_matches_active_crystal(magnetic, tmp_path):
         actual_result.snapshot(include_matrices=False)["energy"], abs=1e-8)
     with pytest.raises(NotImplementedError, match="parity"):
         loaded_result.forces()
+
+
+def test_native_hubbard_fe_setup_matches_active_crystal(tmp_path):
+    import os
+    from ase import Atoms
+    from mandacaru import hubbard
+    from mandacaru.integrals import Grid
+    from mandacaru.pseudopotentials.periodic_paw import build_crystal
+    from mandacaru.units import BOHR_TO_ANGSTROM
+
+    root = os.environ.get("MANDACARU_PAW_PATH")
+    if not root:
+        pytest.skip("MANDACARU_PAW_PATH is not set")
+    cell = np.eye(3) * (8. * BOHR_TO_ANGSTROM)
+    atoms = Atoms("Fe", positions=[[0., 0., 0.]], cell=cell, pbc=True)
+    moments = np.array([2.])
+    atoms.set_initial_magnetic_moments(moments)
+    grid = Grid(center=0.5 * cell.sum(axis=0), box_size=0.,
+                grid_spacing=BOHR_TO_ANGSTROM, units="angstrom", cell=cell, periodic=True)
+    ctx = _native.Context(threads=1, memory_limit_bytes=1 << 30)
+    active, setup = build_crystal(atoms, BOHR_TO_ANGSTROM,
+        {"size": "SZ", "paw_dataset": "lda-sr"}, kpts=(1, 1, 1),
+        grid=grid, symmetry=False, full_mesh=True, native_context=ctx)
+    option = {"Fe": {"l": "d", "U": 4.0}}
+    spec = hubbard.validate(option, xc="lda", precision="float64")
+    table = hubbard.table(spec, ctx, active, moments)
+    metadata, arrays = _active_paw_snapshot(active, active.datasets[0].valence_charge,
+        magnetic_moments=moments, unrestricted=True, hubbard=table)
+    request = {"lattice": (np.eye(3) * 8.).reshape(-1).tolist(), "grid_shape": list(grid.shape),
+        "atoms": [{"species": 0, "symbol": "Fe", "fractional": [0., 0., 0.], "moment": 2.}],
+        "basis_size": "SZ", "symmetry": False, "hubbard_u": option,
+        "kpoints": [{"fractional": k.tolist(), "weight": float(w)}
+                    for k, w in zip(setup["kpoints_fractional"], active.weights)]}
+    native = ctx._periodic_problem_from_request(json.dumps(request),
+        [str(Path(root) / "lda-sr" / "Fe.parquet")])
+    _assert_raw_setup_arrays(active, metadata, arrays, native)
+    expected = ctx.periodic_problem(metadata, arrays).solve(max_iterations=1000)
+    result = native.solve(max_iterations=1000)
+    assert expected.converged and result.converged
+    assert result.snapshot(include_matrices=False)["energy"] == pytest.approx(
+        expected.snapshot(include_matrices=False)["energy"], abs=1e-8)
+    snapshot = tmp_path / "native-hubbard.json"
+    native.save(str(snapshot))
+    loaded = ctx.load_crystal(str(snapshot))
+    loaded.check_hubbard_u(spec)
 
 
 @pytest.mark.parametrize("functional", ["lda", "pbe"])

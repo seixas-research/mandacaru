@@ -10,19 +10,242 @@ use mandacaru_core::periodic::{
 };
 use mandacaru_core::{kernels, product, Context, Error};
 use numpy::{
-    Complex64, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArrayDyn,
+    Complex32, Complex64, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArrayDyn,
     PyUntypedArrayMethods,
 };
 use periodic::PyCrystal;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use std::sync::Arc;
 type GateRecord = (String, usize, Option<usize>, Option<f64>);
+type ValenceSource<'py> = (PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>, [f64; 3]);
+
+fn valence_inputs<'a, 'py>(
+    sources: &'a [ValenceSource<'py>],
+) -> PyResult<(Vec<mandacaru_core::periodic::setup::fields::Tables<'a>>, Vec<mandacaru_core::periodic::setup::fields::Placed>)> {
+    use mandacaru_core::periodic::setup::fields::{Placed, Tables};
+    let mut tables = Vec::with_capacity(sources.len());
+    let mut atoms = Vec::with_capacity(sources.len());
+    for (species, (r, values, center)) in sources.iter().enumerate() {
+        super::layout(r)?;
+        super::layout(values)?;
+        tables.push(Tables { radius: r.as_slice()?, valence_density: values.as_slice()?, core: None });
+        atoms.push(Placed { species, center: *center });
+    }
+    Ok((tables, atoms))
+}
+
+enum PeriodicOperator<'py> {
+    Real(PyReadonlyArray2<'py, f64>),
+    Complex(PyReadonlyArray2<'py, Complex64>),
+}
+enum PeriodicOperatorView<'a> {
+    Real(&'a [f64]),
+    Complex(&'a [Complex64]),
+}
+impl PeriodicOperatorView<'_> {
+    fn get(&self, i: usize) -> Complex64 {
+        match self {
+            Self::Real(values) => Complex64::new(values[i], 0.),
+            Self::Complex(values) => values[i],
+        }
+    }
+}
+impl<'py> PeriodicOperator<'py> {
+    fn extract(value: &Bound<'py, PyAny>, p: usize) -> PyResult<Self> {
+        let result = if let Ok(a) = value.extract::<PyReadonlyArray2<'py, f64>>() {
+            super::layout(&a)?;
+            if a.shape() != [p, p] { return Err(PyValueError::new_err("operator shape must be (projectors, projectors)")); }
+            Self::Real(a)
+        } else {
+            let a = value.extract::<PyReadonlyArray2<'py, Complex64>>()?;
+            super::layout(&a)?;
+            if a.shape() != [p, p] { return Err(PyValueError::new_err("operator shape must be (projectors, projectors)")); }
+            Self::Complex(a)
+        };
+        Ok(result)
+    }
+    fn view(&self) -> PyResult<PeriodicOperatorView<'_>> {
+        Ok(match self {
+            Self::Real(a) => PeriodicOperatorView::Real(a.as_slice()?),
+            Self::Complex(a) => PeriodicOperatorView::Complex(a.as_slice()?),
+        })
+    }
+}
 #[pyclass(name = "Context", module = "mandacaru._native", frozen)]
 pub(crate) struct PyContext {
     pub(crate) inner: Context,
 }
 #[pymethods]
 impl PyContext {
+    /// Spectral Bloch gradients, borrowing contiguous complex128 samples.
+    fn periodic_bloch_gradients<'py>(
+        &self, py: Python<'py>, grid: &PySpatialGrid, k: [f64; 3],
+        orbitals: PyReadonlyArray2<'py, Complex64>,
+    ) -> PyResult<Array<'py, Complex64>> {
+        super::layout(&orbitals)?;
+        let m = orbitals.shape()[0];
+        if orbitals.shape()[1] != grid.inner.index.points() {
+            return Err(PyValueError::new_err("orbitals must have shape (functions, grid points)"));
+        }
+        let out = mandacaru_core::periodic::fields::bloch_gradients(
+            &self.inner, &grid.inner, k, orbitals.as_slice()?, m).map_err(error)?;
+        let (values, _reservation) = out.into_parts();
+        array(py, &[3, m, grid.inner.index.points()], values)
+    }
+
+    /// Spectral Bloch gradients with complex64 input and complex128 output.
+    fn periodic_bloch_gradients_f32<'py>(
+        &self, py: Python<'py>, grid: &PySpatialGrid, k: [f64; 3],
+        orbitals: PyReadonlyArray2<'py, Complex32>,
+    ) -> PyResult<Array<'py, Complex64>> {
+        super::layout(&orbitals)?;
+        let m = orbitals.shape()[0];
+        if orbitals.shape()[1] != grid.inner.index.points() {
+            return Err(PyValueError::new_err("orbitals must have shape (functions, grid points)"));
+        }
+        let out = mandacaru_core::periodic::fields::bloch_gradients_f32(
+            &self.inner, &grid.inner, k, orbitals.as_slice()?, m).map_err(error)?;
+        let (values, _reservation) = out.into_parts();
+        array(py, &[3, m, grid.inner.index.points()], values)
+    }
+
+    /// Initial smooth density or collinear magnetization from radial datasets.
+    #[pyo3(signature=(grid, sources, *, charges=None, moments=None, magnetization=false))]
+    #[allow(clippy::type_complexity)]
+    fn periodic_initial_valence<'py>(
+        &self, py: Python<'py>, grid: &PySpatialGrid,
+        sources: Vec<ValenceSource<'py>>,
+        charges: Option<Vec<f64>>, moments: Option<Vec<f64>>, magnetization: bool,
+    ) -> PyResult<Array<'py, f64>> {
+        use mandacaru_core::periodic::setup::fields;
+        let _metadata = self.inner.reserve(product(&[sources.len(), 128]).map_err(error)?).map_err(error)?;
+        let (tables, atoms) = valence_inputs(&sources)?;
+        let field = if magnetization {
+            let charges = charges.ok_or_else(|| PyValueError::new_err("magnetization needs atomic charges"))?;
+            let moments = moments.unwrap_or_else(|| vec![0.; sources.len()]);
+            fields::initial_magnetization(&self.inner, &grid.inner, &tables, &atoms, &charges, &moments)
+        } else {
+            if charges.is_some() || moments.is_some() {
+                return Err(PyValueError::new_err("density does not take charges or moments"));
+            }
+            fields::initial_density(&self.inner, &grid.inner, &tables, &atoms)
+        }.map_err(error)?;
+        let (data, _reservation) = field.into_parts();
+        array(py, &[grid.inner.index.points()], data)
+    }
+
+    /// Per-atom Hirshfeld shares of the superposed valence density.
+    fn periodic_valence_shares<'py>(
+        &self, py: Python<'py>, grid: &PySpatialGrid, sources: Vec<ValenceSource<'py>>,
+    ) -> PyResult<Array<'py, f64>> {
+        if sources.is_empty() { return Err(PyValueError::new_err("valence shares need at least one atom")); }
+        let _metadata = self.inner.reserve(product(&[sources.len(), 128]).map_err(error)?).map_err(error)?;
+        let (tables, atoms) = valence_inputs(&sources)?;
+        let field = mandacaru_core::periodic::setup::fields::valence_shares(
+            &self.inner, &grid.inner, &tables, &atoms,
+        ).map_err(error)?;
+        let (data, _reservation) = field.into_parts();
+        array(py, &[sources.len(), grid.inner.index.points()], data)
+    }
+
+    /// Initial compensation moments in channel order.
+    fn periodic_initial_monopoles<'py>(
+        &self, py: Python<'py>, channels: Vec<(usize, usize, i32)>, charges: Vec<f64>,
+    ) -> PyResult<Array<'py, Complex64>> {
+        let values = mandacaru_core::periodic::setup::fields::initial_monopoles(&channels, &charges)
+            .map_err(error)?;
+        array(py, &[values.len()], values)
+    }
+
+    /// One periodic smooth-valence field using the complete radial spline.
+    fn periodic_valence_field<'py>(
+        &self, py: Python<'py>, grid: &PySpatialGrid,
+        radius: PyReadonlyArray1<'py, f64>, values: PyReadonlyArray1<'py, f64>,
+        center: [f64; 3],
+    ) -> PyResult<Array<'py, f64>> {
+        super::layout(&radius)?;
+        super::layout(&values)?;
+        let field = mandacaru_core::periodic::setup::fields::valence_field(
+            &self.inner, &grid.inner, radius.as_slice()?, values.as_slice()?, center,
+        ).map_err(error)?;
+        let (data, _reservation) = field.into_parts();
+        array(py, &[grid.inner.index.points()], data)
+    }
+
+    /// Complete the PAW overlap and fixed matrices without Python products.
+    fn periodic_paw_matrices<'py>(
+        &self, py: Python<'py>, projections: PyReadonlyArray2<'py, Complex64>,
+        overlap: Bound<'py, PyAny>, ionic: Bound<'py, PyAny>,
+        grid_overlap: PyReadonlyArray2<'py, Complex64>,
+        kinetic: PyReadonlyArray2<'py, Complex64>, local: PyReadonlyArray2<'py, Complex64>,
+    ) -> PyResult<(Array<'py, Complex64>, Array<'py, Complex64>)> {
+        for a in [&projections, &grid_overlap, &kinetic, &local] { super::layout(a)?; }
+        let (m, p) = (projections.shape()[0], projections.shape()[1]);
+        if [grid_overlap.shape(), kinetic.shape(), local.shape()].iter().any(|shape| *shape != [m, m]) {
+            return Err(PyValueError::new_err("grid, kinetic and local matrices must have shape (functions, functions)"));
+        }
+        let q = PeriodicOperator::extract(&overlap, p)?;
+        let d = PeriodicOperator::extract(&ionic, p)?;
+        let (q, d, c) = (q.view()?, d.view()?, projections.as_slice()?);
+        let (s, h) = mandacaru_core::periodic::setup::matrices::assemble_paw_matrices(
+            &self.inner, m, p, grid_overlap.as_slice()?, kinetic.as_slice()?, local.as_slice()?,
+            |i, j| c[i * p + j], |i, j| q.get(i * p + j), |i, j| d.get(i * p + j),
+        ).map_err(error)?;
+        let rows = |matrix: &nalgebra::DMatrix<Complex64>| (0..m)
+            .flat_map(|i| (0..m).map(move |j| (i, j)))
+            .map(|(i, j)| matrix[(i, j)]).collect();
+        Ok((array(py, &[m, m], rows(&s))?, array(py, &[m, m], rows(&h))?))
+    }
+
+    /// Grid overlap, borrowing aligned contiguous orbital samples.
+    fn periodic_overlap<'py>(
+        &self, py: Python<'py>, orbitals: PyReadonlyArray2<'py, Complex64>, dv: f64,
+    ) -> PyResult<Array<'py, Complex64>> {
+        super::layout(&orbitals)?;
+        let (m, n) = (orbitals.shape()[0], orbitals.shape()[1]);
+        let matrix = mandacaru_core::periodic::setup::matrices::grid_overlap(
+            orbitals.as_slice()?, m, n, dv).map_err(error)?;
+        let rows = (0..m).flat_map(|i| (0..m).map(move |j| (i, j)))
+            .map(|(i, j)| matrix[(i, j)]).collect();
+        array(py, &[m, m], rows)
+    }
+
+    /// Spectral kinetic matrix, borrowing aligned contiguous orbital samples.
+    fn periodic_kinetic<'py>(
+        &self, py: Python<'py>, grid: &PySpatialGrid, k: [f64; 3],
+        orbitals: PyReadonlyArray2<'py, Complex64>,
+    ) -> PyResult<Array<'py, Complex64>> {
+        use mandacaru_core::periodic::setup::pulay::kinetic_grid;
+        super::layout(&orbitals)?;
+        let m = orbitals.shape()[0];
+        if m == 0 || orbitals.shape()[1] != grid.inner.index.points() {
+            return Err(PyValueError::new_err("orbitals must have shape (functions, grid points)"));
+        }
+        let matrix = kinetic_grid(&self.inner, &grid.inner, k, orbitals.as_slice()?, m)
+            .map_err(error)?;
+        let rows = (0..m).flat_map(|i| (0..m).map(move |j| (i, j)))
+            .map(|(i, j)| matrix[(i, j)]).collect();
+        array(py, &[m, m], rows)
+    }
+
+    /// As above, with single-precision samples promoted while forming FFT input.
+    fn periodic_kinetic_f32<'py>(
+        &self, py: Python<'py>, grid: &PySpatialGrid, k: [f64; 3],
+        orbitals: PyReadonlyArray2<'py, Complex32>,
+    ) -> PyResult<Array<'py, Complex64>> {
+        use mandacaru_core::periodic::setup::pulay::kinetic_grid_f32;
+        super::layout(&orbitals)?;
+        let m = orbitals.shape()[0];
+        if m == 0 || orbitals.shape()[1] != grid.inner.index.points() {
+            return Err(PyValueError::new_err("orbitals must have shape (functions, grid points)"));
+        }
+        let matrix = kinetic_grid_f32(&self.inner, &grid.inner, k, orbitals.as_slice()?, m)
+            .map_err(error)?;
+        let rows = (0..m).flat_map(|i| (0..m).map(move |j| (i, j)))
+            .map(|(i, j)| matrix[(i, j)]).collect();
+        array(py, &[m, m], rows)
+    }
+
     /// Dense reciprocal-space compensation and ion couplings for a periodic cell.
     fn periodic_compensation_couplings<'py>(
         &self,

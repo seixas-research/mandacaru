@@ -193,6 +193,28 @@ fn weights_reproduce_the_frozen_old_python_in_both_bases() {
 }
 
 #[test]
+fn dataset_weights_borrow_separate_waves_and_match_flattened_weights() {
+    let ctx = context();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    for (symbol, l) in [("Fe", 2), ("Ce", 3)] {
+        let path = PathBuf::from(&root).join(format!("lda-sr/{symbol}.parquet"));
+        let dataset = mandacaru_core::paw::record::PawDataset::read(&ctx, &path).unwrap();
+        let channel = &dataset.channels[&l];
+        let flat = Shipped::read(symbol, l as usize);
+        for basis in [Basis::Raw, Basis::Dual] {
+            let borrowed = mandacaru_core::paw::shell::dataset_weights(
+                &ctx, channel, dataset.r.as_slice(), basis,
+            ).unwrap();
+            let expected = flat.weights(basis);
+            assert_eq!(borrowed.len(), expected.len());
+            for (got, want) in borrowed.iter().zip(expected) {
+                close(*got, want, 1e-13, symbol);
+            }
+        }
+    }
+}
+
+#[test]
 fn the_isolated_atom_sphere_fractions_are_the_frozen_ones() {
     let rows = frozen();
     let mut deficit = 0f64;

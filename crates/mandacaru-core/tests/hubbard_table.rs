@@ -7,13 +7,72 @@ use mandacaru_core::paw::onecenter::{Basis, Channel};
 use mandacaru_core::paw::shell;
 use mandacaru_core::periodic::hubbard::{Seed, Spec};
 use mandacaru_core::periodic::hubbard_table::{
-    build, check_datasets, check_loaded, ChannelData, Dataset, Layout, Projector, Species,
+    build, build_paw, check_datasets, check_loaded, ChannelData, Dataset, Layout, PawLayout,
+    Projector, Species,
 };
 use mandacaru_core::{Context, Error};
 use std::collections::BTreeMap;
 
 fn context() -> Context {
     Context::new(Some(1), 64 << 20).unwrap()
+}
+
+#[test]
+fn paw_records_produce_the_same_table_without_flattening_waves() {
+    let ctx = context();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let path = std::path::PathBuf::from(root).join("lda-sr/Fe.parquet");
+    let ds = std::sync::Arc::new(mandacaru_core::paw::record::PawDataset::read(&ctx, &path).unwrap());
+    let d = &ds.channels[&2];
+    let old = Species { r: ds.r.as_slice().to_vec(), source: path.to_string_lossy().into(),
+        channels: BTreeMap::from([(2, ChannelData { waves: d.ae_waves.len(),
+            ae: d.ae_waves.iter().flat_map(|w| w.as_slice().iter().copied()).collect(),
+            vanderbilt: d.vanderbilt.data().to_vec(), r_cut: d.r_cut,
+            occupations: d.occupations.data().to_vec() })]) };
+    let projectors = channel("Fe", 0, 2, d.ae_waves.len(), "raw");
+    let request = request(r#"{"Fe": {"l": "d", "U": 4.0}}"#);
+    let old_species = [old];
+    let expected = build(&ctx, &request, &Layout { projectors: &projectors,
+        species_of_atom: &[0], species: &old_species, moments: &[2.], spin_orbit: false }).unwrap();
+    let records = [ds];
+    let sources = [path.to_string_lossy().into_owned()];
+    let actual = build_paw(&ctx, &request, &PawLayout { projectors: &projectors,
+        species_of_atom: &[0], species: &records, sources: &sources,
+        moments: &[2.], spin_orbit: false }).unwrap();
+    assert_eq!(actual.to_json(), expected.to_json());
+}
+
+#[test]
+fn paw_table_matches_flattened_mixed_species_and_repeated_atoms() {
+    let ctx = context();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let folder = std::path::PathBuf::from(root).join("lda-sr");
+    let paths: Vec<_> = ["Fe", "Ce"].iter().map(|s| folder.join(format!("{s}.parquet"))).collect();
+    let records: Vec<_> = paths.iter().map(|p| std::sync::Arc::new(
+        mandacaru_core::paw::record::PawDataset::read(&ctx, p).unwrap())).collect();
+    let old_species: Vec<_> = records.iter().zip(&paths).map(|(ds, path)| Species {
+        r: ds.r.as_slice().to_vec(), source: path.to_string_lossy().into(),
+        channels: ds.channels.iter().map(|(&l, d)| (l as usize, ChannelData {
+            waves: d.ae_waves.len(),
+            ae: d.ae_waves.iter().flat_map(|w| w.as_slice().iter().copied()).collect(),
+            vanderbilt: d.vanderbilt.data().to_vec(), r_cut: d.r_cut,
+            occupations: d.occupations.data().to_vec(),
+        })).collect(),
+    }).collect();
+    let mut projectors = channel("Ce", 0, 3, records[1].channels[&3].ae_waves.len(), "raw");
+    projectors.extend(channel("Fe", 1, 2, records[0].channels[&2].ae_waves.len(), "raw"));
+    projectors.extend(channel("Fe", 2, 2, records[0].channels[&2].ae_waves.len(), "raw"));
+    let of_atom = [1, 0, 0];
+    let moments = [0.5, 2., -2.];
+    let request = request(r#"{"Ce": {"l": "f", "U": 5.0}, "Fe": {"l": "d", "U": 4.0}}"#);
+    let expected = build(&ctx, &request, &Layout { projectors: &projectors,
+        species_of_atom: &of_atom, species: &old_species, moments: &moments, spin_orbit: false }).unwrap();
+    let sources: Vec<_> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let actual = build_paw(&ctx, &request, &PawLayout { projectors: &projectors,
+        species_of_atom: &of_atom, species: &records, sources: &sources,
+        moments: &moments, spin_orbit: false }).unwrap();
+    assert_eq!(actual.to_json(), expected.to_json());
+    assert_eq!(actual.shells.iter().map(|s| s.atom).collect::<Vec<_>>(), [0, 1, 2]);
 }
 
 /// A reference atom with a `d` channel of two partial waves and a `p` channel of one.
