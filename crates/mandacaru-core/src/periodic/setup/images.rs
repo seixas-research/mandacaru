@@ -18,6 +18,35 @@ pub struct Region {
     pub radius: f64,
 }
 
+impl Region {
+    /// Bounding ball (center and radius) of a lattice unit cell with given origin.
+    pub fn of_cell(lattice: &Matrix3<f64>, origin: [f64; 3]) -> Self {
+        let center = [
+            0.5 * (lattice[(0, 0)] + lattice[(0, 1)] + lattice[(0, 2)]) + origin[0],
+            0.5 * (lattice[(1, 0)] + lattice[(1, 1)] + lattice[(1, 2)]) + origin[1],
+            0.5 * (lattice[(2, 0)] + lattice[(2, 1)] + lattice[(2, 2)]) + origin[2],
+        ];
+        let mut max_r2 = 0.0f64;
+        for s1 in [-0.5, 0.5] {
+            for s2 in [-0.5, 0.5] {
+                for s3 in [-0.5, 0.5] {
+                    let cx = s1 * lattice[(0, 0)] + s2 * lattice[(0, 1)] + s3 * lattice[(0, 2)];
+                    let cy = s1 * lattice[(1, 0)] + s2 * lattice[(1, 1)] + s3 * lattice[(1, 2)];
+                    let cz = s1 * lattice[(2, 0)] + s2 * lattice[(2, 1)] + s3 * lattice[(2, 2)];
+                    let r2 = cx * cx + cy * cy + cz * cz;
+                    if r2 > max_r2 {
+                        max_r2 = r2;
+                    }
+                }
+            }
+        }
+        Self {
+            center,
+            radius: max_r2.sqrt(),
+        }
+    }
+}
+
 /// The lattice vectors `R` for which a function centered at `center` with the given support
 /// reaches the region. The list is charged to the `Context` that built it.
 #[derive(Debug)]

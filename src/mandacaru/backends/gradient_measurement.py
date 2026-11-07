@@ -221,7 +221,7 @@ class _Batch:
     """
 
     def __init__(self, operators, x, z, coeffs, owners, n_qubits):
-        from scipy.sparse import csr_matrix
+        from .._native import CSRMatrix
 
         self.operators = np.asarray(operators, dtype=np.int64)
         keys = np.ascontiguousarray(np.concatenate([x, z], axis=1))
@@ -239,9 +239,10 @@ class _Batch:
         self.z = np.ascontiguousarray(uz[order])
         self.letters = np.ascontiguousarray(letters[order])
         self.n_qubits = int(n_qubits)
-        self.matrix = csr_matrix(
-            (coeffs, (owners, rank[inverse.ravel()])),
-            shape=(len(self.operators), len(order)))
+        self.matrix = CSRMatrix(
+            len(self.operators), len(order),
+            owners, rank[inverse.ravel()],
+            np.asarray(coeffs, dtype=np.float64))
         self.new = np.arange(len(order))
         self.stored = np.full(len(order), -1, dtype=np.int64)
         self.slots = np.full(len(order), -1, dtype=np.int64)

@@ -40,13 +40,13 @@ def validate(spec, *, xc, precision):
     return text
 
 
-def require_crystal(spec, pbc):
-    """Raise when DFT+U is asked for a geometry with no periodic direction."""
-    if spec is not None and not any(pbc):
+def require_crystal(spec, pbc, method="dft"):
+    """Check that system and method support hubbard_u."""
+    if spec is None:
+        return
+    if not any(pbc) and method != "dft":
         raise ValueError(
-            "hubbard_u needs a periodic cell: DFT+U is implemented for crystals only (the "
-            "molecular PAW route has no +U term and refuses d and f cores); give the system "
-            "a periodic direction"
+            "hubbard_u for molecules is implemented for method='dft' only"
         )
 
 

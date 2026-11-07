@@ -69,6 +69,12 @@ class SolverView:
             indices=result.get("indices", []),
             energy=result.get("energy_ha", 0.0),
         )
+        from ..optimizers import Optimizer
+        self.optimizer = Optimizer(
+            method=result.get("optimizer", "BFGS"),
+            maxiter=result.get("max_iterations", 300),
+            tol=result.get("tolerance", 1e-9),
+        )
         self._gradient_context = {}
 
     @property

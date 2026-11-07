@@ -31,8 +31,8 @@ a 3D-normalized orbital, matching the convention of the other Mandacaru bases.
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import gamma
 
+from .. import _native
 from ..units import to_bohr
 from ._angular import sample_dtype as _dtype
 from ._angular import spherical_coords, spherical_harmonic
@@ -41,15 +41,13 @@ from .base import BasisFunction
 
 def primitive_norm(alpha, l: int):
     r"""Radial normalization ``N(alpha, l)`` of a primitive ``r^l e^{-alpha r^2}``."""
-    alpha = np.asarray(alpha, dtype=float)
-    return np.sqrt(2.0 * (2.0 * alpha) ** (l + 1.5) / gamma(l + 1.5))
+    return _native.gaussian_primitive_norm(np.ascontiguousarray(alpha, dtype=float), int(l))
 
 
 def _contracted_self_overlap(exponents, d, l: int) -> float:
     r"""``int |sum_i d_i r^l e^{-alpha_i r^2}|^2 r^2 dr`` in closed form."""
-    a = exponents[:, None] + exponents[None, :]
-    integ = gamma(l + 1.5) / (2.0 * a ** (l + 1.5))  # int r^{2l+2} e^{-a r^2} dr
-    return float(d @ integ @ d)
+    return float(_native.gaussian_contracted_self_overlap(
+        np.ascontiguousarray(exponents, dtype=float), np.ascontiguousarray(d, dtype=float), int(l)))
 
 
 class GaussianOrbital(BasisFunction):

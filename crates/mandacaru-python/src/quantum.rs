@@ -395,6 +395,7 @@ impl PyProblem {
                 tolerance,
                 seed,
                 track_best,
+                ..Default::default()
             },
         };
         let mut result = py
@@ -512,6 +513,7 @@ impl PyProblem {
                 tolerance: Some(tolerance),
                 seed,
                 track_best: true,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -670,6 +672,7 @@ impl PyProblem {
                 tolerance,
                 seed: 0,
                 track_best,
+                ..Default::default()
             },
         };
         let result = py
@@ -879,6 +882,7 @@ impl PyProblem {
                 tolerance,
                 seed: 0,
                 track_best,
+                ..Default::default()
             },
         };
         if resume.is_some() && (initial_parameters.is_some() || initial_indices.is_some()) {

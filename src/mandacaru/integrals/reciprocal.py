@@ -46,182 +46,50 @@ from __future__ import annotations
 
 import numpy as np
 
+from .. import _native
+
+ISOMETRY_TOLERANCE = 2e-2
+
 
 def lattice_vectors(grid) -> np.ndarray:
     """The cell the grid spans, lattice vectors as **columns** (Bohr)."""
-    return np.asarray(grid.step, dtype=float) @ np.diag(grid.shape)
+    return _native.Context(threads=1).periodic_lattice_vectors(
+        tuple(int(n) for n in grid.shape), np.ascontiguousarray(grid.step, dtype=float))
 
 
 def reciprocal_vectors(lattice_columns) -> np.ndarray:
     r""":math:`B = 2\pi A^{-T}`: reciprocal vectors as columns."""
-    return 2.0 * np.pi * np.linalg.inv(np.asarray(lattice_columns,
-                                                  dtype=float)).T
+    return _native.Context(threads=1).periodic_reciprocal_vectors(
+        np.ascontiguousarray(lattice_columns, dtype=float))
 
 
 def cell_volume(grid) -> float:
     """Volume of the spanned cell (Bohr^3)."""
-    return float(abs(np.linalg.det(lattice_vectors(grid))))
+    return _native.Context(threads=1).periodic_cell_volume(
+        tuple(int(n) for n in grid.shape), np.ascontiguousarray(grid.step, dtype=float))
 
 
 def grid_origin(grid) -> np.ndarray:
     """The first node of the grid (Bohr)."""
-    return np.array([grid.X.flat[0], grid.Y.flat[0], grid.Z.flat[0]],
-                    dtype=float)
+    return np.array([grid.X.flat[0], grid.Y.flat[0], grid.Z.flat[0]], dtype=float)
 
 
 def wavevectors(grid) -> np.ndarray:
     r"""``(3, n1, n2, n3)`` Cartesian :math:`\mathbf G` in FFT index order."""
-    B = reciprocal_vectors(lattice_vectors(grid))
-    m = [np.fft.fftfreq(n, d=1.0 / n) for n in grid.shape]
-    m1, m2, m3 = np.meshgrid(*m, indexing="ij")
-    return np.einsum("ci,ixyz->cxyz", B, np.stack([m1, m2, m3]))
-
-
-#: Largest departure from an isometry, :math:`\|R^TR - 1\|_F`, of a grid
-#: operation :func:`lattice_operations` keeps.  Above the strains of a
-#: finite-strain stress (1e-4 to 1e-3), so a strained crystal keeps the
-#: unstrained grid's operations and its derivatives stay linear in the
-#: strain.  A lattice within it of a higher symmetry is averaged over the
-#: higher group, which is harmless: its own operations are a subgroup, and
-#: every term is still an alias.  A strain that crosses it changes the set,
-#: and the derivatives by the difference of two averages, which falls with
-#: the grid step like the box's own aliasing.
-ISOMETRY_TOLERANCE = 2e-2
-
-#: :func:`symmetric_aliases` of the last few grids, keyed by shape and step.
-_SYMMETRIC: dict = {}
-_SYMMETRIC_KEEP = 4
+    return _native.Context(threads=1).periodic_wavevectors(
+        tuple(int(n) for n in grid.shape), np.asarray(grid.step, dtype=float))
 
 
 def lattice_operations(grid) -> list:
-    r"""The point operations of the grid's lattice, as integer matrices
-    ``V`` acting on FFT frequencies (:math:`\mathbf m \to V\mathbf m`).
-
-    Those of :math:`x \to Wx` (fractional) with :math:`W` unimodular, its
-    Cartesian form :math:`R = AWA^{-1}` an isometry to
-    :data:`ISOMETRY_TOLERANCE`, mapping nodes onto nodes (:math:`W_{ij}
-    n_i/n_j` integral) and aliases onto aliases; :math:`V = W^{-T}`.  The
-    lattice's, not a crystal's: a superset of every space group's point
-    part on the grid, and never empty (the identity and the inversion).
-    """
-    import itertools
-
-    shape = np.asarray(grid.shape, dtype=float)
-    A = lattice_vectors(grid)
-    inverse = np.linalg.inv(A)
-
-    def kept(W):
-        """Which of the ``(k, 3, 3)`` matrices ``W`` are kept."""
-        R = np.einsum("ij,kjl,lm->kim", A, W, inverse)
-        defect = np.einsum("kji,kjl->kil", R, R) - np.eye(3)
-        isometry = np.sqrt(np.sum(defect * defect, axis=(1, 2))) \
-            <= ISOMETRY_TOLERANCE
-        nodes = W * shape[None, :, None] / shape[None, None, :]
-        V = np.transpose(np.linalg.inv(W), (0, 2, 1))
-        aliases = V * shape[None, None, :] / shape[None, :, None]
-        integral = (np.all(np.abs(nodes - np.round(nodes)) < 1e-9, axis=(1, 2))
-                    & np.all(np.abs(aliases - np.round(aliases)) < 1e-9,
-                             axis=(1, 2)))
-        return isometry & integral
-
-    candidates = np.array(list(itertools.product((-1, 0, 1), repeat=9)),
-                          dtype=float).reshape(-1, 3, 3)
-    candidates = candidates[np.abs(np.abs(np.linalg.det(candidates)) - 1.0)
-                            < 1e-9]
-    group = list(candidates[kept(candidates)])
-    # Close the set under products: an operation with entries beyond
-    # {-1, 0, 1} in a skewed basis is a product of ones within it.
-    known = {tuple(np.round(W).astype(int).ravel()) for W in group}
-    while True:
-        products = np.einsum("aij,bjk->abik", np.array(group),
-                             np.array(group)).reshape(-1, 3, 3)
-        new = {}
-        for W in products[kept(products)]:
-            key = tuple(np.round(W).astype(int).ravel())
-            if key not in known:
-                new[key] = W
-        if not new:
-            break
-        known.update(new)
-        group.extend(new.values())
-    return [np.round(np.linalg.inv(W).T).astype(int) for W in group]
+    r"""The point operations of the grid's lattice, as integer matrices ``V``."""
+    return _native.Context(threads=1).periodic_lattice_operations(
+        tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float))
 
 
 def symmetric_aliases(grid) -> tuple[np.ndarray, np.ndarray]:
-    r"""``(vectors, norms)``: the FFT box's wave-vectors averaged over the
-    grid's lattice operations.
-
-    A grid of ``n_i`` nodes per axis cannot tell :math:`\mathbf G` from its
-    aliases :math:`\mathbf G + \sum_i j_i n_i\mathbf b_i`; :func:`wavevectors`
-    picks the alias in the box :math:`-n_i/2 \le m_i < n_i/2`, and a spectral
-    derivative multiplies by it.  An operation that maps the grid onto
-    itself maps the box onto itself only when it maps every axis onto an
-    axis -- the hexagonal and fcc ones do not -- so the box derivative of a
-    symmetric field is not exactly symmetric.  Its average over the
-    operations :math:`V` of :func:`lattice_operations`,
-
-    .. math::
-
-        \tilde{\mathbf m} = \frac{1}{|\mathcal P|}\sum_{V\in\mathcal P}
-            V^{-1}\,\mathrm{box}(V\mathbf m),
-
-    commutes with every one of them; each term is an alias of
-    :math:`\mathbf m`, so a frequency the operations keep inside the box is
-    differentiated exactly as before, and only those near its faces get a
-    mean of aliases (an even axis' Nyquist plane, through the inversion, the
-    mean of :math:`\pm n_i/2`: zero, so a real field's derivative stays
-    real).  The average is taken on the integers: it does not depend on the
-    metric, so a strain that keeps the operations changes the derivative
-    linearly, exactly as the box's -- what the finite-strain stress needs.
-    A choice by length (the shortest alias, the Wigner-Seitz cell) is
-    equally symmetric but switches aliases where a strain lifts a tie.
-
-    ``vectors`` is :math:`B\tilde{\mathbf m}` (``(3, n1, n2, n3)``),
-    ``norms`` the mean length of the averaged aliases (``(n1, n2, n3)``),
-    for kernels of :math:`|\mathbf G|`.  On an orthorhombic grid only the
-    Nyquist planes differ from :func:`wavevectors`.  Both are cached per
-    grid and read-only.
-    """
-    shape = tuple(int(n) for n in grid.shape)
-    key = (shape, np.asarray(grid.step, dtype=float).tobytes())
-    cached = _SYMMETRIC.get(key)
-    if cached is not None:
-        return cached
-    B = reciprocal_vectors(lattice_vectors(grid))
-    n = np.asarray(shape, dtype=float)[:, None]
-    grids = np.meshgrid(*[np.fft.fftfreq(k, d=1.0 / k) for k in shape],
-                        indexing="ij")
-    m = np.stack([g.ravel() for g in grids])
-    box = np.sqrt(np.sum((B @ m) ** 2, axis=0))
-    operations = lattice_operations(grid)
-    if all(np.all(np.sum(np.abs(V), axis=1) == 1) for V in operations):
-        # Signed permutations (an orthorhombic, tetragonal or cubic grid):
-        # they keep the box but for an even axis' Nyquist plane, which the
-        # inversion averages to zero.
-        m = np.where(2 * np.abs(m) == n, 0.0, m)
-        vectors = (B @ m).reshape(3, *shape)
-        norms = box.reshape(shape)
-    else:
-        shift = np.zeros(m.shape)
-        norms = len(operations) * box
-        for V in operations:
-            image = V @ m
-            # box(V m) - V m: nonzero only where the image left the box.
-            wrap = np.mod(image + n // 2, n) - n // 2 - image
-            moved = np.any(wrap != 0.0, axis=0)
-            back = np.rint(np.linalg.inv(V)) @ wrap[:, moved]
-            shift[:, moved] += back
-            norms[moved] += (np.sqrt(np.sum((B @ (m[:, moved] + back)) ** 2,
-                                            axis=0)) - box[moved])
-        count = len(operations)
-        vectors = (B @ (m + shift / count)).reshape(3, *shape)
-        norms = (norms / count).reshape(shape)
-    vectors.setflags(write=False)
-    norms.setflags(write=False)
-    if len(_SYMMETRIC) >= _SYMMETRIC_KEEP:
-        _SYMMETRIC.pop(next(iter(_SYMMETRIC)))
-    _SYMMETRIC[key] = (vectors, norms)
-    return vectors, norms
+    r"""``(vectors, norms)``: the FFT box's wave-vectors averaged over operations."""
+    return _native.Context(threads=1).periodic_symmetric_aliases(
+        tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float))
 
 
 def symmetric_wavevectors(grid) -> np.ndarray:
@@ -229,278 +97,92 @@ def symmetric_wavevectors(grid) -> np.ndarray:
     return symmetric_aliases(grid)[0]
 
 
-#: A frequency closer than this (FFT index units) to a face of the box counts
-#: as on it.  A k-point's fractional coordinates are read back from Cartesian
-#: ones, so a zone-boundary k sits on a face only to rounding, and its images
-#: must all be read the same way.
-FACE_TOLERANCE = 1e-9
-
-#: :func:`_bloch_table` of the last few grids, keyed as :data:`_SYMMETRIC`.
-_BLOCH: dict = {}
-
-
-def _grid_key(grid) -> tuple:
-    return (tuple(int(n) for n in grid.shape),
-            np.asarray(grid.step, dtype=float).tobytes())
-
-
-def _boxed(image, n) -> np.ndarray:
-    """``image`` (FFT index units, ``(3, ...)``) moved by whole periods
-    ``n`` into the box ``[-n/2, n/2)``, a face within
-    :data:`FACE_TOLERANCE` read as its lower side."""
-    return image - n * np.floor((image + 0.5 * n + FACE_TOLERANCE) / n)
-
-
-def _bloch_table(grid):
-    """``(m, operations, inverses, slack)`` of :func:`bloch_aliases`: the box
-    frequencies ``(3, N)``, the lattice operations and their inverses, and how
-    far inside the box faces every image of each frequency stays."""
-    key = _grid_key(grid)
-    cached = _BLOCH.get(key)
-    if cached is not None:
-        return cached
-    shape = key[0]
-    half = 0.5 * np.asarray(shape, dtype=float)[:, None]
-    grids = np.meshgrid(*[np.fft.fftfreq(k, d=1.0 / k) for k in shape],
-                        indexing="ij")
-    m = np.stack([g.ravel() for g in grids])
-    operations = lattice_operations(grid)
-    inverses = [np.rint(np.linalg.inv(V)) for V in operations]
-    slack = np.full(m.shape[1], np.inf)
-    for V in operations:
-        slack = np.minimum(slack, np.min(half - np.abs(V @ m), axis=0))
-    table = (m, [np.asarray(V, dtype=float) for V in operations], inverses,
-             slack)
-    if len(_BLOCH) >= _SYMMETRIC_KEEP:
-        _BLOCH.pop(next(iter(_BLOCH)))
-    _BLOCH[key] = table
-    return table
-
-
 def bloch_aliases(grid, k) -> tuple[np.ndarray, np.ndarray]:
-    r"""``(vectors, squares)``: the wave-vectors :math:`\mathbf G + \mathbf k`
-    of a Bloch function's periodic part, averaged over the grid's lattice
-    operations.
-
-    The periodic part :math:`u_{\mathbf k} = e^{-i\mathbf k\cdot\mathbf r}
-    \chi_{\mathbf k}` sampled on the grid carries the frequencies
-    :math:`\mathbf m` of the FFT box; its derivatives multiply by the
-    wave-vector :math:`B(\mathbf m + \boldsymbol\kappa)`
-    (:math:`\mathbf k = B\boldsymbol\kappa`), which is defined only up to an
-    alias.  As for a density (:func:`symmetric_aliases`), the alias the box
-    picks is not carried onto the alias of the image by an operation that
-    mixes the axes, so a kinetic matrix with it is not equivariant: the
-    star of a k-point splits, and a wedge symmetrized to the full mesh is
-    not the full mesh.  Here the alias is chosen for the whole wave-vector
-    :math:`\mathbf q = \mathbf m + \boldsymbol\kappa`,
-
-    .. math::
-
-        \mathbf q_V = V^{-1}\,\mathrm{box}(V\mathbf q), \qquad
-        \mathrm{box}(\mathbf x)_i \in [-n_i/2,\ n_i/2),
-
-    averaged over the operations :math:`V` of :func:`lattice_operations`:
-    ``vectors`` is :math:`B\,\overline{\mathbf q_V}`, the derivative of the
-    Bloch gradients, and ``squares`` :math:`\overline{|B\mathbf q_V|^2}`,
-    the kinetic multiplier.  The kinetic energy is the mean of the aliases'
-    kinetic energies, not the square of the mean vector, which is shorter
-    near the faces and starves the basis' highest frequencies.  Both commute
-    with every operation and with time reversal (:math:`\mathbf q \to
-    -\mathbf q`), and depend on :math:`\mathbf q` alone, so on neither the
-    representative of ``k`` nor the metric; a frequency every operation
-    keeps inside the box is the plain :math:`\mathbf G + \mathbf k`.
-
-    ``k`` is Cartesian (Bohr^-1); the arrays are ``(3, n1, n2, n3)`` and
-    ``(n1, n2, n3)``.
-    """
-    shape = tuple(int(n) for n in grid.shape)
-    n = np.asarray(shape, dtype=float)[:, None]
-    B = reciprocal_vectors(lattice_vectors(grid))
-    m, operations, inverses, slack = _bloch_table(grid)
-    kappa = np.linalg.solve(B, np.asarray(k, dtype=float))
-    q = m + kappa[:, None]
-    vectors = B @ q
-    squares = np.sum(vectors * vectors, axis=0)
-    # Only a frequency some image may carry across a face is averaged.
-    reach = max(float(np.max(np.abs(V @ kappa))) for V in operations)
-    near = np.nonzero(slack <= reach + FACE_TOLERANCE)[0]
-    if near.size:
-        part = q[:, near]
-        total = np.zeros_like(part)
-        total_squares = np.zeros(near.size)
-        for V, inverse in zip(operations, inverses):
-            image = V @ part
-            alias = part + inverse @ (_boxed(image, n) - image)
-            total += alias
-            G = B @ alias
-            total_squares += np.sum(G * G, axis=0)
-        count = len(operations)
-        vectors[:, near] = B @ (total / count)
-        squares[near] = total_squares / count
-    return vectors.reshape(3, *shape), squares.reshape(shape)
-
-
-#: :func:`alias_table` of the last few grids, keyed as :data:`_SYMMETRIC`.
-_ALIASES: dict = {}
+    r"""``(vectors, squares)``: wave-vectors :math:`\mathbf G + \mathbf k` averaged over operations."""
+    return _native.Context(threads=1).periodic_bloch_aliases(
+        tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float),
+        (float(k[0]), float(k[1]), float(k[2])))
 
 
 def alias_table(grid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    r"""``(index, vectors, weights)``: the frequencies whose box wave-vector
-    an operation of :func:`lattice_operations` does not carry onto the box
-    wave-vector of the image, with their other aliases.
-
-    Every row is a distinct pair: ``index`` the flat FFT index of a
-    frequency :math:`\mathbf m`, ``vectors`` ``(3, n)`` the Cartesian alias
-    :math:`BV^{-1}\mathrm{box}(V\mathbf m) \neq B\,\mathrm{box}(\mathbf m)`,
-    ``weights`` the fraction of the operations that pick it.  The mean of a
-    function of the wave-vector over the aliases the operations pick is
-    then its box value plus ``weights * (f(alias) - f(box))`` summed over a
-    frequency's rows (:func:`alias_combine`).  Cached per grid.
-    """
-    key = _grid_key(grid)
-    cached = _ALIASES.get(key)
-    if cached is not None:
-        return cached
-    n = np.asarray(key[0], dtype=float)[:, None]
-    B = reciprocal_vectors(lattice_vectors(grid))
-    m, operations, inverses, slack = _bloch_table(grid)
-    near = np.nonzero(slack <= FACE_TOLERANCE)[0]
-    part = m[:, near]
-    rows, aliases = [], []
-    for V, inverse in zip(operations, inverses):
-        image = V @ part
-        wrap = _boxed(image, n) - image
-        moved = np.any(wrap != 0.0, axis=0)
-        rows.append(near[moved])
-        aliases.append(part[:, moved] + inverse @ wrap[:, moved])
-    keys = np.vstack([np.concatenate(rows)[None, :],
-                      np.rint(np.concatenate(aliases, axis=1))]).astype(int)
-    unique, counts = np.unique(keys, axis=1, return_counts=True)
-    table = (unique[0], B @ unique[1:].astype(float),
-             counts / float(len(operations)))
-    for array in table:
-        array.setflags(write=False)
-    if len(_ALIASES) >= _SYMMETRIC_KEEP:
-        _ALIASES.pop(next(iter(_ALIASES)))
-    _ALIASES[key] = table
-    return table
+    r"""``(index, vectors, weights)`` of the grid alias table."""
+    return _native.Context(threads=1).periodic_alias_table(
+        tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float))
 
 
 def alias_combine(grid, box_values, alias_values) -> np.ndarray:
-    r"""The mean over the lattice operations' aliases of a function of the
-    wave-vector, from its values on the box (``(..., n1, n2, n3)``) and on
-    the :func:`alias_table` vectors (``(..., n)``)."""
+    r"""The mean over the lattice operations' aliases of a function."""
     index, _vectors, weights = alias_table(grid)
-    box_values = np.asarray(box_values)
-    lead = box_values.shape[:-3]
-    flat = box_values.reshape(*lead, -1)
-    alias_values = np.asarray(alias_values)
-    out = flat.astype(np.result_type(flat, alias_values), copy=True)
-    if index.size:
-        change = weights * (alias_values - flat[..., index])
-        np.add.at(out.reshape(-1, flat.shape[-1]).T, index,
-                  change.reshape(-1, index.size).T)
-    return out.reshape(box_values.shape)
+    box_arr = np.asarray(box_values)
+    return _native.Context(threads=1).periodic_alias_combine(
+        index, weights, box_arr, np.asarray(alias_values), list(box_arr.shape))
 
 
 def alias_mean(grid, function) -> np.ndarray:
-    r"""``function`` of the wave-vectors ``(3, ...)`` on the grid's
-    reciprocal set, each frequency's value the mean over the aliases the
-    lattice operations pick.
-
-    A grid charge or kernel :math:`f(\mathbf G)` taken at the box alias
-    alone does not commute with an operation that mixes the grid's axes,
-    as the derivatives of :func:`symmetric_aliases` did not: the Hartree
-    potential of a symmetric density, and the compensation and ion charges
-    of symmetric atoms, come out asymmetric where the box cuts the alias
-    star (hcp Mg, h 0.32 A: 2.5e-3 and 4.4e-3 of their peaks).  The mean
-    commutes with every operation; a frequency they all keep inside the box
-    is unchanged.
-    """
+    r"""``function`` of the wave-vectors ``(3, ...)`` averaged over aliases."""
     _index, vectors, _weights = alias_table(grid)
     return alias_combine(grid, function(wavevectors(grid)), function(vectors))
 
 
 def to_reciprocal(grid, values) -> np.ndarray:
     r"""``f(G)`` of flat real-space values, in the module's convention."""
-    G = wavevectors(grid)
-    phase = np.exp(-1j * np.einsum("c,cxyz->xyz", grid_origin(grid), G))
-    return (grid.dV * phase
-            * np.fft.fftn(np.asarray(values).reshape(grid.shape)))
+    return _native.Context(threads=1).periodic_to_reciprocal(
+        tuple(int(n) for n in grid.shape), grid_origin(grid), np.ascontiguousarray(grid.step, dtype=float),
+        float(grid.dV), np.ascontiguousarray(values))
 
 
 def to_real(grid, transform) -> np.ndarray:
     r"""Flat ``f(r)`` of ``f(G)`` (inverse of :func:`to_reciprocal`)."""
-    G = wavevectors(grid)
-    phase = np.exp(1j * np.einsum("c,cxyz->xyz", grid_origin(grid), G))
-    N = int(np.prod(grid.shape))
-    return (np.fft.ifftn(transform * phase) * N / cell_volume(grid)).reshape(-1)
+    return _native.Context(threads=1).periodic_to_real(
+        tuple(int(n) for n in grid.shape), grid_origin(grid), np.ascontiguousarray(grid.step, dtype=float),
+        np.ascontiguousarray(transform, dtype=complex))
 
 
 def structure_factor(G, center) -> np.ndarray:
     r""":math:`e^{-i\mathbf G\cdot\mathbf R}` for one center (Bohr)."""
-    return np.exp(-1j * np.einsum("c,c...->...", np.asarray(center, float), G))
+    return _native.Context(threads=1).periodic_structure_factor(
+        np.asarray(G, dtype=float), (float(center[0]), float(center[1]), float(center[2])))
 
 
 def spherical(G):
     """``(|G|, theta, phi)`` of a ``(3, ...)`` array of vectors."""
-    norm = np.sqrt(np.sum(G * G, axis=0))
-    safe = np.where(norm > 0.0, norm, 1.0)
-    theta = np.arccos(np.clip(G[2] / safe, -1.0, 1.0))
-    phi = np.arctan2(G[1], G[0])
-    return norm, theta, phi
+    return _native.Context(threads=1).periodic_spherical(np.asarray(G, dtype=float))
 
 
 def radial_transform(r, values, L: int, q) -> np.ndarray:
     r""":math:`F_L(q) = \int_0^\infty f(r)\,j_L(qr)\,r^2\,dr` on a radial table."""
-    from scipy.special import spherical_jn
-
-    r = np.asarray(r, dtype=float)
-    q = np.asarray(q, dtype=float)
-    flat = q.reshape(-1)
-    out = np.empty(flat.size)
-    weights = np.asarray(values, dtype=float) * r * r
-    # Each q is its own row of the integral: the block only bounds the (q, r) matrix of Bessel
-    # values (256 x 1201 x 8 bytes), and the result does not depend on it.
-    for start in range(0, flat.size, 256):
-        chunk = flat[start:start + 256]
-        out[start:start + chunk.size] = np.trapezoid(
-            spherical_jn(int(L), np.outer(chunk, r)) * weights[None, :], r,
-            axis=1)
-    return out.reshape(q.shape)
+    return _native.Context(threads=1).periodic_radial_transform(
+        np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(values, dtype=float),
+        int(L), np.ascontiguousarray(q, dtype=float))
 
 
 def multipole_transform(G, center, radial, L: int, M: int) -> np.ndarray:
-    r"""Fourier transform of :math:`f_L(r)Y_{LM}(\hat r)` centered at ``center``.
-
-    :math:`4\pi(-i)^L Y_{LM}(\hat G)\,F_L(|G|)\,e^{-i\mathbf G\cdot\mathbf R}`,
-    from the plane-wave expansion of :math:`e^{-i\mathbf G\cdot\mathbf r}`.
-    ``radial`` is ``F_L`` already evaluated on ``|G|``.
-    """
-    from ..basis._angular import spherical_harmonic
-
-    _norm, theta, phi = spherical(G)
-    return (4.0 * np.pi * (-1j) ** int(L)
-            * spherical_harmonic(int(L), int(M), theta, phi, real=False)
-            * radial * structure_factor(G, center))
+    r"""Fourier transform of :math:`f_L(r)Y_{LM}(\hat r)` centered at ``center``."""
+    return _native.Context(threads=1).periodic_multipole_transform(
+        np.ascontiguousarray(G, dtype=float), (float(center[0]), float(center[1]), float(center[2])),
+        np.ascontiguousarray(radial, dtype=float), int(L), int(M))
 
 
 def coulomb_kernel(G) -> np.ndarray:
     r""":math:`4\pi/G^2` with the :math:`\mathbf G = 0` term dropped."""
-    G2 = np.sum(G * G, axis=0)
-    return np.where(G2 > 0.0, 4.0 * np.pi / np.where(G2 > 0.0, G2, 1.0), 0.0)
+    return _native.Context(threads=1).periodic_coulomb_wavevector_kernel(np.asarray(G, dtype=float))
 
 
 def lattice_translations(lattice_columns, radius: float) -> np.ndarray:
     """All lattice vectors ``R`` with ``|R| <= radius`` (rows, Bohr)."""
-    A = np.asarray(lattice_columns, dtype=float)
-    B = reciprocal_vectors(A)
-    # |n_i| <= radius |b_i| / 2 pi bounds every vector inside the sphere.
-    reach = [int(np.ceil(radius * np.linalg.norm(B[:, i]) / (2.0 * np.pi)))
-             for i in range(3)]
-    n = [np.arange(-r, r + 1) for r in reach]
-    n1, n2, n3 = np.meshgrid(*n, indexing="ij")
-    integers = np.stack([n1.ravel(), n2.ravel(), n3.ravel()], axis=1)
-    R = integers @ A.T
-    keep = np.linalg.norm(R, axis=1) <= radius + 1e-12
-    return R[keep]
+    return _native.Context(threads=1).periodic_lattice_translations(
+        np.asarray(lattice_columns, dtype=float), float(radius))
+
+
+def coulomb_kernel(G) -> np.ndarray:
+    r""":math:`4\pi/G^2` with the :math:`\mathbf G = 0` term dropped."""
+    from .. import _native
+    return _native.Context(threads=1).periodic_coulomb_wavevector_kernel(np.asarray(G, dtype=float))
+
+
+def lattice_translations(lattice_columns, radius: float) -> np.ndarray:
+    """All lattice vectors ``R`` with ``|R| <= radius`` (rows, Bohr)."""
+    from .. import _native
+    return _native.Context(threads=1).periodic_lattice_translations(
+        np.asarray(lattice_columns, dtype=float), float(radius)
+    )

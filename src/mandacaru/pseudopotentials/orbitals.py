@@ -559,15 +559,13 @@ def basis_states(pp) -> list[OccupiedState]:
     the basis fcc Ca came out 7-9 % too large with every zeta and
     polarization count (HISTORY.md, 2026-10-06)."""
     states = occupied_states(pp)
-    held = {state.l for state in states}
-    held |= set(SCATTERING_ONLY_CHANNELS.get(str(pp.symbol), ()))
-    for l, channel in sorted(pp.channels.items()):
-        if int(l) in held:
-            continue
-        level = _lowest_level(pp, l)
-        if level < BOUND_LEVEL:
+    held = {s.l for s in states} | set(SCATTERING_ONLY_CHANNELS.get(str(pp.symbol), ()))
+    items = sorted(pp.channels.items())
+    for l, channel in items:
+        lvl = _lowest_level(pp, l) if int(l) not in held else 0.0
+        if int(l) not in held and lvl < BOUND_LEVEL:
             states.append(OccupiedState(int(l), 0, int(channel.n), False,
-                                        empty=True, level=level))
+                                        empty=True, level=lvl))
     return states
 
 
@@ -576,12 +574,11 @@ def occupied_states(pp) -> list[OccupiedState]:
     per occupied channel, two in a semicore one (sodium's 2s and 3s; the
     second is one shell up)."""
     semicore = {tuple(o) for o in getattr(pp, "semicore_subshells", ())}
-    out = []
-    for l, channel in sorted(pp.channels.items()):
-        occupations = (getattr(channel, "occupations", None)
-                       or [channel.occupation])
-        for i, occupation in enumerate(occupations):
-            if occupation > 0.0:
+    out, items = [], sorted(pp.channels.items())
+    for l, channel in items:
+        for i, occ in enumerate(getattr(channel, "occupations", None)
+                               or [channel.occupation]):
+            if occ > 0.0:
                 n = int(channel.n) + i
                 out.append(OccupiedState(int(l), i, n,
                                          (n, int(l)) in semicore))

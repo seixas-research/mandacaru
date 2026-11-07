@@ -306,11 +306,11 @@ impl<'a> Spline<'a> {
         dimension(breaks.len())?;
         if breaks.len() < 2
             || breaks.windows(2).any(|w| w[1] <= w[0])
-            || !cutoff.is_finite()
             || cutoff <= 0.0
+            || cutoff.is_nan()
         {
             return Err(Error::Invalid(
-                "spline needs increasing knots and positive finite cutoff".into(),
+                "spline needs increasing knots and positive cutoff".into(),
             ));
         }
         finite(breaks, "spline knots")?;

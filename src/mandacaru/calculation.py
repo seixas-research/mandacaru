@@ -411,8 +411,7 @@ class Mandacaru(ASEProperties, Calculator):
         ``"hse06"`` included, on the whole k mesh (see ``kpts`` and
         ``symmetry``: a hybrid crystal on a symmetry-reduced mesh raises
         ``NotImplementedError``); its forces and stress are analytic (Rust).
-        The forces and stress of an ``"r2scan"`` or ``"rvv10"`` crystal, of a
-        DFT+U crystal and, for the stress, of a spin-polarized one raise
+        The forces and stress of an ``"r2scan"`` or ``"rvv10"`` crystal raise
         ``NotImplementedError`` naming the cause. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
     vdw : str or bool, optional
@@ -1299,8 +1298,9 @@ class Mandacaru(ASEProperties, Calculator):
             raise ValueError(
                 f"expected a native optimizer in {tuple(_native.OPTIMIZERS)}"
             )
-        if set(self._optimizer) - {"method", "maxiter", "maxfev", "tol", "track_best"}:
-            raise ValueError("optimizer options are method, maxiter, maxfev, tol and track_best")
+        unknown = sorted(set(self._optimizer) - {"method", "maxiter", "maxfev", "tol", "track_best"})
+        if unknown:
+            raise ValueError(f"unknown optimizer option(s) {unknown}; optimizer options are method, maxiter, maxfev, tol and track_best")
         if shots > 0 and self._optimizer["method"] in NOISE_INTOLERANT:
             raise ValueError(
                 f"optimizer {self._optimizer['method']!r} differences the energy at tiny "
@@ -1330,7 +1330,7 @@ class Mandacaru(ASEProperties, Calculator):
         self.integrals = None
         self.native_reference = None
         self.problem = None
-        self.solver = None
+        self._solver_instance = None
         self.result = None
         self.results = {}
         self.checkpoint = None
@@ -1364,7 +1364,7 @@ class Mandacaru(ASEProperties, Calculator):
         self._periodic_symmetry = symmetry
         self._hubbard_u = hubbard.validate(hubbard_u, xc=self._xc, precision=precision)
         if atoms is not None:
-            hubbard.require_crystal(self._hubbard_u, atoms.pbc)
+            hubbard.require_crystal(self._hubbard_u, atoms.pbc, method=self._method)
         # A crystal file owns its basis; otherwise the option needs a PAW dataset.
         paw = None if load_crystal is not None else hubbard.paw_basis(self._hubbard_u, basis)
         if atoms is not None:
@@ -1404,6 +1404,25 @@ class Mandacaru(ASEProperties, Calculator):
 
         if atoms is not None:
             atoms.calc = self
+
+    @property
+    def solver(self):
+        if getattr(self, "_solver_instance", None) is not None:
+            return self._solver_instance
+        if hasattr(self, "_optimizer"):
+            from types import SimpleNamespace
+            from .optimizers import Optimizer
+            opt = Optimizer(
+                method=self._optimizer["method"],
+                maxiter=self._optimizer.get("maxiter", 300),
+                tol=self._optimizer.get("tol", 1e-9),
+            )
+            return SimpleNamespace(optimizer=opt)
+        return None
+
+    @solver.setter
+    def solver(self, val):
+        self._solver_instance = val
 
     @property
     def spin(self):
@@ -1686,6 +1705,7 @@ class Mandacaru(ASEProperties, Calculator):
             n_electrons=self._n_electrons,
             magnetic_moment=float(np.sum(geometry.magnetic_moments)),
         )
+        self.context.release_freed_memory()
         # The native integrals are lazy: the two-body integrals are built by the
         # first call that needs them, which is this one.
         with self._stage("mean-field SCF (builds the two-body integrals)"):
@@ -1726,7 +1746,12 @@ class Mandacaru(ASEProperties, Calculator):
                 and self._force_grid is not None and self._geometry is not None
                 and geometry.numbers == self._geometry.numbers
                 and np.array_equal(geometry.cell, self._geometry.cell)):
-            return self.integrals.at_geometry(geometry.native())
+            old = self.integrals
+            self.integrals = None
+            rebuilt = old.at_geometry(geometry.native())
+            del old
+            self.context.release_freed_memory()
+            return rebuilt
         if self._basis_spec is None:
             from .integrations.paw_molecular import build
 
@@ -1981,6 +2006,12 @@ class Mandacaru(ASEProperties, Calculator):
 
         self.solver = SolverView(
             self.problem, raw, self.checkpoint, opts["adapt"] or self._trotter
+        )
+        from .optimizers import Optimizer
+        self.solver.optimizer = Optimizer(
+            method=self._optimizer["method"],
+            maxiter=self._optimizer.get("maxiter", 300),
+            tol=self._optimizer.get("tol", 1e-9),
         )
         result = CalculationResult(
             method=self.method,
@@ -2386,7 +2417,7 @@ class Mandacaru(ASEProperties, Calculator):
             elif (value is not None and any(value.pbc)) and not self.capabilities.quantum:
                 result = self._periodic(value)
             elif value is not None:
-                hubbard.require_crystal(self._hubbard_u, value.pbc)
+                hubbard.require_crystal(self._hubbard_u, value.pbc, method=self._method)
                 _refuse_exchange_divergence_without_hybrid(
                     self._periodic_options["exxdiv_treatment"], self._xc, periodic=False
                 )
@@ -2508,18 +2539,6 @@ class Mandacaru(ASEProperties, Calculator):
                     "is unaffected); use precision='float64'"
                 )
             if (
-                ("forces" in properties or "stress" in properties)
-                and periodic_geometry
-                and self._hubbard_u is not None
-            ):
-                # Whatever the symmetry: with symmetry=True the energy path would raise its own
-                # symmetry-table error first, hiding that the +U force and strain terms do not exist.
-                raise NotImplementedError(
-                    "crystal forces and stress are not available for a DFT+U crystal (hubbard_u): "
-                    "the +U terms of the analytic force and stress are not implemented; the DFT+U "
-                    "energy is available (with symmetry=False)"
-                )
-            if (
                 "forces" in properties
                 and self._precision == "float32"
                 and not periodic_geometry
@@ -2581,6 +2600,7 @@ class Mandacaru(ASEProperties, Calculator):
 
                 write_performance(self, result, time.perf_counter() - started,
                                   solver_ran=not reusable)
+            self.context.release_freed_memory()
             return result
 
     def _arm_exit_hook(self):

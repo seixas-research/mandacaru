@@ -87,10 +87,10 @@ def test_combinations_the_engine_does_not_implement_are_refused_at_construction(
         Mandacaru(method="dft", xc="hse06", hubbard_u=NI_D, basis=SZ, trace=False)
     with pytest.raises(ValueError, match="precision='float64'"):
         Mandacaru(method="dft", precision="float32", hubbard_u=NI_D, basis=SZ, trace=False)
-    # a geometry given with the calculator: a molecule has no periodic direction
+    # a geometry given with the calculator: a molecule with non-DFT method
     molecule = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[8.0] * 3)
-    with pytest.raises(ValueError, match="needs a periodic cell"):
-        Mandacaru(method="dft", atoms=molecule, hubbard_u=CU_D, basis=SZ, trace=False)
+    with pytest.raises(ValueError, match="does not use: hubbard_u"):
+        Mandacaru(method="rhf", atoms=molecule, hubbard_u=CU_D, basis=SZ, trace=False)
 
 
 @pytest.mark.parametrize("basis", ["HAO", "STO-3G"])
@@ -106,12 +106,27 @@ def test_a_basis_without_a_pseudopotential_is_refused_naming_the_option(basis):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_molecule_is_refused_before_any_calculation():
+def test_a_molecule_is_refused_for_non_dft():
     molecule = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[8.0] * 3)
     molecule.center()
-    molecule.calc = Mandacaru(method="dft", hubbard_u=CU_D, trace=False, basis=SZ)
-    with pytest.raises(ValueError, match="needs a periodic cell"):
-        molecule.get_potential_energy()
+    with pytest.raises(ValueError, match="does not use: hubbard_u"):
+        Mandacaru(method="rhf", hubbard_u=CU_D, trace=False, basis=SZ)
+
+
+def test_a_molecule_calculates_dft_plus_u():
+    molecule = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[8.0] * 3)
+    molecule.center()
+    calc = Mandacaru(method="dft", xc="lda", hubbard_u=CU_D, trace=False, basis=SZ, grid_spacing=0.3)
+    molecule.calc = calc
+    energy = molecule.get_potential_energy()
+    assert np.isfinite(energy)
+    assert calc.result.hubbard_energy is not None
+    assert calc.result.hubbard_energy > 0.0
+    assert len(calc.result.hubbard) == 1
+    shell = calc.result.hubbard[0]
+    assert shell["symbol"] == "Cu"
+    assert shell["l"] == "d"
+    assert np.allclose(shell["trace"], [4.886], atol=1e-2)
 
 
 GEOMETRY_REFUSALS = [

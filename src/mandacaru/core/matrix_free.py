@@ -87,6 +87,73 @@ _REGISTER_INDICES: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _REGISTER_LOCK = threading.Lock()
 
 
+class _CSRBlock:
+    """Lightweight CSR matrix container for cached matrix-free flip groups."""
+    __slots__ = ("data", "indices", "indptr", "shape")
+
+    def __init__(self, data: np.ndarray, indices: np.ndarray, indptr: np.ndarray, shape: tuple[int, int]):
+        self.data = data
+        self.indices = indices
+        self.indptr = indptr
+        self.shape = shape
+
+    def __matmul__(self, vector: np.ndarray) -> np.ndarray:
+        from .. import _native
+        return _native.csr_matvec(self.data, self.indices, self.indptr, vector, self.shape[0])
+
+
+class _LinearOperator:
+    """A minimal linear operator interface compatible with scipy.sparse.linalg."""
+
+    __array_priority__ = 1000.0
+
+    def __init__(self, shape: tuple[int, int], matvec, matmat=None, rmatvec=None, rmatmat=None, dtype=complex):
+        self.shape = shape
+        self.dtype = np.dtype(dtype)
+        self._matvec = matvec
+        self._matmat = matmat or matvec
+        self._rmatvec = rmatvec
+        self._rmatmat = rmatmat or rmatvec
+
+    def matvec(self, v):
+        return self._matvec(v)
+
+    def rmatvec(self, v):
+        if self._rmatvec is None:
+            raise NotImplementedError("rmatvec is not implemented")
+        return self._rmatvec(v)
+
+    def matmat(self, X):
+        return self._matmat(X)
+
+    def rmatmat(self, X):
+        if self._rmatmat is None:
+            raise NotImplementedError("rmatmat is not implemented")
+        return self._rmatmat(X)
+
+    def __matmul__(self, other):
+        if hasattr(other, "ndim") and other.ndim > 1:
+            return self.matmat(other)
+        return self.matvec(other)
+
+    def __rmatmul__(self, other):
+        return self.rmatvec(other)
+
+    def dot(self, other):
+        return self.__matmul__(other)
+
+    @property
+    def H(self):
+        return _LinearOperator(
+            (self.shape[1], self.shape[0]),
+            matvec=self._rmatvec,
+            matmat=self._rmatmat,
+            rmatvec=self._matvec,
+            rmatmat=self._matmat,
+            dtype=self.dtype,
+        )
+
+
 def register_indices(n_qubits: int) -> np.ndarray:
     """The basis-state indices of an ``n_qubits`` register, shared.
 
@@ -436,7 +503,7 @@ class PauliOperator:
 
     def _prepare(self) -> None:
         """Store groups, in order, while their CSR entries fit the budget."""
-        import scipy.sparse as sp
+        from .. import _native
 
         index_bytes = 4 if self.dim < 2 ** 31 else 8
         used = index_bytes * (self.dim + 1)          # the CSR row pointer
@@ -455,10 +522,14 @@ class PauliOperator:
         if weights:
             # Groups never share an entry: distinct flips send a column to
             # distinct rows, so the COO -> CSR conversion sums nothing.
-            self._stored = sp.coo_matrix(
-                (np.concatenate(weights),
-                 (np.concatenate(rows), np.concatenate(columns))),
-                shape=self.shape).tocsr()
+            csr_data, csr_indices, csr_indptr = _native.csr_from_coo(
+                self.shape[0],
+                self.shape[1],
+                np.concatenate(rows),
+                np.concatenate(columns),
+                np.concatenate(weights),
+            )
+            self._stored = _CSRBlock(csr_data, csr_indices, csr_indptr, self.shape)
         self._recomputed = recomputed
 
     def matvec(self, vector) -> np.ndarray:
@@ -508,13 +579,11 @@ class PauliOperator:
         return 0j
 
     def as_linear_operator(self):
-        """A :class:`scipy.sparse.linalg.LinearOperator` (for ``expm_multiply``)."""
-        from scipy.sparse.linalg import LinearOperator
-
+        """A :class:`_LinearOperator` (for ``expm_multiply``)."""
         adjoint = self.adjoint()
-        return LinearOperator(self.shape, matvec=self.matvec,
-                              matmat=self.matvec, rmatvec=adjoint.matvec,
-                              rmatmat=adjoint.matvec, dtype=complex)
+        return _LinearOperator(self.shape, matvec=self.matvec,
+                               matmat=self.matvec, rmatvec=adjoint.matvec,
+                               rmatmat=adjoint.matvec, dtype=complex)
 
     def __repr__(self) -> str:
         where = (f"sector dim={self.dim}" if self.sector is not None

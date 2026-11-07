@@ -192,6 +192,11 @@ pub fn operation_count(ctx: &Context, grid: &SpatialGrid) -> Result<usize> {
     Ok(lattice(ctx, grid)?.group.len())
 }
 
+/// The lattice point operations V acting on FFT frequencies (m -> V m).
+pub fn lattice_operations(ctx: &Context, grid: &SpatialGrid) -> Result<Vec<Matrix3<f64>>> {
+    Ok(lattice(ctx, grid)?.operations)
+}
+
 /// The alias mean of the outer products `Q_a Q_b` of the vectors whose squares [`bloch`] averages,
 /// `(6, n)` component-major in the order xx, yy, zz, yz, xz, xy (Bohr^-2). The strain derivative
 /// of the mean square is `-2` times it: the mean of the products, not the product of the mean

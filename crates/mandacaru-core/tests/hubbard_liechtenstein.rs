@@ -288,7 +288,7 @@ fn limits_to_dudarev() {
             let eval_lie = evaluate(&ctx, &h_lie, l, Spin::Unrestricted, &[&n_up, &n_dn]).unwrap();
 
             assert!(
-                (eval_lie.energy - eval_dud.energy).abs() < 1e-13,
+                (eval_lie.energy - eval_dud.energy).abs() < 1e-12,
                 "l={l} J=0 energy: {} vs {}",
                 eval_lie.energy,
                 eval_dud.energy

@@ -95,7 +95,7 @@ class EchoSpectrum:
         Keep maxima at least ``relative_threshold`` times the largest positive
         spectral magnitude. These are sampled bins without peak fitting.
         """
-        from scipy.signal import find_peaks
+        from .._native import find_peaks_1d
 
         threshold = _finite_real(relative_threshold, "relative_threshold")
         if not 0 <= threshold <= 1:
@@ -105,7 +105,7 @@ class EchoSpectrum:
         scale = float(np.max(intensity[positive]))
         if scale == 0:
             return np.empty(0, dtype=np.int64)
-        indices, _ = find_peaks(intensity, height=threshold*scale)
+        indices = find_peaks_1d(intensity, height=threshold * scale)
         return indices[self.energies[indices] > 0]
 
     def to_csv(self, path: str | PathLike[str] = "spectrum.csv") -> Path:

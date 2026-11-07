@@ -13,17 +13,15 @@ VQE / ADAPT-VQE parameter minimization behind one interface, recording the cost
 history so a convergence trace is always available:
 
 * **SPSA** (Simultaneous Perturbation Stochastic Approximation) -- a two-evaluation
-  stochastic-gradient method, implemented natively here;
-* **COBYLA** (Constrained Optimization BY Linear Approximation) -- SciPy;
-* **Nelder-Mead** -- SciPy simplex;
-* **SLSQP** (Sequential Least Squares Programming) -- SciPy, **the default**
+  stochastic-gradient method;
+* **COBYLA** (Constrained Optimization BY Linear Approximation);
+* **Nelder-Mead** -- simplex search;
+* **SLSQP** (Sequential Least Squares Programming) -- **the default**
   on an exact objective (SPSA is, with shots: :data:`SHOT_OPTIMIZER`);
-* **BFGS**, **L-BFGS** -- SciPy quasi-Newton;
-* **CG** -- SciPy nonlinear conjugate gradient, Polak-Ribiere.
+* **BFGS**, **L-BFGS** -- quasi-Newton;
+* **CG** -- nonlinear conjugate gradient, Polak-Ribiere.
 
-Everything but SPSA is dispatched to ``scipy.optimize.minimize``; SPSA is
-implemented natively (SciPy has no equivalent) but shares the same
-:meth:`Optimizer.minimize` interface and :class:`OptimizeResult` output.
+All methods are executed natively in Rust via :class:`mandacaru._native.Context`.
 """
 
 from __future__ import annotations
@@ -32,7 +30,7 @@ from dataclasses import dataclass, field
 from collections.abc import Callable, Sequence
 
 import numpy as np
-from scipy.optimize import minimize
+from .._native import Context
 
 
 @dataclass
@@ -109,23 +107,8 @@ NOISE_INTOLERANT = ("SLSQP", "BFGS", "L-BFGS", "CG")
 DEFAULT_MAXITER = 1000
 DEFAULT_TOL = 1e-12
 
-# Methods implemented natively below; every other one goes to
-# scipy.optimize.minimize.
+# Historical compatibility aliases.
 _CUSTOM_METHODS = ("SPSA",)
-
-#: Mandacaru name -> the name ``scipy.optimize.minimize`` knows it by, for the
-#: methods whose Mandacaru name is not SciPy's.
-#:
-#: ``"L-BFGS"`` is limited-memory BFGS *without* bounds, which is exactly what
-#: SciPy's ``"L-BFGS-B"`` reduces to when no bounds are given -- and a
-#: variational ansatz's parameters are unbounded angles, so the driver never
-#: passes any.  SciPy's bounded spelling is **not** offered as a separate
-#: method: it was, and it ran the same code for the same cost (LiH: 85 steps
-#: and 844 evaluations either way), which is a second name for one thing.
-#:
-#: ``"CG"`` needs no entry: it is SciPy's own name for its nonlinear conjugate
-#: gradient, the Polak-Ribiere variant with the ``max(0, beta)`` restart of
-#: Polak-Ribiere+.
 _SCIPY_ALIASES = {"L-BFGS": "L-BFGS-B"}
 
 #: Methods for which SciPy reads ``tol`` as a **gradient norm** (``gtol``)
@@ -245,22 +228,13 @@ class Optimizer:
           builds its own by finite differences;
         * **stochastic** -- ``"SPSA"``.
 
-        Every method but SPSA goes through ``scipy.optimize.minimize``, under
-        the name :data:`_SCIPY_ALIASES` gives it; SPSA is implemented natively
-        below.
+        Every method goes through native Rust algorithms in :class:`mandacaru._native.Context`.
     maxiter : int
-        Maximum iterations (default :data:`DEFAULT_MAXITER`).  For the SciPy
-        methods this is the ``maxiter`` option; for SPSA it is the number of
-        update steps.
+        Maximum iterations (default :data:`DEFAULT_MAXITER`).
     tol : float, optional
-        Convergence tolerance (default :data:`DEFAULT_TOL`, ``1e-12``).  Passed
-        to SciPy for the SciPy methods; used as the step/cost-change stopping
-        threshold for SPSA, which cannot certify convergence without one.  ``None`` restores each method's own default -- Nelder-Mead's is
-        ``1e-4``, far too loose for a cost in Hartree.
+        Convergence tolerance (default :data:`DEFAULT_TOL`, ``1e-12``).
     options : dict, optional
-        Extra options.  Forwarded to ``scipy.optimize.minimize`` for the SciPy
-        methods; the SPSA hyperparameters (see :meth:`_minimize_spsa`) are
-        read from here for the native method.
+        Extra options (e.g. ``track_best``, ``patience``, ``eps``).
     seed : int, optional
         Seed for the SPSA perturbation RNG (default ``0``); makes runs
         reproducible.  Ignored by the deterministic methods.
@@ -335,40 +309,16 @@ class Optimizer:
                                   success=True, message="no free parameters",
                                   nit=0)
 
-        if self.method in _CUSTOM_METHODS:
-            x, fun, converged, steps = self._minimize_spsa(wrapped, x0)
-            # `success` means a convergence test was met, not that the loop ran:
-            # the native methods stop on their own step criterion, which needs
-            # `tol`.  Without one there is nothing to certify.
-            message = (f"{self.method} met tol={self.tol:g}" if converged else
-                       f"{self.method} ran {self.maxiter} iterations without "
-                       f"meeting a tolerance"
-                       + ("" if self.tol else " (no tol set)"))
-            return OptimizeResult(
-                x=np.asarray(x, dtype=float), fun=float(fun),
-                nfev=len(history), history=history, success=bool(converged),
-                message=message, nit=int(steps))
-
-        # SciPy calls `callback` once per *iteration*, which is the count we
-        # want; `res.nit` is preferred where the method reports it (it is the
-        # method's own bookkeeping), and the tally is the fallback for the ones
-        # that do not -- COBYLA has no `nit` at all.
-        steps = 0
-
-        def count_step(*_args, **_kwargs):
-            nonlocal steps
-            steps += 1
-
-        options = {"maxiter": self.maxiter, **self.options}
         tol = self.tol
         if (tol is not None and self.method in _GRADIENT_NORM_METHODS
-                and "gtol" not in options):
+                and "gtol" not in self.options):
             # A gradient-norm test of the same strength as a function-value
             # one of `tol`; see _GRADIENT_NORM_METHODS.
             tol = float(np.sqrt(tol))
-        fun, jac = wrapped, None
+
+        native_grad = None
         if gradient is not None and self.method in _GRADIENT_METHODS:
-            def fun(x):
+            def native_grad(x):
                 value, grad = gradient(x)
                 grad = np.asarray(grad, dtype=float).ravel()
                 if not np.all(np.isfinite(grad)):
@@ -376,72 +326,41 @@ class Optimizer:
                         f"the gradient is not finite at {np.asarray(x)}; "
                         "the optimization cannot continue")
                 return wrapped_value(x, value), grad
-            jac = True
-        res = minimize(fun, x0, jac=jac,
-                       method=_SCIPY_ALIASES.get(self.method, self.method),
-                       tol=tol, options=options, callback=count_step)
-        reported = getattr(res, "nit", None)
+
+        track_best = bool(self.options.get("track_best", True))
+        patience = max(1, int(self.options.get("patience", 5)))
+        eps = float(self.options.get("eps", 1.4901161193847656e-8))
+
+        ctx = Context(threads=1)
+        res = ctx.minimize(
+            self.method,
+            x0,
+            cost=wrapped,
+            gradient=native_grad,
+            max_iterations=self.maxiter,
+            max_evaluations=self.max_evaluations() or 100000,
+            tolerance=tol,
+            seed=self.seed,
+            track_best=track_best,
+            patience=patience,
+            eps=eps,
+        )
+
+        if self.method == "SPSA":
+            message = (f"{self.method} met tol={self.tol:g}" if res["success"] else
+                       f"{self.method} ran {self.maxiter} iterations without "
+                       f"meeting a tolerance"
+                       + ("" if self.tol else " (no tol set)"))
+        else:
+            message = str(res["message"])
+
         return OptimizeResult(
-            x=np.asarray(res.x, dtype=float), fun=float(res.fun),
-            nfev=len(history), history=history,
-            success=bool(res.success), message=str(res.message),
-            nit=int(reported) if reported is not None else steps)
-
-    # -- native optimizers ------------------------------------------------- #
-
-    def _minimize_spsa(self, cost, x0):
-        """SPSA -- Spall's simultaneous perturbation stochastic approximation.
-
-        Each step estimates the gradient from **two** cost evaluations at
-        ``x +/- c_k * delta`` with a random ``+/-1`` perturbation ``delta``, then
-        takes a decaying step ``a_k``.  By default a **third** evaluation at the
-        new point keeps the best iterate seen, which is what a noiseless
-        state-vector cost wants; ``track_best=False`` is the strict
-        two-evaluation form (the last iterate is returned, evaluated once at
-        the end) -- the one to use when every evaluation is a hardware job.
-
-        Gain sequences follow Spall's practical recommendations, tunable through
-        ``options``: ``a`` (0.2), ``c`` (0.1), ``alpha`` (0.602), ``gamma``
-        (0.101) and the stability constant ``A`` (``0.1 * maxiter``).  The
-        gradient estimate is a single random sample, so one small step proves
-        nothing: convergence is claimed only after ``patience`` (5)
-        **consecutive** steps below ``tol``.
-
-        Returns ``(x, f, converged, steps)``, where ``steps`` is the number of
-        parameter updates taken -- two or three cost evaluations each.
-        """
-        o = self.options
-        a = float(o.get("a", 0.2))
-        c = float(o.get("c", 0.1))
-        alpha = float(o.get("alpha", 0.602))
-        gamma = float(o.get("gamma", 0.101))
-        A = float(o.get("A", 0.1 * self.maxiter))
-        patience = max(1, int(o.get("patience", 5)))
-        track_best = bool(o.get("track_best", True))
-        tol = self.tol if self.tol is not None else 0.0
-
-        rng = np.random.default_rng(self.seed)
-        x = np.array(x0, dtype=float)
-        best_x, best_f = x.copy(), (cost(x) if track_best else None)
-        calm, converged, steps = 0, False, 0
-        for k in range(self.maxiter):
-            steps += 1
-            ak = a / (k + 1 + A) ** alpha
-            ck = c / (k + 1) ** gamma
-            delta = rng.choice([-1.0, 1.0], size=x.shape)
-            fp = cost(x + ck * delta)
-            fm = cost(x - ck * delta)
-            ghat = (fp - fm) / (2.0 * ck) * (1.0 / delta)
-            x = x - ak * ghat
-            if track_best:
-                f = cost(x)
-                if f < best_f:
-                    best_x, best_f = x.copy(), f
-            calm = calm + 1 if tol and ak * np.linalg.norm(ghat) < tol else 0
-            if calm >= patience:
-                converged = True
-                break
-        if not track_best:
-            best_x, best_f = x, cost(x)
-        return best_x, best_f, converged, steps
+            x=np.asarray(res["x"], dtype=float),
+            fun=float(res["fun"]),
+            nfev=len(history),
+            history=history,
+            success=bool(res["success"]),
+            message=message,
+            nit=int(res["steps"]),
+        )
 

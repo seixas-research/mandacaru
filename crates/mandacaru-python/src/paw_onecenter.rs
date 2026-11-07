@@ -19,7 +19,11 @@ use nalgebra::DMatrix;
 use numpy::{
     Complex64, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods,
 };
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{
+    exceptions::PyValueError,
+    prelude::*,
+    types::{PyComplex, PyDict, PyTuple},
+};
 
 fn invalid(message: &str) -> PyErr {
     PyValueError::new_err(message.to_string())
@@ -571,17 +575,60 @@ type ExactAtomOut<'py> = (
 /// `(V, K, D0, coupling, values, factors)` of one sphere: the layout-expanded one-body
 /// blocks, the coupling `-V - Delta W . D0 + K`, and the low-rank factors of the
 /// pair-pair matrix of the real exchange tensor `tensor` (`omega = 0`).
-#[pyfunction]
+#[pyfunction(signature = (
+    context,
+    layout,
+    tensor,
+    terms_or_ls,
+    v_blocks=None,
+    k_blocks=None,
+    d0_blocks=None,
+))]
 fn paw_exact_atom<'py>(
     context: PyRef<'_, PyContext>,
     py: Python<'py>,
     layout: PyReadonlyArray2<'py, i64>,
     tensor: PyReadonlyArrayDyn<'py, f64>,
-    ls: Vec<usize>,
-    v_blocks: Vec<PyReadonlyArray2<'py, f64>>,
-    k_blocks: Vec<PyReadonlyArray2<'py, f64>>,
-    d0_blocks: Vec<PyReadonlyArray2<'py, f64>>,
+    terms_or_ls: Bound<'py, PyAny>,
+    v_blocks: Option<Vec<PyReadonlyArray2<'py, f64>>>,
+    k_blocks: Option<Vec<PyReadonlyArray2<'py, f64>>>,
+    d0_blocks: Option<Vec<PyReadonlyArray2<'py, f64>>>,
 ) -> PyResult<ExactAtomOut<'py>> {
+    let (ls, v_blocks, k_blocks, d0_blocks) = match (v_blocks, k_blocks, d0_blocks) {
+        (Some(v), Some(k), Some(d0)) => {
+            let ls: Vec<usize> = terms_or_ls.extract()?;
+            (ls, v, k, d0)
+        }
+        _ => {
+            let dict = terms_or_ls.cast::<PyDict>()?;
+            let mut entries: Vec<(
+                usize,
+                PyReadonlyArray2<'py, f64>,
+                PyReadonlyArray2<'py, f64>,
+                PyReadonlyArray2<'py, f64>,
+            )> = Vec::new();
+            for (l_obj, tuple_obj) in dict.iter() {
+                let l = l_obj.extract::<usize>()?;
+                let tuple = tuple_obj.cast::<PyTuple>()?;
+                let v: PyReadonlyArray2<'py, f64> = tuple.get_item(0)?.extract()?;
+                let k: PyReadonlyArray2<'py, f64> = tuple.get_item(1)?.extract()?;
+                let d0: PyReadonlyArray2<'py, f64> = tuple.get_item(2)?.extract()?;
+                entries.push((l, v, k, d0));
+            }
+            entries.sort_by_key(|e| e.0);
+            let mut ls = Vec::with_capacity(entries.len());
+            let mut v_vec = Vec::with_capacity(entries.len());
+            let mut k_vec = Vec::with_capacity(entries.len());
+            let mut d0_vec = Vec::with_capacity(entries.len());
+            for (l, v, k, d0) in entries {
+                ls.push(l);
+                v_vec.push(v);
+                k_vec.push(k);
+                d0_vec.push(d0);
+            }
+            (ls, v_vec, k_vec, d0_vec)
+        }
+    };
     let ctx = &context.inner;
     let layout = layout_rows(&layout)?;
     let n = layout.len();
@@ -811,20 +858,60 @@ impl PyOneCenterHybrid {
     /// `{l: V_l}` (`block_ls`, `blocks`); `frozen` lists the spheres' frozen
     /// constants `X0 - V.D0`.
     #[new]
+    #[pyo3(signature = (
+        context,
+        members,
+        tensors,
+        layouts,
+        block_ls_or_blocks,
+        blocks=None,
+        projectors=0,
+        fraction=0.0,
+        frozen=vec![],
+        real_tensors=None,
+    ))]
     fn new(
         context: PyRef<'_, PyContext>,
         members: Vec<Vec<usize>>,
-        tensors: Vec<PyReadonlyArrayDyn<'_, Complex64>>,
+        tensors: Vec<Bound<'_, PyAny>>,
         layouts: Vec<PyReadonlyArray2<'_, i64>>,
-        block_ls: Vec<Vec<usize>>,
-        blocks: Vec<Vec<PyReadonlyArray2<'_, f64>>>,
+        block_ls_or_blocks: Bound<'_, PyAny>,
+        blocks: Option<Vec<Vec<PyReadonlyArray2<'_, f64>>>>,
         projectors: usize,
         fraction: f64,
         frozen: Vec<f64>,
-        real_tensors: bool,
+        real_tensors: Option<bool>,
     ) -> PyResult<Self> {
         let ctx = context.inner.clone();
         let count = members.len();
+
+        let (block_ls, blocks) = match blocks {
+            Some(b) => {
+                let ls: Vec<Vec<usize>> = block_ls_or_blocks.extract()?;
+                (ls, b)
+            }
+            None => {
+                let mut block_ls = Vec::with_capacity(count);
+                let mut blocks_per_sphere = Vec::with_capacity(count);
+                for sphere_item in block_ls_or_blocks.try_iter()? {
+                    let sphere_bound = sphere_item?;
+                    let dict = sphere_bound.cast::<PyDict>()?;
+                    let mut entries: Vec<(usize, PyReadonlyArray2<'_, f64>)> = Vec::new();
+                    for (l_obj, v_obj) in dict.iter() {
+                        let l = l_obj.extract::<usize>()?;
+                        let v: PyReadonlyArray2<'_, f64> = v_obj.extract()?;
+                        entries.push((l, v));
+                    }
+                    entries.sort_by_key(|e| e.0);
+                    let ls: Vec<usize> = entries.iter().map(|e| e.0).collect();
+                    let vs: Vec<PyReadonlyArray2<'_, f64>> = entries.into_iter().map(|e| e.1).collect();
+                    block_ls.push(ls);
+                    blocks_per_sphere.push(vs);
+                }
+                (block_ls, blocks_per_sphere)
+            }
+        };
+
         if [
             tensors.len(),
             layouts.len(),
@@ -841,9 +928,29 @@ impl PyOneCenterHybrid {
         }
         let mut keep = Vec::new();
         let mut atoms = Vec::new();
+        let mut all_real = true;
         for i in 0..count {
-            let (tensor, hold) = copy(&ctx, &tensors[i])?;
-            keep.push(hold);
+            let tensor_any = &tensors[i];
+            let tensor_buf = if let Ok(t_c) = tensor_any.extract::<PyReadonlyArrayDyn<'_, Complex64>>() {
+                all_real = false;
+                let (buf, hold) = copy(&ctx, &t_c)?;
+                keep.push(hold);
+                buf
+            } else if let Ok(t_r) = tensor_any.extract::<PyReadonlyArrayDyn<'_, f64>>() {
+                let view = t_r.as_array();
+                let len = view.len();
+                let bytes = product(&[len, std::mem::size_of::<Complex64>()]).map_err(error)?;
+                let hold = ctx.reserve(bytes).map_err(error)?;
+                let mut data = Vec::with_capacity(len);
+                for &src in view.iter() {
+                    data.push(Complex64::new(src, 0.0));
+                }
+                keep.push(hold);
+                data
+            } else {
+                return Err(invalid("tensor must be a float or complex array"));
+            };
+
             let layout = layout_rows(&layouts[i])?;
             if layout.len() != members[i].len() {
                 return Err(invalid("a sphere's layout and members differ in length"));
@@ -855,14 +962,14 @@ impl PyOneCenterHybrid {
             atoms.push(HybridAtom {
                 v,
                 members: members[i].clone(),
-                tensor,
+                tensor: tensor_buf,
             });
         }
         let inner = Hybrid::new(atoms, projectors, fraction, frozen.iter().sum()).map_err(error)?;
         Ok(Self {
             inner,
             context: ctx,
-            real_tensors,
+            real_tensors: real_tensors.unwrap_or(all_real),
             _held: keep,
         })
     }
@@ -1034,6 +1141,489 @@ fn paw_angular_rule<'py>(
     ))
 }
 
+#[pyfunction]
+#[pyo3(signature=(center, radius, radial, polar, azimuthal, panel=0.0))]
+fn paw_sphere_rule<'py>(
+    py: Python<'py>,
+    center: [f64; 3],
+    radius: f64,
+    radial: usize,
+    polar: usize,
+    azimuthal: usize,
+    panel: f64,
+) -> PyResult<(
+    (Array<'py, f64>, Array<'py, f64>, Array<'py, f64>),
+    Array<'py, f64>,
+    Array<'py, f64>,
+    Array<'py, f64>,
+)> {
+    let (r, w_r) = local_split::radial_rule(radius, panel, radial).map_err(error)?;
+    let (directions, w_ang) = local_split::angular_rule(polar, azimuthal).map_err(error)?;
+    let n_r = r.len();
+    let n_ang = w_ang.len();
+    let total = n_r * n_ang;
+    let mut x = Vec::with_capacity(total);
+    let mut y = Vec::with_capacity(total);
+    let mut z = Vec::with_capacity(total);
+    let mut weights = Vec::with_capacity(total);
+    for i in 0..n_r {
+        let ri = r[i];
+        let w_ri = w_r[i];
+        for j in 0..n_ang {
+            x.push(center[0] + ri * directions[0][j]);
+            y.push(center[1] + ri * directions[1][j]);
+            z.push(center[2] + ri * directions[2][j]);
+            weights.push(w_ri * w_ang[j]);
+        }
+    }
+    let pts = (
+        array(py, &[total], x)?,
+        array(py, &[total], y)?,
+        array(py, &[total], z)?,
+    );
+    let w = array(py, &[total], weights)?;
+    let r_arr = array(py, &[n_r], r)?;
+    let dirs = array(py, &[3, n_ang], directions.into_iter().flatten().collect())?;
+    Ok((pts, w, r_arr, dirs))
+}
+
+/// `(n, 4)` array with rows `[l, m, index, real]` for each projector.
+#[pyfunction]
+fn paw_projector_layout<'py>(
+    py: Python<'py>,
+    projectors: &Bound<'py, PyAny>,
+) -> PyResult<Array<'py, i64>> {
+    let mut data = Vec::new();
+    let mut count = 0;
+    for item in projectors.try_iter()? {
+        let p = item?;
+        let l = p.getattr("l")?.extract::<i64>()?;
+        let m = p.getattr("m")?.extract::<i64>()?;
+        let index = match p.getattr("index") {
+            Ok(idx) => idx.extract::<i64>().unwrap_or(0),
+            Err(_) => 0,
+        };
+        let real = if p.getattr("real")?.is_truthy()? { 1i64 } else { 0i64 };
+        data.push(l);
+        data.push(m);
+        data.push(index);
+        data.push(real);
+        count += 1;
+    }
+    array(py, &[count, 4], data)
+}
+
+/// `(n, 3)` array with rows `[l, m, index]` for each projector.
+#[pyfunction]
+fn paw_projector_members_layout<'py>(
+    py: Python<'py>,
+    projectors: &Bound<'py, PyAny>,
+) -> PyResult<Array<'py, i64>> {
+    let mut data = Vec::new();
+    let mut count = 0;
+    for item in projectors.try_iter()? {
+        let p = item?;
+        let l = p.getattr("l")?.extract::<i64>()?;
+        let m = p.getattr("m")?.extract::<i64>()?;
+        let index = match p.getattr("index") {
+            Ok(idx) => idx.extract::<i64>().unwrap_or(0),
+            Err(_) => 0,
+        };
+        data.push(l);
+        data.push(m);
+        data.push(index);
+        count += 1;
+    }
+    array(py, &[count, 3], data)
+}
+
+/// Map each atom index to the list of projector positions belonging to it, ordered by atom.
+#[pyfunction]
+fn paw_projectors_by_atom<'py>(
+    py: Python<'py>,
+    projectors: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut positions: std::collections::BTreeMap<i64, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    let mut p = 0;
+    for item in projectors.try_iter()? {
+        let proj = item?;
+        let atom = proj.getattr("atom_index")?.extract::<i64>()?;
+        positions.entry(atom).or_default().push(p);
+        p += 1;
+    }
+    let out = PyDict::new(py);
+    for (atom, cols) in positions {
+        out.set_item(atom, cols)?;
+    }
+    Ok(out)
+}
+
+/// Group projector positions by channel `(atom, l, m)`: `{(atom, l, m): [p, ...]}`.
+#[pyfunction]
+fn paw_projector_blocks<'py>(
+    py: Python<'py>,
+    projectors: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut groups: std::collections::HashMap<(i64, Vec<i64>), Vec<(i64, usize)>> =
+        std::collections::HashMap::new();
+    let mut insertion_order: Vec<(i64, Vec<i64>)> = Vec::new();
+    let mut p = 0;
+    for item in projectors.try_iter()? {
+        let proj = item?;
+        let atom = proj.getattr("atom_index")?.extract::<i64>()?;
+        let channel_obj = proj.getattr("channel")?;
+        let mut ch_vec = Vec::new();
+        for val in channel_obj.try_iter()? {
+            ch_vec.push(val?.extract::<i64>()?);
+        }
+        let rad_idx = match proj.getattr("index") {
+            Ok(v) => v.extract::<i64>().unwrap_or(0),
+            Err(_) => 0,
+        };
+        let key = (atom, ch_vec);
+        if !groups.contains_key(&key) {
+            insertion_order.push(key.clone());
+        }
+        groups.entry(key).or_default().push((rad_idx, p));
+        p += 1;
+    }
+
+    let ordered = PyDict::new(py);
+    for key in insertion_order {
+        let entries = groups.get_mut(&key).unwrap();
+        let mut indices: Vec<i64> = entries.iter().map(|&(rad, _)| rad).collect();
+        let mut unique_indices = indices.clone();
+        unique_indices.sort_unstable();
+        unique_indices.dedup();
+        if unique_indices.len() != indices.len() {
+            indices.sort_unstable();
+            let mut key_items = vec![key.0];
+            key_items.extend_from_slice(&key.1);
+            let tuple_str = if key_items.len() == 1 {
+                format!("({},)", key_items[0])
+            } else {
+                format!(
+                    "({})",
+                    key_items
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            return Err(PyValueError::new_err(format!(
+                "projectors of channel (atom, l, m)={} carry duplicate radial indices {:?}",
+                tuple_str, indices
+            )));
+        }
+        entries.sort_by_key(|&(rad, _)| rad);
+        let positions: Vec<usize> = entries.iter().map(|&(_, pos)| pos).collect();
+        let mut tuple_elems: Vec<Bound<'py, PyAny>> = Vec::with_capacity(1 + key.1.len());
+        tuple_elems.push(key.0.into_pyobject(py)?.into_any());
+        for v in &key.1 {
+            tuple_elems.push(v.into_pyobject(py)?.into_any());
+        }
+        let py_tuple = PyTuple::new(py, tuple_elems)?;
+        ordered.set_item(py_tuple, positions)?;
+    }
+    Ok(ordered)
+}
+
+/// Assemble a `(P, P)` block-diagonal matrix over projector channels.
+#[pyfunction(signature = (projectors, blocks=None, diagonal=None))]
+fn paw_assemble_block_matrix<'py>(
+    py: Python<'py>,
+    projectors: &Bound<'py, PyAny>,
+    blocks: Option<&Bound<'py, PyDict>>,
+    diagonal: Option<&Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let p_len = match projectors.len() {
+        Ok(l) => l,
+        Err(_) => {
+            let mut count = 0;
+            for _ in projectors.try_iter()? {
+                count += 1;
+            }
+            count
+        }
+    };
+
+    if blocks.is_none() {
+        let diag_obj = match diagonal {
+            Some(d) => d,
+            None => return Err(PyValueError::new_err("either blocks or a diagonal must be given")),
+        };
+        let mut is_complex = false;
+        let mut complex_diag = Vec::new();
+        for item in diag_obj.try_iter()? {
+            let val = item?;
+            if let Ok(c) = val.cast::<PyComplex>() {
+                let re = c.real();
+                let im = c.imag();
+                if im != 0.0 {
+                    is_complex = true;
+                }
+                complex_diag.push(Complex64::new(re, im));
+            } else if let Ok(f) = val.extract::<f64>() {
+                complex_diag.push(Complex64::new(f, 0.0));
+            } else {
+                return Err(PyValueError::new_err("diagonal elements must be numeric"));
+            }
+        }
+        if complex_diag.len() != p_len {
+            return Err(PyValueError::new_err(format!(
+                "expected {} diagonal entries, got ({},)",
+                p_len,
+                complex_diag.len()
+            )));
+        }
+        if is_complex {
+            let mut data = vec![Complex64::new(0.0, 0.0); p_len * p_len];
+            for i in 0..p_len {
+                data[i * p_len + i] = complex_diag[i];
+            }
+            Ok(array(py, &[p_len, p_len], data)?.into_any())
+        } else {
+            let mut data = vec![0.0f64; p_len * p_len];
+            for i in 0..p_len {
+                data[i * p_len + i] = complex_diag[i].re;
+            }
+            Ok(array(py, &[p_len, p_len], data)?.into_any())
+        }
+    } else {
+        let blocks_dict = blocks.unwrap();
+        let groups = paw_projector_blocks(py, projectors)?;
+
+        let mut normalized: std::collections::HashMap<Vec<i64>, Bound<'py, PyAny>> =
+            std::collections::HashMap::new();
+        for (k, v) in blocks_dict.iter() {
+            let mut key_vec = Vec::new();
+            if let Ok(iter) = k.try_iter() {
+                for part in iter {
+                    key_vec.push(part?.extract::<i64>()?);
+                }
+            } else {
+                key_vec.push(k.extract::<i64>()?);
+            }
+            normalized.insert(key_vec, v);
+        }
+
+        let group_keys: std::collections::BTreeSet<Vec<i64>> = groups
+            .keys()
+            .iter()
+            .map(|k| {
+                let mut vec = Vec::new();
+                if let Ok(iter) = k.try_iter() {
+                    for part in iter {
+                        if let Ok(v) = part.and_then(|p| p.extract::<i64>()) {
+                            vec.push(v);
+                        }
+                    }
+                }
+                vec
+            })
+            .collect();
+        let norm_keys: std::collections::BTreeSet<Vec<i64>> =
+            normalized.keys().cloned().collect();
+
+        let missing: Vec<Vec<i64>> = group_keys.difference(&norm_keys).cloned().collect();
+        let extra: Vec<Vec<i64>> = norm_keys.difference(&group_keys).cloned().collect();
+
+        if !missing.is_empty() || !extra.is_empty() {
+            let format_set = |vecs: &[Vec<i64>]| {
+                let items: Vec<String> = vecs
+                    .iter()
+                    .map(|v| {
+                        if v.len() == 1 {
+                            format!("({},)", v[0])
+                        } else {
+                            format!(
+                                "({})",
+                                v.iter()
+                                    .map(|x| x.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }
+                    })
+                    .collect();
+                format!("[{}]", items.join(", "))
+            };
+            return Err(PyValueError::new_err(format!(
+                "nonlocal blocks do not match the projector channels: missing {}, unmatched {}",
+                format_set(&missing),
+                format_set(&extra)
+            )));
+        }
+
+        let mut is_complex = false;
+        for (_, block_any) in normalized.iter() {
+            if let Ok(arr) = block_any.extract::<PyReadonlyArrayDyn<'py, Complex64>>() {
+                for c in arr.as_array().iter() {
+                    if c.im != 0.0 {
+                        is_complex = true;
+                        break;
+                    }
+                }
+            }
+            if is_complex {
+                break;
+            }
+        }
+
+        if is_complex {
+            let mut out = vec![Complex64::new(0.0, 0.0); p_len * p_len];
+            for (k_obj, positions_obj) in groups.iter() {
+                let mut key_vec = Vec::new();
+                for part in k_obj.try_iter()? {
+                    key_vec.push(part?.extract::<i64>()?);
+                }
+                let positions: Vec<usize> = positions_obj.extract()?;
+                let n = positions.len();
+                let block_any = normalized.get(&key_vec).unwrap();
+                let tuple_str = if key_vec.len() == 1 {
+                    format!("({},)", key_vec[0])
+                } else {
+                    format!(
+                        "({})",
+                        key_vec
+                            .iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                if let Ok(block_arr) = block_any.extract::<PyReadonlyArray2<'py, Complex64>>() {
+                    let shape = block_arr.shape();
+                    if shape != [n, n] {
+                        return Err(PyValueError::new_err(format!(
+                            "block for channel {} must be ({}, {}), got ({}, {})",
+                            tuple_str, n, n, shape[0], shape[1]
+                        )));
+                    }
+                    let view = block_arr.as_array();
+                    for (i, &pi) in positions.iter().enumerate() {
+                        for (j, &pj) in positions.iter().enumerate() {
+                            out[pi * p_len + pj] = view[[i, j]];
+                        }
+                    }
+                } else if let Ok(real_arr) = block_any.extract::<PyReadonlyArray2<'py, f64>>() {
+                    let shape = real_arr.shape();
+                    if shape != [n, n] {
+                        return Err(PyValueError::new_err(format!(
+                            "block for channel {} must be ({}, {}), got ({}, {})",
+                            tuple_str, n, n, shape[0], shape[1]
+                        )));
+                    }
+                    let view = real_arr.as_array();
+                    for (i, &pi) in positions.iter().enumerate() {
+                        for (j, &pj) in positions.iter().enumerate() {
+                            out[pi * p_len + pj] = Complex64::new(view[[i, j]], 0.0);
+                        }
+                    }
+                } else {
+                    return Err(PyValueError::new_err(format!(
+                        "block for channel {} cannot be read as 2D array",
+                        tuple_str
+                    )));
+                }
+            }
+            Ok(array(py, &[p_len, p_len], out)?.into_any())
+        } else {
+            let mut out = vec![0.0f64; p_len * p_len];
+            for (k_obj, positions_obj) in groups.iter() {
+                let mut key_vec = Vec::new();
+                for part in k_obj.try_iter()? {
+                    key_vec.push(part?.extract::<i64>()?);
+                }
+                let positions: Vec<usize> = positions_obj.extract()?;
+                let n = positions.len();
+                let block_any = normalized.get(&key_vec).unwrap();
+                let tuple_str = if key_vec.len() == 1 {
+                    format!("({},)", key_vec[0])
+                } else {
+                    format!(
+                        "({})",
+                        key_vec
+                            .iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                let block_arr: PyReadonlyArray2<'py, f64> = block_any.extract().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "block for channel {} cannot be read as 2D float array",
+                        tuple_str
+                    ))
+                })?;
+                let shape = block_arr.shape();
+                if shape != [n, n] {
+                    return Err(PyValueError::new_err(format!(
+                        "block for channel {} must be ({}, {}), got ({}, {})",
+                        tuple_str, n, n, shape[0], shape[1]
+                    )));
+                }
+                let view = block_arr.as_array();
+                for (i, &pi) in positions.iter().enumerate() {
+                    for (j, &pj) in positions.iter().enumerate() {
+                        out[pi * p_len + pj] = view[[i, j]];
+                    }
+                }
+            }
+            Ok(array(py, &[p_len, p_len], out)?.into_any())
+        }
+    }
+}
+
+/// Calculate coupling blocks for OneCenterExact: `{(atom, l, m): block}`.
+#[pyfunction]
+fn paw_exact_coupling_blocks<'py>(
+    py: Python<'py>,
+    atoms: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    for entry_obj in atoms.try_iter()? {
+        let entry = entry_obj?;
+        let atom = entry.get_item("atom")?.extract::<i64>()?;
+        let own = entry.get_item("projectors")?;
+        let coupling_arr: PyReadonlyArray2<'py, f64> = entry.get_item("coupling")?.extract()?;
+        let coupling_view = coupling_arr.as_array();
+
+        let mut groups: std::collections::BTreeMap<(i64, i64), Vec<(i64, usize)>> =
+            std::collections::BTreeMap::new();
+        let mut i = 0;
+        for p_obj in own.try_iter()? {
+            let p = p_obj?;
+            let l = p.getattr("l")?.extract::<i64>()?;
+            let m = p.getattr("m")?.extract::<i64>()?;
+            let idx = match p.getattr("index") {
+                Ok(v) => v.extract::<i64>().unwrap_or(0),
+                Err(_) => 0,
+            };
+            groups.entry((l, m)).or_default().push((idx, i));
+            i += 1;
+        }
+
+        for ((l, m), mut members) in groups {
+            members.sort_by_key(|&(idx, _)| idx);
+            let rows: Vec<usize> = members.into_iter().map(|(_, idx)| idx).collect();
+            let n = rows.len();
+            let mut block_data = Vec::with_capacity(n * n);
+            for &r1 in &rows {
+                for &r2 in &rows {
+                    block_data.push(coupling_view[[r1, r2]]);
+                }
+            }
+            let block_arr = array(py, &[n, n], block_data)?;
+            let key = PyTuple::new(py, &[atom, l, m])?;
+            out.set_item(key, block_arr)?;
+        }
+    }
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_radial_coulomb, m)?)?;
     m.add_function(wrap_pyfunction!(paw_long_range_kernel, m)?)?;
@@ -1055,6 +1645,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_split_width, m)?)?;
     m.add_function(wrap_pyfunction!(paw_radial_rule, m)?)?;
     m.add_function(wrap_pyfunction!(paw_angular_rule, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_sphere_rule, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_projector_layout, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_projector_members_layout, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_projectors_by_atom, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_projector_blocks, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_assemble_block_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_exact_coupling_blocks, m)?)?;
     m.add_class::<PyOneCenterHybrid>()?;
     Ok(())
 }

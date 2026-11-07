@@ -2,6 +2,7 @@
 //! Dataset decoding and basis recipes are outside this numerical boundary.
 pub(super) mod data;
 pub mod gradient;
+pub(super) mod hubbard;
 pub(super) mod onecenter;
 mod screened;
 pub use screened::{Screened, SpinTerms};
@@ -167,6 +168,7 @@ pub struct Setup {
     species_terms: Vec<onecenter::AtomTerms>,
     /// The species-level terms of a screened hybrid, built once per screening.
     screened: std::sync::Mutex<Vec<(f64, Arc<Vec<ScreenedAtom>>)>>,
+    hubbard: Option<crate::models::hubbard_request::Request>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -198,11 +200,19 @@ pub fn build(
         Some("dual") => false,
         _ => return Err(invalid("PAW projector basis must be raw or dual")),
     };
+    let allow_heavy_dft = metadata.get("allow_heavy_dft").and_then(|v| v.as_bool()).unwrap_or(false);
+    let hubbard = match metadata.get("hubbard") {
+        Some(serde_json::Value::String(s)) => Some(crate::models::hubbard_request::Request::parse(s)?),
+        _ => None,
+    };
     let species = metadata["species"]
         .as_array()
         .ok_or_else(|| invalid("missing PAW species"))?
         .iter()
-        .map(|s| Species::parse(ctx, s, &mut arrays, raw))
+        .map(|s| {
+            let allow_heavy = allow_heavy_dft || s.get("allow_heavy_dft").and_then(|v| v.as_bool()).unwrap_or(false);
+            Species::parse_with_options(ctx, s, &mut arrays, raw, false, allow_heavy)
+        })
         .collect::<Result<Vec<_>>>()?;
     let atoms = metadata["atoms"]
         .as_array()
@@ -271,6 +281,7 @@ pub fn build(
         basis,
         species_terms,
         screened: std::sync::Mutex::new(Vec::new()),
+        hubbard,
     });
     setup.at_geometry(ctx, geometry, grid, kinetic, tolerance, precision)
 }
@@ -598,6 +609,10 @@ impl Setup {
             }),
             charges,
             electrons: count.round() as usize,
+            core_supported: species.iter().all(|s| s.core_supported),
+            hubbard: self.hubbard.as_ref().and_then(|req| {
+                hubbard::build(req, &species, &species_terms, &atoms, &geometry, &c, m).ok().flatten()
+            }),
         };
         let mut integrals = MolecularIntegrals::from_basis(
             ctx,

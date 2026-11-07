@@ -118,18 +118,10 @@ def confinement_potential(r, r_onset: float, width: float,
     for ``r >= r_onset + width``.  Every derivative vanishes at the onset, so
     the confined orbital is smooth there, and the wall is impenetrable.
     """
-    r = np.asarray(r, dtype=float)
-    r0, w = float(r_onset), float(width)
-    if w <= 0.0 or r0 < 0.0:
-        raise ValueError("require width > 0 and r_onset >= 0")
-    v = np.full(r.shape, float(cap))
-    inside = r <= r0
-    ramp = (r > r0) & (r < r0 + w)
-    v[inside] = 0.0
-    x = r[ramp]
-    v[ramp] = np.minimum(
-        float(scale) * np.exp(-w / (x - r0)) / (r0 + w - x) ** 2, float(cap))
-    return v
+    from .. import _native
+    return _native.confinement_potential(
+        np.ascontiguousarray(r, dtype=float),
+        float(r_onset), float(width), float(scale), float(cap))
 
 
 # --------------------------------------------------------------------------- #
@@ -156,7 +148,10 @@ def effective_charge_for_radius(n: int, l: int, target_radius: float) -> float:
 
 def mean_radius(r: np.ndarray, u: np.ndarray) -> float:
     """``<r> = int u^2 r dr`` of a normalized ``u = r R``."""
-    return float(np.trapezoid(u * u * r, r) / np.trapezoid(u * u, r))
+    from .. import _native
+    return float(_native.radial_mean_radius(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(u, dtype=float)))
 
 
 # --------------------------------------------------------------------------- #
@@ -191,8 +186,11 @@ class RadialFunction:
 
     def outer_radius(self, threshold: float = 1e-6) -> float:
         """Largest ``r`` where ``|u|`` still exceeds ``threshold``."""
-        idx = np.nonzero(np.abs(self.u) > threshold)[0]
-        return float(self.r[idx[-1]]) if idx.size else 0.0
+        from .. import _native
+        return float(_native.radial_outer_radius(
+            np.ascontiguousarray(self.r, dtype=float),
+            np.ascontiguousarray(self.u, dtype=float),
+            float(threshold)))
 
 
 def _solve_on(r, potential, l, n_nodes, wall_radius):
@@ -206,14 +204,13 @@ def _solve_on(r, potential, l, n_nodes, wall_radius):
 
 def _tail_radius(r, u, tail_norm: float) -> float:
     """Radius beyond which ``u`` carries at most ``tail_norm`` of its norm."""
-    from scipy.integrate import cumulative_trapezoid
+    from .. import _native
 
-    density = u * u
-    total = float(np.trapezoid(density, r))
-    inner = cumulative_trapezoid(density, r, initial=0.0)
-    tail = 1.0 - inner / total
-    idx = np.nonzero(tail < float(tail_norm))[0]
-    return float(r[idx[0]]) if idx.size else float(r[-1])
+    return float(_native.tail_radius(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(u, dtype=float),
+        float(tail_norm),
+    ))
 
 
 def hydrogenic_function(r, n: int, l: int, z: float, onset: float,
@@ -280,7 +277,8 @@ def minimal_functions(atom, onset: float, width: float,
     r = atom.r
     v_basis = atom.v_effective + confinement_potential(r, onset, width, scale)
     out = []
-    for (n, l) in sorted(atom.occupations):
+    sorted_shells = sorted(atom.occupations)
+    for (n, l) in sorted_shells:
         if atom.occupations[(n, l)] <= 0:
             continue
         u, eps = _solve_on(r, v_basis, l, n - l - 1, onset + width)
@@ -338,7 +336,8 @@ def tier_specification(atom, tier: int) -> list[tuple[int, int, float, str]]:
     # Tier 1: polarization at l_max + 1, diffuse in every valence channel.
     l_pol = l_max + 1
     add(l_pol + 1, l_pol, "polarization", -1)
-    for l in sorted(n_of_l):
+    sorted_channels = sorted(n_of_l)
+    for l in sorted_channels:
         add(n_of_l[l] + 1, l, "diffuse", l)
     if tier == 1:
         return spec
@@ -346,7 +345,7 @@ def tier_specification(atom, tier: int) -> list[tuple[int, int, float, str]]:
     # and a contracted function per valence channel.
     add(l_pol + 2, l_pol + 1, "polarization", -1)
     add(l_pol + 2, l_pol, "noded-polarization", -1)
-    for l in sorted(n_of_l):
+    for l in sorted_channels:
         add(n_of_l[l], l, "contracted", l)
     return spec
 
@@ -365,30 +364,23 @@ def orthonormalize(functions: list[RadialFunction],
     dependent.  A minimal function can never be dropped: that would mean the
     atom's own orbital is missing, which is an error.
     """
-    accepted: list[RadialFunction] = []
-    for f in functions:
-        r = f.r
-        u = f.u.copy()
-        same = [g for g in accepted if g.l == f.l and g.r.shape == r.shape]
-        for _pass in range(3):
-            for g in same:
-                u -= float(np.trapezoid(g.u * u, r)) * g.u
-            norm2 = float(np.trapezoid(u * u, r))
-            if _pass == 0 and norm2 < tol:
-                if f.kind == "minimal":
-                    raise RuntimeError(
-                        f"minimal function {f.label} is linearly dependent")
-                u = None
-                break
-            u /= np.sqrt(norm2)
-        if u is None:
-            continue
-        if u[np.argmax(np.abs(u))] < 0:
-            u = -u
-        accepted.append(RadialFunction(r=r, u=u, n=f.n, l=f.l, kind=f.kind,
-                                       energy=f.energy, z=f.z, onset=f.onset,
-                                       details=dict(f.details)))
-    return accepted
+    if not functions:
+        return []
+    from .. import _native
+    r = np.ascontiguousarray(functions[0].r, dtype=float)
+    u_list = [np.ascontiguousarray(f.u, dtype=float) for f in functions]
+    l_list = [int(f.l) for f in functions]
+    is_minimal = [f.kind == "minimal" for f in functions]
+    labels = [str(f.label) for f in functions]
+    indices, u_ortho = _native.radial_orthonormalize(
+        r, u_list, l_list, is_minimal, labels, float(tol))
+    return [
+        RadialFunction(
+            r=functions[i].r, u=u_ortho[k], n=functions[i].n, l=functions[i].l,
+            kind=functions[i].kind, energy=functions[i].energy, z=functions[i].z,
+            onset=functions[i].onset, details=dict(functions[i].details))
+        for k, i in enumerate(indices)
+    ]
 
 
 # --------------------------------------------------------------------------- #

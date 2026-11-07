@@ -109,9 +109,9 @@ pub(super) fn minimize(
         } else {
             0
         };
-        if calm >= 5 {
+        if calm >= options.patience {
             success = true;
-            message = "five consecutive SPSA updates converged".into();
+            message = "consecutive SPSA updates converged".into();
             break;
         }
     }

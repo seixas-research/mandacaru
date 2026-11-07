@@ -79,24 +79,20 @@ def crystal_input(
         return row
     n, p = c.grid.size, len(c.projectors)
     channels = c.channels
-    blocks = np.zeros((len(channels), p, p), dtype=complex)
-    for a, channel in enumerate(channels):
-        own = c._positions[channel[0]]
-        blocks[a][np.ix_(own, own)] = c.multipole_blocks[channel]
+    native_ctx = getattr(c, "_native_context", None)
+    if native_ctx is None:
+        from .. import _native
+        native_ctx = _native.Context(threads=1)
+    positions_list = [c._positions[ch[0]] for ch in channels]
+    blocks_list = [c.multipole_blocks[ch] for ch in channels]
+    blocks = native_ctx.periodic_multipole_blocks(positions_list, blocks_list, p)
     sym = c.symmetry
-    qsym = np.eye(len(channels), dtype=complex)
     if sym is not None:
-        qsym[:] = 0.0
-        index = {key: i for i, key in enumerate(channels)}
-        for atom_map, rotation in zip(sym.atom_maps, sym.rotations):
-            for a, (atom, degree, order) in enumerate(channels):
-                for other in range(-degree, degree + 1):
-                    source = index.get((int(atom_map[atom]), degree, other))
-                    if source is not None:
-                        qsym[a, source] += (
-                            rotation[degree][order + degree, other + degree]
-                            / sym.n_operations
-                        )
+        qsym = native_ctx.periodic_channel_symmetry(
+            channels, sym.atom_maps, sym.rotations, sym.n_operations
+        )
+    else:
+        qsym = native_ctx.periodic_channel_symmetry(channels)
     initial, moments = c.initial_density()
     core = c.core_density()
     u, uion, eion = c.dense_coulomb()
@@ -104,22 +100,19 @@ def crystal_input(
     short, onsite = c.short_range_ion_compensation(), c.onsite_ion_compensation()
     magnetization = c.initial_magnetization(magnetic_moments)
     if c.has_spin_orbit:
-        # The public ASE scalar initial moments define the z direction.
-        magnetization = np.stack([np.zeros(n), np.zeros(n), magnetization])
-    g2 = np.sum(c.G * c.G, axis=0)
-    kerker = g2 / (g2 + 1.0)
-    kerker.flat[0] = 1.0
-    phase = np.exp(-1j * np.einsum("c,cxyz->xyz", rc.grid_origin(c.grid), c.G))
+        magnetization = native_ctx.periodic_spinor_initial_magnetization(magnetization, n)
+    kerker = native_ctx.periodic_kerker(c.grid.shape, rc.grid_origin(c.grid), c.grid.step)
+    phase = native_ctx.periodic_phase(c.grid.shape, rc.grid_origin(c.grid), c.grid.step)
+    k_cart = np.asarray([d.k for d in c.kpoint_data], dtype=float) if c.kpoint_data else np.zeros((0, 3))
+    k_frac = native_ctx.periodic_fractional_kpoints(k_cart, c.lattice)
     metadata = dict(
         schema_version=1,
         representation="periodic-paw-snapshot",
         energy_unit="Ha",
         length_unit="bohr",
-        grid=dict(
-            shape=list(c.grid.shape),
-            origin=rc.grid_origin(c.grid).tolist(),
-            step=c.grid.step.ravel().tolist(),
-        ),
+        grid=dict(shape=list(c.grid.shape),
+                  origin=rc.grid_origin(c.grid).tolist(),
+                  step=c.grid.step.ravel().tolist()),
         m=c.M,
         p=p,
         channels=len(channels),
@@ -127,14 +120,11 @@ def crystal_input(
         sites=dict(
             centers=[list(map(float, p)) for p in c.centers],
             projector_basis=c.projectors[0].projector_basis,
-            datasets=[
-                dict(symbol=d.symbol, file=getattr(d, "source", ""), sha256=getattr(d, "source_sha256", ""))
-                for d in c.datasets
-            ],
-        ),
+            datasets=[dict(symbol=d.symbol, file=getattr(d, "source", ""), sha256=getattr(d, "source_sha256", ""))
+                      for d in c.datasets]),
         setup=setup_block(c),
         kpoints=[
-            point_input(d, np.asarray(d.k) @ c.lattice / (2 * np.pi), i)
+            point_input(d, k_frac[i], i)
             for i, d in enumerate(c.kpoint_data)
         ],
         blocks=hold("blocks", blocks, complex),
@@ -156,7 +146,7 @@ def crystal_input(
         eion=float(eion),
         ion_constant=float(c.ion_constants()),
         constant=float(constant),
-        reference=float(2 * np.pi * c.sigma**2 * np.sum(c.charges) / c.volume),
+        reference=float(native_ctx.periodic_reference(c.sigma, c.charges, c.volume)),
         electrons=float(electrons),
         spins=2 if not c.has_spin_orbit and unrestricted else 1,
         spinor=c.has_spin_orbit,

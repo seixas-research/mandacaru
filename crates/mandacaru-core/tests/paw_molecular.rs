@@ -76,6 +76,8 @@ fn signed_paw_corrections_stay_separate_from_positive_coulomb_cholesky() {
             }),
             charges: vec![1., 1.],
             electrons: 2,
+            core_supported: true,
+            hubbard: None,
         };
         let integrals = MolecularIntegrals::from_basis(
             &ctx,

@@ -209,22 +209,34 @@ def test_float32_forces_and_stress_are_refused_before_the_scf(monkeypatch):
     assert ran == [] and atoms.calc.result is None
 
 
-@pytest.mark.parametrize("symmetry", [False, True])
-def test_dft_plus_u_forces_and_stress_raise_naming_the_cause(symmetry, monkeypatch):
-    """The same cause whatever the symmetry, before any SCF: the +U force and strain terms do not exist.
-
-    With ``symmetry=True`` the energy path would raise its own symmetry-table ``ValueError`` (it never builds a +U
-    crystal on a reduced mesh), which told the user nothing about the forces; the request is refused first."""
+def test_dft_plus_u_symmetry_reduced_mesh_raises():
+    """With ``symmetry=True`` DFT+U refuses before any SCF because occupations are not symmetrized."""
     atoms = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[7.0] * 3, pbc=True)
     atoms.center()
-    atoms.calc = calculator(grid_spacing=0.3, hubbard_u={"Cu": {"l": "d", "U": 4.0}}, symmetry=symmetry,
+    atoms.calc = calculator(grid_spacing=0.3, hubbard_u={"Cu": {"l": "d", "U": 4.0}}, symmetry=True,
                             periodic_scf_options={"max_iterations": 1})
-    ran = []
-    monkeypatch.setattr(atoms.calc, "run", lambda *a, **k: ran.append("run"))
-    for query in ("get_forces", "get_stress"):
-        with pytest.raises(NotImplementedError, match="forces and stress are not available for a DFT\\+U crystal"):
-            getattr(atoms, query)()
-    assert ran == [] and atoms.calc.result is None
+    with pytest.raises(ValueError, match="DFT\\+U needs the shell occupations symmetrized"):
+        atoms.get_forces()
+
+
+def test_dft_plus_u_hybrid_raises():
+    """Hybrid DFT+U raises NotImplementedError naming the functional."""
+    with pytest.raises(NotImplementedError, match="hybrid functional"):
+        calculator(xc="hse06", hubbard_u={"Cu": {"l": "d", "U": 4.0}})
+
+
+def test_dft_plus_u_forces_and_stress_semilocal():
+    """DFT+U on a semilocal crystal produces valid analytic forces and stress."""
+    atoms = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[7.0] * 3, pbc=True)
+    atoms.center()
+    atoms.calc = calculator(grid_spacing=0.45, hubbard_u={"Cu": {"l": "d", "U": 4.0}}, symmetry=False,
+                            periodic_scf_options={"max_iterations": 50, "tolerance": 1e-8, "density_tolerance": 1e-7, "mixing": 0.25, "width_ha": 0.1 / HARTREE_TO_EV})
+    forces = atoms.get_forces()
+    stress = atoms.get_stress()
+    assert forces.shape == (2, 3)
+    assert stress.shape == (6,)
+    assert not np.isnan(forces).any()
+    assert not np.isnan(stress).any()
 
 
 def test_a_hybrid_on_a_symmetry_reduced_mesh_raises_before_any_force():
@@ -264,14 +276,14 @@ def test_the_stress_of_a_molecule_is_refused_naming_the_cause():
         atoms.get_stress()
 
 
-def test_a_spin_polarized_crystal_has_forces_and_no_stress():
-    """H2 triplet: the unrestricted engine differentiates the energy; the stress of a spin-polarized crystal raises."""
+def test_a_spin_polarized_crystal_has_forces_and_stress():
+    """H2 triplet: the unrestricted engine differentiates the energy and computes forces and stress."""
     atoms = Atoms("HH", cell=[6.2] * 3, pbc=True, positions=[[3.1, 3.3, 2.0], [3.62, 3.0, 4.0]])
     atoms.set_initial_magnetic_moments([1.0, 1.0])
-    atoms.calc = calculator(grid_spacing=0.45, spin=True)
+    atoms.calc = calculator(grid_spacing=0.45, spin=True,
+                            periodic_scf_options=dict(SCF, density_tolerance=1e-8, width_ha=0.1 / HARTREE_TO_EV))
     assert atoms.get_forces().shape == (2, 3)
-    with pytest.raises(NotImplementedError, match="spin-polarized"):
-        atoms.get_stress()
+    assert atoms.get_stress().shape == (6,)
 
 
 # --------------------------------------------------------------------------- #

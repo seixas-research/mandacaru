@@ -6,7 +6,7 @@ use mandacaru_core::{
     quantum::{Basis, Encoding, C64},
     Context,
 };
-use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{Complex64, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use std::sync::Arc;
 
@@ -539,6 +539,10 @@ impl PyMeanField {
     fn converged(&self) -> bool {
         self.inner.converged
     }
+    #[getter]
+    fn hubbard_energy(&self) -> Option<f64> {
+        self.inner.hubbard_energy
+    }
     #[pyo3(signature=(mapping="jordan_wigner"))]
     fn state<'py>(&self, py: Python<'py>, mapping: &str) -> PyResult<Array<'py, C64>> {
         let out = py
@@ -674,6 +678,33 @@ impl PyMeanField {
         }
         out.set_item("has_model", value.has_model())?;
         out.set_item("has_eri", self.integrals.has_eri())?;
+        if let Some(hubbard_energy) = value.hubbard_energy {
+            out.set_item("hubbard_energy", hubbard_energy)?;
+        }
+        if let Some(hubbard_report) = &value.hubbard {
+            let list = pyo3::types::PyList::empty(py);
+            for r in hubbard_report {
+                let item = PyDict::new(py);
+                item.set_item("atom", r.atom)?;
+                item.set_item("symbol", &r.symbol)?;
+                item.set_item("l", r.l)?;
+                item.set_item("shell", mandacaru_core::models::hubbard::shell_letter(r.l).map(String::from))?;
+                item.set_item("u_ha", r.u_ha)?;
+                item.set_item("j_ha", r.j_ha)?;
+                item.set_item("u_eff_ha", r.u_eff_ha)?;
+                item.set_item("energy_ha", r.energy_ha)?;
+                item.set_item("trace", r.trace.clone())?;
+                let p = 2 * r.l + 1;
+                let count = r.n.len() * p * p;
+                let mut vals = Vec::with_capacity(count);
+                for n_spin in &r.n {
+                    vals.extend(n_spin.iter().map(|z| Complex64::new(z.re, z.im)));
+                }
+                item.set_item("n", array(py, &[r.n.len(), p, p], vals)?)?;
+                list.append(item)?;
+            }
+            out.set_item("hubbard", list)?;
+        }
         out.set_item("num_particles", value.particles)?;
         out.set_item("kramers_pairing", value.kramers_pairing)?;
         out.set_item(

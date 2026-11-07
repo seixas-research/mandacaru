@@ -233,8 +233,8 @@ def energy_shift_label(spec) -> str:
     if spec is None:
         return "unconfined"
     if isinstance(spec, dict):
-        inner = ", ".join(f"{k}: {'off' if v is None else format(v, 'g')}"
-                          for k, v in sorted(spec.items()))
+        items = sorted(spec.items())
+        inner = ", ".join(f"{k}: {'off' if v is None else format(v, 'g')}" for k, v in items)
         return f"energy_shift {{{inner}}} eV"
     return f"energy_shift {spec:g} eV"
 
@@ -500,10 +500,10 @@ def polarization_channel(channels) -> int:
     ``channels`` are the ``l`` of the *valence* states: a semicore ``p``
     (sodium's 2p) does not stop sodium's 3s from being polarized with p."""
     present = {int(l) for l in channels}
-    for l in range(max(present) + 1):
-        if l not in present:
-            return l
-    return max(present) + 1
+    top = max(present) + 1
+    for l in range(top):
+        if l not in present: return l
+    return top
 
 
 @dataclass(frozen=True)

@@ -184,10 +184,8 @@ def j_average(values: dict, l: int) -> float:
     reproduces, and the one a spin-orbit-free pseudopotential must be built
     from.
     """
-    ks = kappa_values(l)
-    weights = np.array([degeneracy(k) for k in ks], dtype=float)
-    data = np.array([values[k] for k in ks], dtype=float)
-    return float(np.dot(weights, data) / weights.sum())
+    from .. import _native
+    return float(_native.relativity_j_average(dict(values), int(l)))
 
 
 def spin_orbit_difference(values: dict, l: int) -> float:
@@ -227,21 +225,10 @@ def hydrogenic_dirac_energy(atomic_number: float, n: int, kappa: int,
     :math:`c\to\infty`.  It depends on :math:`n` and :math:`j` only -- the
     Dirac degeneracy of :math:`2p_{1/2}` with :math:`2s_{1/2}`.
     """
-    za = float(atomic_number) / c
-    k = int(kappa)
-    if abs(k) > n:
-        raise ValueError(f"|kappa| = {abs(k)} exceeds n = {n}")
-    if za >= abs(k):
-        raise ValueError(
-            f"Z/c = {za:.4f} reaches |kappa| = {abs(k)}: the point-nucleus "
-            "Dirac equation has no bound state there (Z > 137 for kappa = -1)")
-    gamma = np.sqrt(k * k - za * za)
-    x = za * za / (n - abs(k) + gamma) ** 2
-    # expm1(-log1p(x)/2) rather than (1+x)**-0.5 - 1: the binding energy is
-    # the *difference* of two numbers that agree to (Z/c)^2, so the direct
-    # form loses every digit of it for a light atom or a large c -- 4e-5
-    # relative at Z/c = 1e-6, where the answer is still exactly -Z^2/2n^2.
-    return float(c * c * np.expm1(-0.5 * np.log1p(x)))
+    from .. import _native
+    return float(_native.relativity_hydrogenic_dirac_energy(
+        float(atomic_number), int(n), int(kappa), float(c)
+    ))
 
 
 # --------------------------------------------------------------------------- #
@@ -262,13 +249,12 @@ def potential_derivatives(r, potential, atomic_number: float = 0.0):
     them once per potential and reuses them across every state and every step
     of the :math:`M(\varepsilon)` iteration.
     """
-    r = np.asarray(r, dtype=float)
-    potential = np.asarray(potential, dtype=float)
-    Z = float(atomic_number)
-    smooth = potential + Z / r
-    d_smooth = np.gradient(smooth, r, edge_order=2)
-    d2_smooth = np.gradient(d_smooth, r, edge_order=2)
-    return (Z / (r * r) + d_smooth, -2.0 * Z / (r ** 3) + d2_smooth)
+    from .. import _native
+    return _native.relativity_potential_derivatives(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(potential, dtype=float),
+        float(atomic_number),
+    )
 
 
 def mass_factor(r, potential, energy: float, atomic_number: float = 0.0,
@@ -278,13 +264,13 @@ def mass_factor(r, potential, energy: float, atomic_number: float = 0.0,
     ``derivatives`` is an already-computed ``(V', V'')`` from
     :func:`potential_derivatives`; it is recomputed when omitted.
     """
-    r = np.asarray(r, dtype=float)
-    potential = np.asarray(potential, dtype=float)
-    dV, d2V = (potential_derivatives(r, potential, atomic_number)
-               if derivatives is None else derivatives)
-    two_c2 = 2.0 * c * c
-    M = 1.0 + (energy - potential) / two_c2
-    return (np.maximum(M, MASS_FLOOR), -dV / two_c2, -d2V / two_c2)
+    from .. import _native
+    derivs = ((np.ascontiguousarray(derivatives[0], dtype=float),
+              np.ascontiguousarray(derivatives[1], dtype=float))
+             if derivatives is not None else None)
+    return _native.relativity_mass_factor(
+        np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(potential, dtype=float),
+        float(energy), float(atomic_number), float(c), derivs)
 
 
 def darwin_spin_orbit_term(r, potential, kappa, M, atomic_number=0.0,
@@ -313,17 +299,15 @@ def darwin_spin_orbit_term(r, potential, kappa, M, atomic_number=0.0,
     rather than shrank -- while every :math:`l > 0` channel, whose wave is
     suppressed where the cancellation is bad, converged cleanly at rate 4.
     """
-    r = np.asarray(r, dtype=float)
-    potential = np.asarray(potential, dtype=float)
-    Z = float(atomic_number)
-    k = int(kappa)
-    smooth = potential + Z / r
-    d_smooth = np.gradient(smooth, r, edge_order=2)
-    d2_smooth = np.gradient(d_smooth, r, edge_order=2)
-    bracket = (-(1.0 + k) * Z / r ** 3
-               + 0.5 * d2_smooth
-               - k * d_smooth / r)
-    return bracket / (2.0 * c * c * M)
+    from .. import _native
+    return _native.relativity_darwin_spin_orbit(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(potential, dtype=float),
+        int(kappa),
+        np.ascontiguousarray(M, dtype=float),
+        float(atomic_number),
+        float(c),
+    )
 
 
 def relativistic_f(r, potential, l: int, kappa: int, energy: float,
@@ -342,19 +326,17 @@ def relativistic_f(r, potential, l: int, kappa: int, energy: float,
     :math:`W`; multiply by :math:`M^{1/2}` for :math:`P = rg`
     (:func:`large_component`).
     """
-    r = np.asarray(r, dtype=float)
-    potential = np.asarray(potential, dtype=float)
-    key = _resolve(treatment)
-    centrifugal = l * (l + 1) / (r * r)
-    if key == "none":
-        return centrifugal + 2.0 * (potential - energy)
-
-    k = SCALAR_KAPPA if key == "scalar" else int(kappa)
-    M, dM, _d2M = mass_factor(r, potential, energy, atomic_number, c)
-    return (centrifugal
-            + darwin_spin_orbit_term(r, potential, k, M, atomic_number, c)
-            + 3.0 * dM * dM / (4.0 * M * M)
-            + 2.0 * M * (potential - energy))
+    from .. import _native
+    return _native.relativity_f_evaluate(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(potential, dtype=float),
+        int(l),
+        int(kappa),
+        float(energy),
+        float(atomic_number),
+        float(c),
+        str(treatment),
+    )
 
 
 def spin_orbit_radial(r, potential, atomic_number: float = 0.0,
@@ -387,19 +369,22 @@ def spin_orbit_radial(r, potential, atomic_number: float = 0.0,
     :func:`potential_derivatives`, so ``atomic_number`` should say how much of
     ``potential`` is :math:`-Z/r`.
     """
-    r = np.asarray(r, dtype=float)
-    potential = np.asarray(potential, dtype=float)
-    dV, _d2V = potential_derivatives(r, potential, atomic_number)
-    xi = dV / (2.0 * c * c * r)
-    if mass_corrected:
-        M = np.maximum(1.0 + (energy - potential) / (2.0 * c * c), MASS_FLOOR)
-        xi = xi / (M * M)
-    return xi
+    from .. import _native
+    return _native.relativity_spin_orbit_radial(
+        np.ascontiguousarray(r, dtype=float),
+        np.ascontiguousarray(potential, dtype=float),
+        float(atomic_number),
+        float(c),
+        bool(mass_corrected),
+        float(energy),
+    )
 
 
 def large_component(w, M):
     r""":math:`P = M^{1/2}W` -- what the rest of the code calls ``u``."""
-    return np.asarray(w, dtype=float) * np.sqrt(np.asarray(M, dtype=float))
+    from .. import _native
+    return _native.relativity_large_component(
+        np.ascontiguousarray(w, dtype=float), np.ascontiguousarray(M, dtype=float))
 
 
 def small_component(r, P, kappa: int, M, c: float = SPEED_OF_LIGHT):
@@ -407,10 +392,10 @@ def small_component(r, P, kappa: int, M, c: float = SPEED_OF_LIGHT):
 
     Exact given :math:`P`; the derivative is taken on the grid.
     """
-    r = np.asarray(r, dtype=float)
-    P = np.asarray(P, dtype=float)
-    dP = np.gradient(P, r, edge_order=2)
-    return (dP + int(kappa) * P / r) / (2.0 * c * np.asarray(M, dtype=float))
+    from .. import _native
+    return _native.relativity_small_component(
+        np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(P, dtype=float),
+        int(kappa), np.ascontiguousarray(M, dtype=float), float(c))
 
 
 def _resolve(treatment: str) -> str:

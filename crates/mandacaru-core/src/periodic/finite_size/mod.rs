@@ -13,7 +13,7 @@ pub use ccmh::{
     ccmh_extrapolate, structure_factor_from_rdms, Ccmh, CcmhShell, StructureFactor,
     DEFAULT_SHELLS, QUADRATIC_REGIME_SPREAD,
 };
-pub use kzk::{kzk, Fit, Kzk, Vacuum, DENSITY_FLOOR, HARTREE_PER_RYDBERG};
+pub use kzk::{kzk, kzk_flexible, Fit, Kzk, Vacuum, DENSITY_FLOOR, HARTREE_PER_RYDBERG};
 pub use mpc::{mpc_from_hole_energies, mpc_hole_contraction, verify_hole_trace, Mpc};
 
 use crate::{Error, Result};

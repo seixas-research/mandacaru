@@ -73,6 +73,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .. import _native
 from ..basis import hse
 from . import vv10
 from ..basis.xc import DENSITY_FLOOR, xc_partials, xc_potential
@@ -331,9 +332,7 @@ def product_rule_gradient(orbitals, orbital_gradients, D) -> np.ndarray:
     :math:`\tau` put a 0.3 uHa ripple on the r2SCAN energy of a molecule
     moved across the grid (HISTORY.md, 2026-10-19).
     """
-    return np.stack([2.0 * np.real(np.sum(orbitals * (D @ dphi.conj()),
-                                          axis=0))
-                     for dphi in orbital_gradients])
+    return _native.xc_product_rule_gradient(orbitals, orbital_gradients, D)
 
 
 def gradient_term_matrix(orbitals, orbital_gradients, field, dV) -> np.ndarray:
@@ -342,10 +341,7 @@ def gradient_term_matrix(orbitals, orbital_gradients, field, dV) -> np.ndarray:
     :math:`\int\mathbf W\cdot\nabla\rho` with respect to the density matrix
     when :math:`\nabla\rho` is :func:`product_rule_gradient`, for the vector
     field ``field`` (``XCTerms.gradient_potential``)."""
-    half = 0.0
-    for component, dphi in zip(field, orbital_gradients):
-        half = half + (orbitals.conj() * component) @ dphi.T
-    return (half + half.conj().T) * dV
+    return _native.xc_gradient_term_matrix(orbitals, orbital_gradients, field, float(dV))
 
 
 def gradient_term_derivative(grid, orbitals, orbital_gradients, moved,
@@ -354,14 +350,8 @@ def gradient_term_derivative(grid, orbitals, orbital_gradients, moved,
     move by ``moved`` (``(M, ngrid)``, zero rows for the ones that stay)
     under the fixed ``field``: the terms with one moved function, value or
     gradient."""
-    out = 0.0
-    for component, dphi, dmoved in zip(field, orbital_gradients,
-                                       gradient(grid, moved)):
-        out = out + ((moved.conj() * component) @ dphi.T
-                     + (orbitals.conj() * component) @ dmoved.T
-                     + (dmoved.conj() * component) @ orbitals.T
-                     + (dphi.conj() * component) @ moved.T)
-    return out * grid.dV
+    dmoved = gradient(grid, moved)
+    return _native.xc_gradient_term_derivative(orbitals, orbital_gradients, moved, dmoved, field, float(grid.dV))
 
 
 def _clipped(raw, potential) -> np.ndarray:
@@ -682,72 +672,64 @@ def core_tau_function(dataset):
     core = xc_core_density(dataset)
     if core is None:
         return None
-    from scipy.interpolate import CubicSpline
 
-    r = np.asarray(dataset.r, dtype=float)
-    spline = CubicSpline(r, core)
-    slope = spline.derivative()(r)
-    floor = CORE_TAU_FLOOR * float(np.max(np.abs(core)))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        tau = np.where(core > floor, slope * slope / (8.0 * core), 0.0)
+    r = np.ascontiguousarray(dataset.r, dtype=np.float64)
+    core = np.ascontiguousarray(core, dtype=np.float64)
+    tau = _native.core_tau_radial_table(r, core, CORE_TAU_FLOOR)
     return _radial_spline(r, tau)
 
 
 def _radial_spline(r, values):
     """``radius -> values`` by a cubic spline, zero beyond the table."""
-    from scipy.interpolate import CubicSpline
+    r_arr = np.ascontiguousarray(r, dtype=np.float64)
+    val_arr = np.ascontiguousarray(values, dtype=np.float64)
+    return lambda q: _native.radial_cubic_spline_evaluate(
+        r_arr, val_arr, np.ascontiguousarray(q, dtype=np.float64)
+    )
 
-    spline = CubicSpline(r, values)
-    edge = float(r[-1])
 
-    def function(radius):
-        radius = np.asarray(radius, dtype=float)
-        return np.where(radius <= edge, spline(np.clip(radius, r[0], edge)),
-                        0.0)
-    return function
+def _core_tables(datasets, centers, is_tau=False):
+    tables = []
+    for d, c in zip(datasets or (), centers or ()):
+        core = xc_core_density(d)
+        if core is not None:
+            r = np.ascontiguousarray(d.r, dtype=np.float64)
+            c_arr = np.ascontiguousarray(core, dtype=np.float64)
+            vals = _native.core_tau_radial_table(r, c_arr, CORE_TAU_FLOOR) if is_tau else c_arr
+            tables.append((r.tolist(), vals.tolist(), (float(c[0]), float(c[1]), float(c[2]))))
+    return tables
+
+
+def _place_tables(grid, tables):
+    if not tables:
+        return None
+    x = np.ascontiguousarray(grid.X.ravel(), dtype=np.float64)
+    y = np.ascontiguousarray(grid.Y.ravel(), dtype=np.float64)
+    z = np.ascontiguousarray(grid.Z.ravel(), dtype=np.float64)
+    return np.asarray(_native.xc_place_radial_densities(x, y, z, tables))
 
 
 def core_tau_on_grid(grid, datasets, centers) -> np.ndarray | None:
-    """Sum of the atoms' core kinetic-energy densities on the flat grid.
-
-    The counterpart of :func:`core_density_on_grid`, same frame and same
-    ``None`` when no dataset carries a core correction.
-    """
-    return _place(grid, [core_tau_function(d) for d in datasets or ()],
-                  centers)
-
-
-def _place(grid, functions, centers) -> np.ndarray | None:
-    total = None
-    for function, center in zip(functions, centers):
-        if function is None:
-            continue
-        distance = np.sqrt((grid.X - center[0]) ** 2
-                           + (grid.Y - center[1]) ** 2
-                           + (grid.Z - center[2]) ** 2).reshape(-1)
-        values = function(distance)
-        total = values if total is None else total + values
-    return total
+    """Sum of the atoms' core kinetic-energy densities on the flat grid."""
+    return _place_tables(grid, _core_tables(datasets, centers, is_tau=True))
 
 
 def core_density_on_grid(grid, datasets, centers) -> np.ndarray | None:
-    r"""Sum of the datasets' partial core densities on the flat grid.
+    r"""Sum of the datasets' partial core densities on the flat grid."""
+    return _place_tables(grid, _core_tables(datasets, centers, is_tau=False))
 
-    ``centers`` are the atomic positions **in Bohr** (the frame of
-    :class:`~mandacaru.integrals.potentials.Potentials`), one per dataset.
-    ``None`` when no dataset carries a core correction.
-    """
-    return _place(grid, [core_density_function(d) for d in datasets or ()],
-                  centers)
+
+_place = core_density_on_grid
 
 
 def _valence_xc_terms(r, valence, core, functional, relativistic):
     r""":math:`E_{xc}[\rho_v+\rho_c] - \int\rho_v v_{xc}[\rho_v+\rho_c]` radially."""
-    shell = 4.0 * np.pi * r * r
-    e_xc, v_xc = xc_potential(r, valence + core, functional,
-                              relativistic=relativistic)
-    return float(np.trapezoid((valence + core) * e_xc * shell, r)
-                 - np.trapezoid(valence * v_xc * shell, r))
+    r_arr = np.ascontiguousarray(r, dtype=np.float64)
+    v_arr = np.ascontiguousarray(valence, dtype=np.float64)
+    c_arr = np.ascontiguousarray(core, dtype=np.float64)
+    e_xc, v_xc = xc_potential(r_arr, v_arr + c_arr, functional,
+                               relativistic=relativistic)
+    return _native.xc_valence_terms(r_arr, v_arr, c_arr, e_xc, v_xc)
 
 
 def core_correction_offset(dataset) -> float:

@@ -86,10 +86,9 @@ def apply_exponential(generator: PauliSum, angle: float, vector) -> np.ndarray:
     exponential has the closed form
     :math:`e^{\theta A} = 1 + \sin\theta\,A + (1-\cos\theta)\,A^2` -- two sparse
     matrix-vector products.  A generator that fails the identity goes through
-    :func:`scipy.sparse.linalg.expm_multiply` instead, so the result is exact
-    either way.
+    native sparse scaling and squaring instead, so the result is exact either way.
     """
-    from scipy.sparse.linalg import expm_multiply
+    from .. import _native
 
     vector = np.asarray(vector, dtype=complex)
     if generator.num_qubits and vector.shape[0] != 2 ** generator.num_qubits:
@@ -104,7 +103,7 @@ def apply_exponential(generator: PauliSum, angle: float, vector) -> np.ndarray:
     if data.size == 0 or float(np.max(np.abs(data))) < 1e-9 * scale:
         return (vector + np.sin(angle) * (A @ vector)
                 + (1.0 - np.cos(angle)) * (A2 @ vector))
-    return expm_multiply(float(angle) * A, vector)
+    return _native.sparse_expm_multiply(A.data, A.indices, A.indptr, float(angle), vector)
 
 
 #: How the generators act on the reference.  ``"product"`` is

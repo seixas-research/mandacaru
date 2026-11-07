@@ -198,6 +198,29 @@ pub fn dataset_weights(
     weights_parts(ctx, &view, r, reference, basis, wave)
 }
 
+/// Shell weights from separate wave vectors, vanderbilt matrix and occupations.
+pub fn channel_weights(
+    ctx: &Context,
+    waves: &[impl AsRef<[f64]>],
+    vanderbilt: &[f64],
+    r_cut: f64,
+    r: &[f64],
+    occupations: &[f64],
+    basis: Basis,
+) -> Result<Vec<f64>> {
+    let view = Channel {
+        l: 0,
+        waves: waves.len(),
+        ae: &[],
+        ps: &[],
+        vanderbilt,
+        r_cut,
+    };
+    let wave = |i: usize| waves[i].as_ref();
+    let reference = reference_parts(&view, r, occupations, wave)?;
+    weights_parts(ctx, &view, r, reference, basis, wave)
+}
+
 fn weights_parts<'a>(
     ctx: &Context,
     channel: &Channel<'_>,

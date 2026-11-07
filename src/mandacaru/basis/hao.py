@@ -17,7 +17,8 @@ engine delegates here, so the radial/angular formula lives in exactly one place.
 from __future__ import annotations
 
 import numpy as np
-from scipy import special
+
+from .. import _native
 
 from ..units import to_bohr
 from ._config import (_AUFBAU_ORDER, _L_CAPACITY, _SLATER_GROUP_ORDER,
@@ -68,12 +69,7 @@ class HydrogenicAtomicOrbital(BasisFunction):
         self.Z = float(Z)
         self.center = (np.zeros(3) if center is None
                        else to_bohr(center, units))
-        # Precompute the pieces that do not depend on the sampling point.
-        num = special.factorial(self.n - self.l - 1)
-        den = 2 * self.n * special.factorial(self.n + self.l)
-        self._radial_norm = np.sqrt(
-            (2 * self.Z / (self.n * _A0)) ** 3 * num / den)
-        self._laguerre = special.genlaguerre(self.n - self.l - 1, 2 * self.l + 1)
+        self._radial_norm = float(_native.hydrogenic_radial_norm(self.n, self.l, self.Z))
 
     @property
     def state(self) -> tuple[int, int, int]:
@@ -156,9 +152,13 @@ class HydrogenicAtomicOrbital(BasisFunction):
     def radial(self, r) -> np.ndarray:
         """Radial function ``R_nl(r)`` (Bohr), normalized as ``int R^2 r^2 dr = 1``."""
         r = np.asarray(r, dtype=float)
+        shape = r.shape
         rho = (2 * self.Z * r) / (self.n * _A0)
-        return (self._radial_norm * np.exp(-rho / 2) * (rho ** self.l)
-                * self._laguerre(rho))
+        lag = _native.hydrogenic_laguerre(
+            self.n - self.l - 1, float(2 * self.l + 1),
+            np.ascontiguousarray(rho.ravel(), dtype=float)
+        ).reshape(shape)
+        return self._radial_norm * np.exp(-rho / 2) * (rho ** self.l) * lag
 
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample :math:`\\psi_{nlm}` on Cartesian coordinates (Bohr)."""
@@ -171,9 +171,7 @@ class HydrogenicAtomicOrbital(BasisFunction):
         theta = np.arccos(np.clip(zr / r, -1.0, 1.0))
         phi = np.arctan2(yr, xr)
 
-        rho = (2 * self.Z * r) / (self.n * _A0)
-        R_nl = self._radial_norm * np.exp(-rho / 2) * (rho ** self.l) \
-            * self._laguerre(rho)
+        R_nl = self.radial(r)
         Y_lm = spherical_harmonic(self.l, self.m, theta, phi, real=self.real)
         return np.asarray(R_nl * Y_lm, dtype=_dtype(self.real))
 

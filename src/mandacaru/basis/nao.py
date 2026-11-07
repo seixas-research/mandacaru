@@ -42,8 +42,8 @@ at ``r_c``.
 from __future__ import annotations
 
 import numpy as np
-from scipy.interpolate import CubicSpline
 
+from .. import _native
 from ..units import EV_TO_HARTREE, to_bohr
 from ._angular import sample_dtype as _dtype
 from ._angular import spherical_coords, spherical_harmonic
@@ -157,9 +157,6 @@ class NumericalAtomicOrbital(BasisFunction):
 
         self._r_grid, self._R_grid, self.energy = solve_confined_radial(
             self.n, self.l, self.Z, self.r_c, n_grid)
-        # Cubic spline of the sampled radial function; zero outside [0, r_c].
-        self._spline = CubicSpline(self._r_grid, self._R_grid,
-                                   extrapolate=False)
 
     @property
     def state(self) -> tuple[int, int, int]:
@@ -167,15 +164,13 @@ class NumericalAtomicOrbital(BasisFunction):
 
     def radial(self, r) -> np.ndarray:
         """Interpolated radial function ``R_{nl}(r)`` (0 for ``r >= r_c``)."""
-        r = np.asarray(r, dtype=float)
-        # Below the first grid point continue as R(r_0) (r/r_0)^l, so an s
-        # orbital keeps its peak when a nucleus sits exactly on a grid node.
-        r0 = float(self._r_grid[0])
-        R = self._spline(np.maximum(r, r0))
-        if r0 > 0.0:
-            R = np.where(r < r0, R * (np.maximum(r, 0.0) / r0) ** self.l, R)
-        # Beyond r_c the spline returns NaN -> the confined orbital is 0.
-        return np.where(np.isnan(R) | (r >= self.r_c), 0.0, R)
+        shape = np.shape(r)
+        res = _native.radial_orbital_evaluate(
+            self._r_grid, self._R_grid,
+            np.ascontiguousarray(np.asarray(r, dtype=float).ravel(), dtype=float),
+            int(self.l), float(self.r_c),
+        )
+        return res.reshape(shape)
 
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample ``psi_{nlm}`` on Cartesian coordinates (Bohr)."""

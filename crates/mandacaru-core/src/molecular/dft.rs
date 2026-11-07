@@ -85,6 +85,8 @@ struct Evaluation {
     hartree: f64,
     xc: f64,
     fields: Option<Fields>,
+    hubbard_energy: Option<f64>,
+    hubbard_report: Option<Vec<crate::molecular::hubbard::MolecularHubbardReport>>,
 }
 /// The grid fields behind one evaluation that a derivative of the energy needs:
 /// the valence spin densities, the Hartree potential of their sum and the
@@ -430,9 +432,21 @@ fn evaluate_with(
         }
         _ => None,
     };
+    let hubbard_eval = if let Some(hubbard) = integrals
+        .corrections
+        .as_ref()
+        .and_then(|c| c.hubbard.as_ref())
+    {
+        Some(hubbard.evaluate(ctx, d)?)
+    } else {
+        None
+    };
     for s in 0..d.len() {
         let v = Matrix::from_fn(m, m, |a, b| C64::new(sums[s][(a, b)] * dv, 0.));
         let mut fock = h + v + &augmentation;
+        if let Some((_, delta_focks, _)) = &hubbard_eval {
+            fock += Matrix::from_fn(m, m, |a, b| C64::new(delta_focks[s][(a, b)], 0.));
+        }
         if let Some(screening) = screened {
             let spins = if d.len() == 1 { 2. } else { 1. };
             let (_, exchange) = scf::jk(&screening.eri, m, &d[s]);
@@ -458,8 +472,12 @@ fn evaluate_with(
     }
     let eone =
         d.iter().map(|d| (d * h).trace().re).sum::<f64>() * if d.len() == 1 { 2. } else { 1. };
-    let (energy, hartree_energy, xc_energy) = (
-        eone + eh + terms.energy + exact_energy + paw.map_or(0., |p| p.constant),
+    let hubbard_energy = hubbard_eval.as_ref().map(|(e, _, _)| *e);
+    let mut energy = eone + eh + terms.energy + exact_energy + paw.map_or(0., |p| p.constant);
+    if let Some(e_u) = hubbard_energy {
+        energy += e_u;
+    }
+    let (hartree_energy, xc_energy) = (
         eh,
         terms.energy + exact_energy,
     );
@@ -483,6 +501,8 @@ fn evaluate_with(
         hartree: hartree_energy,
         xc: xc_energy,
         fields,
+        hubbard_energy,
+        hubbard_report: hubbard_eval.map(|(_, _, r)| r),
     })
 }
 /// A screened hybrid's exact exchange: the short-range pair integrals, the
@@ -685,7 +705,12 @@ impl MolecularIntegrals {
                 }
                 starts.push(pair);
             }
-            let mut best: Option<(Candidate, f64, f64)> = None;
+            let mut best: Option<(
+                Candidate,
+                f64,
+                f64,
+                Option<(f64, Vec<crate::molecular::hubbard::MolecularHubbardReport>)>,
+            )> = None;
             for start in starts {
                 let density = |c: &Vec<Matrix>| -> Vec<Matrix> {
                     c.iter()
@@ -796,15 +821,19 @@ impl MolecularIntegrals {
                     densities: d,
                     energies,
                 };
-                if best.as_ref().is_none_or(|(b, _, _)| {
+                let hubbard_data = match (value.hubbard_energy, value.hubbard_report) {
+                    (Some(e), Some(r)) => Some((e, r)),
+                    _ => None,
+                };
+                if best.as_ref().is_none_or(|(b, _, _, _)| {
                     (candidate.converged && !b.converged)
                         || (candidate.converged == b.converged
                             && candidate.energy < b.energy - 1e-12)
                 }) {
-                    best = Some((candidate, value.hartree, value.xc));
+                    best = Some((candidate, value.hartree, value.xc, hubbard_data));
                 }
             }
-            let (candidate, eh, exc) = best.unwrap();
+            let (candidate, eh, exc, hubbard_data) = best.unwrap();
             self.finish(
                 if unrestricted { "uhf" } else { "rhf" },
                 particles,
@@ -812,6 +841,7 @@ impl MolecularIntegrals {
                 candidate,
                 workspace,
                 Some((functional, eh, exc)),
+                hubbard_data,
             )
         })
     }
@@ -864,6 +894,8 @@ mod tests {
                 potential: DMatrix::zeros(m, m),
                 charges: vec![1., 1.],
                 electrons: 2,
+                core_supported: true,
+                hubbard: None,
                 pairs: Arc::new(PairCorrection {
                     factors: vec![],
                     weights: vec![],

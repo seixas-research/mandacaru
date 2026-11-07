@@ -194,13 +194,12 @@ def _channel_arrays(dataset, *, occupied: bool = False) -> dict:
 
 def _layout(projectors) -> np.ndarray:
     """``(n, 4)`` rows ``l, m, index, real`` of a sphere's projectors."""
-    return np.array([[p.l, p.m, p.index, int(bool(p.real))]
-                     for p in projectors], dtype=np.int64).reshape(-1, 4)
+    return _native.paw_projector_layout(projectors)
 
 
 def _members_layout(projectors) -> np.ndarray:
     """``(n, 3)`` rows ``l, m, index`` of a sphere's projectors."""
-    return np.ascontiguousarray(_layout(projectors)[:, :3])
+    return _native.paw_projector_members_layout(projectors)
 
 
 def _projector_basis(projectors, basis):
@@ -312,10 +311,7 @@ class OneCenterTerms:
 
 
 def _by_atom(projectors) -> dict:
-    positions: dict = {}
-    for p, projector in enumerate(projectors):
-        positions.setdefault(int(projector.atom_index), []).append(p)
-    return positions
+    return _native.paw_projectors_by_atom(projectors)
 
 
 class OneCenterHybrid:
@@ -347,10 +343,12 @@ class OneCenterHybrid:
         self.omega = float(omega)
         self.fraction = float(fraction)
         self.n_projectors = len(projectors)
-        members, tensors, layouts, block_ls, blocks, frozen = ([] for _ in
-                                                               range(6))
-        real_tensors = True
-        for atom, columns in sorted(_by_atom(projectors).items()):
+        members = []
+        tensors = []
+        layouts = []
+        blocks = []
+        frozen = []
+        for atom, columns in _by_atom(projectors).items():
             dataset = datasets[atom]
             own = [projectors[p] for p in columns]
             basis = _projector_basis(own, None)
@@ -358,16 +356,15 @@ class OneCenterHybrid:
                                                 basis)
             constant, per_l = frozen_exchange_terms(dataset, self.omega,
                                                     basis)
-            real_tensors = real_tensors and np.isrealobj(tensor)
             members.append(columns)
-            tensors.append(np.ascontiguousarray(tensor, dtype=complex))
+            tensors.append(tensor)
             layouts.append(_members_layout(own))
-            block_ls.append(sorted(per_l))
-            blocks.append([per_l[l] for l in sorted(per_l)])
+            blocks.append(per_l)
             frozen.append(constant)
         self._native = _native.OneCenterHybrid(
-            context(), members, tensors, layouts, block_ls, blocks,
-            self.n_projectors, self.fraction, frozen, real_tensors)
+            context(), members, tensors, layouts, blocks,
+            projectors=self.n_projectors, fraction=self.fraction,
+            frozen=frozen)
         #: The per-species frozen constant (Hartree), fraction included.
         self.constant = self._native.constant
 
@@ -598,18 +595,15 @@ class OneCenterExact:
                 "crystal, which has no Hartree-Fock path")
         self.n_projectors = len(projectors)
         self.atoms = []
-        for atom, members in sorted(_by_atom(projectors).items()):
+        for atom, members in _by_atom(projectors).items():
             dataset = datasets[atom]
             own = [projectors[p] for p in members]
             basis = _projector_basis(own, None)
             W = one_center_exchange_tensor(dataset, own, 0.0, basis)
             terms = exact_one_center_terms(dataset, basis)
-            ls = sorted(terms)
             V, K, D0, coupling, values, factors = _native.paw_exact_atom(
-                context(), _members_layout(own), W, ls,
-                [terms[l][0] for l in ls], [terms[l][1] for l in ls],
-                [terms[l][2] for l in ls])
-            self.atoms.append({"atom": atom, "members": np.asarray(members),
+                context(), _members_layout(own), W, terms)
+            self.atoms.append({"atom": atom, "members": members,
                                "projectors": own, "W": W, "V": V, "K": K,
                                "D0": D0, "coupling": coupling,
                                "values": values, "factors": factors})
@@ -621,19 +615,7 @@ class OneCenterExact:
 
     def coupling_blocks(self) -> dict:
         """``{(atom, l, m): block}`` to add to the nonlocal coupling."""
-        out = {}
-        for entry in self.atoms:
-            own = entry["projectors"]
-            groups: dict = {}
-            for i, projector in enumerate(own):
-                groups.setdefault((projector.l, projector.m), []).append(
-                    (projector.index, i))
-            for (l, m), members in groups.items():
-                members = sorted(members)
-                rows = [i for _index, i in members]
-                out[(entry["atom"], l, m)] = entry["coupling"][
-                    np.ix_(rows, rows)]
-        return out
+        return _native.paw_exact_coupling_blocks(self.atoms)
 
     def _spheres(self):
         return ([[int(m) for m in entry["members"]] for entry in self.atoms],

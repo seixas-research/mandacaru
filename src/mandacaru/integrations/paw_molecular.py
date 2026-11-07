@@ -41,21 +41,17 @@ def build(driver, geometry):
         _warn_functional_mismatch(species.values(), driver.xc)
     grid = driver._grid(geometry)
     if grid is None:
-        view = Grid(
-            center=np.mean(geometry.positions, axis=0),
-            cell=geometry.cell,
-            grid_spacing=driver._grid_spacing
-            if geometry.units == "angstrom"
-            else driver._grid_spacing / _native.BOHR_TO_ANGSTROM,
-            units=geometry.units,
-        )
+        spacing = (driver._grid_spacing if geometry.units == "angstrom"
+                   else driver._grid_spacing / _native.BOHR_TO_ANGSTROM)
+        view = Grid(center=_native.positions_center(geometry.positions),
+                    cell=geometry.cell, grid_spacing=spacing, units=geometry.units)
         grid = _native.SpatialGrid(
             view.shape,
             [float(view.X.flat[0]), float(view.Y.flat[0]), float(view.Z.flat[0])],
             np.ascontiguousarray(view.step),
         )
     cutoff = resolve_filter_cutoff(
-        options.get("filter_cutoff"), max(np.linalg.norm(grid.step_bohr, axis=0))
+        options.get("filter_cutoff"), _native.grid_step_max_norm(grid.step_bohr)
     )
     driver._basis_report = report = dict(confinement={}, polarization={}, options=options, cutoff=cutoff, species=species)
     functions, owners = pseudo_basis(
@@ -74,14 +70,14 @@ def build(driver, geometry):
         return key
 
     metadata = dict(
-        format="molecular-paw-input",
-        version=1,
-        length_unit="bohr",
-        energy_unit="Ha",
+        format="molecular-paw-input", version=1,
+        length_unit="bohr", energy_unit="Ha",
         projector_basis=projector_basis,
         atoms=[unique.index(s) for s in symbols],
         species=[],
         basis=[],
+        allow_heavy_dft=(driver.method == "dft"),
+        **({"hubbard": driver._hubbard_u} if getattr(driver, "_hubbard_u", None) is not None else {}),
     )
     for symbol in unique:
         dataset = species[symbol]
@@ -90,7 +86,10 @@ def build(driver, geometry):
                 "native molecular PAW spin-orbit projector terms are not yet implemented"
             )
         channels = []
-        for l, channel in sorted(dataset.channels.items()):
+        for l in range(8):
+            if l not in dataset.channels:
+                continue
+            channel = dataset.channels[l]
             entry = dict(
                 l=int(l),
                 principal_n=int(channel.n),

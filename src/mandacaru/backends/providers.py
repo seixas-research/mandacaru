@@ -814,10 +814,15 @@ class QiskitProvider(CircuitProvider):
 
         for q in occupied:
             qc.x(wire(q))
+        context = getattr(self, "_native_context", None)
+        if context is None:
+            from .._native import Context
+            context = Context()
+            self._native_context = context
         for k, generator in enumerate(generators):
             terms = [(label, complex(c).real, complex(c).imag)
                      for label, c in generator.terms.items()]
-            for gate, first, second, angle in self._native_context.compile_circuit(
+            for gate, first, second, angle in context.compile_circuit(
                     n_qubits, [], [terms], [1.0]):
                 if gate == "cx":
                     qc.cx(wire(first), wire(second))

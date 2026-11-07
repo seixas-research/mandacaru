@@ -112,11 +112,12 @@ class PAWChannel(Channel):
 
     def __repr__(self) -> str:
         energies = ", ".join(f"{e:+.4f}" for e in self.reference_energies)
-        q = (np.diag(self.overlap_correction).tolist()
+        q = ([float(f"{float(self.overlap_correction[i][i]):.4f}")
+              for i in range(len(self.overlap_correction))]
              if self.overlap_correction is not None else [])
         return (f"PAWChannel(l={self.l}, n={self.n}, eps=[{energies}] Ha, "
                 f"rc={self.r_cut:.3f} Bohr, {len(self.projectors)} projectors, "
-                f"q_ii={np.round(q, 4).tolist()})")
+                f"q_ii={q})")
 
 
 def _deficit_label(norm_deficit) -> str:
@@ -194,7 +195,9 @@ class PAWDataset(PseudoPotential):
         smooth wave obeys the all-electron equation: its own ``r_cut``, or
         the local potential's ``r_cut_local`` when that is larger
         (the engine's channel assembly, ``paw::generate::assemble``)."""
-        return max(float(self.channels[int(l)].r_cut), float(self.r_cut_local))
+        r_c = float(self.channels[int(l)].r_cut)
+        r_l = float(self.r_cut_local)
+        return r_c if r_c > r_l else r_l
 
     @property
     def has_spin_orbit(self) -> bool:
@@ -208,8 +211,7 @@ class PAWDataset(PseudoPotential):
         radius = np.asarray(radius, dtype=float)
         values, slopes = _native.paw_local_value(
             context(), np.ascontiguousarray(self.r, dtype=np.float64),
-            np.ascontiguousarray(self.v_local, dtype=np.float64),
-            float(self.valence_charge),
+            np.ascontiguousarray(self.v_local, dtype=np.float64), float(self.valence_charge),
             np.ascontiguousarray(radius.reshape(-1), dtype=np.float64))
         return values.reshape(radius.shape), slopes.reshape(radius.shape)
 
@@ -301,8 +303,9 @@ class PAWDataset(PseudoPotential):
         return cache[key]
 
     def __repr__(self) -> str:
+        sorted_channels = sorted(self.channels)
         channels = ", ".join(f"l={l}x{len(self.projectors.get(l, []))}"
-                             for l in sorted(self.channels))
+                             for l in sorted_channels)
         return (f"PAWDataset({self.symbol}, Z_ion={self.valence_charge:g}, "
                 f"[{channels}], rg={self.compensation_radius:.2f}, "
                 f"Q^={self.compensation_charge:+.4f}, "
@@ -330,7 +333,9 @@ def paw_projectors(symbols, positions, datasets, units: str = "angstrom",
     projectors = []
     for index, (symbol, position) in enumerate(zip(symbols, positions)):
         pp = datasets[symbol]
-        for l in sorted(pp.projectors):
+        for l in range(8):
+            if l not in pp.projectors:
+                continue
             functions, D, _q = pp.projector_set(l, projector_basis)
             for m in range(-l, l + 1):
                 for i, p in enumerate(functions):
@@ -349,11 +354,8 @@ def _blocks(projectors, symbols, datasets, which) -> dict:
         key = projector.block_key
         if key not in blocks:
             pp = datasets[symbols[projector.atom_index]]
-            basis = getattr(projector, "projector_basis",
-                            DEFAULT_PROJECTOR_BASIS)
-            _f, D, q = pp.projector_set(projector.l, basis)
-            blocks[key] = np.asarray(D if which == "coupling" else q,
-                                     dtype=float)
+            _f, D, q = pp.projector_set(projector.l, getattr(projector, "projector_basis", DEFAULT_PROJECTOR_BASIS))
+            blocks[key] = np.asarray(D if which == "coupling" else q, dtype=float)
     return blocks
 
 
@@ -369,7 +371,11 @@ def paw_spin_orbit_projectors(symbols, positions, datasets,
     projectors = []
     for index, (symbol, position) in enumerate(zip(symbols, positions)):
         pp = datasets[symbol]
-        for l, entry in sorted((getattr(pp, "spin_orbit", None) or {}).items()):
+        so_dict = getattr(pp, "spin_orbit", None) or {}
+        for l in range(8):
+            if l not in so_dict:
+                continue
+            entry = so_dict[l]
             for m in range(-l, l + 1):
                 for i, p in enumerate(entry["projectors"]):
                     projectors.append(KBProjector(
@@ -440,7 +446,7 @@ def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:
         l_list = [int(pa.l) for _, pa in entries]
         m_list = [int(pa.m) for _, pa in entries]
         idx_list = [int(pa.index) for _, pa in entries]
-        unique_l = sorted(set(l_list))
+        unique_l = [l for l in range(8) if l in set(l_list)]
         deltas = {}
         strides = {}
         for l1 in unique_l:
@@ -470,11 +476,9 @@ def _projector_sphere(projector, *, split_radial: bool = False):
     r_cut = float(projector.r_cut)
     channel_cut = float(getattr(projector, "channel_r_cut", r_cut))
     panel = channel_cut if (split_radial and 0.0 < channel_cut < r_cut) else 0.0
-    center = [float(x) for x in projector.center]
     return _native.paw_projector_sphere(
-        context(), center, r_cut, panel,
-        PROJECTION_RADIAL_POINTS, PROJECTION_POLAR_POINTS, PROJECTION_AZIMUTHAL_POINTS,
-    )
+        context(), [float(x) for x in projector.center], r_cut, panel,
+        PROJECTION_RADIAL_POINTS, PROJECTION_POLAR_POINTS, PROJECTION_AZIMUTHAL_POINTS)
 
 
 # --------------------------------------------------------------------------- #
@@ -525,12 +529,10 @@ def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
                                     format=format, stride=stride)
         written.append(path)
         if verbose:
+            chs = [f"l{l}: rc={pp.channels[l].r_cut:.2f} q11={pp.channels[l].overlap_correction[0, 0]:+.4f}"
+                   for l in range(8) if l in pp.channels]
             print(f"  {symbol:>2}  Z_ion={pp.valence_charge:>4.0f}  "
-                  + "  ".join(f"l{l}: rc={c.r_cut:.2f} q11="
-                              f"{c.overlap_correction[0, 0]:+.4f}"
-                              for l, c in sorted(pp.channels.items()))
-                  + f"  E1c={pp.one_center_energy:+.4f}  -> "
-                  f"{os.path.basename(path)}")
+                  + "  ".join(chs) + f"  E1c={pp.one_center_energy:+.4f}  -> {os.path.basename(path)}")
     _CACHE.clear()
     return written
 
@@ -609,12 +611,10 @@ def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
                                     format=format, stride=stride)
         written.append(path)
         if verbose:
+            chs = [f"l{l}: rc={pp.channels[l].r_cut:.2f} |q|={(-float(pp.channels[l].overlap_correction[0, 0]) if float(pp.channels[l].overlap_correction[0, 0]) < 0.0 else float(pp.channels[l].overlap_correction[0, 0])):.1e}"
+                   for l in range(8) if l in pp.channels]
             print(f"  {symbol:>2}  Z_ion={pp.valence_charge:>4.0f}  "
-                  + "  ".join(f"l{l}: rc={c.r_cut:.2f} |q|="
-                              f"{abs(c.overlap_correction[0, 0]):.1e}"
-                              for l, c in sorted(pp.channels.items()))
-                  + f"  E1c={pp.one_center_energy:+.4f}  -> "
-                  f"{os.path.basename(path)}")
+                  + "  ".join(chs) + f"  E1c={pp.one_center_energy:+.4f}  -> {os.path.basename(path)}")
     _CACHE.clear()
     return written
 

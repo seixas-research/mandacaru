@@ -480,25 +480,12 @@ def givens_decomposition(unitary, tol: float = GIVENS_TOLERANCE):
     :math:`\tilde n_k = b^\dagger_k b_k` unchanged.  They are returned so the
     decomposition can be checked against its input.
     """
-    u = np.array(unitary, dtype=float)
-    if u.ndim != 2 or u.shape[0] != u.shape[1]:
-        raise ValueError(f"expected a square matrix, got {u.shape}")
-    if not np.allclose(u @ u.T, np.eye(u.shape[0]), atol=1e-8):
-        raise ValueError("the Givens decomposition needs a real orthogonal "
-                         "matrix; this one is not")
-    m = u.shape[0]
-    rotations: list[tuple[int, float]] = []
-    for column in range(m - 1):
-        for row in range(m - 1, column, -1):
-            below, above = u[row, column], u[row - 1, column]
-            if abs(below) <= tol:
-                continue
-            theta = float(np.arctan2(below, above))
-            cos, sin = np.cos(theta), np.sin(theta)
-            u[row - 1], u[row] = (cos * u[row - 1] + sin * u[row],
-                                  -sin * u[row - 1] + cos * u[row])
-            rotations.append((row - 1, theta))
-    return rotations, np.diag(u).copy()
+    from .._native import givens_decomposition as _native_givens_decomposition
+
+    return _native_givens_decomposition(
+        np.asarray(unitary, dtype=np.float64),
+        tol=float(tol),
+    )
 
 
 def givens_generator(n_modes: int, p: int, mapping: str = "jordan_wigner"):

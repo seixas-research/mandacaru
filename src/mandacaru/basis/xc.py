@@ -502,7 +502,7 @@ def _radial_derivative(r, y, nodes):
     """``dy/dr`` on the ``nodes`` subset, splined back onto ``r``."""
     if nodes is None:
         return np.gradient(y, r, edge_order=2)
-    from scipy.interpolate import CubicSpline
+    from .. import _native
 
-    derivative = np.gradient(y[nodes], r[nodes], edge_order=2)
-    return CubicSpline(r[nodes], derivative)(r)
+    rn, rc = np.ascontiguousarray(r[nodes], dtype=float), np.ascontiguousarray(r, dtype=float)
+    return _native.radial_cubic_spline_evaluate(rn, np.ascontiguousarray(np.gradient(y[nodes], r[nodes], edge_order=2), dtype=float), rc)

@@ -43,6 +43,8 @@ pub struct MolecularCorrections {
     pub charges: Vec<f64>,
     pub electrons: usize,
     pub dft: Option<PawKohnSham>,
+    pub core_supported: bool,
+    pub hubbard: Option<crate::molecular::hubbard::MolecularHubbard>,
 }
 /// Frozen atomic one-center KS model, separate from the interacting HF model.
 pub struct PawKohnSham {
@@ -658,6 +660,9 @@ impl MolecularIntegrals {
     /// Build Coulomb factors only when a solver or Hamiltonian asks for them.
     /// Failed allocations do not poison the cache and can be retried.
     pub fn eri(&self) -> Result<Arc<Eri>> {
+        if self.corrections.as_ref().is_some_and(|c| !c.core_supported) {
+            return Err(invalid("native PAW frozen-core exchange currently requires an empty core or a single closed 1s shell (Kohn-Sham DFT only for heavy elements)"));
+        }
         let mut cache = self.eri.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(value) = cache.as_ref() {
             return Ok(value.clone());
@@ -905,6 +910,11 @@ impl MolecularIntegrals {
                 .factors
             {
                 *factor = lowdin.transpose() * &*factor * &lowdin;
+            }
+            if let Some(hubbard) = c.hubbard.as_mut() {
+                for shell in &mut hubbard.shells {
+                    shell.q = lowdin.transpose() * &shell.q_ao;
+                }
             }
         }
         let h = DMatrix::from_fn(m, m, |a, b| {

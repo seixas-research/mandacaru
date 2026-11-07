@@ -40,7 +40,7 @@ pub fn effective_length(volume: f64) -> f64 {
     volume.cbrt()
 }
 
-fn rs_at(electrons: f64, length: f64) -> f64 {
+pub fn rs_at(electrons: f64, length: f64) -> f64 {
     length * (3.0 / (4.0 * PI * electrons)).powf(1.0 / 3.0)
 }
 fn rs_of_density(density: f64) -> f64 {
@@ -251,31 +251,30 @@ fn determinant(c: &[[f64; 3]; 3]) -> f64 {
         + c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0])
 }
 
-/// Integrate `n (eps_xc^inf - eps_xc^FS)` over a supercell grid.
-///
-/// `density` is the electron density at the grid nodes (Bohr^-3) with node volume `dv`
-/// (Bohr^3); the nodes must tile `cell` (rows are lattice vectors, Bohr). A negative, NaN or
-/// infinite density, an all-vacuum density, a grid that does not tile the cell, or a vacuum
-/// fraction above `vacuum.max_fraction` is an error: nothing is dropped silently.
-pub fn kzk(
+/// Integrate `n (eps_xc^inf - eps_xc^FS)` over a supercell grid with customizable validation.
+pub fn kzk_flexible(
     density: &[f64],
     dv: f64,
     cell: &[[f64; 3]; 3],
     n_cells: usize,
-    vacuum: Vacuum,
+    floor: f64,
+    check_covered: bool,
+    max_vacuum_fraction: Option<f64>,
 ) -> Result<Kzk> {
     // Below 1e-30 `lda_terms` floors the density, so a smaller floor would change the number.
-    if !vacuum.floor.is_finite() || vacuum.floor < 1e-30 {
+    if !floor.is_finite() || floor < 1e-30 {
         return Err(invalid(format!(
             "the vacuum floor must be finite and at least 1e-30, got {}",
-            vacuum.floor
+            floor
         )));
     }
-    if !(0.0..=1.0).contains(&vacuum.max_fraction) {
-        return Err(invalid(format!(
-            "the vacuum fraction bound must lie in [0, 1], got {}",
-            vacuum.max_fraction
-        )));
+    if let Some(frac) = max_vacuum_fraction {
+        if !(0.0..=1.0).contains(&frac) {
+            return Err(invalid(format!(
+                "the vacuum fraction bound must lie in [0, 1], got {}",
+                frac
+            )));
+        }
     }
     if !dv.is_finite() || dv <= 0.0 || density.is_empty() {
         return Err(invalid(format!("the node volume must be finite and positive and the density non-empty (dv {dv}, {} nodes)", density.len())));
@@ -288,12 +287,14 @@ pub fn kzk(
         ));
     }
     let scope = Scope::new(n_cells, volume)?;
-    let covered = density.len() as f64 * dv;
-    if (covered - volume).abs() > 1e-8 * volume {
-        return Err(invalid(format!(
-            "the {} grid nodes of volume {dv:e} cover {covered:e} Bohr^3, not the supercell volume {volume:e}",
-            density.len()
-        )));
+    if check_covered {
+        let covered = density.len() as f64 * dv;
+        if (covered - volume).abs() > 1e-8 * volume {
+            return Err(invalid(format!(
+                "the {} grid nodes of volume {dv:e} cover {covered:e} Bohr^3, not the supercell volume {volume:e}",
+                density.len()
+            )));
+        }
     }
     let length = effective_length(volume);
     let cubic_deviation = norms
@@ -316,7 +317,7 @@ pub fn kzk(
             )));
         }
         total.add(n);
-        if n <= vacuum.floor {
+        if n <= floor {
             below.add(n);
             beyond.add(n);
             continue;
@@ -338,12 +339,14 @@ pub fn kzk(
     }
     let n_electrons = total.value() * dv;
     let electrons_beyond_gamma_l = beyond.value() * dv;
-    if electrons_beyond_gamma_l > vacuum.max_fraction * n_electrons {
-        return Err(invalid(format!(
-            "{:.4} of the {n_electrons:.4} electrons sit in vacuum (r_s above gamma_l = {:.3} Bohr); \
-             the KZK fit leaves its range there and the bound is {}",
-            electrons_beyond_gamma_l / n_electrons, fit.gamma_l, vacuum.max_fraction
-        )));
+    if let Some(max_frac) = max_vacuum_fraction {
+        if electrons_beyond_gamma_l > max_frac * n_electrons {
+            return Err(invalid(format!(
+                "{:.4} of the {n_electrons:.4} electrons sit in vacuum (r_s above gamma_l = {:.3} Bohr); \
+                 the KZK fit leaves its range there and the bound is {}",
+                electrons_beyond_gamma_l / n_electrons, fit.gamma_l, max_frac
+            )));
+        }
     }
     let (xc_infinite, xc_finite) = (infinite.value() * dv, finite.value() * dv);
     Ok(Kzk {
@@ -358,4 +361,28 @@ pub fn kzk(
         cubic_deviation,
         rs_range: (rs_min, rs_max),
     })
+}
+
+/// Integrate `n (eps_xc^inf - eps_xc^FS)` over a supercell grid.
+///
+/// `density` is the electron density at the grid nodes (Bohr^-3) with node volume `dv`
+/// (Bohr^3); the nodes must tile `cell` (rows are lattice vectors, Bohr). A negative, NaN or
+/// infinite density, an all-vacuum density, a grid that does not tile the cell, or a vacuum
+/// fraction above `vacuum.max_fraction` is an error: nothing is dropped silently.
+pub fn kzk(
+    density: &[f64],
+    dv: f64,
+    cell: &[[f64; 3]; 3],
+    n_cells: usize,
+    vacuum: Vacuum,
+) -> Result<Kzk> {
+    kzk_flexible(
+        density,
+        dv,
+        cell,
+        n_cells,
+        vacuum.floor,
+        true,
+        Some(vacuum.max_fraction),
+    )
 }

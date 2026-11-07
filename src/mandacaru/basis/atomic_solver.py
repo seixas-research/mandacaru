@@ -218,8 +218,8 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         Converged orbitals, eigenvalues, density and potentials.
     """
     if callable(confinement):
-        confinement = confinement(
-            np.arange(1, points + 1, dtype=float) * r_max / (points + 1))
+        from .. import _native
+        confinement = confinement(_native.uniform_grid(int(points), float(r_max)))
     context = _context(resources)
     spec = (None if configuration is None else
             [(int(n), int(l), float(q)) for (n, l), q in configuration.items() if q > 0])

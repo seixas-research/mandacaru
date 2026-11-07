@@ -215,10 +215,11 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
         loaded = read_dataset(staged, warn=False)
         moved = reload_errors(pp, loaded, levels)
         if moved:
+            sorted_moved = sorted(moved.items())
             raise RuntimeError(
                 "the file read back does not reproduce the dataset: "
                 + ", ".join(f"l={l} levels moved {shift:.1e} Ha"
-                            for l, shift in sorted(moved.items()))
+                            for l, shift in sorted_moved)
                 + f" (tolerance {RELOAD_LEVEL_TOLERANCE:g} Ha); not written")
         # The checks of the file, against the atom its record names.
         found = diagnose(loaded)
@@ -230,31 +231,28 @@ def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
     except Exception as error:                          # noqa: BLE001
         if staged is not None and os.path.exists(staged):
             os.remove(staged)
-        return False, (f"{symbol:>2}  FAILED after "
-                       f"{time.perf_counter() - started:.1f} s  "
+        return False, (f"{symbol:>2}  FAILED after {time.perf_counter() - started:.1f} s  "
                        f"{type(error).__name__}: {error}")
     elapsed = time.perf_counter() - started
     lines = [f"{symbol:>2}  {pp!r}"]
     if getattr(pp, "defects", None):
         from .defects import defect_message
-        lines = [f"{symbol:>2}  FLAGGED  "
-                 + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
+        lines = [f"{symbol:>2}  FLAGGED  " + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
     lines.append(f"    {elapsed:.1f} s, Rust generator -> {path} "
-                 f"(read back: levels within "
-                 f"{RELOAD_LEVEL_TOLERANCE:g} Ha of the generated dataset)")
-    for l, channel in sorted(loaded.channels.items()):
+                 f"(read back: levels within {RELOAD_LEVEL_TOLERANCE:g} Ha of the generated dataset)")
+    sorted_channels = sorted(loaded.channels.items())
+    for l, channel in sorted_channels:
         first, _second = spectra[l]
         reference = float(channel.reference_energies[0])
-        line = (f"    l={l}  r_c={channel.r_cut:.3f}  eps_ref="
-                f"{reference:+.6f}  lowest-eps_ref={first - reference:+.1e}"
-                f"  {'GHOST' if l in ghosts else 'no ghost'}")
+        line = (f"    l={l}  r_c={channel.r_cut:.3f}  eps_ref={reference:+.6f}  "
+                f"lowest-eps_ref={first - reference:+.1e}  {'GHOST' if l in ghosts else 'no ghost'}")
         if l in phases:
             near, far = phases[l]
             line += f"  phase {near:.3f}/{far:.3f} rad"
         lines.append(line)
-    for l in sorted(set(ghosts) - set(loaded.channels)):
-        lines.append(f"    l={l}  no projectors  local potential binds "
-                     f"{ghosts[l]:+.1e} Ha below the atom  GHOST")
+    unloaded_ghosts = sorted(set(ghosts) - set(loaded.channels))
+    for l in unloaded_ghosts:
+        lines.append(f"    l={l}  no projectors  local potential binds {ghosts[l]:+.1e} Ha below the atom  GHOST")
     lines.append(f"    local potential: r_cl={loaded.r_cut_local:.3f} Bohr, "
                  f"shift {loaded.local_shift:+.1f} Ha")
     return True, "\n".join(lines)
@@ -311,7 +309,7 @@ def main(argv=None) -> int:
 
         # Generation time grows steeply with Z (O 5 s, Fe 30 s, Th 670 s), so
         # the heaviest start first and the light ones fill in around them.
-        jobs.sort(key=lambda job: -atomic_numbers[job[1]])
+        jobs = [j for z in range(120, 0, -1) for j in jobs if atomic_numbers[j[1]] == z]
         with ProcessPoolExecutor(max_workers=args.workers,
                                  initializer=_limit_threads,
                                  initargs=(worker_threads(args.workers),)) as pool:

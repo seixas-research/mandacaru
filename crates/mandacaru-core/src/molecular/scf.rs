@@ -52,6 +52,8 @@ pub struct MeanField {
     pub functional: Option<String>,
     pub hartree_energy: f64,
     pub xc_energy: f64,
+    pub hubbard_energy: Option<f64>,
+    pub hubbard: Option<Vec<crate::molecular::hubbard::MolecularHubbardReport>>,
     _memory: Reservation,
 }
 pub(super) fn density(c: &Matrix, n: usize) -> Matrix {
@@ -439,6 +441,7 @@ impl MolecularIntegrals {
                 candidate,
                 workspace,
                 None,
+                None,
             )
         })
     }
@@ -556,7 +559,7 @@ impl MolecularIntegrals {
             }
         }
         let best = best.unwrap();
-        self.finish(method, particles, options, best, workspace, None)
+        self.finish(method, particles, options, best, workspace, None, None)
     }
     pub(super) fn finish(
         &self,
@@ -566,6 +569,7 @@ impl MolecularIntegrals {
         best: Candidate,
         mut workspace: Reservation,
         xc: Option<(&str, f64, f64)>,
+        hubbard: Option<(f64, Vec<crate::molecular::hubbard::MolecularHubbardReport>)>,
     ) -> Result<MeanField> {
         let m = self.m();
         let spatial = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
@@ -593,7 +597,7 @@ impl MolecularIntegrals {
         } else {
             best.coefficients[0].clone()
         };
-        let reference_energy = if method == "uhf" {
+        let reference_energy = if method == "uhf" && xc.is_none() {
             let d = vec![
                 density(&model_orbitals, particles[0]),
                 density(&model_orbitals, particles[1]),
@@ -637,6 +641,8 @@ impl MolecularIntegrals {
             functional: xc.map(|v| v.0.to_string()),
             hartree_energy: xc.map_or(0., |v| v.1),
             xc_energy: xc.map_or(0., |v| v.2),
+            hubbard_energy: hubbard.as_ref().map(|v| v.0),
+            hubbard: hubbard.map(|v| v.1),
             _memory: workspace,
         })
     }

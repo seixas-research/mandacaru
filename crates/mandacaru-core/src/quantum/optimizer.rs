@@ -57,6 +57,7 @@ pub struct Options {
     /// point (three evaluations per iteration); `false` is the strict
     /// two-evaluation form used on hardware. Other methods ignore it.
     pub track_best: bool,
+    pub patience: usize,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -67,6 +68,7 @@ impl Default for Options {
             tolerance: Some(DEFAULT_TOLERANCE),
             seed: 0,
             track_best: true,
+            patience: 5,
         }
     }
 }

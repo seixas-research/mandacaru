@@ -4,6 +4,7 @@ pub mod correlation;
 pub mod dft;
 mod exchange_pieces;
 pub mod forces;
+pub mod hubbard;
 pub mod integrals;
 pub mod local_correlation;
 pub mod observables;

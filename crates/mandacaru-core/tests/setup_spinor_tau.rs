@@ -4,7 +4,12 @@
 //! `P = diag(P_a, P_b)` against the scalar densities of each spin. The Python freeze cannot be
 //! replayed: it holds the gradients of the first k-point only, and the density needs every one,
 //! so these identities (which the freeze satisfies to 0.0) are the gate.
-use mandacaru_core::{periodic::setup::spinor_tau::spinor_kinetic_density, Context};
+use mandacaru_core::{
+    periodic::setup::spinor_tau::{
+        density_and_projected, scalar_kinetic_density, spinor_kinetic_density, spinor_magnetization,
+    },
+    Context,
+};
 use num_complex::Complex64;
 
 const M: usize = 3;
@@ -210,4 +215,117 @@ fn inconsistent_inputs_raise() {
     assert!(spinor_kinetic_density(&ctx, M, POINTS, &[1.], &[&p], &[&g[..g.len() - 1]]).is_err());
     assert!(spinor_kinetic_density(&ctx, M, POINTS, &[1.], &[&p[1..]], &[&g]).is_err());
     assert!(spinor_kinetic_density(&ctx, M, POINTS, &[], &[], &[]).is_err());
+}
+
+#[test]
+fn scalar_kinetic_density_matches_explicit() {
+    let mut stream = Stream(42);
+    let ctx = Context::new(Some(1), 1 << 28).unwrap();
+    let matrices: Vec<Vec<Complex64>> = WEIGHTS.iter().map(|_| psd(&mut stream, M)).collect();
+    let grads = gradients(&mut stream);
+    let p_refs: Vec<&[Complex64]> = matrices.iter().map(|v| v.as_slice()).collect();
+    let g_refs: Vec<&[Complex64]> = grads.iter().map(|v| v.as_slice()).collect();
+    let tau = scalar_kinetic_density(&ctx, M, POINTS, &WEIGHTS, &p_refs, &g_refs).unwrap();
+    let mut want = vec![0.; POINTS];
+    for (k, &w) in WEIGHTS.iter().enumerate() {
+        for axis in 0..3 {
+            for x in 0..POINTS {
+                for a in 0..M {
+                    for b in 0..M {
+                        let da = grads[k][(axis * M + a) * POINTS + x];
+                        let db = grads[k][(axis * M + b) * POINTS + x];
+                        want[x] += (0.5 * w * matrices[k][a * M + b] * da * db.conj()).re;
+                    }
+                }
+            }
+        }
+    }
+    let miss = worst(&tau, &want);
+    let scale = want.iter().fold(0f64, |m, v| m.max(v.abs()));
+    assert!(scale > 1e-2 && miss < 1e-13 * scale);
+}
+
+#[test]
+fn spinor_magnetization_matches_explicit() {
+    let mut stream = Stream(99);
+    let ctx = Context::new(Some(1), 1 << 28).unwrap();
+    let matrices: Vec<Vec<Complex64>> = WEIGHTS.iter().map(|_| psd(&mut stream, 2 * M)).collect();
+    let psi_list: Vec<Vec<Complex64>> = WEIGHTS
+        .iter()
+        .map(|_| (0..M * POINTS).map(|_| stream.complex()).collect())
+        .collect();
+    let p_refs: Vec<&[Complex64]> = matrices.iter().map(|v| v.as_slice()).collect();
+    let psi_refs: Vec<&[Complex64]> = psi_list.iter().map(|v| v.as_slice()).collect();
+    let m_vec = spinor_magnetization(&ctx, M, POINTS, &WEIGHTS, &p_refs, &psi_refs).unwrap();
+    let mut want_x = vec![0.; POINTS];
+    let mut want_y = vec![0.; POINTS];
+    let mut want_z = vec![0.; POINTS];
+    for (k, &w) in WEIGHTS.iter().enumerate() {
+        for x in 0..POINTS {
+            for a in 0..M {
+                for b in 0..M {
+                    let pa = psi_list[k][a * POINTS + x];
+                    let pb = psi_list[k][b * POINTS + x];
+                    let p_uu = matrices[k][a * 2 * M + b];
+                    let p_dd = matrices[k][(M + a) * 2 * M + M + b];
+                    let p_ud = matrices[k][a * 2 * M + M + b];
+                    want_z[x] += (w * (p_uu - p_dd) * pa * pb.conj()).re;
+                    let ud = w * p_ud * pa * pb.conj();
+                    want_x[x] += 2.0 * ud.re;
+                    want_y[x] += -2.0 * ud.im;
+                }
+            }
+        }
+    }
+    assert!(worst(&m_vec[..POINTS], &want_x) < 1e-12);
+    assert!(worst(&m_vec[POINTS..2 * POINTS], &want_y) < 1e-12);
+    assert!(worst(&m_vec[2 * POINTS..], &want_z) < 1e-12);
+}
+
+#[test]
+fn density_and_projected_matches_explicit() {
+    let mut stream = Stream(77);
+    let ctx = Context::new(Some(1), 1 << 28).unwrap();
+    let p_proj = 4;
+    let matrices: Vec<Vec<Complex64>> = WEIGHTS.iter().map(|_| psd(&mut stream, M)).collect();
+    let psi_list: Vec<Vec<Complex64>> = WEIGHTS
+        .iter()
+        .map(|_| (0..M * POINTS).map(|_| stream.complex()).collect())
+        .collect();
+    let proj_list: Vec<Vec<Complex64>> = WEIGHTS
+        .iter()
+        .map(|_| (0..M * p_proj).map(|_| stream.complex()).collect())
+        .collect();
+    let p_refs: Vec<&[Complex64]> = matrices.iter().map(|v| v.as_slice()).collect();
+    let psi_refs: Vec<&[Complex64]> = psi_list.iter().map(|v| v.as_slice()).collect();
+    let proj_refs: Vec<&[Complex64]> = proj_list.iter().map(|v| v.as_slice()).collect();
+    let res = density_and_projected(&ctx, M, POINTS, p_proj, &WEIGHTS, &p_refs, &psi_refs, &proj_refs).unwrap();
+    let mut want_rho = vec![0.; POINTS];
+    let mut want_r = vec![Complex64::default(); p_proj * p_proj];
+    for (k, &w) in WEIGHTS.iter().enumerate() {
+        for x in 0..POINTS {
+            for a in 0..M {
+                for b in 0..M {
+                    let pa = psi_list[k][a * POINTS + x];
+                    let pb = psi_list[k][b * POINTS + x];
+                    want_rho[x] += (w * matrices[k][a * M + b] * pa * pb.conj()).re;
+                }
+            }
+        }
+        for i in 0..p_proj {
+            for j in 0..p_proj {
+                for a in 0..M {
+                    for b in 0..M {
+                        let ci = proj_list[k][a * p_proj + i];
+                        let cj = proj_list[k][b * p_proj + j];
+                        want_r[i * p_proj + j] += Complex64::new(w, 0.) * ci.conj() * matrices[k][a * M + b] * cj;
+                    }
+                }
+            }
+        }
+    }
+    assert!(worst(&res.rho, &want_rho) < 1e-12);
+    for idx in 0..p_proj * p_proj {
+        assert!((res.r_matrix[idx] - want_r[idx]).norm() < 1e-12);
+    }
 }

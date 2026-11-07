@@ -272,10 +272,10 @@ def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
     at its peak).  Rows come out sorted by column; exact zeros (terms that
     cancelled) are dropped.
     """
-    import scipy.sparse as sp
+    from .._native import CSRMatrix
 
     if not groups or dim == 0:
-        return sp.csr_matrix((dim, dim), dtype=complex)
+        return CSRMatrix((dim, dim), dtype=complex)
 
     columns = np.arange(dim, dtype=np.int64)
 
@@ -290,11 +290,11 @@ def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
         (flip, members), = groups.items()
         rows, cols, kept = reach(flip)
         if rows.size == 0:
-            return sp.csr_matrix((dim, dim), dtype=complex)
+            return CSRMatrix((dim, dim), dtype=complex)
         vals = group_amplitudes(members, kept)
         nz = np.flatnonzero(vals)
         if nz.size == 0:
-            return sp.csr_matrix((dim, dim), dtype=complex)
+            return CSRMatrix((dim, dim), dtype=complex)
         if nz.size != vals.size:
             rows = rows[nz]
             cols = cols[nz]
@@ -310,8 +310,8 @@ def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
         indptr = np.empty(dim + 1, dtype=index_type)
         indptr[0] = 0
         np.cumsum(counts, out=indptr[1:])
-        matrix = sp.csr_matrix((vals, cols.astype(index_type), indptr),
-                               shape=(dim, dim))
+        matrix = CSRMatrix((vals, cols.astype(index_type), indptr),
+                           shape=(dim, dim))
         matrix.has_sorted_indices = True
         return matrix
 
@@ -339,7 +339,7 @@ def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
     np.cumsum(counts, out=indptr[1:])
     nnz = int(indptr[-1])
     if nnz == 0:
-        return sp.csr_matrix((dim, dim), dtype=complex)
+        return CSRMatrix((dim, dim), dtype=complex)
     index_type = np.int32 if nnz < np.iinfo(np.int32).max else np.int64
     indices = np.empty(nnz, dtype=index_type)
     data = np.empty(nnz, dtype=complex)
@@ -370,8 +370,8 @@ def csr_from_flip_groups(groups: dict, states: np.ndarray, locate, dim: int):
         indices[slot] = cols
         data[slot] = vals
         fill[rows] += 1
-    matrix = sp.csr_matrix((data, indices, indptr.astype(index_type)),
-                           shape=(dim, dim))
+    matrix = CSRMatrix((data, indices, indptr.astype(index_type)),
+                       shape=(dim, dim))
     matrix.sort_indices()
     matrix.eliminate_zeros()
     return matrix

@@ -201,6 +201,7 @@ fn strict_spsa_uses_two_evaluations_per_iteration_and_keeps_the_best_evaluated_p
         tolerance: None,
         seed: 3,
         track_best: false,
+        ..Default::default()
     };
     let (result, points) = traced(&ctx, &options);
     assert_eq!(points.len(), 2 * 25 + 1);

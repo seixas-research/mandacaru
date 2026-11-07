@@ -413,7 +413,7 @@ fn lcm(a: i128, b: i128) -> i128 {
 /// `T^L` for `L = 0..=max_l` of the Cartesian operation `r` (orthogonal to within
 /// `bound`; the nearest orthogonal matrix is used), by the exact product
 /// quadrature `T_{M'M} = int conj(Y_LM'(u)) Y_LM(R u) dOmega`.
-fn rotation_tables(r: &Matrix3<f64>, max_l: usize, bound: f64) -> Result<Vec<DMatrix<Complex64>>> {
+pub fn rotation_tables(r: &Matrix3<f64>, max_l: usize, bound: f64) -> Result<Vec<DMatrix<Complex64>>> {
     let svd = r.svd(true, true);
     let (u, vt) = (
         svd.u.ok_or_else(|| invalid("SVD failed"))?,

@@ -46,6 +46,7 @@ pub struct Channel {
     pub reference: DMatrix<f64>,
     pub xc: DMatrix<f64>,
     pub core_exchange: DMatrix<f64>,
+    pub weights: Option<Vec<f64>>,
 }
 pub struct Species {
     pub atomic_number: u8,
@@ -58,6 +59,7 @@ pub struct Species {
     pub xc_core_tau: Cubic,
     pub dft_constant: f64,
     pub relativistic_exchange: bool,
+    pub core_supported: bool,
     _memory: crate::Reservation,
 }
 impl Species {
@@ -126,7 +128,8 @@ impl Species {
             && ((atomic_number as f64 - charge) - 2.).abs() < 1e-8
             && (core_charge - 2.).abs() < 0.02
             && !occupied_1s;
-        if !allow_heavy_dft && core_charge > 1e-6 && !closed_1s {
+        let core_supported = core_charge <= 1e-6 || closed_1s;
+        if !allow_heavy_dft && !core_supported {
             return Err(invalid("native PAW frozen-core exchange currently requires an empty core or a single closed 1s shell"));
         }
         if core.as_slice().iter().any(|v| *v < 0.) {
@@ -254,6 +257,15 @@ impl Species {
                 refs,
                 occupations.iter().map(|o| o / (2 * l + 1) as f64),
             ));
+            let shell_weights = crate::paw::shell::channel_weights(
+                ctx,
+                &ae_waves,
+                b.as_slice(),
+                radius,
+                r.as_slice(),
+                &occupations,
+                if raw { crate::paw::onecenter::Basis::Raw } else { crate::paw::onecenter::Basis::Dual },
+            ).ok();
             channels.push(Channel {
                 l,
                 radius,
@@ -269,6 +281,7 @@ impl Species {
                 },
                 xc: DMatrix::zeros(refs, refs),
                 core_exchange: DMatrix::zeros(refs, refs),
+                weights: shell_weights,
             });
             transforms.push(transform);
         }
@@ -398,6 +411,7 @@ impl Species {
             xc_core_tau,
             dft_constant,
             relativistic_exchange: relativistic,
+            core_supported,
             _memory: memory,
         })
     }

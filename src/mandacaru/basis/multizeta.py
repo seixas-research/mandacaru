@@ -69,7 +69,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.interpolate import CubicSpline
 
 from .. import _native
 from ..units import to_bohr
@@ -121,8 +120,6 @@ class TabulatedOrbital(BasisFunction):
         self.center = (np.zeros(3) if center is None
                        else to_bohr(center, units))
         self.r_c = float(table.r[-1])
-        self._spline = CubicSpline(table.r, table.values, extrapolate=False)
-        self._slope_spline = self._spline.derivative()
 
     @property
     def state(self) -> tuple[int, int, int]:
@@ -135,35 +132,26 @@ class TabulatedOrbital(BasisFunction):
                 else "polarization" if self.polarization else "zeta")
 
     def radial(self, r) -> np.ndarray:
-        """Interpolated radial function; zero outside the confining sphere.
-
-        Below the first table point the function continues as
-        ``R(r_0) (r / r_0)^l``.  Without that, a table starting at ``r_0 > 0``
-        made every s function vanish within ``r_0`` of its center, and a nucleus
-        sitting exactly on a grid node lost the orbital's peak sample (LiH
-        PAW-LCAO-DZP moved by 3 eV).
-        """
-        r = np.asarray(r, dtype=float)
-        r0 = float(self.table.r[0])
-        values = self._spline(np.maximum(r, r0))
-        if r0 > 0.0:
-            values = np.where(r < r0, values * (np.maximum(r, 0.0) / r0) ** self.l,
-                              values)
-        return np.where(np.isnan(values) | (r >= self.r_c), 0.0, values)
+        """Interpolated radial function; zero outside the confining sphere."""
+        shape = np.shape(r)
+        res = _native.radial_orbital_evaluate(
+            np.ascontiguousarray(self.table.r, dtype=float),
+            np.ascontiguousarray(self.table.values, dtype=float),
+            np.ascontiguousarray(np.asarray(r, dtype=float).ravel(), dtype=float),
+            int(self.l), float(self.r_c), False,
+        )
+        return res.reshape(shape)
 
     def radial_slope(self, r) -> np.ndarray:
-        """``dR/dr`` of :meth:`radial`: the spline's derivative, and the
-        derivative of the power-law continuation below the first table
-        point."""
-        r = np.asarray(r, dtype=float)
-        r0 = float(self.table.r[0])
-        slope = self._slope_spline(np.maximum(r, r0))
-        if r0 > 0.0:
-            below = (self._spline(r0) * self.l
-                     * np.maximum(r, 0.0) ** max(self.l - 1, 0) / r0 ** self.l
-                     if self.l else np.zeros_like(r))
-            slope = np.where(r < r0, below, slope)
-        return np.where(np.isnan(slope) | (r >= self.r_c), 0.0, slope)
+        """``dR/dr`` of :meth:`radial`: the spline's derivative."""
+        shape = np.shape(r)
+        res = _native.radial_orbital_evaluate(
+            np.ascontiguousarray(self.table.r, dtype=float),
+            np.ascontiguousarray(self.table.values, dtype=float),
+            np.ascontiguousarray(np.asarray(r, dtype=float).ravel(), dtype=float),
+            int(self.l), float(self.r_c), True,
+        )
+        return res.reshape(shape)
 
     def evaluate(self, x, y, z) -> np.ndarray:
         r, theta, phi = spherical_coords(x, y, z, self.center)

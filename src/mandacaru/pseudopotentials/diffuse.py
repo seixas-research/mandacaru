@@ -116,7 +116,7 @@ DEFAULT_RMS_RATIO = 2.5
 
 #: Ratio between successive rms radii of one channel (``count > 1``): the
 #: Gaussian families' exponent ratio 3.5 as a length.
-DEFAULT_SHELL_RATIO = math.sqrt(3.5)
+DEFAULT_SHELL_RATIO = 3.5 ** 0.5
 
 #: The uncut Gaussian's squared norm left beyond ``r_cut``.  1e-4 instead of
 #: the filter's 1e-6 shortens every support by 14-15 % (the box needed by as
@@ -341,8 +341,9 @@ def diffuse_recipe_text(spec) -> str:
     if spec is None:
         return "off"
     if isinstance(spec, dict):
+        items = sorted(spec.items())
         return "{" + "; ".join(f"{k}: {'off' if v is None else v.label()}"
-                               for k, v in sorted(spec.items())) + "}"
+                               for k, v in items) + "}"
     return spec.label()
 
 
@@ -399,8 +400,9 @@ def free_valence_rms(pp) -> dict:
             continue
         radial = (bound_radial(pp, state.l) if state.empty
                   else pp.channels[state.l].pseudo_waves[state.index])
-        out[state.l] = max(out.get(state.l, 0.0),
-                           _native.diffuse_rms(r, _array(radial)))
+        rms_val = _native.diffuse_rms(r, _array(radial))
+        if rms_val > out.get(state.l, 0.0):
+            out[state.l] = rms_val
     return out
 
 
@@ -417,10 +419,8 @@ def diffuse_tables(symbol, pp, existing, recipe: DiffuseRecipe,
     functions, the grid, the resampling and the projection are native; the
     Fourier filter between them is :func:`~mandacaru.basis.filtering.filter_radial`.
     """
-    from ..basis.filtering import filter_radial
     from ..basis.multizeta import RadialTable
 
-    context = _context()
     present = sorted({int(l) for _n, l, _r, _v in existing})
     channels = ([l for l in present if l <= PRESENT_L_MAX]
                 if recipe.shells == "present" else list(recipe.shells))
@@ -429,44 +429,33 @@ def diffuse_tables(symbol, pp, existing, recipe: DiffuseRecipe,
         raise ValueError(f"{symbol} has no valence orbital to size diffuse "
                          "shells from")
     outermost = max(reference, key=reference.get)
-    filtered = filter_wavevector is not None
+    existing_items = [(int(n), int(l), _array(r), _array(v))
+                      for n, l, r, v in existing]
+    recipe_params = (
+        int(recipe.count),
+        float(recipe.ratio),
+        float(recipe.cutoff_norm),
+        float(recipe.rms_radius * ANGSTROM_TO_BOHR) if recipe.rms_radius is not None else -1.0,
+        float(recipe.rms_ratio),
+    )
+    chan_info = [
+        (int(l), int(l if l in reference else outermost),
+         float(reference[l if l in reference else outermost]))
+        for l in channels
+    ]
+    k_c = float(filter_wavevector) if filter_wavevector is not None else None
 
-    tables, shells = [], []
-    for l in channels:
-        ref_l = l if l in reference else outermost
-        ref_rms = reference[ref_l]
-        first = (recipe.rms_radius * ANGSTROM_TO_BOHR
-                 if recipe.rms_radius is not None
-                 else recipe.rms_ratio * ref_rms)
-        targets = [first * recipe.ratio ** k for k in range(recipe.count)]
-        _alpha, widest = diffuse_parameters(l, targets[-1], recipe.cutoff_norm)
-        r = _native.diffuse_extended_grid(_array(pp.r), GRID_REACH * widest)
-        same = [_native.diffuse_on_grid(context, r, _array(r_old),
-                                        _array(values))
-                for _n, l_old, r_old, values in existing if l_old == l]
-        n_next = max([n for n, l_old, _r, _v in existing if l_old == l],
-                     default=l) + 1
-        for k, rms in enumerate(targets):
-            values, alpha, r_cut = diffuse_radial(r, l, rms,
-                                                  recipe.cutoff_norm)
-            if filtered:
-                values, _info = filter_radial(r, values, l,
-                                              float(filter_wavevector),
-                                              context=context)
-            residual, accepted, candidate = _native.diffuse_orthogonalize(
-                context, r, same, _array(values), filtered,
-                LINEAR_DEPENDENCE_TOL)
-            shells.append(DiffuseShell(
-                symbol=str(symbol), l=int(l), index=k, n=n_next + k,
-                reference_l=int(ref_l), reference_rms=float(ref_rms),
-                rms=float(rms), alpha=float(alpha), r_cut=float(r_cut),
-                residual=float(residual), accepted=bool(accepted),
-                r_max=float(r[-1])))
-            if not accepted:
-                continue
-            tables.append(RadialTable(r=r, values=candidate, n=n_next + k,
-                                      l=int(l), zeta=1, diffuse=True))
-            same.append(candidate)
+    raw_tables, raw_shells = _native.diffuse_build_tables(
+        _context(), _array(pp.r), existing_items, chan_info, recipe_params,
+        k_c, GRID_REACH, LINEAR_DEPENDENCE_TOL)
+
+    tables = [RadialTable(r=r, values=v, n=n, l=l, zeta=1, diffuse=True)
+              for r, v, n, l in raw_tables]
+    shells = [DiffuseShell(
+        symbol=str(symbol), l=l, index=idx, n=n, reference_l=ref_l,
+        reference_rms=ref_rms, rms=rms, alpha=alpha, r_cut=r_cut,
+        residual=residual, accepted=accepted, r_max=r_max)
+        for l, idx, n, ref_l, ref_rms, rms, alpha, r_cut, residual, accepted, r_max in raw_shells]
     return tables, shells
 
 
@@ -542,7 +531,7 @@ def box_diagnostic(grid_norms, basis_fns, atom_of_orbital, symbols, grid,
     largest ``r_cut`` against the distance from the atom to the nearest face
     of the grid, and the smallest ratio among its functions.
     """
-    ratios = [math.nan] * len(basis_fns)
+    ratios: dict = {}
     for i, fn in enumerate(basis_fns):
         if is_diffuse(fn):
             ratios[i] = float(grid_norms[i]) / _native.diffuse_radial_norm(
@@ -553,17 +542,23 @@ def box_diagnostic(grid_norms, basis_fns, atom_of_orbital, symbols, grid,
     shape = [int(n) for n in grid.shape]
     owners = [int(o) for o in atom_of_orbital]
     rows = []
-    for atom in sorted({owners[i] for i, x in enumerate(ratios)
-                        if math.isfinite(x)}):
-        mine = [i for i, x in enumerate(ratios)
-                if owners[i] == atom and math.isfinite(x)]
+    active_atoms = sorted({owners[i] for i in ratios})
+    for atom in active_atoms:
+        mine = [i for i in ratios if owners[i] == atom]
         face = _native.diffuse_face_distance(
             origin, step, shape, _array(basis_fns[mine[0]].center).tolist())
         symbol = symbols[atom]
-        r_cut = max((s.r_cut for s in (shells or {}).get(symbol, ())
-                     if s.accepted), default=float("nan"))
-        rows.append((atom, symbol, r_cut, face, min(ratios[i] for i in mine)))
-    short = [i for i, x in enumerate(ratios) if x < 1.0 - BOX_TOL]
+        r_cut = None
+        for s in (shells or {}).get(symbol, ()):
+            if s.accepted and (r_cut is None or s.r_cut > r_cut):
+                r_cut = s.r_cut
+        min_ratio = float("inf")
+        for i in mine:
+            if ratios[i] < min_ratio:
+                min_ratio = ratios[i]
+        rows.append((atom, symbol, float("nan") if r_cut is None else r_cut,
+                     face, min_ratio))
+    short = [i for i, r in ratios.items() if r < 1.0 - BOX_TOL]
     if short:
         worst = min(short, key=ratios.__getitem__)
         warnings.warn(
@@ -574,7 +569,8 @@ def box_diagnostic(grid_norms, basis_fns, atom_of_orbital, symbols, grid,
             "atom's diffuse r_cut fits inside it (the [BASIS] diffuse_box "
             "table lists r_cut against each atom's distance to the cell "
             "face)", RuntimeWarning, stacklevel=3)
-    return ratios, rows
+    out_ratios = [ratios.get(i, float("nan")) for i in range(len(basis_fns))]
+    return out_ratios, rows
 
 
 def box_table(rows) -> list:
