@@ -4,8 +4,8 @@ use super::{invalid, solver, Crystal, KPoint};
 use crate::{
     math::{
         fft::Fft3,
-        linalg::eigen,
-        projection::{hermitian_density_tiles, ComplexProjector},
+        linalg::{davidson, eigen, rmm_diis},
+        projection::{hermitian_density_tiles_accumulate, ComplexProjector},
         storage::MatrixSource,
     },
     quantum::C64,
@@ -103,6 +103,32 @@ pub fn diagonalize_with_exchange(
     hubbard: Option<&Matrix>,
     exchange: Option<&Matrix>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    diagonalize_with_solver(
+        c,
+        point,
+        fields,
+        moments,
+        hubbard,
+        exchange,
+        solver::Eigensolver::Direct,
+        1e-2,
+        0.0,
+        None,
+    )
+}
+
+pub fn diagonalize_with_solver(
+    c: &Crystal,
+    point: &KPoint,
+    fields: &[f64],
+    moments: &[C64],
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+    eigensolver: solver::Eigensolver,
+    switch_tolerance: f64,
+    current_residual: f64,
+    previous_y: Option<&Matrix>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
     let m = c.m;
     let n = c.grid.index.points();
     if fields.len() != c.field_channels() * n
@@ -167,7 +193,31 @@ pub fn diagonalize_with_exchange(
     }
     let lowdin = lowdin_block(point, m, true);
     let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
-    let (eps, y) = eigen(lowdin.adjoint() * h * &lowdin)?;
+    let h_ortho = lowdin.adjoint() * h * &lowdin;
+    let h_ortho = (&h_ortho + h_ortho.adjoint()) * C64::new(0.5, 0.);
+
+    let (eps, y) = match eigensolver {
+        solver::Eigensolver::Direct => eigen(h_ortho)?,
+        solver::Eigensolver::Davidson => davidson(&h_ortho, previous_y, 1e-6, 4)?,
+        solver::Eigensolver::RmmDiis => {
+            if let Some(y_prev) = previous_y {
+                rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
+            } else {
+                eigen(h_ortho)?
+            }
+        }
+        solver::Eigensolver::Mixed => {
+            if current_residual < switch_tolerance {
+                if let Some(y_prev) = previous_y {
+                    rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
+                } else {
+                    davidson(&h_ortho, previous_y, 1e-6, 4)?
+                }
+            } else {
+                davidson(&h_ortho, previous_y, 1e-6, 4)?
+            }
+        }
+    };
     Ok((eps, &lowdin * &y, y))
 }
 
@@ -204,10 +254,14 @@ pub fn density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f
                     * &point.projections
                     * C64::new(point.weight, 0.);
             }
-            let field = hermitian_density_tiles(&c.context, &point.psi, &d, n)?;
-            for k in 0..n {
-                rho.as_mut_slice()[a * n + k] += point.weight * field.as_slice()[k];
-            }
+            hermitian_density_tiles_accumulate(
+                &c.context,
+                &point.psi,
+                &d,
+                n,
+                point.weight,
+                &mut rho.as_mut_slice()[a * n..(a + 1) * n],
+            )?;
         }
     }
     let mut q = c.context.allocate::<C64>(c.channels)?;

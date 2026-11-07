@@ -58,6 +58,7 @@ _METHOD_SCOPED_OPTIONS = {
             "vdw",
             "smearing",
             "periodic_scf_options",
+            "eigensolver",
             "hubbard_u",
             "exxdiv_treatment",
             "gygi_baldereschi",
@@ -787,8 +788,14 @@ class Mandacaru(ASEProperties, Calculator):
         Options of the periodic SCF: ``max_iterations`` (default 300),
         ``tolerance`` (default 1e-7), ``density_tolerance`` (default 1e-5),
         ``smearing``, ``width_ha`` (the width in Hartree), ``mixing`` (default
-        0.25) and ``history`` (default 7, the mixing history length). An unknown
-        key raises ``TypeError`` at ``run()``. Ignored for molecules.
+        0.25), ``history`` (default 7, the mixing history length) and ``eigensolver``.
+        An unknown key raises ``TypeError`` at ``run()``. Ignored for molecules.
+    eigensolver : {"davidson", "direct", "rmm-diis", "mixed"}, default "davidson"
+        Eigensolver algorithm for periodic Kohn-Sham diagonalization. ``"direct"``
+        performs full dense diagonalization. ``"davidson"`` uses block Davidson
+        subspace iteration. ``"rmm-diis"`` uses residual minimization with DIIS.
+        ``"mixed"`` begins SCF iterations using Davidson and switches to RMM-DIIS
+        once the density residual passes 0.01. Periodic DFT only.
     symmetry : bool, default True
         Reduce the k-mesh with the space-group operations of the cell (time
         reversal is always used). Spinor (spin-orbit) calculations never use
@@ -947,6 +954,7 @@ class Mandacaru(ASEProperties, Calculator):
         kpts=None,
         smearing=None,
         periodic_scf_options=None,
+        eigensolver="davidson",
         symmetry=True,
         hubbard_u=None,
         load_crystal=None,
@@ -1353,6 +1361,14 @@ class Mandacaru(ASEProperties, Calculator):
         if len(size) != 3 or any(type(n) is not int or n < 1 for n in size):
             raise ValueError("kpts needs three positive integer mesh sizes")
         self._periodic_options = dict(periodic_scf_options or {})
+        if eigensolver is not None:
+            eigen_norm = str(eigensolver).strip().lower().replace("_", "-")
+            if eigen_norm not in ("direct", "davidson", "rmm-diis", "mixed"):
+                raise ValueError(
+                    f"unknown eigensolver {eigensolver!r}; supported options are 'direct', 'davidson', 'rmm-diis', 'mixed'"
+                )
+            self._periodic_options.setdefault("eigensolver", eigen_norm)
+        self._periodic_options.setdefault("switch_tolerance", 0.01)
         self._periodic_options["exxdiv_treatment"] = _exchange_divergence(
             exxdiv_treatment, gygi_baldereschi, periodic_scf_options
         )
@@ -1409,7 +1425,7 @@ class Mandacaru(ASEProperties, Calculator):
     def solver(self):
         if getattr(self, "_solver_instance", None) is not None:
             return self._solver_instance
-        if hasattr(self, "_optimizer"):
+        if self.capabilities.quantum and hasattr(self, "_optimizer"):
             from types import SimpleNamespace
             from .optimizers import Optimizer
             opt = Optimizer(
@@ -2561,6 +2577,14 @@ class Mandacaru(ASEProperties, Calculator):
                 and "energy" in self.results
                 and geometry.same_as(self._geometry)
             )
+            if not reusable:
+                self._drop_crystal()
+                self.result = None
+                self.solver = None
+                self.problem = None
+                self.native_reference = None
+                self.results.clear()
+                self.context.release_freed_memory()
             if "forces" in properties and self._force_grid is None and not periodic_geometry:
                 self._force_grid = (
                     self.integrals.grid
@@ -2574,6 +2598,8 @@ class Mandacaru(ASEProperties, Calculator):
                 if result.periodic is not None:
                     with self._stage("nuclear gradient (forces)"):
                         self.results["forces"] = result.forces()
+                    from .integrations.reporting import write_forces
+                    write_forces(self, result, geometry, internal=False, translated=False)
                 elif periodic_geometry and self.capabilities.quantum:
                     with self._stage("quantum nuclear gradient (forces)"):
                         self.results["forces"] = self._periodic_quantum_forces(geometry, result)
@@ -2738,6 +2764,11 @@ class Mandacaru(ASEProperties, Calculator):
             self.problem = None
             self.solver = None
             self._force_grid = None
+            if hasattr(self, "_optimization_history"):
+                hist = getattr(self, "_optimization_history", None)
+                if hasattr(hist, "close"):
+                    hist.close()
+                delattr(self, "_optimization_history")
             self._drop_crystal()
 
     def _drop_crystal(self):

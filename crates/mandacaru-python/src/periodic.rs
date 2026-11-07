@@ -182,7 +182,7 @@ impl PyCrystal {
     fn save(&self, py: Python<'_>, path: &str) -> PyResult<()> {
         py.detach(|| self.inner.save(path)).map_err(error)
     }
-    #[pyo3(signature=(*,max_iterations=300,tolerance=1e-7,density_tolerance=1e-5,smearing="fermi-dirac",width_ha=0.003674932217565499,mixing=0.25,history=7,exxdiv_treatment="none"))]
+    #[pyo3(signature=(*,max_iterations=300,tolerance=1e-7,density_tolerance=1e-5,smearing="fermi-dirac",width_ha=0.003674932217565499,mixing=0.25,history=7,exxdiv_treatment="none",algorithm="diis",spin_mixing=None,eigensolver="davidson",switch_tolerance=1e-2))]
     fn solve(
         &self,
         py: Python<'_>,
@@ -194,8 +194,16 @@ impl PyCrystal {
         mixing: f64,
         history: usize,
         exxdiv_treatment: &str,
+        algorithm: &str,
+        spin_mixing: Option<f64>,
+        eigensolver: &str,
+        switch_tolerance: f64,
     ) -> PyResult<PyPeriodicResult> {
         let exxdiv = mandacaru_core::periodic::screened_exchange::ExxDivTreatment::parse(exxdiv_treatment)
+            .map_err(error)?;
+        let scf_algo = mandacaru_core::periodic::solver::ScfAlgorithm::parse(algorithm)
+            .map_err(error)?;
+        let eigen_algo = mandacaru_core::periodic::solver::Eigensolver::parse(eigensolver)
             .map_err(error)?;
         let options = Options {
             max_iterations,
@@ -206,6 +214,10 @@ impl PyCrystal {
             mixing,
             history,
             exxdiv_treatment: exxdiv,
+            algorithm: scf_algo,
+            spin_mixing,
+            eigensolver: eigen_algo,
+            switch_tolerance,
         };
         let inner = py.detach(|| self.inner.solve(&options)).map_err(error)?;
         Ok(PyPeriodicResult {

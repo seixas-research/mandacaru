@@ -291,6 +291,115 @@ impl<'a, S: ComplexTiles + ?Sized> ComplexProjector<'a, S> {
     }
 }
 
+/// Pre-allocated reusable workspace for projecting local scalar fields into complex Bloch orbitals
+/// across multiple k-points and SCF iterations without repeated heap allocations.
+pub struct ComplexProjectorWorkspace {
+    orbitals: usize,
+    points: usize,
+    tile: usize,
+    staged: Buffer<C64>,
+    left: Buffer<f64>,
+    right: Buffer<f64>,
+    real: Buffer<f64>,
+    imaginary: Buffer<f64>,
+    matrix: Buffer<C64>,
+    _packing: Reservation,
+}
+impl ComplexProjectorWorkspace {
+    pub fn new(ctx: &Context, orbitals: usize, points: usize) -> Result<Self> {
+        if orbitals == 0 || points == 0 {
+            return Err(Error::Invalid(
+                "complex orbital dimensions must be nonzero".into(),
+            ));
+        }
+        let tile = points.min(TILE);
+        let staged = product(&[orbitals, tile])?;
+        Ok(Self {
+            orbitals,
+            points,
+            tile,
+            staged: ctx.allocate(staged)?,
+            left: ctx.allocate(product(&[orbitals, tile])?)?,
+            right: ctx.allocate(product(&[orbitals, tile])?)?,
+            real: ctx.allocate(product(&[orbitals, orbitals])?)?,
+            imaginary: ctx.allocate(product(&[orbitals, orbitals])?)?,
+            matrix: ctx.allocate(product(&[orbitals, orbitals])?)?,
+            _packing: ctx.reserve(product(&[orbitals, tile, 16])?)?,
+        })
+    }
+
+    /// Column-major matrix `sum_k conj(phi[a,k]) field[k] phi[b,k]`.
+    pub fn project<S: ComplexTiles + ?Sized>(&mut self, samples: &S, field: &[f64]) -> Result<&[C64]> {
+        if field.len() != self.points {
+            return Err(Error::Invalid(
+                "local field does not match the complex orbital grid".into(),
+            ));
+        }
+        finite(field, "local field")?;
+        let m = self.orbitals;
+        self.real.as_mut_slice().fill(0.);
+        self.imaginary.as_mut_slice().fill(0.);
+        for start in (0..self.points).step_by(self.tile) {
+            let count = self.tile.min(self.points - start);
+            let tile = samples.tile(
+                m,
+                self.points,
+                start,
+                count,
+                &mut self.staged.as_mut_slice()[..],
+            )?;
+            for (left_imag, right_imag, imaginary, sign) in [
+                (false, false, false, 1.),
+                (true, true, false, 1.),
+                (false, true, true, 1.),
+                (true, false, true, -1.),
+            ] {
+                for a in 0..m {
+                    let row = tile.row(a);
+                    for k in 0..count {
+                        let sample = row[k];
+                        self.left.as_mut_slice()[k * m + a] =
+                            if left_imag { sample.im } else { sample.re };
+                        self.right.as_mut_slice()[a * self.tile + k] =
+                            (if right_imag { sample.im } else { sample.re }) * field[start + k];
+                    }
+                }
+                let target = if imaginary {
+                    &mut self.imaginary
+                } else {
+                    &mut self.real
+                };
+                gemm::multiply(
+                    MatrixRef {
+                        values: self.left.as_slice(),
+                        rows: m,
+                        columns: count,
+                        leading: m,
+                    },
+                    MatrixRef {
+                        values: self.right.as_slice(),
+                        rows: count,
+                        columns: m,
+                        leading: self.tile,
+                    },
+                    MatrixMut {
+                        values: target.as_mut_slice(),
+                        rows: m,
+                        columns: m,
+                        leading: m,
+                    },
+                    sign,
+                    1.,
+                )?;
+            }
+        }
+        for (i, value) in self.matrix.as_mut_slice().iter_mut().enumerate() {
+            *value = C64::new(self.real.as_slice()[i], self.imaginary.as_slice()[i]);
+        }
+        Ok(self.matrix.as_slice())
+    }
+}
+
 /// Grid diagonal `phi^T D conj(phi)` for a Hermitian density matrix.
 /// Tiled real products retain complex coherence, including imaginary D.
 pub fn hermitian_density(
@@ -303,6 +412,7 @@ pub fn hermitian_density(
 }
 
 /// [`hermitian_density`] over a tiled stack: the samples are read one tile at a time (a stack on
+/// [`hermitian_density`] over a tiled stack: the samples are read one tile at a time (a stack on
 /// disk is never materialized). Each tile runs only the products its own values need: a tile of
 /// real samples skips the imaginary ones, which add exact zeros to the same sums.
 pub fn hermitian_density_tiles<S: ComplexTiles + ?Sized>(
@@ -311,6 +421,20 @@ pub fn hermitian_density_tiles<S: ComplexTiles + ?Sized>(
     matrix: &DMatrix<C64>,
     points: usize,
 ) -> Result<Buffer<f64>> {
+    let mut density = ctx.allocate::<f64>(points)?;
+    hermitian_density_tiles_accumulate(ctx, samples, matrix, points, 1.0, density.as_mut_slice())?;
+    Ok(density)
+}
+
+/// Accumulate [`hermitian_density_tiles`] directly into an existing buffer scaled by `weight`.
+pub fn hermitian_density_tiles_accumulate<S: ComplexTiles + ?Sized>(
+    ctx: &Context,
+    samples: &S,
+    matrix: &DMatrix<C64>,
+    points: usize,
+    weight: f64,
+    out: &mut [f64],
+) -> Result<()> {
     let m = matrix.nrows();
     if m == 0
         || matrix.ncols() != m
@@ -318,6 +442,7 @@ pub fn hermitian_density_tiles<S: ComplexTiles + ?Sized>(
         || samples.len() != product(&[m, points])?
         || !samples.finite()
         || matrix.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
+        || out.len() != points
     {
         return Err(Error::Invalid(
             "complex density projection has invalid dimensions or values".into(),
@@ -346,7 +471,6 @@ pub fn hermitian_density_tiles<S: ComplexTiles + ?Sized>(
     }
     let imaginary_matrix = b.as_slice().iter().any(|v| *v != 0.);
     let _packing = ctx.reserve(product(&[m, tile, 16])?)?;
-    let mut density = ctx.allocate::<f64>(points)?;
     for start in (0..points).step_by(tile) {
         let count = tile.min(points - start);
         let block = samples.tile(m, points, start, count, staged.as_mut_slice())?;
@@ -395,14 +519,14 @@ pub fn hermitian_density_tiles<S: ComplexTiles + ?Sized>(
                 0.,
             )?;
             for j in 0..count {
-                density.as_mut_slice()[start + j] += factor
+                out[start + j] += weight * factor
                     * (0..m)
                         .map(|i| contraction[i + j * m] * work.as_slice()[i + j * m])
                         .sum::<f64>();
             }
         }
     }
-    Ok(density)
+    Ok(())
 }
 impl<'a, T: Sample> RealProjector<'a, T> {
     pub fn new(ctx: &Context, samples: &'a [T], orbitals: usize, points: usize) -> Result<Self> {

@@ -7,7 +7,7 @@ use super::{
 use crate::{
     math::{
         fft::Fft3,
-        linalg::eigen,
+        linalg::{davidson, eigen, rmm_diis},
         storage::{MatrixSource, StoredMatrix},
     },
     models::xc,
@@ -17,6 +17,61 @@ use crate::{
 };
 use nalgebra::{DMatrix, DVector};
 type Matrix = DMatrix<C64>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScfAlgorithm {
+    #[default]
+    Diis,
+    Linear,
+    Damped,
+}
+impl ScfAlgorithm {
+    pub fn parse(name: &str) -> Result<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "diis" | "pulay" => Ok(Self::Diis),
+            "linear" => Ok(Self::Linear),
+            "damped" | "damping" => Ok(Self::Damped),
+            _ => Err(invalid(format!(
+                "unknown scf algorithm {name:?}; supported algorithms are 'diis', 'linear', 'damped'"
+            ))),
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Diis => "diis",
+            Self::Linear => "linear",
+            Self::Damped => "damped",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Eigensolver {
+    Direct,
+    #[default]
+    Davidson,
+    RmmDiis,
+    Mixed,
+}
+impl Eigensolver {
+    pub fn parse(name: &str) -> Result<Self> {
+        match name.to_ascii_lowercase().replace('_', "-").as_str() {
+            "direct" | "dense" | "qr" => Ok(Self::Direct),
+            "davidson" => Ok(Self::Davidson),
+            "rmm-diis" | "rmm" | "rmmdiis" => Ok(Self::RmmDiis),
+            "mixed" => Ok(Self::Mixed),
+            _ => Err(invalid(format!(
+                "unknown eigensolver {name:?}; supported eigensolvers are 'direct', 'davidson', 'rmm-diis', 'mixed'"
+            ))),
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Davidson => "davidson",
+            Self::RmmDiis => "rmm-diis",
+            Self::Mixed => "mixed",
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Options {
     pub max_iterations: usize,
@@ -27,6 +82,10 @@ pub struct Options {
     pub mixing: f64,
     pub history: usize,
     pub exxdiv_treatment: super::screened_exchange::ExxDivTreatment,
+    pub algorithm: ScfAlgorithm,
+    pub spin_mixing: Option<f64>,
+    pub eigensolver: Eigensolver,
+    pub switch_tolerance: f64,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -39,6 +98,10 @@ impl Default for Options {
             mixing: 0.25,
             history: 7,
             exxdiv_treatment: super::screened_exchange::ExxDivTreatment::None,
+            algorithm: ScfAlgorithm::Diis,
+            spin_mixing: None,
+            eigensolver: Eigensolver::Davidson,
+            switch_tolerance: 1e-2,
         }
     }
 }
@@ -129,6 +192,32 @@ fn inverse(c: &Crystal, fft: &mut Fft3, input: &[C64]) -> Result<Buffer<f64>> {
     }
     Ok(real)
 }
+pub(super) fn derivative_into(
+    c: &Crystal,
+    fft: &mut Fft3,
+    input: &[f64],
+    axis: usize,
+    work: &mut [C64],
+    out: &mut [f64],
+) -> Result<()> {
+    let n = c.grid.index.points();
+    if input.len() != n || work.len() != n || out.len() != n {
+        return Err(invalid("derivative buffer lengths must match grid"));
+    }
+    for (k, value) in input.iter().enumerate() {
+        work[k] = C64::new(*value, 0.);
+    }
+    fft.transform(work, false)?;
+    for k in 0..n {
+        work[k] *= C64::new(0., c.xc_wave.as_slice()[axis * n + k]);
+    }
+    fft.transform(work, true)?;
+    for k in 0..n {
+        out[k] = work[k].re;
+    }
+    Ok(())
+}
+
 pub(super) fn derivative(
     c: &Crystal,
     fft: &mut Fft3,
@@ -136,25 +225,50 @@ pub(super) fn derivative(
     axis: usize,
 ) -> Result<Buffer<f64>> {
     let n = c.grid.index.points();
-    let mut out = c.context.allocate::<C64>(n)?;
-    for (k, value) in input.iter().enumerate() {
-        out.as_mut_slice()[k] = C64::new(*value, 0.);
-    }
-    fft.transform(out.as_mut_slice(), false)?;
-    for k in 0..n {
-        out.as_mut_slice()[k] *= C64::new(0., c.xc_wave.as_slice()[axis * n + k]);
-    }
-    fft.transform(out.as_mut_slice(), true)?;
+    let mut work = c.context.allocate::<C64>(n)?;
     let mut real = c.context.allocate::<f64>(n)?;
-    for k in 0..n {
-        real.as_mut_slice()[k] = out.as_slice()[k].re;
-    }
+    derivative_into(c, fft, input, axis, work.as_mut_slice(), real.as_mut_slice())?;
     Ok(real)
 }
 struct Electro {
-    energy: f64,
     potential: Buffer<f64>,
     moments: Buffer<C64>,
+}
+pub(super) fn electrostatic_energy(
+    c: &Crystal,
+    fft: &mut Fft3,
+    rho: &[f64],
+    q: &[C64],
+) -> Result<f64> {
+    let n = c.grid.index.points();
+    let h = c.channels;
+    let volume = n as f64 * c.grid.index.dv();
+    let rho = reciprocal(c, fft, rho)?;
+    let mut hats = c.context.allocate::<C64>(n)?;
+    let mut staged = c.context.allocate::<C64>(n)?;
+    let mut energy = c.eion + c.ion_constant;
+    for (a, &charge) in q.iter().enumerate().take(h) {
+        let table = c.hats.slice(a * n, staged.as_mut_slice())?;
+        for k in 0..n {
+            hats.as_mut_slice()[k] += charge * table[k];
+        }
+    }
+    for k in 0..n {
+        energy += c.kernel.as_slice()[k]
+            * (0.5 * rho.as_slice()[k].norm_sqr()
+                + (rho.as_slice()[k].conj() * (hats.as_slice()[k] + c.ion.as_slice()[k])).re)
+            / volume;
+    }
+    for a in 0..h {
+        let uq = (0..h)
+            .map(|b| c.u.as_slice()[a * h + b] * q[b])
+            .sum::<C64>();
+        energy += (0.5 * q[a].conj() * uq
+            + q[a].conj() * c.uion.as_slice()[a]
+            + q[a] * c.linear.as_slice()[a])
+            .re;
+    }
+    Ok(energy)
 }
 fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<Electro> {
     let n = c.grid.index.points();
@@ -166,7 +280,6 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
     let mut staged = c.context.allocate::<C64>(n)?;
     let mut potential = c.context.allocate::<C64>(n)?;
     let mut moments = c.context.allocate::<C64>(h)?;
-    let mut energy = c.eion + c.ion_constant;
     for (a, &charge) in q.iter().enumerate().take(h) {
         let table = c.hats.slice(a * n, staged.as_mut_slice())?;
         for k in 0..n {
@@ -178,21 +291,10 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
             / volume;
     }
     for k in 0..n {
-        energy += c.kernel.as_slice()[k]
-            * (0.5 * rho.as_slice()[k].norm_sqr()
-                + (rho.as_slice()[k].conj() * (hats.as_slice()[k] + c.ion.as_slice()[k])).re)
-            / volume;
         potential.as_mut_slice()[k] =
             c.kernel.as_slice()[k] * (rho.as_slice()[k] + hats.as_slice()[k] + c.ion.as_slice()[k]);
     }
     for a in 0..h {
-        let uq = (0..h)
-            .map(|b| c.u.as_slice()[a * h + b] * q[b])
-            .sum::<C64>();
-        energy += (0.5 * q[a].conj() * uq
-            + q[a].conj() * c.uion.as_slice()[a]
-            + q[a] * c.linear.as_slice()[a])
-            .re;
         moments.as_mut_slice()[a] += (0..h)
             .map(|b| q[b].conj() * c.u.as_slice()[b * h + a])
             .sum::<C64>()
@@ -200,7 +302,6 @@ fn electrostatic(c: &Crystal, fft: &mut Fft3, rho: &[f64], q: &[C64]) -> Result<
             + c.linear.as_slice()[a];
     }
     Ok(Electro {
-        energy,
         potential: inverse(c, fft, potential.as_slice())?,
         moments,
     })
@@ -215,6 +316,72 @@ pub(super) fn exchange_correlation(
         return super::spinor::exchange_correlation(c, fft, rho);
     }
     collinear_xc(c, fft, rho, tau, c.spins)
+}
+pub(super) fn collinear_xc_energy(
+    c: &Crystal,
+    fft: &mut Fft3,
+    rho: &[f64],
+    spins: usize,
+) -> Result<f64> {
+    if !matches!(c.functional.as_str(), "lda" | "pbe") {
+        return Ok(super::fields::evaluate(c, fft, rho, None, spins)?.energy);
+    }
+    let n = c.grid.index.points();
+    let ctx = &c.context;
+    let mut densities = ctx.allocate::<f64>(2 * n)?;
+    for spin in 0..2 {
+        for k in 0..n {
+            densities.as_mut_slice()[spin * n + k] = (if spins == 1 {
+                0.5 * rho[k]
+            } else {
+                rho[spin * n + k]
+            } + 0.5 * c.core.as_slice()[k])
+                .max(0.);
+        }
+    }
+    let mut gradients = ctx.allocate::<f64>(6 * n)?;
+    if c.functional == "pbe" {
+        let mut work = ctx.allocate::<C64>(n)?;
+        for s in 0..2 {
+            for a in 0..3 {
+                derivative_into(
+                    c,
+                    fft,
+                    &densities.as_slice()[s * n..(s + 1) * n],
+                    a,
+                    work.as_mut_slice(),
+                    &mut gradients.as_mut_slice()[(3 * s + a) * n..(3 * s + a + 1) * n],
+                )?;
+            }
+        }
+    }
+    let mut energy = 0.;
+    for k in 0..n {
+        let mut sigma = [0.; 3];
+        let live = densities.as_slice()[k] + densities.as_slice()[n + k] > 1e-10;
+        if live {
+            for a in 0..3 {
+                let u = gradients.as_slice()[a * n + k];
+                let d = gradients.as_slice()[(a + 3) * n + k];
+                sigma[0] += u * u;
+                sigma[1] += u * d;
+                sigma[2] += d * d;
+            }
+        }
+        let (f, _df) = xc::partials_relativistic(
+            &c.functional,
+            [
+                densities.as_slice()[k],
+                densities.as_slice()[n + k],
+                sigma[0],
+                sigma[1],
+                sigma[2],
+            ],
+            c.relativistic,
+        )?;
+        energy += f;
+    }
+    Ok(energy * c.grid.index.dv())
 }
 pub(super) fn collinear_xc(
     c: &Crystal,
@@ -242,12 +409,18 @@ pub(super) fn collinear_xc(
     let mut gradients = ctx.allocate::<f64>(6 * n)?;
     let mut flux = ctx.allocate::<f64>(6 * n)?;
     let mut potential = ctx.allocate::<f64>(2 * n)?;
+    let mut work_complex = ctx.allocate::<C64>(n)?;
     if c.functional == "pbe" {
         for s in 0..2 {
             for a in 0..3 {
-                let g = derivative(c, fft, &densities.as_slice()[s * n..(s + 1) * n], a)?;
-                gradients.as_mut_slice()[(3 * s + a) * n..(3 * s + a + 1) * n]
-                    .copy_from_slice(g.as_slice());
+                derivative_into(
+                    c,
+                    fft,
+                    &densities.as_slice()[s * n..(s + 1) * n],
+                    a,
+                    work_complex.as_mut_slice(),
+                    &mut gradients.as_mut_slice()[(3 * s + a) * n..(3 * s + a + 1) * n],
+                )?;
             }
         }
     }
@@ -288,16 +461,19 @@ pub(super) fn collinear_xc(
         }
     }
     if c.functional == "pbe" {
+        let mut divergence_real = ctx.allocate::<f64>(n)?;
         for s in 0..2 {
             for a in 0..3 {
-                let divergence = derivative(
+                derivative_into(
                     c,
                     fft,
                     &flux.as_slice()[(s * 3 + a) * n..(s * 3 + a + 1) * n],
                     a,
+                    work_complex.as_mut_slice(),
+                    divergence_real.as_mut_slice(),
                 )?;
                 for k in 0..n {
-                    potential.as_mut_slice()[s * n + k] -= divergence.as_slice()[k];
+                    potential.as_mut_slice()[s * n + k] -= divergence_real.as_slice()[k];
                 }
             }
         }
@@ -427,8 +603,77 @@ pub fn diagonalize_with_exchange(
     hubbard: Option<&Matrix>,
     exchange: Option<&Matrix>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    diagonalize_with_solver(
+        c,
+        data,
+        v,
+        w,
+        kinetic_potential,
+        hubbard,
+        exchange,
+        Eigensolver::Direct,
+        1e-2,
+        0.0,
+        None,
+    )
+}
+
+pub fn diagonalize_with_solver(
+    c: &Crystal,
+    data: &KPoint,
+    v: &[f64],
+    w: &[C64],
+    kinetic_potential: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+    eigensolver: Eigensolver,
+    switch_tolerance: f64,
+    current_residual: f64,
+    previous_y: Option<&Matrix>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    diagonalize_with_solver_ws(
+        c,
+        data,
+        v,
+        w,
+        kinetic_potential,
+        hubbard,
+        exchange,
+        eigensolver,
+        switch_tolerance,
+        current_residual,
+        previous_y,
+        None,
+    )
+}
+
+pub fn diagonalize_with_solver_ws(
+    c: &Crystal,
+    data: &KPoint,
+    v: &[f64],
+    w: &[C64],
+    kinetic_potential: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+    eigensolver: Eigensolver,
+    switch_tolerance: f64,
+    current_residual: f64,
+    previous_y: Option<&Matrix>,
+    projector_ws: Option<&mut crate::math::projection::ComplexProjectorWorkspace>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
     if c.spinor {
-        return super::spinor::diagonalize_with_exchange(c, data, v, w, hubbard, exchange);
+        return super::spinor::diagonalize_with_solver(
+            c,
+            data,
+            v,
+            w,
+            hubbard,
+            exchange,
+            eigensolver,
+            switch_tolerance,
+            current_residual,
+            previous_y,
+        );
     }
     let m = c.m;
     let p = c.p;
@@ -449,13 +694,18 @@ pub fn diagonalize_with_exchange(
         *to = from * c.grid.index.dv();
     }
     // The orbital stack is streamed tile by tile: a stack on disk is never read back whole.
-    let mut projector =
-        crate::math::projection::ComplexProjector::streaming(&c.context, &data.psi, m, n)?;
-    let local = projector.project(field.as_slice())?;
+    let mut fallback_ws;
+    let ws = match projector_ws {
+        Some(ws) => ws,
+        None => {
+            fallback_ws = crate::math::projection::ComplexProjectorWorkspace::new(&c.context, m, n)?;
+            &mut fallback_ws
+        }
+    };
+    let local = ws.project(&data.psi, field.as_slice())?;
     let mut h = &data.fixed
         + &data.projections * operator * data.projections.adjoint()
         + Matrix::from_column_slice(m, m, local);
-    drop(projector);
     drop(field);
     if let Some(v) = kinetic_potential {
         let operator = super::fields::kinetic_operator(c, data, v)?;
@@ -469,7 +719,31 @@ pub fn diagonalize_with_exchange(
         h -= k * C64::new(c.require_screened_exchange()?.1, 0.);
     }
     let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
-    let (eps, y) = eigen(data.lowdin.adjoint() * h * &data.lowdin)?;
+    let h_ortho = data.lowdin.adjoint() * h * &data.lowdin;
+    let h_ortho = (&h_ortho + h_ortho.adjoint()) * C64::new(0.5, 0.);
+
+    let (eps, y) = match eigensolver {
+        Eigensolver::Direct => eigen(h_ortho)?,
+        Eigensolver::Davidson => davidson(&h_ortho, previous_y, 1e-6, 4)?,
+        Eigensolver::RmmDiis => {
+            if let Some(y_prev) = previous_y {
+                rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
+            } else {
+                eigen(h_ortho)?
+            }
+        }
+        Eigensolver::Mixed => {
+            if current_residual < switch_tolerance {
+                if let Some(y_prev) = previous_y {
+                    rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
+                } else {
+                    davidson(&h_ortho, previous_y, 1e-6, 4)?
+                }
+            } else {
+                davidson(&h_ortho, previous_y, 1e-6, 4)?
+            }
+        }
+    };
     Ok((eps, &data.lowdin * &y, y))
 }
 pub(super) fn density(
@@ -490,11 +764,14 @@ pub(super) fn density(
             let d = matrices[s * c.points.len() + k].matrix(&c.context)?;
             projected +=
                 data.projections.adjoint() * &*d * &data.projections * C64::new(data.weight, 0.);
-            let contribution =
-                crate::math::projection::hermitian_density_tiles(&c.context, &data.psi, &d, n)?;
-            for (to, from) in raw.as_mut_slice().iter_mut().zip(contribution.as_slice()) {
-                *to += data.weight * from;
-            }
+            crate::math::projection::hermitian_density_tiles_accumulate(
+                &c.context,
+                &data.psi,
+                &d,
+                n,
+                data.weight,
+                raw.as_mut_slice(),
+            )?;
         }
         sym_field(
             c,
@@ -544,10 +821,16 @@ pub(super) fn energy(
             }
         })
         .sum::<Result<f64>>()?;
+    let electro_energy = electrostatic_energy(c, fft, total.as_slice(), q)?;
+    let xc_energy = if c.spinor || !matches!(c.functional.as_str(), "lda" | "pbe") {
+        exchange_correlation(c, fft, rho, tau)?.energy
+    } else {
+        collinear_xc_energy(c, fft, rho, c.spins)?
+    };
     Ok([
         band,
-        electrostatic(c, fft, total.as_slice(), q)?.energy,
-        exchange_correlation(c, fft, rho, tau)?.energy,
+        electro_energy,
+        xc_energy,
         c.constant,
     ])
 }
@@ -610,6 +893,8 @@ fn unpack(c: &Crystal, x: &[C64], rho: &mut [f64], q: &mut [C64], tau: Option<&m
 }
 struct Mixer {
     history: Vec<(StoredMatrix, StoredMatrix)>,
+    gram: Vec<Vec<f64>>,
+    spec: Option<Buffer<C64>>,
 }
 impl Mixer {
     fn next(
@@ -627,15 +912,57 @@ impl Mixer {
             .zip(&input)
             .map(|(a, b)| a - b)
             .collect::<Vec<_>>();
-        if self.history.len() == options.history {
-            self.history.remove(0);
-        }
-        let (mut x, mut r) = if warmup {
+        let use_diis = options.algorithm == ScfAlgorithm::Diis && options.history > 1 && !warmup;
+        let (mut x, mut r) = if !use_diis {
             (input, residual)
         } else {
+            if self.history.len() >= options.history {
+                self.history.remove(0);
+                self.gram.remove(0);
+                for row in &mut self.gram {
+                    row.remove(0);
+                }
+            }
             let archive = c
                 .context
                 .offloads(product(&[input.len(), 16, 2, options.history])?);
+            let field_limit = c.grid.index.points() * c.field_channels();
+            let channel_limit = field_limit + c.channels;
+            let dv = c.grid.index.dv();
+            let mut new_row = Vec::with_capacity(self.history.len() + 1);
+            for (i, hist) in self.history.iter().enumerate() {
+                let old_r = hist.1.matrix(&c.context)?;
+                let dot: f64 = old_r
+                    .iter()
+                    .zip(residual.iter())
+                    .enumerate()
+                    .map(|(k, (a, b))| {
+                        (a.conj() * b).re
+                            * if (k < field_limit || k >= channel_limit) && k < unit_from {
+                                dv
+                            } else {
+                                1.
+                            }
+                    })
+                    .sum();
+                self.gram[i].push(dot);
+                new_row.push(dot);
+            }
+            let self_dot: f64 = residual
+                .iter()
+                .enumerate()
+                .map(|(k, a)| {
+                    a.norm_sqr()
+                        * if (k < field_limit || k >= channel_limit) && k < unit_from {
+                            dv
+                        } else {
+                            1.
+                        }
+                })
+                .sum();
+            new_row.push(self_dot);
+            self.gram.push(new_row);
+
             self.history.push((
                 StoredMatrix::new(&c.context, Matrix::from_vec(input.len(), 1, input), archive)?,
                 StoredMatrix::new(
@@ -648,24 +975,7 @@ impl Mixer {
             let mut b = DMatrix::<f64>::zeros(h + 1, h + 1);
             for i in 0..h {
                 for j in 0..h {
-                    let left = self.history[i].1.matrix(&c.context)?;
-                    let right = self.history[j].1.matrix(&c.context)?;
-                    b[(i, j)] = left
-                        .iter()
-                        .zip(right.iter())
-                        .enumerate()
-                        .map(|(k, (a, b))| {
-                            (a.conj() * b).re
-                                * if (k < c.grid.index.points() * c.field_channels()
-                                    || k >= c.grid.index.points() * c.field_channels() + c.channels)
-                                    && k < unit_from
-                                {
-                                    c.grid.index.dv()
-                                } else {
-                                    1.
-                                }
-                        })
-                        .sum();
+                    b[(i, j)] = self.gram[i][j];
                 }
                 b[(i, h)] = -1.;
                 b[(h, i)] = -1.;
@@ -692,7 +1002,10 @@ impl Mixer {
             (x, r)
         };
         let n = c.grid.index.points();
-        let mut spec = c.context.allocate::<C64>(n)?;
+        if self.spec.as_ref().map_or(true, |b| b.as_slice().len() != n) {
+            self.spec = Some(c.context.allocate::<C64>(n)?);
+        }
+        let spec = self.spec.as_mut().unwrap();
         spec.as_mut_slice().copy_from_slice(&r[..n]);
         fft.transform(spec.as_mut_slice(), false)?;
         for k in 0..n {
@@ -702,8 +1015,21 @@ impl Mixer {
         for (k, r) in r.iter_mut().enumerate().take(n) {
             *r = C64::new(spec.as_slice()[k].re, 0.);
         }
-        for (x, r) in x.iter_mut().zip(&r) {
-            *x += options.mixing * r;
+        let spin_beta = options.spin_mixing.unwrap_or(options.mixing);
+        if c.spins == 2 && (spin_beta - options.mixing).abs() > 1e-12 {
+            for (x_val, r_val) in x[..n].iter_mut().zip(&r[..n]) {
+                *x_val += options.mixing * r_val;
+            }
+            for (x_val, r_val) in x[n..2 * n].iter_mut().zip(&r[n..2 * n]) {
+                *x_val += spin_beta * r_val;
+            }
+            for (x_val, r_val) in x[2 * n..].iter_mut().zip(&r[2 * n..]) {
+                *x_val += options.mixing * r_val;
+            }
+        } else {
+            for (x_val, r_val) in x.iter_mut().zip(&r) {
+                *x_val += options.mixing * r_val;
+            }
         }
         if x.iter().any(|v| !v.re.is_finite() || !v.im.is_finite()) {
             return Err(crate::Error::Kernel(
@@ -759,6 +1085,9 @@ impl Crystal {
             || !options.mixing.is_finite()
             || options.mixing <= 0.
             || options.mixing > 1.
+            || options
+                .spin_mixing
+                .is_some_and(|s| !s.is_finite() || s <= 0. || s > 1.)
         {
             return Err(invalid(
                 "invalid periodic SCF iteration, convergence, smearing or mixing options",
@@ -834,7 +1163,8 @@ impl Crystal {
             };
             let mut previous = None;
             let mut history = vec![];
-            let mut mixer = Mixer { history: vec![] };
+            let mut mixer = Mixer { history: vec![], gram: vec![], spec: None };
+            let mut projector_ws = crate::math::projection::ComplexProjectorWorkspace::new(ctx, m, n).ok();
             // DFT+U: the shell occupations that define the operator are part of the mixed state.
             let mut hub_in = match (hub, initial) {
                 (Some(h), Some(init)) if active => {
@@ -854,6 +1184,7 @@ impl Crystal {
                 None => vec![],
             };
             let mut exchange_energy = 0.0;
+            let mut previous_y: Vec<Option<Matrix>> = vec![None; c.spins * nk];
             for iteration in 1..=options.max_iterations {
                 let LocalPotential {
                     local: v,
@@ -883,9 +1214,11 @@ impl Crystal {
                 };
                 let mut eigenvalues = vec![];
                 let mut coefficients = vec![];
+                let current_residual = history.last().map_or(f64::INFINITY, |it: &Iteration| it.residual);
                 for s in 0..c.spins {
                     for (k_idx, data) in c.points.iter().enumerate() {
-                        let (eps, coeff, _) = diagonalize_with_exchange(
+                        let idx = s * c.points.len() + k_idx;
+                        let (eps, coeff, y_ortho) = diagonalize_with_solver_ws(
                             c,
                             data,
                             if c.spinor {
@@ -898,8 +1231,14 @@ impl Crystal {
                                 .as_ref()
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
                             effective_operators.as_ref().map(|o| &o[s]),
-                            hybrid.map(|_| &exchange_in[s * c.points.len() + k_idx]),
+                            hybrid.map(|_| &exchange_in[idx]),
+                            options.eigensolver,
+                            options.switch_tolerance,
+                            current_residual,
+                            previous_y[idx].as_ref(),
+                            projector_ws.as_mut(),
                         )?;
+                        previous_y[idx] = Some(y_ortho);
                         eigenvalues.push(eps);
                         coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
                     }

@@ -127,6 +127,7 @@ pub(super) fn response_with_energy(
         gradients.as_ref(),
         screened.as_ref(),
         true,
+        None,
     )?;
     let fields = evaluation
         .fields
@@ -252,6 +253,29 @@ fn evaluate(
         orbital_gradients,
         screened,
         false,
+        None,
+    )
+}
+fn evaluate_scratch(
+    integrals: &MolecularIntegrals,
+    h: &Matrix,
+    d: &[Matrix],
+    name: &str,
+    poisson: &mut Poisson,
+    orbital_gradients: Option<&RealSamples>,
+    screened: Option<&Screening>,
+    scratch: Option<(&mut [C64], &mut [C64])>,
+) -> Result<Evaluation> {
+    evaluate_with(
+        integrals,
+        h,
+        d,
+        name,
+        poisson,
+        orbital_gradients,
+        screened,
+        false,
+        scratch,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -264,6 +288,7 @@ fn evaluate_with(
     orbital_gradients: Option<&RealSamples>,
     screened: Option<&Screening>,
     retain: bool,
+    scratch: Option<(&mut [C64], &mut [C64])>,
 ) -> Result<Evaluation> {
     let ctx = &integrals.context;
     let m = integrals.m();
@@ -271,12 +296,19 @@ fn evaluate_with(
     let dv = integrals.grid.index.dv();
     let mut rho = grid_densities(integrals, d)?;
     let paw = integrals.corrections.as_ref().and_then(|c| c.dft.as_ref());
-    let mut total = ctx.allocate::<C64>(n)?;
+    let (mut total_buf, mut hartree_buf);
+    let (total_slice, hartree_slice) = match scratch {
+        Some((t, h)) => (&mut t[..], &mut h[..]),
+        None => {
+            total_buf = ctx.allocate::<C64>(n)?;
+            hartree_buf = ctx.allocate::<C64>(n)?;
+            (total_buf.as_mut_slice(), hartree_buf.as_mut_slice())
+        }
+    };
     for k in 0..n {
-        total.as_mut_slice()[k] = C64::new(rho.as_slice()[k] + rho.as_slice()[n + k], 0.);
+        total_slice[k] = C64::new(rho.as_slice()[k] + rho.as_slice()[n + k], 0.);
     }
-    let mut hartree = ctx.allocate::<C64>(n)?;
-    poisson.solve_into(total.as_slice(), hartree.as_mut_slice())?;
+    poisson.solve_into(total_slice, hartree_slice)?;
     let mut kinetic = orbital_gradients
         .map(|gradient| grid_kinetic(integrals, d, gradient))
         .transpose()?;
@@ -328,10 +360,9 @@ fn evaluate_with(
             && matches!(crate::models::functional(name)?.semilocal, "lda" | "pbe"),
     )?;
     let mut eh = 0.5
-        * total
-            .as_slice()
+        * total_slice
             .iter()
-            .zip(hartree.as_slice())
+            .zip(hartree_slice.iter())
             .map(|(r, v)| (r * v).re)
             .sum::<f64>()
         * dv;
@@ -384,7 +415,7 @@ fn evaluate_with(
                             let k = start + i;
                             let local = phi[a * w + i]
                                 * phi[b * w + i]
-                                * (hartree.as_slice()[k].re
+                                * (hartree_slice[k].re
                                     + terms.potentials.as_slice()[s * n + k]);
                             let meta = if let (Some(gradient), Some(tau)) =
                                 (gradient, terms.tau_potentials.as_ref())
@@ -484,7 +515,7 @@ fn evaluate_with(
     let fields = match valence {
         Some(valence) => {
             let mut potential = ctx.allocate::<f64>(n)?;
-            for (to, from) in potential.as_mut_slice().iter_mut().zip(hartree.as_slice()) {
+            for (to, &from) in potential.as_mut_slice().iter_mut().zip(hartree_slice.iter()) {
                 *to = from.re;
             }
             Some(Fields {
@@ -738,8 +769,11 @@ impl MolecularIntegrals {
                     let mut previous = None;
                     let mut mixer = Diis::new();
                     let mut shift = 0.;
+                    let n_pts = self.grid.index.points();
+                    let mut total_scratch = ctx.allocate::<C64>(n_pts)?;
+                    let mut hartree_scratch = ctx.allocate::<C64>(n_pts)?;
                     for iteration in 1..=options.max_iterations {
-                        let value = evaluate(
+                        let value = evaluate_scratch(
                             self,
                             &h,
                             &d,
@@ -747,6 +781,7 @@ impl MolecularIntegrals {
                             &mut poisson,
                             orbital_gradients.as_ref(),
                             screened.as_ref(),
+                            Some((total_scratch.as_mut_slice(), hartree_scratch.as_mut_slice())),
                         )?;
                         if retry
                             && previous.is_some_and(|p: f64| value.energy > p + 1e-10)

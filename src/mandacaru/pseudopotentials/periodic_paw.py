@@ -666,7 +666,6 @@ class PeriodicPAW:
             self._positions.setdefault(projector.atom_index, []).append(position)
         self.multipole_blocks = dict(multipole_blocks)
         self.channels = sorted(self.multipole_blocks)
-        self.G = rc.wavevectors(grid)
         #: The Coulomb kernel and the grid charges (:meth:`compensation_grid`,
         #: :meth:`ion_charge`) are means over the aliases the grid lattice's
         #: operations pick (:func:`~mandacaru.integrals.reciprocal.alias_mean`),
@@ -1077,9 +1076,10 @@ class PeriodicPAW:
         return self._compensation_grid
 
     def compensation_grid_array(self) -> np.ndarray:
-        """Compensation transforms in channel order, without copying the cache."""
-        self.compensation_grid()
-        return self._compensation_values
+        """Compensation transforms in channel order, without caching intermediate dicts."""
+        if self._compensation_values is not None:
+            return self._compensation_values
+        return rc.alias_mean(self.grid, self.compensation_transforms)
 
     def compensation_transforms(self, vectors) -> np.ndarray:
         r"""``(n_ch, ...)``: every channel's compensation shape,

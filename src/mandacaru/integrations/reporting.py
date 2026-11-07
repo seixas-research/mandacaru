@@ -10,17 +10,21 @@ def write_forces(driver, result, geometry, *, internal, translated):
     import numpy as np
     from ase.data import chemical_symbols
     from ..utils.logging import append_forces
+    from .history import DiskOptimizationHistory
 
     forces = driver.results["forces"]
-    history = getattr(driver, "_optimization_history", [])
+    history = getattr(driver, "_optimization_history", None)
+    if history is None or not isinstance(history, DiskOptimizationHistory):
+        scratch = getattr(getattr(driver, "resources", None), "scratch_dir", None)
+        history = DiskOptimizationHistory(scratch_dir=scratch)
+        driver._optimization_history = history
     entry = dict(energy=float(driver.results["energy"]),
                  max_force=float(np.linalg.norm(forces, axis=1).max()),
                  net_force=float(np.abs(forces.sum(axis=0)).max()))
     if history and geometry.same_as(driver._last_force_geometry):
-        history[-1] = entry
+        history.replace_last(entry)
     else:
         history.append(entry)
-    driver._optimization_history = history
     driver._last_force_geometry = geometry
     driver._summary_written = False
     targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])

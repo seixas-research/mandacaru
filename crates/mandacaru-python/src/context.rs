@@ -3989,8 +3989,8 @@ impl PyContext {
             inner: std::sync::Arc::new(inner),
         })
     }
-    #[pyo3(signature=(geometry,grid,metadata,arrays,*,kinetic="spectral",cholesky_tolerance=1e-10,precision="float64"))]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(geometry, grid, metadata, arrays, *, kinetic="spectral", cholesky_tolerance=1e-10, precision="float64", consume=false))]
     fn paw_molecular_integrals(
         &self,
         py: Python<'_>,
@@ -4001,17 +4001,25 @@ impl PyContext {
         kinetic: &str,
         cholesky_tolerance: f64,
         precision: &str,
+        consume: bool,
     ) -> PyResult<molecular::PyIntegrals> {
         let precision =
             mandacaru_core::math::storage::Precision::parse(precision).map_err(error)?;
         let mut tables = mandacaru_core::paw::molecular::Arrays::new();
-        for (key, value) in arrays.iter() {
+        for py_key in arrays.keys().iter() {
+            let key: String = py_key.extract()?;
+            let value = arrays.get_item(&py_key)?.ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err("molecular array disappeared during transfer")
+            })?;
             let values: PyReadonlyArrayDyn<'_, f64> = value.extract()?;
             super::layout(&values)?;
             tables.insert(
-                key.extract::<String>()?,
+                key,
                 self.inner.copy_slice(values.as_slice()?).map_err(error)?,
             );
+            if consume {
+                arrays.del_item(&py_key)?;
+            }
         }
         let _metadata = self.inner.reserve(metadata.len()).map_err(error)?;
         let inner = py

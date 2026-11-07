@@ -168,11 +168,7 @@ def build(driver, geometry):
             )
         )
     return driver.context.paw_molecular_integrals(
-        geometry.native(),
-        grid,
-        json.dumps(metadata, allow_nan=False),
-        arrays,
-        kinetic=driver._kinetic,
-        cholesky_tolerance=driver._cholesky_tolerance,
-        precision=driver._precision,
+        geometry.native(), grid, json.dumps(metadata, allow_nan=False), arrays,
+        kinetic=driver._kinetic, cholesky_tolerance=driver._cholesky_tolerance,
+        precision=driver._precision, consume=True,
     )

@@ -33,4 +33,4 @@ pub(crate) fn invalid(message: impl Into<String>) -> Error {
 }
 pub use hubbard_response::{hubbard_response, PeriodicProbe, ResponseResult};
 pub use input::{Crystal, KPoint};
-pub use solver::{Options, PeriodicResult};
+pub use solver::{Eigensolver, Options, PeriodicResult, ScfAlgorithm};

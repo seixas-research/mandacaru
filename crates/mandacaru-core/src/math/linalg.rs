@@ -16,17 +16,242 @@ pub fn eigen(matrix: Matrix) -> Result<(Vec<f64>, Matrix)> {
     let mut order: Vec<_> = (0..n).collect();
     order.sort_by(|&a, &b| eigenvalues[a].total_cmp(&eigenvalues[b]));
     let energies = order.iter().map(|&j| eigenvalues[j]).collect();
-    let mut c = Matrix::from_fn(n, n, |i, j| eigenvectors[(i, order[j])]);
-    for j in 0..n {
+    let c = Matrix::from_fn(n, n, |i, j| eigenvectors[(i, order[j])]);
+    Ok((energies, standardize_phases(c)))
+}
+pub fn standardize_phases(mut c: Matrix) -> Matrix {
+    let n = c.nrows();
+    let k = c.ncols();
+    for j in 0..k {
         let pivot = (0..n)
             .max_by(|&a, &b| c[(a, j)].norm().total_cmp(&c[(b, j)].norm()))
-            .unwrap();
-        let phase = c[(pivot, j)].conj() / c[(pivot, j)].norm();
-        for i in 0..n {
-            c[(i, j)] *= phase;
+            .unwrap_or(0);
+        let norm = c[(pivot, j)].norm();
+        if norm > 1e-15 {
+            let phase = c[(pivot, j)].conj() / norm;
+            for i in 0..n {
+                c[(i, j)] *= phase;
+            }
         }
     }
-    Ok((energies, c))
+    c
+}
+/// Block Davidson iterative eigensolver for Hermitian matrices.
+/// Computes eigenvalues and orthonormal eigenvectors starting from trial vectors `initial`.
+pub fn davidson(
+    matrix: &Matrix,
+    initial: Option<&Matrix>,
+    tol: f64,
+    max_subspace_iter: usize,
+) -> Result<(Vec<f64>, Matrix)> {
+    let n = matrix.nrows();
+    if n <= 2 || initial.is_none() {
+        return eigen(matrix.clone());
+    }
+    let init = initial.unwrap();
+    if init.nrows() != n || init.ncols() != n {
+        return eigen(matrix.clone());
+    }
+
+    let diag: Vec<f64> = (0..n).map(|i| matrix[(i, i)].re).collect();
+    let v = init.clone();
+    let w = matrix * &v;
+    let mut h_sub = v.adjoint() * &w;
+    h_sub = (&h_sub + h_sub.adjoint()) * C64::new(0.5, 0.);
+    let (mut energies, c_sub) = eigen(h_sub)?;
+    let mut u = &v * &c_sub;
+    let mut wu = &w * &c_sub;
+
+    for _iter in 0..max_subspace_iter {
+        let mut max_res = 0.0f64;
+        let mut unconverged = Vec::new();
+        for i in 0..n {
+            let mut r_norm_sq = 0.0f64;
+            for j in 0..n {
+                let r_ji = wu[(j, i)] - C64::new(energies[i], 0.) * u[(j, i)];
+                r_norm_sq += r_ji.norm_sqr();
+            }
+            let res = r_norm_sq.sqrt();
+            if res > max_res {
+                max_res = res;
+            }
+            if res > tol {
+                unconverged.push((i, res));
+            }
+        }
+
+        if max_res <= tol || unconverged.is_empty() {
+            break;
+        }
+
+        unconverged.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        let mut corrections: Vec<DVector<C64>> = Vec::new();
+        for &(band, _) in unconverged.iter().take(4) {
+            let theta = energies[band];
+            let mut q = DVector::<C64>::zeros(n);
+            for j in 0..n {
+                let r_j = wu[(j, band)] - C64::new(theta, 0.) * u[(j, band)];
+                let denom = theta - diag[j];
+                let safe_denom = if denom.abs() < 1e-4 {
+                    if denom >= 0.0 { 1e-4 } else { -1e-4 }
+                } else {
+                    denom
+                };
+                q[j] = r_j / safe_denom;
+            }
+            for col in 0..n {
+                let u_col = u.column(col);
+                let proj = (0..n).map(|k| u_col[k].conj() * q[k]).sum::<C64>();
+                q -= u_col * proj;
+            }
+            for prev in &corrections {
+                let proj = (0..n).map(|k| prev[k].conj() * q[k]).sum::<C64>();
+                q -= prev * proj;
+            }
+            let norm = q.norm();
+            if norm > 1e-8 {
+                corrections.push(q / C64::new(norm, 0.));
+            }
+        }
+
+        if corrections.is_empty() {
+            break;
+        }
+
+        let num_corr = corrections.len();
+        let mut v_exp = Matrix::zeros(n, n + num_corr);
+        v_exp.view_mut((0, 0), (n, n)).copy_from(&u);
+        for (idx, corr) in corrections.iter().enumerate() {
+            v_exp.column_mut(n + idx).copy_from(corr);
+        }
+
+        let w_exp = matrix * &v_exp;
+        let mut h_exp = v_exp.adjoint() * &w_exp;
+        h_exp = (&h_exp + h_exp.adjoint()) * C64::new(0.5, 0.);
+        let (e_exp, c_exp) = eigen(h_exp)?;
+
+        let c_top = c_exp.view((0, 0), (n + num_corr, n));
+        u = &v_exp * &c_top;
+        wu = &w_exp * &c_top;
+        energies = e_exp[..n].to_vec();
+    }
+
+    Ok((energies, standardize_phases(u)))
+}
+
+/// RMM-DIIS (Residual Minimization Method with DIIS) eigensolver for Hermitian matrices.
+pub fn rmm_diis(
+    matrix: &Matrix,
+    initial: &Matrix,
+    tol: f64,
+    max_micro_iter: usize,
+) -> Result<(Vec<f64>, Matrix)> {
+    let n = matrix.nrows();
+    if n <= 2 {
+        return eigen(matrix.clone());
+    }
+    let diag: Vec<f64> = (0..n).map(|i| matrix[(i, i)].re).collect();
+    let mut psi = initial.clone();
+
+    for band in 0..n {
+        let mut p_curr: DVector<C64> = psi.column(band).into_owned();
+        let p_norm = p_curr.norm();
+        if p_norm > 1e-14 {
+            p_curr /= C64::new(p_norm, 0.);
+        }
+
+        let mut vectors: Vec<DVector<C64>> = Vec::with_capacity(max_micro_iter + 1);
+        let mut residuals: Vec<DVector<C64>> = Vec::with_capacity(max_micro_iter + 1);
+
+        for _micro in 0..max_micro_iter {
+            let ap = matrix * &p_curr;
+            let eps = (0..n).map(|k| p_curr[k].conj() * ap[k]).sum::<C64>().re;
+            let r = &ap - &p_curr * C64::new(eps, 0.);
+            let r_norm = r.norm();
+
+            vectors.push(p_curr.clone());
+            residuals.push(r.clone());
+
+            if r_norm <= tol {
+                break;
+            }
+
+            let mut step = DVector::<C64>::zeros(n);
+            for j in 0..n {
+                let denom = eps - diag[j];
+                let safe_denom = if denom.abs() < 1e-4 {
+                    if denom >= 0.0 { 1e-4 } else { -1e-4 }
+                } else {
+                    denom
+                };
+                step[j] = r[j] / safe_denom;
+            }
+
+            if vectors.len() == 1 {
+                p_curr = &p_curr + step * C64::new(0.5, 0.);
+                let norm = p_curr.norm();
+                if norm > 1e-14 {
+                    p_curr /= C64::new(norm, 0.);
+                }
+            } else {
+                let m_diis = vectors.len();
+                let mut b = DMatrix::<f64>::zeros(m_diis + 1, m_diis + 1);
+                for i in 0..m_diis {
+                    for j in 0..m_diis {
+                        b[(i, j)] = (0..n).map(|k| residuals[i][k].conj() * residuals[j][k]).sum::<C64>().re;
+                    }
+                    b[(i, m_diis)] = -1.0;
+                    b[(m_diis, i)] = -1.0;
+                }
+                let mut rhs = DVector::<f64>::zeros(m_diis + 1);
+                rhs[m_diis] = -1.0;
+
+                if let Some(alpha) = b.lu().solve(&rhs) {
+                    if alpha.iter().all(|v| v.is_finite() && v.abs() < 100.0) {
+                        let mut p_new = DVector::<C64>::zeros(n);
+                        for i in 0..m_diis {
+                            p_new += &vectors[i] * C64::new(alpha[i], 0.);
+                        }
+                        let norm = p_new.norm();
+                        if norm > 1e-14 {
+                            p_curr = p_new / C64::new(norm, 0.);
+                            continue;
+                        }
+                    }
+                }
+                p_curr = &p_curr + step * C64::new(0.5, 0.);
+                let norm = p_curr.norm();
+                if norm > 1e-14 {
+                    p_curr /= C64::new(norm, 0.);
+                }
+            }
+        }
+        psi.column_mut(band).copy_from(&p_curr);
+    }
+
+    let s = psi.adjoint() * &psi;
+    let s_sym = (&s + s.adjoint()) * C64::new(0.5, 0.);
+    let (s_evals, s_evecs) = eigen(s_sym)?;
+    let mut inv_sqrt_s = Matrix::zeros(n, n);
+    for i in 0..n {
+        let val = if s_evals[i] > 1e-10 {
+            1.0 / s_evals[i].sqrt()
+        } else {
+            1.0
+        };
+        inv_sqrt_s[(i, i)] = C64::new(val, 0.);
+    }
+    let lowdin = &s_evecs * inv_sqrt_s * s_evecs.adjoint();
+    let psi_ortho = &psi * lowdin;
+
+    let w_ortho = matrix * &psi_ortho;
+    let mut h_sub = psi_ortho.adjoint() * &w_ortho;
+    h_sub = (&h_sub + h_sub.adjoint()) * C64::new(0.5, 0.);
+    let (energies, c_sub) = eigen(h_sub)?;
+    let final_u = standardize_phases(&psi_ortho * c_sub);
+
+    Ok((energies, final_u))
 }
 /// Largest residual of an eigendecomposition relative to the matrix scale.
 fn decomposition_error(

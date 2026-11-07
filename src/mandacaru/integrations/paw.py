@@ -65,17 +65,18 @@ def crystal_input(
 
     def point_input(d, frac, index):
         prefix = f"k{index}."
+        psi, d.psi, overlap, d.overlap = d.psi, None, d.overlap, None
+        fixed, d.fixed, proj, d.projections = d.fixed, None, d.projections, None
+        so, d.spin_orbit = d.spin_orbit, None
         row = dict(
-            k=np.asarray(d.k).tolist(),
-            fractional=np.asarray(frac).tolist(),
-            weight=float(d.weight),
-            psi=hold(prefix + "psi", d.psi, d.psi.dtype),
-            overlap=hold(prefix + "overlap", d.overlap, complex),
-            fixed=hold(prefix + "fixed", d.fixed, complex),
-            projections=hold(prefix + "projections", d.projections, complex),
+            k=np.asarray(d.k).tolist(), fractional=np.asarray(frac).tolist(),
+            weight=float(d.weight), psi=hold(prefix + "psi", psi, psi.dtype),
+            overlap=hold(prefix + "overlap", overlap, complex),
+            fixed=hold(prefix + "fixed", fixed, complex),
+            projections=hold(prefix + "projections", proj, complex),
         )
-        if d.spin_orbit is not None:
-            row["spin_orbit"] = hold(prefix + "spin_orbit", d.spin_orbit, complex)
+        if so is not None:
+            row["spin_orbit"] = hold(prefix + "spin_orbit", so, complex)
         return row
     n, p = c.grid.size, len(c.projectors)
     channels = c.channels
@@ -87,16 +88,13 @@ def crystal_input(
     blocks_list = [c.multipole_blocks[ch] for ch in channels]
     blocks = native_ctx.periodic_multipole_blocks(positions_list, blocks_list, p)
     sym = c.symmetry
-    if sym is not None:
-        qsym = native_ctx.periodic_channel_symmetry(
-            channels, sym.atom_maps, sym.rotations, sym.n_operations
-        )
-    else:
-        qsym = native_ctx.periodic_channel_symmetry(channels)
+    qsym = (native_ctx.periodic_channel_symmetry(channels, sym.atom_maps, sym.rotations, sym.n_operations)
+            if sym is not None else native_ctx.periodic_channel_symmetry(channels))
     initial, moments = c.initial_density()
     core = c.core_density()
     u, uion, eion = c.dense_coulomb()
     hats = c.compensation_grid_array()
+    c._compensation_values = c._compensation_grid = None
     short, onsite = c.short_range_ion_compensation(), c.onsite_ion_compensation()
     magnetization = c.initial_magnetization(magnetic_moments)
     if c.has_spin_orbit:
@@ -268,8 +266,7 @@ def configure(driver, atoms):
     # solver retains no callback or reference to this Python object.
     driver._crystal_adapter, driver._crystal_metadata = crystal, context
     crystal.kpoint_data.clear()
-    crystal._compensation_grid = None
-    crystal._compensation_values = None
+    crystal._compensation_grid = crystal._compensation_values = None
     driver.periodic_problem = driver.context.periodic_problem(metadata, arrays, consume=True)
     # This adapter owns recipes for new k-points. The SCF mesh and its samples
     # have been transferred to the native owner and need no Python duplicate.
