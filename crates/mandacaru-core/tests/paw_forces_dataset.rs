@@ -348,6 +348,63 @@ fn lithium_hydride_forces_include_the_closed_core_exchange() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 69 s measured 2026-11-08 (a meta-GGA open shell, SCF reconvergence per displaced coordinate); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored --test-threads=1 the_hydroxyl_radical_r2scan_force_follows_the_spin_resolved_kinetic_density"]
+fn the_hydroxyl_radical_r2scan_force_follows_the_spin_resolved_kinetic_density() {
+    // MG-F7: the open-shell meta-GGA force. Each spin channel has its own kinetic density tau_s,
+    // so the response -1/2 D(tau_pot,s D psi_s) runs per spin. The gates are those of OH UKS-PBE.
+    let started = std::time::Instant::now();
+    let ctx = Context::new(Some(2), 768 << 20).unwrap();
+    {
+        let open = build(&ctx, "pbe-sr", &["O", "H"], &[8, 1], &OH, &[0, 1, 2]);
+        check(
+            "OH UKS-r2SCAN",
+            &open,
+            Method::Ks("r2scan"),
+            [4, 3],
+            &[(0, 2), (1, 0), (1, 1)],
+            &[(1, 2)],
+            2e-5,
+        );
+    }
+    assert_eq!(ctx.memory_used(), 0);
+    println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
+}
+#[test]
+#[ignore = "slow: rVV10 molecules, SCF reconvergence per displaced coordinate; run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored --test-threads=1 rvv10_forces_follow_the_energy_closed_and_open_shell"]
+fn rvv10_forces_follow_the_energy_closed_and_open_shell() {
+    // MG-F6: the nonlocal correlation adds no force term of its own; its partials join v_xc.
+    // Closed-shell LiH (a partial core: the core term carries rVV10 too) for PBE+rVV10 and
+    // r2SCAN+rVV10, and open-shell OH (UKS: rVV10 sees the total density) for PBE+rVV10.
+    let started = std::time::Instant::now();
+    let ctx = Context::new(Some(2), 768 << 20).unwrap();
+    {
+        let lih = build(&ctx, "pbe-sr", &["Li", "H"], &[3, 1], &LIH, &[0, 1]);
+        for name in ["pbe+rvv10", "r2scan+rvv10"] {
+            check(
+                &format!("LiH {name}"),
+                &lih,
+                Method::Ks(name),
+                [2, 2],
+                &[(0, 2), (1, 0)],
+                &[(1, 2)],
+                2e-5,
+            );
+        }
+        let oh = build(&ctx, "pbe-sr", &["O", "H"], &[8, 1], &OH, &[0, 1, 2]);
+        check(
+            "OH UKS-PBE+rVV10",
+            &oh,
+            Method::Ks("pbe+rvv10"),
+            [4, 3],
+            &[(0, 2), (1, 0), (1, 1)],
+            &[(1, 2)],
+            2e-5,
+        );
+    }
+    assert_eq!(ctx.memory_used(), 0);
+    println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
+}
+#[test]
 fn the_hydroxyl_radical_has_an_open_shell_force() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();

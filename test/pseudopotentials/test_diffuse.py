@@ -28,10 +28,10 @@ from mandacaru import Mandacaru, _native
 from mandacaru.pseudopotentials import get_paw
 from mandacaru.pseudopotentials.diffuse import (
     DEFAULT_CUTOFF_NORM, DEFAULT_DIFFUSE, DEFAULT_RMS_RATIO,
-    DEFAULT_SHELL_RATIO, LINEAR_DEPENDENCE_TOL, PRESENT_L_MAX, DiffuseRecipe,
+    DEFAULT_SHELL_RATIO, LINEAR_DEPENDENCE_TOL, DiffuseRecipe,
     box_diagnostic, box_table, diffuse_label, diffuse_of, diffuse_parameters,
-    diffuse_radial, free_valence_rms, refuse_crystal, validate_diffuse)
-from mandacaru.pseudopotentials.families import pseudo_basis_arguments
+    diffuse_radial, refuse_crystal, validate_diffuse)
+from .recipe_view import free_valence_rms
 from mandacaru.pseudopotentials.orbitals import pseudo_basis
 
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -166,12 +166,10 @@ class TestFrozenPythonOutputs:
         record = {}
         functions, _owners = pseudo_basis(
             [symbol], np.zeros((1, 3)), {symbol: get_paw(symbol)},
-            filter_wavevector=case["k_c"],
-            **pseudo_basis_arguments("paw-lcao", {
-                "size": "DZP", "energy_shift": 0.1, "diffuse": case["spec"]},
-                diffuse=record))
+            options={"size": "DZP", "energy_shift": 0.1, "diffuse": case["spec"]},
+            filter_wavevector=case["k_c"], report=record)
         assert len(functions) == case["n_functions"]
-        shells = record.get(symbol, [])
+        shells = record["diffuse"].get(symbol, [])
         assert len(shells) == len(case["shells"])
         for got, (l, index, n, ref_l, ref_rms, rms, alpha, r_cut, residual,
                   accepted, r_max) in zip(shells, case["shells"]):
@@ -270,7 +268,6 @@ class TestTheDefaultRecipe:
         assert DEFAULT_RMS_RATIO == 2.5
         assert DEFAULT_CUTOFF_NORM == 1e-4
         assert DEFAULT_SHELL_RATIO == pytest.approx(np.sqrt(3.5))
-        assert PRESENT_L_MAX == 2
         assert LINEAR_DEPENDENCE_TOL == 1e-4
 
 
@@ -322,10 +319,8 @@ def _atom_basis(symbol, size="DZP", diffuse=True, k_c=None,
     record = {}
     functions, owners = pseudo_basis(
         [symbol], np.zeros((1, 3)), pp, filter_wavevector=k_c,
-        **pseudo_basis_arguments("paw-lcao", {
-            "size": size, "energy_shift": energy_shift, "diffuse": diffuse},
-            diffuse=record))
-    return pp[symbol], functions, record.get(symbol, [])
+        options={"size": size, "energy_shift": energy_shift, "diffuse": diffuse}, report=record)
+    return pp[symbol], functions, record["diffuse"].get(symbol, [])
 
 
 def _radial_overlap(a, b, r):
@@ -381,8 +376,7 @@ class TestShells:
             pp = {"O": get_paw("O")}
             plain, _o = pseudo_basis(
                 ["O"], np.zeros((1, 3)), pp, filter_wavevector=6.0,
-                **pseudo_basis_arguments("paw-lcao", {"size": size,
-                                                      "energy_shift": 0.1}))
+                options={"size": size, "energy_shift": 0.1})
             for spec in (False, None, 0):
                 _pp, functions, record = _atom_basis("O", size, diffuse=spec,
                                                      k_c=6.0)

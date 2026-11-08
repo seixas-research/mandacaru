@@ -35,8 +35,6 @@ import pytest
 from mandacaru import _native
 from mandacaru.pseudopotentials.generation import generate_paw
 from mandacaru.pseudopotentials.native_context import context
-from mandacaru.pseudopotentials.paw import (paw_spin_orbit_blocks,
-                                            paw_spin_orbit_projectors)
 from mandacaru.pseudopotentials.record import record_of
 
 HARTREE_EV = 27.211386245988
@@ -254,14 +252,3 @@ class TestSpinOrbitCoupling:
         with pytest.raises(ValueError, match="radial grid"):
             _native.paw_record_write(context(), str(tmp_path / "O.parquet"),
                                      json.dumps(record), tables)
-
-    def test_the_blocks_act_through_the_union_projectors(self, oxygen_dirac):
-        position = np.zeros((1, 3))
-        projectors = paw_spin_orbit_projectors(["O"], position,
-                                               {"O": oxygen_dirac})
-        n = len(oxygen_dirac.spin_orbit[1]["projectors"])
-        assert len(projectors) == 3 * n and {p.l for p in projectors} == {1}
-        blocks = paw_spin_orbit_blocks(projectors, ["O"], {"O": oxygen_dirac})
-        assert set(blocks) == {(0, 1)}
-        assert np.allclose(blocks[(0, 1)],
-                           oxygen_dirac.spin_orbit[1]["coupling"])

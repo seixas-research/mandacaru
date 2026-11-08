@@ -373,9 +373,9 @@ class TestGivensRotations:
         labels = [l for l in generator.terms if set(l) != {"I"}]
         assert len(labels) == 2
         # Commuting, which is what lets a provider emit the gate exactly.
-        from mandacaru.backends.providers import pauli_rotations
+        from mandacaru.backends.providers import build_provider
 
-        pauli_rotations(generator, 0.3)          # raises if they do not
+        list(build_provider("qiskit")._emit(4, [], [generator], [0.3]))   # raises if they do not
 
     def test_the_circuit_induces_the_right_single_particle_matrix(self):
         r"""The convention, extracted rather than assumed.

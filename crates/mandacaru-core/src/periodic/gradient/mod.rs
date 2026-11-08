@@ -136,10 +136,23 @@ pub enum Term {
     Local,
     /// P4: the short-range spheres.
     ShortRange,
+    /// P6: a meta-GGA's `T = 1/2 <grad chi | v_tau | grad chi>`. Not in [`Term::ALL`]: the engine
+    /// asks for it only when the functional needs `tau` ([`Term::of`]).
+    KineticDensity,
 }
 
 impl Term {
     pub const ALL: [Term; 4] = [Term::Overlap, Term::Kinetic, Term::Local, Term::ShortRange];
+
+    /// The matrix terms of `functional`: [`Term::ALL`], plus [`Term::KineticDensity`] for a
+    /// meta-GGA.
+    pub fn of(functional: &str) -> Result<Vec<Term>> {
+        let mut terms = Term::ALL.to_vec();
+        if models::functional(functional)?.requires_tau {
+            terms.push(Term::KineticDensity);
+        }
+        Ok(terms)
+    }
 }
 
 /// The derivative of the dense channel arrays with respect to one coordinate of one atom.
@@ -217,6 +230,13 @@ pub trait Derivatives {
     fn constant(&self, atom: usize, axis: usize) -> Result<f64>;
     /// E5: `<v_xc | d rho_core>`.
     fn core_overlap(&self, fields: &Self::Fields, atom: usize, axis: usize) -> Result<f64>;
+    /// E6, a meta-GGA only: `<v_tau | d tau_core>`, the partial core's kinetic density moving
+    /// with its atom. A provider that does not implement it raises; it never returns a zero.
+    fn core_kinetic_overlap(&self, _fields: &Self::Fields, _atom: usize, _axis: usize) -> Result<f64> {
+        Err(Error::Unsupported(
+            "this geometry provider has no meta-GGA core kinetic-density term".into(),
+        ))
+    }
 
     /// The spin-orbit operator `B` of a spinor crystal with the owners of the basis functions and of
     /// the union projectors ([`SpinOrbit`]). A provider without spin-orbit data raises
@@ -293,6 +313,10 @@ pub struct Breakdown {
     pub dense: Vec<[f64; 3]>,
     pub constants: Vec<[f64; 3]>,
     pub core: Vec<[f64; 3]>,
+    /// P6, a meta-GGA's `1/2 <grad chi | v_tau | grad chi>`, the basis functions moving.
+    pub kinetic_density: Vec<[f64; 3]>,
+    /// E6, a meta-GGA's partial-core kinetic density moving.
+    pub core_kinetic: Vec<[f64; 3]>,
     /// The spin-orbit union-projector term, the basis functions moving (spinor requests only).
     pub spin_orbit_rows: Vec<[f64; 3]>,
     /// The same, the union projectors moving.
@@ -308,7 +332,7 @@ pub struct Breakdown {
 }
 
 impl Breakdown {
-    pub fn terms(&self) -> [(&'static str, &Vec<[f64; 3]>); 17] {
+    pub fn terms(&self) -> [(&'static str, &Vec<[f64; 3]>); 19] {
         [
             ("overlap", &self.overlap),
             ("kinetic", &self.kinetic),
@@ -321,6 +345,8 @@ impl Breakdown {
             ("dense", &self.dense),
             ("constants", &self.constants),
             ("core", &self.core),
+            ("kinetic_density", &self.kinetic_density),
+            ("core_kinetic", &self.core_kinetic),
             ("spin_orbit_rows", &self.spin_orbit_rows),
             ("spin_orbit_columns", &self.spin_orbit_columns),
             ("exchange_phase", &self.exchange_phase),
@@ -330,7 +356,7 @@ impl Breakdown {
         ]
     }
 
-    fn terms_mut(&mut self) -> [&mut Vec<[f64; 3]>; 17] {
+    fn terms_mut(&mut self) -> [&mut Vec<[f64; 3]>; 19] {
         [
             &mut self.overlap,
             &mut self.kinetic,
@@ -343,6 +369,8 @@ impl Breakdown {
             &mut self.dense,
             &mut self.constants,
             &mut self.core,
+            &mut self.kinetic_density,
+            &mut self.core_kinetic,
             &mut self.spin_orbit_rows,
             &mut self.spin_orbit_columns,
             &mut self.exchange_phase,
@@ -399,11 +427,15 @@ pub fn check_request(request: &Request) -> Result<()> {
     if request.single_precision {
         return refuse("float32 data");
     }
-    if definition.requires_tau {
-        return refuse(&format!("the meta-GGA {}", definition.name));
+    if definition.requires_tau && request.spinor {
+        return refuse(&format!("the spinor meta-GGA {}", definition.name));
     }
-    if definition.nonlocal_b.is_some() {
-        return refuse(&format!("the rVV10 correction of {}", definition.name));
+    // rVV10 needs no term of its own: its kernel depends on the positions only through the
+    // density, and its partials join the semilocal ones in `v_xc` (`periodic::fields`), which the
+    // Local and core terms contract (`tests/periodic_gradient_xc.rs`). The spinor SCF has no
+    // rVV10 (F6c), so a spinor rVV10 request is refused here as it is there.
+    if definition.nonlocal_b.is_some() && request.spinor {
+        return refuse(&format!("the spinor rVV10 correction of {}", definition.name));
     }
     Ok(())
 }
@@ -464,6 +496,8 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Bre
         dense: explicit.dense,
         constants: explicit.constants,
         core: explicit.core,
+        kinetic_density: matrix.kinetic_density,
+        core_kinetic: core::kinetic(d, frozen)?,
         spin_orbit_rows: matrix.spin_orbit.rows,
         spin_orbit_columns: matrix.spin_orbit.columns,
         exchange_phase: exchange.phase,

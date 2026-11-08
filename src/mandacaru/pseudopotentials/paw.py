@@ -64,11 +64,6 @@ UPAW_FAMILY = "upaw-lcao"
 COMPENSATION_RADIAL_POINTS = 48
 #: Projector basis sampled on the molecular grid (:meth:`PAWDataset.projector_set`).
 DEFAULT_PROJECTOR_BASIS = "raw"
-#: Spherical product quadrature of the atom-centered projections: Gauss-Legendre
-#: in radius and cos(theta), uniform in phi.
-PROJECTION_RADIAL_POINTS = 64
-PROJECTION_POLAR_POINTS = 24
-PROJECTION_AZIMUTHAL_POINTS = 48
 
 
 # --------------------------------------------------------------------------- #
@@ -125,7 +120,6 @@ def _deficit_label(norm_deficit) -> str:
     if norm_deficit is None:
         return "free"
     return f"{float(norm_deficit):g}" + (" (unitary)" if norm_deficit == 0 else "")
-
 
 
 @dataclass
@@ -359,126 +353,16 @@ def _blocks(projectors, symbols, datasets, which) -> dict:
     return blocks
 
 
-def paw_spin_orbit_projectors(symbols, positions, datasets,
-                              units: str = "angstrom", *, real: bool = True):
-    """The projectors the spin-orbit term acts through: for every atom with a
-    Dirac dataset, every ``(l, m)`` of each channel that carries the term and
-    every function of its union of the two j branches
-    (:func:`j_resolved_spin_orbit`, j = l-1/2 first), in the dual basis they
-    are stored in.  Empty for scalar datasets."""
-    from .orbitals import KBProjector
-
-    projectors = []
-    for index, (symbol, position) in enumerate(zip(symbols, positions)):
-        pp = datasets[symbol]
-        so_dict = getattr(pp, "spin_orbit", None) or {}
-        for l in range(8):
-            if l not in so_dict:
-                continue
-            entry = so_dict[l]
-            for m in range(-l, l + 1):
-                for i, p in enumerate(entry["projectors"]):
-                    projectors.append(KBProjector(
-                        pp, l, m, center=position, units=units,
-                        atom_index=index, index=i, radial=p, kb_energy=0.0,
-                        real=real))
-    return projectors
-
-
-def paw_spin_orbit_blocks(projectors, symbols, datasets) -> dict:
-    r"""``{(atom, l): D_SO}`` over :func:`paw_spin_orbit_projectors`.
-
-    The L.S part of the j-resolved term, unscreened like the scalar
-    :math:`D^{ion}` (the molecule screens both).  Its (2j+1) average is not
-    used: the scalar channel stands in for it (mandacaru-paw/FR.md, option (a)), which
-    keeps the overlap, the compensation charges, the basis and the forces
-    those of the scalar channel.  The price, measured on the atom's radial
-    operator: the 6p of Pb and Bi 0.6-1.6 mHa off at the centroid, up to
-    2.6 mHa for 6p1/2, and the splitting 2.0-2.4 % short (I 5p 0.4 %, d
-    shells <= 0.15 %); with the stored average, under a spin-free metric,
-    both branches are within 0.02 mHa (HISTORY.md, 2026-10-11, "The PAW
-    audit report checked").  Using it needs the averaged channel's own
-    partial waves (compensation multipoles, one-center terms), which the
-    files do not store.
-    """
-    blocks: dict = {}
-    for projector in projectors:
-        key = (projector.atom_index, projector.l)
-        if key not in blocks:
-            table = datasets[symbols[projector.atom_index]].spin_orbit
-            blocks[key] = np.asarray(table[projector.l]["coupling"],
-                                     dtype=float)
-    return blocks
-
-
 def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
     """``{(atom, l, m): D_l}`` for ``nonlocal_coupling`` (in the
     projectors' basis)."""
     return _blocks(projectors, symbols, datasets, "coupling")
 
 
-def paw_multipole_blocks(projectors, datasets_by_atom) -> dict:
-    r"""``{(atom, L, M): matrix}`` -- the compensation multipole moments.
-
-    ``matrix[a, b]`` is the ``LM`` moment carried by the pair density of this
-    atom's projectors ``a`` and ``b``, i.e. the radial moment
-    :math:`\Delta^{(L)}` times the angular coupling
-    :math:`\int Y^*_{LM}Y^*_{l_am_a}Y_{l_bm_b}d\Omega`.  Rows and columns are
-    numbered within the atom, in the order the projectors appear;
-    ``datasets_by_atom[atom]`` is that atom's dataset.
-
-    ``L = 0`` reproduces ``paw_overlap_blocks`` scaled by
-    :math:`1/\sqrt{4\pi}`, which is the normalization that makes the
-    :math:`L = 0` term of the augmentation identical to the monopole-only code
-    it replaces.  Channels that carry no moment are omitted.
-    """
-    per_atom: dict = {}
-    for position, projector in enumerate(projectors):
-        per_atom.setdefault(projector.atom_index, []).append(
-            (position, projector))
-
-    blocks: dict = {}
-    for atom, entries in per_atom.items():
-        dataset = datasets_by_atom[atom]
-        basis = getattr(entries[0][1], "projector_basis",
-                        DEFAULT_PROJECTOR_BASIS)
-        real = bool(entries[0][1].real)
-        l_list = [int(pa.l) for _, pa in entries]
-        m_list = [int(pa.m) for _, pa in entries]
-        idx_list = [int(pa.index) for _, pa in entries]
-        unique_l = [l for l in range(8) if l in set(l_list)]
-        deltas = {}
-        strides = {}
-        for l1 in unique_l:
-            for l2 in unique_l:
-                strides[(l1, l2)] = (len(dataset.channels[l1].projectors), len(dataset.channels[l2].projectors))
-                for L in _native.paw_multipole_range(l1, l2):
-                    deltas[(l1, l2, L)] = np.ascontiguousarray(
-                        dataset.multipole_moments(l1, l2, L, basis), dtype=np.float64
-                    )
-        atom_blocks = _native.paw_atom_multipole_blocks(
-            l_list, m_list, idx_list, real, deltas, strides
-        )
-        for L, M, mat in atom_blocks:
-            blocks[(atom, L, M)] = mat
-    return blocks
-
-
 def paw_overlap_blocks(projectors, symbols, datasets) -> dict:
     """``{(atom, l, m): q_l}`` for ``nonlocal_overlap`` (in the
     projectors' basis)."""
     return _blocks(projectors, symbols, datasets, "overlap")
-
-
-def _projector_sphere(projector, *, split_radial: bool = False):
-    """Quadrature points (Bohr, a coordinate triple) and weights over the
-    sphere of radius ``projector.r_cut`` around ``projector.center``."""
-    r_cut = float(projector.r_cut)
-    channel_cut = float(getattr(projector, "channel_r_cut", r_cut))
-    panel = channel_cut if (split_radial and 0.0 < channel_cut < r_cut) else 0.0
-    return _native.paw_projector_sphere(
-        context(), [float(x) for x in projector.center], r_cut, panel,
-        PROJECTION_RADIAL_POINTS, PROJECTION_POLAR_POINTS, PROJECTION_AZIMUTHAL_POINTS)
 
 
 # --------------------------------------------------------------------------- #

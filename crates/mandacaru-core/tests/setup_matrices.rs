@@ -192,6 +192,9 @@ fn skew_lih_native_setup_response_matches_active_setup() {
         (path.to_string_lossy().into_owned(), sha256_file(&path).unwrap())
     }).collect();
     let input = SetupInput {
+        mesh: None,
+        recipes: None,
+        projector_basis: "raw".into(),
         lattice: Matrix3::from_row_slice(&[8., 1., 0.5, 0., 9., 1., 0., 0., 10.]),
         grid_shape: [8, 9, 10],
         atoms: vec![
@@ -207,12 +210,11 @@ fn skew_lih_native_setup_response_matches_active_setup() {
     let datasets = vec![Arc::new(dataset(&ctx, "lda-sr", "H")),
         Arc::new(dataset(&ctx, "lda-sr", "Li"))];
     let setup = create_setup(&ctx, input.clone(), datasets.clone()).unwrap();
-    let mut crystal = setup.build(&ctx).unwrap();
+    let crystal = setup.build(&ctx).unwrap();
     let options = Options { tolerance: 1e-11, density_tolerance: 1e-8, ..Options::default() };
     let result = crystal.solve(&options).unwrap();
     assert!(result.converged);
-    // Only this test bypasses the capability gate; production responses remain refused.
-    crystal.description_unavailable = None;
+    assert!(crystal.description_unavailable.is_none());
     let forces = response::forces(&crystal, &result).unwrap();
     let expected = [[-0.0015693448701201258, -0.00041682012015089383, 0.005480404682238612],
         [-0.0011635448014300955, -0.00167223430420251, -0.004134832194651231]];
@@ -308,6 +310,7 @@ fn test_periodic_setup_build_and_with_cell() {
     lattice[(2, 1)] = 0.5 * a;
 
     let input = SetupInput {
+        mesh: None,
         lattice,
         grid_shape: [12, 12, 12],
         atoms: vec![
@@ -337,6 +340,8 @@ fn test_periodic_setup_build_and_with_cell() {
         dataset_files: None,
         hubbard_u: None,
         charge: None,
+        recipes: None,
+        projector_basis: "raw".into(),
     };
 
     let setup = create_setup(&ctx, input, vec![ds.clone()]).unwrap();
@@ -352,7 +357,7 @@ fn test_periodic_setup_build_and_with_cell() {
     assert!(crystal.u.as_slice().len() > 0);
     assert!(crystal.ion.as_slice().len() > 0);
     assert!(crystal.description.is_some(), "crystal description should be populated");
-    assert!(crystal.description_unavailable.as_deref().unwrap().contains("parity"));
+    assert!(crystal.description_unavailable.is_none());
     // Each identical atom must receive its own copy of the nonzero monopole
     // operator, even though the setup stores only one Si dataset by species.
     let monopole0 = setup.channels.iter().position(|&c| c == (0, 0, 0)).unwrap();
@@ -434,8 +439,47 @@ fn polarized_hydrogen_setup_builds_crystal_matrices() {
     let crystal = setup.build(&ctx).unwrap();
     assert_eq!(crystal.m, 5);
     assert_eq!(crystal.electrons, 1.);
-    assert!(crystal.description_unavailable.is_some());
+    assert!(crystal.description_unavailable.is_none());
     let point = &crystal.points[0];
     let eye = point.lowdin.adjoint() * &point.overlap * &point.lowdin;
     assert!((eye - DMatrix::identity(5, 5)).norm() < 1e-10);
+}
+
+/// The setup reduces a Monkhorst-Pack mesh itself (operations that keep it, then time reversal), and
+/// the `setup`/`sites` blocks its description writes are read back by `Description::parse` into the
+/// same description: the snapshot of a Rust-built crystal keeps what its forces are rebuilt from.
+#[test]
+fn the_setup_reduces_its_mesh_and_its_description_round_trips() {
+    use mandacaru_core::periodic::description::Description;
+    let ctx = context();
+    let ds = Arc::new(dataset(&ctx, "lda-sr", "Si"));
+    let a = 10.26;
+    let input = serde_json::json!({
+        "lattice": [0., 0.5 * a, 0.5 * a, 0.5 * a, 0., 0.5 * a, 0.5 * a, 0.5 * a, 0.],
+        "grid_shape": [12, 12, 12],
+        "atoms": [{"species": 0, "symbol": "Si", "fractional": [0., 0., 0.]},
+                  {"species": 0, "symbol": "Si", "fractional": [0.25, 0.25, 0.25]}],
+        "mesh": {"size": [4, 4, 4], "gamma": true}, "basis_size": "SZ", "symmetry": true,
+    });
+    let parsed = mandacaru_core::periodic::setup::parse::parse_input_json(&input).unwrap();
+    assert!(parsed.kpoints_frac.is_empty());
+    let setup = create_setup(&ctx, parsed, vec![ds.clone()]).unwrap();
+    // 64 points of the Gamma-centered 4x4x4 mesh reduce to the 8 of the diamond wedge.
+    assert_eq!(setup.kpoints_frac.len(), 8);
+    assert!((setup.weights.iter().sum::<f64>() - 1.).abs() < 1e-12);
+    let mut both = input.clone();
+    both["kpoints"] = serde_json::json!([{"fractional": [0., 0., 0.]}]);
+    assert!(mandacaru_core::periodic::setup::parse::parse_input_json(&both).is_err());
+
+    let crystal = setup.build(&ctx).unwrap();
+    let description = crystal.description.as_ref().unwrap();
+    let operations = description.operations.as_ref().unwrap();
+    assert_eq!(operations.rotations.len(), crystal.permutations.len());
+    let (block, sites) = description.blocks();
+    let labels: Vec<_> = description.channels.iter().map(|&(a, l, m)| serde_json::json!([a, l, m])).collect();
+    let root = serde_json::json!({"setup": block, "sites": sites, "channel_labels": labels});
+    let shape = crystal.grid.index.shape();
+    let cell = Matrix3::from_fn(|i, j| shape[j] as f64 * crystal.grid.step[(i, j)]);
+    let back = Description::parse(&ctx, &root, crystal.m, crystal.p, &cell, shape, &crystal.permutations).unwrap();
+    assert_eq!(back.blocks(), description.blocks());
 }

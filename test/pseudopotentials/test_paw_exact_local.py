@@ -6,15 +6,13 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""The range-separated local potential: exactness and forces.
+"""The range-separated local potential: the force is the derivative of the energy.
 
 PAW-LCAO keeps only the long-range half of its local channel on the grid -- the
 potential of a Gaussian ion, which the grid resolves -- and integrates the
-short-range remainder on atom-centered spherical quadratures
-(:mod:`mandacaru.pseudopotentials.local_split`).  The two halves add up to the
-potential the all-grid form used, so the tests here are about *exactness* of the
-split, and about the force being the derivative of the energy the solver
-reported.  The sphere matrices, their translation invariance and the
+short-range remainder on atom-centered spherical quadratures (in Rust,
+``paw/local_split.rs``). The test here is about the force being the derivative
+of the energy the solver reported.  The sphere matrices, their translation invariance and the
 comparison with the all-grid form belonged to the molecular engine that
 integrated the local potential in Python; that engine is native now
 (``paw/molecular``), and its quadratures are tested in ``crates``.
@@ -25,7 +23,6 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.pseudopotentials import local_split as ls
 
 # The classical optimizer used below, with its budget and tolerance written
 # out.  `tol` is deliberately looser than the library default (1e-12): these
@@ -54,77 +51,6 @@ def water(cell=8.0):
 # --------------------------------------------------------------------------- #
 # The split itself.
 # --------------------------------------------------------------------------- #
-
-class TestRangeSeparation:
-    def test_the_two_halves_add_up_to_the_local_potential(self):
-        """``v^lr + v^sr == v`` by construction, at every radius.
-
-        The short-range part is evaluated as a *difference* of the dataset's own
-        ``local_potential`` and the Gaussian-ion potential, never from the
-        asymptotic ``-Z erfc(r)/r``, so the identity is exact whatever the
-        shipped table's tail actually does (it sits ~5e-7 Hartree off -Z/r).
-        """
-        from mandacaru.pseudopotentials.paw import get_paw
-
-        radii = np.linspace(0.0, 12.0, 4001)
-        for symbol in ("H", "O"):
-            dataset = get_paw(symbol)
-            sigma = 0.66
-            total = (ls.long_range_potential(dataset.valence_charge, sigma, radii)
-                     + ls.short_range_potential(dataset, sigma, radii))
-            assert np.abs(total - dataset.local_potential(radii)).max() < 1e-12
-
-    def test_the_long_range_part_is_finite_at_the_origin(self):
-        """``-Z erf(r/sqrt(2) sigma)/r -> -Z sqrt(2/pi)/sigma``."""
-        sigma = 0.5
-        value = ls.long_range_potential(3.0, sigma, np.array([0.0]))[0]
-        assert value == pytest.approx(-3.0 * np.sqrt(2.0 / np.pi) / sigma)
-        # and it joins the tail smoothly: -Z/r far out.
-        far = ls.long_range_potential(3.0, sigma, np.array([10.0]))[0]
-        assert far == pytest.approx(-0.3, rel=1e-12)
-
-    def test_the_short_range_part_dies_inside_its_sphere(self):
-        """What the quadrature truncates, in its two separable pieces.
-
-        Beyond the dataset's local cutoff the potential is the ionic tail, so
-        ``v^sr = -Z erfc(r/sqrt2 sigma)/r`` plus whatever the *table* itself
-        deviates from ``-Z/r``.  The first is the design's own quantity and is
-        ``erfc(6.5/sqrt2) = 7.3e-11`` at the sphere's edge; the second is a
-        property of the shipped, decimated library (measured at up to 4.4e-6
-        Hartree near 2 Bohr for a *non-relativistic* oxygen, falling to ~2e-7
-        by 8 Bohr) and is not
-        something the split introduces -- the all-grid form integrates the same
-        table.  Both are checked, separately, so a regression in either is
-        attributable.
-
-        The bound is 2e-5 rather than 1e-5 because the datasets are
-        scalar-relativistic by default: oxygen measures 1.34e-5 against 4.4e-6
-        for the same dataset generated with ``relativity="none"``, and
-        hydrogen is 7.7e-7 either way.  That factor of three is the
-        ``r**gamma`` cusp of a relativistic s state, which a uniform radial
-        grid does not resolve -- the limitation recorded in
-        :mod:`mandacaru.basis.relativity`.  It was 5.8e-4 until the reference
-        atom was made to finish on the *same* Numerov orbitals the generators
-        pseudize; a hundredfold of this number was the atom and the
-        pseudization disagreeing about where oxygen's 2s sits.
-        """
-        from scipy.special import erfc
-
-        from mandacaru.pseudopotentials.paw import get_paw
-
-        for symbol in ("H", "O"):
-            dataset = get_paw(symbol)
-            charge = dataset.valence_charge
-            for sigma in (0.3, 0.5, 0.8):
-                radius = ls.short_range_radius(dataset, sigma)
-                assert radius >= ls.local_cutoff(dataset)
-                outside = np.linspace(radius, radius + 6.0, 200)
-                erfc_tail = (charge * erfc(outside / (np.sqrt(2.0) * sigma))
-                             / outside)
-                assert erfc_tail.max() < 1e-9
-                table = (ls.short_range_potential(dataset, sigma, outside)
-                         + erfc_tail)
-                assert np.abs(table).max() < 2e-5
 
 
 # --------------------------------------------------------------------------- #

@@ -79,8 +79,12 @@ impl Setup {
         }
         let channels = compensation::channels(self);
         let (_, projected) = projections::project(self, integrals, occupied)?;
+        // The bare channels match the calculation's cached electrostatic matrices.
+        let cached = integrals.corrections.as_ref().and_then(|c| {
+            Some((c.electrostatic.as_ref()?, c.ionic.as_deref()?))
+        });
         let moments = compensation::moments(
-            self, integrals, &channels, occupied, &projected, grid.psi, grid.rho, hf,
+            self, integrals, &channels, cached, occupied, &projected, grid.psi, grid.rho, hf,
         )?;
         Ok(Response {
             setup: self,

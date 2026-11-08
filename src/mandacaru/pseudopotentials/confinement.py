@@ -99,11 +99,6 @@ CONFINEMENT_DEFAULT_OPTIONS = {"energy_shift": DEFAULT_ENERGY_SHIFT}
 #: unconfined element falls back to when the option is left unwritten.
 POLARIZATION_KINDS = ("gaussian", "orbital")
 
-#: The polarization Gaussian is sized from the cutoff the base orbital has at
-#: a **fixed** 0.3 eV shift -- whatever ``energy_shift`` the basis itself
-#: uses -- confined with the default potential: ``r_char = 0.25 * r_c(0.3 eV)``.
-POLARIZATION_REFERENCE_SHIFT = 0.3
-POLARIZATION_CHARACTER_FRACTION = 0.25
 
 #: Smallest ``energy_shift`` (eV) accepted.  Below it the cutoff radius runs
 #: past the end of the dataset's radial table, and the request is
@@ -356,42 +351,6 @@ def _refuse(pp, l: int, shift: float, status: int, value: float):
         "the unconfined orbital")
 
 
-def confinement_radius(pp, l: int, energy_shift: float, *,
-                       amplitude: float = CONFINEMENT_AMPLITUDE,
-                       inner_fraction: float = CONFINEMENT_INNER_FRACTION,
-                       tightest: bool = False, state: int = 0) -> float:
-    """Cutoff radius ``r_c`` (Bohr) at which channel ``l``'s eigenvalue lies
-    ``energy_shift`` (**eV**) above the free atom's.
-
-    The eigenvalue falls monotonically as the wall recedes, so the radius is
-    bracketed by scanning outward from the channel's cutoff radius and then
-    refined with Brent's method.  A shift too large to reach without cutting
-    into the sphere, or too small to reach inside the radial table, is
-    refused with the range that *is* reachable -- unless ``tightest``, when a
-    shift too large returns the tightest wall the sphere allows instead.  That
-    is the case of a deep semicore channel (the 4f of Lu-Hg, 1-3.5 Ha deep in
-    a 2.9-3.9 Bohr sphere): its orbital lies inside the sphere, so no wall
-    outside it can move its energy by 0.1 eV, and it needs no confining.
-    ``state`` picks the channel's eigenstate (1: a semicore channel's
-    valence state).
-    """
-    l, state = int(l), int(state)
-    shift = _validate_value(energy_shift)
-    if shift is None:
-        raise ValueError("confinement_radius needs a positive energy_shift")
-    status, value = _native.confinement_radius(
-        _context(), *channel_arrays(pp, l, state), shift,
-        float(amplitude), float(inner_fraction), bool(tightest), state,
-        free_energy(pp, l, state))
-    if status > 1:
-        _refuse(pp, l, shift, status, value)
-    return float(value)
-
-
-# --------------------------------------------------------------------------- #
-# The orbital a basis uses.
-# --------------------------------------------------------------------------- #
-
 @dataclass(frozen=True)
 class ConfinedOrbital:
     """A confined first zeta, tabulated on the dataset's own radial grid."""
@@ -410,13 +369,6 @@ class ConfinedOrbital:
         """The realized shift (eV); equals :attr:`energy_shift` to the root
         search's tolerance."""
         return (self.energy - self.free_energy) * HARTREE_TO_EV
-
-
-#: ``(id(dataset), l, shift, amplitude, inner, state) -> (dataset,
-#: ConfinedOrbital)``.  The dataset is
-#: kept in the entry so an ``id`` recycled after a garbage collection cannot
-#: serve another dataset's orbital.
-_CACHE: dict = {}
 
 
 def confined_orbital(pp, l: int, energy_shift: float,
@@ -455,30 +407,48 @@ def confined_orbital(pp, l: int, energy_shift: float,
     return orbital
 
 
-def first_zeta_factory(energy_shift, record: dict | None = None,
-                       confinement_potential=None):
-    """The ``first_zeta`` hook of :func:`~.orbitals.pseudo_basis` for an
-    ``energy_shift`` option, or ``None`` when the option is off.
+def confinement_radius(pp, l: int, energy_shift: float, *,
+                       amplitude: float = CONFINEMENT_AMPLITUDE,
+                       inner_fraction: float = CONFINEMENT_INNER_FRACTION,
+                       tightest: bool = False, state: int = 0) -> float:
+    """Cutoff radius ``r_c`` (Bohr) at which channel ``l``'s eigenvalue lies
+    ``energy_shift`` (**eV**) above the free atom's.
 
-    ``record`` (optional) is filled with ``{symbol: {(l, state):
-    ConfinedOrbital}}`` so a builder can report the radii it used.
+    The eigenvalue falls monotonically as the wall recedes, so the radius is
+    bracketed by scanning outward from the channel's cutoff radius and then
+    refined with Brent's method.  A shift too large to reach without cutting
+    into the sphere, or too small to reach inside the radial table, is
+    refused with the range that *is* reachable -- unless ``tightest``, when a
+    shift too large returns the tightest wall the sphere allows instead.  That
+    is the case of a deep semicore channel (the 4f of Lu-Hg, 1-3.5 Ha deep in
+    a 2.9-3.9 Bohr sphere): its orbital lies inside the sphere, so no wall
+    outside it can move its energy by 0.1 eV, and it needs no confining.
+    ``state`` picks the channel's eigenstate (1: a semicore channel's
+    valence state).
     """
-    spec = validate_energy_shift(energy_shift)
-    if spec is None:
-        return None
-    confinement_potential = validate_confinement_potential(
-        confinement_potential)
+    l, state = int(l), int(state)
+    shift = _validate_value(energy_shift)
+    if shift is None:
+        raise ValueError("confinement_radius needs a positive energy_shift")
+    status, value = _native.confinement_radius(
+        _context(), *channel_arrays(pp, l, state), shift,
+        float(amplitude), float(inner_fraction), bool(tightest), state,
+        free_energy(pp, l, state))
+    if status > 1:
+        _refuse(pp, l, shift, status, value)
+    return float(value)
 
-    def first_zeta(symbol, pp, l, state=0):
-        shift = energy_shift_of(spec, symbol)
-        if shift is None:
-            return None
-        orbital = confined_orbital(pp, l, shift, confinement_potential, state)
-        if record is not None:
-            record.setdefault(symbol, {})[(int(l), int(state))] = orbital
-        return orbital.radial
 
-    return first_zeta
+# --------------------------------------------------------------------------- #
+# The orbital a basis uses.
+# --------------------------------------------------------------------------- #
+
+
+#: ``(id(dataset), l, shift, amplitude, inner, state) -> (dataset,
+#: ConfinedOrbital)``.  The dataset is
+#: kept in the entry so an ``id`` recycled after a garbage collection cannot
+#: serve another dataset's orbital.
+_CACHE: dict = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -493,97 +463,3 @@ def quasi_gaussian(r, alpha: float, r_cut: float) -> np.ndarray:
     return _native.pao_quasi_gaussian(_array(r), float(alpha), float(r_cut))
 
 
-def polarization_channel(channels) -> int:
-    """Angular momentum of the polarization shell: the first
-    ``l`` **missing** among the valence channels, else ``l_max + 1`` (so a
-    4s/3d transition metal is polarized with a p shell, not an f shell).
-    ``channels`` are the ``l`` of the *valence* states: a semicore ``p``
-    (sodium's 2p) does not stop sodium's 3s from being polarized with p."""
-    present = {int(l) for l in channels}
-    top = max(present) + 1
-    for l in range(top):
-        if l not in present: return l
-    return top
-
-
-@dataclass(frozen=True)
-class GaussianPolarization:
-    """A quasi-Gaussian polarization shell on the dataset's radial grid."""
-
-    symbol: str
-    l: int                       # of the polarization shell
-    base_l: int                  # the valence channel it is sized from
-    r_cut: float                 # Bohr: the base orbital's cutoff
-    r_char: float                # Bohr: 1 / sqrt(alpha)
-    reference_radius: float      # Bohr: the base orbital's cutoff at 0.3 eV
-    radial: np.ndarray           # R(r) = r^l f(r), unit norm
-
-
-def gaussian_polarization(pp, energy_shift: float,
-                          confinement_potential=None) -> GaussianPolarization:
-    r"""The quasi-Gaussian polarization function for the dataset ``pp``.
-
-    The shell has the angular momentum of
-    :func:`polarization_channel`; it is based on the valence channel one below,
-    whose cutoff (at the basis's own ``energy_shift``) becomes the function's
-    ``r_cut``; its width is ``r_char = 0.25 * r_c(0.3 eV)`` with that reference
-    cutoff always taken at 0.3 eV in the default potential; and
-    :math:`R(r) = r^l\,[e^{-r^2/r_{char}^2} - (a - b r^2)]`, normalized.
-    """
-    from .orbitals import basis_states
-
-    valence = {state.l: state.index for state in basis_states(pp)
-               if not state.semicore}
-    l_pol = polarization_channel(valence)
-    base = l_pol - 1
-    if base not in valence:
-        raise ValueError(
-            f"a Gaussian polarization shell with l = {l_pol} for "
-            f"{pp.symbol} needs an l = {base} valence channel to size it from")
-    index = valence[base]
-    r_cut = confined_orbital(pp, base, energy_shift, confinement_potential,
-                             index).r_c
-    reference = confined_orbital(pp, base, POLARIZATION_REFERENCE_SHIFT,
-                                 state=index).r_c
-    r_char = POLARIZATION_CHARACTER_FRACTION * reference
-    radial = _native.pao_polarization_radial(
-        _array(pp.r), l_pol, float(r_cut), float(r_char))
-    return GaussianPolarization(symbol=str(pp.symbol), l=l_pol, base_l=base,
-                                r_cut=float(r_cut), r_char=float(r_char),
-                                reference_radius=float(reference),
-                                radial=radial)
-
-
-def polarization_factory(kind, energy_shift, record: dict | None = None,
-                         confinement_potential=None):
-    """The ``polarization_shape`` hook of :func:`~.orbitals.pseudo_basis`, or
-    ``None`` for the ``"orbital"`` shell that function builds itself.
-
-    The Gaussian shell is sized from the confined orbital's cutoff, so it
-    exists only for a confined orbital.  *Asking* for it without an
-    ``energy_shift`` is refused rather than given an invented radius; when the
-    option was left unwritten, an unconfined element quietly keeps the
-    ``"orbital"`` shell instead (the hook returns ``None`` for it).
-    """
-    if resolve_polarization_method(kind, energy_shift) != "gaussian":
-        return None
-    explicit = validate_polarization_method(kind) is not None
-    spec = validate_energy_shift(energy_shift)
-    confinement_potential = validate_confinement_potential(
-        confinement_potential)
-
-    def polarization_shape(symbol, pp):
-        shift = energy_shift_of(spec, symbol)
-        if shift is None and not explicit:
-            return None
-        if shift is None:
-            raise ValueError(
-                f"polarization_method='gaussian' needs an energy_shift for "
-                f"{symbol!r}: the Gaussian shell takes its cutoff from the "
-                "confined orbital, and an unconfined orbital has none")
-        shell = gaussian_polarization(pp, shift, confinement_potential)
-        if record is not None:
-            record[symbol] = shell
-        return shell.l, shell.radial
-
-    return polarization_shape

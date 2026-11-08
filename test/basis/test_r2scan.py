@@ -9,9 +9,17 @@
 import numpy as np
 import pytest
 
-from mandacaru.basis.xc_spin import unpolarized_partials
+from .xc_points import unpolarized_partials
 from mandacaru.basis.atomic_solver import lda_exchange
-from mandacaru.basis.xc import pw92_correlation
+
+
+def pw92_correlation_energy(rho):
+    """Independent reference: the unpolarized Perdew-Wang (1992) correlation energy per electron,
+    Phys. Rev. B 45, 13244, Table I (A = 0.031091, alpha1 = 0.21370, beta = 7.5957, 3.5876,
+    1.6382, 0.49294), the uniform-gas limit r2SCAN must reduce to."""
+    rs = (3.0 / (4.0 * np.pi * np.maximum(rho, 1e-30))) ** (1.0 / 3.0)
+    q1 = 7.5957 * rs ** 0.5 + 3.5876 * rs + 1.6382 * rs ** 1.5 + 0.49294 * rs ** 2
+    return -2.0 * 0.031091 * (1.0 + 0.21370 * rs) * np.log1p(1.0 / (2.0 * 0.031091 * q1))
 
 #: ``(rho, p, alpha) -> f`` from libxc 7 (MGGA_X_R2SCAN + MGGA_C_R2SCAN),
 #: evaluated independently of this code.  libxc's Perdew-Wang constant
@@ -42,7 +50,7 @@ class TestLimits:
         sigma, tau = _state(rho, 0.0, 1.0)
         f = unpolarized_partials("r2scan", rho, sigma, tau)[0]
         e_x, _vx = lda_exchange(rho)
-        e_c, _vc = pw92_correlation(rho)
+        e_c = pw92_correlation_energy(rho)
         assert np.allclose(f, rho * (e_x + e_c), rtol=1e-10)
 
     def test_a_tau_below_the_bound_stays_finite(self):

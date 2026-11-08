@@ -290,16 +290,16 @@ def _molecule_folder(monkeypatch, **options):
     from ase import Atoms
 
     from mandacaru import Mandacaru
-    from mandacaru.pseudopotentials import orbitals
+    from mandacaru.integrations import paw_molecular
 
     seen = {}
 
-    def stop(symbols, positions, species, **kwargs):
+    def stop(context, family, options, species, *args, **kwargs):
         seen["sources"] = {os.path.basename(os.path.dirname(d.source))
                            for d in species.values()}
         raise _Stopped
 
-    monkeypatch.setattr(orbitals, "pseudo_basis", stop)
+    monkeypatch.setattr(paw_molecular, "basis_tables", stop)
     atoms = Atoms("H2", positions=[(3.0, 3.0, 2.63), (3.0, 3.0, 3.37)],
                   cell=[6.0, 6.0, 6.0])
     atoms.calc = Mandacaru(basis={"name": "PAW-LCAO", "size": "SZ"},
@@ -311,21 +311,21 @@ def _molecule_folder(monkeypatch, **options):
 
 
 def _crystal_folder(monkeypatch, **options):
-    """The folder of the datasets a periodic ``Mandacaru`` hands the crystal
-    setup (:func:`~mandacaru.pseudopotentials.periodic_paw.build_crystal`)."""
+    """The folder of the datasets a periodic ``Mandacaru`` hands the Rust crystal
+    setup (:func:`~mandacaru.integrations.setup_block.native_setup`)."""
     from ase.build import bulk
 
     from mandacaru import Mandacaru
-    from mandacaru.pseudopotentials import periodic_paw
+    from mandacaru.integrations import paw
     from mandacaru.pseudopotentials.paw import get_paw
 
     seen = {}
 
-    def stop(atoms, grid_spacing, basis_options, **kwargs):
-        seen["source"] = get_paw("Si", basis_options["paw_dataset"]).source
+    def stop(driver, atoms, family, options, *args, **kwargs):
+        seen["source"] = get_paw("Si", options["paw_dataset"]).source
         raise _Stopped
 
-    monkeypatch.setattr(periodic_paw, "build_crystal", stop)
+    monkeypatch.setattr(paw, "native_setup", stop)
     atoms = bulk("Si", "diamond", a=5.43)
     atoms.calc = Mandacaru(method="dft",
                            basis={"name": "PAW-LCAO", "size": "SZ"},

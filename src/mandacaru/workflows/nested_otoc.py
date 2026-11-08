@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from .._native import state_inner, state_norm_squared
+from .. import _native
 from ..core.mapping import PauliSum
 from ..units import HARTREE_TO_EV
 from .time_evolution import (PreparedState, SuzukiTrotter, _finite_real,
@@ -159,17 +159,6 @@ class NestedOTOC:
         self._m = _pauli_insertion(measurement, "measurement",
                                    self._evolution.n_qubits, precision)
 
-    def _sequence(self, state: NDArray[np.complexfloating], time: float,
-                  steps: int, k: int) -> NDArray[np.complexfloating]:
-        """Apply U_k, using the exact adjoint of each discrete forward leg."""
-        for index in range(k):
-            if index:
-                state = self._m._apply_operator(state)
-            state = self._evolution._evolve(state, time, steps)
-            state = self._b._apply_operator(state)
-            state = self._evolution._evolve(state, time, steps, inverse=True)
-        return state
-
     def run(self, initial_state: PreparedState, time: float, *,
             otoc_order: int = 2, steps: int = 1) -> NestedOTOCResult:
         """Compute C^(2k) and the physical sequence's final measurement.
@@ -185,22 +174,11 @@ class NestedOTOC:
         k = _positive_integer(otoc_order, "otoc_order")
         psi = _state_vector(initial_state, self._evolution.n_qubits,
                             precision=self.precision)
-        m_psi = self._m._apply_operator(psi)
-        eigenvalue = None
-        tolerance = _EIGENSTATE_TOLERANCE[self.precision]
-        for sign in (1, -1):
-            if state_norm_squared(m_psi - sign * psi) <= tolerance**2:
-                eigenvalue = sign
-                break
-        state = self._sequence(psi, time, steps, k)
-        m_state = self._m._apply_operator(state)
-        measured = state_inner(state, m_state)[0]
-        if eigenvalue is not None:
-            correlator = complex(eigenvalue * measured)
-        else:
-            branch = self._sequence(m_psi, time, steps, k)
-            correlator = complex(*state_inner(m_state, branch))
-        return NestedOTOCResult(state, correlator, measured, eigenvalue, time, k)
+        state, (real, imag), measured, eigenvalue = self._evolution._native.nested_otoc(
+            self._b._native, self._m._native,
+            np.ascontiguousarray(psi, dtype=self._evolution._dtype), time, steps, k,
+            _EIGENSTATE_TOLERANCE[self.precision])
+        return NestedOTOCResult(state, complex(real, imag), measured, eigenvalue, time, k)
 
     def spectrum(self, initial_state: PreparedState, *, time_step: float = 0.5,
                  num_samples: int = 256, steps_per_sample: int = 1,
@@ -226,13 +204,11 @@ class NestedOTOC:
         psi = _state_vector(initial_state, self._evolution.n_qubits,
                             precision=self.precision)
         times = np.arange(n) * dt
-        correlation = np.empty(n, dtype=complex)
-        for j, time in enumerate(times):
-            correlation[j] = self.run(psi, float(time), otoc_order=k,
-                                      steps=max(1, j * steps)).correlator
-        weights = np.hanning(n) if window == "hann" else np.ones(n)
-        amplitudes = dt * np.fft.fftshift(np.fft.fft(weights * correlation))
-        frequencies = 2 * np.pi * np.fft.fftshift(np.fft.fftfreq(n, d=dt))
+        correlation = self._evolution._native.nested_otoc_series(
+            self._b._native, self._m._native,
+            np.ascontiguousarray(psi, dtype=self._evolution._dtype), dt, n, steps, k,
+            _EIGENSTATE_TOLERANCE[self.precision])
+        frequencies, amplitudes = _native.fourier_spectrum(correlation, dt, window=window)
         return OTOCSpectrum(frequencies, amplitudes, correlation, times, dt, window, k)
 
     def circuit(self, time: float, *, otoc_order: int = 2,

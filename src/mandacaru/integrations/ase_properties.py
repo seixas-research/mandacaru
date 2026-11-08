@@ -109,39 +109,12 @@ class ASEProperties:
         )["full"]
 
     def _bands_at(self, fractional):
-        calculation = self._calculation_owner()
-        periodic = getattr(getattr(calculation, "result", None), "periodic", None)
-        if periodic is not None and hasattr(periodic, "bands_at"):
-            try:
-                frac_list = [list(map(float, k)) for k in fractional]
-                native = periodic.bands_at(frac_list)
-                return np.asarray(native["eigenvalues"])
-            except NotImplementedError:
-                pass
-
-        from .paw import band_input
-
-        calculation = self._calculation_owner()
-        if not hasattr(calculation, "_crystal_adapter") and hasattr(calculation, "_ensure_crystal_adapter"):
-            calculation._ensure_crystal_adapter()
-        if not hasattr(calculation, "_crystal_adapter"):
-            raise NotImplementedError(
-                "off-mesh bands require geometry and its PAW setup"
-            )
-        adapter = calculation._crystal_adapter
-        m, points = adapter.M, adapter.grid.X.size
-        available = (
-            calculation.context.memory_limit_bytes
-            - calculation.context.memory_used_bytes
-        )
-        per_point = 3 * 16 * m * points + 16 * m * m * 20
-        block = max(1, min(8, available // max(1, 2 * per_point)))
-        chunks = []
-        for start in range(0, len(fractional), block):
-            metadata, arrays = band_input(adapter, fractional[start : start + block])
-            native = calculation.result.periodic.bands(metadata, arrays)
-            chunks.append(native["eigenvalues"])
-        return np.concatenate(chunks, axis=1)
+        """Eigenvalues (Hartree) at fractional k-points, from the Rust crystal (``bands_at``)."""
+        periodic = getattr(getattr(self._calculation_owner(), "result", None), "periodic", None)
+        if periodic is None:
+            raise RuntimeError("run periodic DFT before asking for bands off its mesh")
+        native = periodic.bands_at([list(map(float, k)) for k in fractional])
+        return np.asarray(native["eigenvalues"])
 
     def band_structure(self, path=None, npoints=100):
         from ase.spectrum.band_structure import BandStructure

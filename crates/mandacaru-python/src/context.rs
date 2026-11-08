@@ -3464,6 +3464,16 @@ impl PyContext {
             .map(|g| (g.name.to_owned(), g.first, g.second, g.angle))
             .collect())
     }
+    /// `(jobs, shots)` of one measurement of `bases` QWC bases (`execution::measurement_cost`).
+    #[pyo3(signature=(bases, *, max_bases_per_job=None, job_per_basis=false, shots=0, noise_factors=1,
+                      randomizations=1, shots_per_randomization=0))]
+    #[allow(clippy::too_many_arguments)]
+    fn measurement_cost(&self, bases: u64, max_bases_per_job: Option<u64>, job_per_basis: bool,
+                        shots: u64, noise_factors: u64, randomizations: u64,
+                        shots_per_randomization: u64) -> PyResult<(u64, u64)> {
+        mandacaru_core::execution::measurement_cost(bases, max_bases_per_job, job_per_basis, shots,
+            noise_factors, randomizations, shots_per_randomization).map_err(error)
+    }
     #[pyo3(signature=(*,jobs=None,total_shots=None))]
     fn run_ledger(&self, jobs: Option<u64>, total_shots: Option<u64>) -> persistence::PyLedger {
         persistence::PyLedger {

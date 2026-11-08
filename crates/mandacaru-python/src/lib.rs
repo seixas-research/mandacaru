@@ -22,6 +22,7 @@ mod orbitals;
 mod optimizers;
 mod parquet;
 mod packed;
+mod paw_basis;
 mod paw_diagnose;
 mod paw_generate;
 mod paw_multipole;
@@ -76,6 +77,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_fd, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_analytic, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_analytic, m)?)?;
+    paw_basis::register(m)?;
     paw_diagnose::register(m)?;
     paw_generate::register(m)?;
     paw_multipole::register(m)?;
@@ -109,6 +111,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<quantum::PyOperator>()?;
     m.add_class::<advanced::PyPropagator>()?;
     m.add_function(wrap_pyfunction!(advanced::find_peaks_1d, m)?)?;
+    m.add_function(wrap_pyfunction!(advanced::fourier_spectrum, m)?)?;
+    m.add_function(wrap_pyfunction!(advanced::qpe_memory, m)?)?;
     m.add_function(wrap_pyfunction!(advanced::givens_decomposition, m)?)?;
     m.add_function(wrap_pyfunction!(factorization::double_factorization, m)?)?;
     m.add_function(wrap_pyfunction!(factorization::spatial_double_factorization, m)?)?;

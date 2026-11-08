@@ -64,6 +64,8 @@ pub struct Pins {
 
 /// The complete recipe and geometry of a periodic PAW problem.
 pub struct PeriodicSetup {
+    /// The projectors and operator blocks are in the dual basis (`projector_basis="dual"`).
+    pub dual: bool,
     pub grid: SpatialGrid,
     pub lattice: Matrix3<f64>,
     pub shells: shells::Shells,
@@ -107,7 +109,11 @@ impl PeriodicSetup {
     /// Build the nonlocal and multipole operators for the setup's atoms.
     pub fn operators(&self) -> Result<Operators> {
         let datasets = self.atom_datasets()?;
-        blocks::raw_operators(&self.projectors, &datasets, &self.channels)
+        if self.dual {
+            blocks::operators(&self.projectors, &datasets, &self.channels)
+        } else {
+            blocks::raw_operators(&self.projectors, &datasets, &self.channels)
+        }
     }
 
     /// Build the full [`Crystal`] structure ready for the Kohn-Sham SCF solver.
@@ -118,7 +124,11 @@ impl PeriodicSetup {
 
         // 1. Build state-independent operators
         let datasets_by_atom = self.atom_datasets()?;
-        let ops = blocks::raw_operators(&self.projectors, &datasets_by_atom, &self.channels)?;
+        let ops = if self.dual {
+            blocks::operators(&self.projectors, &datasets_by_atom, &self.channels)?
+        } else {
+            blocks::raw_operators(&self.projectors, &datasets_by_atom, &self.channels)?
+        };
 
         // 2. Build k-point matrices
         let assembly = MatrixAssembly {
@@ -301,6 +311,29 @@ impl PeriodicSetup {
             return Err(invalid("charged crystal must have positive electron count"));
         }
 
+        // The PAW spheres of a screened hybrid, built here from the same datasets, centers and
+        // moment blocks as the crystal (the `sites` block a snapshot carries holds exactly these).
+        let hybrid = match definition.screened_exchange {
+            Some(range) => {
+                crate::periodic::input::hybrid_needs_the_full_mesh(&points, permutations.len())?;
+                let description = self.description.as_ref().ok_or_else(|| {
+                    invalid("a hybrid crystal needs the description of its PAW spheres")
+                })?;
+                let sites = serde_json::json!({
+                    "centers": self.centers,
+                    "projector_basis": description.projector_basis,
+                    "datasets": description.datasets.iter()
+                        .map(|(file, sha256)| serde_json::json!({"file": file, "sha256": sha256}))
+                        .collect::<Vec<_>>(),
+                });
+                Some(crate::periodic::hybrid_setup::Hybrid::parse(
+                    ctx, &self.grid, p, &self.channels, blocks.as_slice(), &sites, range,
+                    self.spinor, self.time_reversal,
+                )?)
+            }
+            None => None,
+        };
+
         let components = CrystalComponents {
             grid: self.grid.clone(),
             m,
@@ -336,15 +369,16 @@ impl PeriodicSetup {
             permutations,
             qsym,
             hubbard: self.hubbard.clone(),
-            hybrid: None,
+            hybrid,
             description: if let Some(ref d) = self.description {
                 Some(d.try_clone(ctx)?)
             } else {
                 None
             },
-            description_unavailable: Some(
-                "native comparison setup has not passed force and stress parity validation".into(),
-            ),
+            // Forces and stress are rebuilt from `description`. Their parity with the frozen
+            // references of the deleted Python build is pinned by
+            // `test/migration/test_native_periodic_response.py` and `tests/setup_matrices.rs`.
+            description_unavailable: None,
         };
 
         Crystal::from_components(ctx, components)
@@ -468,6 +502,7 @@ impl PeriodicSetup {
         };
 
         Ok(Self {
+            dual: self.dual,
             grid,
             lattice: *new_lattice,
             shells,

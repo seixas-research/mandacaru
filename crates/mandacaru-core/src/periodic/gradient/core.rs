@@ -16,3 +16,19 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Vec
     }
     Ok(out)
 }
+
+/// E6, a meta-GGA's partial-core kinetic density against `v_tau` (`Derivatives::core_kinetic_overlap`);
+/// zeros for every other functional.
+pub fn kinetic<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Vec<[f64; 3]>> {
+    let atoms = d.layout().atoms;
+    let mut out = vec![[0.0; 3]; atoms];
+    if !crate::models::functional(&d.layout().request.functional)?.requires_tau {
+        return Ok(out);
+    }
+    for (atom, row) in out.iter_mut().enumerate() {
+        for (axis, x) in row.iter_mut().enumerate() {
+            *x = d.core_kinetic_overlap(&frozen.fields, atom, axis)?;
+        }
+    }
+    Ok(out)
+}

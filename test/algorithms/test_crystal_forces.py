@@ -95,7 +95,7 @@ def test_the_stress_of_cubic_aluminum_on_the_reduced_mesh_is_an_isotropic_pressu
 
     Measured 57 s (the reduced SCF and its stress engine, charged to the fixture) at a machine load of 13-15."""
     atoms, stress = aluminum_reduced
-    assert atoms.calc._crystal_adapter.symmetry.n_operations == 48
+    assert atoms.calc.periodic_problem.symmetry.n_operations == 48
     # The group average over 48 operations makes the tensor isotropic to rounding (7e-16 measured on the frozen pair in Rust):
     # the gate asserts the symmetrizer's exactness, not a physical tolerance.
     assert np.ptp(stress[:3]) < 1e-12 and np.abs(stress[3:]).max() < 1e-12
@@ -114,7 +114,7 @@ def test_the_stress_of_a_symmetry_reduced_mesh_is_the_whole_meshs(aluminum_whole
     module fixture to the first test that asks for it."""
     whole, stress_whole = aluminum_whole
     reduced, stress_reduced = aluminum_reduced
-    assert len(whole.calc._crystal_adapter.kpoints) > len(reduced.calc._crystal_adapter.kpoints)
+    assert len(whole.calc.periodic_problem.kpoints) > len(reduced.calc.periodic_problem.kpoints)
     # The plan's stress gates: 3e-6 eV/A^3 on a diagonal entry, 5e-8 on a shear.
     assert np.allclose(stress_reduced[:3], stress_whole[:3], atol=3e-6, rtol=0)
     assert np.allclose(stress_reduced[3:], stress_whole[3:], atol=5e-8, rtol=0)
@@ -125,7 +125,7 @@ def test_the_reduced_mesh_force_follows_the_diagonal(silicon_reduced):
     """The reduced mesh keeps 6 operations: the force is along the diagonal and nowhere else, the symmetry holds in the
     answer."""
     atoms, force = silicon_reduced
-    assert atoms.calc._crystal_adapter.symmetry.n_operations == 6
+    assert atoms.calc.periodic_problem.symmetry.n_operations == 6
     assert np.allclose(force[:, 0], force[:, 1], atol=1e-6)
     assert np.allclose(force[:, 0], force[:, 2], atol=1e-6)
 
@@ -189,13 +189,28 @@ def test_a_crystal_file_without_the_setup_block_has_an_energy_and_no_forces(tmp_
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("xc, cause", [("r2scan", "meta-GGA"), ("pbe+rvv10", "rVV10")])
-def test_a_functional_the_engines_do_not_differentiate_raises_naming_the_cause(xc, cause):
-    for query in ("get_forces", "get_stress"):
+@pytest.mark.parametrize("xc, cause, queries", [
+    ("r2scan", "meta-GGA", ("get_stress",)),
+    ("pbe+rvv10", "rVV10", ("get_stress",)),
+])
+def test_a_functional_the_engines_do_not_differentiate_raises_naming_the_cause(xc, cause, queries):
+    for query in queries:
         atoms = lih()
         atoms.calc = calculator(xc=xc)
         with pytest.raises(NotImplementedError, match=cause):
             getattr(atoms, query)()
+
+
+@pytest.mark.parametrize("xc", ["r2scan", "pbe+rvv10"])
+def test_r2scan_and_rvv10_crystals_have_analytic_forces(xc):
+    """MG-F5/F6: the meta-GGA and rVV10 crystal forces are analytic in Rust (their
+    finite-difference gates are in ``crates/mandacaru-core/tests/periodic_gradient_xc.rs``);
+    here they reach the calculator."""
+    atoms = lih()
+    atoms.calc = calculator(xc=xc)
+    forces = atoms.get_forces()
+    assert forces.shape == (len(atoms), 3) and np.all(np.isfinite(forces))
+    assert np.abs(forces).max() > 1e-4
 
 
 def test_float32_forces_and_stress_are_refused_before_the_scf(monkeypatch):
@@ -264,7 +279,7 @@ def test_a_hybrid_with_symmetry_operations_on_a_gamma_mesh_raises_naming_the_red
         with pytest.raises(NotImplementedError, match=f"{word} (are|is) not available for a hybrid crystal on a k mesh reduced "
                                                       "by space-group symmetry.*symmetry=False"):
             getattr(atoms, query)()
-    assert atoms.calc._crystal_adapter.symmetry.n_operations == 16
+    assert atoms.calc.periodic_problem.symmetry.n_operations == 16
     whole = hydrogen(False)
     assert whole.get_forces().shape == (2, 3)
 
@@ -351,13 +366,17 @@ def test_aluminum_stress_equals_the_reconverged_strain_difference(monkeypatch):
     """ASE-style central differences of the free energy under strain, computed here (Richardson over two steps), against
     the analytic stress: the isotropic part and one shear. Measured 36 s at a machine load of 13-15."""
     from mandacaru.integrals import Grid
-    from mandacaru.pseudopotentials import local_split
+    from mandacaru.integrations import setup_block
+    from mandacaru.units import ANGSTROM_TO_BOHR
 
     unstrained = bulk("Al", "fcc", a=4.05)
     reference = Grid(center=0.5 * unstrained.cell.array.sum(axis=0), box_size=0.0, grid_spacing=0.45, units="angstrom",
                      cell=unstrained.cell.array, periodic=True)
-    shape, sigma = tuple(int(n) for n in reference.shape), float(local_split.split_width(reference))
-    monkeypatch.setattr(local_split, "split_width", lambda grid: sigma)
+    shape = tuple(int(n) for n in reference.shape)
+    # The Rust setup's ion width, 1.4 times the coarsest step of the unstrained grid, held for every strain.
+    steps = np.linalg.norm(unstrained.cell.array, axis=1) / np.asarray(shape)
+    sigma = 1.4 * float(steps.max()) * ANGSTROM_TO_BOHR
+    monkeypatch.setattr(setup_block, "ion_width", lambda grid: sigma)
     analytic = strained_aluminum(np.zeros((3, 3)), shape, sigma)
     stress = analytic.get_stress()
     volume = abs(np.linalg.det(analytic.cell.array))

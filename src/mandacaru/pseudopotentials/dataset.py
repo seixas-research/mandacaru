@@ -89,7 +89,7 @@ class PseudoPotential:
     xc: str = "lda"
     relativity: str = "none"
     #: Whether the functional carried the relativistic exchange correction
-    #: (:func:`~mandacaru.basis.xc.relativistic_exchange_factors`) -- what a
+    #: (the Rust radial exchange) -- what a
     #: relativistic reference atom uses.  Stored, not derived from
     #: ``relativity``: a file written before the correction existed is
     #: relativistic without it, and rescreening it must match how it was

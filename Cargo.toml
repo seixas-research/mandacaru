@@ -28,3 +28,13 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "unwind"
+
+# Tests: the release optimizations without whole-program LTO. Each of the ~250 integration-test
+# binaries links mandacaru-core, and a fat-LTO link per binary made the test build take 25 minutes.
+# LTO and codegen units do not change IEEE results (no FMA contraction by default). The wheel
+# keeps `[profile.release]`.
+[profile.release-test]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

@@ -263,10 +263,7 @@ fn unsupported_states_raise_instead_of_returning_forces() {
         let mut state = solve(&base, Method::Hf("rhf"), [1, 1]);
         state.converged = false;
         assert!(refusal(&base, &state).contains("converged"));
-        // Nonlocal correlation has no PAW force: the functional is refused by name.
-        let mut state = solve(&base, Method::Ks("pbe"), [1, 1]);
-        state.functional = Some("pbe+rvv10".into());
-        assert!(refusal(&base, &state).contains("pbe+rvv10"));
+        // rVV10 is differentiated (MG-F6, `paw_forces_dataset.rs`): no refusal to test here.
         // A PBE state relabeled as the screened hybrid is not the stationary
         // state of the hybrid operator: no gradient is returned for it.
         let mut relabeled = solve(&base, Method::Ks("pbe"), [1, 1]);

@@ -36,8 +36,8 @@ use super::{
     },
     ions::LocalPotential,
     pulay::{
-        core_gradient, grid_cross, kinetic_cross, mesh_dot, projection, projection_gradient,
-        short_range_gradients, KSamples, Matrix, Mesh,
+        core_gradient, core_kinetic_gradient, grid_cross, kinetic_cross, mesh_dot, projection,
+        projection_gradient, short_range_gradients, tau_cross, KSamples, Matrix, Mesh,
     },
     shapes::{Shapes, Sites},
     shells::Shells,
@@ -111,6 +111,10 @@ pub struct Fields {
     pub xc: Vec<f64>,
     pub weights: Vec<C64>,
     pub moments: Vec<C64>,
+    /// A meta-GGA's `v_tau`, one block per spin channel (P6), and its spin average, the potential
+    /// the partial core's kinetic density is differentiated against (E6; the core tau is split in
+    /// halves between the spins, as the core density is for E5). `None` for every other functional.
+    pub kinetic: Option<(Vec<Vec<f64>>, Vec<f64>)>,
     /// The re-diagonalized bands of the density, when the fields come from a real SCF crystal
     /// ([`SetupDerivatives::with_scf`]): the Fermi level needs the whole mesh, so
     /// [`Derivatives::bands`] returns these.
@@ -127,6 +131,7 @@ impl Fields {
             xc,
             weights,
             moments,
+            kinetic: None,
             bands: Vec::new(),
             hats: OnceCell::new(),
             ions: OnceCell::new(),
@@ -329,6 +334,15 @@ impl<'a> SetupDerivatives<'a> {
                     .get(spin)
                     .ok_or_else(|| invalid("crystal gradient: one local potential per spin"))?;
                 self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, Some(v)))
+            }
+            Term::KineticDensity => {
+                let (blocks, _) = fields.kinetic.as_ref().ok_or_else(|| {
+                    invalid("crystal gradient: the meta-GGA term needs the fields' v_tau")
+                })?;
+                let v = blocks
+                    .get(spin)
+                    .ok_or_else(|| invalid("crystal gradient: one v_tau per spin"))?;
+                self.with_samples(k, |s| tau_cross(self.ctx, self.inputs.grid, s, v))
             }
             // The rows' share of every sphere: the sum over the spheres of `G_A`.
             Term::ShortRange => self.with_spheres(k, |blocks| {
@@ -568,6 +582,7 @@ impl Derivatives for SetupDerivatives<'_> {
             moments,
             xc,
             weights,
+            kinetic,
         } = output;
         let mut fields = Fields::new(
             local.as_slice().chunks(n).map(<[f64]>::to_vec).collect(),
@@ -575,6 +590,13 @@ impl Derivatives for SetupDerivatives<'_> {
             weights.as_slice().to_vec(),
             moments.as_slice().to_vec(),
         );
+        fields.kinetic = kinetic.map(|v| {
+            let blocks: Vec<Vec<f64>> = v.as_slice().chunks(n).map(<[f64]>::to_vec).collect();
+            let average = (0..n)
+                .map(|k| blocks.iter().map(|b| b[k]).sum::<f64>() / blocks.len() as f64)
+                .collect();
+            (blocks, average)
+        });
         fields.bands = bands;
         fields._held = Some(held);
         Ok(fields)
@@ -728,5 +750,28 @@ impl Derivatives for SetupDerivatives<'_> {
             axis,
         )?;
         mesh_dot(&self.mesh, &fields.xc, slope.as_slice())
+    }
+    fn core_kinetic_overlap(&self, fields: &Fields, atom: usize, axis: usize) -> Result<f64> {
+        let axis = axis_of(axis)?;
+        let (_, average) = fields.kinetic.as_ref().ok_or_else(|| {
+            invalid("crystal gradient: the meta-GGA core term needs the fields' v_tau")
+        })?;
+        let Some(core) = self
+            .inputs
+            .cores
+            .get(atom)
+            .ok_or_else(|| invalid("crystal gradient: atom out of range"))?
+        else {
+            return Ok(0.);
+        };
+        let slope = core_kinetic_gradient(
+            self.ctx,
+            self.inputs.grid,
+            core.radius,
+            core.values,
+            self.inputs.sites.atoms[atom].center,
+            axis,
+        )?;
+        mesh_dot(&self.mesh, average, slope.as_slice())
     }
 }

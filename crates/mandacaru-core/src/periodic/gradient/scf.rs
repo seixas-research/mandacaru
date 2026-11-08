@@ -212,6 +212,9 @@ pub struct OutputFields {
     pub xc: Buffer<f64>,
     /// `K rho^* / V`, the reciprocal weights of the hats and ions.
     pub weights: Buffer<C64>,
+    /// A meta-GGA's `v_tau = dE_xc / d tau`, one block of `n` per spin channel, evaluated on the
+    /// output density's own `tau`; `None` for every other functional.
+    pub kinetic: Option<Buffer<f64>>,
 }
 
 /// The potentials of the density of `densities` with the channel moments `q`.
@@ -219,8 +222,20 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
     let n = c.grid.index.points();
     let (rho, _) = solver::density(c, densities)?;
     let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
-    let potential = solver::local_potential(c, &mut fft, rho.as_slice(), q, None)?;
-    let terms = solver::exchange_correlation(c, &mut fft, rho.as_slice(), None)?;
+    // A meta-GGA is evaluated on the output density's own kinetic density, as the SCF does,
+    // in the local potential and in the xc terms alike.
+    let tau = if crate::models::functional(&c.functional)?.requires_tau {
+        if c.spinor {
+            return Err(crate::Error::Unsupported(
+                "crystal forces are not available for a spinor meta-GGA".into(),
+            ));
+        }
+        Some(super::super::fields::kinetic_density(c, densities)?)
+    } else {
+        None
+    };
+    let potential = solver::local_potential(c, &mut fft, rho.as_slice(), q, tau.as_ref().map(|t| t.as_slice()))?;
+    let terms = solver::exchange_correlation(c, &mut fft, rho.as_slice(), tau.as_ref().map(|t| t.as_slice()))?;
     // One block of `n` per field channel. For a spinor the first block is the charge channel,
     // `0.5 (v_up + v_dn)` of the collinear functional in the local eigenframe (a time-reversal
     // crystal has that block only): the potential the unpolarized partial core is differentiated
@@ -249,6 +264,7 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
         moments: potential.moments,
         xc,
         weights,
+        kinetic: terms.kinetic_potential,
     })
 }
 
@@ -296,12 +312,13 @@ pub fn rediagonalize(
             } else {
                 &fields.local.as_slice()[s * n..(s + 1) * n]
             };
+            let kinetic = fields.kinetic.as_ref().map(|v| &v.as_slice()[s * n..(s + 1) * n]);
             let (eps, coefficient, _) = solver::diagonalize_with_exchange(
                 c,
                 data,
                 local,
                 fields.moments.as_slice(),
-                None,
+                kinetic,
                 hubbard.get(s),
                 exchange.get(s * c.points.len() + k),
             )?;

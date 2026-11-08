@@ -269,6 +269,44 @@ pub struct Usage {
     pub failed_jobs: u64,
     pub total_shots: u64,
 }
+/// What one measurement of `bases` qubit-wise-commuting bases costs: `(jobs, shots)`.
+///
+/// `max_bases_per_job` splits the bases over jobs (`None`: one job carries them all);
+/// `job_per_basis` is a provider that submits one task per basis. Each basis is measured at every
+/// one of `noise_factors` zero-noise-extrapolation factors with `shots`, or, when
+/// `randomizations > 1`, with `randomizations x shots_per_randomization` (twirled instances share
+/// the requested shots). The provider's own option schema decides those multipliers; this is the
+/// arithmetic the run ledger is checked with before the first job is queued.
+pub fn measurement_cost(
+    bases: u64,
+    max_bases_per_job: Option<u64>,
+    job_per_basis: bool,
+    shots: u64,
+    noise_factors: u64,
+    randomizations: u64,
+    shots_per_randomization: u64,
+) -> Result<(u64, u64)> {
+    if max_bases_per_job == Some(0) || noise_factors == 0 {
+        return Err(invalid("a job carries at least one basis and one noise factor"));
+    }
+    let jobs = if job_per_basis {
+        bases
+    } else {
+        match max_bases_per_job {
+            Some(limit) => bases.div_ceil(limit),
+            None => u64::from(bases > 0),
+        }
+    };
+    let per_instance = if randomizations > 1 {
+        randomizations.checked_mul(shots_per_randomization).ok_or(Error::Overflow)?
+    } else {
+        shots
+    };
+    let total = bases.checked_mul(noise_factors).and_then(|v| v.checked_mul(per_instance))
+        .ok_or(Error::Overflow)?;
+    Ok((jobs, total))
+}
+
 pub struct RunLedger {
     pub usage: Usage,
     context: Context,

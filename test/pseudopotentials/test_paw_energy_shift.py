@@ -24,7 +24,7 @@ from mandacaru.pseudopotentials import get_paw
 from mandacaru.pseudopotentials.confinement import (
     CONFINEMENT_INNER_FRACTION, MIN_ENERGY_SHIFT, confined_energy,
     confined_orbital, confinement_potential, confinement_radius,
-    energy_shift_label, energy_shift_of, first_zeta_factory, free_energy,
+    energy_shift_label, energy_shift_of, free_energy,
     validate_energy_shift)
 from mandacaru.pseudopotentials.orbitals import pseudo_basis
 from mandacaru.units import HARTREE_TO_EV
@@ -74,10 +74,6 @@ class TestOption:
         assert energy_shift_of(spec, "H") == 0.1
         assert energy_shift_of({"O": 0.2}, "H") is None
         assert validate_energy_shift({"O": None, "H": 0}) is None
-
-    def test_the_factory_is_none_when_off(self):
-        assert first_zeta_factory(None) is None
-        assert first_zeta_factory({"H": 0}) is None
 
 
 class TestConfiningPotential:
@@ -148,24 +144,14 @@ class TestRadialSolver:
 
 @needs_library
 class TestBasis:
-    def _functions(self, **kwargs):
+    def _functions(self, options):
         pp = {"H": get_paw("H")}
-        functions, _owners = pseudo_basis(
-            ["H"], np.zeros((1, 3)), pp, **kwargs)
+        functions, _owners = pseudo_basis(["H"], np.zeros((1, 3)), pp, options=options)
         return pp["H"], functions
-
-    def test_a_hook_that_declines_changes_nothing(self):
-        r = np.linspace(0.05, 12.0, 60)
-        _pp, stored = self._functions(size="DZP")
-        _pp, declined = self._functions(
-            size="DZP", first_zeta=lambda symbol, pp, l, state=0: None)
-        for a, b in zip(stored, declined):
-            np.testing.assert_array_equal(a.radial(r), b.radial(r))
 
     @pytest.mark.parametrize("size, count", [("SZ", 1), ("DZ", 2), ("DZP", 5)])
     def test_every_function_inherits_the_cutoff(self, size, count):
-        pp, functions = self._functions(size=size,
-                                        first_zeta=first_zeta_factory(0.1))
+        pp, functions = self._functions({"size": size, "energy_shift": 0.1})
         r_c = confined_orbital(pp, 0, 0.1).r_c
         assert len(functions) == count          # the size hierarchy is intact
         beyond = np.linspace(r_c + 1e-3, r_c + 5.0, 40)
@@ -329,11 +315,10 @@ class TestTheReferenceRecipe:
 
     @pytest.mark.parametrize("symbol", sorted(REFERENCE_RECIPE))
     def test_the_polarization_gaussian(self, symbol):
-        from mandacaru.pseudopotentials.confinement import (
-            gaussian_polarization)
+        from .recipe_view import gaussian_shell
 
         pp, reference = get_paw(symbol), REFERENCE_RECIPE[symbol]
-        shell = gaussian_polarization(pp, 0.1)
+        shell = gaussian_shell(pp, 0.1)
         assert shell.l == reference["l_pol"]
         assert shell.r_char == pytest.approx(reference["r_char"], abs=0.005)
         # Its cutoff is the base orbital's, at the basis's own energy shift.
@@ -353,22 +338,14 @@ class TestTheReferenceRecipe:
         assert abs(f[edge - 1] - f[edge - 2]) / 1e-3 < 1e-5  # slope -> 0
         assert np.all(f[edge:] == 0.0)
 
-    def test_the_missing_channel_is_polarized_first(self):
-        from mandacaru.pseudopotentials.confinement import polarization_channel
-
-        assert polarization_channel({0: None}) == 1
-        assert polarization_channel({0: None, 1: None}) == 2
-        # A 4s/3d transition metal gets a p shell -- not an f.
-        assert polarization_channel({0: None, 2: None}) == 1
-
 
 @needs_library
 class TestSplitSchemes:
-    def _split_radii(self, **kwargs):
+    def _split_radii(self, scheme):
         pp = {"H": get_paw("H")}
-        functions, _ = pseudo_basis(["H"], np.zeros((1, 3)), pp, size="TZ",
-                                    first_zeta=first_zeta_factory(0.1),
-                                    **kwargs)
+        functions, _ = pseudo_basis(["H"], np.zeros((1, 3)), pp,
+                                    options={"size": "TZ", "energy_shift": 0.1,
+                                             "zeta_split": scheme})
         r = np.linspace(0.0, 8.0, 8001)
         # Where each extra zeta ends.  The threshold sits above the 1e-8 a
         # cubic spline rings with in the first interval past a function's end.
@@ -376,18 +353,13 @@ class TestSplitSchemes:
                 for f in functions[1:]]
 
     def test_first_zeta_splits_every_zeta_from_the_first(self):
-        from mandacaru.basis.multizeta import DEFAULT_TAIL_NORMS
-
-        second, third = self._split_radii(tail_norms=DEFAULT_TAIL_NORMS)
+        second, third = self._split_radii("first_zeta")
         assert second == pytest.approx(3.68, abs=0.1)
         assert third < second
 
     def test_the_two_schemes_differ(self):
-        from mandacaru.basis.multizeta import (DEFAULT_SPLIT_NORM,
-                                               DEFAULT_TAIL_NORMS)
-
-        first = self._split_radii(tail_norms=DEFAULT_TAIL_NORMS)
-        last = self._split_radii(split_norm=DEFAULT_SPLIT_NORM)
+        first = self._split_radii("first_zeta")
+        last = self._split_radii("last_zeta")
         # 0.15 of the squared norm is far more tail than a 0.16 norm (0.0256).
         assert last[0] < first[0] - 0.5
 

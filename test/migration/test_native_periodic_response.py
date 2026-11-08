@@ -78,10 +78,18 @@ def test_hse06_forces_and_stress_follow_the_reconverged_finite_difference():
     check_stress("lih_hse06")
 
 
-def test_spin_polarized_forces_follow_the_reconverged_finite_difference_and_its_stress_raises():
+#: sigma_xx of the spin-polarized ``beh_lda`` crystal (eV/Angstrom^3): the Richardson extrapolation of
+#: central strain differences of the free energy (steps 1e-3 and 2e-3, every SCF reconverged) with the
+#: ion width held at the unstrained cell's value (the pin of the analytic stress). Measured
+#: 2026-11-08 at 0.000755343; the analytic stress then agreed to 4.5e-9, as the unpolarized cell did.
+BEH_SPIN_SIGMA_XX = 7.55343e-4
+BEH_SPIN_GATE = 5e-8
+
+
+def test_spin_polarized_forces_and_stress_follow_the_reconverged_finite_difference():
     atoms = check_forces("beh_lda")
-    with pytest.raises(NotImplementedError, match="spin-polarized"):
-        atoms.get_stress()
+    stress = atoms.get_stress()
+    assert abs(stress[0] - BEH_SPIN_SIGMA_XX) < BEH_SPIN_GATE, stress[0]
 
 
 @pytest.mark.slow

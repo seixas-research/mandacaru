@@ -26,7 +26,6 @@ import pytest
 
 from mandacaru.basis.multizeta import RadialTable, TabulatedOrbital
 from mandacaru.pseudopotentials import get_paw
-from mandacaru.pseudopotentials.families import pseudo_basis_arguments
 from mandacaru.pseudopotentials.orbitals import (
     BOUND_LEVEL, KBProjector, PseudoAtomicOrbital, PseudoShell, _RadialTabulated,
     basis_states, bound_radial,
@@ -149,16 +148,17 @@ class TestFrozenPythonOutputs:
         symbol = case["symbol"]
         functions, owners = pseudo_basis(
             [symbol], np.zeros((1, 3)), {symbol: get_paw(symbol)},
-            filter_wavevector=case["k_c"],
-            **pseudo_basis_arguments(
-                "paw-lcao", dict(case["options"], size=case["size"])))
+            filter_wavevector=case["k_c"], options=dict(case["options"], size=case["size"]))
         assert len(functions) == case["n_functions"]
         assert owners == [0] * len(functions)
         tables = unique_tables(functions)
         assert len(tables) == len(case["tables"])
         for i, ((l, kind, zeta, n, r, values), meta) in enumerate(
                 zip(tables, case["tables"])):
-            assert [l, kind, zeta, n, len(r)] == meta
+            # The minimal basis was a PseudoAtomicOrbital ("orbital"); every function is a
+            # PseudoShell now, its first zeta of kind "zeta". The numbers below are unchanged.
+            frozen_kind = "zeta" if meta[1] == "orbital" else meta[1]
+            assert [l, kind, zeta, n, len(r)] == [meta[0], frozen_kind, *meta[2:]]
             close(strided(r), FROZEN[f"{case['tag']}_{i}_r"], 1e-13)
             close(strided(values), FROZEN[f"{case['tag']}_{i}_v"])
 
@@ -216,8 +216,7 @@ class TestShells:
     def test_a_polarized_basis_is_shells_after_the_orbitals(self):
         pp = get_paw("H")
         functions, owners = pseudo_basis(
-            ["H"], np.zeros((1, 3)), {"H": pp},
-            **pseudo_basis_arguments("paw-lcao", {"size": "DZP"}))
+            ["H"], np.zeros((1, 3)), {"H": pp}, options={"size": "DZP"})
         kinds = [f.kind for f in functions]
         assert kinds == ["zeta"] * 2 + ["polarization"] * 3
         assert all(isinstance(f, PseudoShell) for f in functions)
@@ -262,11 +261,10 @@ class TestFunctions:
         pp = get_paw("O")
         functions, owners = pseudo_basis(
             ["O", "O"], np.array([[0.0, 0, 0], [0, 0, 1.2]]), {"O": pp},
-            **pseudo_basis_arguments("paw-lcao", {"size": "SZ",
-                                                  "energy_shift": None}))
+            options={"size": "SZ", "energy_shift": None})
         assert owners == [0] * 4 + [1] * 4
-        assert all(isinstance(f, PseudoAtomicOrbital) for f in functions)
-        np.testing.assert_array_equal(functions[0]._values,
+        assert all(isinstance(f, PseudoShell) for f in functions)
+        np.testing.assert_array_equal(functions[0].table.values,
                                       pp.channels[0].pseudo_waves[0])
 
     def test_the_orbital_holds_its_arrays_and_evaluates_them(self):
@@ -290,5 +288,4 @@ class TestFunctions:
     def test_a_size_mapping_needs_every_element(self):
         pp = get_paw("H")
         with pytest.raises(ValueError, match="no pseudo-basis size"):
-            pseudo_basis(["H"], np.zeros((1, 3)), {"H": pp},
-                         size={"O": "SZ"})
+            pseudo_basis(["H"], np.zeros((1, 3)), {"H": pp}, options={"size": {"O": "SZ"}})

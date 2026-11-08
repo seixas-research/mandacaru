@@ -22,11 +22,8 @@ from mandacaru import Mandacaru
 class TestBackendCores:
     def test_num_threads_reports_positive_int_when_native_backend(self):
         n = _backend.num_threads()
-        if _backend.HAS_NATIVE_BACKEND:
-            assert isinstance(n, int) and n >= 1
-            assert backend_cores() == n
-        else:
-            assert n is None
+        assert isinstance(n, int) and n >= 1
+        assert backend_cores() == n
 
     def test_peak_memory_is_positive(self):
         assert peak_memory_mb() > 0.0

@@ -16,12 +16,32 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mandacaru.integrals import reciprocal as rc
+from mandacaru import _native
 from mandacaru.pseudopotentials import get_paw, multipoles
-from mandacaru.pseudopotentials.multipoles import (partial_waves,
+from mandacaru.pseudopotentials.multipoles import (_pair, partial_waves,
                                                     radial_moments,
-                                                    radial_remainder,
                                                     shape_function)
+from mandacaru.pseudopotentials.native_context import context
+
+
+# Array views of the native kernels these tests pin (their Python wrappers served only the deleted
+# Python crystal setup): the radial Fourier-Bessel transform, the multipole selection rule and the
+# augmentation remainder E^(L)_ij(q).
+def radial_transform(r, values, L, q):
+    return context().periodic_radial_transform(
+        np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(values, dtype=float),
+        int(L), np.ascontiguousarray(q, dtype=float))
+
+
+def multipole_range(l1, l2):
+    return list(_native.paw_multipole_range(int(l1), int(l2)))
+
+
+def radial_remainder(dataset, l1, l2, L, q, shape_transform):
+    return _native.paw_radial_remainder(
+        context(), int(L), *_pair(dataset, l1, l2), np.ascontiguousarray(q, dtype=float),
+        np.ascontiguousarray(dataset.multipole_moments(l1, l2, L, "dual"), dtype=float),
+        np.ascontiguousarray(shape_transform, dtype=float))
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +111,7 @@ class TestTheRemainderBeyondTheMultipoles:
     def _shape(dataset, L, q):
         r_g = float(dataset.compensation_radius)
         r = np.linspace(0.0, r_g, 1201)
-        return rc.radial_transform(r, shape_function(r, r_g, L), L, q)
+        return radial_transform(r, shape_function(r, r_g, L), L, q)
 
     @pytest.mark.parametrize("L", [0, 2, 4])
     def test_it_has_no_moment(self, copper, L):
@@ -221,7 +241,7 @@ class TestFrozenPythonOutputs:
             assert _scaled_error(np.array(smooth)[:, ::7],
                                  frozen[f"{symbol}_pw_sm_{l}"]) < 1e-11
         for l1, l2 in itertools.product(dataset.channels, repeat=2):
-            for L in multipoles.multipole_range(l1, l2):
+            for L in multipole_range(l1, l2):
                 tag = f"{symbol}_{{}}_{l1}{l2}{L}"
                 assert _scaled_error(radial_moments(dataset, l1, l2, L),
                                      frozen[tag.format("mom")]) < 1e-9
@@ -230,7 +250,7 @@ class TestFrozenPythonOutputs:
 
     def test_the_selection_rule_of_the_multipole_range(self, frozen):
         for a, b, count in frozen["range_keys"]:
-            levels = multipoles.multipole_range(int(a), int(b))
+            levels = multipole_range(int(a), int(b))
             assert len(levels) == count
             assert all(abs(a - b) <= L <= a + b and (L + a + b) % 2 == 0
                        for L in levels)

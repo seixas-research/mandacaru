@@ -382,3 +382,18 @@ fn adapt_stop_when_the_next_step_is_first_measured_reports_the_optimized_energy(
     assert!((result.energy - optimized).abs() < 1e-12);
     assert!(result.energy < measured[0]);
 }
+
+#[test]
+fn measurement_cost_counts_jobs_and_shots_as_the_providers_submit_them() {
+    use mandacaru_core::execution::measurement_cost;
+    // One Estimator job carries every basis; split at 2 bases a job, 5 bases are 3 jobs.
+    assert_eq!(measurement_cost(5, None, false, 1000, 1, 1, 0).unwrap(), (1, 5000));
+    assert_eq!(measurement_cost(5, Some(2), false, 1000, 1, 1, 0).unwrap(), (3, 5000));
+    // Braket submits one task per basis; no basis is no job.
+    assert_eq!(measurement_cost(4, None, true, 100, 1, 1, 0).unwrap(), (4, 400));
+    assert_eq!(measurement_cost(0, None, false, 100, 1, 1, 0).unwrap(), (0, 0));
+    // Three ZNE factors, and twirled instances sharing the shots: 32 x 64 per basis.
+    assert_eq!(measurement_cost(2, None, false, 2000, 3, 32, 64).unwrap(), (1, 2 * 3 * 32 * 64));
+    assert!(measurement_cost(1, Some(0), false, 1, 1, 1, 0).is_err());
+    assert!(measurement_cost(u64::MAX, None, false, 2, 1, 1, 0).is_err());
+}

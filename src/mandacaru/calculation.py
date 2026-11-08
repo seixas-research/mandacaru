@@ -412,8 +412,10 @@ class Mandacaru(ASEProperties, Calculator):
         ``"hse06"`` included, on the whole k mesh (see ``kpts`` and
         ``symmetry``: a hybrid crystal on a symmetry-reduced mesh raises
         ``NotImplementedError``); its forces and stress are analytic (Rust).
-        The forces and stress of an ``"r2scan"`` or ``"rvv10"`` crystal raise
-        ``NotImplementedError`` naming the cause. With
+        ``"r2scan"`` and ``"rvv10"`` crystals have analytic forces
+        (unpolarized and spin-polarized; the spin-orbit crystal SCF supports
+        neither and raises); their stress raises ``NotImplementedError``
+        naming the cause. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
     vdw : str or bool, optional
         Van der Waals dispersion correction, one of ``"rvv10"``, ``"ts"``
@@ -1690,12 +1692,13 @@ class Mandacaru(ASEProperties, Calculator):
             )
         elif scheme == "kzk":
             from .core.kzk import kzk_correction
-            psi = integrals._engine._psi
-            A = integrals._lowdin_x() if integrals.orthogonalize else np.eye(len(psi))
-            if integrals.mo_coefficients is not None:
-                A = A @ integrals.mo_coefficients
-            phi = A.T @ psi
-            density = np.einsum("pq,pg,qg->g", D, phi.conj(), phi).real
+            psi = np.ascontiguousarray(integrals._engine._psi, dtype=float)
+            X = (np.ascontiguousarray(integrals._lowdin_x().real, dtype=float)
+                 if integrals.orthogonalize else None)
+            V = (None if integrals.mo_coefficients is None
+                 else np.ascontiguousarray(integrals.mo_coefficients, dtype=complex))
+            density = _native.rotated_density(
+                self.context, psi, X, V, np.ascontiguousarray(np.real(D), dtype=float))
             return kzk_correction(
                 density,
                 integrals.grid.dV,
@@ -2184,16 +2187,9 @@ class Mandacaru(ASEProperties, Calculator):
             dataset_name = self._basis_spec.get("paw_dataset")
         if dataset_name is None:
             return False
-        try:
-            from .pseudopotentials import get_paw
-            for z in value.numbers:
-                s = chemical_symbols[z]
-                p = get_paw(s, dataset_name, xc=self.xc)
-                if getattr(p, "has_spin_orbit", False):
-                    return True
-            return False
-        except Exception:
-            return False
+        from .pseudopotentials import get_paw
+        return any(getattr(get_paw(chemical_symbols[z], dataset_name, xc=self.xc),
+                           "has_spin_orbit", False) for z in value.numbers)
 
     def _molecular_soc_dft(self, value):
         from .structure import geometry_value
@@ -2212,11 +2208,10 @@ class Mandacaru(ASEProperties, Calculator):
         self._geometry = value
         return res
 
-    def _periodic_quantum_forces(self, geometry, result, step=1e-3, scheme="analytic"):
+    def _periodic_quantum_forces(self, geometry, result, step=1e-3):
         from .units import HARTREE_TO_EV, BOHR_TO_ANGSTROM
         from .structure import geometry_value
         from .integrations.ase import atoms_from_geometry
-        import numpy as np
 
         if hasattr(self, "_attached_atoms") and self._attached_atoms is not None:
             source_atoms = self._attached_atoms
@@ -2275,30 +2270,17 @@ class Mandacaru(ASEProperties, Calculator):
 
         fd_res = _native.periodic_quantum_forces_fd(energies_plus, energies_minus, step)
 
-        if scheme == "fd":
-            forces_ha = fd_res["forces"]
-            result.force_details = {"scheme": fd_res["scheme"]}
-        else:
-            state = result._raw.get("state")
-            rdm1, _ = self.solver.properties()["rdm"] if hasattr(self.solver, "properties") else (None, None)
-            if rdm1 is None and state is not None and self.problem is not None:
-                rdm1, _ = self.problem.rdms(state, two_body=False)
-            if rdm1 is None:
-                rdm1 = np.eye(n_atoms)
-            m = rdm1.shape[0] if len(rdm1.shape) == 2 else int(np.sqrt(len(rdm1)))
-            dh_atomic = [[[0.0, 0.0, 0.0]] * (m * m) for _ in range(n_atoms)]
-            ewald_forces = [[float(x) for x in row] for row in fd_res["forces"]]
-            ana_res = _native.periodic_quantum_forces_analytic(
-                n_atoms, m, np.ascontiguousarray(rdm1), None, dh_atomic, None, None, None, ewald_forces
-            )
-            forces_ha = ana_res["forces"]
-            result.force_details = {"scheme": ana_res["scheme"]}
+        # Central finite differences of the correlated energy over displaced supercells. The
+        # analytic quantum force (the RDM contracted with dH/dR) is not implemented, so the result
+        # is labeled what it is (dev_plan/RUST_MIGRATION_PLAN.md, MG-0b).
+        forces_ha = fd_res["forces"]
+        result.force_details = {"scheme": fd_res["scheme"]}
 
         forces_ev = forces_ha * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)
         result._periodic_forces = forces_ev
         return forces_ev
 
-    def _periodic_quantum_stress(self, geometry, result, eps=1e-3, scheme="analytic", voigt=True):
+    def _periodic_quantum_stress(self, geometry, result, eps=1e-3, voigt=True):
         from .units import HARTREE_TO_EV, BOHR_TO_ANGSTROM
         from .structure import geometry_value
         from .integrations.ase import atoms_from_geometry
@@ -2358,23 +2340,9 @@ class Mandacaru(ASEProperties, Calculator):
 
         fd_res = _native.periodic_quantum_stress_fd(strained_plus, strained_minus, eps, vol_bohr)
 
-        if scheme == "fd":
-            stress_ha = fd_res["voigt"]
-        else:
-            state = result._raw.get("state")
-            rdm1, _ = self.solver.properties()["rdm"] if hasattr(self.solver, "properties") else (None, None)
-            if rdm1 is None and state is not None and self.problem is not None:
-                rdm1, _ = self.problem.rdms(state, two_body=False)
-            if rdm1 is None:
-                rdm1 = np.eye(len(source_atoms))
-            m = rdm1.shape[0] if len(rdm1.shape) == 2 else int(np.sqrt(len(rdm1)))
-            ewald_stress = fd_res["sigma"].tolist()
-            ana_res = _native.periodic_quantum_stress_analytic(
-                m, vol_bohr, np.ascontiguousarray(rdm1), None, 0.0,
-                [[[] for _ in range(3)] for _ in range(3)],
-                None, None, None, ewald_stress
-            )
-            stress_ha = ana_res["voigt"]
+        # Central finite differences over strained supercells; no analytic quantum stress yet.
+        stress_ha = fd_res["voigt"]
+        result.stress_details = {"scheme": fd_res.get("scheme", "central finite difference")}
 
         stress_ev = stress_ha * (HARTREE_TO_EV / BOHR_TO_ANGSTROM ** 3)
         result._crystal_stress = stress_ha
@@ -2767,10 +2735,9 @@ class Mandacaru(ASEProperties, Calculator):
             self._drop_crystal()
 
     def _drop_crystal(self):
-        """Release the periodic problem and the setup adapter of the last geometry."""
-        for name in ("periodic_problem", "_crystal_adapter", "_crystal_metadata"):
-            if hasattr(self, name):
-                delattr(self, name)
+        """Release the periodic problem of the last geometry."""
+        if hasattr(self, "periodic_problem"):
+            del self.periodic_problem
         if hasattr(self, "context") and self.context is not None:
             self.context.release_freed_memory()
 

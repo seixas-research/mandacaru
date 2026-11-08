@@ -8,9 +8,10 @@
 pub mod ccmh;
 pub mod kzk;
 pub mod mpc;
+pub mod two_body;
 
 pub use ccmh::{
-    ccmh_extrapolate, structure_factor_from_rdms, Ccmh, CcmhShell, StructureFactor,
+    ccmh_extrapolate, structure_factor, Ccmh, CcmhShell, StructureFactor,
     DEFAULT_SHELLS, QUADRATIC_REGIME_SPREAD,
 };
 pub use kzk::{kzk, kzk_flexible, Fit, Kzk, Vacuum, DENSITY_FLOOR, HARTREE_PER_RYDBERG};

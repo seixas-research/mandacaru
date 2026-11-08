@@ -380,6 +380,7 @@ pub fn ccmh_reciprocal_vectors<'py>(
 
 #[pyfunction]
 pub fn compute_structure_factor<'py>(
+    context: PyRef<'_, super::PyContext>,
     py: Python<'py>,
     psi: PyReadonlyArray2<'py, f64>,
     shape: (usize, usize, usize),
@@ -432,204 +433,20 @@ pub fn compute_structure_factor<'py>(
         )));
     }
 
-    let ctx = mandacaru_core::Context::new(None, 64 << 20).map_err(error)?;
-    let mut fft = Fft3::new(&ctx, [nx, ny, nz]).map_err(error)?;
-
-    // Compute reciprocal triples and kvectors
-    let c = cell.as_slice()?;
-    let mat = Matrix3::new(
-        c[0], c[1], c[2],
-        c[3], c[4], c[5],
-        c[6], c[7], c[8],
-    );
-    let inv_t = mat
-        .try_inverse()
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("singular cell matrix"))?
-        .transpose();
-    let b = inv_t * (2.0 * std::f64::consts::PI);
-
-    let mut triples = Vec::new();
-    let mut kvectors_vec = Vec::new();
-
-    for i in -limit..=limit {
-        for j in -limit..=limit {
-            for k in -limit..=limit {
-                if i == 0 && j == 0 && k == 0 {
-                    continue;
-                }
-                triples.push((i, j, k));
-                let m = Vector3::new(i as f64, j as f64, k as f64);
-                let kx = m[0] * b[(0, 0)] + m[1] * b[(1, 0)] + m[2] * b[(2, 0)];
-                let ky = m[0] * b[(0, 1)] + m[1] * b[(1, 1)] + m[2] * b[(2, 1)];
-                let kz = m[0] * b[(0, 2)] + m[1] * b[(1, 2)] + m[2] * b[(2, 2)];
-                kvectors_vec.push(kx);
-                kvectors_vec.push(ky);
-                kvectors_vec.push(kz);
-            }
-        }
-    }
-    let n_triples = triples.len();
-
-    // M: (n_triples + 1, n_ao, n_ao)
-    let mut m_tensor = vec![C64::new(0.0, 0.0); (n_triples + 1) * n_ao * n_ao];
-    let psi_slice = psi.as_slice()?;
-
-    let mut buf = vec![C64::new(0.0, 0.0); n_grid];
-
-    for a in 0..n_ao {
-        let psi_a = &psi_slice[a * n_grid..(a + 1) * n_grid];
-        for b in a..n_ao {
-            let psi_b = &psi_slice[b * n_grid..(b + 1) * n_grid];
-            for idx in 0..n_grid {
-                buf[idx] = C64::new(psi_a[idx] * psi_b[idx], 0.0);
-            }
-            fft.transform(&mut buf, false).map_err(error)?;
-            for idx in 0..n_grid {
-                buf[idx] = buf[idx] * dv;
-            }
-
-            let val0 = buf[0];
-            m_tensor[0 * n_ao * n_ao + a * n_ao + b] = val0;
-            m_tensor[0 * n_ao * n_ao + b * n_ao + a] = val0.conj();
-
-            for (t_idx, &(ti, tj, tk)) in triples.iter().enumerate() {
-                let node_x = (ti.rem_euclid(nx as i64)) as usize;
-                let node_y = (tj.rem_euclid(ny as i64)) as usize;
-                let node_z = (tk.rem_euclid(nz as i64)) as usize;
-                let flat_pos = (node_x * ny + node_y) * nz + node_z;
-
-                let node_neg_x = ((-ti).rem_euclid(nx as i64)) as usize;
-                let node_neg_y = ((-tj).rem_euclid(ny as i64)) as usize;
-                let node_neg_z = ((-tk).rem_euclid(nz as i64)) as usize;
-                let flat_neg = (node_neg_x * ny + node_neg_y) * nz + node_neg_z;
-
-                let val = buf[flat_pos];
-                let val_neg_conj = buf[flat_neg].conj();
-
-                let k_layer = (t_idx + 1) * n_ao * n_ao;
-                m_tensor[k_layer + a * n_ao + b] = val;
-                m_tensor[k_layer + b * n_ao + a] = val_neg_conj;
-            }
-        }
-    }
-
-    // Rotate M: M'_k = A^\dagger M_k A
-    let a_slice = a_matrix.as_slice()?;
-    let mut m_prime = vec![C64::new(0.0, 0.0); (n_triples + 1) * a_cols * a_cols];
-
-    // Precompute for each k
-    let mut temp = vec![C64::new(0.0, 0.0); n_ao * a_cols];
-    for k_idx in 0..=n_triples {
-        let mk = &m_tensor[k_idx * n_ao * n_ao..(k_idx + 1) * n_ao * n_ao];
-        // temp[a, q] = sum_b M[a, b] * A[b, q]
-        for a in 0..n_ao {
-            for q in 0..a_cols {
-                let mut sum = C64::new(0.0, 0.0);
-                for b in 0..n_ao {
-                    let a_bq = C64::new(a_slice[b * a_cols + q].re, a_slice[b * a_cols + q].im);
-                    sum += mk[a * n_ao + b] * a_bq;
-                }
-                temp[a * a_cols + q] = sum;
-            }
-        }
-        // m_prime[k, p, q] = sum_a A^*[a, p] * temp[a, q]
-        let out_k = &mut m_prime[k_idx * a_cols * a_cols..(k_idx + 1) * a_cols * a_cols];
-        for p in 0..a_cols {
-            for q in 0..a_cols {
-                let mut sum = C64::new(0.0, 0.0);
-                for a in 0..n_ao {
-                    let a_ap_conj =
-                        C64::new(a_slice[a * a_cols + p].re, -a_slice[a * a_cols + p].im);
-                    sum += a_ap_conj * temp[a * a_cols + q];
-                }
-                out_k[p * a_cols + q] = sum;
-            }
-        }
-    }
-
-    // Overlap error: max |M'[0, p, q] - delta_{p,q}|
-    let m0 = &m_prime[0..a_cols * a_cols];
-    let mut overlap_error = 0.0_f64;
-    for p in 0..a_cols {
-        for q in 0..a_cols {
-            let diff = if p == q {
-                m0[p * a_cols + q] - C64::new(1.0, 0.0)
-            } else {
-                m0[p * a_cols + q]
-            };
-            overlap_error = overlap_error.max(diff.norm());
-        }
-    }
-
-    // Electron count: tr(D)
-    let mut n_electrons = 0.0_f64;
-    for p in 0..a_cols {
-        n_electrons += d_slice[p * a_cols + p];
-    }
-
-    // Values for each k in 1..=n_triples
-    let mut values = Vec::with_capacity(n_triples);
-    for k_idx in 1..=n_triples {
-        let mk = &m_prime[k_idx * a_cols * a_cols..(k_idx + 1) * a_cols * a_cols];
-
-        let mut pair_sum = 0.0_f64;
-        for p in 0..a_cols {
-            for q in 0..a_cols {
-                let mpq = mk[p * a_cols + q];
-                if mpq.norm_sqr() == 0.0 {
-                    continue;
-                }
-                for r in 0..a_cols {
-                    for s in 0..a_cols {
-                        let mrs_conj = mk[r * a_cols + s].conj();
-                        // Python: Gamma[p, r, s, q]
-                        let g_prsq = gamma_slice[((p * a_cols + r) * a_cols + s) * a_cols + q];
-                        pair_sum += (mpq * mrs_conj).re * g_prsq;
-                    }
-                }
-            }
-        }
-
-        let mut exch_sum = 0.0_f64;
-        for p in 0..a_cols {
-            for q in 0..a_cols {
-                let mpq = mk[p * a_cols + q];
-                if mpq.norm_sqr() == 0.0 {
-                    continue;
-                }
-                for s in 0..a_cols {
-                    let mqs_conj = mk[q * a_cols + s].conj();
-                    // Python: D[p, s]
-                    let d_ps = d_slice[p * a_cols + s];
-                    exch_sum += (mpq * mqs_conj).re * d_ps;
-                }
-            }
-        }
-
-        values.push((pair_sum + exch_sum) / n_electrons);
-    }
-
-    let mut magnitudes = Vec::with_capacity(n_triples);
-    for k in 0..n_triples {
-        let kx = kvectors_vec[k * 3];
-        let ky = kvectors_vec[k * 3 + 1];
-        let kz = kvectors_vec[k * 3 + 2];
-        magnitudes.push((kx * kx + ky * ky + kz * kz).sqrt());
-    }
-
+    let (psi, cell, a) = (psi.as_slice()?.to_vec(), cell.as_slice()?.to_vec(), a_matrix.as_slice()?.to_vec());
+    let (d, gamma) = (d_slice.to_vec(), gamma_slice.to_vec());
+    let ctx = &context.inner;
+    let out = py
+        .detach(|| mandacaru_core::periodic::finite_size::structure_factor(
+            ctx, &psi, [nx, ny, nz], dv, &cell, limit, &a, a_cols, &d, &gamma))
+        .map_err(error)?;
+    let n_triples = out.values.len();
     let dict = PyDict::new(py);
-    dict.set_item(
-        "kvectors",
-        array(py, &[n_triples, 3], kvectors_vec)?,
-    )?;
-    dict.set_item("values", array(py, &[n_triples], values)?)?;
-    dict.set_item(
-        "magnitudes",
-        array(py, &[n_triples], magnitudes)?,
-    )?;
-    dict.set_item("n_electrons", n_electrons)?;
-    dict.set_item("overlap_error", overlap_error)?;
-
+    dict.set_item("kvectors", array(py, &[n_triples, 3], out.kvectors)?)?;
+    dict.set_item("values", array(py, &[n_triples], out.values)?)?;
+    dict.set_item("magnitudes", array(py, &[n_triples], out.magnitudes)?)?;
+    dict.set_item("n_electrons", out.n_electrons)?;
+    dict.set_item("overlap_error", out.overlap_error)?;
     Ok(dict)
 }
 
@@ -1069,201 +886,84 @@ pub fn compute_pair_densities<'py>(
     array(py, &[m * m, ngrid], rho_stack)
 }
 
+fn optional_real(a: Option<PyReadonlyArray2<'_, f64>>) -> PyResult<Option<Vec<f64>>> {
+    a.map(|a| { layout(&a)?; Ok(a.as_slice()?.to_vec()) }).transpose()
+}
+
+fn optional_complex(a: Option<PyReadonlyArray2<'_, Complex64>>) -> PyResult<Option<Vec<Complex64>>> {
+    a.map(|a| { layout(&a)?; Ok(a.as_slice()?.to_vec()) }).transpose()
+}
+
+/// `A = X V` (`periodic::finite_size::two_body::orbital_rotation`).
 #[pyfunction]
-pub fn transform_two_body_mo<'py>(
+#[pyo3(signature = (m, x, v))]
+pub fn orbital_rotation<'py>(
     py: Python<'py>,
-    eri_raw: PyReadonlyArray2<'py, f64>,
+    m: usize,
+    x: Option<PyReadonlyArray2<'py, f64>>,
+    v: Option<PyReadonlyArray2<'py, Complex64>>,
+) -> PyResult<Array<'py, Complex64>> {
+    let (x, v) = (optional_real(x)?, optional_complex(v)?);
+    let a = mandacaru_core::periodic::finite_size::two_body::orbital_rotation(m, x.as_deref(), v.as_deref())
+        .map_err(super::error)?;
+    array(py, &[m, m], a)
+}
+
+/// The density of `d` in the orbitals `A = X V` of `psi` (`two_body::rotated_density`).
+#[pyfunction]
+#[pyo3(signature = (context, psi, x, v, d))]
+pub fn rotated_density<'py>(
+    context: PyRef<'_, super::PyContext>,
+    py: Python<'py>,
+    psi: PyReadonlyArray2<'py, f64>,
+    x: Option<PyReadonlyArray2<'py, f64>>,
+    v: Option<PyReadonlyArray2<'py, Complex64>>,
+    d: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Array<'py, f64>> {
+    layout(&psi)?;
+    layout(&d)?;
+    let (m, points) = (psi.shape()[0], psi.shape()[1]);
+    let (x, v) = (optional_real(x)?, optional_complex(v)?);
+    let (psi, d) = (psi.as_slice()?.to_vec(), d.as_slice()?.to_vec());
+    let ctx = &context.inner;
+    let out = py.detach(|| {
+        use mandacaru_core::periodic::finite_size::two_body::{orbital_rotation, rotated_density};
+        let a = orbital_rotation(m, x.as_deref(), v.as_deref())?;
+        rotated_density(ctx, &psi, points, &a, &d, m)
+    }).map_err(super::error)?;
+    array(py, &[points], out)
+}
+
+#[pyfunction]
+#[pyo3(signature = (context, rho, phi, dv, x, v, m))]
+pub fn pair_two_body<'py>(
+    context: PyRef<'_, super::PyContext>,
+    py: Python<'py>,
+    rho: PyReadonlyArray2<'py, f64>,
+    phi: PyReadonlyArray2<'py, f64>,
     dv: f64,
     x: Option<PyReadonlyArray2<'py, f64>>,
     v: Option<PyReadonlyArray2<'py, f64>>,
     m: usize,
 ) -> PyResult<Array<'py, f64>> {
-    layout(&eri_raw)?;
-    let m2 = m * m;
-    if eri_raw.shape() != [m2, m2] {
+    for array in [&rho, &phi] {
+        layout(array)?;
+    }
+    if rho.shape() != phi.shape() || rho.shape()[0] != m * m {
         return Err(pyo3::exceptions::PyValueError::new_err(
-            "eri_raw shape must be (M^2, M^2)",
+            "the pair densities and potentials must both be (M^2, points)",
         ));
     }
-    let raw_slice = eri_raw.as_slice()?;
-
-    // eri[a, b, c, d] in chemists' order is raw[a*m + c, b*m + d] * dv
-    // Transposed to physicists' order: (0, 2, 1, 3) -> eri_phys[a, c, b, d]
-    // So eri_phys[a, b, c, d] = eri_chem[a, c, b, d] = raw[a*m + b, c*m + d] * dv
-    let mut eri = vec![0.0_f64; m * m * m * m];
-    for a in 0..m {
-        for b in 0..m {
-            for c in 0..m {
-                for d in 0..m {
-                    // chemists: row = a*M + c, col = b*M + d
-                    // physicists: eri[a, b, c, d] = chem[a, c, b, d] = raw[(a*m + b)*m2 + c*m + d]
-                    eri[((a * m + b) * m + c) * m + d] =
-                        raw_slice[(a * m + b) * m2 + c * m + d] * dv;
-                }
-            }
-        }
-    }
-
-    // Transform with X if provided
-    let mut cur = eri;
-    if let Some(x_mat) = x {
-        layout(&x_mat)?;
-        if x_mat.shape() != [m, m] {
-            return Err(pyo3::exceptions::PyValueError::new_err("X must be (M, M)"));
-        }
-        let x_slice = x_mat.as_slice()?;
-        // cur[p, q, r, s] = sum_{a,b,c,d} X[a, p] X[b, q] X[c, r] X[d, s] cur[a, b, c, d]
-        // 4 successive contractions
-        let mut t1 = vec![0.0_f64; m * m * m * m];
-        for a in 0..m {
-            for p in 0..m {
-                let x_ap = x_slice[a * m + p];
-                if x_ap == 0.0 {
-                    continue;
-                }
-                for b in 0..m {
-                    for c in 0..m {
-                        for d in 0..m {
-                            t1[((p * m + b) * m + c) * m + d] +=
-                                x_ap * cur[((a * m + b) * m + c) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        let mut t2 = vec![0.0_f64; m * m * m * m];
-        for b in 0..m {
-            for q in 0..m {
-                let x_bq = x_slice[b * m + q];
-                if x_bq == 0.0 {
-                    continue;
-                }
-                for p in 0..m {
-                    for c in 0..m {
-                        for d in 0..m {
-                            t2[((p * m + q) * m + c) * m + d] +=
-                                x_bq * t1[((p * m + b) * m + c) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        let mut t3 = vec![0.0_f64; m * m * m * m];
-        for c in 0..m {
-            for r in 0..m {
-                let x_cr = x_slice[c * m + r];
-                if x_cr == 0.0 {
-                    continue;
-                }
-                for p in 0..m {
-                    for q in 0..m {
-                        for d in 0..m {
-                            t3[((p * m + q) * m + r) * m + d] +=
-                                x_cr * t2[((p * m + q) * m + c) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        let mut t4 = vec![0.0_f64; m * m * m * m];
-        for d in 0..m {
-            for s in 0..m {
-                let x_ds = x_slice[d * m + s];
-                if x_ds == 0.0 {
-                    continue;
-                }
-                for p in 0..m {
-                    for q in 0..m {
-                        for r in 0..m {
-                            t4[((p * m + q) * m + r) * m + s] +=
-                                x_ds * t3[((p * m + q) * m + r) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        cur = t4;
-    }
-
-    // Transform with V if provided
-    if let Some(v_mat) = v {
-        layout(&v_mat)?;
-        if v_mat.shape() != [m, m] {
-            return Err(pyo3::exceptions::PyValueError::new_err("V must be (M, M)"));
-        }
-        let v_slice = v_mat.as_slice()?;
-        let mut t1 = vec![0.0_f64; m * m * m * m];
-        for a in 0..m {
-            for p in 0..m {
-                let v_ap = v_slice[a * m + p];
-                if v_ap == 0.0 {
-                    continue;
-                }
-                for b in 0..m {
-                    for c in 0..m {
-                        for d in 0..m {
-                            t1[((p * m + b) * m + c) * m + d] +=
-                                v_ap * cur[((a * m + b) * m + c) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        let mut t2 = vec![0.0_f64; m * m * m * m];
-        for b in 0..m {
-            for q in 0..m {
-                let v_bq = v_slice[b * m + q];
-                if v_bq == 0.0 {
-                    continue;
-                }
-                for p in 0..m {
-                    for c in 0..m {
-                        for d in 0..m {
-                            t2[((p * m + q) * m + c) * m + d] +=
-                                v_bq * t1[((p * m + b) * m + c) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        let mut t3 = vec![0.0_f64; m * m * m * m];
-        for c in 0..m {
-            for r in 0..m {
-                let v_cr = v_slice[c * m + r];
-                if v_cr == 0.0 {
-                    continue;
-                }
-                for p in 0..m {
-                    for q in 0..m {
-                        for d in 0..m {
-                            t3[((p * m + q) * m + r) * m + d] +=
-                                v_cr * t2[((p * m + q) * m + c) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        let mut t4 = vec![0.0_f64; m * m * m * m];
-        for d in 0..m {
-            for s in 0..m {
-                let v_ds = v_slice[d * m + s];
-                if v_ds == 0.0 {
-                    continue;
-                }
-                for p in 0..m {
-                    for q in 0..m {
-                        for r in 0..m {
-                            t4[((p * m + q) * m + r) * m + s] +=
-                                v_ds * t3[((p * m + q) * m + r) * m + d];
-                        }
-                    }
-                }
-            }
-        }
-        cur = t4;
-    }
-
-    array(py, &[m, m, m, m], cur)
+    let points = rho.shape()[1];
+    let (rho, phi) = (rho.as_slice()?.to_vec(), phi.as_slice()?.to_vec());
+    let x = x.map(|a| { layout(&a)?; Ok::<_, PyErr>(a.as_slice()?.to_vec()) }).transpose()?;
+    let v = v.map(|a| { layout(&a)?; Ok::<_, PyErr>(a.as_slice()?.to_vec()) }).transpose()?;
+    let ctx = &context.inner;
+    let out = py
+        .detach(|| mandacaru_core::periodic::finite_size::two_body::pair_two_body(
+            ctx, &rho, &phi, points, dv, x.as_deref(), v.as_deref(), m))
+        .map_err(super::error)?;
+    array(py, &[m, m, m, m], out)
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1296,6 +996,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mpc_hole_energies, m)?)?;
     m.add_function(wrap_pyfunction!(spatial_rdms, m)?)?;
     m.add_function(wrap_pyfunction!(compute_pair_densities, m)?)?;
-    m.add_function(wrap_pyfunction!(transform_two_body_mo, m)?)?;
+    m.add_function(wrap_pyfunction!(pair_two_body, m)?)?;
+    m.add_function(wrap_pyfunction!(orbital_rotation, m)?)?;
+    m.add_function(wrap_pyfunction!(rotated_density, m)?)?;
     Ok(())
 }

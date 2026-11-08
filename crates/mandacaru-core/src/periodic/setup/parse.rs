@@ -11,12 +11,8 @@ use super::{
     PeriodicSetup, Pins,
 };
 use crate::{
-    basis::filter,
     math::SpatialGrid,
-    paw::{
-        confinement::{orbital, ChannelData, Prepared},
-        record::PawDataset,
-    },
+    paw::record::PawDataset,
     periodic::invalid,
     Context, Result,
 };
@@ -41,6 +37,10 @@ pub struct SetupInput {
     pub atoms: Vec<AtomSpec>,
     pub kpoints_frac: Vec<[f64; 3]>,
     pub weights: Vec<f64>,
+    /// A Monkhorst-Pack mesh `(size, gamma)` the setup reduces itself (by the operations that keep
+    /// it, then time reversal; whole for a magnetic or a non-time-reversal spinor crystal). When
+    /// set, `kpoints_frac` and `weights` are its output and must be empty on input.
+    pub mesh: Option<([usize; 3], bool)>,
     pub functional: String,
     pub precision: String,
     /// Basis size, such as SZ, DZP or TZ2P.
@@ -54,25 +54,27 @@ pub struct SetupInput {
     pub dataset_files: Option<Vec<(String, String)>>,
     pub hubbard_u: Option<crate::models::hubbard_request::Request>,
     pub charge: Option<f64>,
+    /// Each element's basis recipe (`paw::basis_recipe::Recipe::from_json`; a `"cutoff"` of
+    /// `"auto"` is the grid's Nyquist wave-vector); `None`: the default recipe of `basis_size`.
+    pub recipes: Option<std::collections::BTreeMap<String, Value>>,
+    /// The projector basis, `"raw"` (the default) or `"dual"`: which projectors the projections
+    /// are built from, and the basis of every operator block.
+    pub projector_basis: String,
 }
 
 /// Construct a [`PeriodicSetup`] from structured inputs and loaded datasets.
 pub fn create_setup(
     ctx: &Context,
-    input: SetupInput,
+    mut input: SetupInput,
     datasets: Vec<Arc<PawDataset>>,
 ) -> Result<PeriodicSetup> {
     if input.atoms.is_empty() {
         return Err(invalid("periodic setup needs at least one atom"));
     }
-    if input.kpoints_frac.is_empty() {
-        return Err(invalid("periodic setup needs at least one k-point"));
+    if input.mesh.is_some() != input.kpoints_frac.is_empty() {
+        return Err(invalid("periodic setup needs either a k mesh or explicit k-points"));
     }
-    if crate::models::functional(&input.functional)?.screened_exchange.is_some() {
-        return Err(crate::Error::Unsupported(
-            "native periodic setup does not yet build hybrid PAW spheres".into(),
-        ));
-    }
+    crate::models::functional(&input.functional)?;
     if let Some(request) = &input.hubbard_u {
         request.require_scope(&input.functional, &input.precision)?;
     }
@@ -95,10 +97,10 @@ pub fn create_setup(
     {
         return Err(invalid("invalid lattice, grid or atom coordinates"));
     }
-    if input.kpoints_frac.len() != input.weights.len()
+    if input.mesh.is_none() && (input.kpoints_frac.len() != input.weights.len()
         || input.kpoints_frac.iter().flatten().any(|x| !x.is_finite())
         || input.weights.iter().any(|w| !w.is_finite() || *w <= 0.)
-        || (input.weights.iter().sum::<f64>() - 1.).abs() > 1e-10
+        || (input.weights.iter().sum::<f64>() - 1.).abs() > 1e-10)
     {
         return Err(invalid("k-point coordinates and positive normalized weights must agree"));
     }
@@ -188,6 +190,14 @@ pub fn create_setup(
     let mut row_idx = 0;
     // Radial data are independent of the atom's position. Share the splines and
     // description tables for every atom using the same dataset.
+    use crate::paw::basis_recipe::{self, Recipe};
+    let recipe_of = |symbol: &str| -> Result<Recipe> {
+        match &input.recipes {
+            None => Ok(Recipe::new(zeta_count, polarization_count, Some(k_c))),
+            Some(table) => Recipe::from_json(table.get(symbol).ok_or_else(|| invalid(format!(
+                "the basis recipes name no recipe for {symbol}")))?, Some(k_c)),
+        }
+    };
     let mut species_shells: Vec<Option<Vec<(usize, usize, Arc<Radial>)>>> =
         (0..datasets.len()).map(|_| None).collect();
 
@@ -196,88 +206,15 @@ pub fn create_setup(
         let center = centers[atom_idx];
 
         if species_shells[species_idx].is_none() {
-            let mut cached = Vec::new();
-            let mut states = Vec::new();
-            for (&l, channel) in &ds.channels {
-                for (state, &occupation) in channel.occupations.data().iter().enumerate() {
-                    if occupation > 0. {
-                        states.push((l, state));
-                    }
-                }
-            }
-            // Empty bound channels follow all occupied states, as in the
-            // active basis builder. Li and Be retain their p channel solely
-            // for scattering, even though it has a bound level.
-            for (&l, channel) in &ds.channels {
-                if channel.occupations.data().iter().any(|&o| o > 0.)
-                    || (l == 1 && (ds.symbol == "Li" || ds.symbol == "Be"))
-                {
-                    continue;
-                }
-                if empty_channel_level(ctx, ds, l)? < -1e-3 {
-                    states.push((l, 0));
-                }
-            }
-            let mut valence = std::collections::BTreeMap::new();
-            let mut cutoffs = std::collections::BTreeMap::new();
-            for (l, state) in states {
-                let l_usize = l as usize;
-                let orbital = confined_orbital(ctx, ds, l, state, 0.1)?;
-                let n = ds.channels[&l].n as i64 + state as i64;
-                let semicore = ds.semicore_subshells.iter()
-                    .any(|shell| shell.len() >= 2 && shell[0] == n && shell[1] == l as i64);
-                if !semicore {
-                    valence.insert(l, state);
-                    cutoffs.insert((l, state), orbital.r_c);
-                }
-                let count = if semicore { 1 } else { zeta_count };
-                let zetas = crate::basis::radial::zeta_values(
-                    ctx, ds.r.as_slice(), &orbital.radial, l_usize, count, 0.15,
-                    Some(&[0.15, 0.31, 0.54]),
-                )?;
-                for zeta in zetas {
-                    let (filtered, _) = filter::filter(
-                        ctx, ds.r.as_slice(), zeta.as_slice(), l_usize, k_c,
-                        &filter::Options::default(),
-                    )?;
-                    let table_idx = tables.len();
-                    let radial = Arc::new(Radial::new(ctx, ds.r.as_slice(), &filtered, None)?);
-                    tables.push(crate::periodic::description::Table {
-                        l: l_usize, r: ds.r.as_slice().to_vec(), values: filtered,
-                        confinement: None,
-                    });
-                    cached.push((l_usize, table_idx, radial));
-                }
-            }
-            if polarization_count > 0 {
-                let max_l = *valence.keys().max()
-                    .ok_or_else(|| invalid("polarization needs a valence channel"))?;
-                let l = (0..=max_l).find(|l| !valence.contains_key(l)).unwrap_or(max_l + 1);
-                let base = l.checked_sub(1)
-                    .and_then(|l| valence.get(&l).map(|&state| (l, state)))
-                    .ok_or_else(|| invalid("polarization needs the preceding valence channel"))?;
-                let r_cut = cutoffs[&base];
-                let reference = confined_orbital(ctx, ds, base.0, base.1, 0.3)?.r_c;
-                let shape = crate::basis::pao::polarization_radial(
-                    ds.r.as_slice(), l as usize, r_cut, 0.25 * reference,
-                )?;
-                let zetas = crate::basis::radial::zeta_values_by_fraction(
-                    ctx, ds.r.as_slice(), &shape, l as usize, polarization_count,
-                    0.15, Some(&[0.15, 0.31, 0.54]),
-                )?;
-                for zeta in zetas {
-                    let (filtered, _) = filter::filter(
-                        ctx, ds.r.as_slice(), zeta.as_slice(), l as usize, k_c,
-                        &filter::Options::default(),
-                    )?;
-                    let table_idx = tables.len();
-                    let radial = Arc::new(Radial::new(ctx, ds.r.as_slice(), &filtered, None)?);
-                    tables.push(crate::periodic::description::Table {
-                        l: l as usize, r: ds.r.as_slice().to_vec(), values: filtered,
-                        confinement: None,
-                    });
-                    cached.push((l as usize, table_idx, radial));
-                }
+            let (shells, _report) = basis_recipe::species(ctx, ds, &recipe_of(&ds.symbol)?)?;
+            let mut cached = Vec::with_capacity(shells.len());
+            for shell in shells {
+                let table_idx = tables.len();
+                let radial = Arc::new(Radial::new(ctx, ds.r.as_slice(), &shell.values, None)?);
+                tables.push(crate::periodic::description::Table {
+                    l: shell.l, r: ds.r.as_slice().to_vec(), values: shell.values, confinement: None,
+                });
+                cached.push((shell.l, table_idx, radial));
             }
             species_shells[species_idx] = Some(cached);
         }
@@ -332,6 +269,12 @@ pub fn create_setup(
     }
     let shells = Shells::new(shells_vec)?;
 
+    let dual = match input.projector_basis.as_str() {
+        "raw" => false,
+        "dual" => true,
+        other => return Err(invalid(format!("projector_basis must be raw or dual, got {other:?}"))),
+    };
+
     // Build Projectors list
     let mut projectors = Vec::new();
     let mut proj_tuples = Vec::new();
@@ -346,7 +289,8 @@ pub fn create_setup(
                 if channel.raw_projectors.len() != channel.projectors.len() {
                     return Err(invalid("raw projector count does not match the channel"));
                 }
-                let radials = channel.raw_projectors.iter()
+                let tables = if dual { &channel.projectors } else { &channel.raw_projectors };
+                let radials = tables.iter()
                     .map(|t| Radial::new(ctx, ds.r.as_slice(), t.as_slice(), None).map(Arc::new))
                     .collect::<Result<Vec<_>>>()?;
                 cached.push((l as usize, radials));
@@ -388,19 +332,6 @@ pub fn create_setup(
         potentials.push(species_potentials[species_idx].as_ref().unwrap().clone());
     }
 
-    // Convert fractional k-points to Cartesian k-points: k = 2 pi (lattice^-1)^T f
-    let inv_lattice = input.lattice.try_inverse().ok_or_else(|| {
-        invalid("singular crystal lattice matrix")
-    })?;
-    let rec_lattice = 2.0 * std::f64::consts::PI * inv_lattice.transpose();
-
-    let mut kpoints_cart = Vec::with_capacity(input.kpoints_frac.len());
-    for f in &input.kpoints_frac {
-        let f_vec = nalgebra::Vector3::new(f[0], f[1], f[2]);
-        let k = rec_lattice * f_vec;
-        kpoints_cart.push([k[0], k[1], k[2]]);
-    }
-
     // Symmetry operations
     let magnetic = input.atoms.iter().any(|a| a.moment != 0.);
     let symmetry = if input.symmetry && !input.spinor && !magnetic {
@@ -424,6 +355,36 @@ pub fn create_setup(
     } else {
         None
     };
+
+    // The k mesh, reduced here when the request names one.
+    let mut symmetry = symmetry;
+    if let Some((size, gamma)) = input.mesh {
+        let reduced = if let Some(sym) = symmetry.take() {
+            let kept = sym.keeping_mesh(size, gamma)?;
+            let reduced = kept.mesh(ctx, size, gamma)?;
+            symmetry = Some(kept);
+            reduced
+        } else {
+            let whole = magnetic || (input.spinor && input.spin);
+            crate::periodic::spectrum::mesh(ctx, size, gamma, &[], !whole)?
+        };
+        input.kpoints_frac = reduced.points.clone();
+        input.weights = reduced.weights.clone();
+    }
+
+    // Convert fractional k-points to Cartesian k-points: k = 2 pi (lattice^-1)^T f
+    let inv_lattice = input.lattice.try_inverse().ok_or_else(|| {
+        invalid("singular crystal lattice matrix")
+    })?;
+    let rec_lattice = 2.0 * std::f64::consts::PI * inv_lattice.transpose();
+
+    let mut kpoints_cart = Vec::with_capacity(input.kpoints_frac.len());
+    for f in &input.kpoints_frac {
+        let f_vec = nalgebra::Vector3::new(f[0], f[1], f[2]);
+        let k = rec_lattice * f_vec;
+        kpoints_cart.push([k[0], k[1], k[2]]);
+    }
+
 
     // Compensation shapes channels: (atom, l, m)
     let mut channels = Vec::new();
@@ -456,6 +417,28 @@ pub fn create_setup(
     } else {
         None
     };
+    // The same operations in the form a snapshot's `setup` block carries (`description::parse`):
+    // integer rotations row by row, fractional translations and the atom map of each.
+    let operations = symmetry.as_ref().filter(|sym| sym.len() > 0).map(|sym| {
+        let mut map = vec![0; n_atoms];
+        let mut out = crate::periodic::description::Operations {
+            rotations: vec![], translations: vec![], atom_maps: vec![],
+        };
+        for k in 0..sym.len() {
+            let w = sym.rotation(k);
+            let mut r = [0i32; 9];
+            for i in 0..3 {
+                for j in 0..3 {
+                    r[3 * i + j] = w[(i, j)];
+                }
+            }
+            out.rotations.push(r);
+            out.translations.push(sym.translation(k));
+            sym.atom_map(k, &mut map);
+            out.atom_maps.push(map.clone());
+        }
+        out
+    });
 
     let dataset_files: Vec<(String, String)> = match input.dataset_files {
         Some(ref files) if files.len() == atoms_species.len() => files.clone(),
@@ -471,7 +454,7 @@ pub fn create_setup(
     let hubbard = if let Some(ref request) = input.hubbard_u {
         use crate::periodic::hubbard_table::{build_paw, PawLayout, Projector as HubbardProjector};
         let labels: Vec<_> = projectors.iter().map(|p| HubbardProjector {
-            symbol: datasets[atoms_species[p.atom]].symbol.clone(), basis: "raw".into(),
+            symbol: datasets[atoms_species[p.atom]].symbol.clone(), basis: input.projector_basis.clone(),
             atom: p.atom, l: p.l, m: p.m as i64, index: p.index,
         }).collect();
         let sources: Vec<_> = (0..datasets.len()).map(|species| {
@@ -494,11 +477,13 @@ pub fn create_setup(
         point_group,
         centers.clone(),
         dataset_files,
-        "raw".to_string(),
+        input.projector_basis.clone(),
         channels.clone(),
+        operations,
     )?);
 
     Ok(PeriodicSetup {
+        dual,
         grid,
         lattice: input.lattice,
         shells,
@@ -530,60 +515,6 @@ pub fn create_setup(
     })
 }
 
-fn empty_channel_level(ctx: &Context, ds: &PawDataset, l: u32) -> Result<f64> {
-    let channel = &ds.channels[&l];
-    let wave = channel.pseudo_waves.first()
-        .ok_or_else(|| invalid("empty channel has no reference pseudo wave"))?;
-    let projectors: Vec<f64> = channel.projectors.iter()
-        .flat_map(|p| p.as_slice().iter().copied()).collect();
-    let data = ChannelData {
-        table: ds.r.as_slice(),
-        local: ds.v_local_screened.as_slice(),
-        projectors: &projectors,
-        rank: channel.projectors.len(),
-        coupling: channel.coupling_screened.data(),
-        overlap: channel.overlap_correction.data(),
-        wave: wave.as_slice(),
-        l: l as usize,
-        r_cut: channel.r_cut,
-    };
-    let (lo, hi) = crate::paw::diagnose::spectrum::EXTENT_BOUNDS;
-    let extent = crate::paw::checks::spectrum_extent(
-        data.table, data.wave, crate::paw::diagnose::spectrum::EXTENT_FLOOR, lo, hi,
-    )?;
-    crate::paw::pao::bound_level(ctx, data, extent)
-}
-
-fn confined_orbital(ctx: &Context, ds: &PawDataset, l: u32, state: usize, shift: f64) -> Result<crate::paw::confinement::Orbital> {
-    let channel = &ds.channels[&l];
-    let wave = channel.pseudo_waves.get(state)
-        .ok_or_else(|| invalid("occupied state has no corresponding pseudo wave"))?;
-    let rank = channel.projectors.len();
-    let projectors: Vec<f64> = channel
-        .projectors
-        .iter()
-        .flat_map(|p| p.as_slice().iter().copied())
-        .collect();
-    let data = ChannelData {
-        table: ds.r.as_slice(),
-        local: ds.v_local_screened.as_slice(),
-        projectors: &projectors,
-        rank,
-        coupling: channel.coupling_screened.data(),
-        overlap: channel.overlap_correction.data(),
-        wave: wave.as_slice(),
-        l: l as usize,
-        r_cut: channel.r_cut,
-    };
-    let prepared = Prepared::new(ctx, data)?;
-    let wall = crate::basis::confinement::Potential {
-        amplitude: 12.,
-        inner_fraction: 0.6,
-    };
-    let orb = orbital(ctx, &prepared, shift, &wall, state, None)?
-        .map_err(|reach| invalid(format!("orbital does not fit table at reach {reach}")))?;
-    Ok(orb)
-}
 
 /// Parse a JSON `"periodic-paw-input"` specification into [`SetupInput`].
 pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
@@ -595,11 +526,20 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
              a confined orbital. Drop 'diffuse' for a periodic geometry",
         ));
     }
-    for name in ["hubbard", "ghosts", "energy_shift",
-                 "confinement_potential", "polarization_method", "zeta_split", "size", "basis"] {
+    for name in ["hubbard", "ghosts", "size", "basis"] {
         if v.get(name).is_some() {
             return Err(crate::Error::Unsupported(format!(
                 "native periodic setup does not yet support option {name:?}"
+            )));
+        }
+    }
+    // A basis option belongs to an element's recipe (`recipes`), never to the request itself:
+    // refused rather than ignored.
+    for name in ["energy_shift", "confinement_potential", "polarization_method", "zeta_split"] {
+        if v.get(name).is_some() {
+            return Err(crate::Error::Unsupported(format!(
+                "the basis option {name:?} is an entry of each element's recipe (\"recipes\"), \
+                 not of the request"
             )));
         }
     }
@@ -670,7 +610,23 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
 
     let mut kpoints_frac = Vec::new();
     let mut weights = Vec::new();
-    if let Some(value) = v.get("kpoints") {
+    let mesh = match v.get("mesh") {
+        None => None,
+        Some(value) => {
+            if v.get("kpoints").is_some() {
+                return Err(invalid("give either 'mesh' or 'kpoints', not both"));
+            }
+            let size = value["size"].as_array().filter(|a| a.len() == 3)
+                .and_then(|a| a.iter().map(|x| x.as_u64().and_then(|n| usize::try_from(n).ok())
+                    .filter(|n| *n > 0)).collect::<Option<Vec<_>>>())
+                .ok_or_else(|| invalid("mesh size must be three positive integers"))?;
+            let gamma = value["gamma"].as_bool()
+                .ok_or_else(|| invalid("mesh gamma must be a boolean"))?;
+            Some(([size[0], size[1], size[2]], gamma))
+        }
+    };
+    if mesh.is_some() {
+    } else if let Some(value) = v.get("kpoints") {
         let k_arr = value.as_array().filter(|a| !a.is_empty())
             .ok_or_else(|| invalid("kpoints must be a nonempty array"))?;
         for item in k_arr {
@@ -729,7 +685,17 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
         None
     };
 
+    let recipes = match v.get("recipes") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_object()
+            .ok_or_else(|| invalid("recipes must map element symbols to basis recipes"))?
+            .iter().map(|(symbol, recipe)| (symbol.clone(), recipe.clone())).collect()),
+    };
+    let projector_basis = string_option("projector_basis", "raw")?;
     Ok(SetupInput {
+        mesh,
+        recipes,
+        projector_basis,
         lattice,
         grid_shape,
         atoms,

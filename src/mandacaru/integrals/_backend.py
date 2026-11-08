@@ -20,7 +20,6 @@ from __future__ import annotations
 import ctypes
 import os
 from dataclasses import dataclass
-from functools import wraps
 
 import numpy as np
 from numpy.ctypeslib import ndpointer
@@ -165,10 +164,6 @@ def _bind(lib):
 
 
 _LIB = _load()
-# Constant: ``_load`` raised above unless every kernel bound. The flag stays
-# only for its three callers (sampling.py, periodic_paw.py, test_profiling.py);
-# W4-C removes it with the sampling fallback.
-HAS_NATIVE_BACKEND = True
 
 
 # --------------------------------------------------------------------------- #
@@ -221,21 +216,6 @@ def ensure_backend():
 # BLAS beside the Rust kernels.
 # --------------------------------------------------------------------------- #
 
-def single_threaded_blas(function):
-    """Return ``function`` unchanged (identity wrapper).
-
-    The wrapper once limited every loaded BLAS to one thread beside the native
-    kernels. It limits nothing now; it stays only because
-    ``pseudopotentials/periodic_paw.py`` still decorates two functions with it,
-    and it is deleted with that file's numerics (WP-G).
-    """
-
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-        return function(*args, **kwargs)
-
-    return wrapper
-
 
 def grid_blas_threads() -> int:
     """BLAS threads for a product over the grid, one per physical core.
@@ -255,60 +235,6 @@ def grid_blas_threads() -> int:
 def num_threads() -> int:
     """Thread count of the Rust kernels."""
     return int(_LIB.mandacaru_num_threads())
-
-
-def bloch_shell(points, center, translations, phases, support, spline, l,
-                ms, rows, out, derivative: int = -1) -> bool:
-    """Accumulate one shell's Bloch sums into ``out`` (``(nk, M, npts)``).
-
-    ``spline`` is ``(breaks, coeffs, rc)``: the breakpoints and the
-    ``(n - 1, 4)`` cubic coefficients of the radial function's spline, and
-    the radius at which it is cut off.  ``derivative`` (0, 1, 2) sums the
-    functions' Cartesian derivative along that axis instead.  Always returns
-    ``True``: the kernel is bound at import, so there is no "not done" case.
-    The flag stays for the sampling fallback that W4-C removes.
-    """
-    x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
-    breaks, coeffs, rc = spline
-    translations = np.ascontiguousarray(translations, dtype=np.float64)
-    phases = np.ascontiguousarray(phases, dtype=np.complex128)
-    _LIB.mandacaru_bloch_shell(
-        x, y, z, x.size, np.ascontiguousarray(center, dtype=np.float64),
-        translations, len(translations), phases, phases.shape[0],
-        float(support), np.ascontiguousarray(breaks, dtype=np.float64),
-        np.ascontiguousarray(coeffs, dtype=np.float64), len(breaks),
-        float(rc), int(l), int(derivative),
-        np.ascontiguousarray(ms, dtype=np.int32),
-        np.ascontiguousarray(rows, dtype=np.int64), len(ms), out.shape[1],
-        out)
-    return True
-
-
-def real_shell(points, center, support, spline, l, ms, rows, out,
-               derivative: int = -1) -> bool:
-    """Evaluate real spherical harmonics or Cartesian derivatives into ``out``.
-
-    ``out`` is ``(M, npts)`` and ``float64`` or ``float32``; any other dtype
-    raises ``TypeError``. Always returns ``True`` (the kernels are bound at
-    import); the flag stays for the sampling fallback that W4-C removes.
-    """
-    if out.dtype == np.float32:
-        kernel = _LIB.mandacaru_real_shell_f32
-    elif out.dtype == np.float64:
-        kernel = _LIB.mandacaru_real_shell
-    else:
-        raise TypeError(f"real_shell writes float64 or float32, not {out.dtype}")
-    x, y, z = (np.ascontiguousarray(c, dtype=np.float64) for c in points)
-    breaks, coeffs, rc = spline
-    kernel(
-        x, y, z, x.size, np.ascontiguousarray(center, dtype=np.float64),
-        float(support), np.ascontiguousarray(breaks, dtype=np.float64),
-        np.ascontiguousarray(coeffs, dtype=np.float64), len(breaks),
-        float(rc), int(l), int(derivative),
-        np.ascontiguousarray(ms, dtype=np.int32),
-        np.ascontiguousarray(rows, dtype=np.int64), len(ms), out.shape[0],
-        out)
-    return True
 
 
 def bloch_project(points, center, translations, support, spline, l, ms,

@@ -56,15 +56,10 @@ from ..core import matrix_free
 from ..core.checkpoint import WavefunctionCheckpoint, prepare_state
 from ..core.mapping import PauliSum
 from ..units import energy_unit_label, from_hartree, to_hartree
+from .. import _native
 from .._native import state_norm_squared
 from .time_evolution import state_dtype
 
-DENSE_LIMIT_QUBITS = 12
-#: Bytes of one stored amplitude: complex128 for float64, complex64 for float32.
-AMPLITUDE_BYTES = {"float64": 16, "float32": 8}
-#: Bytes of one entry of the dense unitary of a small system (always complex128).
-COMPLEX_BYTES = 16
-WORKING_SET_FACTOR = 3
 MEMORY_POLICIES = ("abort", "prompt", "ignore")
 DEFAULT_MEMORY_FRACTION = 0.5
 WARN_MEMORY_FRACTION = 0.25
@@ -135,17 +130,12 @@ def qpe_memory_estimate(
     """
     state_dtype(precision)
     n, t = (int(n_system), int(n_evaluation))
-    if n < 1 or t < 1:
-        raise ValueError("need at least one system and one evaluation qubit")
-    if dense is None:
-        dense = n <= DENSE_LIMIT_QUBITS
-    statevector = AMPLITUDE_BYTES[precision] * 2 ** (n + t)
-    unitary = COMPLEX_BYTES * 4**n if dense else 0
+    statevector, working, unitary, _dense = _native.qpe_memory(n, t, dense, precision)
     return QPEMemoryEstimate(
         n_system=n,
         n_evaluation=t,
         statevector_bytes=statevector,
-        working_bytes=WORKING_SET_FACTOR * statevector,
+        working_bytes=working,
         unitary_bytes=unitary,
         available_bytes=matrix_free.available_memory_bytes(),
     )
@@ -446,22 +436,21 @@ class QuantumPhaseEstimation:
             raise ValueError("the initial state is zero")
         return (psi / norm, n, self.hamiltonian, None)
 
+    def _operator(self, hamiltonian: PauliSum):
+        return self._context.pauli_operator(
+            hamiltonian.num_qubits,
+            [
+                (label, float(complex(c).real), float(complex(c).imag))
+                for label, c in hamiltonian.terms.items()
+            ],
+        )
+
     def _window(self, hamiltonian: PauliSum) -> tuple[float, float]:
         """``(E_lo, E_hi)`` in Hartree, with a margin so no phase reaches 1."""
-        if self.energy_window is not None:
-            lo, hi = self.energy_window
-        else:
-            simplified = hamiltonian.simplify()
-            n = hamiltonian.num_qubits
-            identity = float(np.real(simplified.terms.get("I" * n, 0.0)))
-            radius = sum(
-                (abs(c) for label, c in simplified.terms.items() if label != "I" * n)
-            )
-            lo, hi = (identity - radius, identity + radius)
-            if hi <= lo:
-                lo, hi = (identity - 0.5, identity + 0.5)
-        width = (hi - lo) * (1.0 + 2.0 / 2**self.n_evaluation_qubits)
-        return (float(lo), float(lo + width))
+        return self._operator(hamiltonian).qpe_window(
+            self.n_evaluation_qubits,
+            None if self.energy_window is None else tuple(map(float, self.energy_window)),
+        )
 
     def memory_estimate(self, n_system_qubits: int) -> QPEMemoryEstimate:
         """The estimate :meth:`run` will check for this register size."""
@@ -483,8 +472,7 @@ class QuantumPhaseEstimation:
                 f"a {hamiltonian.num_qubits}-qubit Hamiltonian for a {n}-qubit state"
             )
         t = self.n_evaluation_qubits
-        dense = n <= DENSE_LIMIT_QUBITS
-        estimate = qpe_memory_estimate(n, t, dense=dense, precision=self.precision)
+        estimate = qpe_memory_estimate(n, t, precision=self.precision)
         self.memory_estimate_result = estimate
         check_memory(
             estimate, self.memory_policy, self.memory_fraction, verbose=self.verbose
@@ -493,17 +481,12 @@ class QuantumPhaseEstimation:
             psi = prepare_state(
                 *problem, precision=self.precision, resources=self._resources
             )
-        lo, hi = self._window(hamiltonian)
+        operator = self._operator(hamiltonian)
+        lo, hi = operator.qpe_window(
+            t, None if self.energy_window is None else tuple(map(float, self.energy_window)))
         width = hi - lo
         N = 2**t
         exact = overlaps = None
-        operator = self._context.pauli_operator(
-            n,
-            [
-                (label, float(complex(c).real), float(complex(c).imag))
-                for label, c in hamiltonian.terms.items()
-            ],
-        )
         native = operator.qpe(
             np.ascontiguousarray(psi, dtype=self._dtype),
             t,

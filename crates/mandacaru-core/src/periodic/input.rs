@@ -327,7 +327,7 @@ fn tree_bytes(source: &str) -> Result<usize> {
 /// equal weights, a point set closed under `k -> -k`, and no symmetry table beside several points.
 /// An irreducible wedge or a time-reversal-halved mesh would give a wrong energy and wrong bands
 /// with no error, so it is refused. One Gamma point is complete whatever the table says.
-fn hybrid_needs_the_full_mesh(points: &[KPoint], permutations: usize) -> Result<()> {
+pub(super) fn hybrid_needs_the_full_mesh(points: &[KPoint], permutations: usize) -> Result<()> {
     const TOLERANCE: f64 = 1e-8;
     let first = points.first().map_or(0., |p| p.weight);
     let uniform = points.iter().all(|p| (p.weight - first).abs() < 1e-10);
@@ -420,9 +420,22 @@ impl Crystal {
             "functional": c.functional, "precision": c.precision.name(),
             "relativistic": c.relativistic,
             "hubbard": c.hubbard.as_ref().map(|h| h.to_json()),
-            "setup": {"unavailable": c.description_unavailable.as_deref().unwrap_or(
-                "native setup description serialization is not yet available")},
-        }).to_string();
+        });
+        // The geometry the derivative engines rebuild from: written from the crystal's own
+        // description, so a loaded crystal has its forces and stress.
+        let mut metadata = metadata;
+        match (&c.description, &c.description_unavailable) {
+            (Some(d), None) => {
+                let (setup, sites) = d.blocks();
+                metadata["setup"] = setup;
+                metadata["sites"] = sites;
+            }
+            (_, cause) => {
+                metadata["setup"] = serde_json::json!({"unavailable": cause.as_deref()
+                    .unwrap_or("this crystal has no setup description")});
+            }
+        }
+        let metadata = metadata.to_string();
         let source = Source::keep(ctx, &metadata)?;
         let memory = ctx.reserve(4096usize.checked_add(source.resident_bytes()).ok_or(crate::Error::Overflow)?)?;
         Ok(Self {

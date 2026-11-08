@@ -146,3 +146,24 @@ fn input_validation_and_errors() {
     assert!(ccmh_extrapolate(&valid_shell, 1000.0, 0, 2.0).is_err());
     assert!(ccmh_extrapolate(&valid_shell, 1000.0, 1, -2.0).is_err());
 }
+
+#[test]
+fn a_uniform_orbital_has_no_structure_at_finite_k() {
+    // One orbital constant over a 4^3 box of unit volume: psi^2 dv integrates to one and its FFT
+    // vanishes off k = 0, so M'(0) = 1 (zero overlap error) and S(k) = 0 for every k != 0.
+    use mandacaru_core::periodic::finite_size::structure_factor;
+    use num_complex::Complex64 as C64;
+    let ctx = mandacaru_core::Context::new(Some(1), 64 << 20).unwrap();
+    let shape = [4usize, 4, 4];
+    let points = 64;
+    let dv = 1.0 / points as f64;
+    let psi = vec![1.0; points];
+    let cell = [1., 0., 0., 0., 1., 0., 0., 0., 1.];
+    let a = [C64::new(1., 0.)];
+    let out = structure_factor(&ctx, &psi, shape, dv, &cell, 1, &a, 1, &[2.], &[0.]).unwrap();
+    assert_eq!(out.values.len(), 26);
+    assert!(out.overlap_error < 1e-14 && out.n_electrons == 2.);
+    assert!(out.values.iter().all(|s| s.abs() < 1e-14));
+    assert!((out.magnitudes[0] - (3f64).sqrt() * 2. * std::f64::consts::PI).abs() < 1e-12);
+    assert!(structure_factor(&ctx, &psi, shape, dv, &cell, 1, &a, 2, &[2.], &[0.]).is_err());
+}

@@ -16,6 +16,7 @@ pub struct Pulay {
     pub kinetic: Vec<[f64; 3]>,
     pub local: Vec<[f64; 3]>,
     pub short_range: Vec<[f64; 3]>,
+    pub kinetic_density: Vec<[f64; 3]>,
     pub rows: Vec<[f64; 3]>,
     pub columns: Vec<[f64; 3]>,
     /// The spin-orbit union-projector term (spinor requests; zero otherwise).
@@ -30,6 +31,7 @@ impl Pulay {
             kinetic: zero(),
             local: zero(),
             short_range: zero(),
+            kinetic_density: zero(),
             rows: zero(),
             columns: zero(),
             spin_orbit: Gradient::new(atoms),
@@ -42,6 +44,7 @@ impl Pulay {
             Term::Kinetic => &mut self.kinetic,
             Term::Local => &mut self.local,
             Term::ShortRange => &mut self.short_range,
+            Term::KineticDensity => &mut self.kinetic_density,
         }
     }
 }
@@ -80,11 +83,12 @@ fn scatter_rows(
 pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pulay> {
     let l = d.layout();
     let mut out = Pulay::new(l.atoms);
+    let terms = Term::of(&l.request.functional)?;
     for k in 0..l.weights.len() {
         let c = d.projection(k)?;
         let gc = d.projection_gradient(k)?;
         for s in 0..l.spins {
-            let crosses = Term::ALL
+            let crosses = terms
                 .iter()
                 .map(|&t| d.cross(s, k, t, &frozen.fields).map(|g| (t, g)))
                 .collect::<Result<Vec<_>>>()?;

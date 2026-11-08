@@ -37,10 +37,13 @@ impl<'a> Response<'a> {
         let integrals: &MolecularIntegrals = self.integrals;
         let atoms = self.setup.screened_atoms(&integrals.context, omega)?;
         let channels = compensation::screened_channels(self.setup, integrals, omega)?;
+        // Screened channels: their U and ionic terms are recomputed under erfc(omega r)/r;
+        // the calculation's cached matrices are the bare ones.
         let moments = compensation::moments(
             self.setup,
             integrals,
             &channels,
+            None,
             self.occupied,
             &self.projected,
             self.grid.psi,

@@ -42,21 +42,10 @@ def _trials(guess, atoms):
 
 def calculate(calculation, n_functions, *, guess, windows, bands, kpts,
               max_iterations, tolerance, step):
-    from .paw import band_input
-
     if calculation.result is None or calculation.result.periodic is None:
         raise RuntimeError("run periodic DFT before constructing Wannier functions")
-    problem = getattr(calculation, "periodic_problem", None)
-    centers = getattr(problem, "centers", None) if problem else None
-    channels = getattr(problem, "channel_labels", None) if problem else None
-    if centers is None or channels is None:
-        if not hasattr(calculation, "_crystal_adapter") and hasattr(calculation, "_ensure_crystal_adapter"):
-            calculation._ensure_crystal_adapter()
-        if not hasattr(calculation, "_crystal_adapter"):
-            raise ValueError("Wannier setup needs the crystal geometry and PAW setup")
-        adapter = calculation._crystal_adapter
-        centers = np.asarray(adapter.centers).tolist()
-        channels = [list(channel) for channel in adapter.channels]
+    problem = calculation.periodic_problem
+    centers, channels = problem.centers, problem.channel_labels
     atoms = calculation.atoms
     mesh = calculation._kpts_spec if kpts is None else kpts
     size = mesh["size"] if isinstance(mesh, dict) else mesh
@@ -72,28 +61,9 @@ def calculate(calculation, n_functions, *, guess, windows, bands, kpts,
             for name, pair in windows.items()
         }
     setup = calculation.result.periodic.wannier_setup(json.dumps(spec, allow_nan=False))
-    used_native = False
-    if hasattr(setup, "add_points_at"):
-        sx, sy, sz = spec["size"]
-        points_frac = []
-        for i in range(sx):
-            for j in range(sy):
-                for k in range(sz):
-                    points_frac.append([float(i) / float(sx), float(j) / float(sy), float(k) / float(sz)])
-        try:
-            setup.add_points_at(points_frac)
-            used_native = True
-        except NotImplementedError:
-            pass
-    if not used_native:
-        adapter = getattr(calculation, "_crystal_adapter", None)
-        if adapter is None and hasattr(calculation, "_ensure_crystal_adapter"):
-            adapter = calculation._ensure_crystal_adapter()
-        for index in np.ndindex(tuple(spec["size"])):
-            fractional = np.asarray(index, dtype=float) / np.asarray(spec["size"])
-            metadata, arrays = band_input(adapter, fractional[None, :])
-            setup.add_point(metadata, arrays)
-            del arrays
+    sx, sy, sz = spec["size"]
+    setup.add_points_at([[i / sx, j / sy, k / sz]
+                         for i in range(sx) for j in range(sy) for k in range(sz)])
     native = setup.localize(max_iterations=max_iterations, tolerance=tolerance, step=step)
     return (WannierResult(native, 0) if native.n_spins == 1 else SpinWannierResult(native))
 

@@ -310,13 +310,14 @@ class PeriodicIntegralsAdapter:
         M = psi.shape[0]
 
         rho_stack = _native.compute_pair_densities(psi)
-        phi_stack = solver.solve_stack(rho_stack)
-        eri_raw = np.ascontiguousarray(rho_stack @ phi_stack.T, dtype=float)
+        phi_stack = np.ascontiguousarray(solver.solve_stack(rho_stack), dtype=float)
 
         X = np.ascontiguousarray(self._lowdin_x().real, dtype=float) if self.orthogonalize else None
         V = np.ascontiguousarray(self.mo_coefficients.real, dtype=float) if (mo and self.mo_coefficients is not None) else None
 
-        eri = _native.transform_two_body_mo(eri_raw, self.grid.dV, X, V, M)
+        context = self.context if self.context is not None else _native.Context(threads=1)
+        eri = _native.pair_two_body(context, np.ascontiguousarray(rho_stack, dtype=float),
+                                    phi_stack, self.grid.dV, X, V, M)
 
         if solver is None or isinstance(solver, PeriodicPoissonSolver):
             self._cached_periodic = eri.copy()

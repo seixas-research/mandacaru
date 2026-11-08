@@ -12,7 +12,7 @@ from ase.spacegroup import Spacegroup, crystal
 import numpy as np
 import pytest
 
-from mandacaru.core.symmetry import crystal_symmetry
+from .space_group import crystal_symmetry
 
 try:
     from .symmetry.corpus import SEED, cellpar, general_site, settings, too_close

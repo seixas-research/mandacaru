@@ -7,8 +7,60 @@ import pytest
 from mandacaru import _native
 from mandacaru import Mandacaru
 from ase.build import bulk
-from mandacaru.core.spin_orbit import ls_matrix, spin_orbit_one_body, spin_orbit_pair
+from mandacaru._native import Context
 
+
+# The array views of the native spin-orbit kernels (formerly ``core/spin_orbit.py``, whose only
+# production caller was the deleted Python crystal setup); the numbers are the Rust engine's.
+def ls_matrix(l: int, *, real: bool) -> np.ndarray:
+    """Native L.S in real or complex spherical harmonics, ordered by m+l."""
+    return Context(threads=1).spin_orbit_angular(l, real=real)
+
+
+def _channels(projectors, blocks):
+    labels = {}
+    for position, projector in enumerate(projectors):
+        key = (int(projector.atom_index), int(projector.l))
+        group = labels.setdefault(key, {})
+        label = (int(projector.m), int(projector.index))
+        if label in group:
+            raise ValueError("duplicate spin-orbit projector label")
+        group[label] = position
+    channels = []
+    for (atom, l), positions in labels.items():
+        if (atom, l) not in blocks or l == 0:
+            continue
+        radial = sorted({i for m, i in positions})
+        expected = [(m, i) for m in range(-l, l + 1) for i in radial]
+        if set(expected) != positions.keys():
+            raise ValueError("spin-orbit channel needs every angular and radial projector")
+        indices = [positions[label] for label in expected]
+        real = bool(projectors[indices[0]].real)
+        if any(bool(projectors[i].real) != real for i in indices):
+            raise ValueError("spin-orbit channel uses inconsistent harmonic conventions")
+        coupling = np.ascontiguousarray(blocks[atom, l], dtype=complex)
+        if coupling.shape != (len(radial), len(radial)):
+            raise ValueError("spin-orbit block dimensions must match its radial projectors")
+        channels.append((l, real, indices, coupling))
+    return channels
+
+
+def spin_orbit_pair(left, right, projectors, blocks, *, context=None) -> np.ndarray:
+    """Native left D_SO (L.S) right^dagger, including unequal bra/ket sets."""
+    context = Context(threads=1) if context is None else context
+    return context.spin_orbit_pair(
+        np.ascontiguousarray(left, dtype=complex),
+        np.ascontiguousarray(right, dtype=complex), _channels(projectors, blocks),
+    )
+
+
+def spin_orbit_one_body(projections, projectors, blocks, *, context=None) -> np.ndarray:
+    """Native Hermitian SOC matrix in the spin-major Bloch or molecular basis."""
+    context = Context(threads=1) if context is None else context
+    values = np.ascontiguousarray(projections, dtype=complex)
+    return context.spin_orbit_pair(
+        values, values, _channels(projectors, blocks), hermitian=True,
+    )
 
 @pytest.mark.parametrize("real", [False, True])
 @pytest.mark.parametrize("l", [0, 1, 2, 3])

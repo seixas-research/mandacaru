@@ -153,13 +153,15 @@ def structure_factor(integrals, D, Gamma, *, limit: int = GVECTOR_RANGE):
     shape = tuple(int(s) for s in grid.shape)
     psi = np.ascontiguousarray(integrals._engine._psi, dtype=float)
 
-    A = integrals._lowdin_x() if integrals.orthogonalize else np.eye(len(psi), dtype=complex)
-    V = integrals.mo_coefficients
-    if V is not None:
-        A = A @ V
-    A = np.ascontiguousarray(A, dtype=complex)
+    X = (np.ascontiguousarray(integrals._lowdin_x().real, dtype=float)
+         if integrals.orthogonalize else None)
+    V = (None if integrals.mo_coefficients is None
+         else np.ascontiguousarray(integrals.mo_coefficients, dtype=complex))
+    A = _native.orbital_rotation(len(psi), X, V)
 
+    context = getattr(integrals, "context", None)
     res = _native.compute_structure_factor(
+        context if context is not None else _native.Context(threads=1),
         psi,
         shape,
         float(grid.dV),

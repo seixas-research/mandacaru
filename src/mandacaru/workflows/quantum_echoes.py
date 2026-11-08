@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from .. import _native
 from .._native import state_inner
 from ..core.mapping import PauliSum
 from ..units import HARTREE_TO_EV
@@ -144,9 +145,7 @@ def fourier_spectrum(correlation: ArrayLike, time_step: float, *,
         raise ValueError("correlation must be a finite vector of at least four samples")
     if window not in ("hann", "none"):
         raise ValueError("window must be 'hann' or 'none'")
-    weights = np.hanning(signal.size) if window == "hann" else np.ones(signal.size)
-    transformed = dt * np.fft.fftshift(np.fft.fft(weights * (signal - elastic)))
-    energies = 2*np.pi*np.fft.fftshift(np.fft.fftfreq(signal.size, d=dt))
+    energies, transformed = _native.fourier_spectrum(signal, dt, elastic=elastic, window=window)
     return EchoSpectrum(energies=energies, amplitudes=transformed,
                         correlation=signal, times=np.arange(signal.size)*dt,
                         time_step=dt, window=window, elastic=elastic)
@@ -231,13 +230,9 @@ class QuantumEchoes:
                               precision=self.precision)
         perturbed = self._kick._apply_operator(state)
         elastic = state_inner(state, perturbed)[0]**2 if remove_elastic else 0.0
-        correlation = np.empty(n, dtype=complex)
-        for i in range(n):
-            correlation[i] = complex(*state_inner(perturbed,
-                                                  self._kick._apply_operator(state)))
-            if i + 1 < n:
-                state = self._evolution._evolve(state, dt, steps)
-                perturbed = self._evolution._evolve(perturbed, dt, steps)
+        correlation = self._evolution._native.echo_correlation(
+            self._kick._native, np.ascontiguousarray(state, dtype=self._evolution._dtype),
+            dt, n, steps)
         return fourier_spectrum(correlation, dt, elastic=elastic, window=window)
 
     def run(self, initial_state: PreparedState, time: float, *,

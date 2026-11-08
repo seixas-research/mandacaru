@@ -281,92 +281,233 @@ pub fn ccmh_extrapolate(
     })
 }
 
-/// Compute the structure factor $S(\mathbf{k})$ from orbital pair transforms and RDMs.
-///
-/// For real orbitals where $M_{pq}(\mathbf{k}) = M_{qp}(\mathbf{k})$, the pair term uses
-/// the native 2-RDM tensor index $\Gamma_{prqs}$ and exchange term $D_{sp}$:
-///
-/// $$ N_e S(\mathbf{k}) = \sum_{pqrs} M_{pq}(\mathbf{k}) M^*_{rs}(\mathbf{k}) \Gamma_{prqs}
-///                     + \sum_{pqs} M_{pq}(\mathbf{k}) M^*_{qs}(\mathbf{k}) D_{ps} $$
-///
-/// If `connected` is true, subtracts $|\langle \hat{\rho}_\mathbf{k} \rangle|^2 / N_e = |\text{Tr}(M D)|^2 / N_e$.
-pub fn structure_factor_from_rdms(
-    k_matrices: &[C64],
-    m: usize,
-    gamma: &[f64],
-    d: &[f64],
-    n_electrons: f64,
-    connected: bool,
-) -> Result<Vec<f64>> {
-    let m2 = m * m;
-    if k_matrices.len() % m2 != 0 {
-        return Err(invalid("k_matrices length must be a multiple of m^2"));
+/// What [`structure_factor`] returns: every G-vector `k` of the box `|i|,|j|,|k| <= limit` but
+/// zero, `S(k)`, `|k|`, `tr D` and `max |M'(0) - 1|` (the orthonormality of the rotated orbitals).
+pub struct StructureFactorGrid {
+    pub kvectors: Vec<f64>,
+    pub values: Vec<f64>,
+    pub magnitudes: Vec<f64>,
+    pub n_electrons: f64,
+    pub overlap_error: f64,
+}
+
+/// `S(k)` of the state `(D, Gamma)` in the orbitals `A` of the real grid functions `psi`
+/// (`(n_ao, points)` row-major on the `shape` grid of volume element `dv`, lattice rows `cell`):
+/// `M_ab(k) = FFT(psi_a psi_b)(k) dv`, `M' = A^dagger M A`, and
+/// `N S(k) = sum M'_pq conj(M'_rs) Gamma_prsq + sum M'_pq conj(M'_qs) D_ps`.
+#[allow(clippy::too_many_arguments)]
+pub fn structure_factor(
+    ctx: &crate::Context,
+    psi: &[f64],
+    shape: [usize; 3],
+    dv: f64,
+    cell: &[f64],
+    limit: i64,
+    a_matrix: &[C64],
+    a_cols: usize,
+    d_slice: &[f64],
+    gamma_slice: &[f64],
+) -> Result<StructureFactorGrid> {
+    use crate::math::fft::Fft3;
+    use nalgebra::{Matrix3, Vector3};
+    let [nx, ny, nz] = shape;
+    let n_grid = crate::product(&shape)?;
+    if n_grid == 0 || psi.len() % n_grid != 0 || cell.len() != 9 || !(0..=16).contains(&limit) {
+        return Err(invalid("psi must be (n_ao, points of the shape), the cell 3x3, the limit in 0..=16"));
     }
-    let n_k = k_matrices.len() / m2;
-    if d.len() != m2 {
-        return Err(invalid(format!("d length must be m^2 = {m2}, got {}", d.len())));
+    let n_ao = psi.len() / n_grid;
+    if a_cols == 0 || a_matrix.len() != n_ao * a_cols || d_slice.len() != a_cols * a_cols
+        || gamma_slice.len() != a_cols.pow(4)
+    {
+        return Err(invalid("A must be (n_ao, M), D (M, M) and Gamma (M, M, M, M)"));
     }
-    if gamma.len() != m2 * m2 {
-        return Err(invalid(format!("gamma length must be m^4 = {}, got {}", m2 * m2, gamma.len())));
+    let mut fft = Fft3::new(&ctx, [nx, ny, nz])?;
+
+    // Compute reciprocal triples and kvectors
+    let c = cell;
+    let mat = Matrix3::new(
+        c[0], c[1], c[2],
+        c[3], c[4], c[5],
+        c[6], c[7], c[8],
+    );
+    let inv_t = mat
+        .try_inverse()
+        .ok_or_else(|| invalid("singular cell matrix"))?
+        .transpose();
+    let b = inv_t * (2.0 * std::f64::consts::PI);
+
+    let mut triples = Vec::new();
+    let mut kvectors_vec = Vec::new();
+
+    for i in -limit..=limit {
+        for j in -limit..=limit {
+            for k in -limit..=limit {
+                if i == 0 && j == 0 && k == 0 {
+                    continue;
+                }
+                triples.push((i, j, k));
+                let m = Vector3::new(i as f64, j as f64, k as f64);
+                let kx = m[0] * b[(0, 0)] + m[1] * b[(1, 0)] + m[2] * b[(2, 0)];
+                let ky = m[0] * b[(0, 1)] + m[1] * b[(1, 1)] + m[2] * b[(2, 1)];
+                let kz = m[0] * b[(0, 2)] + m[1] * b[(1, 2)] + m[2] * b[(2, 2)];
+                kvectors_vec.push(kx);
+                kvectors_vec.push(ky);
+                kvectors_vec.push(kz);
+            }
+        }
     }
-    if !n_electrons.is_finite() || n_electrons <= 0.0 {
-        return Err(invalid("n_electrons must be positive"));
+    let n_triples = triples.len();
+    // M and M' over every G-vector plus the zero vector, the pair line and the rotation scratch.
+    let _tensors = ctx.reserve(crate::product(&[n_triples + 1, n_ao * n_ao + a_cols * a_cols, 16])?
+        .checked_add(crate::product(&[n_grid + n_ao * a_cols, 16])?)
+        .ok_or(crate::Error::Overflow)?)?;
+
+    // M: (n_triples + 1, n_ao, n_ao)
+    let mut m_tensor = vec![C64::new(0.0, 0.0); (n_triples + 1) * n_ao * n_ao];
+    let psi_slice = psi;
+
+    let mut buf = vec![C64::new(0.0, 0.0); n_grid];
+
+    for a in 0..n_ao {
+        let psi_a = &psi_slice[a * n_grid..(a + 1) * n_grid];
+        for b in a..n_ao {
+            let psi_b = &psi_slice[b * n_grid..(b + 1) * n_grid];
+            for idx in 0..n_grid {
+                buf[idx] = C64::new(psi_a[idx] * psi_b[idx], 0.0);
+            }
+            fft.transform(&mut buf, false)?;
+            for idx in 0..n_grid {
+                buf[idx] = buf[idx] * dv;
+            }
+
+            let val0 = buf[0];
+            m_tensor[0 * n_ao * n_ao + a * n_ao + b] = val0;
+            m_tensor[0 * n_ao * n_ao + b * n_ao + a] = val0.conj();
+
+            for (t_idx, &(ti, tj, tk)) in triples.iter().enumerate() {
+                let node_x = (ti.rem_euclid(nx as i64)) as usize;
+                let node_y = (tj.rem_euclid(ny as i64)) as usize;
+                let node_z = (tk.rem_euclid(nz as i64)) as usize;
+                let flat_pos = (node_x * ny + node_y) * nz + node_z;
+
+                let node_neg_x = ((-ti).rem_euclid(nx as i64)) as usize;
+                let node_neg_y = ((-tj).rem_euclid(ny as i64)) as usize;
+                let node_neg_z = ((-tk).rem_euclid(nz as i64)) as usize;
+                let flat_neg = (node_neg_x * ny + node_neg_y) * nz + node_neg_z;
+
+                let val = buf[flat_pos];
+                let val_neg_conj = buf[flat_neg].conj();
+
+                let k_layer = (t_idx + 1) * n_ao * n_ao;
+                m_tensor[k_layer + a * n_ao + b] = val;
+                m_tensor[k_layer + b * n_ao + a] = val_neg_conj;
+            }
+        }
     }
 
-    let mut s_values = Vec::with_capacity(n_k);
+    // Rotate M: M'_k = A^\dagger M_k A
+    let a_slice = a_matrix;
+    let mut m_prime = vec![C64::new(0.0, 0.0); (n_triples + 1) * a_cols * a_cols];
 
-    for k_idx in 0..n_k {
-        let mk = &k_matrices[k_idx * m2..(k_idx + 1) * m2];
+    // Precompute for each k
+    let mut temp = vec![C64::new(0.0, 0.0); n_ao * a_cols];
+    for k_idx in 0..=n_triples {
+        let mk = &m_tensor[k_idx * n_ao * n_ao..(k_idx + 1) * n_ao * n_ao];
+        // temp[a, q] = sum_b M[a, b] * A[b, q]
+        for a in 0..n_ao {
+            for q in 0..a_cols {
+                let mut sum = C64::new(0.0, 0.0);
+                for b in 0..n_ao {
+                    let a_bq = C64::new(a_slice[b * a_cols + q].re, a_slice[b * a_cols + q].im);
+                    sum += mk[a * n_ao + b] * a_bq;
+                }
+                temp[a * a_cols + q] = sum;
+            }
+        }
+        // m_prime[k, p, q] = sum_a A^*[a, p] * temp[a, q]
+        let out_k = &mut m_prime[k_idx * a_cols * a_cols..(k_idx + 1) * a_cols * a_cols];
+        for p in 0..a_cols {
+            for q in 0..a_cols {
+                let mut sum = C64::new(0.0, 0.0);
+                for a in 0..n_ao {
+                    let a_ap_conj =
+                        C64::new(a_slice[a * a_cols + p].re, -a_slice[a * a_cols + p].im);
+                    sum += a_ap_conj * temp[a * a_cols + q];
+                }
+                out_k[p * a_cols + q] = sum;
+            }
+        }
+    }
 
-        // pair = sum M_pq conj(M_rs) Gamma_prqs
+    // Overlap error: max |M'[0, p, q] - delta_{p,q}|
+    let m0 = &m_prime[0..a_cols * a_cols];
+    let mut overlap_error = 0.0_f64;
+    for p in 0..a_cols {
+        for q in 0..a_cols {
+            let diff = if p == q {
+                m0[p * a_cols + q] - C64::new(1.0, 0.0)
+            } else {
+                m0[p * a_cols + q]
+            };
+            overlap_error = overlap_error.max(diff.norm());
+        }
+    }
+
+    // Electron count: tr(D)
+    let mut n_electrons = 0.0_f64;
+    for p in 0..a_cols {
+        n_electrons += d_slice[p * a_cols + p];
+    }
+
+    // Values for each k in 1..=n_triples
+    let mut values = Vec::with_capacity(n_triples);
+    for k_idx in 1..=n_triples {
+        let mk = &m_prime[k_idx * a_cols * a_cols..(k_idx + 1) * a_cols * a_cols];
+
         let mut pair_sum = 0.0_f64;
-        for p in 0..m {
-            for q in 0..m {
-                let mpq = mk[p * m + q];
+        for p in 0..a_cols {
+            for q in 0..a_cols {
+                let mpq = mk[p * a_cols + q];
                 if mpq.norm_sqr() == 0.0 {
                     continue;
                 }
-                for r in 0..m {
-                    for s in 0..m {
-                        let mrs_conj = mk[r * m + s].conj();
-                        let g_prqs = gamma[((p * m + r) * m + q) * m + s];
-                        pair_sum += (mpq * mrs_conj).re * g_prqs;
+                for r in 0..a_cols {
+                    for s in 0..a_cols {
+                        let mrs_conj = mk[r * a_cols + s].conj();
+                        // Python: Gamma[p, r, s, q]
+                        let g_prsq = gamma_slice[((p * a_cols + r) * a_cols + s) * a_cols + q];
+                        pair_sum += (mpq * mrs_conj).re * g_prsq;
                     }
                 }
             }
         }
 
-        // exchange = sum M_pq conj(M_qs) D_ps
         let mut exch_sum = 0.0_f64;
-        for p in 0..m {
-            for q in 0..m {
-                let mpq = mk[p * m + q];
+        for p in 0..a_cols {
+            for q in 0..a_cols {
+                let mpq = mk[p * a_cols + q];
                 if mpq.norm_sqr() == 0.0 {
                     continue;
                 }
-                for s in 0..m {
-                    let mqs_conj = mk[q * m + s].conj();
-                    let d_ps = d[p * m + s];
+                for s in 0..a_cols {
+                    let mqs_conj = mk[q * a_cols + s].conj();
+                    // Python: D[p, s]
+                    let d_ps = d_slice[p * a_cols + s];
                     exch_sum += (mpq * mqs_conj).re * d_ps;
                 }
             }
         }
 
-        let mut n_s = pair_sum + exch_sum;
-
-        if connected {
-            // Subtract |<rho_k>|^2 = |Tr(M D)|^2
-            let mut tr_md = C64::new(0.0, 0.0);
-            for p in 0..m {
-                for q in 0..m {
-                    tr_md += mk[p * m + q] * d[q * m + p];
-                }
-            }
-            n_s -= tr_md.norm_sqr();
-        }
-
-        s_values.push(n_s / n_electrons);
+        values.push((pair_sum + exch_sum) / n_electrons);
     }
 
-    Ok(s_values)
+    let mut magnitudes = Vec::with_capacity(n_triples);
+    for k in 0..n_triples {
+        let kx = kvectors_vec[k * 3];
+        let ky = kvectors_vec[k * 3 + 1];
+        let kz = kvectors_vec[k * 3 + 2];
+        magnitudes.push((kx * kx + ky * ky + kz * kz).sqrt());
+    }
+
+    Ok(StructureFactorGrid { kvectors: kvectors_vec, values, magnitudes, n_electrons, overlap_error })
 }

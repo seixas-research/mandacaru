@@ -278,3 +278,92 @@ pub fn face_distance(
     }
     Ok(best)
 }
+
+/// How one element's diffuse shells are sized: `count` shells per channel, rms radii `ratio` apart,
+/// the first `rms_ratio` times the free-atom valence rms of the channel (or `rms_radius`, Bohr), each
+/// cut where `cutoff_norm` of its squared norm is left outside.
+#[derive(Clone, Debug)]
+pub struct Recipe {
+    pub count: usize,
+    pub ratio: f64,
+    pub cutoff_norm: f64,
+    pub rms_radius: Option<f64>,
+    pub rms_ratio: f64,
+}
+
+/// One diffuse shell as built, accepted or not (the run log's record of it).
+#[derive(Clone, Debug)]
+pub struct Row {
+    pub l: usize,
+    pub index: usize,
+    pub n: usize,
+    pub reference_l: usize,
+    pub reference_rms: f64,
+    pub rms: f64,
+    pub alpha: f64,
+    pub r_cut: f64,
+    pub residual: f64,
+    pub accepted: bool,
+    pub r_max: f64,
+}
+
+/// An accepted shell: `(r, values, n, l)` on its own grid (the base grid continued past its end
+/// when the support needs it).
+pub type Table = (Vec<f64>, Vec<f64>, usize, usize);
+
+/// The diffuse shells of one atom. `existing` are its ordinary radial functions `(n, l, r, values)`
+/// in final (filtered) form; `channels` are `(l, reference l, reference rms in Bohr)`. Each channel's
+/// shells are built compact first on a grid reaching `grid_reach` times the widest support, filtered
+/// at `filter_wavevector`, and Gram-Schmidt orthogonalized against the atom's functions of the same
+/// `l` and the shells accepted before them; one left with less than `linear_dependence_tol` of its
+/// squared norm is recorded and dropped.
+pub fn build_tables(
+    ctx: &Context,
+    r_base: &[f64],
+    existing: &[(usize, usize, &[f64], &[f64])],
+    channels: &[(usize, usize, f64)],
+    recipe: &Recipe,
+    filter_wavevector: Option<f64>,
+    grid_reach: f64,
+    linear_dependence_tol: f64,
+) -> Result<(Vec<Table>, Vec<Row>)> {
+    if recipe.count == 0 {
+        return Err(invalid("a diffuse recipe needs at least one shell per channel"));
+    }
+    let mut n_by_l = std::collections::BTreeMap::new();
+    let mut existing_by_l: std::collections::BTreeMap<usize, Vec<(&[f64], &[f64])>> =
+        std::collections::BTreeMap::new();
+    for &(n, l, r, values) in existing {
+        n_by_l.entry(l).and_modify(|cur: &mut usize| *cur = (*cur).max(n)).or_insert(n);
+        existing_by_l.entry(l).or_default().push((r, values));
+    }
+    let (mut tables, mut rows) = (Vec::new(), Vec::new());
+    for &(l, reference_l, reference_rms) in channels {
+        let first = recipe.rms_radius.unwrap_or(recipe.rms_ratio * reference_rms);
+        let targets: Vec<f64> = (0..recipe.count).map(|k| first * recipe.ratio.powi(k as i32)).collect();
+        let (_alpha, widest) = parameters(l, targets[recipe.count - 1], recipe.cutoff_norm)?;
+        let r = extended_grid(r_base, grid_reach * widest)?;
+        let mut same: Vec<Vec<f64>> = Vec::new();
+        for &(r_old, values) in existing_by_l.get(&l).map(Vec::as_slice).unwrap_or(&[]) {
+            same.push(on_grid(ctx, &r, r_old, values)?);
+        }
+        let n_next = n_by_l.get(&l).copied().unwrap_or(l) + 1;
+        for (k, &rms) in targets.iter().enumerate() {
+            let (mut values, alpha, r_cut) = radial(&r, l, rms, recipe.cutoff_norm)?;
+            if let Some(k_c) = filter_wavevector {
+                values = super::filter::filter(ctx, &r, &values, l, k_c, &super::filter::Options::default())?.0;
+            }
+            let views: Vec<&[f64]> = same.iter().map(Vec::as_slice).collect();
+            let shell = orthogonalize(&r, &views, &values, filter_wavevector.is_some(), linear_dependence_tol)?;
+            rows.push(Row {
+                l, index: k, n: n_next + k, reference_l, reference_rms, rms, alpha, r_cut,
+                residual: shell.residual, accepted: shell.accepted, r_max: r[r.len() - 1],
+            });
+            if shell.accepted {
+                tables.push((r.clone(), shell.values.clone(), n_next + k, l));
+                same.push(shell.values);
+            }
+        }
+    }
+    Ok((tables, rows))
+}

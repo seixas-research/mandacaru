@@ -69,8 +69,10 @@ fn what_is_not_differentiated_raises_with_the_cause() {
     data.crystal.precision = Precision::Float32;
     assert!(unsupported(&data).contains("float32"));
     data.crystal.precision = Precision::Float64;
-    data.crystal.spins = 2;
-    assert!(unsupported(&data).contains("spin-polarized"));
+    // A spin-polarized crystal is differentiated (its stress matches a pinned strain difference,
+    // 2026-11-08); only more than two spin channels are refused.
+    data.crystal.spins = 3;
+    assert!(unsupported(&data).contains("more than two spin channels"));
     data.crystal.spins = 1;
     data.crystal.hubbard = Some(Spec {
         form: Form::DudarevFll,
@@ -142,5 +144,5 @@ fn a_setup_that_is_not_the_crystals_is_refused() {
     let mut layout = data.layout();
     layout.spins = 2;
     layout.degeneracy = 1.;
-    assert!(matches!(ask(&data, layout), Err(Error::Unsupported(_))));
+    assert!(matches!(ask(&data, layout), Err(Error::Invalid(m)) if m.contains("spin channels")));
 }

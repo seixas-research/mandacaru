@@ -21,17 +21,17 @@ class NativeBuildHook(BuildHookInterface):
         cargo = shutil.which("cargo")
         if cargo is None:
             raise RuntimeError("Building Mandacaru from source requires Rust/Cargo; install a platform wheel or install Rust.")
-        env = dict(os.environ, PYO3_PYTHON=sys.executable)
+        # Use a target directory owned by the temporary source tree.  This
+        # makes the artifact location independent of a user's Cargo config
+        # and, crucially, avoids a second `cargo metadata` resolution after a
+        # successful build just to discover that location.
+        target = root / "target"
+        env = dict(os.environ, PYO3_PYTHON=sys.executable,
+                   CARGO_TARGET_DIR=str(target))
         if env.get("CARGO_BUILD_TARGET"):
             raise RuntimeError("Cross-target wheels are not configured; unset CARGO_BUILD_TARGET for a host build.")
         subprocess.run([cargo, "build", "--locked", "--release", "--manifest-path", str(manifest),
                         "--package", "mandacaru-python"], cwd=root, env=env, check=True)
-        # Cargo's machine-readable metadata resolves custom target locations.
-        metadata = subprocess.run([cargo, "metadata", "--no-deps", "--format-version", "1",
-                                   "--manifest-path", str(manifest)], cwd=root, env=env,
-                                  check=True, capture_output=True, text=True)
-        import json
-        target = Path(json.loads(metadata.stdout)["target_directory"])
         if sys.platform == "win32":
             filename = "_native.dll"
         elif sys.platform == "darwin":

@@ -79,22 +79,17 @@ from __future__ import annotations
 import math
 import numbers
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
 from .. import _native
-from ..units import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
-from .native_context import context as _context
+from ..units import BOHR_TO_ANGSTROM
 
 #: Keys a ``diffuse`` recipe dict accepts.
 DIFFUSE_KEYS = ("shells", "count", "rms_ratio", "ratio", "rms_radius",
                 "cutoff_norm")
 
-#: ``shells="present"``: one shell for every angular momentum the atom's
-#: ordinary basis has (valence and polarization), up to this ``l`` -- the cap
-#: of the augmented Gaussian families (``diffuse_l_max``).
-PRESENT_L_MAX = 2
 
 #: Highest angular momentum an explicit ``shells`` list may name.
 DIFFUSE_L_LIMIT = 3
@@ -132,9 +127,6 @@ MAX_CUTOFF_NORM = 1e-2
 #: after its atom's same-``l`` functions are projected out is dropped.
 LINEAR_DEPENDENCE_TOL = 1e-4
 
-#: The diffuse grid runs to this multiple of ``r_cut``, past the window the
-#: Fourier filter places at 1.5 times the function's support.
-GRID_REACH = 1.6
 
 #: A function whose norm on the real-space grid falls below ``1 - BOX_TOL``
 #: of its radial norm is cut by the box: warned about.
@@ -171,29 +163,6 @@ class DiffuseRecipe:
 #: The recipe ``diffuse=True`` selects: one shell per angular momentum present,
 #: rms radius 2.5 times the free-atom valence one, cut at a 1e-4 tail.
 DEFAULT_DIFFUSE = DiffuseRecipe()
-
-
-@dataclass(frozen=True)
-class DiffuseShell:
-    """One diffuse radial function as built (the ``[BASIS]`` record).
-
-    Lengths in Bohr; ``alpha`` in Bohr^-2.  ``residual`` is the squared norm
-    left after the one-center Gram-Schmidt; ``accepted`` is whether it
-    cleared :data:`LINEAR_DEPENDENCE_TOL`.
-    """
-
-    symbol: str
-    l: int
-    index: int
-    n: int
-    reference_l: int
-    reference_rms: float
-    rms: float
-    alpha: float
-    r_cut: float
-    residual: float
-    accepted: bool
-    r_max: float = field(default=0.0)       # the end of its radial grid
 
 
 # --------------------------------------------------------------------------- #
@@ -385,108 +354,6 @@ def diffuse_radial(r, l: int, rms: float,
     """``(R, alpha, r_cut)``: the unit-norm diffuse shell on ``r`` (Bohr)."""
     return _native.diffuse_radial(_array(r), int(l), float(rms),
                                   float(cutoff_norm))
-
-
-def free_valence_rms(pp) -> dict:
-    """``{l: rms}`` (Bohr) of the dataset's free-atom valence orbitals: the
-    stored bound partial wave of each occupied valence state (the
-    outermost when a channel has two), and an empty channel's bound level."""
-    from .orbitals import basis_states, bound_radial
-
-    r = _array(pp.r)
-    out: dict = {}
-    for state in basis_states(pp):
-        if state.semicore:
-            continue
-        radial = (bound_radial(pp, state.l) if state.empty
-                  else pp.channels[state.l].pseudo_waves[state.index])
-        rms_val = _native.diffuse_rms(r, _array(radial))
-        if rms_val > out.get(state.l, 0.0):
-            out[state.l] = rms_val
-    return out
-
-
-def diffuse_tables(symbol, pp, existing, recipe: DiffuseRecipe,
-                   filter_wavevector=None):
-    """``(tables, shells)``: one atom's diffuse
-    :class:`~mandacaru.basis.multizeta.RadialTable` s and their records.
-
-    ``existing`` are the atom's ordinary radial functions as ``(n, l, r,
-    values)``, final (filtered) form, in basis order.  The shells of each
-    channel are built compact first, filtered (``filter_wavevector``, Bohr^-1)
-    and Gram-Schmidt orthogonalized against ``existing`` and the shells
-    accepted before them; a rejected shell is recorded, not built.  The radial
-    functions, the grid, the resampling and the projection are native; the
-    Fourier filter between them is :func:`~mandacaru.basis.filtering.filter_radial`.
-    """
-    from ..basis.multizeta import RadialTable
-
-    present = sorted({int(l) for _n, l, _r, _v in existing})
-    channels = ([l for l in present if l <= PRESENT_L_MAX]
-                if recipe.shells == "present" else list(recipe.shells))
-    reference = free_valence_rms(pp)
-    if not reference:
-        raise ValueError(f"{symbol} has no valence orbital to size diffuse "
-                         "shells from")
-    outermost = max(reference, key=reference.get)
-    existing_items = [(int(n), int(l), _array(r), _array(v))
-                      for n, l, r, v in existing]
-    recipe_params = (
-        int(recipe.count),
-        float(recipe.ratio),
-        float(recipe.cutoff_norm),
-        float(recipe.rms_radius * ANGSTROM_TO_BOHR) if recipe.rms_radius is not None else -1.0,
-        float(recipe.rms_ratio),
-    )
-    chan_info = [
-        (int(l), int(l if l in reference else outermost),
-         float(reference[l if l in reference else outermost]))
-        for l in channels
-    ]
-    k_c = float(filter_wavevector) if filter_wavevector is not None else None
-
-    raw_tables, raw_shells = _native.diffuse_build_tables(
-        _context(), _array(pp.r), existing_items, chan_info, recipe_params,
-        k_c, GRID_REACH, LINEAR_DEPENDENCE_TOL)
-
-    tables = [RadialTable(r=r, values=v, n=n, l=l, zeta=1, diffuse=True)
-              for r, v, n, l in raw_tables]
-    shells = [DiffuseShell(
-        symbol=str(symbol), l=l, index=idx, n=n, reference_l=ref_l,
-        reference_rms=ref_rms, rms=rms, alpha=alpha, r_cut=r_cut,
-        residual=residual, accepted=accepted, r_max=r_max)
-        for l, idx, n, ref_l, ref_rms, rms, alpha, r_cut, residual, accepted, r_max in raw_shells]
-    return tables, shells
-
-
-def diffuse_factory(spec, record: dict | None = None):
-    """The ``diffuse_shells`` hook of :func:`~.orbitals.pseudo_basis`, or
-    ``None`` when the option is off.
-
-    The hook is ``(symbol, pp, existing, filter_wavevector) -> tables``;
-    ``record`` (optional) receives ``{symbol: [DiffuseShell, ...]}``.  The
-    tables are built once per element and shared by its atoms.
-    """
-    spec = validate_diffuse(spec)
-    if spec is None:
-        return None
-    built: dict = {}
-
-    def diffuse_shells(symbol, pp, existing, filter_wavevector=None):
-        recipe = diffuse_of(spec, symbol)
-        if recipe is None:
-            return []
-        key = (symbol, None if filter_wavevector is None
-               else float(filter_wavevector))
-        if key not in built:
-            built[key] = diffuse_tables(symbol, pp, existing, recipe,
-                                        filter_wavevector)
-        tables, shells = built[key]
-        if record is not None:
-            record[symbol] = list(shells)
-        return list(tables)
-
-    return diffuse_shells
 
 
 # --------------------------------------------------------------------------- #

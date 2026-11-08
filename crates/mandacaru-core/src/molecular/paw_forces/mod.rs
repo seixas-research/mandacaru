@@ -58,14 +58,9 @@ impl MolecularIntegrals {
                 "PAW forces support restricted and unrestricted collinear states only",
             ));
         }
-        if let Some(name) = state.functional.as_deref() {
-            let definition = crate::models::functional(name)?;
-            if definition.nonlocal_b.is_some() {
-                return Err(crate::Error::Unsupported(format!(
-                    "PAW forces are not implemented for the nonlocal correlation of {name}"
-                )));
-            }
-        }
+        // rVV10 needs no term of its own: its kernel depends on the positions only through the
+        // density, and `models::xc` folds its partials into the semilocal ones, which the grid
+        // and core terms contract (`tests/paw_forces_dataset.rs`, the rVV10 gates).
         let channels = if state.method == "rhf" { 1 } else { 2 };
         if state.densities.len() != channels
             || state.densities.iter().any(|d| d.shape() != (m, m))

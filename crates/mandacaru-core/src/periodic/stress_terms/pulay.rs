@@ -76,6 +76,8 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Terms> {
                     Term::Kinetic => (&density, 1., &mut out.kinetic),
                     Term::Local => (&density, 1., &mut out.local),
                     Term::ShortRange => (&density, 1., &mut out.short_range),
+                    // Not in `Term::ALL`; the meta-GGA stress (MG-F5b) refuses before this loop.
+                    Term::KineticDensity => unreachable!("Term::ALL holds no meta-GGA term"),
                 };
                 for a in 0..3 {
                     for b in 0..3 {

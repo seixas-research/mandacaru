@@ -32,14 +32,16 @@ fn what_is_not_differentiated_raises_with_the_cause() {
     let mut data = Data::load("lih");
     scf::refuse(&data.crystal).expect("the plain LDA crystal is supported");
     let original = data.crystal.functional.clone();
-    for (functional, word) in [
-        ("hse06", "PAW spheres"),
-        ("r2scan", "meta-GGA"),
-        ("pbe+rvv10", "rVV10"),
-    ] {
+    for (functional, word) in [("hse06", "PAW spheres")] {
         data.crystal.functional = functional.to_string();
         let message = cause(scf::refuse(&data.crystal));
         assert!(message.contains(word), "{functional}: {message}");
+    }
+    // A collinear meta-GGA (MG-F5) and rVV10 (MG-F6) are differentiated
+    // (`periodic_gradient_xc.rs`): neither is a refusal.
+    for functional in ["r2scan", "pbe+rvv10", "r2scan+rvv10"] {
+        data.crystal.functional = functional.to_string();
+        scf::refuse(&data.crystal).unwrap_or_else(|e| panic!("{functional}: {e}"));
     }
     data.crystal.functional = original;
     // A spinor LDA/PBE crystal is differentiated (CS-3): the flag alone is no longer a refusal.
@@ -138,9 +140,9 @@ fn a_hybrid_crystal_is_differentiated_and_its_other_refusals_stand() {
     data.crystal.permutations = vec![vec![0]];
     assert!(cause(scf::refuse(&data.crystal)).contains("space-group"));
     data.crystal.permutations.clear();
-    for (functional, word) in [("r2scan", "meta-GGA"), ("pbe+rvv10", "rVV10")] {
+    for functional in ["r2scan", "pbe+rvv10"] {
         let original = std::mem::replace(&mut data.crystal.functional, functional.to_string());
-        assert!(cause(scf::refuse(&data.crystal)).contains(word));
+        scf::refuse(&data.crystal).unwrap_or_else(|e| panic!("{functional}: {e}"));
         data.crystal.functional = original;
     }
     scf::refuse(&data.crystal).expect("restored");

@@ -212,6 +212,228 @@ impl Propagator {
     }
 }
 
+impl Propagator {
+    /// `C(t_i) = <U(t_i) V psi | V U(t_i) psi>` at `t_i = i dt`, `i < samples`, with `V` the operator
+    /// of `kick` and `U` this propagator sliced into `steps` per interval: the echo correlation of
+    /// the linear response, with both vectors evolved incrementally (cost linear in `samples`).
+    pub fn echo_correlation<A: Amplitude>(
+        &self,
+        ctx: &Context,
+        kick: &Propagator,
+        state: &[A],
+        dt: f64,
+        samples: usize,
+        steps: usize,
+    ) -> Result<Vec<C64>> {
+        if samples == 0 || !(dt.is_finite() && dt > 0.) {
+            return Err(invalid("echo sampling needs a positive time step and samples"));
+        }
+        let mut state = ctx.copy_slice(state)?;
+        let mut perturbed = kick.apply(ctx, state.as_slice())?;
+        let mut out = Vec::with_capacity(samples);
+        for i in 0..samples {
+            let kicked = kick.apply(ctx, state.as_slice())?;
+            out.push(super::amplitude::inner(perturbed.as_slice(), kicked.as_slice()));
+            if i + 1 < samples {
+                state = self.evolve(ctx, state.as_slice(), dt, steps, false, false)?;
+                perturbed = self.evolve(ctx, perturbed.as_slice(), dt, steps, false, false)?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// `U_k psi` with `U_k = B(t) [M B(t)]^(k-1)` and `B(t) = U(t)^dagger B U(t)`, each backward
+    /// leg the exact adjoint of its discrete forward leg.
+    fn otoc_sequence<A: Amplitude>(
+        &self,
+        ctx: &Context,
+        b: &Propagator,
+        m: &Propagator,
+        state: &[A],
+        time: f64,
+        steps: usize,
+        k: usize,
+    ) -> Result<Buffer<A>> {
+        let mut out = ctx.copy_slice(state)?;
+        for index in 0..k {
+            if index > 0 {
+                out = m.apply(ctx, out.as_slice())?;
+            }
+            out = self.evolve(ctx, out.as_slice(), time, steps, false, false)?;
+            out = b.apply(ctx, out.as_slice())?;
+            out = self.evolve(ctx, out.as_slice(), time, steps, true, false)?;
+        }
+        Ok(out)
+    }
+
+    /// The nested OTOC `C^(2k)(t) = <U_k psi | M U_k M psi>` with butterfly `b` and measurement
+    /// `m`. An initial `M` eigenstate (`|M psi - s psi| <= tolerance`, `s = +-1`) needs one branch,
+    /// `C = s <U_k psi | M U_k psi>`. Returns the sequence state `U_k psi`, the correlator, the
+    /// final `<M>` and the eigenvalue.
+    #[allow(clippy::too_many_arguments)]
+    pub fn nested_otoc<A: Amplitude>(
+        &self,
+        ctx: &Context,
+        b: &Propagator,
+        m: &Propagator,
+        psi: &[A],
+        time: f64,
+        steps: usize,
+        k: usize,
+        tolerance: f64,
+    ) -> Result<(Buffer<A>, C64, f64, Option<i8>)> {
+        if k == 0 || !(tolerance.is_finite() && tolerance >= 0.) {
+            return Err(invalid("a nested OTOC needs a positive order and a finite tolerance"));
+        }
+        let m_psi = m.apply(ctx, psi)?;
+        let eigenvalue = [1i8, -1].into_iter().find(|&sign| {
+            let distance: f64 = m_psi.as_slice().iter().zip(psi)
+                .map(|(x, y)| (x.widen() - f64::from(sign) * y.widen()).norm_sqr())
+                .sum();
+            distance <= tolerance * tolerance
+        });
+        let state = self.otoc_sequence(ctx, b, m, psi, time, steps, k)?;
+        let m_state = m.apply(ctx, state.as_slice())?;
+        let measured = super::amplitude::inner(state.as_slice(), m_state.as_slice()).re;
+        let correlator = match eigenvalue {
+            Some(sign) => C64::new(f64::from(sign) * measured, 0.),
+            None => {
+                let branch = self.otoc_sequence(ctx, b, m, m_psi.as_slice(), time, steps, k)?;
+                super::amplitude::inner(m_state.as_slice(), branch.as_slice())
+            }
+        };
+        Ok((state, correlator, measured, eigenvalue))
+    }
+
+    /// `C^(2k)(j dt)` for `j < samples`, every leg of sample `j` sliced into `max(1, j steps)` steps
+    /// so the Trotter step stays fixed as the observation time grows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn nested_otoc_series<A: Amplitude>(
+        &self,
+        ctx: &Context,
+        b: &Propagator,
+        m: &Propagator,
+        psi: &[A],
+        dt: f64,
+        samples: usize,
+        steps: usize,
+        k: usize,
+        tolerance: f64,
+    ) -> Result<Vec<C64>> {
+        if samples == 0 || steps == 0 || !(dt.is_finite() && dt > 0.) {
+            return Err(invalid("OTOC sampling needs a positive time step, samples and steps"));
+        }
+        (0..samples)
+            .map(|j| {
+                self.nested_otoc(ctx, b, m, psi, j as f64 * dt, (j * steps).max(1), k, tolerance)
+                    .map(|outcome| outcome.1)
+            })
+            .collect()
+    }
+}
+
+/// The excitation spectrum of a uniformly sampled correlation: `(energies, amplitudes)`, with
+/// `amplitudes = dt fftshift(fft(w (C - elastic)))` (`w` the Hann window `0.5 - 0.5 cos(2 pi n /
+/// (N - 1))` or ones) and `energies = 2 pi fftshift(fftfreq(N, dt))`: positive-phase oscillations at
+/// positive energy, as NumPy's convention.
+pub fn fourier_spectrum(
+    ctx: &Context,
+    signal: &[C64],
+    dt: f64,
+    elastic: f64,
+    hann: bool,
+) -> Result<(Vec<f64>, Vec<C64>)> {
+    let n = signal.len();
+    if n < 4 || !(dt.is_finite() && dt > 0.) || !elastic.is_finite() || !finite(signal) {
+        return Err(invalid("a spectrum needs at least four finite samples and a positive time step"));
+    }
+    let weight = |k: usize| if hann {
+        0.5 - 0.5 * (2. * std::f64::consts::PI * k as f64 / (n - 1) as f64).cos()
+    } else {
+        1.
+    };
+    let mut values: Vec<C64> = signal.iter().enumerate()
+        .map(|(k, &c)| (c - elastic) * weight(k)).collect();
+    let mut fft = crate::math::fft::Fft3::new(ctx, [n, 1, 1])?;
+    fft.transform(&mut values, false)?;
+    let shift = n / 2;
+    let amplitudes: Vec<C64> = (0..n).map(|k| values[(k + n - shift) % n] * dt).collect();
+    let energies: Vec<f64> = (0..n).map(|k| {
+        let index = (k + n - shift) % n;
+        let frequency = if index < n.div_ceil(2) { index as f64 } else { index as f64 - n as f64 };
+        2. * std::f64::consts::PI * frequency / (n as f64 * dt)
+    }).collect();
+    Ok((energies, amplitudes))
+}
+
+/// Registers of at most this many system qubits are diagonalized densely by [`qpe`].
+pub const QPE_DENSE_LIMIT: usize = 12;
+/// The working set of a QPE simulation, in state vectors of the full register.
+pub const QPE_WORKING_SET_FACTOR: u128 = 3;
+
+/// What a QPE simulation of `system + evaluation` qubits allocates, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QpeMemory {
+    pub statevector: u128,
+    pub working: u128,
+    pub unitary: u128,
+    pub dense: bool,
+}
+
+/// Size a QPE simulation before allocating anything: `amplitude_bytes 2^(n+t)` for the state,
+/// [`QPE_WORKING_SET_FACTOR`] of those for the working set and, when the system is diagonalized
+/// densely (`dense`, or by default `n <= QPE_DENSE_LIMIT`), `16 4^n` for its complex128 unitary.
+pub fn qpe_memory(system: usize, evaluation: usize, dense: Option<bool>, amplitude_bytes: u128)
+    -> Result<QpeMemory>
+{
+    if system == 0 || evaluation == 0 {
+        return Err(invalid("need at least one system and one evaluation qubit"));
+    }
+    let power = |exponent: usize| u32::try_from(exponent).ok()
+        .and_then(|e| 1u128.checked_shl(e).filter(|_| e < 128)).ok_or(Error::Overflow);
+    let dense = dense.unwrap_or(system <= QPE_DENSE_LIMIT);
+    let statevector = power(system.checked_add(evaluation).ok_or(Error::Overflow)?)?
+        .checked_mul(amplitude_bytes).ok_or(Error::Overflow)?;
+    let unitary = if dense {
+        power(system.checked_mul(2).ok_or(Error::Overflow)?)?.checked_mul(16).ok_or(Error::Overflow)?
+    } else {
+        0
+    };
+    Ok(QpeMemory {
+        statevector,
+        working: statevector.checked_mul(QPE_WORKING_SET_FACTOR).ok_or(Error::Overflow)?,
+        unitary,
+        dense,
+    })
+}
+
+/// The QPE energy window `(lo, hi)`: `explicit`, or the Gershgorin bound `c_I -+ sum |c_P|` over
+/// the non-identity terms (`c_I -+ 1/2` when that is empty), widened by `1 + 2 / 2^t` so that no
+/// phase reaches 1.
+pub fn qpe_window(h: &Operator, evaluation_qubits: usize, explicit: Option<[f64; 2]>) -> Result<[f64; 2]> {
+    let [mut lo, mut hi] = match explicit {
+        Some(window) => window,
+        None => {
+            let identity: f64 = h.terms.iter().filter(|t| t.x == 0 && t.z == 0)
+                .map(|t| t.coefficient.re).sum();
+            let radius: f64 = h.terms.iter().filter(|t| t.x != 0 || t.z != 0)
+                .map(|t| t.coefficient.norm()).sum();
+            [identity - radius, identity + radius]
+        }
+    };
+    if explicit.is_none() && hi <= lo {
+        let centre = (lo + hi) / 2.;
+        (lo, hi) = (centre - 0.5, centre + 0.5);
+    }
+    let bins = u32::try_from(evaluation_qubits).ok().filter(|&t| t > 0 && t < 64)
+        .ok_or_else(|| invalid("evaluation qubits must be in 1..64"))?;
+    let width = (hi - lo) * (1. + 2. / (1u64 << bins) as f64);
+    if !(lo.is_finite() && width.is_finite()) {
+        return Err(invalid("the QPE energy window must be finite"));
+    }
+    Ok([lo, lo + width])
+}
+
 pub struct QpeResult {
     pub probabilities: Buffer<f64>,
     pub amplitudes: Option<State>,
@@ -247,12 +469,12 @@ pub fn qpe<A: Amplitude>(
         let basis = Basis::register(ctx, h.n)?;
         let d = basis.len();
         check_state(state, d, true)?;
-        let memory = ctx.reserve(if h.n <= 12 { product(&[d, 16])? } else { 0 })?;
+        let memory = ctx.reserve(if h.n <= QPE_DENSE_LIMIT { product(&[d, 16])? } else { 0 })?;
         let mut columns = stack::<A>(ctx, bins, d)?;
         let mut exact_energies = None;
         let mut overlaps = None;
         let width = window[1] - window[0];
-        if h.n <= 12 {
+        if h.n <= QPE_DENSE_LIMIT {
             let _workspace = ctx.reserve(product(&[d, d, 16, 10])?)?;
             let dense = h.dense(ctx, &basis)?;
             let (energies, vectors) = crate::math::linalg::eigen(

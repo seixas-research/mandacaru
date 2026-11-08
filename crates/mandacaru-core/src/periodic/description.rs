@@ -31,6 +31,70 @@ pub const MAX_ORBITAL_L: usize = 8;
 /// The largest degree of a moment channel (`l <= 16`, as the snapshot's own labels).
 pub const MAX_MOMENT_L: usize = 16;
 
+/// The symmetry operations of a reduced mesh, in the form a `setup` block carries them: integer
+/// rotations (row by row), fractional translations and the atom map of each.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Operations {
+    pub rotations: Vec<[i32; 9]>,
+    pub translations: Vec<[f64; 3]>,
+    pub atom_maps: Vec<Vec<usize>>,
+}
+
+impl Operations {
+    /// The heap `n` operations on `atoms` atoms take.
+    pub fn bytes(n: usize, atoms: usize) -> Result<usize> {
+        let each = product(&[atoms, std::mem::size_of::<usize>()])?
+            .checked_add(std::mem::size_of::<[i32; 9]>() + std::mem::size_of::<[f64; 3]>()
+                         + std::mem::size_of::<Vec<usize>>())
+            .ok_or(Error::Overflow)?;
+        product(&[n, each])
+    }
+
+    fn parse(value: &Value) -> Result<Self> {
+        let rows = |key: &str| list(&value[key], "the symmetry operations");
+        // Sized exactly, so the description keeps what `Operations::bytes` reserved.
+        let n = rows("rotations")?.len();
+        let mut out = Operations {
+            rotations: Vec::with_capacity(n),
+            translations: Vec::with_capacity(n),
+            atom_maps: Vec::with_capacity(n),
+        };
+        for w in rows("rotations")? {
+            let w = list(w, "a rotation")?;
+            if w.len() != 9 {
+                return Err(invalid("a rotation needs 9 numbers"));
+            }
+            let mut r = [0i32; 9];
+            for (slot, x) in r.iter_mut().zip(w) {
+                *slot = real(x, "a rotation")?.round() as i32;
+            }
+            out.rotations.push(r);
+        }
+        for t in rows("translations")? {
+            let t = list(t, "a translation")?;
+            if t.len() != 3 {
+                return Err(invalid("a translation needs 3 numbers"));
+            }
+            out.translations.push([real(&t[0], "a translation")?, real(&t[1], "a translation")?,
+                                   real(&t[2], "a translation")?]);
+        }
+        for m in rows("atom_maps")? {
+            let entries = list(m, "an atom map")?;
+            let mut map = Vec::with_capacity(entries.len());
+            for x in entries {
+                map.push(index(x, "an atom map entry")?);
+            }
+            out.atom_maps.push(map);
+        }
+        Ok(out)
+    }
+
+    fn to_json(&self) -> Value {
+        serde_json::json!({"rotations": self.rotations, "translations": self.translations,
+                           "atom_maps": self.atom_maps})
+    }
+}
+
 /// One radial table of the basis (several functions of a shell share it).
 #[derive(Clone, Debug)]
 pub struct Table {
@@ -63,6 +127,9 @@ pub struct Description {
     pub projector_basis: String,
     /// The moment channels `(atom, L, M)`, in the order of the snapshot's blocks.
     pub channels: Vec<(usize, usize, i32)>,
+    /// The operations as written, kept so a snapshot can write the block it was read from;
+    /// `None` on a full mesh.
+    pub operations: Option<Operations>,
     _memory: Reservation,
 }
 
@@ -202,6 +269,8 @@ fn declared_bytes(
                 )));
             }
             point_group::bytes(n, atoms)?
+                .checked_add(Operations::bytes(n, atoms)?)
+                .ok_or(Error::Overflow)?
         }
     };
     let (word, pair) = (std::mem::size_of::<usize>(), 2 * std::mem::size_of::<f64>());
@@ -384,6 +453,10 @@ impl Description {
                 permutations,
             )?),
         };
+        let operations = match &block["operations"] {
+            Value::Null => None,
+            value => Some(Operations::parse(value)?),
+        };
         Ok(Self {
             sigma,
             tables,
@@ -396,8 +469,35 @@ impl Description {
             datasets,
             projector_basis,
             channels,
+            operations,
             _memory: memory,
         })
+    }
+
+    /// The `setup` and `sites` blocks of a snapshot: the exact inverse of [`Description::parse`].
+    pub fn blocks(&self) -> (Value, Value) {
+        let tables: Vec<Value> = self.tables.iter().map(|t| serde_json::json!({
+            "l": t.l, "r": t.r, "values": t.values, "confinement": t.confinement,
+        })).collect();
+        let setup = serde_json::json!({
+            "version": 1,
+            "sigma_bohr": self.sigma,
+            "tables": tables,
+            "functions": {"atom": self.function_atom, "m": self.function_m,
+                          "table": self.function_table},
+            "projectors": self.projectors.iter()
+                .map(|&(atom, l, m, index)| serde_json::json!([atom, l, m, index]))
+                .collect::<Vec<_>>(),
+            "operations": self.operations.as_ref().map_or(Value::Null, Operations::to_json),
+        });
+        let sites = serde_json::json!({
+            "centers": self.centers,
+            "projector_basis": self.projector_basis,
+            "datasets": self.datasets.iter()
+                .map(|(file, sha256)| serde_json::json!({"file": file, "sha256": sha256}))
+                .collect::<Vec<_>>(),
+        });
+        (setup, sites)
     }
 
     /// Construct a [`Description`] directly from pre-validated parts and reserve memory.
@@ -414,6 +514,7 @@ impl Description {
         datasets: Vec<(String, String)>,
         projector_basis: String,
         channels: Vec<(usize, usize, i32)>,
+        operations: Option<Operations>,
     ) -> Result<Self> {
         let mut bytes = 0;
         for t in &tables {
@@ -422,6 +523,9 @@ impl Description {
         bytes += function_atom.len() * 8 + function_m.len() * 4 + function_table.len() * 8;
         bytes += projectors.len() * 32;
         bytes += centers.len() * 24 + datasets.len() * 128 + channels.len() * 24;
+        if let Some(o) = &operations {
+            bytes += Operations::bytes(o.rotations.len(), centers.len())?;
+        }
         let memory = ctx.reserve(bytes)?;
         Ok(Self {
             sigma,
@@ -435,6 +539,7 @@ impl Description {
             datasets,
             projector_basis,
             channels,
+            operations,
             _memory: memory,
         })
     }
@@ -454,6 +559,7 @@ impl Description {
             datasets: self.datasets.clone(),
             projector_basis: self.projector_basis.clone(),
             channels: self.channels.clone(),
+            operations: self.operations.clone(),
             _memory: memory,
         })
     }

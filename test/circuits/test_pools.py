@@ -25,7 +25,8 @@ from mandacaru.core.mapping import Fermion, PauliSum, qubit_excitation
 from mandacaru.core.sector import ParticleSector
 from mandacaru.units import HARTREE_TO_EV
 from mandacaru.optimizers import Optimizer
-from mandacaru.backends.providers import (QiskitProvider, pauli_rotations, pauli_strings_commute)
+from mandacaru._native import Context
+from mandacaru.backends.providers import QiskitProvider
 from mandacaru.core import WavefunctionCheckpoint
 
 # The classical optimizers used below, with the iteration budget and
@@ -358,16 +359,25 @@ class TestCEOLabels:
             assert op.short_label == op.label
 
 
+def compile_generator(generator):
+    """The native gate stream of ``exp(1.0 * generator)`` (raises what the circuit compiler refuses)."""
+    terms = [(label, complex(c).real, complex(c).imag) for label, c in generator.terms.items()]
+    n = len(next(iter(generator.terms)))
+    return Context(threads=1).compile_circuit(n, [], [terms], [1.0])
+
+
 class TestCommutingTermsOnly:
     def test_the_pairwise_rule(self):
-        assert pauli_strings_commute("XX", "YY")           # two clashes
-        assert not pauli_strings_commute("XI", "ZI")       # one clash
-        assert pauli_strings_commute("XI", "IZ")           # disjoint
+        """Two strings commute iff they clash, neither being I, at an even number of places."""
+        compile_generator(PauliSum({"XX": 0.5j, "YY": 0.5j}))          # two clashes
+        compile_generator(PauliSum({"XI": 0.5j, "IZ": 0.5j}))          # disjoint
+        with pytest.raises(ValueError, match="anticommute"):
+            compile_generator(PauliSum({"XI": 0.5j, "ZI": 0.5j}))      # one clash
 
     def test_an_anticommuting_generator_is_refused(self):
         generator = PauliSum({"X": 0.3j, "Z": 0.2j})
         with pytest.raises(ValueError, match="anticommute"):
-            pauli_rotations(generator)
+            compile_generator(generator)
         record = WavefunctionCheckpoint(1, [], [generator], [1.7])
         with pytest.raises(ValueError, match="anticommute"):   # fidelity 0.983
             QiskitProvider().statevector(*record.problem()[:4])
@@ -378,7 +388,7 @@ class TestCommutingTermsOnly:
     @pytest.mark.parametrize("pool", ["fermionic", "qubit", "qeb"])
     def test_these_pools_are_exportable_in_every_mapping(self, pool, mapping):
         for operator in build_pool(pool, 3, (2, 1), mapping=mapping).operators():
-            assert pauli_rotations(operator.generator)
+            assert compile_generator(operator.generator)
 
     def test_every_pool_generator_is_exportable(self):
         """The guard's original case is gone: CEO generators now commute.
@@ -394,16 +404,16 @@ class TestCommutingTermsOnly:
             for name in ("fermionic", "qeb", "ceo", "qubit"):
                 for operator in build_pool(name, 3, (2, 1),
                                            mapping=mapping).operators():
-                    assert pauli_rotations(operator.generator)
+                    assert compile_generator(operator.generator)
 
     def test_non_commuting_terms_are_still_refused(self):
         """The guard itself must stay: a product of rotations is not the
         exponential of a sum unless the terms commute."""
         # XY and YX differ on both qubits, so they commute; XX and XY differ on
         # one, so they anticommute.
-        assert pauli_rotations(PauliSum({"XY": 0.5j, "YX": 0.5j}))
+        assert compile_generator(PauliSum({"XY": 0.5j, "YX": 0.5j}))
         with pytest.raises(ValueError, match="commut"):
-            pauli_rotations(PauliSum({"XX": 0.5j, "XY": 0.5j}))
+            compile_generator(PauliSum({"XX": 0.5j, "XY": 0.5j}))
 
 
 class TestSpinOrbitPool:

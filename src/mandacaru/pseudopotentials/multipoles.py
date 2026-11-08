@@ -117,11 +117,6 @@ def gaunt(L: int, M: int, l1: int, m1: int, l2: int, m2: int, *,
                   int(m2))
 
 
-def multipole_range(l1: int, l2: int) -> list[int]:
-    """The ``L`` a pair of waves with these momenta can carry."""
-    return list(_native.paw_multipole_range(int(l1), int(l2)))
-
-
 def _channel_arrays(dataset, l: int):
     channel = dataset.channels[int(l)]
     ae = np.ascontiguousarray([np.asarray(w, dtype=float)
@@ -162,16 +157,3 @@ def radial_moments(dataset, l1: int, l2: int, L: int) -> np.ndarray:
     return _native.paw_radial_moments(context(), int(L), *_pair(dataset, l1, l2))
 
 
-def radial_remainder(dataset, l1: int, l2: int, L: int, q,
-                     shape_transform) -> np.ndarray:
-    r"""``E^{(L)}_{ij}(q)``, ``(len(q), n1, n2)``: the Fourier-Bessel transform
-    of the all-electron minus smooth pair density over the augmentation
-    sphere, less the compensation shape that carries its multipole moment
-    :math:`\Delta^{(L)}_{ij}` in the dual projector basis.
-    ``shape_transform`` is :math:`\hat g_L(q)` on ``q``."""
-    return _native.paw_radial_remainder(
-        context(), int(L), *_pair(dataset, l1, l2),
-        np.ascontiguousarray(q, dtype=float),
-        np.ascontiguousarray(dataset.multipole_moments(l1, l2, L, "dual"),
-                             dtype=float),
-        np.ascontiguousarray(shape_transform, dtype=float))

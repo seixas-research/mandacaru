@@ -50,7 +50,7 @@ usual multipole expansion of :math:`1/r_{12}`: a radial double integral per
 
 The one-center exact exchange of a screened hybrid
 ------------------------------------------------------
-HSE06 (:mod:`mandacaru.basis.hse`) replaces the fraction :math:`a` of the
+HSE06 replaces the fraction :math:`a` of the
 short-range semilocal exchange of the valence density by as much short-range
 exact exchange.  On PAW-LCAO both halves of that swap have a smooth part and a
 one-center part, and **both** one-center parts are needed: either alone moves
@@ -105,7 +105,7 @@ and smooth valence densities (spherical, so :math:`V` is diagonal in
 :math:`lm`; the GGA term enters through :math:`2\,\partial f/\partial\sigma\,
 n_0'\,(R_iR_j)'`), and :math:`D^0` its one-center density matrix (the
 channel occupation on the bound wave).  The semilocal exchange is the hole
-model of :mod:`mandacaru.basis.hse` (the piece HSE06 removes from PBE),
+model (the piece HSE06 removes from PBE, computed in Rust),
 whatever functional the dataset was generated with, so that the change
 HSE06 - PBE is the hybrid's own.
 
@@ -273,7 +273,7 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
     :math:`X^0 = E_x^{\rm SR}[n^1_0] - E_x^{\rm SR}[\tilde n^1_0]` and
     :math:`V_{ij} = \int v_x^{\rm SR}[n^1_0]\phi_i\phi_j -
     \int v_x^{\rm SR}[\tilde n^1_0]\tilde\phi_i\tilde\phi_j` per channel, in
-    the hole model of :func:`~mandacaru.basis.hse.short_range_partials`
+    the hole model of the Rust short-range exchange
     (unpolarized, valence densities of the reference atom).  The first entry
     is the constant of the linearization, :math:`X^0 - \sum V D^0`; the blocks
     are in the projector ``basis`` (the same for every ``m`` of a channel).
@@ -322,7 +322,7 @@ class OneCenterHybrid:
     projectors : list
         Every :class:`~mandacaru.pseudopotentials.orbitals.KBProjector` of
         the system, in the order the projections ``C[:, p]`` index them (the
-        integrals' ``kb_projectors``; the crystal's ``PeriodicPAW.projectors``).
+        integrals' ``kb_projectors``).
     datasets : sequence
         One dataset per atom, indexed by ``projector.atom_index``.
     omega, fraction : float

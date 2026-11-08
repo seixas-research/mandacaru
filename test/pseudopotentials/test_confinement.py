@@ -28,7 +28,8 @@ import pytest
 from mandacaru.pseudopotentials import get_paw
 from mandacaru.pseudopotentials.confinement import (
     confined_energy, confined_eigenstate, confined_orbital, confinement_potential,
-    confinement_radius, free_energy, gaussian_polarization, quasi_gaussian)
+    confinement_radius, free_energy, quasi_gaussian)
+from .recipe_view import gaussian_shell
 
 REFERENCE = Path(__file__).resolve().parents[1] / "migration" / "reference" / "paw"
 META = json.loads((REFERENCE / "confinement.json").read_text())
@@ -150,7 +151,7 @@ class TestFrozenPythonOutputs:
     @pytest.mark.parametrize("symbol", META["polarization_elements"])
     @pytest.mark.parametrize("shift", [0.1, 0.05])
     def test_the_gaussian_polarization_shell(self, symbol, shift):
-        shell = gaussian_polarization(get_paw(symbol), shift)
+        shell = gaussian_shell(get_paw(symbol), shift)
         key = f"gp_{symbol}_{shift}"
         close([shell.l, shell.base_l, shell.r_cut, shell.r_char,
                shell.reference_radius], FROZEN[f"{key}_scalars"], 1e-8)

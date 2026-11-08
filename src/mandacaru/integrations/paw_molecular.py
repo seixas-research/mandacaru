@@ -1,21 +1,23 @@
 """Dataset/basis-table adapter to the owned Rust molecular PAW engine.
 
-The existing PAW basis recipe supplies radial tables. Sampling, quadratures,
-operator assembly, augmentation, factorization and SCF execute in Rust.
+The basis is the Rust recipe the crystal setup uses (``paw::basis_recipe``, bound as
+``_native.paw_basis``). Sampling, quadratures, operator assembly, augmentation, factorization and
+SCF execute in Rust.
 """
 
 import json
+
 import numpy as np
 
 from .. import _native
+from .basis_recipe import basis_entries, basis_tables
 
 
 def build(driver, geometry):
     from ase.data import chemical_symbols
     from ..basis.filtering import resolve_filter_cutoff
     from ..integrals.grid import Grid
-    from ..pseudopotentials.families import lookup_family, pseudo_basis_arguments
-    from ..pseudopotentials.orbitals import pseudo_basis
+    from ..pseudopotentials.families import lookup_family
 
     spec = {"name": driver.basis} if isinstance(driver.basis, str) else driver.basis
     family = lookup_family(spec["name"])
@@ -54,14 +56,7 @@ def build(driver, geometry):
         options.get("filter_cutoff"), _native.grid_step_max_norm(grid.step_bohr)
     )
     driver._basis_report = report = dict(confinement={}, polarization={}, options=options, cutoff=cutoff, species=species)
-    functions, owners = pseudo_basis(
-        symbols,
-        geometry.positions,
-        species,
-        units=geometry.units,
-        filter_wavevector=cutoff,
-        **pseudo_basis_arguments(family, options, confinement=report["confinement"], polarization=report["polarization"]),
-    )
+    tables_of = basis_tables(driver.context, family, options, species, cutoff, report)
     arrays = {}
 
     def hold(value):
@@ -148,25 +143,7 @@ def build(driver, geometry):
                 channels=channels,
             )
         )
-    tables = {}
-    for function, owner in zip(functions, owners):
-        if hasattr(function, "table"):
-            r, values = function.table.r, function.table.values
-        else:
-            r, values = function._r, function._values
-        key = (id(r), id(values))
-        if key not in tables:
-            tables[key] = hold(r), hold(values)
-        r_key, values_key = tables[key]
-        metadata["basis"].append(
-            dict(
-                atom=int(owner),
-                l=int(function.l),
-                m=int(function.m),
-                r=r_key,
-                values=values_key,
-            )
-        )
+    metadata["basis"] = basis_entries(symbols, tables_of, hold)
     return driver.context.paw_molecular_integrals(
         geometry.native(), grid, json.dumps(metadata, allow_nan=False), arrays,
         kinetic=driver._kinetic, cholesky_tolerance=driver._cholesky_tolerance,

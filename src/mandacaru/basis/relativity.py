@@ -414,7 +414,7 @@ def _resolve(treatment: str) -> str:
 
 def relativistic_exchange(treatment: str) -> bool:
     """Whether a reference atom of this treatment carries the relativistic
-    correction to LDA exchange (:func:`~mandacaru.basis.xc.relativistic_exchange_factors`):
+    correction to LDA exchange (computed in Rust):
     every relativistic treatment does, the non-relativistic one does not."""
     return _resolve(treatment) != "none"
 

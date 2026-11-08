@@ -224,6 +224,13 @@ impl PyOperator {
             parse_precision(precision)?,
         )
     }
+    /// `(lo, hi)`: `window`, or the Gershgorin bound widened by `1 + 2/2^t` (`dynamics::qpe_window`).
+    #[pyo3(signature=(evaluation_qubits, window=None))]
+    fn qpe_window(&self, evaluation_qubits: usize, window: Option<[f64; 2]>) -> PyResult<(f64, f64)> {
+        let [lo, hi] = mandacaru_core::quantum::dynamics::qpe_window(&self.inner, evaluation_qubits, window)
+            .map_err(error)?;
+        Ok((lo, hi))
+    }
     #[getter]
     fn num_qubits(&self) -> usize {
         self.inner.n

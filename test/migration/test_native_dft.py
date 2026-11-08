@@ -19,6 +19,10 @@ def h2():
     return Atoms("H2", positions=[[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]], cell=[5] * 3)
 
 
+#: The deleted Python grid evaluator's output (energies and potentials), frozen 2026-11-08.
+GRID_XC = json.loads((Path(__file__).parent / "reference" / "grid_xc.json").read_text())["cases"]
+
+
 def native_grid(grid):
     return _native.SpatialGrid(grid.shape, [grid.X.flat[0], grid.Y.flat[0], grid.Z.flat[0]], grid.step)
 
@@ -27,7 +31,7 @@ def native_grid(grid):
 @pytest.mark.parametrize("spin", [False, True])
 @pytest.mark.parametrize("spacing", [.35, .4])
 def test_native_xc_matches_python_and_is_the_discrete_energy_derivative(functional, spin, spacing):
-    from mandacaru.integrals.exchange_correlation import evaluate, evaluate_spin
+    """Against the frozen output of the deleted Python grid evaluator (``reference/grid_xc.json``)."""
     grid = Grid(center=[0, 0, 0], cell=np.diag([2, 2.4, 2.8]), grid_spacing=spacing)
     rng = np.random.default_rng(55)
     rho = rng.uniform(.005, .2, size=(2, grid.size))
@@ -35,12 +39,9 @@ def test_native_xc_matches_python_and_is_the_discrete_energy_derivative(function
         rho[1] = rho[0]
     context = _native.Context(threads=1)
     result = context.exchange_correlation(native_grid(grid), rho, functional=functional)
-    expected = (evaluate_spin(grid, *rho, functional) if spin else
-                evaluate(grid, rho.sum(axis=0), functional))
-    assert result["energy"] == pytest.approx(expected.energy, abs=1e-11)
-    potential = (np.stack([expected.potential_up, expected.potential_dn]) if spin else
-                 np.stack([expected.potential] * 2))
-    assert np.allclose(result["potentials"], potential, atol=2e-10, rtol=1e-10)
+    expected = GRID_XC[f"{functional}-{'spin' if spin else 'restricted'}-{spacing}"]
+    assert result["energy"] == pytest.approx(expected["energy"], abs=1e-11)
+    assert np.allclose(result["potentials"], expected["potentials"], atol=2e-10, rtol=1e-10)
     delta = rng.normal(size=rho.shape)
     step = 1e-6
     plus = context.exchange_correlation(native_grid(grid), rho + step * delta, functional=functional)["energy"]
@@ -51,7 +52,6 @@ def test_native_xc_matches_python_and_is_the_discrete_energy_derivative(function
 
 @pytest.mark.parametrize("functional", ["lda", "pbe"])
 def test_empty_and_fully_polarized_xc_are_finite(functional):
-    from mandacaru.integrals.exchange_correlation import evaluate_spin
     grid = Grid(center=[0, 0, 0], cell=np.eye(3)*2, grid_spacing=.4)
     rho = np.zeros((2, grid.size))
     ctx = _native.Context()
@@ -59,9 +59,9 @@ def test_empty_and_fully_polarized_xc_are_finite(functional):
     assert zero["energy"] == 0 and np.all(zero["potentials"] == 0)
     rho[0] = np.linspace(1e-14, .5, grid.size)
     actual = ctx.exchange_correlation(native_grid(grid), rho, functional=functional)
-    expected = evaluate_spin(grid, *rho, functional)
-    assert actual["energy"] == pytest.approx(expected.energy, abs=1e-11)
-    assert np.allclose(actual["potentials"], [expected.potential_up, expected.potential_dn], atol=3e-9)
+    expected = GRID_XC[f"{functional}-polarized"]
+    assert actual["energy"] == pytest.approx(expected["energy"], abs=1e-11)
+    assert np.allclose(actual["potentials"], expected["potentials"], atol=3e-9)
 
 
 def test_dft_lda_energy_and_forces_match_frozen_phase0_and_round_trip():
@@ -269,7 +269,6 @@ def test_native_radial_atom_confinement_and_nonconvergence_are_honest():
 
 def test_phase4_pipeline_does_not_call_python_numerical_implementations(monkeypatch):
     from mandacaru.basis import atomic_solver, nao, nao_ae
-    from mandacaru.integrals import exchange_correlation
     def forbidden(*args, **kwargs):
         raise AssertionError("Python numerical callback entered native Phase 4")
     # The Python Kohn-Sham loop, Poisson solver, force module and Hamiltonian
@@ -277,8 +276,7 @@ def test_phase4_pipeline_does_not_call_python_numerical_implementations(monkeypa
     # exist), so absence is their guard; every Python numerical entry point
     # that survives is poisoned, and a missing name fails the patch loudly.
     for cls, name in [(BasisSet, "build"), (np.linalg, "eigh"), (np.linalg, "solve"),
-                      (atomic_solver, "solve_radial"), (nao, "solve_confined_radial"), (nao_ae, "build_species"),
-                      (exchange_correlation, "evaluate"), (exchange_correlation, "evaluate_spin")]:
+                      (atomic_solver, "solve_radial"), (nao, "solve_confined_radial"), (nao_ae, "build_species")]:
         monkeypatch.setattr(cls, name, forbidden)
     for functional in ["lda", "pbe"]:
         atoms = h2()

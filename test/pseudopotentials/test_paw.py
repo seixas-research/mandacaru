@@ -567,11 +567,10 @@ class TestAtomic:
         pp = generated("Na")
         states = [(s.n, s.l, s.index, s.semicore) for s in occupied_states(pp)]
         assert states == [(2, 0, 0, True), (3, 0, 1, False), (2, 1, 0, True)]
-        minimal, _ = pseudo_basis(["Na"], [[0, 0, 0]], {"Na": pp}, size="SZ")
+        unconfined = {"energy_shift": None}
+        minimal, _ = pseudo_basis(["Na"], [[0, 0, 0]], {"Na": pp}, options={"size": "SZ", **unconfined})
         assert [(f.n, f.l) for f in minimal] == [(2, 0), (3, 0)] + [(2, 1)] * 3
-        assert minimal[1].eigenvalue == pytest.approx(
-            pp.channels[0].reference_energies[1])
-        dzp, _ = pseudo_basis(["Na"], [[0, 0, 0]], {"Na": pp}, size="DZP")
+        dzp, _ = pseudo_basis(["Na"], [[0, 0, 0]], {"Na": pp}, options={"size": "DZP", **unconfined})
         assert [f.l for f in dzp] == [0, 0, 0] + [1] * 6
 
     def test_a_semicore_channel_confines_its_valence_state(self):

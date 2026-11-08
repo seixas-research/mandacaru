@@ -386,6 +386,63 @@ pub fn kinetic_cross(
     Ok(out)
 }
 
+/// P6, the meta-GGA operator: the row-center derivative of
+/// `T = sum_axis (d_axis chi)^+ diag(dv v_tau / 2) (d_axis chi)`, the matrix
+/// [`crate::periodic::fields::kinetic_operator`] adds to `H`, with the SCF's spectral gradient
+/// ([`crate::periodic::fields::bloch_gradients`]) and the SAMPLED center derivative of the bra
+/// (as [`kinetic_cross`]): `G^a = -sum_axis (d_axis slope_a)^+ diag(dv v_tau / 2) d_axis chi`.
+pub fn tau_cross(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    samples: &KSamples,
+    potential: &[f64],
+) -> Result<[Matrix; 3]> {
+    use crate::periodic::fields::bloch_gradients;
+    let (m, n, k) = (samples.functions, samples.points, samples.k);
+    if potential.len() != n || n != grid.index.points() {
+        return Err(invalid("crystal gradient: the kinetic potential must match the grid"));
+    }
+    let half_dv = 0.5 * grid.index.dv();
+    // [axis][function][point], the ket weighted by dv v_tau / 2 in place.
+    let mut ket = bloch_gradients(ctx, grid, k, samples.values(), m)?;
+    for row in ket.as_mut_slice().chunks_mut(n) {
+        for (value, v) in row.iter_mut().zip(potential) {
+            *value *= half_dv * v;
+        }
+    }
+    let mut out = [
+        Matrix::zeros(m, m),
+        Matrix::zeros(m, m),
+        Matrix::zeros(m, m),
+    ];
+    for (a, to) in out.iter_mut().enumerate() {
+        let bra = bloch_gradients(ctx, grid, k, samples.slope(a), m)?;
+        for axis in 0..3 {
+            let span = axis * m * n..(axis + 1) * m * n;
+            let b = columns(&bra.as_slice()[span.clone()], n, m);
+            let w = columns(&ket.as_slice()[span], n, m);
+            *to -= b.adjoint() * w;
+        }
+    }
+    Ok(out)
+}
+
+/// E6: the slope `d tau_core / d c_axis` of one atom's partial-core kinetic density, the von
+/// Weizsaecker form of its smooth core ([`crate::paw::fields::core_kinetic`], the table the
+/// setup samples for a meta-GGA), placed like [`core_gradient`].
+pub fn core_kinetic_gradient(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    radius: &[f64],
+    core: &[f64],
+    center: [f64; 3],
+    axis: usize,
+) -> Result<Buffer<f64>> {
+    let density = Cubic::new(ctx, ctx.copy_slice(radius)?, ctx.copy_slice(core)?)?;
+    let tau = crate::paw::fields::core_kinetic(ctx, &density)?;
+    core_gradient(ctx, grid, radius, tau.values.as_slice(), center, axis)
+}
+
 /// `C_k` (`m x p`): `<chi_{mu k} | p_p>` on the projector spheres.
 pub fn projection(
     ctx: &Context,

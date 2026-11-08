@@ -45,6 +45,7 @@ pub fn options_of(scf: &Value) -> Options {
         mixing: scf["mixing"].as_f64().unwrap_or(0.25),
         history: scf["history"].as_u64().unwrap_or(7) as usize,
         exxdiv_treatment: exxdiv,
+        ..Options::default()
     }
 }
 

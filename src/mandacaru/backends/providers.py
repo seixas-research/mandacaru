@@ -86,49 +86,6 @@ def normalize_provider(name: str) -> str:
 # Generator -> Pauli-rotation decomposition (provider independent).
 # --------------------------------------------------------------------------- #
 
-def pauli_rotations(generator: PauliSum, atol: float = 1e-12
-                    ) -> list[tuple[str, float]]:
-    r"""Decompose an anti-Hermitian generator into ``(pauli_string, angle_coeff)``.
-
-    For ``A = sum_j i c_j P_j`` this returns ``[(P_j, c_j), ...]`` with real
-    ``c_j``, so ``exp(theta A) = prod_j exp(i theta c_j P_j)`` -- an identity
-    that holds **because the terms commute**, which is checked, not assumed.
-    Identity strings contribute only a global phase and are dropped.
-
-    Raises
-    ------
-    ValueError
-        If any coefficient has a non-negligible real part (the operator is not
-        anti-Hermitian and does not generate a unitary for real ``theta``), or
-        if two of its Pauli terms anticommute: the product of their rotations
-        would then be a first-order Trotter *approximation* of ``exp(theta A)``
-        (fidelity 0.98 for ``0.3i X + 0.2i Z`` at ``theta = 1.7``), silently a
-        different state from the one the state-vector backend prepares.  Every
-        pool generator Mandacaru builds has commuting terms, in every mapping.
-    """
-    out: list[tuple[str, float]] = []
-    for label, coeff in sorted(generator.simplify().terms.items()):
-        c = complex(coeff)
-        if abs(c.real) > 1e-8 * max(1.0, abs(c.imag)):
-            raise ValueError(
-                f"generator term {label!r} has coefficient {c!r}: the generator "
-                "must be anti-Hermitian (purely imaginary Pauli coefficients)")
-        if abs(c.imag) <= atol or set(label) == {"I"}:
-            continue                       # negligible, or a global phase only
-        out.append((label, float(c.imag)))
-    for i, (first, _c) in enumerate(out):
-        for second, _d in out[i + 1:]:
-            if not pauli_strings_commute(first, second):
-                raise ValueError(
-                    f"generator terms {first!r} and {second!r} anticommute, so "
-                    "exp(theta A) is not the product of their rotations and a "
-                    "circuit built from them would prepare a different state. "
-                    "Split the generator into commuting parts (one ansatz "
-                    "operator each), or evaluate it on the state-vector "
-                    "backend, which exponentiates it exactly.")
-    return out
-
-
 def run_local_estimator(estimator, pubs, precision: float):
     """Run a *local* Qiskit Estimator synchronously; the one place that
     touches the primitive's private ``_run``.
@@ -152,59 +109,6 @@ def run_local_estimator(estimator, pubs, precision: float):
     return private([EstimatorPub.coerce(pub, precision) for pub in pubs])
 
 
-def pauli_strings_commute(first: str, second: str) -> bool:
-    """Two Pauli strings commute iff they differ, with neither the identity,
-    at an **even** number of positions."""
-    clashes = sum(1 for a, b in zip(first, second)
-                  if a != "I" and b != "I" and a != b)
-    return clashes % 2 == 0
-
-
-def evolve_determinants(provider, n_qubits: int, generators, theta,
-                        references: np.ndarray) -> np.ndarray:
-    """Run the ansatz circuit on every column of ``references`` (``(2**n, k)``).
-
-    A circuit cannot be initialized in a superposition, so each column must be
-    a computational-basis (Slater-determinant) state -- the HF reference and
-    the subspace-search references are.  Shared by every ansatz that can
-    execute on a :class:`CircuitProvider`.
-    """
-    columns = []
-    for j in range(references.shape[1]):
-        index = basis_state_index(references[:, j])
-        if index is None:
-            raise ValueError(
-                f"the {provider.name} circuit backend can only evolve "
-                "computational-basis (Slater-determinant) reference states; "
-                f"column {j} of `references` is a superposition")
-        columns.append(provider.statevector(
-            n_qubits, _occupied_qubits(index, n_qubits), generators, theta))
-    return np.asarray(columns, dtype=complex).T
-
-
-def basis_state_index(vector: np.ndarray, atol: float = 1e-9) -> int | None:
-    """Index of the single non-zero amplitude of ``vector``, or ``None``.
-
-    Circuits can only be *initialized* in a computational basis state, so the
-    provider execution path uses this to check that a reference state is a Slater
-    determinant (it always is: Hartree-Fock and the SSVQE references are
-    determinants) and falls back to the matrix path otherwise.
-    """
-    nz = np.flatnonzero(np.abs(np.asarray(vector)) > atol)
-    if nz.size != 1:
-        return None
-    amp = complex(vector[nz[0]])
-    if abs(abs(amp) - 1.0) > 1e-6:
-        return None
-    return int(nz[0])
-
-
-def _occupied_qubits(index: int, n_qubits: int) -> list[int]:
-    """Mandacaru qubit indices set to ``|1>`` in basis state ``index`` (qubit 0 = MSB)."""
-    return [k for k in range(n_qubits)
-            if (index >> (n_qubits - 1 - k)) & 1]
-
-
 # --------------------------------------------------------------------------- #
 # Provider interface.
 # --------------------------------------------------------------------------- #
@@ -223,77 +127,34 @@ class CircuitProvider(ABC):
 
     # -- provider-independent gate stream --------------------------------- #
 
+    def _context(self):
+        """The native context that compiles this provider's circuits (made on first use)."""
+        context = getattr(self, "_native_context", None)
+        if context is None:
+            from .._native import Context
+            context = self._native_context = Context()
+        return context
+
     def _emit(self, n_qubits: int, occupied: list[int], generators, thetas):
         """Yield ``(gate, *qubits[, angle])`` for the full ansatz circuit.
 
         Gates are ``"x"``, ``"h"``, ``"s"``, ``"sdg"``, ``"cx"`` and ``"rz"`` --
         the common denominator of the three SDKs.  The circuit is the reference
         determinant preparation followed by one Pauli-rotation block per term of
-        each generator, in append order.
+        each generator, in append order. The gate stream is compiled in Rust
+        (``execution::compile``), which refuses a generator that is not
+        anti-Hermitian or whose terms anticommute (a product of rotations would
+        then be a Trotter approximation, a different state), and angles that do
+        not match the generators.
         """
-        context = getattr(self, "_native_context", None)
-        if context is not None:
-            terms = [[(p, complex(c).real, complex(c).imag) for p, c in g.terms.items()]
-                     for g in generators]
-            for gate, first, second, angle in context.compile_circuit(
-                    n_qubits, list(occupied), terms,
-                    np.asarray(thetas, dtype=float).ravel().tolist()):
-                yield ((gate, first, second) if gate == "cx" else
-                       (gate, first, angle) if gate == "rz" else (gate, first))
-            return
-        thetas = np.asarray(thetas, dtype=float).ravel()
-        generators = list(generators)
-        if len(thetas) != len(generators):
-            raise ValueError(
-                f"{len(thetas)} angles for {len(generators)} generators: a "
-                "circuit that zips them short prepares a different state")
-        for q in occupied:
-            yield ("x", q)
-        for theta, generator in zip(thetas, generators):
-            for label, coeff in pauli_rotations(generator):
-                angle = float(theta) * coeff
-                if angle == 0.0:
-                    continue
-                yield from self._pauli_rotation(label, angle)
+        terms = [[(p, complex(c).real, complex(c).imag) for p, c in g.terms.items()]
+                 for g in generators]
+        for gate, first, second, angle in self._context().compile_circuit(
+                n_qubits, list(occupied), terms,
+                np.asarray(thetas, dtype=float).ravel().tolist()):
+            yield ((gate, first, second) if gate == "cx" else
+                   (gate, first, angle) if gate == "rz" else (gate, first))
 
-    @staticmethod
-    def _pauli_rotation(label: str, angle: float):
-        r"""Gate stream for ``exp(i * angle * P)`` with ``P`` the string ``label``.
-
-        ``exp(i a P) = V exp(i a Z_t) V^dagger`` where ``V`` rotates ``Z`` on the
-        last active qubit ``t`` into ``P``: single-qubit basis changes map
-        ``X -> Z`` (``H``) and ``Y -> Z`` (``S†`` then ``H``), and a CNOT ladder
-        collects the parity of the active qubits onto ``t``.  The rotation itself
-        is ``R_z(-2a) = exp(i a Z)``.
-        """
-        active = [(k, ch) for k, ch in enumerate(label) if ch != "I"]
-        if not active:
-            return
-        # Basis change into the Z eigenbasis (V^dagger).
-        for k, ch in active:
-            if ch == "X":
-                yield ("h", k)
-            elif ch == "Y":
-                yield ("sdg", k)
-                yield ("h", k)
-        # Parity ladder: accumulate onto the last active qubit.
-        qubits = [k for k, _ in active]
-        for a, b in zip(qubits, qubits[1:]):
-            yield ("cx", a, b)
-        yield ("rz", qubits[-1], -2.0 * angle)
-        for a, b in reversed(list(zip(qubits, qubits[1:]))):
-            yield ("cx", a, b)
-        # Undo the basis change (V).
-        for k, ch in active:
-            if ch == "X":
-                yield ("h", k)
-            elif ch == "Y":
-                yield ("h", k)
-                yield ("s", k)
-
-    # -- provider hooks --------------------------------------------------- #
-
-    @abstractmethod
     def build(self, n_qubits: int, occupied, generators, thetas):
         """Build the SDK-native circuit for the ansatz at parameters ``thetas``."""
 
@@ -814,11 +675,7 @@ class QiskitProvider(CircuitProvider):
 
         for q in occupied:
             qc.x(wire(q))
-        context = getattr(self, "_native_context", None)
-        if context is None:
-            from .._native import Context
-            context = Context()
-            self._native_context = context
+        context = self._context()
         for k, generator in enumerate(generators):
             terms = [(label, complex(c).real, complex(c).imag)
                      for label, c in generator.terms.items()]
@@ -926,10 +783,11 @@ class QiskitProvider(CircuitProvider):
         from .measurement import resilience_multipliers
 
         factors, twirls, per_twirl = resilience_multipliers(self)
-        per_instance = twirls * per_twirl if twirls > 1 else self.shots
         bases = sum(n for _op, n in self._energy_pieces(
             hamiltonian, self.max_bases_per_job))
-        return int(bases * factors * max(per_instance, 0))
+        return self._context().measurement_cost(
+            bases, shots=max(int(self.shots), 0), noise_factors=factors,
+            randomizations=twirls, shots_per_randomization=per_twirl)[1]
 
     def energies(self, problems) -> list[float]:
         """Expectation values of several ``(n_qubits, occupied, generators,
@@ -1189,7 +1047,8 @@ class BraketProvider(CircuitProvider):
         return max(len(self._groups[key][0]), 1)
 
     def shots_per_energy(self, hamiltonian) -> int:
-        return self.jobs_per_energy(hamiltonian) * max(self.shots, 0)
+        return self._context().measurement_cost(
+            self.jobs_per_energy(hamiltonian), job_per_basis=True, shots=max(int(self.shots), 0))[1]
 
     def _submit(self, circuit, shots: int):
         """Queue ``circuit`` (after the run-budget check) and return its task."""

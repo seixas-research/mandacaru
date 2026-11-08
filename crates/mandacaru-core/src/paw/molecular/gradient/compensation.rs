@@ -167,10 +167,16 @@ pub(super) fn grid_field(integrals: &MolecularIntegrals, channel: &Channel<'_>, 
     }
 }
 
+/// `electrostatics` is the setup's own `(U, ionic)` for these `channels`, when the caller has it:
+/// the bare channels may pass the calculation's cached matrices, while screened channels
+/// (`screened_channels`) pass `None`, because a cached matrix holds the bare `1/r` coupling,
+/// not the `erfc(omega r)/r` one.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn moments(
     setup: &Setup,
     integrals: &MolecularIntegrals,
     channels: &[Channel<'_>],
+    electrostatics: Option<(&DMatrix<f64>, &[f64])>,
     occupied: &[Occupied],
     projected: &[Vec<DVector<f64>>],
     psi: &[f64],
@@ -229,17 +235,8 @@ pub(super) fn moments(
     // Coulomb coupling of two multipoles (the setup's electrostatic matrix) and
     // the local potentials of the other atoms in a compensation sphere.
     let positions = integrals.geometry.positions();
-    let (u, ionic) = if let (Some(u), Some(ionic)) = (
-        integrals
-            .corrections
-            .as_ref()
-            .and_then(|c| c.electrostatic.as_ref()),
-        integrals
-            .corrections
-            .as_ref()
-            .and_then(|c| c.ionic.as_ref()),
-    ) {
-        (u.clone(), ionic.clone())
+    let (u, ionic) = if let Some((u, ionic)) = electrostatics {
+        (u.clone(), ionic.to_vec())
     } else {
         let mut u = DMatrix::<f64>::zeros(nch, nch);
         let mut ionic = vec![0.; nch];

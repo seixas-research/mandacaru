@@ -27,7 +27,6 @@ SZ = {"name": "PAW-LCAO", "size": "SZ"}
 #: The 512 MiB budget of the guides: loading the CuH crystal file (23 MB) took 738 MB of the
 #: calculation budget before the load reserved what the file's tree can take, 261 MB after.
 LOAD = dict(method="dft", trace=False, resources={"memory_limit_bytes": 512 << 20})
-CRYSTAL_INPUT = paw.crystal_input
 
 ENERGY_TOLERANCE_EV = 1e-8
 FIRST_ORDER_EV = 1e-5
@@ -79,48 +78,47 @@ def run(atoms, **options):
 
 
 class _Captured(BaseException):
-    """Stops ``configure`` after the snapshot is written, before the native problem is built."""
+    """Stops the calculation once the Rust setup has built the crystal, before the SCF."""
 
 
-def snapshot_of(monkeypatch, atoms, **options):
-    taken = {}
+def crystal_of(monkeypatch, atoms, **options):
+    """The Rust-built crystal of ``Mandacaru(**options)`` on ``atoms`` (no SCF is run)."""
+    from mandacaru.integrations import setup_block
+    built = {}
+    original = setup_block.native_setup
 
-    def hook(*args, **kwargs):
-        metadata, _ = CRYSTAL_INPUT(*args, **kwargs)
-        taken.update(json.loads(metadata))
+    def stop(driver, *args, **kwargs):
+        original(driver, *args, **kwargs)
+        built["crystal"] = driver.periodic_problem
         raise _Captured
 
-    monkeypatch.setattr(paw, "crystal_input", hook)
+    monkeypatch.setattr(paw, "native_setup", stop)
     atoms.calc = Mandacaru(**options)
     with pytest.raises(_Captured):
         atoms.get_potential_energy()
-    return taken
+    return built["crystal"]
 
 
 # --------------------------------------------------------------------------- #
-# The shell table Python hands to Rust.
+# The shell table the Rust setup builds.
 # --------------------------------------------------------------------------- #
 
 
-def test_the_shell_table_is_the_one_the_frozen_weights_define(monkeypatch):
-    """Projectors, basis and seed equal the fixture's, and the Rust weights equal the frozen
-    ``w_raw`` of the deleted ``shell_weights`` (the fixture's weights come from ``frozen.json``)."""
-    taken = snapshot_of(monkeypatch, nio(), hubbard_u=NI_D, **NIO_OPTIONS)
+def test_the_shell_table_is_the_one_the_fixture_defines(monkeypatch):
+    """The Rust setup's DFT+U shells (atom, element, l, U, J) are the fixture's; the projector
+    weights are pinned in Rust (``tests/hubbard_table.rs``)."""
+    crystal = crystal_of(monkeypatch, nio(), hubbard_u=NI_D, **NIO_OPTIONS)
     fixture = json.loads((FIXTURE / "nio_afm2.json").read_text())["hubbard"]
-    table = taken["hubbard"]
-    assert table["form"] == fixture["form"] == "dudarev-fll"
-    assert len(table["shells"]) == len(fixture["shells"]) == 2
-    for ours, theirs in zip(table["shells"], fixture["shells"]):
-        for key in ("atom", "symbol", "l", "projectors", "projector_basis", "seed"):
-            assert ours[key] == theirs[key], key
-        assert np.allclose(ours["weights"], theirs["weights"], rtol=0, atol=1e-10)
-        assert ours["u"] == 3.0 / HARTREE_TO_EV and ours["j"] == 0.0
-    moments = [s["seed"]["moment"] for s in table["shells"]]
-    assert moments == [2.0, -2.0]
-    assert snapshot_of(monkeypatch, nio(), **NIO_OPTIONS)["hubbard"] is None
+    assert fixture["form"] == "dudarev-fll"
+    shells = crystal.hubbard
+    assert len(shells) == len(fixture["shells"]) == 2
+    for (atom, symbol, l, u, j), theirs in zip(shells, fixture["shells"]):
+        assert (atom, symbol, l) == (theirs["atom"], theirs["symbol"], theirs["l"])
+        assert u == pytest.approx(3.0 / HARTREE_TO_EV, abs=1e-15) and j == 0.0
+    assert crystal_of(monkeypatch, nio(), **NIO_OPTIONS).hubbard is None
     # the form field is part of the contract: naming the one form changes nothing
     named = {"Ni": {**NI_D["Ni"], "form": "dudarev-fll"}}
-    assert snapshot_of(monkeypatch, nio(), hubbard_u=named, **NIO_OPTIONS)["hubbard"] == table
+    assert crystal_of(monkeypatch, nio(), hubbard_u=named, **NIO_OPTIONS).hubbard == shells
 
 
 # --------------------------------------------------------------------------- #

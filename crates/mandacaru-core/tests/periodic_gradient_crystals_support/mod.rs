@@ -178,6 +178,7 @@ impl Data {
             mixing: scf["mixing"].as_f64().unwrap(),
             history: scf["history"].as_u64().unwrap() as usize,
             exxdiv_treatment: exxdiv,
+            ..Options::default()
         };
         let kpoints = crystal.points.iter().map(|p| p.k).collect();
         let setup = &manifest["setup"];

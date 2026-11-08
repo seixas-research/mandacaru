@@ -18,7 +18,7 @@
 //! basis and, for the stress, a spin-polarized crystal.
 use super::{
     description::Description,
-    gradient::{gradient, scf, Bands, State},
+    gradient::{gradient, scf, Bands, Breakdown, State},
     invalid,
     point_group::PointGroup,
     setup::provider::SetupDerivatives,
@@ -116,6 +116,14 @@ pub fn forces_with_group(
     r: &PeriodicResult,
     group: Option<PointGroup>,
 ) -> Result<Vec<[f64; 3]>> {
+    Ok(breakdown_with_group(c, r, group)?.forces())
+}
+
+fn breakdown_with_group(
+    c: &Crystal,
+    r: &PeriodicResult,
+    group: Option<PointGroup>,
+) -> Result<Breakdown> {
     scf::refuse(c)?;
     let _held = reserve_state(c)?;
     let setup = Setup::new(c)?;
@@ -132,7 +140,14 @@ pub fn forces_with_group(
         provider = provider.with_spin_orbit(&so_projectors, &so_couplings)?;
     }
     provider.set_point_group(group);
-    Ok(gradient(&provider, &state(c, r)?, c.hubbard_hook())?.forces())
+    gradient(&provider, &state(c, r)?, c.hubbard_hook())
+}
+
+/// The per-term [`Breakdown`] (`dF/dtau`) behind [`forces`], for the tests that check a term is
+/// not vacuous. A caller of the engine uses [`forces`].
+#[doc(hidden)]
+pub fn breakdown(c: &Crystal, r: &PeriodicResult) -> Result<Breakdown> {
+    breakdown_with_group(c, r, own_group(c))
 }
 
 /// The analytic stress of the converged crystal `r` at the pins of its snapshot (node counts, ion

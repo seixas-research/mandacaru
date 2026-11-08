@@ -104,19 +104,19 @@ class CircuitExecutor:
                              if label.strip("I")})
             groups = driver.context.qwc_groups(labels)
             self._check_budget(labels, groups)
-            limit = getattr(self.provider, "max_bases_per_job", None)
-            jobs = len(groups) if self.provider.name == "braket" else (
-                (len(groups) + limit - 1) // limit if limit else bool(groups))
             factors, twirls, per_twirl = resilience_multipliers(self.provider)
+            jobs, shots = driver.context.measurement_cost(
+                len(groups), max_bases_per_job=getattr(self.provider, "max_bases_per_job", None) or None,
+                job_per_basis=self.provider.name == "braket", shots=int(driver._shots),
+                noise_factors=factors, randomizations=twirls, shots_per_randomization=per_twirl)
             driver._gradient_measurement = {
                 "scheme": "native commutators [H, A_k], merged QWC measurement bases",
                 "first_step": "classical (exact at the reference determinant)",
                 "measured_operators": sum(bool(terms) for terms in observables),
                 "strings_per_step": len(labels),
                 "bases_per_step": len(groups),
-                "jobs_per_step": int(jobs),
-                "shots_per_step": len(groups) * factors * (
-                    twirls * per_twirl if twirls > 1 else driver._shots),
+                "jobs_per_step": jobs,
+                "shots_per_step": shots,
             }
 
     def _check_budget(self, labels, groups):

@@ -259,234 +259,37 @@ def _shells(tables, center, units: str, real: bool) -> list[PseudoShell]:
             for table in tables for m in range(-table.l, table.l + 1)]
 
 
-def _orbitals(pp, orbitals, center, units: str, real: bool) -> list:
-    """Every ``m`` component of the ``(state, radial)`` pairs of an element's
-    minimal set."""
-    return [PseudoAtomicOrbital(pp, state.l, m, center=center, units=units,
-                                radial=radial, index=state.index,
-                                eigenvalue=state.level, real=real)
-            for state, radial in orbitals for m in range(-state.l, state.l + 1)]
+def pseudo_basis(symbols, positions, potentials, units: str = "angstrom", options=None,
+                 filter_wavevector=None, *, family: str = "paw-lcao", real: bool = True,
+                 report: dict | None = None):
+    """Valence pseudo-atomic basis for a molecule (real spherical harmonics) or, ``real=False``,
+    a crystal (complex ones): ``(functions, atom_of_orbital)``.
 
-
-def pseudo_basis(symbols, positions, potentials, units: str = "angstrom",
-                 size="SZ", split_norm=None, filter_wavevector=None,
-                 first_zeta=None, tail_norms=None, polarization_shape=None,
-                 diffuse_shells=None, *, real: bool = True):
-    """Valence pseudo-atomic basis for a molecule (real spherical
-    harmonics) or, ``real=False``, a crystal (complex ones).
-
-    Returns ``(functions, atom_of_orbital)``: the orbitals and which atom each
-    belongs to.
-
-    ``size`` selects the multiple-zeta / polarized hierarchy exactly as it does
-    for the all-electron NAO family (``"SZ"``, ``"DZ"``, ``"DZP"``, ``"TZP"``,
-    ...); a ``{symbol: size}`` mapping (with an optional ``"*"`` default)
-    gives each element its own size.  The **first zeta always comes from the pseudopotential** and cannot be
-    replaced: the dataset's construction pseudizes each valence orbital
-    inside its cutoff radius and the projectors are built from
-    those specific pseudo-orbitals, so pairing the potential with an unrelated
-    all-electron radial function would be inconsistent.  The extra zetas are
-    split-valence refinements *of* that pseudo-orbital, and the polarization
-    shell is split from the highest occupied channel, so everything stays
-    matched to the potential it came from.
-
-    ``first_zeta`` (optional) is a callable ``(symbol, potential, l) -> R(r)``
-    on the potential's radial table, or ``None`` to keep the stored orbital.
-    It is how a family supplies a **confined** first zeta -- the
-    ``energy_shift`` of :mod:`~.confinement` -- and it is the one sanctioned
-    replacement of the pseudopotential's own orbital: the function it returns
-    solves the *same* pseudo-Hamiltonian (same projectors, same couplings) in a
-    confining potential, so it stays matched to the operator in the sense the
-    paragraph above requires.  The extra zetas and the polarization shell are
-    then split from the confined orbital and inherit its cutoff radius.
-
-    ``tail_norms`` (a sequence) selects ``zeta_split="first_zeta"``: every
-    extra zeta split from the *first* one, at the radius leaving a tail of
-    that **norm**; ``None`` is ``"last_zeta"``, each zeta split from the
-    previous one by ``split_norm`` (see
-    :func:`~mandacaru.basis.multizeta.zeta_tables`, which runs the native
-    construction).
-
-    ``polarization_shape`` (optional) is a callable ``(symbol, potential) ->
-    (l, R(r))`` -- or ``None`` to decline for that element -- that replaces the polarization shell built here --
-    :func:`~.confinement.polarization_factory` supplies the quasi-Gaussian.
-    Further polarization functions are then split-valence refinements of that
-    shape with the *same* ``l``, instead of shells of higher ``l``.
-
-    ``diffuse_shells`` (optional) is a callable ``(symbol, potential,
-    existing, filter_wavevector) -> [RadialTable, ...]`` that **appends**
-    diffuse shells to each atom after its ordinary functions (``existing``:
-    the atom's radial functions as ``(n, l, r, values)``, filtered) --
-    :func:`~.diffuse.diffuse_factory` supplies it.  The ordinary basis is
-    built exactly as without it, and the atom-major order is kept.
-
-    ``filter_wavevector`` (the cutoff wave-vector :math:`k_c` in
-    Bohr\\ :sup:`-1` that the ``filter_cutoff`` option resolves to, ``None``
-    = off) runs every radial table through the Fourier filter of
-    :mod:`mandacaru.basis.filtering` before it becomes a basis function, so the
-    grid sampling, the PAW-LCAO atom-centered projection quadrature and the displaced
-    sampling the forces are built from all see one band-limited function.  The
-    filter is applied **after** the split-valence construction: the split is
-    defined on the pseudopotential's own orbital, and it is each *final* basis
-    function that has to be representable on the grid.
-
-    This does soften the first zeta -- the very function the Kleinman-Bylander
-    projectors were built from -- and that is legitimate but not free.  The
-    operator is untouched (the projectors, their energies and the local channel
-    all come from the dataset); only the trial space changes, and the filter
-    tends to the identity as the cutoff grows.  What is lost is that the
-    *exact* pseudo-orbital is an eigenstate of the pseudo-Hamiltonian at the
-    reference energy, so the atomic reference is no longer reproduced exactly.
-    That is a variational price, measured in
-    ``docs/source/guide/pseudopotentials.md``; PAW-LCAO and UPAW-LCAO turn the
-    filter on by default because a PAW-LCAO partial wave is already built
-    band-limited, so the filter barely moves it.
+    ``options`` is a basis dict of ``family`` (``size``, ``energy_shift``,
+    ``confinement_potential``, ``polarization_method``, ``zeta_split``, ``diffuse``), read with
+    the calculator's own rules; ``filter_wavevector`` is the Fourier-filter cutoff (Bohr^-1,
+    ``None`` = off). The radial shells are built by the Rust recipe the calculator uses
+    (``paw::basis_recipe``); this returns them as :class:`PseudoShell` functions, atom-major.
+    ``report``, when given, receives what the recipe resolved per element: ``confinement``,
+    ``polarization`` and ``diffuse`` (every diffuse shell built, accepted or not).
     """
-    from ..basis.filtering import filter_radial, filter_table
-    from ..basis.multizeta import zeta_tables
-    from ..models.radial import DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS, resolve_zeta
+    from ..basis.multizeta import RadialTable
+    from ..integrations.basis_recipe import basis_tables
+    from .families import resolve_family
 
-    k_c = None if filter_wavevector is None else float(filter_wavevector)
-    split = DEFAULT_SPLIT_NORM if split_norm is None else float(split_norm)
-
-    # The filter memoizes by content (`filtering.filter_radial`): the same
-    # radial function of the same element is filtered once, across atoms and
-    # across steps.
-    def filtered(values, r, l):
-        return values if k_c is None else filter_radial(
-            r, values, l, k_c, context=_context())[0]
-
-    def filtered_table(table):
-        return table if k_c is None else filter_table(
-            table, k_c, context=_context())[0]
-
-    confined: dict = {}
-
-    def first_radial(symbol, pp, l, index=0, empty=False):
-        """The first zeta's ``R(r)`` of the channel's ``index``-th occupied
-        state: the family's confined orbital when it supplies one, else the
-        pseudopotential's stored partial wave -- or, for an empty channel's
-        bound level, its eigenstate (the stored waves there scatter)."""
-        key = (symbol, int(l), int(index))
-        if key not in confined:
-            radial = (None if first_zeta is None
-                      else first_zeta(symbol, pp, l, index))
-            if radial is None and empty:
-                radial = bound_radial(pp, l)
-            confined[key] = (np.asarray(pp.channels[l].pseudo_waves[index],
-                                        dtype=float)
-                             if radial is None
-                             else np.asarray(radial, dtype=float))
-        return confined[key]
-
-    def size_of(symbol):
-        """``size`` may be one spec for all atoms or ``{symbol: spec}`` with an
-        optional ``"*"`` default -- a polarized water next to a minimal ion."""
-        if isinstance(size, dict):
-            table = {(k if k == "*" else k.capitalize()): v
-                     for k, v in size.items()}
-            spec = table.get(symbol.capitalize(), table.get("*"))
-            if spec is None:
-                raise ValueError(
-                    f"no pseudo-basis size for element {symbol!r}; add it or "
-                    "a '*' default to the size mapping")
-            return spec
-        return size
-
-    def element(symbol, pp):
-        """``(orbitals, tables)`` of one element, built once for all its
-        atoms: the ``(state, radial)`` pairs of the minimal set (``radial``
-        ``None`` is the stored partial wave) and the radial tables of
-        everything else."""
-        # Empty scattering or bound-reference channels improve the nonlocal
-        # operator without adding electrons. They supply projectors, not
-        # minimal valence basis functions (or a new polarization parent).
-        # Every occupied state gets a function -- a semicore channel two --
-        # and so does an empty channel's bound level (calcium's 3d); only the
-        # valence ones are split into zetas and polarized.
-        states = basis_states(pp)
-        n_zeta, n_polarization = resolve_zeta(size_of(symbol))
-        if n_zeta == 1 and n_polarization == 0:
-            # Minimal valence set: the original path, unchanged.
-            orbitals, existing = [], []
-            for state in states:
-                l = state.l
-                radial = first_radial(symbol, pp, l, state.index, state.empty)
-                if k_c is None and first_zeta is None and not state.empty:
-                    radial = None          # the stored table, byte for byte
-                else:
-                    radial = filtered(radial, pp.r, l)
-                orbitals.append((state, radial))
-                existing.append((state.n, l, pp.r,
-                                 pp.channels[l].pseudo_waves[state.index]
-                                 if radial is None else radial))
-            extra = ([] if diffuse_shells is None
-                     else diffuse_shells(symbol, pp, existing, k_c))
-            return orbitals, extra
-
-        tables = []
-        valence = [state for state in states if not state.semicore]
-        outer = max(valence, key=lambda state: state.l)
-        l_max = outer.l
-        for state in states:
-            for table in zeta_tables(pp.r,
-                                     first_radial(symbol, pp, state.l,
-                                                  state.index, state.empty),
-                                     state.n, state.l,
-                                     1 if state.semicore else n_zeta,
-                                     split, tail_norms=tail_norms,
-                                     context=_context()):
-                tables.append(filtered_table(table))
-        # Polarization: raise the outermost channel to l+1.  Solving a new
-        # confined orbital is not an option here -- there is no pseudopotential
-        # channel for an unoccupied l -- so the shape is r^k R_outer(r),
-        # normalized: it keeps the channel's range and vanishes as r^l at the
-        # nucleus.  (Reusing R_outer itself gave R_p(0) != 0, a function
-        # discontinuous at its own center whose derivative blew up whenever a
-        # nucleus sat on a grid node.)
-        outermost = first_radial(symbol, pp, l_max, outer.index, outer.empty)
-        r_table = np.asarray(pp.r, dtype=float)
-        custom = (polarization_shape(symbol, pp)
-                  if polarization_shape is not None and n_polarization > 0
-                  else None)
-        if custom is not None:
-            l, shape = custom
-            # For the polarization zetas the tail norms are squared-norm
-            # fractions (the valence zetas square them); `last_zeta` keeps its
-            # convention for them too, rather than mixing the two.
-            tails = (None if tail_norms is None
-                     else tail_norms or DEFAULT_TAIL_NORMS)
-            for table in zeta_tables(pp.r, shape, l + 1, l, n_polarization,
-                                     split, tail_norms=tails, fractions=True,
-                                     context=_context()):
-                table.polarization = True
-                tables.append(filtered_table(table))
-            n_polarization = 0                 # the loop below has nothing left
-        for offset in range(n_polarization):
-            l = l_max + 1 + offset
-            shape = _native.pao_power_shape(r_table, outermost, offset + 1)
-            for table in zeta_tables(pp.r, shape, l + 1, l, 1, split,
-                                     context=_context()):
-                table.polarization = True
-                # `filter_table` copies the record, `polarization` included.
-                tables.append(filtered_table(table))
-
-        if diffuse_shells is not None:
-            # After the polarization shells, still on this atom: the
-            # atom-major order the populations and `atom_of_orbital` rely on.
-            tables.extend(diffuse_shells(
-                symbol, pp, [(t.n, t.l, t.r, t.values) for t in tables], k_c))
-        return [], tables
-
-    built: dict = {}
+    spec = resolve_family(family)
+    resolved = spec.resolved_options(dict(options or {}))
+    unique = {symbol: potentials[symbol] for symbol in dict.fromkeys(symbols)}
+    report = {} if report is None else report
+    for key in ("confinement", "polarization", "diffuse"):
+        report.setdefault(key, {})
+    built = basis_tables(_context(), spec, resolved, unique, filter_wavevector, report)
     functions, owners = [], []
     for index, (symbol, position) in enumerate(zip(symbols, positions)):
-        pp = potentials[symbol]
-        if symbol not in built:
-            built[symbol] = element(symbol, pp)
-        orbitals, tables = built[symbol]
-        atom_functions = _orbitals(pp, orbitals, position, units, real)
-        atom_functions.extend(_shells(tables, position, units, real))
+        tables = [RadialTable(r=t.r, values=t.values, n=int(t.n), l=int(t.l), zeta=int(t.zeta),
+                              polarization=bool(t.polarization), diffuse=bool(t.diffuse))
+                  for t in built[symbol]]
+        atom_functions = _shells(tables, position, units, real)
         functions.extend(atom_functions)
         owners.extend(index for _ in atom_functions)
     return functions, owners

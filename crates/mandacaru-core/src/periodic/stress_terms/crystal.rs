@@ -158,6 +158,12 @@ pub fn crystal_strain<'a>(
         check_request(&layout)?;
     }
     refuse(crystal)?;
+    if layout.spins != crystal.spins {
+        return Err(invalid(&format!(
+            "crystal stress: the layout has {} spin channels, the crystal {}",
+            layout.spins, crystal.spins
+        )));
+    }
     if layout.request.spinor != spin_orbit.is_some() {
         return Err(Error::Unsupported(if layout.request.spinor {
             "the analytic crystal stress of a spinor crystal needs its spin-orbit projectors \

@@ -13,7 +13,7 @@ from ase import Atoms
 import numpy as np
 import pytest
 
-from mandacaru.core.symmetry import crystal_symmetry
+from .space_group import crystal_symmetry
 
 try:
     from .symmetry.compare import EQUIV, MUTANTS, compare

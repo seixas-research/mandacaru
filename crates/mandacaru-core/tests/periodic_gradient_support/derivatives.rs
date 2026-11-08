@@ -92,6 +92,10 @@ impl Derivatives for ToyDerivatives {
             Term::Kinetic => (Kind::Hopping, 1.0),
             Term::Local => (Kind::Local, fields.v),
             Term::ShortRange => (Kind::Short, 1.0),
+            // The toy has no meta-GGA; the engine asks for this term only when tau is needed.
+            Term::KineticDensity => {
+                return Err(mandacaru_core::Error::Unsupported("the toy has no meta-GGA".into()))
+            }
         };
         Ok(self.row_derivative(kind, k).map(|g| g * c(scale)))
     }

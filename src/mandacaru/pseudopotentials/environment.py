@@ -78,7 +78,7 @@ LIBRARY_FOLDERS = {("paw-lcao", "lda", "scalar"): "lda-sr",
 #: quantum solvers) or with LDA reads, the scalar-relativistic LDA set.
 DEFAULT_LIBRARY_FOLDER = "lda-sr"
 #: The functional whose datasets each Kohn-Sham functional reads, by the
-#: canonical names of :data:`~mandacaru.integrals.exchange_correlation.GRID_FUNCTIONALS`.
+#: canonical Kohn-Sham functional names.
 #: PBE has its own set; the screened hybrid built on it and the meta-GGAs,
 #: for which no datasets are generated, read the PBE set too.
 DATASET_FUNCTIONALS = {"lda": "lda", "pbe": "pbe", "hse06": "pbe",

@@ -180,10 +180,7 @@ def test_counts_and_sdk_gate_streams_use_native_core(monkeypatch):
     assert actual == pytest.approx(expected, abs=1e-14)
     generators = [PauliSum({"XY": .5j, "YX": -.5j}, num_qubits=2)]
     expected = list(build_provider("qiskit")._emit(2, [0], generators, [.37]))
-    import mandacaru.backends.providers as providers
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Python generator compilation was used")
-    monkeypatch.setattr(providers, "pauli_rotations", forbidden)
+    # The gate stream has one compiler, the native one (the Python fallback is deleted).
     for name in ["qiskit", "braket", "cirq"]:
         native = build_provider(name, context=_native.Context(threads=1))
         assert list(native._emit(2, [0], generators, [.37])) == expected

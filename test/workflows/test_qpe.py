@@ -189,7 +189,7 @@ class TestMemoryCheck:
     def test_estimate_counts_the_full_register(self):
         est = qpe_memory_estimate(4, 10)
         assert est.statevector_bytes == 16 * 2 ** 14
-        assert est.working_bytes == qpe_module.WORKING_SET_FACTOR * est.statevector_bytes
+        assert est.working_bytes == 3 * est.statevector_bytes
         assert est.unitary_bytes == 16 * 4 ** 4
         assert "2^14 amplitudes" in est.summary()
         assert qpe_memory_estimate(30, 20).total_bytes > 2 ** 50

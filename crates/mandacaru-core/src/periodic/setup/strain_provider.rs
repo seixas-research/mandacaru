@@ -201,6 +201,13 @@ impl<'a> StrainSetup<'a> {
         let strain = || StrainSamples::new(shells, self.lattice(), &self.mesh, kpoint);
         let values = || bloch_values(ctx, shells, self.lattice(), &self.mesh, kpoint);
         let tensor: Matrices = match term {
+            // The meta-GGA stress is its own package (MG-F5b); the stress engine refuses a
+            // meta-GGA before it asks, so this arm is a guard, never a zero.
+            Term::KineticDensity => {
+                return Err(crate::Error::Unsupported(
+                    "crystal stress is not available for a meta-GGA".into(),
+                ))
+            }
             Term::Overlap => {
                 grid_strain(ctx, &self.mesh, &strain(), values()?.as_slice(), None, true)?
             }

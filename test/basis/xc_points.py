@@ -1,22 +1,19 @@
-"""Array interface to Rust spin-resolved exchange-correlation kernels.
+"""Test helper: broadcast density arrays onto the native point kernels (``Context.xc_points``).
 
-Point energies and every density, gradient and kinetic-density derivative are
-computed by the native engine. Python only broadcasts and reshapes arrays.
-The HSE intermediate uses full-range hole exchange; solvers explicitly add
-short-range semilocal subtraction and screened exact exchange.
+The exchange-correlation values and every derivative are computed by the Rust engine; this only
+stacks and reshapes arrays, so the tests of ``test_xc.py`` and ``test_r2scan.py`` can pin the native
+functionals against their own derivatives and independent values.
 """
-from __future__ import annotations
-
 import numpy as np
 
-from .._native import Context
+from mandacaru._native import Context
 
 FUNCTIONALS = ("lda", "pbe", "r2scan", "hse06")
 
 
 def spin_partials(functional, rho_up, rho_dn, sigma_uu=None, sigma_ud=None,
                   sigma_dd=None, tau_up=None, tau_dn=None, *, relativistic=False):
-    """Return energy density and seven partials, in atomic units."""
+    """Energy density and seven partials, atomic units."""
     if functional not in FUNCTIONALS:
         raise ValueError(f"expected canonical functional in {FUNCTIONALS}")
     arrays = np.broadcast_arrays(*(np.asarray(0. if x is None else x, dtype=float)
@@ -36,9 +33,9 @@ def spin_partials(functional, rho_up, rho_dn, sigma_uu=None, sigma_ud=None,
 
 def unpolarized_partials(functional, rho, sigma, tau):
     """Energy and density/sigma/tau derivatives at equal spin populations."""
-    up, contraction, kinetic = np.broadcast_arrays(np.asarray(rho, dtype=float)*.5,
-                                                   np.asarray(sigma, dtype=float)*.25,
-                                                   np.asarray(tau, dtype=float)*.5)
+    up, contraction, kinetic = np.broadcast_arrays(np.asarray(rho, dtype=float) * .5,
+                                                   np.asarray(sigma, dtype=float) * .25,
+                                                   np.asarray(tau, dtype=float) * .5)
     f, vu, vd, suu, sud, sdd, tu, td = spin_partials(
         functional, up, up, contraction, contraction, contraction, kinetic, kinetic)
-    return f, .5*(vu+vd), .25*(suu+sud+sdd), .5*(tu+td)
+    return f, .5 * (vu + vd), .25 * (suu + sud + sdd), .5 * (tu + td)

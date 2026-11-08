@@ -17,6 +17,17 @@ pub struct PyPropagator {
     precision: Precision,
 }
 impl PyPropagator {
+    fn same_precision(&self, others: &[&PyPropagator]) -> PyResult<()> {
+        if others.iter().any(|other| other.precision != self.precision) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "every propagator of one workflow must store states at one precision",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl PyPropagator {
     pub fn new(
         context: &Context,
         n: usize,
@@ -86,6 +97,89 @@ impl PyPropagator {
             })
             .map_err(error)?;
         state_array(py, &[length], out)
+    }
+    /// `C(t_i) = <U(t_i) V psi | V U(t_i) psi>`, `i < samples` (`Propagator::echo_correlation`),
+    /// with `V` the operator of `kick`.
+    fn echo_correlation<'py>(
+        &self,
+        py: Python<'py>,
+        kick: PyRef<'_, PyPropagator>,
+        state: &Bound<'py, PyAny>,
+        dt: f64,
+        samples: usize,
+        steps: usize,
+    ) -> PyResult<Bound<'py, numpy::PyArray1<num_complex::Complex64>>> {
+        self.same_precision(&[&kick])?;
+        let input = input_state(&self.context, self.precision, state)?;
+        let kick_operator: &mandacaru_core::quantum::dynamics::Propagator = &kick.inner;
+        let values = py
+            .detach(|| {
+                typed!(input, values => {
+                    self.inner.echo_correlation(&self.context, kick_operator, values, dt, samples, steps)
+                })
+            })
+            .map_err(error)?;
+        Ok(numpy::PyArray1::from_vec(py, values))
+    }
+    /// `(U_k psi, C^(2k), <M>, eigenvalue)` (`Propagator::nested_otoc`).
+    #[allow(clippy::too_many_arguments)]
+    fn nested_otoc<'py>(
+        &self,
+        py: Python<'py>,
+        butterfly: PyRef<'_, PyPropagator>,
+        measurement: PyRef<'_, PyPropagator>,
+        state: &Bound<'py, PyAny>,
+        time: f64,
+        steps: usize,
+        order: usize,
+        tolerance: f64,
+    ) -> PyResult<(Bound<'py, PyAny>, (f64, f64), f64, Option<i8>)> {
+        self.same_precision(&[&butterfly, &measurement])?;
+        let input = input_state(&self.context, self.precision, state)?;
+        let length = input.len();
+        let (b, m): (&mandacaru_core::quantum::dynamics::Propagator, &mandacaru_core::quantum::dynamics::Propagator) =
+            (&butterfly.inner, &measurement.inner);
+        let mut scalars = (num_complex::Complex64::new(0., 0.), 0., None);
+        let out = py
+            .detach(|| {
+                typed!(input, values => {
+                    self.inner
+                        .nested_otoc(&self.context, b, m, values, time, steps, order, tolerance)
+                        .map(|(state, correlator, measured, eigenvalue)| {
+                            scalars = (correlator, measured, eigenvalue);
+                            mandacaru_core::quantum::Amplitude::wrap(state)
+                        })
+                })
+            })
+            .map_err(error)?;
+        Ok((state_array(py, &[length], out)?, (scalars.0.re, scalars.0.im), scalars.1, scalars.2))
+    }
+    /// `C^(2k)(j dt)`, `j < samples` (`Propagator::nested_otoc_series`).
+    #[allow(clippy::too_many_arguments)]
+    fn nested_otoc_series<'py>(
+        &self,
+        py: Python<'py>,
+        butterfly: PyRef<'_, PyPropagator>,
+        measurement: PyRef<'_, PyPropagator>,
+        state: &Bound<'py, PyAny>,
+        dt: f64,
+        samples: usize,
+        steps: usize,
+        order: usize,
+        tolerance: f64,
+    ) -> PyResult<Bound<'py, numpy::PyArray1<num_complex::Complex64>>> {
+        self.same_precision(&[&butterfly, &measurement])?;
+        let input = input_state(&self.context, self.precision, state)?;
+        let (b, m): (&mandacaru_core::quantum::dynamics::Propagator, &mandacaru_core::quantum::dynamics::Propagator) =
+            (&butterfly.inner, &measurement.inner);
+        let values = py
+            .detach(|| {
+                typed!(input, values => {
+                    self.inner.nested_otoc_series(&self.context, b, m, values, dt, samples, steps, order, tolerance)
+                })
+            })
+            .map_err(error)?;
+        Ok(numpy::PyArray1::from_vec(py, values))
     }
 }
 pub fn qpe<'py>(
@@ -269,4 +363,41 @@ pub fn givens_decomposition<'py>(
     let signs: Vec<f64> = (0..m).map(|i| u[i * m + i]).collect();
     let py_signs = crate::arrays::array(py, &[m], signs)?;
     Ok((rotations, py_signs))
+}
+
+/// `(energies, amplitudes)` of a sampled correlation (`dynamics::fourier_spectrum`).
+#[pyfunction]
+#[pyo3(signature = (signal, dt, *, elastic = 0.0, window = "hann"))]
+pub fn fourier_spectrum<'py>(
+    py: Python<'py>,
+    signal: numpy::PyReadonlyArray1<'py, numpy::Complex64>,
+    dt: f64,
+    elastic: f64,
+    window: &str,
+) -> PyResult<(Bound<'py, numpy::PyArray1<f64>>, Bound<'py, numpy::PyArray1<num_complex::Complex64>>)> {
+    let hann = match window {
+        "hann" => true,
+        "none" => false,
+        _ => return Err(pyo3::exceptions::PyValueError::new_err("window must be 'hann' or 'none'")),
+    };
+    let signal = signal.as_slice()?.to_vec();
+    let ctx = mandacaru_core::Context::new(Some(1), 1 << 28).map_err(error)?;
+    let (energies, amplitudes) = py
+        .detach(|| mandacaru_core::quantum::dynamics::fourier_spectrum(&ctx, &signal, dt, elastic, hann))
+        .map_err(error)?;
+    Ok((numpy::PyArray1::from_vec(py, energies), numpy::PyArray1::from_vec(py, amplitudes)))
+}
+
+/// `(statevector, working, unitary, dense)` bytes of a QPE simulation (`dynamics::qpe_memory`).
+#[pyfunction]
+#[pyo3(signature = (system, evaluation, dense = None, precision = "float64"))]
+pub fn qpe_memory(system: usize, evaluation: usize, dense: Option<bool>, precision: &str)
+    -> PyResult<(u128, u128, u128, bool)>
+{
+    let bytes = match parse_precision(precision)? {
+        Precision::Float64 => 16,
+        Precision::Float32 => 8,
+    };
+    let m = mandacaru_core::quantum::dynamics::qpe_memory(system, evaluation, dense, bytes).map_err(error)?;
+    Ok((m.statevector, m.working, m.unitary, m.dense))
 }

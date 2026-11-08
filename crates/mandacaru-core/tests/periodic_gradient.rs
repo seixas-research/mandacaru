@@ -116,10 +116,15 @@ fn the_engine_force_is_the_derivative_of_the_converged_energy_for_every_scenario
         for (name, term) in breakdown.terms() {
             let size = largest(term);
             eprintln!("  {name}: {size:e}");
-            if name.starts_with("spin_orbit") || name.starts_with("exchange") {
+            if name.starts_with("spin_orbit")
+                || name.starts_with("exchange")
+                || name == "kinetic_density"
+                || name == "core_kinetic"
+            {
                 // A scalar semilocal request has neither a spin-orbit term
                 // (periodic_gradient_spin_orbit_hook.rs) nor an exchange term
-                // (periodic_gradient_hybrid.rs).
+                // (periodic_gradient_hybrid.rs) nor the meta-GGA terms
+                // (periodic_gradient_meta.rs).
                 assert_eq!(size, 0., "scenario {index}: {name}");
             } else {
                 assert!(size > 1e-4, "scenario {index}: {name} is {size:e}");

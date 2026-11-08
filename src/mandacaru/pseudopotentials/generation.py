@@ -33,10 +33,10 @@ from numbers import Integral, Real
 
 from .. import _native
 from ..basis.relativity import _resolve as _resolve_relativity
-from ..basis.xc import _resolve as _resolve_xc
 from .defects import GhostStateError, check_mode
 from .native_context import context
 from .record import dataset_from_record
+
 
 PAW_FAMILY = "paw-lcao"
 UPAW_FAMILY = "upaw-lcao"
@@ -92,7 +92,8 @@ def _options(family: str, xc, relativity, ghosts, atom, r_cut, rc_factor, r_cut_
         raise NotImplementedError(
             "norm_deficit=None (free smooth waves) is no longer available: the dataset "
             "record stores the norm deficit, so a free construction has no place in it")
-    options = {"family": family, "xc": _resolve_xc(xc),
+    if xc not in ("lda", "pbe"): raise ValueError(f"expected canonical XC name in ('lda', 'pbe'), got {xc!r}")  # noqa: E701
+    options = {"family": family, "xc": xc,
                "relativity": _resolve_relativity(relativity),
                "ghosts": check_mode(ghosts)}
     named = {"rc_factor": rc_factor, "r_cut_local": r_cut_local,

@@ -25,9 +25,8 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.backends.providers import (BACKEND_PROVIDERS, basis_state_index,
-                                          build_provider, normalize_provider,
-                                          pauli_rotations, provider_available)
+from mandacaru.backends.providers import (BACKEND_PROVIDERS, build_provider,
+                                          normalize_provider, provider_available)
 from mandacaru.circuits.pools import build_pool
 from mandacaru.core import PauliSum
 
@@ -101,23 +100,24 @@ class TestAnglesMatchGenerators:
 
 
 class TestPauliRotationDecomposition:
+    """The native compiler (``execution::compile``) turns ``i c P`` into one rotation by ``c``."""
+
+    @staticmethod
+    def rotations(generator, theta=1.0):
+        gates = list(build_provider("qiskit")._emit(2, [], [generator], [theta]))
+        return [g[2] for g in gates if g[0] == "rz"]
+
     def test_extracts_imaginary_coefficients(self):
         generator = PauliSum({"XY": 0.5j, "YX": -0.5j, "II": 0.0})
-        assert pauli_rotations(generator) == [("XY", 0.5), ("YX", -0.5)]
+        # exp(i a P) = R_z(-2a) after the basis change: one rotation per string.
+        assert sorted(self.rotations(generator)) == pytest.approx([-1.0, 1.0])
 
     def test_drops_global_phase_identity(self):
-        assert pauli_rotations(PauliSum({"II": 3.0j})) == []
+        assert list(build_provider("qiskit")._emit(2, [], [PauliSum({"II": 3.0j})], [1.0])) == []
 
     def test_rejects_non_anti_hermitian(self):
         with pytest.raises(ValueError, match="anti-Hermitian"):
-            pauli_rotations(PauliSum({"XY": 0.5}))
-
-    def test_basis_state_index(self):
-        vec = np.zeros(8, dtype=complex)
-        vec[5] = 1.0
-        assert basis_state_index(vec) == 5
-        vec[2] = 1.0                                  # a superposition
-        assert basis_state_index(vec) is None
+            self.rotations(PauliSum({"XY": 0.5}))
 
 
 # --------------------------------------------------------------------------- #

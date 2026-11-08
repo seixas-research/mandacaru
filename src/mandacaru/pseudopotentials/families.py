@@ -362,38 +362,3 @@ def resolve_family(name=None) -> FamilySpec:
     return spec
 
 
-def pseudo_basis_arguments(family, options, *, confinement=None,
-                           polarization=None, diffuse=None) -> dict:
-    """Keyword arguments of :func:`~.orbitals.pseudo_basis` for ``options``.
-
-    The one place a basis dict is turned into a construction, shared by the
-    Hamiltonian builder and the dry run so the two cannot count different
-    bases.  ``confinement`` / ``polarization`` (optional dicts) receive what
-    the hooks resolve -- each orbital's cutoff radius, the polarization
-    shell's -- for the run log, and ``diffuse`` (optional) the diffuse shells
-    (:mod:`.diffuse`).
-
-    The split-valence scheme is ``zeta_split`` (``"first_zeta"`` unless
-    written), and the scheme fixes its own tail norms or split norm
-    (:func:`~mandacaru.models.radial.resolve_split_scheme`).
-    """
-    from ..models.radial import resolve_split_scheme
-
-    spec = resolve_family(family)
-    split_norm, tail_norms = resolve_split_scheme(options.get("zeta_split"))
-    arguments = {"size": options.get("size", "SZ"), "split_norm": split_norm,
-                 "tail_norms": tail_norms}
-    if "energy_shift" in spec.options:
-        from .confinement import first_zeta_factory, polarization_factory
-        arguments["first_zeta"] = first_zeta_factory(
-            options.get("energy_shift"), confinement,
-            options.get("confinement_potential"))
-        arguments["polarization_shape"] = polarization_factory(
-            options.get("polarization_method"), options.get("energy_shift"),
-            polarization, options.get("confinement_potential"))
-    if "diffuse" in spec.options:
-        from .diffuse import diffuse_factory
-        hook = diffuse_factory(options.get("diffuse"), diffuse)
-        if hook is not None:
-            arguments["diffuse_shells"] = hook
-    return arguments
