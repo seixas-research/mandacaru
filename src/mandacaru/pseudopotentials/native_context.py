@@ -8,15 +8,12 @@
 
 """The native execution context the PAW radial routines run in."""
 
-from __future__ import annotations
-
 from functools import lru_cache
+import os
 
 from .. import _native
 
 
-@lru_cache(maxsize=1)
-def context() -> _native.Context:
-    """One single-threaded context shared by the radial routines of a
-    process (dataset builds parallelize across processes, not inside one)."""
-    return _native.Context(threads=1)
+@lru_cache(maxsize=8)
+def context(threads=None):
+    return _native.Context(threads=threads or int(os.environ.get("OMP_NUM_THREADS", "8")))

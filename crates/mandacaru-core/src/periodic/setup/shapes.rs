@@ -10,7 +10,7 @@ use crate::{
 use mandacaru_kernels::two_center::spherical_bessel;
 use nalgebra::{Matrix3, Vector3};
 use num_complex::Complex64;
-use std::{collections::BTreeMap, f64::consts::PI};
+use std::{collections::BTreeMap, f64::consts::PI, sync::Mutex};
 
 /// Reciprocal radius (Bohr^-1) of the dense compensation sums.
 pub const COMPENSATION_CUTOFF: f64 = 15.;
@@ -172,9 +172,20 @@ pub fn radial_transform(
 }
 
 /// `F_L(q)` of one shape on a uniform table, linearly interpolated.
+#[derive(Clone, Debug)]
 pub struct ShapeTable {
     pub q: Vec<f64>,
     pub f: Vec<f64>,
+}
+
+static CACHED_SHAPE_TABLES: Mutex<Option<BTreeMap<(i64, usize), ShapeTable>>> = Mutex::new(None);
+
+pub fn clear_shape_cache() {
+    if let Ok(mut lock) = CACHED_SHAPE_TABLES.lock() {
+        if let Some(map) = lock.as_mut() {
+            map.clear();
+        }
+    }
 }
 impl ShapeTable {
     /// `np.interp`: clamped outside the table.
@@ -272,12 +283,48 @@ impl Shapes {
             }
         }
         let storage = ctx.reserve(crate::product(&[distinct.len(), points, 16])?)?;
-        for (radius, l) in distinct {
-            let r = linspace(0., radius, SHAPE_POINTS);
-            let shape = shape_function(&r, radius, l)?;
-            let f = radial_transform(ctx, &r, &shape, l, &q, Transient::of(ctx).radial_bytes)?;
-            tables.insert(key(radius, l), ShapeTable { q: q.clone(), f });
+
+        let mut needed: Vec<(f64, usize)> = Vec::new();
+        {
+            if let Ok(mut cache_guard) = CACHED_SHAPE_TABLES.lock() {
+                let cache = cache_guard.get_or_insert_with(BTreeMap::new);
+                for &(radius, l) in &distinct {
+                    let k = key(radius, l);
+                    if let Some(cached) = cache.get(&k) {
+                        if cached.q.last().copied().unwrap_or(0.0) >= top - 1e-9 {
+                            tables.insert(k, cached.clone());
+                            continue;
+                        }
+                    }
+                    needed.push((radius, l));
+                }
+            } else {
+                needed = distinct.clone();
+            }
         }
+
+        if !needed.is_empty() {
+            let mut newly_computed = Vec::new();
+            for (radius, l) in needed {
+                let r = linspace(0., radius, SHAPE_POINTS);
+                let shape = shape_function(&r, radius, l)?;
+                let f = radial_transform(ctx, &r, &shape, l, &q, Transient::of(ctx).radial_bytes)?;
+                let table = ShapeTable { q: q.clone(), f };
+                newly_computed.push((key(radius, l), table));
+            }
+            if let Ok(mut cache_guard) = CACHED_SHAPE_TABLES.lock() {
+                let cache = cache_guard.get_or_insert_with(BTreeMap::new);
+                for (k, table) in newly_computed {
+                    cache.insert(k, table.clone());
+                    tables.insert(k, table);
+                }
+            } else {
+                for (k, table) in newly_computed {
+                    tables.insert(k, table);
+                }
+            }
+        }
+
         Ok(Self {
             tables,
             top,

@@ -60,17 +60,23 @@ pub(super) fn screened_channels<'a>(
 ) -> Result<Vec<Channel<'a>>> {
     let mut out = channels(setup);
     let positions = integrals.geometry.positions();
-    let n = integrals.grid.index.points();
     // The table reaches the farthest grid point of any atom, as the setup's own
-    // (per atom) does; one spline per distinct shape.
+    // (per atom) does; one spline per distinct shape. Convexity of Euclidean distance
+    // guarantees the maximum occurs at one of the eight grid corners.
     let mut largest = 0f64;
-    for k in 0..n {
-        let point = integrals.grid.point(k);
-        for center in positions {
-            largest = largest.max(distance(
-                std::array::from_fn(|i| point[i] - center[i]),
-                [0.; 3],
-            ));
+    let [nx, ny, nz] = integrals.grid.index.shape();
+    for ix in [0, nx.saturating_sub(1)] {
+        for iy in [0, ny.saturating_sub(1)] {
+            for iz in [0, nz.saturating_sub(1)] {
+                let k = (ix * ny + iy) * nz + iz;
+                let point = integrals.grid.point(k);
+                for center in positions {
+                    largest = largest.max(distance(
+                        std::array::from_fn(|i| point[i] - center[i]),
+                        [0.; 3],
+                    ));
+                }
+            }
         }
     }
     let mut cache: Vec<((u64, usize), Arc<Cubic>)> = Vec::new();
@@ -223,51 +229,65 @@ pub(super) fn moments(
     // Coulomb coupling of two multipoles (the setup's electrostatic matrix) and
     // the local potentials of the other atoms in a compensation sphere.
     let positions = integrals.geometry.positions();
-    let mut u = DMatrix::<f64>::zeros(nch, nch);
-    let mut ionic = vec![0.; nch];
-    for (b, &s) in setup.atoms.iter().enumerate() {
-        let radius = setup.species[s].compensation_radius;
-        sphere(
-            radius,
-            0.,
-            ELECTROSTATIC[0],
-            ELECTROSTATIC[1],
-            ELECTROSTATIC[2],
-            |offset, r, weight| {
-                let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
-                for (j, cj) in channels.iter().enumerate().filter(|(_, c)| c.atom == b) {
-                    let density = shape(r, radius, cj.l) * harmonic(cj.l, cj.m, offset) * weight;
-                    for (i, ci) in channels.iter().enumerate() {
-                        let delta = std::array::from_fn(|k| point[k] - positions[ci.atom][k]);
-                        u[(i, j)] += ci.field(delta) * density;
+    let (u, ionic) = if let (Some(u), Some(ionic)) = (
+        integrals
+            .corrections
+            .as_ref()
+            .and_then(|c| c.electrostatic.as_ref()),
+        integrals
+            .corrections
+            .as_ref()
+            .and_then(|c| c.ionic.as_ref()),
+    ) {
+        (u.clone(), ionic.clone())
+    } else {
+        let mut u = DMatrix::<f64>::zeros(nch, nch);
+        let mut ionic = vec![0.; nch];
+        for (b, &s) in setup.atoms.iter().enumerate() {
+            let radius = setup.species[s].compensation_radius;
+            sphere(
+                radius,
+                0.,
+                ELECTROSTATIC[0],
+                ELECTROSTATIC[1],
+                ELECTROSTATIC[2],
+                |offset, r, weight| {
+                    let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
+                    for (j, cj) in channels.iter().enumerate().filter(|(_, c)| c.atom == b) {
+                        let density = shape(r, radius, cj.l) * harmonic(cj.l, cj.m, offset) * weight;
+                        for (i, ci) in channels.iter().enumerate() {
+                            let delta = std::array::from_fn(|k| point[k] - positions[ci.atom][k]);
+                            u[(i, j)] += ci.field(delta) * density;
+                        }
                     }
-                }
-                Ok(())
-            },
-        )?;
-        sphere(
-            radius,
-            0.,
-            IONIC[0],
-            IONIC[1],
-            IONIC[2],
-            |offset, r, weight| {
-                let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
-                let value: f64 = setup
-                    .atoms
-                    .iter()
-                    .enumerate()
-                    .filter(|(a, _)| *a != b)
-                    .map(|(a, &sa)| setup.species[sa].local(distance(point, positions[a])))
-                    .sum();
-                for (i, ch) in channels.iter().enumerate().filter(|(_, c)| c.atom == b) {
-                    ionic[i] +=
-                        weight * value * shape(r, radius, ch.l) * harmonic(ch.l, ch.m, offset);
-                }
-                Ok(())
-            },
-        )?;
-    }
+                    Ok(())
+                },
+            )?;
+            sphere(
+                radius,
+                0.,
+                IONIC[0],
+                IONIC[1],
+                IONIC[2],
+                |offset, r, weight| {
+                    let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
+                    let value: f64 = setup
+                        .atoms
+                        .iter()
+                        .enumerate()
+                        .filter(|(a, _)| *a != b)
+                        .map(|(a, &sa)| setup.species[sa].local(distance(point, positions[a])))
+                        .sum();
+                    for (i, ch) in channels.iter().enumerate().filter(|(_, c)| c.atom == b) {
+                        ionic[i] +=
+                            weight * value * shape(r, radius, ch.l) * harmonic(ch.l, ch.m, offset);
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        (u, ionic)
+    };
     let usym = (&u + u.transpose()) * 0.5;
     Ok(Moments {
         q,
@@ -319,10 +339,33 @@ pub(super) fn electrostatic_force(
     weights: &DMatrix<f64>,
 ) -> Result<Vec<f64>> {
     let positions = integrals.geometry.positions();
-    let mut force = vec![0.; 3 * positions.len()];
-    let mut source = vec![0.; channels.len()];
-    for (b, &s) in setup.atoms.iter().enumerate() {
+    let n_atoms = setup.atoms.len();
+
+    let compute_atom = |b: usize| -> Result<Vec<f64>> {
+        let s = setup.atoms[b];
         let radius = setup.species[s].compensation_radius;
+        let mut force = vec![0.; 3 * positions.len()];
+        let b_channels: Vec<(usize, usize, i32)> = channels
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.atom == b)
+            .map(|(j, c)| (j, c.l, c.m))
+            .collect();
+        if b_channels.is_empty() {
+            return Ok(force);
+        }
+        let other_channels: Vec<usize> = channels
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.atom != b)
+            .map(|(i, _)| i)
+            .collect();
+        if other_channels.is_empty() {
+            return Ok(force);
+        }
+        let mut a_j = vec![0.; b_channels.len()];
+        let mut source = vec![0.; channels.len()];
+
         sphere(
             radius,
             0.,
@@ -330,28 +373,38 @@ pub(super) fn electrostatic_force(
             ELECTROSTATIC[1],
             ELECTROSTATIC[2],
             |offset, r, weight| {
-                let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
-                for (i, source) in source.iter_mut().enumerate() {
-                    *source = channels
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, c)| c.atom == b)
-                        .map(|(j, cj)| {
-                            weights[(i, j)]
-                                * shape(r, radius, cj.l)
-                                * harmonic(cj.l, cj.m, offset)
-                                * weight
-                        })
-                        .sum();
+                let mut any_non_zero = false;
+                for (idx, &(_, l, m)) in b_channels.iter().enumerate() {
+                    let val = shape(r, radius, l) * harmonic(l, m, offset) * weight;
+                    a_j[idx] = val;
+                    if val != 0. {
+                        any_non_zero = true;
+                    }
                 }
-                for (i, ci) in channels.iter().enumerate().filter(|(_, c)| c.atom != b) {
-                    if source[i] == 0. {
+                if !any_non_zero {
+                    return Ok(());
+                }
+                let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
+                for &i in &other_channels {
+                    let mut s = 0.;
+                    for (idx, &(j, _, _)) in b_channels.iter().enumerate() {
+                        let w = weights[(i, j)];
+                        if w != 0. {
+                            s += w * a_j[idx];
+                        }
+                    }
+                    source[i] = s;
+                }
+                for &i in &other_channels {
+                    let src = source[i];
+                    if src == 0. {
                         continue;
                     }
+                    let ci = &channels[i];
                     let delta = std::array::from_fn(|k| point[k] - positions[ci.atom][k]);
                     let gradient = ci.gradient(delta);
                     for axis in 0..3 {
-                        let value = gradient[axis] * source[i];
+                        let value = gradient[axis] * src;
                         force[3 * ci.atom + axis] -= value;
                         force[3 * b + axis] += value;
                     }
@@ -359,8 +412,34 @@ pub(super) fn electrostatic_force(
                 Ok(())
             },
         )?;
+        Ok(force)
+    };
+
+    let workers = integrals.context.threads().max(1).min(n_atoms.max(1));
+    let mut total_force = vec![0.; 3 * positions.len()];
+    if workers <= 1 {
+        for b in 0..n_atoms {
+            let part = compute_atom(b)?;
+            for (tot, val) in total_force.iter_mut().zip(part) {
+                *tot += val;
+            }
+        }
+    } else {
+        integrals.context.run(|| {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..n_atoms)
+                    .map(|b| mandacaru_kernels::runtime::spawn(scope, move || compute_atom(b)))
+                    .collect();
+                for handle in handles {
+                    let part = handle.join().unwrap().unwrap();
+                    for (tot, val) in total_force.iter_mut().zip(part) {
+                        *tot += val;
+                    }
+                }
+            })
+        });
     }
-    Ok(force)
+    Ok(total_force)
 }
 
 /// The force on the atoms from `sum_A coefficient[A] ionic[A]`.
@@ -415,13 +494,15 @@ pub(super) fn ionic_force(
 pub(super) fn field_force(
     integrals: &MolecularIntegrals,
     channels: &[Channel<'_>],
-    weight: impl Fn(usize, usize) -> f64,
+    weight: impl Fn(usize, usize) -> f64 + Sync,
 ) -> Result<Vec<f64>> {
     let positions = integrals.geometry.positions();
     let n = integrals.grid.index.points();
     let dv = integrals.grid.index.dv();
-    let mut force = vec![0.; 3 * positions.len()];
-    for (a, channel) in channels.iter().enumerate() {
+    let nch = channels.len();
+
+    let compute_channel = |a: usize| -> [f64; 3] {
+        let channel = &channels[a];
         let center = positions[channel.atom];
         let mut sum = [0.; 3];
         for k in 0..n {
@@ -436,8 +517,34 @@ pub(super) fn field_force(
                 sum[axis] -= w * gradient[axis];
             }
         }
-        for axis in 0..3 {
-            force[3 * channel.atom + axis] += dv * sum[axis];
+        sum
+    };
+
+    let workers = integrals.context.threads().max(1).min(nch.max(1));
+    let mut force = vec![0.; 3 * positions.len()];
+    if workers <= 1 {
+        for (a, channel) in channels.iter().enumerate() {
+            let sum = compute_channel(a);
+            for axis in 0..3 {
+                force[3 * channel.atom + axis] += dv * sum[axis];
+            }
+        }
+    } else {
+        let sums: Vec<[f64; 3]> = integrals.context.run(|| {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..nch)
+                    .map(|a| {
+                        mandacaru_kernels::runtime::spawn(scope, move || compute_channel(a))
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        });
+        for (a, channel) in channels.iter().enumerate() {
+            let sum = sums[a];
+            for axis in 0..3 {
+                force[3 * channel.atom + axis] += dv * sum[axis];
+            }
         }
     }
     Ok(force)

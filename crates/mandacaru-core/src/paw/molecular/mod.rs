@@ -132,10 +132,44 @@ fn projection(
     )?;
     let mut accumulator = PointAccumulator::new(ctx, m, p)?;
     let mut phi = vec![0.; m];
+    let max_radius = species
+        .channels
+        .iter()
+        .map(|ch| ch.radius.max(species.local_radius))
+        .fold(0.0f64, f64::max);
+    let active_orbitals: Vec<(usize, f64)> = basis
+        .orbitals
+        .iter()
+        .enumerate()
+        .filter_map(|(i, orbital)| {
+            let r_cut = match &orbital.radial {
+                crate::basis::Radial::Tabulated(table) => {
+                    *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
+                }
+                _ => f64::INFINITY,
+            };
+            let d = distance(center, orbital.center);
+            if d <= max_radius + r_cut {
+                Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+            } else {
+                None
+            }
+        })
+        .collect();
     projection_points(species, terms, |offset, target| {
+        if target.iter().all(|&t| t == 0.) {
+            return Ok(());
+        }
         let point = std::array::from_fn(|i| center[i] + offset[i]);
-        for (value, orbital) in phi.iter_mut().zip(&basis.orbitals) {
-            *value = orbital.evaluate(point);
+        phi.fill(0.);
+        for &(i, support2) in &active_orbitals {
+            let orbital = &basis.orbitals[i];
+            let r2 = (point[0] - orbital.center[0]).powi(2)
+                + (point[1] - orbital.center[1]).powi(2)
+                + (point[2] - orbital.center[2]).powi(2);
+            if r2 <= support2 {
+                phi[i] = orbital.evaluate(point);
+            }
         }
         accumulator.push(&phi, target)
     })?;
@@ -318,19 +352,41 @@ impl Setup {
         let species_terms = &self.species_terms;
         let m = basis.orbitals.len();
         let g = grid.index.points();
-        let c = atoms
-            .iter()
-            .enumerate()
-            .map(|(a, &s)| {
-                projection(
-                    ctx,
-                    &basis,
-                    &species[s],
-                    &species_terms[s],
-                    geometry.positions()[a],
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let c = if atoms.len() <= 1 || ctx.threads() <= 1 {
+            atoms
+                .iter()
+                .enumerate()
+                .map(|(a, &s)| {
+                    projection(
+                        ctx,
+                        &basis,
+                        &species[s],
+                        &species_terms[s],
+                        geometry.positions()[a],
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let basis_ref = &basis;
+            let geom_ref = &geometry;
+            ctx.run(|| {
+                std::thread::scope(|scope| {
+                    let mut handles = Vec::with_capacity(atoms.len());
+                    for (a, &s) in atoms.iter().enumerate() {
+                        let sp = &species[s];
+                        let st = &species_terms[s];
+                        let pos = geom_ref.positions()[a];
+                        handles.push(mandacaru_kernels::runtime::spawn(scope, move || {
+                            projection(ctx, basis_ref, sp, st, pos)
+                        }));
+                    }
+                    handles
+                        .into_iter()
+                        .map(|h| h.join().unwrap())
+                        .collect::<Result<Vec<_>>>()
+                })
+            })?
+        };
         let mut multipoles = Vec::new();
         for (a, &s) in atoms.iter().enumerate() {
             for ch in &species_terms[s].multipoles {
@@ -376,38 +432,171 @@ impl Setup {
         }
         let sigma = 1.4 * grid.spacings().into_iter().fold(0., f64::max);
         let mut external = ctx.allocate::<f64>(g)?;
-        for k in 0..g {
-            external.as_mut_slice()[k] = atoms
-                .iter()
-                .enumerate()
-                .map(|(a, &s)| {
-                    long_range(
-                        species[s].charge,
-                        sigma,
-                        distance(grid.point(k), geometry.positions()[a]),
-                    )
+        let workers = ctx.threads().max(1).min(g.max(1));
+        if workers <= 1 {
+            for k in 0..g {
+                external.as_mut_slice()[k] = atoms
+                    .iter()
+                    .enumerate()
+                    .map(|(a, &s)| {
+                        long_range(
+                            species[s].charge,
+                            sigma,
+                            distance(grid.point(k), geometry.positions()[a]),
+                        )
+                    })
+                    .sum();
+            }
+        } else {
+            let chunk = g.div_ceil(workers);
+            let ext_slice = external.as_mut_slice();
+            let grid_ref = &grid;
+            let geom_ref = &geometry;
+            let species_ref = species;
+            let atoms_ref = atoms;
+            ctx.run(|| {
+                std::thread::scope(|scope| {
+                    for (w, part) in ext_slice.chunks_mut(chunk).enumerate() {
+                        let start = w * chunk;
+                        mandacaru_kernels::runtime::spawn(scope, move || {
+                            for (i, val) in part.iter_mut().enumerate() {
+                                let k = start + i;
+                                *val = atoms_ref
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(a, &s)| {
+                                        long_range(
+                                            species_ref[s].charge,
+                                            sigma,
+                                            distance(grid_ref.point(k), geom_ref.positions()[a]),
+                                        )
+                                    })
+                                    .sum();
+                            }
+                        });
+                    }
+                });
+            });
+        }
+        let values = if atoms.len() <= 1 || ctx.threads() <= 1 {
+            let mut phi = vec![0.; m];
+            let mut weighted = vec![0.; m];
+            let mut local = PointAccumulator::new(ctx, m, m)?;
+            for (a, &s) in atoms.iter().enumerate() {
+                let sp = &species[s];
+                let radius = local_sphere_radius(sp, sigma);
+                let active_orbitals: Vec<(usize, f64)> = basis
+                    .orbitals
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, orbital)| {
+                        let r_cut = match &orbital.radial {
+                            crate::basis::Radial::Tabulated(table) => {
+                                *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
+                            }
+                            _ => f64::INFINITY,
+                        };
+                        let d = distance(geometry.positions()[a], orbital.center);
+                        if d <= radius + r_cut {
+                            Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
+                    let g_r = sp.local(r) - long_range(sp.charge, sigma, r);
+                    if g_r.abs() < 1e-15 {
+                        return Ok(());
+                    }
+                    let weight = weight * g_r;
+                    let point = std::array::from_fn(|i| geometry.positions()[a][i] + offset[i]);
+                    phi.fill(0.);
+                    for &(i, support2) in &active_orbitals {
+                        let orbital = &basis.orbitals[i];
+                        let r2 = (point[0] - orbital.center[0]).powi(2)
+                            + (point[1] - orbital.center[1]).powi(2)
+                            + (point[2] - orbital.center[2]).powi(2);
+                        if r2 <= support2 {
+                            phi[i] = orbital.evaluate(point);
+                        }
+                    }
+                    for &(i, _) in &active_orbitals {
+                        weighted[i] = weight * phi[i];
+                    }
+                    local.push(&phi, &weighted)
+                })?;
+            }
+            local.finish()?
+        } else {
+            let basis_ref = &basis;
+            let geom_ref = &geometry;
+            ctx.run(|| {
+                std::thread::scope(|scope| {
+                    let mut handles = Vec::with_capacity(atoms.len());
+                    for (a, &s) in atoms.iter().enumerate() {
+                        let sp = &species[s];
+                        let pos = geom_ref.positions()[a];
+                        handles.push(mandacaru_kernels::runtime::spawn(scope, move || {
+                            let mut phi = vec![0.; m];
+                            let mut weighted = vec![0.; m];
+                            let mut local = PointAccumulator::new(ctx, m, m)?;
+                            let radius = local_sphere_radius(sp, sigma);
+                            let active_orbitals: Vec<(usize, f64)> = basis_ref
+                                .orbitals
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, orbital)| {
+                                    let r_cut = match &orbital.radial {
+                                        crate::basis::Radial::Tabulated(table) => {
+                                            *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
+                                        }
+                                        _ => f64::INFINITY,
+                                    };
+                                    let d = distance(pos, orbital.center);
+                                    if d <= radius + r_cut {
+                                        Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
+                                let g_r = sp.local(r) - long_range(sp.charge, sigma, r);
+                                if g_r.abs() < 1e-15 {
+                                    return Ok(());
+                                }
+                                let weight = weight * g_r;
+                                let point = std::array::from_fn(|i| pos[i] + offset[i]);
+                                phi.fill(0.);
+                                for &(i, support2) in &active_orbitals {
+                                    let orbital = &basis_ref.orbitals[i];
+                                    let r2 = (point[0] - orbital.center[0]).powi(2)
+                                        + (point[1] - orbital.center[1]).powi(2)
+                                        + (point[2] - orbital.center[2]).powi(2);
+                                    if r2 <= support2 {
+                                        phi[i] = orbital.evaluate(point);
+                                    }
+                                }
+                                for &(i, _) in &active_orbitals {
+                                    weighted[i] = weight * phi[i];
+                                }
+                                local.push(&phi, &weighted)
+                            })?;
+                            local.finish()
+                        }));
+                    }
+                    let mut sum_buf = ctx.allocate::<f64>(m * m)?;
+                    for h in handles {
+                        let partial = h.join().unwrap()?;
+                        for (tot, val) in sum_buf.as_mut_slice().iter_mut().zip(partial.as_slice()) {
+                            *tot += val;
+                        }
+                    }
+                    Ok(sum_buf)
                 })
-                .sum();
-        }
-        let mut phi = vec![0.; m];
-        let mut weighted = vec![0.; m];
-        let mut local = PointAccumulator::new(ctx, m, m)?;
-        for (a, &s) in atoms.iter().enumerate() {
-            let sp = &species[s];
-            let radius = local_sphere_radius(sp, sigma);
-            sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
-                let point = std::array::from_fn(|i| geometry.positions()[a][i] + offset[i]);
-                let weight = weight * (sp.local(r) - long_range(sp.charge, sigma, r));
-                for (value, orbital) in phi.iter_mut().zip(&basis.orbitals) {
-                    *value = orbital.evaluate(point);
-                }
-                for (to, from) in weighted.iter_mut().zip(&phi) {
-                    *to = weight * from;
-                }
-                local.push(&phi, &weighted)
-            })?;
-        }
-        let values = local.finish()?;
+            })?
+        };
         v += DMatrix::from_column_slice(m, m, values.as_slice());
         drop(values);
         // The stack is built once, in the calculation's precision, and handed
@@ -424,96 +613,207 @@ impl Setup {
                 None
             };
             let mut field = ctx.allocate::<f64>(g)?;
+            let workers = ctx.threads().max(1).min(g.max(1));
+            let chunk = g.div_ceil(workers);
             for (a, ch) in multipoles.iter().enumerate() {
                 let sp = &species[atoms[ch.atom]];
-                for k in 0..g {
-                    let offset = std::array::from_fn(|i| {
-                        grid.point(k)[i] - geometry.positions()[ch.atom][i]
-                    });
-                    let weight = potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
-                        * harmonic(ch.l, ch.m, offset)
-                        * grid.index.dv();
-                    if projector.is_some() {
-                        field.as_mut_slice()[k] = weight;
-                    } else {
-                        for i in 0..m {
-                            for j in 0..m {
-                                ws[a][(i, j)] +=
-                                    weight * stored[i * g + k].widen() * stored[j * g + k].widen();
-                            }
-                        }
+                let ch_atom_pos = geometry.positions()[ch.atom];
+                let dv = grid.index.dv();
+                let field_slice = field.as_mut_slice();
+                if workers <= 1 {
+                    for k in 0..g {
+                        let offset = std::array::from_fn(|i| {
+                            grid.point(k)[i] - ch_atom_pos[i]
+                        });
+                        field_slice[k] = potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
+                            * harmonic(ch.l, ch.m, offset)
+                            * dv;
                     }
+                } else {
+                    let grid_ref = &grid;
+                    ctx.run(|| {
+                        std::thread::scope(|scope| {
+                            for (w, part) in field_slice.chunks_mut(chunk).enumerate() {
+                                let start = w * chunk;
+                                mandacaru_kernels::runtime::spawn(scope, move || {
+                                    for (i, val) in part.iter_mut().enumerate() {
+                                        let k = start + i;
+                                        let offset = std::array::from_fn(|dim| {
+                                            grid_ref.point(k)[dim] - ch_atom_pos[dim]
+                                        });
+                                        *val = potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
+                                            * harmonic(ch.l, ch.m, offset)
+                                            * dv;
+                                    }
+                                });
+                            }
+                        });
+                    });
                 }
                 if let Some(projector) = projector.as_mut() {
                     ws[a]
                         .as_mut_slice()
                         .copy_from_slice(projector.project(field.as_slice())?);
+                } else {
+                    for i in 0..m {
+                        for j in 0..m {
+                            for k in 0..g {
+                                ws[a][(i, j)] +=
+                                    field_slice[k] * stored[i * g + k].widen() * stored[j * g + k].widen();
+                            }
+                        }
+                    }
                 }
             }
         });
-        let mut electrostatic = PointAccumulator::new(ctx, nch, nch)?;
-        let mut potentials = vec![0.; nch];
-        let mut densities = vec![0.; nch];
-        for (b, &s) in atoms.iter().enumerate() {
-            let sp = &species[s];
-            sphere(
-                sp.compensation_radius,
-                0.,
-                ELECTROSTATIC[0],
-                ELECTROSTATIC[1],
-                ELECTROSTATIC[2],
-                |offset, r, weight| {
-                    let point: [f64; 3] =
-                        std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
-                    for (i, ci) in multipoles.iter().enumerate() {
-                        let delta =
-                            std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
-                        potentials[i] = potential(
-                            distance(delta, [0.; 3]),
-                            species[atoms[ci.atom]].compensation_radius,
-                            ci.l,
-                        ) * harmonic(ci.l, ci.m, delta);
-                    }
-                    densities.fill(0.);
-                    for (j, cj) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                        densities[j] = shape(r, sp.compensation_radius, cj.l)
-                            * harmonic(cj.l, cj.m, offset)
-                            * weight;
-                    }
-                    electrostatic.push(&potentials, &densities)
-                },
-            )?;
+        let mut total_ionic = vec![0.; nch];
+        let (u, ionic) = if atoms.len() <= 1 || ctx.threads() <= 1 {
+            let mut electrostatic = PointAccumulator::new(ctx, nch, nch)?;
+            let mut potentials = vec![0.; nch];
+            let mut densities = vec![0.; nch];
             let mut ionic = vec![0.; nch];
-            sphere(
-                sp.compensation_radius,
-                0.,
-                IONIC[0],
-                IONIC[1],
-                IONIC[2],
-                |offset, r, weight| {
-                    let point = std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
-                    let value: f64 = atoms
-                        .iter()
-                        .enumerate()
-                        .filter(|(a, _)| *a != b)
-                        .map(|(a, &s)| species[s].local(distance(point, geometry.positions()[a])))
-                        .sum();
-                    for (i, ch) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                        ionic[i] += weight
-                            * value
-                            * shape(r, sp.compensation_radius, ch.l)
-                            * harmonic(ch.l, ch.m, offset);
-                    }
-                    Ok(())
-                },
-            )?;
-            for (ch, value) in multipoles.iter().zip(ionic) {
-                v += &ch.q * value;
+            for (b, &s) in atoms.iter().enumerate() {
+                let sp = &species[s];
+                sphere(
+                    sp.compensation_radius,
+                    0.,
+                    ELECTROSTATIC[0],
+                    ELECTROSTATIC[1],
+                    ELECTROSTATIC[2],
+                    |offset, r, weight| {
+                        let point: [f64; 3] =
+                            std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
+                        for (i, ci) in multipoles.iter().enumerate() {
+                            let delta =
+                                std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
+                            potentials[i] = potential(
+                                distance(delta, [0.; 3]),
+                                species[atoms[ci.atom]].compensation_radius,
+                                ci.l,
+                            ) * harmonic(ci.l, ci.m, delta);
+                        }
+                        densities.fill(0.);
+                        for (j, cj) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
+                            densities[j] = shape(r, sp.compensation_radius, cj.l)
+                                * harmonic(cj.l, cj.m, offset)
+                                * weight;
+                        }
+                        electrostatic.push(&potentials, &densities)
+                    },
+                )?;
+                sphere(
+                    sp.compensation_radius,
+                    0.,
+                    IONIC[0],
+                    IONIC[1],
+                    IONIC[2],
+                    |offset, r, weight| {
+                        let point = std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
+                        let value: f64 = atoms
+                            .iter()
+                            .enumerate()
+                            .filter(|(a, _)| *a != b)
+                            .map(|(a, &s)| species[s].local(distance(point, geometry.positions()[a])))
+                            .sum();
+                        for (i, ch) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
+                            ionic[i] += weight
+                                * value
+                                * shape(r, sp.compensation_radius, ch.l)
+                                * harmonic(ch.l, ch.m, offset);
+                        }
+                        Ok(())
+                    },
+                )?;
             }
+            let values = electrostatic.finish()?;
+            let u = DMatrix::from_column_slice(nch, nch, values.as_slice());
+            (u, ionic)
+        } else {
+            let geom_ref = &geometry;
+            let multipoles_ref = &multipoles;
+            ctx.run(|| {
+                std::thread::scope(|scope| {
+                    let mut handles = Vec::with_capacity(atoms.len());
+                    for (b, &s) in atoms.iter().enumerate() {
+                        let sp = &species[s];
+                        let pos = geom_ref.positions()[b];
+                        handles.push(mandacaru_kernels::runtime::spawn(scope, move || {
+                            let mut electrostatic = PointAccumulator::new(ctx, nch, nch)?;
+                            let mut potentials = vec![0.; nch];
+                            let mut densities = vec![0.; nch];
+                            let mut ionic = vec![0.; nch];
+                            sphere(
+                                sp.compensation_radius,
+                                0.,
+                                ELECTROSTATIC[0],
+                                ELECTROSTATIC[1],
+                                ELECTROSTATIC[2],
+                                |offset, r, weight| {
+                                    let point: [f64; 3] =
+                                        std::array::from_fn(|i| pos[i] + offset[i]);
+                                    for (i, ci) in multipoles_ref.iter().enumerate() {
+                                        let delta =
+                                            std::array::from_fn(|k| point[k] - geom_ref.positions()[ci.atom][k]);
+                                        potentials[i] = potential(
+                                            distance(delta, [0.; 3]),
+                                            species[atoms[ci.atom]].compensation_radius,
+                                            ci.l,
+                                        ) * harmonic(ci.l, ci.m, delta);
+                                    }
+                                    densities.fill(0.);
+                                    for (j, cj) in multipoles_ref.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
+                                        densities[j] = shape(r, sp.compensation_radius, cj.l)
+                                            * harmonic(cj.l, cj.m, offset)
+                                            * weight;
+                                    }
+                                    electrostatic.push(&potentials, &densities)
+                                },
+                            )?;
+                            sphere(
+                                sp.compensation_radius,
+                                0.,
+                                IONIC[0],
+                                IONIC[1],
+                                IONIC[2],
+                                |offset, r, weight| {
+                                    let point = std::array::from_fn(|i| pos[i] + offset[i]);
+                                    let value: f64 = atoms
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(a, _)| *a != b)
+                                        .map(|(a, &s)| species[s].local(distance(point, geom_ref.positions()[a])))
+                                        .sum();
+                                    for (i, ch) in multipoles_ref.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
+                                        ionic[i] += weight
+                                            * value
+                                            * shape(r, sp.compensation_radius, ch.l)
+                                            * harmonic(ch.l, ch.m, offset);
+                                    }
+                                    Ok(())
+                                },
+                            )?;
+                            let values = electrostatic.finish()?;
+                            Ok((values, ionic))
+                        }));
+                    }
+                    let mut u_mat = DMatrix::zeros(nch, nch);
+                    let mut tot_ionic = vec![0.; nch];
+                    for h in handles {
+                        let (values, ion) = h.join().unwrap()?;
+                        let partial = DMatrix::from_column_slice(nch, nch, values.as_slice());
+                        u_mat += partial;
+                        for (tot, val) in tot_ionic.iter_mut().zip(&ion) {
+                            *tot += val;
+                        }
+                    }
+                    Ok((u_mat, tot_ionic))
+                })
+            })?
+        };
+        for (i, (ch, &value)) in multipoles.iter().zip(&ionic).enumerate() {
+            v += &ch.q * value;
+            total_ionic[i] += value;
         }
-        let values = electrostatic.finish()?;
-        let u = DMatrix::from_column_slice(nch, nch, values.as_slice());
-        drop(values);
         let smooth_start = factors.len();
         if nch > 0 {
             let coupled = DMatrix::from_fn(2 * nch, 2 * nch, |a, b| {
@@ -553,45 +853,117 @@ impl Setup {
                 },
                 core: {
                     let mut core = ctx.allocate::<f64>(g)?;
-                    for k in 0..g {
-                        core.as_mut_slice()[k] = atoms
-                            .iter()
-                            .enumerate()
-                            .map(|(a, &s)| {
-                                let radial = &species[s].xc_core;
-                                let r = distance(grid.point(k), geometry.positions()[a]);
-                                if r > *radial.knots.as_slice().last().unwrap() {
-                                    0.
-                                } else {
-                                    radial
-                                        .value_slope(r.max(radial.knots.as_slice()[0]))
-                                        .0
-                                        .max(0.)
+                    let shape = grid.index.shape();
+                    let [_, ny, nz] = shape;
+                    let inv_step = grid.step.try_inverse().unwrap_or(nalgebra::Matrix3::identity());
+                    let row_norms = [
+                        (inv_step[(0, 0)].powi(2) + inv_step[(0, 1)].powi(2) + inv_step[(0, 2)].powi(2)).sqrt(),
+                        (inv_step[(1, 0)].powi(2) + inv_step[(1, 1)].powi(2) + inv_step[(1, 2)].powi(2)).sqrt(),
+                        (inv_step[(2, 0)].powi(2) + inv_step[(2, 1)].powi(2) + inv_step[(2, 2)].powi(2)).sqrt(),
+                    ];
+                    for (a, &s) in atoms.iter().enumerate() {
+                        let radial = &species[s].xc_core;
+                        let r_cut = *radial.knots.as_slice().last().unwrap_or(&0.0);
+                        if r_cut <= 0. {
+                            continue;
+                        }
+                        let center = geometry.positions()[a];
+                        let c_center = inv_step * (nalgebra::Vector3::from(center) - nalgebra::Vector3::from(grid.origin));
+                        let mut min_idx = [0; 3];
+                        let mut max_idx = [0; 3];
+                        let mut inside = true;
+                        for d in 0..3 {
+                            let delta = r_cut * row_norms[d];
+                            let mn = ((c_center[d] - delta).floor() as isize).max(0) as usize;
+                            let mx = (c_center[d] + delta).ceil() as isize;
+                            if mx < 0 {
+                                inside = false;
+                                break;
+                            }
+                            let mx = (mx as usize).min(shape[d] - 1);
+                            if mn > mx {
+                                inside = false;
+                                break;
+                            }
+                            min_idx[d] = mn;
+                            max_idx[d] = mx;
+                        }
+                        if !inside {
+                            continue;
+                        }
+                        for ix in min_idx[0]..=max_idx[0] {
+                            for iy in min_idx[1]..=max_idx[1] {
+                                let base = (ix * ny + iy) * nz;
+                                for iz in min_idx[2]..=max_idx[2] {
+                                    let k = base + iz;
+                                    let r = distance(grid.point(k), center);
+                                    if r <= r_cut {
+                                        core.as_mut_slice()[k] += radial
+                                            .value_slope(r.max(radial.knots.as_slice()[0]))
+                                            .0
+                                            .max(0.);
+                                    }
                                 }
-                            })
-                            .sum();
+                            }
+                        }
                     }
                     core
                 },
                 core_tau: {
                     let mut tau = ctx.allocate::<f64>(g)?;
-                    for k in 0..g {
-                        tau.as_mut_slice()[k] = atoms
-                            .iter()
-                            .enumerate()
-                            .map(|(a, &s)| {
-                                let radial = &species[s].xc_core_tau;
-                                let r = distance(grid.point(k), geometry.positions()[a]);
-                                if r > *radial.knots.as_slice().last().unwrap() {
-                                    0.
-                                } else {
-                                    radial
-                                        .value_slope(r.max(radial.knots.as_slice()[0]))
-                                        .0
-                                        .max(0.)
+                    let shape = grid.index.shape();
+                    let [_, ny, nz] = shape;
+                    let inv_step = grid.step.try_inverse().unwrap_or(nalgebra::Matrix3::identity());
+                    let row_norms = [
+                        (inv_step[(0, 0)].powi(2) + inv_step[(0, 1)].powi(2) + inv_step[(0, 2)].powi(2)).sqrt(),
+                        (inv_step[(1, 0)].powi(2) + inv_step[(1, 1)].powi(2) + inv_step[(1, 2)].powi(2)).sqrt(),
+                        (inv_step[(2, 0)].powi(2) + inv_step[(2, 1)].powi(2) + inv_step[(2, 2)].powi(2)).sqrt(),
+                    ];
+                    for (a, &s) in atoms.iter().enumerate() {
+                        let radial = &species[s].xc_core_tau;
+                        let r_cut = *radial.knots.as_slice().last().unwrap_or(&0.0);
+                        if r_cut <= 0. {
+                            continue;
+                        }
+                        let center = geometry.positions()[a];
+                        let c_center = inv_step * (nalgebra::Vector3::from(center) - nalgebra::Vector3::from(grid.origin));
+                        let mut min_idx = [0; 3];
+                        let mut max_idx = [0; 3];
+                        let mut inside = true;
+                        for d in 0..3 {
+                            let delta = r_cut * row_norms[d];
+                            let mn = ((c_center[d] - delta).floor() as isize).max(0) as usize;
+                            let mx = (c_center[d] + delta).ceil() as isize;
+                            if mx < 0 {
+                                inside = false;
+                                break;
+                            }
+                            let mx = (mx as usize).min(shape[d] - 1);
+                            if mn > mx {
+                                inside = false;
+                                break;
+                            }
+                            min_idx[d] = mn;
+                            max_idx[d] = mx;
+                        }
+                        if !inside {
+                            continue;
+                        }
+                        for ix in min_idx[0]..=max_idx[0] {
+                            for iy in min_idx[1]..=max_idx[1] {
+                                let base = (ix * ny + iy) * nz;
+                                for iz in min_idx[2]..=max_idx[2] {
+                                    let k = base + iz;
+                                    let r = distance(grid.point(k), center);
+                                    if r <= r_cut {
+                                        tau.as_mut_slice()[k] += radial
+                                            .value_slope(r.max(radial.knots.as_slice()[0]))
+                                            .0
+                                            .max(0.);
+                                    }
                                 }
-                            })
-                            .sum();
+                            }
+                        }
                     }
                     tau
                 },
@@ -613,6 +985,9 @@ impl Setup {
             hubbard: self.hubbard.as_ref().and_then(|req| {
                 hubbard::build(req, &species, &species_terms, &atoms, &geometry, &c, m).ok().flatten()
             }),
+            projections: Some(c),
+            electrostatic: Some(u),
+            ionic: Some(total_ionic),
         };
         let mut integrals = MolecularIntegrals::from_basis(
             ctx,

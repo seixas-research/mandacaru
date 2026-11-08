@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 8523
+zero_sloc = 8484
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -70,11 +70,11 @@ zero_sloc = 8523
 "integrals/exchange_correlation.py" = { np = 52, dloops = 4, dcomp = 3, bi = 1, arith = 71, arithmax = 25, sloc = 377, wave = "W4", dies = "2027-07-16" }
 "integrals/grid.py" = { sloc = 70, wave = "W4", dies = "2027-07-16" }
 "integrals/packed.py" = { np = 4, meth = 3, bi = 1, arith = 8, arithmax = 2, sloc = 135, wave = "W4", dies = "2027-07-16" }
-"integrals/reciprocal.py" = { sloc = 75, wave = "3b", dies = "2027-05-07" }
+"integrals/reciprocal.py" = { sloc = 67, wave = "3b", dies = "2027-05-07" }
 "integrals/sampling.py" = { np = 6, dloops = 3, dcomp = 2, bi = 4, aloops = 2, arith = 7, arithmax = 4, sloc = 178, wave = "W4", dies = "2027-07-16" }
 "integrals/vv10.py" = { arith = 1, arithmax = 1, sloc = 27, category = "hand-off" }
 "integrations/ase_properties.py" = { np = 1, meth = 2 }
-"integrations/paw.py" = { bi = 1, arith = 1, arithmax = 1, sloc = 252, wave = "3b", dies = "2027-05-07" }
+"integrations/paw.py" = { bi = 1, arith = 1, arithmax = 1, sloc = 250, wave = "3b", dies = "2027-05-07" }
 "integrations/paw_molecular.py" = { bi = 1, arith = 1, arithmax = 1, sloc = 159, wave = "W4", dies = "2027-07-16" }
 "integrations/reporting.py" = { np = 2, meth = 3 }
 "integrations/wannier.py" = { np = 1, dloops = 1 }
@@ -104,7 +104,7 @@ zero_sloc = 8523
 "pseudopotentials/onecenter.py" = { bi = 3, sloc = 246, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/orbitals.py" = { bi = 5, arith = 1, arithmax = 1, sloc = 291, wave = "3b", dies = "2027-05-07" }
 "pseudopotentials/paw.py" = { bi = 1, sloc = 387, wave = "3a/3b", dies = "2027-05-07" }
-"pseudopotentials/periodic_paw.py" = { bi = 11, aloops = 1, arith = 4, arithmax = 3, sloc = 1109, wave = "3b", dies = "2027-05-07" }
+"pseudopotentials/periodic_paw.py" = { bi = 11, aloops = 1, arith = 4, arithmax = 3, sloc = 1080, wave = "3b", dies = "2027-05-07" }
 "pseudopotentials/record.py" = { sloc = 190, category = "hand-off" }
 "results.py" = { np = 1 }
 "specifications.py" = { math = 2 }

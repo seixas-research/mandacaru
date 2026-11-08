@@ -78,6 +78,9 @@ fn signed_paw_corrections_stay_separate_from_positive_coulomb_cholesky() {
             electrons: 2,
             core_supported: true,
             hubbard: None,
+            projections: None,
+            electrostatic: None,
+            ionic: None,
         };
         let integrals = MolecularIntegrals::from_basis(
             &ctx,

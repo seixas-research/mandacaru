@@ -173,13 +173,7 @@ impl MolecularIntegrals {
             .ok_or_else(|| invalid("PAW forces need the PAW corrections"))?;
         let points = grid::points(self)?;
         let mut terms: Vec<(&'static str, Vec<f64>)> = Vec::new();
-        let mut action = ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?;
-        let contract = |name: &'static str, action: &Buffer<f64>| {
-            (
-                name,
-                grid::contract(self, occupied, points.as_slice(), action.as_slice()),
-            )
-        };
+        let mut kinetic_action = ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?;
         for i in 0..nocc {
             let lap = laplacian_of(
                 ctx,
@@ -188,28 +182,15 @@ impl MolecularIntegrals {
                 &psi.as_slice()[i * n..(i + 1) * n],
             )?;
             for k in 0..n {
-                action.as_mut_slice()[i * n + k] = -0.5 * lap.as_slice()[k];
+                kinetic_action.as_mut_slice()[i * n + k] = -0.5 * lap.as_slice()[k];
             }
         }
-        terms.push(contract("kinetic/basis", &action));
         let coulomb = response.coulomb_potential()?;
-        let [external_term, hartree_term, xc_term, coulomb_term, pulay_term] = grid::contract_local(
-            self,
-            occupied,
-            points.as_slice(),
-            psi.as_slice(),
-            corrections.external.as_slice(),
-            hartree.as_slice(),
-            xc.as_ref().map(|fields| fields.potentials.as_slice()),
-            coulomb.as_slice(),
-        );
-        drop(hartree);
-        drop(coulomb);
-        terms.push(("external/basis", external_term));
-        terms.push(("hartree/basis", hartree_term));
+        let mut xc_gradient_action = None;
+        let mut xc_tau_action = None;
         if let Some(fields) = xc.as_ref() {
-            terms.push(("xc/basis", xc_term));
             if let Some(tau) = fields.tau_potentials.as_ref() {
+                let mut action = ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?;
                 kinetic_density_action(
                     self,
                     occupied,
@@ -217,9 +198,10 @@ impl MolecularIntegrals {
                     tau.as_slice(),
                     &mut action,
                 )?;
-                terms.push(contract("xc/tau_basis", &action));
+                xc_tau_action = Some(action);
             }
             if let Some(flux) = fields.gradient_potentials.as_ref() {
+                let mut action = ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?;
                 density_gradient_action(
                     self,
                     occupied,
@@ -227,23 +209,66 @@ impl MolecularIntegrals {
                     flux.as_slice(),
                     &mut action,
                 )?;
-                terms.push(contract("xc/gradient_basis", &action));
+                xc_gradient_action = Some(action);
             }
         }
-        terms.push(("pairs_coulomb/compensation_basis", coulomb_term));
-        terms.push(("pulay_grid/basis", pulay_term));
+        let combined = grid::contract_combined(
+            self,
+            occupied,
+            points.as_slice(),
+            grid::CombinedInputs {
+                psi: psi.as_slice(),
+                external: corrections.external.as_slice(),
+                hartree: hartree.as_slice(),
+                xc: xc.as_ref().map(|fields| fields.potentials.as_slice()),
+                coulomb: coulomb.as_slice(),
+                kinetic: Some(kinetic_action.as_slice()),
+                xc_gradient: xc_gradient_action.as_ref().map(|b| b.as_slice()),
+                xc_tau: xc_tau_action.as_ref().map(|b| b.as_slice()),
+            },
+        );
+        drop(hartree);
+        drop(coulomb);
+        drop(kinetic_action);
+        drop(xc_gradient_action);
+        drop(xc_tau_action);
+        if let Some(kin) = combined.kinetic {
+            terms.push(("kinetic/basis", kin));
+        }
+        terms.push(("external/basis", combined.external));
+        terms.push(("hartree/basis", combined.hartree));
+        if xc.is_some() {
+            terms.push(("xc/basis", combined.xc));
+            if let Some(tau) = combined.xc_tau {
+                terms.push(("xc/tau_basis", tau));
+            }
+            if let Some(grad) = combined.xc_gradient {
+                terms.push(("xc/gradient_basis", grad));
+            }
+        }
+        terms.push(("pairs_coulomb/compensation_basis", combined.coulomb));
+        terms.push(("pulay_grid/basis", combined.pulay));
+        let hybrid = match state.functional.as_deref() {
+            Some(name) => crate::models::functional(name)?.screened_exchange,
+            None => None,
+        };
+        let mut action = if hf || hybrid.is_some() {
+            ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?
+        } else {
+            ctx.allocate::<f64>(0)?
+        };
+        let contract = |name: &'static str, action: &Buffer<f64>| {
+            (
+                name,
+                grid::contract(self, occupied, points.as_slice(), action.as_slice()),
+            )
+        };
         if hf {
             contract_exchange(self, occupied, psi.as_slice(), &mut poisson, &mut action)?;
             terms.push(contract("exchange/basis", &action));
             let compensation = response.exchange_action()?;
             terms.push(contract("pairs_exchange/compensation_basis", &compensation));
         }
-        // A screened hybrid adds `fraction` times the exchange form under
-        // `erfc(omega r) / r`: its grid pairs here, the rest in the PAW setup.
-        let hybrid = match state.functional.as_deref() {
-            Some(name) => crate::models::functional(name)?.screened_exchange,
-            None => None,
-        };
         let screened = hybrid
             .map(|(omega, fraction)| response.hybrid(omega, fraction, state.method == "uhf"))
             .transpose()?;

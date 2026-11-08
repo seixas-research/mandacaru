@@ -45,6 +45,9 @@ pub struct MolecularCorrections {
     pub dft: Option<PawKohnSham>,
     pub core_supported: bool,
     pub hubbard: Option<crate::molecular::hubbard::MolecularHubbard>,
+    pub projections: Option<Vec<DMatrix<f64>>>,
+    pub electrostatic: Option<DMatrix<f64>>,
+    pub ionic: Option<Vec<f64>>,
 }
 /// Frozen atomic one-center KS model, separate from the interacting HF model.
 pub struct PawKohnSham {

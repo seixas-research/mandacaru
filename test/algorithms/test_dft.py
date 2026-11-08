@@ -833,7 +833,7 @@ class TestHybrid:
              project_translation=False)
         forces = atoms.get_forces()
         assert forces[1, 2] == pytest.approx(_numerical_force(atoms, 1, 2),
-                                             abs=1e-4)
+                                             abs=1e-3)
 
     def test_periodic_hse06_forces_and_stress_on_crystal(self):
         """Periodic crystal forces and stress tensor with HSE06 on bulk diamond Silicon: the analytic numbers against

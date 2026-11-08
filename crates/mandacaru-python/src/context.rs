@@ -2081,6 +2081,11 @@ impl PyContext {
         array(py, q.shape(), out)
     }
 
+    /// Clear the global compensation shape table cache.
+    fn periodic_clear_shape_cache(&self) {
+        mandacaru_core::periodic::setup::shapes::clear_shape_cache();
+    }
+
     /// Accumulate conj(chi) * weighted * chi_ket into block for each k-point.
     #[pyo3(signature=(block, chi, chi_ket, weighted))]
     fn periodic_accumulate_zgemm<'py>(

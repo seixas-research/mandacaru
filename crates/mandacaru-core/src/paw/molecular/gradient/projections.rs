@@ -25,23 +25,33 @@ pub(super) fn project(
     occupied: &[Occupied],
 ) -> Result<(Vec<DMatrix<f64>>, Vec<Vec<DVector<f64>>>)> {
     let positions = integrals.geometry.positions();
-    let mut matrices = Vec::new();
+    let matrices = if let Some(stored) = integrals
+        .corrections
+        .as_ref()
+        .and_then(|c| c.projections.as_ref())
+    {
+        stored.clone()
+    } else {
+        let mut matrices = Vec::new();
+        for (a, &s) in setup.atoms.iter().enumerate() {
+            matrices.push(projection(
+                &integrals.context,
+                &integrals.basis,
+                &setup.species[s],
+                &setup.species_terms[s],
+                positions[a],
+            )?);
+        }
+        matrices
+    };
     let mut projected = Vec::new();
-    for (a, &s) in setup.atoms.iter().enumerate() {
-        let c = projection(
-            &integrals.context,
-            &integrals.basis,
-            &setup.species[s],
-            &setup.species_terms[s],
-            positions[a],
-        )?;
+    for c in &matrices {
         projected.push(
             occupied
                 .iter()
                 .map(|o| c.transpose() * DVector::from_column_slice(&o.ao))
                 .collect(),
         );
-        matrices.push(c);
     }
     Ok((matrices, projected))
 }
@@ -53,29 +63,94 @@ pub(super) fn derivative_samples(
 ) -> Result<Vec<[DMatrix<f64>; 3]>> {
     let m = integrals.m();
     let positions = integrals.geometry.positions();
-    let mut out = Vec::new();
-    for (a, &s) in setup.atoms.iter().enumerate() {
-        let p = setup.species_terms[s].projectors.len();
+    let n_atoms = setup.atoms.len();
+    let compute_atom = |a: usize| -> Result<[DMatrix<f64>; 3]> {
+        let s = setup.atoms[a];
+        let species = &setup.species[s];
+        let terms = &setup.species_terms[s];
+        let p = terms.projectors.len();
         let mut samples = [(); 3].map(|_| DMatrix::<f64>::zeros(m, p));
-        projection_points(
-            &setup.species[s],
-            &setup.species_terms[s],
-            |offset, target| {
-                let point = std::array::from_fn(|i| positions[a][i] + offset[i]);
-                for (i, orbital) in integrals.basis.orbitals.iter().enumerate() {
-                    let gradient = orbital.gradient(point);
-                    for (q, &t) in target.iter().enumerate().filter(|(_, t)| **t != 0.) {
-                        for axis in 0..3 {
-                            samples[axis][(i, q)] += gradient[axis] * t;
-                        }
+        let r_proj_max = species
+            .channels
+            .iter()
+            .map(|ch| ch.radius.max(species.local_radius))
+            .fold(0.0f64, f64::max);
+        let active_orbitals: Vec<(usize, f64)> = integrals
+            .basis
+            .orbitals
+            .iter()
+            .enumerate()
+            .filter_map(|(i, orbital)| {
+                let r_cut = match &orbital.radial {
+                    crate::basis::Radial::Tabulated(table) => {
+                        *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
+                    }
+                    _ => f64::INFINITY,
+                };
+                let d = super::super::distance(positions[a], orbital.center);
+                if d <= r_proj_max + r_cut {
+                    Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        projection_points(species, terms, |offset, target| {
+            let active_targets: Vec<(usize, f64)> = target
+                .iter()
+                .enumerate()
+                .filter_map(|(q, &t)| if t != 0. { Some((q, t)) } else { None })
+                .collect();
+            if active_targets.is_empty() {
+                return Ok(());
+            }
+            let point = std::array::from_fn(|i| positions[a][i] + offset[i]);
+            for &(i, support2) in &active_orbitals {
+                let orbital = &integrals.basis.orbitals[i];
+                let r2 = (point[0] - orbital.center[0]).powi(2)
+                    + (point[1] - orbital.center[1]).powi(2)
+                    + (point[2] - orbital.center[2]).powi(2);
+                if r2 > support2 {
+                    continue;
+                }
+                let gradient = orbital.gradient(point);
+                for &(q, t) in &active_targets {
+                    for axis in 0..3 {
+                        samples[axis][(i, q)] += gradient[axis] * t;
                     }
                 }
-                Ok(())
-            },
-        )?;
-        out.push(samples);
+            }
+            Ok(())
+        })?;
+        Ok(samples)
+    };
+
+    let workers = integrals.context.threads().max(1).min(n_atoms.max(1));
+    if workers <= 1 {
+        let mut out = Vec::with_capacity(n_atoms);
+        for a in 0..n_atoms {
+            out.push(compute_atom(a)?);
+        }
+        return Ok(out);
     }
-    Ok(out)
+
+    let mut out: Vec<Option<[DMatrix<f64>; 3]>> = (0..n_atoms).map(|_| None).collect();
+    let out_slice = out.as_mut_slice();
+    integrals.context.run(|| {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..n_atoms)
+                .map(|a| {
+                    mandacaru_kernels::runtime::spawn(scope, move || (a, compute_atom(a)))
+                })
+                .collect();
+            for handle in handles {
+                let (a, res) = handle.join().unwrap();
+                out_slice[a] = Some(res.unwrap());
+            }
+        });
+    });
+    Ok(out.into_iter().map(|s| s.unwrap()).collect())
 }
 
 /// `Pi[atom][orbital]`, the derivative of the energy with respect to the

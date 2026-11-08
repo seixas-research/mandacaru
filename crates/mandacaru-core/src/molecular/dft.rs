@@ -407,46 +407,71 @@ fn evaluate_with(
             }
             let (phi, w) = (orbitals.values(), orbitals.stride());
             let gradient = slopes.as_ref().map(|s| s.values());
-            for (s, sum) in sums.iter_mut().enumerate() {
-                for a in 0..m {
+            if gradient.is_none() {
+                let mut w_buf = vec![0.0; count];
+                for (s, sum) in sums.iter_mut().enumerate() {
+                    let pot = &terms.potentials.as_slice()[s * n..];
                     for b in 0..m {
-                        let mut value = sum[(a, b)];
+                        let phi_b = &phi[b * w..b * w + count];
                         for i in 0..count {
                             let k = start + i;
-                            let local = phi[a * w + i]
-                                * phi[b * w + i]
-                                * (hartree_slice[k].re
-                                    + terms.potentials.as_slice()[s * n + k]);
-                            let meta = if let (Some(gradient), Some(tau)) =
-                                (gradient, terms.tau_potentials.as_ref())
-                            {
-                                0.5 * tau.as_slice()[s * n + k]
-                                    * (0..3)
+                            w_buf[i] = phi_b[i] * (hartree_slice[k].re + pot[k]);
+                        }
+                        for a in 0..=b {
+                            let phi_a = &phi[a * w..a * w + count];
+                            let mut dot = 0.0;
+                            for i in 0..count {
+                                dot += phi_a[i] * w_buf[i];
+                            }
+                            sum[(a, b)] += dot;
+                            if a != b {
+                                sum[(b, a)] += dot;
+                            }
+                        }
+                    }
+                }
+            } else {
+                for (s, sum) in sums.iter_mut().enumerate() {
+                    for a in 0..m {
+                        for b in 0..m {
+                            let mut value = sum[(a, b)];
+                            for i in 0..count {
+                                let k = start + i;
+                                let local = phi[a * w + i]
+                                    * phi[b * w + i]
+                                    * (hartree_slice[k].re
+                                        + terms.potentials.as_slice()[s * n + k]);
+                                let meta = if let (Some(gradient), Some(tau)) =
+                                    (gradient, terms.tau_potentials.as_ref())
+                                {
+                                    0.5 * tau.as_slice()[s * n + k]
+                                        * (0..3)
+                                            .map(|axis| {
+                                                gradient[(axis * m + a) * w + i]
+                                                    * gradient[(axis * m + b) * w + i]
+                                            })
+                                            .sum::<f64>()
+                                } else {
+                                    0.
+                                };
+                                // dE/dD_ab through the product-rule density gradient.
+                                let flux = if let (Some(gradient), Some(flux)) =
+                                    (gradient, terms.gradient_potentials.as_ref())
+                                {
+                                    (0..3)
                                         .map(|axis| {
-                                            gradient[(axis * m + a) * w + i]
-                                                * gradient[(axis * m + b) * w + i]
+                                            flux.as_slice()[(s * 3 + axis) * n + k]
+                                                * (phi[a * w + i] * gradient[(axis * m + b) * w + i]
+                                                    + gradient[(axis * m + a) * w + i] * phi[b * w + i])
                                         })
                                         .sum::<f64>()
-                            } else {
-                                0.
-                            };
-                            // dE/dD_ab through the product-rule density gradient.
-                            let flux = if let (Some(gradient), Some(flux)) =
-                                (gradient, terms.gradient_potentials.as_ref())
-                            {
-                                (0..3)
-                                    .map(|axis| {
-                                        flux.as_slice()[(s * 3 + axis) * n + k]
-                                            * (phi[a * w + i] * gradient[(axis * m + b) * w + i]
-                                                + gradient[(axis * m + a) * w + i] * phi[b * w + i])
-                                    })
-                                    .sum::<f64>()
-                            } else {
-                                0.
-                            };
-                            value += local + meta + flux;
+                                } else {
+                                    0.
+                                };
+                                value += local + meta + flux;
+                            }
+                            sum[(a, b)] = value;
                         }
-                        sum[(a, b)] = value;
                     }
                 }
             }
@@ -867,6 +892,9 @@ impl MolecularIntegrals {
                 }) {
                     best = Some((candidate, value.hartree, value.xc, hubbard_data));
                 }
+                if best.as_ref().is_some_and(|(b, _, _, _)| b.converged) && !unrestricted {
+                    break;
+                }
             }
             let (candidate, eh, exc, hubbard_data) = best.unwrap();
             self.finish(
@@ -931,6 +959,9 @@ mod tests {
                 electrons: 2,
                 core_supported: true,
                 hubbard: None,
+                projections: None,
+                electrostatic: None,
+                ionic: None,
                 pairs: Arc::new(PairCorrection {
                     factors: vec![],
                     weights: vec![],

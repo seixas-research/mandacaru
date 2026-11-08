@@ -10,6 +10,7 @@ from time import perf_counter
 import numpy as np
 
 from .setup_block import setup_block
+from ..pseudopotentials.native_context import context as _default_native_ctx
 
 
 def band_input(crystal, fractional_kpoints):
@@ -80,10 +81,7 @@ def crystal_input(
         return row
     n, p = c.grid.size, len(c.projectors)
     channels = c.channels
-    native_ctx = getattr(c, "_native_context", None)
-    if native_ctx is None:
-        from .. import _native
-        native_ctx = _native.Context(threads=1)
+    native_ctx = getattr(c, "_native_context", None) or _default_native_ctx()
     positions_list = [c._positions[ch[0]] for ch in channels]
     blocks_list = [c.multipole_blocks[ch] for ch in channels]
     blocks = native_ctx.periodic_multipole_blocks(positions_list, blocks_list, p)

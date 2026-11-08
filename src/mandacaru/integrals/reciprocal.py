@@ -46,26 +46,26 @@ from __future__ import annotations
 
 import numpy as np
 
-from .. import _native
+from ..pseudopotentials.native_context import context as _native_ctx
 
 ISOMETRY_TOLERANCE = 2e-2
 
 
 def lattice_vectors(grid) -> np.ndarray:
     """The cell the grid spans, lattice vectors as **columns** (Bohr)."""
-    return _native.Context(threads=1).periodic_lattice_vectors(
+    return _native_ctx().periodic_lattice_vectors(
         tuple(int(n) for n in grid.shape), np.ascontiguousarray(grid.step, dtype=float))
 
 
 def reciprocal_vectors(lattice_columns) -> np.ndarray:
     r""":math:`B = 2\pi A^{-T}`: reciprocal vectors as columns."""
-    return _native.Context(threads=1).periodic_reciprocal_vectors(
+    return _native_ctx().periodic_reciprocal_vectors(
         np.ascontiguousarray(lattice_columns, dtype=float))
 
 
 def cell_volume(grid) -> float:
     """Volume of the spanned cell (Bohr^3)."""
-    return _native.Context(threads=1).periodic_cell_volume(
+    return _native_ctx().periodic_cell_volume(
         tuple(int(n) for n in grid.shape), np.ascontiguousarray(grid.step, dtype=float))
 
 
@@ -76,19 +76,19 @@ def grid_origin(grid) -> np.ndarray:
 
 def wavevectors(grid) -> np.ndarray:
     r"""``(3, n1, n2, n3)`` Cartesian :math:`\mathbf G` in FFT index order."""
-    return _native.Context(threads=1).periodic_wavevectors(
+    return _native_ctx().periodic_wavevectors(
         tuple(int(n) for n in grid.shape), np.asarray(grid.step, dtype=float))
 
 
 def lattice_operations(grid) -> list:
     r"""The point operations of the grid's lattice, as integer matrices ``V``."""
-    return _native.Context(threads=1).periodic_lattice_operations(
+    return _native_ctx().periodic_lattice_operations(
         tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float))
 
 
 def symmetric_aliases(grid) -> tuple[np.ndarray, np.ndarray]:
     r"""``(vectors, norms)``: the FFT box's wave-vectors averaged over operations."""
-    return _native.Context(threads=1).periodic_symmetric_aliases(
+    return _native_ctx().periodic_symmetric_aliases(
         tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float))
 
 
@@ -99,14 +99,14 @@ def symmetric_wavevectors(grid) -> np.ndarray:
 
 def bloch_aliases(grid, k) -> tuple[np.ndarray, np.ndarray]:
     r"""``(vectors, squares)``: wave-vectors :math:`\mathbf G + \mathbf k` averaged over operations."""
-    return _native.Context(threads=1).periodic_bloch_aliases(
+    return _native_ctx().periodic_bloch_aliases(
         tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float),
         (float(k[0]), float(k[1]), float(k[2])))
 
 
 def alias_table(grid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     r"""``(index, vectors, weights)`` of the grid alias table."""
-    return _native.Context(threads=1).periodic_alias_table(
+    return _native_ctx().periodic_alias_table(
         tuple(int(n) for n in grid.shape), grid_origin(grid), np.asarray(grid.step, dtype=float))
 
 
@@ -114,7 +114,7 @@ def alias_combine(grid, box_values, alias_values) -> np.ndarray:
     r"""The mean over the lattice operations' aliases of a function."""
     index, _vectors, weights = alias_table(grid)
     box_arr = np.asarray(box_values)
-    return _native.Context(threads=1).periodic_alias_combine(
+    return _native_ctx().periodic_alias_combine(
         index, weights, box_arr, np.asarray(alias_values), list(box_arr.shape))
 
 
@@ -126,63 +126,49 @@ def alias_mean(grid, function) -> np.ndarray:
 
 def to_reciprocal(grid, values) -> np.ndarray:
     r"""``f(G)`` of flat real-space values, in the module's convention."""
-    return _native.Context(threads=1).periodic_to_reciprocal(
+    return _native_ctx().periodic_to_reciprocal(
         tuple(int(n) for n in grid.shape), grid_origin(grid), np.ascontiguousarray(grid.step, dtype=float),
         float(grid.dV), np.ascontiguousarray(values))
 
 
 def to_real(grid, transform) -> np.ndarray:
     r"""Flat ``f(r)`` of ``f(G)`` (inverse of :func:`to_reciprocal`)."""
-    return _native.Context(threads=1).periodic_to_real(
+    return _native_ctx().periodic_to_real(
         tuple(int(n) for n in grid.shape), grid_origin(grid), np.ascontiguousarray(grid.step, dtype=float),
         np.ascontiguousarray(transform, dtype=complex))
 
 
 def structure_factor(G, center) -> np.ndarray:
     r""":math:`e^{-i\mathbf G\cdot\mathbf R}` for one center (Bohr)."""
-    return _native.Context(threads=1).periodic_structure_factor(
+    return _native_ctx().periodic_structure_factor(
         np.asarray(G, dtype=float), (float(center[0]), float(center[1]), float(center[2])))
 
 
 def spherical(G):
     """``(|G|, theta, phi)`` of a ``(3, ...)`` array of vectors."""
-    return _native.Context(threads=1).periodic_spherical(np.asarray(G, dtype=float))
+    return _native_ctx().periodic_spherical(np.asarray(G, dtype=float))
 
 
 def radial_transform(r, values, L: int, q) -> np.ndarray:
     r""":math:`F_L(q) = \int_0^\infty f(r)\,j_L(qr)\,r^2\,dr` on a radial table."""
-    return _native.Context(threads=1).periodic_radial_transform(
+    return _native_ctx().periodic_radial_transform(
         np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(values, dtype=float),
         int(L), np.ascontiguousarray(q, dtype=float))
 
 
 def multipole_transform(G, center, radial, L: int, M: int) -> np.ndarray:
     r"""Fourier transform of :math:`f_L(r)Y_{LM}(\hat r)` centered at ``center``."""
-    return _native.Context(threads=1).periodic_multipole_transform(
+    return _native_ctx().periodic_multipole_transform(
         np.ascontiguousarray(G, dtype=float), (float(center[0]), float(center[1]), float(center[2])),
         np.ascontiguousarray(radial, dtype=float), int(L), int(M))
 
 
 def coulomb_kernel(G) -> np.ndarray:
     r""":math:`4\pi/G^2` with the :math:`\mathbf G = 0` term dropped."""
-    return _native.Context(threads=1).periodic_coulomb_wavevector_kernel(np.asarray(G, dtype=float))
+    return _native_ctx().periodic_coulomb_wavevector_kernel(np.asarray(G, dtype=float))
 
 
 def lattice_translations(lattice_columns, radius: float) -> np.ndarray:
     """All lattice vectors ``R`` with ``|R| <= radius`` (rows, Bohr)."""
-    return _native.Context(threads=1).periodic_lattice_translations(
+    return _native_ctx().periodic_lattice_translations(
         np.asarray(lattice_columns, dtype=float), float(radius))
-
-
-def coulomb_kernel(G) -> np.ndarray:
-    r""":math:`4\pi/G^2` with the :math:`\mathbf G = 0` term dropped."""
-    from .. import _native
-    return _native.Context(threads=1).periodic_coulomb_wavevector_kernel(np.asarray(G, dtype=float))
-
-
-def lattice_translations(lattice_columns, radius: float) -> np.ndarray:
-    """All lattice vectors ``R`` with ``|R| <= radius`` (rows, Bohr)."""
-    from .. import _native
-    return _native.Context(threads=1).periodic_lattice_translations(
-        np.asarray(lattice_columns, dtype=float), float(radius)
-    )

@@ -77,6 +77,7 @@ import numpy as np
 
 from ..integrals import reciprocal as rc
 from ..integrals._backend import single_threaded_blas
+from .native_context import context as _default_native_ctx
 
 #: Reciprocal-space cutoff (Bohr^-1) of the sums among the compact charges
 #: (compensation multipoles and Gaussian ions).  The shapes vanish at r_g with
@@ -150,8 +151,7 @@ class BasisGradient:
         spline = _radial_spline(self.parent)
         if spline is None:
             raise NotImplementedError("BasisGradient requires a tabulated orbital")
-        from .. import _native
-        ctx = _native.Context(threads=1)
+        ctx = _default_native_ctx()
         breaks, coeffs, rc_val = spline
         x_arr = np.ascontiguousarray(x, dtype=float)
         y_arr = np.ascontiguousarray(y, dtype=float)
@@ -207,8 +207,7 @@ def _support(function) -> float:
         r, values = table
         held = _SUPPORTS.get(id(values))
         if held is None or held[0]() is not values:
-            from .. import _native
-            context = _native.Context(threads=1)
+            context = _default_native_ctx()
             edge = context.periodic_radial_support(r, values, SUPPORT_TOLERANCE)
             held = _SUPPORTS[id(values)] = (weakref.ref(
                 values, lambda _, key=id(values): _SUPPORTS.pop(key, None)), edge)
@@ -224,8 +223,7 @@ def _support(function) -> float:
 def _shell_key(function):
     """Functions that share a radial table and a center differ only in ``m``
     (and gradients also by their axis)."""
-    from .. import _native
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     center = context.periodic_round_coords(tuple(function.center))
     if isinstance(function, BasisGradient):
         key = _shell_key(function.parent)
@@ -267,8 +265,7 @@ SPHERE_BYTES = 1 << 29
 
 def _sphere_chunk_size(n_kpoints: int, n_functions: int) -> int:
     """Points per chunk of a sphere quadrature: :data:`SPHERE_CHUNK`."""
-    from .. import _native
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     return context.periodic_sphere_chunk_size(
         int(n_kpoints), int(n_functions), SPHERE_BYTES, SPHERE_CHUNK,
     )
@@ -278,8 +275,7 @@ def _sphere_chunks(points, *arrays, size: int = SPHERE_CHUNK):
     """Yield ``(points, *arrays)`` chunks of ``size`` points of a quadrature,
     its points sorted into 1-Bohr bins (a sum over the points does not depend
     on their order, and :func:`bloch_values` then has nothing to un-permute)."""
-    from .. import _native
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     x, y, z = (np.asarray(c, dtype=float).ravel() for c in points)
     order = context.periodic_spatial_bins_order(x, y, z)
     x, y, z = x[order], y[order], z[order]
@@ -294,8 +290,7 @@ def reaching(functions, lattice, region_center, region_radius) -> np.ndarray:
     reaches the ball of ``region_radius`` about ``region_center``."""
     if not functions:
         return np.zeros(0, dtype=int)
-    from .. import _native
-    context = getattr(functions[0], "_native_context", None) or _native.Context(threads=1)
+    context = getattr(functions[0], "_native_context", None) or _default_native_ctx()
     centers = [list(f.center) for f in functions]
     supports = [_support(f) for f in functions]
     lat = lattice.tolist() if hasattr(lattice, "tolist") else list(lattice)
@@ -316,8 +311,7 @@ def bloch_values(functions, lattice, kpoints, points, region_center,
     the geometry and the radial interpolation of every image.
     """
     if context is None:
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = _default_native_ctx()
 
     x, y, z = (np.asarray(c, dtype=float).ravel() for c in points)
     # The points are visited in 1-Bohr bins: the C kernel culls lattice
@@ -411,8 +405,7 @@ def bloch_projections(functions, lattice, kpoints, points, columns,
                 f"{type(first).__name__} without radial spline is not supported in periodic Bloch projections"
             )
         if context is None:
-            from .. import _native
-            context = _native.Context(threads=1)
+            context = _default_native_ctx()
         breaks, coeffs, rc_val = spline
         lattice_arr = np.ascontiguousarray(lattice, dtype=float)
         kpoints_arr = np.ascontiguousarray(kpoints, dtype=float)
@@ -438,8 +431,7 @@ def bloch_projections(functions, lattice, kpoints, points, columns,
 
 def time_reversal_reduce(kpoints_frac, tolerance: float = 1e-8):
     r"""``(representatives, weights)`` of a mesh under :math:`\mathbf k \to -\mathbf k`."""
-    from .. import _native
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     k_arr = np.ascontiguousarray(kpoints_frac, dtype=float)
     return context.periodic_time_reversal_reduce(k_arr, float(tolerance))
 
@@ -483,8 +475,7 @@ class GridSymmetry:
     def keeping_mesh(self, mesh) -> "GridSymmetry | None":
         """The operations that also map the k-point ``mesh`` onto itself."""
         from dataclasses import replace as dc_replace
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         mesh_arr = np.ascontiguousarray(mesh, dtype=float)
         rotations = [np.asarray(W, dtype=float).tolist() for W in self.info.rotations]
         keep = context.periodic_filter_mesh_rotations(rotations, mesh_arr, 1e-8)
@@ -501,15 +492,13 @@ class GridSymmetry:
 
     def field(self, values) -> np.ndarray:
         """The average of a flat grid field over the operations."""
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         val_arr = np.ascontiguousarray(values, dtype=float).ravel()
         return context.periodic_symmetrize_field(self.permutations, val_arr)
 
     def moments(self, q: dict) -> dict:
         """The average of the multipoles ``{(atom, L, M): q}``."""
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         keys = list(q.keys())
         vals = np.ascontiguousarray([q[k] for k in keys], dtype=complex)
         out_vals = context.periodic_symmetrize_moments(self.atom_maps, self.rotations, keys, vals)
@@ -518,8 +507,7 @@ class GridSymmetry:
 
 def _harmonic_rotation(R, L: int) -> np.ndarray:
     """``T`` with ``Y_L(R u) = Y_L(u) T`` for the complex ``Y_LM``."""
-    from .. import _native
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     mat = [[float(R[i][j]) for j in range(3)] for i in range(3)]
     return context.periodic_harmonic_rotation(mat, int(L))
 
@@ -531,7 +519,7 @@ def grid_symmetry(atoms, grid, max_L: int = 4, symprec: float | None = None):
     from .. import _native
     from ..core.symmetry import DEFAULT_SYMPREC, crystal_symmetry
 
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     info = crystal_symmetry(atoms, DEFAULT_SYMPREC if symprec is None else symprec)
     lattice = rc.lattice_vectors(grid)
     frac = np.asarray(atoms.get_scaled_positions(wrap=True), dtype=float)
@@ -837,10 +825,7 @@ class PeriodicPAW:
                 continue
             near = [self.basis[mu] for mu in rows]
             points, weights = _projector_sphere(first)
-            native_ctx = getattr(self, "_native_context", None)
-            if native_ctx is None:
-                from .. import _native
-                native_ctx = _native.Context(threads=1)
+            native_ctx = getattr(self, "_native_context", None) or _default_native_ctx()
             raw_columns = [np.ascontiguousarray(projectors[p].evaluate(*points).ravel(), dtype=complex)
                            for p in members]
             values = native_ctx.periodic_weighted_columns(raw_columns, np.ascontiguousarray(weights.ravel(), dtype=float))
@@ -898,10 +883,7 @@ class PeriodicPAW:
         points, weights, r, _dirs = _sphere_rule(
             center, radius, CRYSTAL_RADIAL_POINTS, CRYSTAL_POLAR_POINTS,
             CRYSTAL_AZIMUTHAL_POINTS, panel=local_cutoff(dataset))
-        native_ctx = getattr(self, "_native_context", None)
-        if native_ctx is None:
-            from .. import _native
-            native_ctx = _native.Context(threads=1)
+        native_ctx = getattr(self, "_native_context", None) or _default_native_ctx()
         sr_weights = native_ctx.periodic_short_range_weights(
             weights, short_range_potential(dataset, self.sigma, r)
         )
@@ -1108,8 +1090,7 @@ class PeriodicPAW:
                     radial[key] = self._shape_transform(atom, L, norm)
                 out[row] = rc.multipole_transform(vectors, self.centers[atom], radial[key], L, M)
             return out
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         centers = [[float(c[0]), float(c[1]), float(c[2])] for c in self.centers]
         radii = [float(self.datasets[atom].compensation_radius) for atom in range(len(self.centers))]
         channels = [(int(atom), int(L), int(M)) for atom, L, M in self.channels]
@@ -1136,7 +1117,7 @@ class PeriodicPAW:
         """
         from .. import _native
 
-        context = _native.Context(threads=1)
+        context = _default_native_ctx()
         vectors = np.asarray(vectors, dtype=float)
         shape = vectors.shape[1:]
         flat_vectors = np.ascontiguousarray(vectors.reshape(3, -1).T, dtype=float)
@@ -1164,8 +1145,7 @@ class PeriodicPAW:
         basis = str(getattr(projectors[0], "projector_basis",
                             DEFAULT_PROJECTOR_BASIS))
         n = len(projectors)
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         q = context.periodic_remainder_q(REMAINDER_TABLE_MAX, REMAINDER_TABLE_STEP)
         proj_info = [(int(p.l), int(p.m), int(p.index), bool(p.real))
                      for p in projectors]
@@ -1263,8 +1243,7 @@ class PeriodicPAW:
     def _shape_transform(self, atom, L, q) -> np.ndarray:
         r""":math:`F_L(q)` of atom ``atom``'s compensation shape, interpolated
         from a table built once per (shape, ``L``)."""
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         r_g = float(self.datasets[atom].compensation_radius)
         q_arr = np.ascontiguousarray(np.asarray(q, dtype=float))
         return context.periodic_shape_transform(r_g, int(L), q_arr)
@@ -1275,8 +1254,7 @@ class PeriodicPAW:
         cached = _SHAPE_TABLES.get(key)
         if cached is not None and cached[0][-1] >= q_max:
             return cached
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         table = context.periodic_shape_table(r_g, int(L), float(q_max))
         _SHAPE_TABLES[key] = table
         return table
@@ -1298,8 +1276,7 @@ class PeriodicPAW:
             return self._compensation_coulomb
         context = getattr(self, "_native_context", None)
         if context is None:
-            from .. import _native
-            context = _native.Context(threads=1)
+            context = _default_native_ctx()
         radii = [float(dataset.compensation_radius) for dataset in self.datasets]
         charges = [float(z) for z in self.charges]
         self._compensation_coulomb = context.periodic_compensation_couplings(
@@ -1440,7 +1417,7 @@ class PeriodicPAW:
     def _field_backend(self):
         from .. import _native
 
-        context = getattr(self, "_native_context", None) or getattr(self, "_field_context", None) or _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or getattr(self, "_field_context", None) or _default_native_ctx()
         self._field_context = context
         grid = self.__dict__.get("_field_grid")
         if grid is None and hasattr(self, "grid") and self.grid is not None:
@@ -1565,8 +1542,7 @@ def reduce_mesh(mesh, operations=None, time_reversal: bool = True):
         if operations is not None:
             raise ValueError("a mesh without time reversal is not reduced "
                              "by the crystal's operations either")
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         mesh = np.asarray(mesh, dtype=float)
         return mesh, context.periodic_uniform_weights(len(mesh)), None
     if operations is not None:
@@ -1576,8 +1552,7 @@ def reduce_mesh(mesh, operations=None, time_reversal: bool = True):
         return reduced, weights, None
     from ..core.symmetry import irreducible_kpoints
     zone = irreducible_kpoints(mesh, operations.info, time_reversal=True)
-    from .. import _native
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     return zone.points, context.periodic_normalize_weights(np.asarray(zone.weights, dtype=float)), operations
 
 
@@ -1599,16 +1574,14 @@ def mesh_wedge(mesh, size, operations=None, time_reversal: bool = True):
         if operations is not None:
             raise ValueError("a mesh without time reversal is not reduced "
                              "by the crystal's operations either")
-        from .. import _native
-        context = _native.Context(threads=1)
+        context = getattr(self, "_native_context", None) or _default_native_ctx()
         return mesh, context.periodic_range_indices(len(mesh)), None
     if operations is not None:
         operations = operations.keeping_mesh(mesh)
     if operations is not None:
         zone = irreducible_kpoints(mesh, operations.info, time_reversal=True)
         return zone.points, zone.mapping, operations
-    from .. import _native
-    context = _native.Context(threads=1)
+    context = _default_native_ctx()
     points, slot = context.periodic_mesh_wedge_time_reversal(mesh, list(size))
     return points, slot, None
 
@@ -1710,8 +1683,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
         # A grid of another cell would be used without complaint and give
         # another crystal's answer: it must be periodic and span this cell.
         from ..units import ANGSTROM_TO_BOHR
-        from .. import _native
-        _ctx = native_context or _native.Context(threads=1)
+        _ctx = native_context or _default_native_ctx()
         valid = getattr(g, "periodic", False) and _ctx.periodic_grid_spans_cell(
             list(g.shape), np.ascontiguousarray(g.step, dtype=float), np.ascontiguousarray(cell, dtype=float), float(ANGSTROM_TO_BOHR)
         )
@@ -1760,8 +1732,7 @@ def build_crystal(atoms, grid_spacing: float, options: dict | None = None, kpts=
         operations = grid_symmetry(atoms, g, max_L=max_L) \
             if symmetry and not ghosts else None
         reduced, weights, operations = reduce_mesh(mesh, operations)
-    from .. import _native
-    _ctx = native_context or _native.Context(threads=1)
+    _ctx = native_context or _default_native_ctx()
     kpoints = _ctx.periodic_cartesian_kpoints(
         rc.lattice_vectors(g).tolist(), np.ascontiguousarray(reduced, dtype=float)
     )
