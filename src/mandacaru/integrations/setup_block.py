@@ -101,6 +101,8 @@ def try_native_setup(driver, atoms, family, options, moments, spinor, time_rever
         load = get_upaw if family.name == "upaw-lcao" else get_paw
         unique_species = sorted(list(set(symbols)))
         datasets = [load(s, options.get("paw_dataset"), xc=driver.xc) for s in unique_species]
+        from ..models.datasets import _warn_functional_mismatch
+        _warn_functional_mismatch(datasets, driver.xc)
 
         has_moments = any(float(m) > 1e-12 or float(m) < -1e-12 for m in moments) if hasattr(moments, "__iter__") else False
         if has_moments or (spinor and not time_reversal):
@@ -156,20 +158,12 @@ def try_native_setup(driver, atoms, family, options, moments, spinor, time_rever
 
         def _make_adapter():
             if not hasattr(driver, "_crystal_adapter"):
-                from ..pseudopotentials.periodic_paw import build_crystal
-                from ..models.datasets import _warn_functional_mismatch
-                c, ctx = build_crystal(
-                    atoms, driver._grid_spacing, options, kpts=driver._kpts_spec,
-                    family=family.name, grid=driver._explicit_grid,
-                    symmetry=driver._periodic_symmetry and not spinor,
-                    full_mesh=bool(has_moments) or (spinor and not time_reversal),
-                    spin_orbit=spinor, native_context=driver.context,
-                    precision=driver._precision, filter_pin=getattr(driver, "filter_pin", None),
-                )
-                c._native_context = driver.context
-                _warn_functional_mismatch(c.datasets, driver.xc)
-                driver._crystal_adapter = c
-                driver._crystal_metadata = ctx
+                driver._crystal_adapter = driver.periodic_problem
+                driver._crystal_metadata = {
+                    "n_electrons": getattr(driver.periodic_problem, "n_electrons", 0),
+                    "kpts_size": list(size),
+                    "kpts_gamma": gamma,
+                }
             return driver._crystal_adapter
 
         driver._ensure_crystal_adapter = _make_adapter

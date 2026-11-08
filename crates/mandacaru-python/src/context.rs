@@ -3878,7 +3878,7 @@ impl PyContext {
         out.set_item("energy", table.energy)?;
         Ok(out)
     }
-    #[pyo3(signature=(grid,densities,*,functional="lda",kinetic_densities=None))]
+    #[pyo3(signature=(grid,densities,*,functional="lda",kinetic_densities=None,gradient_densities=None,relativistic=false))]
     fn exchange_correlation<'py>(
         &self,
         py: Python<'py>,
@@ -3886,6 +3886,8 @@ impl PyContext {
         densities: PyReadonlyArray2<'py, f64>,
         functional: &str,
         kinetic_densities: Option<PyReadonlyArray2<'py, f64>>,
+        gradient_densities: Option<PyReadonlyArray2<'py, f64>>,
+        relativistic: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         if densities.shape() != [2, grid.inner.index.points()] {
             return Err(PyValueError::new_err("densities must have shape (2,ngrid)"));
@@ -3903,14 +3905,28 @@ impl PyContext {
             .as_ref()
             .map(|v| copy(&self.inner, v))
             .transpose()?;
+        if gradient_densities
+            .as_ref()
+            .is_some_and(|v| v.shape() != [6, grid.inner.index.points()])
+        {
+            return Err(PyValueError::new_err(
+                "gradient densities must have shape (6,ngrid)",
+            ));
+        }
+        let grad = gradient_densities
+            .as_ref()
+            .map(|v| copy(&self.inner, v))
+            .transpose()?;
         let value = py
             .detach(|| {
-                mandacaru_core::models::xc::evaluate_fields(
+                mandacaru_core::models::xc::evaluate_fields_relativistic(
                     &self.inner,
                     &grid.inner,
                     &rho,
                     kinetic.as_ref().map(|v| v.0.as_slice()),
+                    grad.as_ref().map(|v| v.0.as_slice()),
                     functional,
+                    relativistic,
                 )
             })
             .map_err(error)?;
@@ -3920,6 +3936,12 @@ impl PyContext {
             out.set_item(
                 "tau_potentials",
                 array(py, &[2, grid.inner.index.points()], tau.as_slice().to_vec())?,
+            )?;
+        }
+        if let Some(gp) = value.gradient_potentials {
+            out.set_item(
+                "gradient_potentials",
+                array(py, &[6, grid.inner.index.points()], gp.as_slice().to_vec())?,
             )?;
         }
         out.set_item(

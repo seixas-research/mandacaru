@@ -391,9 +391,11 @@ def xc_potential(r, rho, functional: str = "lda", gradient=None,
         e_c, v_c = lda_correlation(rho)
         return e_x * phi_e + e_c, v_x * phi_v + v_c
 
-    nodes = derivative_nodes(r)
     if gradient is None:
-        gradient = _radial_derivative(r, rho, nodes)
+        from .. import _native
+        return _native.radial_xc_potential(_native.Context(threads=1), r, rho, key, relativistic)
+
+    nodes = derivative_nodes(r)
     gradient = np.asarray(gradient, dtype=float)
 
     e_xc, df_drho, df_dsigma = _pbe_terms(rho, gradient, relativistic)
@@ -478,24 +480,9 @@ def derivative_nodes(r) -> np.ndarray | None:
     grid already coarser than :math:`\Delta r` everywhere it matters, and on
     a non-uniform grid, every point is used.
     """
-    r = np.asarray(r, dtype=float)
-    if r.size < 8:
-        return None
-    step = r[1:] - r[:-1]
-    h = float(step[0])
-    if not np.allclose(step, h, rtol=1e-6, atol=0.0):
-        return None
-    stride = np.maximum(1, np.floor(GGA_DERIVATIVE_STEP * r / h).astype(int))
-    if stride.max() <= 1:
-        return None
-    nodes = [0]
-    while True:
-        nxt = nodes[-1] + int(stride[nodes[-1]])
-        if nxt >= r.size - 1:
-            break
-        nodes.append(nxt)
-    nodes.append(r.size - 1)
-    return np.asarray(nodes)
+    from .. import _native
+    raw = _native.radial_derivative_nodes(np.ascontiguousarray(r, dtype=float))
+    return np.asarray(raw) if raw is not None else None
 
 
 def _radial_derivative(r, y, nodes):

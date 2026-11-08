@@ -11,6 +11,7 @@ mod basis_filter;
 mod basis_table;
 mod basis_zetas;
 mod context;
+mod factorization;
 mod finite_size;
 mod geometry;
 mod hubbard;
@@ -109,6 +110,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<advanced::PyPropagator>()?;
     m.add_function(wrap_pyfunction!(advanced::find_peaks_1d, m)?)?;
     m.add_function(wrap_pyfunction!(advanced::givens_decomposition, m)?)?;
+    m.add_function(wrap_pyfunction!(factorization::double_factorization, m)?)?;
+    m.add_function(wrap_pyfunction!(factorization::spatial_double_factorization, m)?)?;
+    m.add_function(wrap_pyfunction!(factorization::pair_spectrum, m)?)?;
+    m.add_function(wrap_pyfunction!(factorization::factorized_energy_rdm, m)?)?;
     m.add_class::<quantum::PyProblem>()?;
     m.add_class::<PySpatialGrid>()?;
     m.add_class::<molecular::PyIntegrals>()?;
@@ -116,6 +121,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<molecular::PyHandover>()?;
     m.add_class::<molecular::PyModel>()?;
     m.add_class::<periodic::PyCrystal>()?;
+    m.add_class::<periodic::PyPeriodicSymmetry>()?;
     m.add_class::<periodic::PyPeriodicResult>()?;
     m.add_class::<wannier::PyWannierSetup>()?;
     m.add_class::<wannier::PyWannierResult>()?;

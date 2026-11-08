@@ -16,6 +16,7 @@ doctest = false
 [dependencies]
 mandacaru-core.workspace = true
 nalgebra.workspace = true
+num-complex.workspace = true
 pyo3.workspace = true
 numpy.workspace = true
 serde_json.workspace = true

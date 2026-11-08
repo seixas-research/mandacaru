@@ -70,6 +70,7 @@ version = "0.1.0"
 dependencies = [
  "mandacaru-core",
  "nalgebra",
+ "num-complex",
  "numpy",
  "pyo3",
  "pyo3-build-config",

@@ -86,26 +86,9 @@ def solve_confined_radial(n: int, l: int, Z: float, r_c: float,
     if n_grid <= k + 2:
         raise ValueError("n_grid too small for the requested state")
 
-    h = r_c / n_grid
-    r = np.arange(1, n_grid) * h  # interior nodes; the wall at r_c is excluded
-    inv_h2 = 1.0 / (h * h)
-    diag = inv_h2 - Z / r + l * (l + 1) / (2.0 * r * r)
-    offdiag = -0.5 * inv_h2 * np.ones(r.size - 1)
-
-    from .radial_backend import tridiagonal_eigenpair
-    value, u = tridiagonal_eigenpair(diag, offdiag, k)
-    R = u / r
-    norm = np.sqrt(np.trapezoid(R * R * r * r, r))
-    R = R / norm
-    if R[0] < 0.0:  # fix the global sign so R > 0 near the origin
-        R = -R
-
-    # Close the grid with r = 0 (extrapolated) and the hard wall r_c (R = 0).
-    slope = (R[1] - R[0]) / (r[1] - r[0])
-    R0 = R[0] - slope * r[0]
-    r_full = np.concatenate(([0.0], r, [r_c]))
-    R_full = np.concatenate(([R0], R, [0.0]))
-    return r_full, R_full, value
+    ctx = _native.Context(threads=1)
+    res = ctx.confined_radial(int(n), int(l), float(Z), float(r_c), intervals=int(n_grid))
+    return res["r"], res["radial"], float(res["energy"])
 
 
 class NumericalAtomicOrbital(BasisFunction):

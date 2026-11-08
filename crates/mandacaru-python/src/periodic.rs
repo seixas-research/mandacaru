@@ -133,6 +133,19 @@ fn matrix_values(a: &nalgebra::DMatrix<C64>) -> Vec<C64> {
         .flat_map(|i| (0..a.ncols()).map(move |j| a[(i, j)]))
         .collect()
 }
+#[pyclass(name = "PeriodicSymmetry", module = "mandacaru._native", frozen)]
+pub struct PyPeriodicSymmetry {
+    pub n_operations: usize,
+}
+
+#[pymethods]
+impl PyPeriodicSymmetry {
+    #[getter]
+    fn n_operations(&self) -> usize {
+        self.n_operations
+    }
+}
+
 #[pyclass(name = "PeriodicProblem", module = "mandacaru._native", frozen)]
 pub struct PyCrystal {
     pub inner: Arc<Crystal>,
@@ -183,6 +196,26 @@ impl PyCrystal {
                 .iter()
                 .map(|&(a, l, m)| [a as i64, l as i64, m as i64])
                 .collect()
+        })
+    }
+    #[getter]
+    fn kpoints(&self) -> Option<Vec<[f64; 3]>> {
+        self.setup.as_ref().map(|s| s.kpoints_cart.clone())
+    }
+    #[getter]
+    fn kpoints_fractional(&self) -> Option<Vec<[f64; 3]>> {
+        self.setup.as_ref().map(|s| s.kpoints_frac.clone())
+    }
+    #[getter]
+    fn weights(&self) -> Option<Vec<f64>> {
+        self.setup.as_ref().map(|s| s.weights.clone())
+    }
+    #[getter]
+    fn symmetry(&self) -> Option<PyPeriodicSymmetry> {
+        self.setup.as_ref().and_then(|s| {
+            s.symmetry.as_ref().map(|sym| PyPeriodicSymmetry {
+                n_operations: sym.len(),
+            })
         })
     }
     /// The DFT+U shells the crystal carries, `(atom, symbol, l, u_ha, j_ha)`; `None` without.

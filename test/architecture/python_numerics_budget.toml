@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 8484
+zero_sloc = 8456
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -24,7 +24,7 @@ zero_sloc = 8484
 "analysis/expressibility.py" = { np = 1 }
 "analysis/fields.py" = { np = 1, matmul = 1 }
 "analysis/proposals.py" = { dloops = 2 }
-"backends/factorization.py" = { np = 53, matmul = 9, meth = 12, dloops = 4 }
+"backends/factorization.py" = { np = 4, matmul = 2, meth = 3, dloops = 1 }
 "backends/gradient_measurement.py" = { np = 24, matmul = 2, meth = 3, dloops = 5 }
 "backends/measurement.py" = { np = 6, dloops = 3, dcomp = 6 }
 "backends/providers.py" = { np = 10, matmul = 2, dyn = 1, dloops = 5, dcomp = 6 }
@@ -41,13 +41,13 @@ zero_sloc = 8484
 "basis/hse.py" = { np = 1, sloc = 10, wave = "W4", dies = "2027-07-16" }
 "basis/loggrid.py" = { sloc = 63, wave = "BF", dies = "2027-07-16" }
 "basis/multizeta.py" = { dloops = 1, bi = 2, arith = 1, arithmax = 1, sloc = 131, wave = "BF", dies = "2027-07-16" }
-"basis/nao.py" = { np = 4, bi = 1, arith = 21, arithmax = 18, sloc = 75, wave = "BF", dies = "2027-07-16" }
+"basis/nao.py" = { np = 1, bi = 1, arith = 3, arithmax = 2, sloc = 61, wave = "BF", dies = "2027-07-16" }
 "basis/nao_ae.py" = { bi = 5, aloops = 2, arith = 17, arithmax = 5, sloc = 232, wave = "BF", dies = "2027-07-16" }
 "basis/pople.py" = { dloops = 1, bi = 2, arith = 4, arithmax = 2, sloc = 41, wave = "BF", dies = "2027-07-16" }
 "basis/radial_backend.py" = { np = 2, sloc = 33, wave = "W4", dies = "2027-07-16" }
 "basis/relativity.py" = { bi = 4, arith = 4, arithmax = 3, sloc = 130, wave = "W4", dies = "2027-07-16" }
 "basis/sto_ng.py" = { np = 2, bi = 1, arith = 6, arithmax = 3, sloc = 41, wave = "BF", dies = "2027-07-16" }
-"basis/xc.py" = { np = 33, meth = 1, arith = 207, arithmax = 90, sloc = 207, wave = "W4", dies = "2027-07-16" }
+"basis/xc.py" = { np = 31, arith = 205, arithmax = 90, sloc = 193, wave = "W4", dies = "2027-07-16" }
 "basis/xc_spin.py" = { np = 2, arith = 6, arithmax = 6, sloc = 27, wave = "W4", dies = "2027-07-16" }
 "calculation.py" = { np = 14, matmul = 4, meth = 1, dloops = 1 }
 "circuits/pools.py" = { math = 4, dloops = 3, dcomp = 1 }

@@ -6,6 +6,7 @@ pub mod dynamics;
 pub mod evolution;
 pub mod execution;
 pub mod expressibility;
+pub mod factorization;
 pub mod hva;
 pub mod optimizer;
 pub mod periodic_response;

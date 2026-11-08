@@ -167,21 +167,17 @@ class DoubleFactorization:
         ``two_rdm`` :math:`\Gamma_{pqrs} = \langle a^\dagger_p a^\dagger_q a_s
         a_r\rangle`, the convention of :mod:`mandacaru.algorithms.rdm`.
         """
-        gamma = np.asarray(one_rdm)
-        gamma2 = np.asarray(two_rdm)
-        energy = self.constant + float(np.real(np.einsum(
-            "pq,pq->", self.one_body, gamma)))
-        # <E_pr E_qs> = Gamma_pqrs + delta_rq gamma_ps, with
-        # Gamma_pqrs = <a+_p a+_q a_s a_r>: the same reordering that produced
-        # the chemists' tensor above, read backwards.
-        pair = np.einsum("pqrs->prqs", gamma2) + np.einsum(
-            "rq,ps->prqs", np.eye(self.n_modes), gamma)
-        for leaf in self.leaves:
-            matrix = leaf.orbitals @ np.diag(leaf.coefficients) \
-                @ leaf.orbitals.conj().T
-            energy += 0.5 * leaf.weight * float(np.real(np.einsum(
-                "pr,qs,prqs->", matrix, matrix, pair)))
-        return energy
+        from .._native import factorized_energy_rdm as _native_energy
+
+        return _native_energy(
+            float(self.constant),
+            np.ascontiguousarray(self.one_body, dtype=np.complex128),
+            [float(leaf.weight) for leaf in self.leaves],
+            [np.ascontiguousarray(leaf.orbitals, dtype=np.float64) for leaf in self.leaves],
+            [np.ascontiguousarray(leaf.coefficients, dtype=np.float64) for leaf in self.leaves],
+            np.ascontiguousarray(one_rdm, dtype=np.float64),
+            np.ascontiguousarray(two_rdm, dtype=np.float64),
+        )
 
     def to_fermion(self):
         """Rebuild the second-quantized operator this factorization represents.
@@ -228,53 +224,25 @@ def double_factorization(h_pq, g_pqrs, tol: float = DEFAULT_LEAF_TOLERANCE,
     constant : float
         Scalar added to the energy (a frozen core, a nuclear repulsion).
     """
-    h_pq = np.asarray(h_pq)
-    g = np.asarray(g_pqrs)
-    m = int(h_pq.shape[0])
-    if g.shape != (m, m, m, m):
-        raise ValueError(f"two-body tensor {g.shape} does not match a "
+    h_arr = np.ascontiguousarray(h_pq, dtype=np.float64)
+    g_arr = np.ascontiguousarray(g_pqrs, dtype=np.float64)
+    m = int(h_arr.shape[0])
+    if g_arr.shape != (m, m, m, m):
+        raise ValueError(f"two-body tensor {g_arr.shape} does not match a "
                          f"{m}-mode one-body tensor")
 
-    # <pq|rs> a+_p a+_q a_s a_r = <pq|rs> [ E_pr E_qs - delta_qr E_ps ].
-    chemist = np.einsum("pqrs->prqs", g)
-    one_body = np.asarray(h_pq, dtype=complex) \
-        - 0.5 * np.einsum("pqqs->ps", g)
+    from .._native import double_factorization as _native_df
 
-    # First factorization: the (pr),(qs) matrix is symmetric, so an eigenvalue
-    # decomposition gives real leaves directly.  `eigh` needs it Hermitian;
-    # symmetrizing costs nothing and absorbs the integrals' own round-off.
-    w = chemist.reshape(m * m, m * m)
-    w = 0.5 * (w + w.conj().T)
-    weights, vectors = np.linalg.eigh(w)
-
-    order = np.argsort(-np.abs(weights))
-    weights, vectors = weights[order], vectors[:, order]
-    largest = float(np.abs(weights[0])) if len(weights) else 0.0
-    keep = np.abs(weights) > tol * max(largest, 1.0)
-    if max_leaves is not None:
-        cut = np.zeros_like(keep)
-        cut[:int(max_leaves)] = True
-        keep &= cut
-    dropped = weights[~keep]
-    truncation = float(np.sqrt(np.sum(dropped ** 2))) if dropped.size else 0.0
-
-    leaves: list[FactorizationLeaf] = []
-    for index in np.flatnonzero(keep):
-        matrix = vectors[:, index].reshape(m, m)
-        matrix = 0.5 * (matrix + matrix.conj().T)
-        values, orbitals = np.linalg.eigh(matrix)
-        values = np.where(np.abs(values) > coefficient_tol, values, 0.0)
-        if not np.any(values):
-            continue
-        leaves.append(FactorizationLeaf(weight=float(weights[index]),
-                                        orbitals=orbitals,
-                                        coefficients=values))
-
-    energies, rotation = np.linalg.eigh(0.5 * (one_body + one_body.conj().T))
+    n_modes, c, ob, ob_rot, ob_e, leaves_raw, trunc = _native_df(
+        h_arr, g_arr, tol=float(tol), coefficient_tol=float(coefficient_tol),
+        max_leaves=max_leaves, constant=float(constant)
+    )
+    leaves = [FactorizationLeaf(weight=float(w), orbitals=u, coefficients=val)
+              for w, u, val in leaves_raw]
     return DoubleFactorization(
-        n_modes=m, constant=float(constant), one_body=one_body,
-        one_body_orbitals=rotation, one_body_energies=energies,
-        leaves=leaves, truncation_error=truncation)
+        n_modes=n_modes, constant=c, one_body=ob,
+        one_body_orbitals=ob_rot, one_body_energies=ob_e,
+        leaves=leaves, truncation_error=trunc)
 
 
 def _pair_spectrum(eri=None, factors=None, coupling=None):
@@ -289,38 +257,18 @@ def _pair_spectrum(eri=None, factors=None, coupling=None):
     decomposition :math:`F^T = QR`, so ``W`` is never formed when ``k`` is
     below ``M^2``.  Both give ``W``'s nonzero spectrum to round-off.
     """
-    if factors is None and is_packed(eri):
-        # The packed pair matrix W_P over unordered pairs: the ordered-pair
-        # matrix is E W_P E^T (E sums a pair's two orderings), whose
-        # nonzero spectrum is that of D^1/2 W_P D^1/2 (D = E^T E, 1 or 2),
-        # eigenvectors E D^-1/2 y -- a P x P problem, P = M(M+1)/2.
-        m, P = eri.n, eri.n_pairs
-        rows, cols = np.tril_indices(m)
-        root = np.where(rows == cols, 1.0, np.sqrt(2.0))
-        w = eri.pair_matrix() * root[:, None] * root[None, :]
-        weights, y = np.linalg.eigh(0.5 * (w + w.T))
-        y = y / root[:, None]
-        vectors = np.zeros((m, m, P))
-        vectors[rows, cols] = y
-        vectors[cols, rows] = y
-        return weights, vectors.reshape(m * m, P)
-    if factors is None:
-        g = np.asarray(eri)
-        m = g.shape[0]
-        w = np.einsum("pqrs->prqs", g).reshape(m * m, m * m)
-        return np.linalg.eigh(0.5 * (w + w.conj().T))
-    F = np.asarray(factors)
-    k, m = F.shape[0], F.shape[1]
-    K = (np.eye(k) if coupling is None
-         else 0.5 * (np.asarray(coupling) + np.asarray(coupling).T))
-    vectors = F.reshape(k, m * m).T                         # (M^2, k)
-    if k >= m * m:
-        w = vectors @ K @ vectors.T
-        return np.linalg.eigh(0.5 * (w + w.conj().T))
-    Q, R = np.linalg.qr(vectors)
-    small = R @ K @ R.T
-    weights, V = np.linalg.eigh(0.5 * (small + small.conj().T))
-    return weights, Q @ V
+    from .._native import pair_spectrum as _native_pair_spectrum
+
+    if factors is not None:
+        f_arr = np.ascontiguousarray(factors, dtype=np.float64)
+        k_arr = (np.ascontiguousarray(coupling, dtype=np.float64)
+                 if coupling is not None else None)
+        return _native_pair_spectrum(factors=f_arr, coupling=k_arr)
+    if is_packed(eri):
+        p_arr = np.ascontiguousarray(eri.data, dtype=np.float64)
+        return _native_pair_spectrum(packed_eri=p_arr, packed_m=int(eri.n))
+    g_arr = np.ascontiguousarray(eri, dtype=np.float64)
+    return _native_pair_spectrum(eri=g_arr)
 
 
 def spatial_double_factorization(h, eri=None, *, factors=None, coupling=None,
@@ -355,75 +303,48 @@ def spatial_double_factorization(h, eri=None, *, factors=None, coupling=None,
     from ``k < M^2`` factors, a ``k x k`` one) instead of ``(2M)^2 x
     (2M)^2``.
     """
-    h = np.asarray(h)
-    m = int(h.shape[0])
+    from .._native import spatial_double_factorization as _native_sdf
+
+    h_arr = np.ascontiguousarray(h, dtype=np.float64)
+    m = int(h_arr.shape[0])
     if factors is not None:
-        F = np.asarray(factors)
-        if F.ndim != 3 or F.shape[1:] != (m, m):
-            raise ValueError(f"pair factors {F.shape} do not match a {m}-orbital "
+        f_arr = np.ascontiguousarray(factors, dtype=np.float64)
+        if f_arr.ndim != 3 or f_arr.shape[1:] != (m, m):
+            raise ValueError(f"pair factors {f_arr.shape} do not match a {m}-orbital "
                              f"one-body matrix")
-        K = (np.eye(F.shape[0]) if coupling is None
-             else np.asarray(coupling))
-        # sum_q <pq|qs> = sum_q (pq|qs) = sum_ij K_ij (F_i F_j)_ps.
-        contracted = np.einsum("ij,jqs->iqs", K, F)
-        exchange_like = np.einsum("ipq,iqs->ps", F, contracted)
+        k_arr = (np.ascontiguousarray(coupling, dtype=np.float64)
+                 if coupling is not None else None)
+        n_modes, c, ob, ob_rot, ob_e, leaves_raw, trunc = _native_sdf(
+            h_arr, factors=f_arr, coupling=k_arr,
+            tol=float(tol), coefficient_tol=float(coefficient_tol),
+            max_leaves=max_leaves, constant=float(constant)
+        )
     elif is_packed(eri):
         if eri.n != m:
             raise ValueError(f"two-body tensor {eri.shape} does not match a "
                              f"{m}-orbital one-body matrix")
-        exchange_like = eri.exchange(np.eye(m))         # sum_q <pq|qs>
+        p_arr = np.ascontiguousarray(eri.data, dtype=np.float64)
+        n_modes, c, ob, ob_rot, ob_e, leaves_raw, trunc = _native_sdf(
+            h_arr, packed_eri=p_arr,
+            tol=float(tol), coefficient_tol=float(coefficient_tol),
+            max_leaves=max_leaves, constant=float(constant)
+        )
     else:
-        g = np.asarray(eri)
-        if g.shape != (m, m, m, m):
-            raise ValueError(f"two-body tensor {g.shape} does not match a "
+        g_arr = np.ascontiguousarray(eri, dtype=np.float64)
+        if g_arr.shape != (m, m, m, m):
+            raise ValueError(f"two-body tensor {g_arr.shape} does not match a "
                              f"{m}-orbital one-body matrix")
-        exchange_like = np.einsum("pqqs->ps", g)
-    spatial_one = np.asarray(h, dtype=complex) - 0.5 * exchange_like
-    weights, vectors = _pair_spectrum(None if factors is not None else eri,
-                                      factors, coupling)
-    # The spin-orbital spectrum: every spatial weight doubled, the rest zero.
-    weights = 2.0 * weights
-    order = np.argsort(-np.abs(weights))
-    weights, vectors = weights[order], vectors[:, order]
-    largest = float(np.abs(weights[0])) if len(weights) else 0.0
-    keep = np.abs(weights) > tol * max(largest, 1.0)
-    if max_leaves is not None:
-        cut = np.zeros_like(keep)
-        cut[:int(max_leaves)] = True
-        keep &= cut
-    dropped = weights[~keep]
-    truncation = float(np.sqrt(np.sum(dropped ** 2))) if dropped.size else 0.0
-
-    n = 2 * m
-
-    def spin_blocks(U):
-        out = np.zeros((n, n), dtype=U.dtype)
-        out[:m, :m] = out[m:, m:] = U
-        return out
-
-    leaves: list[FactorizationLeaf] = []
-    root = np.sqrt(0.5)
-    for index in np.flatnonzero(keep):
-        matrix = vectors[:, index].reshape(m, m)
-        matrix = 0.5 * (matrix + matrix.conj().T)
-        values, orbitals = np.linalg.eigh(matrix)
-        values = np.concatenate([values, values]) * root
-        values = np.where(np.abs(values) > coefficient_tol, values, 0.0)
-        if not np.any(values):
-            continue
-        leaves.append(FactorizationLeaf(weight=float(weights[index]),
-                                        orbitals=spin_blocks(orbitals),
-                                        coefficients=values))
-
-    energies, rotation = np.linalg.eigh(0.5 * (spatial_one
-                                               + spatial_one.conj().T))
-    one_body = np.zeros((n, n), dtype=complex)
-    one_body[:m, :m] = one_body[m:, m:] = spatial_one
+        n_modes, c, ob, ob_rot, ob_e, leaves_raw, trunc = _native_sdf(
+            h_arr, eri=g_arr,
+            tol=float(tol), coefficient_tol=float(coefficient_tol),
+            max_leaves=max_leaves, constant=float(constant)
+        )
+    leaves = [FactorizationLeaf(weight=float(w), orbitals=u, coefficients=val)
+              for w, u, val in leaves_raw]
     return DoubleFactorization(
-        n_modes=n, constant=float(constant), one_body=one_body,
-        one_body_orbitals=spin_blocks(rotation),
-        one_body_energies=np.concatenate([energies, energies]),
-        leaves=leaves, truncation_error=truncation)
+        n_modes=n_modes, constant=c, one_body=ob,
+        one_body_orbitals=ob_rot, one_body_energies=ob_e,
+        leaves=leaves, truncation_error=trunc)
 
 
 def factorized_measurement_bases(factorization: DoubleFactorization) -> int:
