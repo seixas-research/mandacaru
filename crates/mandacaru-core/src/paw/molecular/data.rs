@@ -75,6 +75,369 @@ impl Species {
         Self::parse_with_options(ctx, v, arrays, raw, false, false)
     }
 
+    pub fn from_dataset(
+        ctx: &Context,
+        ds: &crate::paw::record::PawDataset,
+        raw: bool,
+        allow_spin_orbit: bool,
+        allow_heavy_dft: bool,
+    ) -> Result<Self> {
+        if !allow_spin_orbit && !ds.spin_orbit.is_empty() {
+            return Err(invalid(
+                "native molecular PAW spin-orbit projector terms are not yet implemented",
+            ));
+        }
+        let atomic_number = u8::try_from(ds.atomic_number)
+            .ok()
+            .filter(|z| (1..=118).contains(z))
+            .ok_or_else(|| invalid("invalid PAW atomic number"))?;
+        let charge = ds.valence_charge;
+        let r_slice = ds.r.as_slice();
+        let ionic_slice = ds.v_local.as_slice();
+        validate(r_slice, ionic_slice)?;
+        let core_slice = ds.core_density.as_slice();
+        validate(r_slice, core_slice)?;
+        let core_charge = integrate(
+            r_slice,
+            &r_slice
+                .iter()
+                .zip(core_slice)
+                .map(|(r, n)| 4. * PI * r * r * n)
+                .collect::<Vec<_>>(),
+        )?;
+        let occupied_1s = ds.channels.values().any(|ch| {
+            ch.n == 1 && ch.occupations.data().first().is_some_and(|&n| n > 0.)
+        });
+        let ordinary_core = ds.frozen_subshells.is_empty()
+            && !ds
+                .semicore_subshells
+                .iter()
+                .any(|s| s.len() >= 2 && s[0] == 1 && s[1] == 0);
+        let closed_1s = ordinary_core
+            && (3..=10).contains(&atomic_number)
+            && ((atomic_number as f64 - charge) - 2.).abs() < 1e-8
+            && (core_charge - 2.).abs() < 0.02
+            && !occupied_1s;
+        let core_supported = core_charge <= 1e-6 || closed_1s;
+        if !allow_heavy_dft && !core_supported {
+            return Err(invalid(
+                "native PAW frozen-core exchange currently requires an empty core or a single closed 1s shell",
+            ));
+        }
+        if core_slice.iter().any(|v| *v < 0.) {
+            return Err(invalid("core density must be nonnegative"));
+        }
+        let _core_memory = ctx.reserve(product(&[r_slice.len(), 8])?)?;
+        let core_orbital: Vec<_> = core_slice
+            .iter()
+            .map(|n| (2. * PI * n).sqrt())
+            .collect();
+        let mut core_extent = 0;
+        if closed_1s {
+            let total = core_charge;
+            let mut integrated = 0.;
+            for i in 1..r_slice.len() {
+                let a = r_slice[i - 1];
+                let b = r_slice[i];
+                integrated += 0.5
+                    * (b - a)
+                    * 4.
+                    * PI
+                    * (a * a * core_slice[i - 1] + b * b * core_slice[i]);
+                if integrated >= (1. - 1e-14) * total {
+                    core_extent = (i + 2).min(r_slice.len());
+                    break;
+                }
+            }
+        }
+        if ds.nlcc.applied
+            && ds.nlcc.source.as_deref() != Some("smooth_core")
+            && ds.nlcc.r_nlcc.is_some()
+        {
+            return Err(invalid(
+                "native PAW reference XC currently reads the dataset's stored smooth-core correction",
+            ));
+        }
+        let xc_core_vec: Vec<f64>;
+        let xc_core_slice: &[f64] = if ds.nlcc.applied {
+            ds.smooth_core_density.as_slice()
+        } else {
+            xc_core_vec = vec![0.0; r_slice.len()];
+            &xc_core_vec
+        };
+        validate(r_slice, xc_core_slice)?;
+        validate(r_slice, ds.valence_density.as_slice())?;
+
+        let total_refs: usize = ds.channels.values().map(|c| c.occupations.len()).sum();
+        let memory = ctx.reserve(
+            product(&[
+                r_slice.len(),
+                total_refs.checked_add(2).ok_or(crate::Error::Overflow)?,
+                8,
+                8,
+            ])?
+            .checked_add(product(&[total_refs, total_refs, 8, 12])?)
+            .ok_or(crate::Error::Overflow)?,
+        )?;
+
+        let mut all_density = core_slice.to_vec();
+        let mut channels = Vec::new();
+        let n = r_slice.len();
+        let mut transforms = Vec::new();
+
+        for (&l_u32, ch) in &ds.channels {
+            let l = l_u32 as usize;
+            if l >= 8 {
+                continue;
+            }
+            let principal_n = ch.n as usize;
+            let radius = ch.r_cut;
+            if principal_n <= l || radius <= 0. {
+                return Err(invalid("invalid PAW angular momentum or radius"));
+            }
+            let occupations = ch.occupations.data();
+            let refs = occupations.len();
+            if refs == 0 {
+                return Err(invalid("a PAW channel needs reference waves"));
+            }
+            if ch.ae_waves.len() != refs {
+                return Err(invalid("PAW wave table dimensions disagree"));
+            }
+            let proj_buffers = if raw {
+                &ch.raw_projectors
+            } else {
+                &ch.projectors
+            };
+            if proj_buffers.len() != refs {
+                return Err(invalid("PAW wave table dimensions disagree"));
+            }
+            for i in 0..refs {
+                if ch.ae_waves[i].as_slice().len() != n || proj_buffers[i].as_slice().len() != n {
+                    return Err(invalid("PAW wave table dimensions disagree"));
+                }
+            }
+            let n_sq = product(&[refs, refs])?;
+            if ch.coupling.len() != n_sq
+                || ch.overlap_correction.len() != n_sq
+                || ch.vanderbilt.len() != n_sq
+            {
+                return Err(invalid("PAW channel matrix dimensions disagree"));
+            }
+            let coupling = DMatrix::from_row_slice(refs, refs, ch.coupling.data());
+            let overlap = DMatrix::from_row_slice(refs, refs, ch.overlap_correction.data());
+            let b = DMatrix::from_row_slice(refs, refs, ch.vanderbilt.data());
+            let transform = if raw {
+                b.clone()
+                    .try_inverse()
+                    .ok_or_else(|| invalid("singular PAW projector transform"))?
+            } else {
+                DMatrix::identity(refs, refs)
+            };
+            let ae_waves: Vec<Vec<f64>> = (0..refs)
+                .map(|i| ch.ae_waves[i].as_slice().to_vec())
+                .collect();
+            let mut dual_ps = vec![vec![0.; n]; refs];
+            for i in 0..refs {
+                let q = ch.wavevectors[i].data();
+                let c = ch.wave_coefficients[i].data();
+                if q.len() != c.len() {
+                    return Err(invalid("PAW Bessel expansion dimensions disagree"));
+                }
+                let j = crate::kernels::bessel(ctx, l as i32, r_slice, q)?;
+                for k in 0..n {
+                    dual_ps[i][k] = if r_slice[k] <= radius {
+                        (0..c.len())
+                            .map(|z| c[z] * j.as_slice()[k * c.len() + z])
+                            .sum()
+                    } else {
+                        ae_waves[i][k]
+                    };
+                    all_density[k] += occupations[i] * ae_waves[i][k].powi(2) / (4. * PI);
+                }
+            }
+            let projectors = (0..refs)
+                .map(|i| {
+                    Cubic::new(
+                        ctx,
+                        ctx.copy_slice(r_slice)?,
+                        ctx.copy_slice(proj_buffers[i].as_slice())?,
+                    )
+                    .map(Arc::new)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let reference = DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(
+                refs,
+                occupations.iter().map(|o| o / (2 * l + 1) as f64),
+            ));
+            let shell_weights = crate::paw::shell::channel_weights(
+                ctx,
+                &ae_waves,
+                b.as_slice(),
+                radius,
+                r_slice,
+                occupations,
+                if raw {
+                    crate::paw::onecenter::Basis::Raw
+                } else {
+                    crate::paw::onecenter::Basis::Dual
+                },
+            )
+            .ok();
+            channels.push(Channel {
+                l,
+                radius,
+                projectors,
+                ae: ae_waves,
+                ps: dual_ps,
+                coupling: &transform * coupling * transform.transpose(),
+                overlap: &transform * overlap * transform.transpose(),
+                reference: if raw {
+                    b.transpose() * reference * b
+                } else {
+                    reference
+                },
+                xc: DMatrix::zeros(refs, refs),
+                core_exchange: DMatrix::zeros(refs, refs),
+                weights: shell_weights,
+            });
+            transforms.push(transform);
+        }
+
+        let ae_xc = crate::models::spherical::exchange_correlation(
+            ctx,
+            r_slice,
+            &all_density,
+            &ds.xc,
+            ds.relativistic_exchange,
+        )?;
+        let ps_xc = crate::models::spherical::exchange_correlation(
+            ctx,
+            r_slice,
+            &ds.valence_density
+                .as_slice()
+                .iter()
+                .zip(xc_core_slice)
+                .map(|(a, b)| a + b)
+                .collect::<Vec<_>>(),
+            &ds.xc,
+            ds.relativistic_exchange,
+        )?;
+        let bare_xc = crate::models::spherical::exchange_correlation(
+            ctx,
+            r_slice,
+            ds.valence_density.as_slice(),
+            &ds.xc,
+            ds.relativistic_exchange,
+        )?;
+        let valence_potential = |potential: &[f64]| -> Result<f64> {
+            integrate(
+                r_slice,
+                &(0..n)
+                    .map(|k| {
+                        4. * PI * r_slice[k].powi(2)
+                            * ds.valence_density.as_slice()[k]
+                            * potential[k]
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let core_offset =
+            bare_xc.energy - valence_potential(bare_xc.potential.as_slice())? - ps_xc.energy
+                + valence_potential(ps_xc.potential.as_slice())?;
+        let dft_constant = ds.one_center_energy + core_offset;
+        let xc_core = Cubic::new(
+            ctx,
+            ctx.copy_slice(r_slice)?,
+            ctx.copy_slice(xc_core_slice)?,
+        )?;
+        let xc_core_tau = crate::paw::fields::core_kinetic(ctx, &xc_core)?;
+        let local_radius = ds.r_cut_local;
+        let sphere = channels
+            .iter()
+            .map(|c| c.radius)
+            .fold(local_radius, f64::max);
+        let inside = (r_slice.partition_point(|x| *x < sphere) + 1).min(n);
+        for (ch, transform) in channels.iter_mut().zip(transforms) {
+            let refs = ch.ae.len();
+            let mut vx = DMatrix::zeros(refs, refs);
+            for i in 0..refs {
+                for j in 0..refs {
+                    let values: Vec<_> = (0..inside)
+                        .map(|k| {
+                            (ae_xc.potential.as_slice()[k] * ch.ae[i][k] * ch.ae[j][k]
+                                - ps_xc.potential.as_slice()[k] * ch.ps[i][k] * ch.ps[j][k])
+                                * r_slice[k].powi(2)
+                        })
+                        .collect();
+                    vx[(i, j)] = integrate(&r_slice[..inside], &values)?;
+                }
+            }
+            ch.xc = &transform * vx * transform.transpose();
+            if closed_1s {
+                if core_extent < 4 {
+                    return Err(invalid("invalid core radial extent"));
+                }
+                let mut exchange = DMatrix::zeros(refs, refs);
+                for i in 0..refs {
+                    for j in 0..refs {
+                        let left: Vec<_> = (0..core_extent)
+                            .map(|k| ch.ae[i][k] * core_orbital[k])
+                            .collect();
+                        let right: Vec<_> = (0..core_extent)
+                            .map(|k| ch.ae[j][k] * core_orbital[k])
+                            .collect();
+                        exchange[(i, j)] =
+                            -0.5 * (crate::paw::pair_tables::coulomb(
+                                &r_slice[..core_extent],
+                                &left,
+                                &right,
+                                ch.l,
+                            ) + crate::paw::pair_tables::coulomb(
+                                &r_slice[..core_extent],
+                                &right,
+                                &left,
+                                ch.l,
+                            )) / (2 * ch.l + 1) as f64;
+                    }
+                }
+                ch.core_exchange = &transform * exchange * transform.transpose();
+            }
+            let mix = |waves: &Vec<Vec<f64>>| {
+                (0..refs)
+                    .map(|i| {
+                        (0..n)
+                            .map(|k| (0..refs).map(|j| transform[(i, j)] * waves[j][k]).sum())
+                            .collect()
+                    })
+                    .collect()
+            };
+            ch.ae = mix(&ch.ae);
+            ch.ps = mix(&ch.ps);
+        }
+        let compensation_radius = ds.compensation_radius;
+        if charge <= 0. || local_radius <= 0. || compensation_radius <= 0. {
+            return Err(invalid("PAW charges and radii must be positive"));
+        }
+        Ok(Self {
+            atomic_number,
+            charge,
+            local_radius,
+            compensation_radius,
+            ionic: Cubic::new(
+                ctx,
+                ctx.copy_slice(r_slice)?,
+                ctx.copy_slice(ionic_slice)?,
+            )?,
+            channels,
+            xc_core,
+            xc_core_tau,
+            dft_constant,
+            relativistic_exchange: ds.relativistic_exchange,
+            core_supported,
+            _memory: memory,
+        })
+    }
+
     pub fn parse_with_options(
         ctx: &Context,
         v: &Value,

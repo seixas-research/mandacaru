@@ -53,6 +53,7 @@ pub struct SetupInput {
     pub sigma: Option<f64>,
     pub dataset_files: Option<Vec<(String, String)>>,
     pub hubbard_u: Option<crate::models::hubbard_request::Request>,
+    pub charge: Option<f64>,
 }
 
 /// Construct a [`PeriodicSetup`] from structured inputs and loaded datasets.
@@ -525,6 +526,7 @@ pub fn create_setup(
         sigma,
         description,
         hubbard,
+        charge: input.charge,
     })
 }
 
@@ -585,19 +587,20 @@ fn confined_orbital(ctx: &Context, ds: &PawDataset, l: u32, state: usize, shift:
 
 /// Parse a JSON `"periodic-paw-input"` specification into [`SetupInput`].
 pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
-    for name in ["hubbard", "ghosts", "diffuse", "energy_shift",
+    if v.get("diffuse").is_some_and(|d| !d.is_null() && d != false) {
+        return Err(invalid(
+            "the 'diffuse' basis option is for molecules: in a crystal a diffuse \
+             shell is nearly linearly dependent on the neighbors' valence \
+             functions, and its Bloch sum runs over several times the images of \
+             a confined orbital. Drop 'diffuse' for a periodic geometry",
+        ));
+    }
+    for name in ["hubbard", "ghosts", "energy_shift",
                  "confinement_potential", "polarization_method", "zeta_split", "size", "basis"] {
         if v.get(name).is_some() {
             return Err(crate::Error::Unsupported(format!(
                 "native periodic setup does not yet support option {name:?}"
             )));
-        }
-    }
-    if let Some(charge) = v.get("charge") {
-        if charge.as_f64() != Some(0.) {
-            return Err(crate::Error::Unsupported(
-                "native periodic setup does not yet support charged crystals".into(),
-            ));
         }
     }
     fn triple(value: &Value, name: &str) -> Result<[f64; 3]> {
@@ -713,6 +716,7 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
     let symmetry = bool_option("symmetry", true)?;
     let filter_cutoff = number_option("filter_cutoff")?;
     let sigma = number_option("sigma")?;
+    let charge = number_option("charge")?;
     let dataset_files = if let Some(arr) = v["dataset_files"].as_array().or_else(|| v["sites"]["datasets"].as_array()) {
         let mut files = Vec::new();
         for item in arr {
@@ -743,5 +747,6 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
         hubbard_u: v.get("hubbard_u").filter(|v| !v.is_null())
             .map(|v| crate::models::hubbard_request::Request::parse(&v.to_string()))
             .transpose()?,
+        charge,
     })
 }

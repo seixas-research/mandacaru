@@ -109,9 +109,21 @@ class ASEProperties:
         )["full"]
 
     def _bands_at(self, fractional):
+        calculation = self._calculation_owner()
+        periodic = getattr(getattr(calculation, "result", None), "periodic", None)
+        if periodic is not None and hasattr(periodic, "bands_at"):
+            try:
+                frac_list = [list(map(float, k)) for k in fractional]
+                native = periodic.bands_at(frac_list)
+                return np.asarray(native["eigenvalues"])
+            except NotImplementedError:
+                pass
+
         from .paw import band_input
 
         calculation = self._calculation_owner()
+        if not hasattr(calculation, "_crystal_adapter") and hasattr(calculation, "_ensure_crystal_adapter"):
+            calculation._ensure_crystal_adapter()
         if not hasattr(calculation, "_crystal_adapter"):
             raise NotImplementedError(
                 "off-mesh bands require geometry and its PAW setup"

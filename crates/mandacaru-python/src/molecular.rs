@@ -23,6 +23,12 @@ fn matrix<'py>(py: Python<'py>, value: &nalgebra::DMatrix<C64>) -> PyResult<Arra
 pub struct PyIntegrals {
     pub inner: Arc<MolecularIntegrals>,
 }
+
+impl Drop for PyIntegrals {
+    fn drop(&mut self) {
+        let _ = mandacaru_core::release_freed_memory();
+    }
+}
 #[pymethods]
 impl PyIntegrals {
     #[pyo3(signature=(previous,*,max_iterations=300,tolerance=1e-9,diis=true))]

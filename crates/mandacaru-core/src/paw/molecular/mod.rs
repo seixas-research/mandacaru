@@ -245,7 +245,12 @@ pub fn build(
         .iter()
         .map(|s| {
             let allow_heavy = allow_heavy_dft || s.get("allow_heavy_dft").and_then(|v| v.as_bool()).unwrap_or(false);
-            Species::parse_with_options(ctx, s, &mut arrays, raw, false, allow_heavy)
+            if let Some(file) = s.get("file").and_then(|f| f.as_str()) {
+                let ds = crate::paw::record::PawDataset::read(ctx, std::path::Path::new(file))?;
+                Species::from_dataset(ctx, &ds, raw, false, allow_heavy)
+            } else {
+                Species::parse_with_options(ctx, s, &mut arrays, raw, false, allow_heavy)
+            }
         })
         .collect::<Result<Vec<_>>>()?;
     let atoms = metadata["atoms"]

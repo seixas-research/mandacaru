@@ -202,6 +202,7 @@ fn skew_lih_native_setup_response_matches_active_setup() {
         weights: vec![0.5, 0.5], functional: "lda".into(), precision: "float64".into(),
         basis_size: "SZ".into(), spinor: false, spin: false, symmetry: false,
         filter_cutoff: None, sigma: None, dataset_files: Some(files), hubbard_u: None,
+        charge: None,
     };
     let datasets = vec![Arc::new(dataset(&ctx, "lda-sr", "H")),
         Arc::new(dataset(&ctx, "lda-sr", "Li"))];
@@ -335,6 +336,7 @@ fn test_periodic_setup_build_and_with_cell() {
         sigma: None,
         dataset_files: None,
         hubbard_u: None,
+        charge: None,
     };
 
     let setup = create_setup(&ctx, input, vec![ds.clone()]).unwrap();

@@ -140,3 +140,64 @@ fn signed_paw_corrections_stay_separate_from_positive_coulomb_cholesky() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
+
+#[test]
+fn molecular_paw_species_from_dataset_file() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let root = match std::env::var("MANDACARU_PAW_PATH") {
+        Ok(r) if !r.trim().is_empty() => std::path::PathBuf::from(r),
+        _ => return,
+    };
+    let h_path = root.join("lda-sr/H.parquet");
+    if !h_path.exists() {
+        return;
+    }
+    let geometry = Geometry::new(
+        vec![1],
+        vec![[0., 0., 0.]],
+        [[10., 0., 0.], [0., 10., 0.], [0., 0., 10.]],
+        [false; 3],
+        LengthUnit::Bohr,
+    )
+    .unwrap();
+    let grid = SpatialGrid::from_geometry(&geometry, [1.; 3], false, false).unwrap();
+    let mut arrays = std::collections::BTreeMap::new();
+    let r_key = "r0".to_string();
+    let v_key = "v0".to_string();
+    arrays.insert(r_key.clone(), ctx.copy_slice(&[0.1, 0.5, 1.0, 2.0]).unwrap());
+    arrays.insert(v_key.clone(), ctx.copy_slice(&[1.0, 0.5, 0.2, 0.05]).unwrap());
+    let metadata = serde_json::json!({
+        "format": "molecular-paw-input",
+        "version": 1,
+        "length_unit": "bohr",
+        "energy_unit": "Ha",
+        "projector_basis": "raw",
+        "atoms": [0],
+        "species": [
+            {
+                "file": h_path.to_str().unwrap(),
+                "allow_heavy_dft": false,
+            }
+        ],
+        "basis": [
+            {
+                "atom": 0,
+                "l": 0,
+                "m": 0,
+                "r": r_key,
+                "values": v_key,
+            }
+        ]
+    });
+    let result = mandacaru_core::paw::molecular::build(
+        &ctx,
+        geometry,
+        grid,
+        &metadata.to_string(),
+        arrays,
+        "spectral",
+        1e-5,
+        mandacaru_core::math::storage::Precision::Float64,
+    );
+    assert!(result.is_ok());
+}

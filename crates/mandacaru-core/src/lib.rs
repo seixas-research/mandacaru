@@ -24,6 +24,11 @@ pub use mandacaru_kernels::runtime::WorkerStats;
 pub use math::index::Grid;
 pub use units::LengthUnit;
 
+/// Release freed memory pages back to the operating system.
+pub fn release_freed_memory() -> bool {
+    mandacaru_kernels::heap::release_freed_memory()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     Invalid(String),

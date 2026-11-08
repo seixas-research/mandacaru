@@ -136,6 +136,13 @@ fn matrix_values(a: &nalgebra::DMatrix<C64>) -> Vec<C64> {
 #[pyclass(name = "PeriodicProblem", module = "mandacaru._native", frozen)]
 pub struct PyCrystal {
     pub inner: Arc<Crystal>,
+    pub setup: Option<Arc<mandacaru_core::periodic::setup::PeriodicSetup>>,
+}
+
+impl Drop for PyCrystal {
+    fn drop(&mut self) {
+        let _ = mandacaru_core::release_freed_memory();
+    }
 }
 #[pymethods]
 impl PyCrystal {
@@ -165,6 +172,19 @@ impl PyCrystal {
     fn time_reversal(&self) -> bool {
         self.inner.time_reversal
     }
+    #[getter]
+    fn centers(&self) -> Option<Vec<[f64; 3]>> {
+        self.setup.as_ref().map(|s| s.centers.clone())
+    }
+    #[getter]
+    fn channel_labels(&self) -> Option<Vec<[i64; 3]>> {
+        self.setup.as_ref().map(|s| {
+            s.channels
+                .iter()
+                .map(|&(a, l, m)| [a as i64, l as i64, m as i64])
+                .collect()
+        })
+    }
     /// The DFT+U shells the crystal carries, `(atom, symbol, l, u_ha, j_ha)`; `None` without.
     #[getter]
     fn hubbard(&self) -> Option<Vec<(usize, String, usize, f64, f64)>> {
@@ -178,6 +198,25 @@ impl PyCrystal {
     #[getter]
     fn n_orbitals(&self) -> usize {
         self.inner.m
+    }
+    #[getter]
+    fn orbital_groups(&self) -> PyResult<Vec<(usize, usize)>> {
+        if let Some(desc) = &self.inner.description {
+            let mut groups = Vec::with_capacity(desc.function_atom.len());
+            for (&atom, &table_idx) in desc.function_atom.iter().zip(&desc.function_table) {
+                let l = desc.tables.get(table_idx).map(|t| t.l).unwrap_or(0);
+                groups.push((atom, l));
+            }
+            if self.inner.spinor {
+                let len = groups.len();
+                for i in 0..len {
+                    groups.push(groups[i]);
+                }
+            }
+            Ok(groups)
+        } else {
+            Ok(Vec::new())
+        }
     }
     fn save(&self, py: Python<'_>, path: &str) -> PyResult<()> {
         py.detach(|| self.inner.save(path)).map_err(error)
@@ -223,6 +262,7 @@ impl PyCrystal {
         Ok(PyPeriodicResult {
             inner: Arc::new(inner),
             crystal: self.inner.clone(),
+            setup: self.setup.clone(),
         })
     }
     #[pyo3(signature=(result, *,alphas=None))]
@@ -307,6 +347,13 @@ impl PyCrystal {
 pub struct PyPeriodicResult {
     pub inner: Arc<PeriodicResult>,
     pub crystal: Arc<Crystal>,
+    pub setup: Option<Arc<mandacaru_core::periodic::setup::PeriodicSetup>>,
+}
+
+impl Drop for PyPeriodicResult {
+    fn drop(&mut self) {
+        let _ = mandacaru_core::release_freed_memory();
+    }
 }
 #[pymethods]
 impl PyPeriodicResult {
@@ -362,7 +409,10 @@ impl PyPeriodicResult {
                 )
             })
             .map_err(error)?;
-        Ok(super::wannier::PyWannierSetup { inner: Some(inner) })
+        Ok(super::wannier::PyWannierSetup {
+            inner: Some(inner),
+            setup: self.setup.clone(),
+        })
     }
     /// The analytic force `-dF/dtau` per atom, Hartree/Bohr, shape `(n_atoms, 3)`, of the
     /// converged crystal, rebuilt in Rust from the crystal's own setup description. Raises
@@ -734,6 +784,92 @@ impl PyPeriodicResult {
                                 .as_ref()
                                 .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
                             // The converged DFT+U operator of this spin channel.
+                            self.inner.hubbard.as_ref().map(|h| &h.operators[s]),
+                            exchange.as_ref(),
+                        )?;
+                        eps.extend(e.iter().map(|e| e + c.reference));
+                        for a in 0..c.bands() {
+                            for b in 0..c.bands() {
+                                projections.push(y[(a, b)].norm_sqr());
+                            }
+                        }
+                    }
+                }
+                Ok::<_, mandacaru_core::Error>((eps, projections, memory))
+            })
+            .map_err(error)?;
+        let nk = eps.len() / (c.spins * c.bands());
+        let out = PyDict::new(py);
+        out.set_item("eigenvalues", array(py, &[c.spins, nk, c.bands()], eps)?)?;
+        out.set_item(
+            "projections",
+            array(py, &[c.spins, nk, c.bands(), c.bands()], projections)?,
+        )?;
+        Ok(out)
+    }
+
+    /// Native off-mesh band structure computed directly from the crystal's setup recipe.
+    #[pyo3(signature=(fractional_k))]
+    fn bands_at<'py>(
+        &self,
+        py: Python<'py>,
+        fractional_k: Vec<[f64; 3]>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let setup = self.setup.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyNotImplementedError::new_err(
+                "native off-mesh bands require a native setup recipe",
+            )
+        })?;
+        let c = &self.crystal;
+        let n_k = fractional_k.len();
+        if n_k == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "fractional_k cannot be empty",
+            ));
+        }
+        let weights = vec![1.0 / n_k as f64; n_k];
+        let (eps, projections, _memory) = py
+            .detach(|| {
+                let points = setup.matrices_at(&c.context, &fractional_k, &weights)?;
+                let memory = c.context.reserve(product(&[
+                    n_k,
+                    c.spins,
+                    c.bands(),
+                    c.bands()
+                        .checked_add(c.p)
+                        .ok_or(mandacaru_core::Error::Overflow)?,
+                    16,
+                    16,
+                ])?)?;
+                let mut eps = Vec::with_capacity(c.spins * n_k * c.bands());
+                let mut projections = Vec::with_capacity(c.spins * n_k * c.bands() * c.bands());
+                let n = c.grid.index.points();
+                let is_hybrid = c.screened_exchange()?.is_some();
+                for s in 0..c.spins {
+                    for p in &points {
+                        let exchange = if is_hybrid {
+                            Some(c.hybrid_exchange_at_k(
+                                &self.inner.matrices,
+                                p,
+                                s,
+                                self.inner.options.exxdiv_treatment,
+                            )?)
+                        } else {
+                            None
+                        };
+                        let (e, _, y) = mandacaru_core::periodic::solver::diagonalize_with_exchange(
+                            c,
+                            p,
+                            if c.spinor {
+                                self.inner.potential.as_slice()
+                            } else {
+                                &self.inner.potential.as_slice()[s * n..(s + 1) * n]
+                            },
+                            self.inner.moment_potential.as_slice(),
+                            self.inner
+                                .kinetic_potential
+                                .as_ref()
+                                .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
                             self.inner.hubbard.as_ref().map(|h| &h.operators[s]),
                             exchange.as_ref(),
                         )?;

@@ -59,3 +59,121 @@ def setup_block(crystal):
         projectors=[[int(p.atom_index), int(p.l), int(p.m), int(p.index)] for p in crystal.projectors],
         operations=operations,
     )
+
+
+def try_native_setup(driver, atoms, family, options, moments, spinor, time_reversal, start):
+    """Attempt pure native Rust periodic setup, bypassing Python quadrature meshes."""
+    import sys
+    paw_mod = sys.modules.get("mandacaru.integrations.paw")
+    if paw_mod is not None and getattr(paw_mod, "crystal_input", None) is not getattr(paw_mod, "_ORIGINAL_CRYSTAL_INPUT", None):
+        return False
+    if options.get("diffuse"):
+        from ..pseudopotentials.diffuse import refuse_crystal
+        refuse_crystal(options.get("diffuse"))
+    can_use_native = (
+        family.name in ("paw-lcao", "upaw-lcao")
+        and options.get("filter_cutoff") is None
+        and not getattr(driver, "_active_spec", None)
+        and not getattr(driver, "_save_crystal", None)
+    )
+    if not can_use_native:
+        return False
+    try:
+        import json
+        from time import perf_counter
+        from ..units import ANGSTROM_TO_BOHR
+        from ..integrals import Grid
+        from ..models.setup import monkhorst_pack_kpts
+        from ..pseudopotentials.paw import get_paw, get_upaw
+        from ..pseudopotentials.periodic_paw import grid_symmetry, reduce_mesh
+
+        cell = atoms.cell.array
+        if driver._explicit_grid is None:
+            c0, c1, c2 = cell[0], cell[1], cell[2]
+            center = [0.5 * (c0[i] + c1[i] + c2[i]) for i in range(3)]
+            g = Grid(center=center, box_size=0.0,
+                     grid_spacing=driver._grid_spacing, units="angstrom", cell=cell, periodic=True)
+        else:
+            g = driver._explicit_grid
+
+        size, gamma, mesh = monkhorst_pack_kpts(driver._kpts_spec)
+        symbols = list(atoms.symbols)
+        load = get_upaw if family.name == "upaw-lcao" else get_paw
+        unique_species = sorted(list(set(symbols)))
+        datasets = [load(s, options.get("paw_dataset"), xc=driver.xc) for s in unique_species]
+
+        has_moments = any(float(m) > 1e-12 or float(m) < -1e-12 for m in moments) if hasattr(moments, "__iter__") else False
+        if has_moments or (spinor and not time_reversal):
+            reduced = mesh
+            weights = [1.0 / len(reduced)] * len(reduced)
+        else:
+            all_ch = [l for d in datasets for l in d.channels]
+            max_L = max(4, 2 * max(all_ch)) if all_ch else 4
+            operations = grid_symmetry(atoms, g, max_L=max_L) if driver._periodic_symmetry and not spinor else None
+            reduced, weights, operations = reduce_mesh(mesh, operations)
+
+        kpts_spec = [{'fractional': [float(x) for x in k], 'weight': float(w)} for k, w in zip(reduced, weights)]
+        atoms_spec = []
+        scaled = atoms.get_scaled_positions()
+        for i, symbol in enumerate(symbols):
+            species_idx = unique_species.index(symbol)
+            m = float(moments[i]) if hasattr(moments, "__getitem__") else 0.0
+            atoms_spec.append({
+                'species': species_idx,
+                'symbol': symbol,
+                'fractional': [float(x) for x in scaled[i]],
+                'moment': m,
+            })
+
+        dataset_paths = [ds.source for ds in datasets]
+        lattice_bohr = [float(x) * ANGSTROM_TO_BOHR for row in cell for x in row]
+        basis_size = options.get("size", "SZ").upper()
+        request = {
+            'lattice': lattice_bohr,
+            'grid_shape': list(g.shape),
+            'atoms': atoms_spec,
+            'kpoints': kpts_spec,
+            'functional': driver.xc,
+            'precision': driver._precision,
+            'basis_size': basis_size,
+            'spinor': spinor,
+            'spin': driver._unrestricted,
+            'symmetry': driver._periodic_symmetry and not spinor,
+            'charge': float(getattr(driver, "_charge", 0.0)),
+        }
+        if getattr(driver, "_hubbard_u", None) is not None:
+            request["hubbard_u"] = (
+                json.loads(driver._hubbard_u)
+                if isinstance(driver._hubbard_u, str)
+                else driver._hubbard_u
+            )
+
+        driver.periodic_problem = driver.context.periodic_problem_from_request(
+            json.dumps(request), dataset_paths
+        )
+        driver._orbital_groups = driver.periodic_problem.orbital_groups
+        driver._geometry_seconds = perf_counter() - start
+
+        def _make_adapter():
+            if not hasattr(driver, "_crystal_adapter"):
+                from ..pseudopotentials.periodic_paw import build_crystal
+                from ..models.datasets import _warn_functional_mismatch
+                c, ctx = build_crystal(
+                    atoms, driver._grid_spacing, options, kpts=driver._kpts_spec,
+                    family=family.name, grid=driver._explicit_grid,
+                    symmetry=driver._periodic_symmetry and not spinor,
+                    full_mesh=bool(has_moments) or (spinor and not time_reversal),
+                    spin_orbit=spinor, native_context=driver.context,
+                    precision=driver._precision, filter_pin=getattr(driver, "filter_pin", None),
+                )
+                c._native_context = driver.context
+                _warn_functional_mismatch(c.datasets, driver.xc)
+                driver._crystal_adapter = c
+                driver._crystal_metadata = ctx
+            return driver._crystal_adapter
+
+        driver._ensure_crystal_adapter = _make_adapter
+        return True
+    except Exception:
+        return False
+

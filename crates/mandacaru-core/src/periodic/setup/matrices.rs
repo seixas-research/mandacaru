@@ -283,6 +283,38 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         None
     };
 
+    // Evaluate augmentation projections C once across all k-points: (nk, m, p)
+    let all_c_buf = spheres::projections(
+        ctx,
+        assembly.shells,
+        assembly.lattice,
+        assembly.kpoints_cart,
+        assembly.projectors,
+    )?;
+
+    // Evaluate short-range local potential matrix V_sr once across all k-points: (nk, m, m)
+    let mut all_v_sr = ctx.allocate::<Complex64>(product(&[nk, m, m])?)?;
+    all_v_sr.as_mut_slice().fill(Complex64::new(0., 0.));
+    for (a_idx, pot) in assembly.potentials.iter().enumerate() {
+        let sr = ShortRange {
+            center: assembly.centers[a_idx],
+            potential: pot,
+            sigma: assembly.sigma,
+        };
+        let cross = short_range_cross(
+            ctx,
+            assembly.lattice,
+            assembly.kpoints_cart,
+            &sr,
+            assembly.shells,
+            None,
+            assembly.shells,
+        )?;
+        for (dst, src) in all_v_sr.as_mut_slice().iter_mut().zip(cross.as_slice()) {
+            *dst += *src;
+        }
+    }
+
     let mut kpoints = Vec::with_capacity(nk);
 
     for k_idx in 0..nk {
@@ -305,14 +337,9 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         )?;
 
         // 2. Projections C of basis onto augmentation projectors: (m, p)
-        let c_buf = spheres::projections(
-            ctx,
-            assembly.shells,
-            assembly.lattice,
-            &[k],
-            assembly.projectors,
-        )?;
-        let c_mat = DMatrix::from_row_slice(m, p, c_buf.as_slice());
+        let c_stride = m * p;
+        let c_slice = &all_c_buf.as_slice()[k_idx * c_stride..(k_idx + 1) * c_stride];
+        let c_mat = DMatrix::from_row_slice(m, p, c_slice);
 
         // 3. Grid overlap S_grid = dV * sum_x conj(psi_mu(x)) psi_nu(x)
         let psi_slice = psi_buf.as_slice();
@@ -379,25 +406,9 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         };
 
         // 5. Short-range local potential matrix V_sr summed over atoms
-        let mut v_sr = DMatrix::zeros(m, m);
-        for (a_idx, pot) in assembly.potentials.iter().enumerate() {
-            let sr = ShortRange {
-                center: assembly.centers[a_idx],
-                potential: pot,
-                sigma: assembly.sigma,
-            };
-            let cross = short_range_cross(
-                ctx,
-                assembly.lattice,
-                &[k],
-                &sr,
-                assembly.shells,
-                None,
-                assembly.shells,
-            )?;
-            let cross_mat = DMatrix::from_row_slice(m, m, cross.as_slice());
-            v_sr += cross_mat;
-        }
+        let v_stride = m * m;
+        let v_slice = &all_v_sr.as_slice()[k_idx * v_stride..(k_idx + 1) * v_stride];
+        let v_sr = DMatrix::from_row_slice(m, m, v_slice);
 
         // 6. Nonlocal ionic term C @ D_ion @ C^H
         // Total fixed Hamiltonian: fixed = T + V_sr + C @ D_ion @ C^H

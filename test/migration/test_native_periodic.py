@@ -290,7 +290,6 @@ def test_native_paw_matrix_products_reject_invalid_shapes_and_layout():
 
 
 @pytest.mark.parametrize("option,value", [
-    ("charge", 1.0),
     ("energy_shift", 0.2), ("size", "DZP"), ("functional", "hse06"),
 ])
 def test_native_comparison_refuses_unimplemented_options(option, value):
@@ -301,6 +300,26 @@ def test_native_comparison_refuses_unimplemented_options(option, value):
     ctx = _native.Context(threads=1, memory_limit_bytes=64 << 20)
     with pytest.raises(NotImplementedError):
         ctx._periodic_problem_from_request(json.dumps(request), [])
+
+
+def test_native_charged_crystal_setup():
+    from ase.build import bulk
+    from mandacaru import Mandacaru
+    atoms = bulk("C", "diamond", a=3.567)
+    calc = Mandacaru(
+        method="dft", xc="lda", grid_spacing=0.4, trace=False,
+        basis={"name": "PAW-LCAO", "size": "SZ"},
+        charge=1,
+        kpts={"size": (1, 1, 1), "gamma": True},
+        smearing={"method": "fermi-dirac", "width": 0.1},
+        periodic_scf_options={"max_iterations": 15},
+    )
+    atoms.calc = calc
+    energy = atoms.get_potential_energy()
+    assert np.isfinite(energy)
+    assert not hasattr(calc, "_crystal_adapter")
+    assert calc.result.converged
+    assert np.isclose(calc.result.snapshot()["occupations"].sum(), 7.0, atol=1e-4)
 
 
 def _assert_raw_setup_arrays(active, metadata, arrays, native):

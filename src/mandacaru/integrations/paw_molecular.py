@@ -70,7 +70,8 @@ def build(driver, geometry):
         return key
 
     metadata = dict(
-        format="molecular-paw-input", version=1,
+        format="molecular-paw-input",
+        version=1,
         length_unit="bohr", energy_unit="Ha",
         projector_basis=projector_basis,
         atoms=[unique.index(s) for s in symbols],
@@ -85,6 +86,11 @@ def build(driver, geometry):
             raise NotImplementedError(
                 "native molecular PAW spin-orbit projector terms are not yet implemented"
             )
+        if getattr(dataset, "source", None) is not None:
+            metadata["species"].append(
+                dict(file=str(dataset.source), allow_heavy_dft=(driver.method == "dft"))
+            )
+            continue
         channels = []
         for l in range(8):
             if l not in dataset.channels:
@@ -111,18 +117,12 @@ def build(driver, geometry):
             )
             channels.append(entry)
         nlcc = dataset.nlcc or {}
-        if (
-            nlcc.get("applied")
-            and nlcc.get("source") != "smooth_core"
-            and nlcc.get("r_nlcc") is not None
-        ):
+        if nlcc.get("applied") and nlcc.get("source") != "smooth_core" and nlcc.get("r_nlcc") is not None:
             raise NotImplementedError(
                 "native PAW reference XC currently reads the dataset's stored smooth-core correction"
             )
         xc_core = (
-            dataset.smooth_core_density
-            if nlcc.get("applied")
-            else np.zeros_like(dataset.r)
+            dataset.smooth_core_density if nlcc.get("applied") else np.zeros_like(dataset.r)
         )
         metadata["species"].append(
             dict(

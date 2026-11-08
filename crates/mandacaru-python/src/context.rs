@@ -3521,7 +3521,17 @@ impl PyContext {
             .map_err(error)?;
         Ok(PyCrystal {
             inner: Arc::new(inner),
+            setup: None,
         })
+    }
+    #[pyo3(signature = (request_json, dataset_paths))]
+    fn periodic_problem_from_request(
+        &self,
+        py: Python<'_>,
+        request_json: &str,
+        dataset_paths: Vec<String>,
+    ) -> PyResult<periodic::PyCrystal> {
+        self._periodic_problem_from_request(py, request_json, dataset_paths)
     }
     #[doc(hidden)]
     fn _periodic_problem_from_request(
@@ -3556,9 +3566,12 @@ impl PyContext {
         }
         let setup = mandacaru_core::periodic::setup::create_setup(&self.inner, input, datasets)
             .map_err(error)?;
-        let crystal = py.detach(|| setup.build(&self.inner)).map_err(error)?;
+        let setup_arc = std::sync::Arc::new(setup);
+        let setup_for_build = setup_arc.clone();
+        let crystal = py.detach(|| setup_for_build.build(&self.inner)).map_err(error)?;
         Ok(periodic::PyCrystal {
             inner: std::sync::Arc::new(crystal),
+            setup: Some(setup_arc),
         })
     }
     fn load_crystal(&self, py: Python<'_>, path: &str) -> PyResult<PyCrystal> {
@@ -3567,6 +3580,7 @@ impl PyContext {
             .map_err(error)?;
         Ok(PyCrystal {
             inner: Arc::new(inner),
+            setup: None,
         })
     }
     #[pyo3(signature=(size,*,gamma=false,rotations=Vec::new(),time_reversal=true))]

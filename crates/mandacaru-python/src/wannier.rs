@@ -18,9 +18,39 @@ use std::sync::Arc;
 #[pyclass(name = "WannierSetup", module = "mandacaru._native")]
 pub struct PyWannierSetup {
     pub inner: Option<Setup>,
+    pub setup: Option<Arc<mandacaru_core::periodic::setup::PeriodicSetup>>,
 }
 #[pymethods]
 impl PyWannierSetup {
+    #[pyo3(signature=(points_frac))]
+    fn add_points_at(
+        &mut self,
+        py: Python<'_>,
+        points_frac: Vec<[f64; 3]>,
+    ) -> PyResult<()> {
+        let setup_rec = self.setup.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyNotImplementedError::new_err(
+                "native off-mesh k-points require a native periodic setup",
+            )
+        })?;
+        let setup = self.inner.as_mut().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("Wannier setup has already been consumed")
+        })?;
+        let c = setup.crystal.clone();
+        let n_k = points_frac.len();
+        if n_k == 0 {
+            return Ok(());
+        }
+        let weights = vec![1.0 / n_k as f64; n_k];
+        let points = py
+            .detach(|| setup_rec.matrices_at(&c.context, &points_frac, &weights))
+            .map_err(error)?;
+        for p in points {
+            setup.add_point(p).map_err(error)?;
+        }
+        Ok(())
+    }
+
     fn add_point(
         &mut self,
         py: Python<'_>,

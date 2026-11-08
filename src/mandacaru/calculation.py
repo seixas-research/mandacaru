@@ -2764,11 +2764,6 @@ class Mandacaru(ASEProperties, Calculator):
             self.problem = None
             self.solver = None
             self._force_grid = None
-            if hasattr(self, "_optimization_history"):
-                hist = getattr(self, "_optimization_history", None)
-                if hasattr(hist, "close"):
-                    hist.close()
-                delattr(self, "_optimization_history")
             self._drop_crystal()
 
     def _drop_crystal(self):
@@ -2776,10 +2771,17 @@ class Mandacaru(ASEProperties, Calculator):
         for name in ("periodic_problem", "_crystal_adapter", "_crystal_metadata"):
             if hasattr(self, name):
                 delattr(self, name)
+        if hasattr(self, "context") and self.context is not None:
+            self.context.release_freed_memory()
 
     def close(self):
         with self.resources.lock:
             self.reset()
+            if hasattr(self, "_optimization_history"):
+                hist = getattr(self, "_optimization_history", None)
+                if hasattr(hist, "close"):
+                    hist.close()
+                delattr(self, "_optimization_history")
             # A closed calculator is unusable: it lets go of the atoms it was attached to, which
             # hold it in turn (``atoms.calc``), so the pair is freed without a collector pass.
             self._attached_atoms = None

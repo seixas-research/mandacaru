@@ -337,14 +337,16 @@ pub fn projection_slopes(
         let near = reached.rows.len();
         let mut block =
             ctx.allocate::<Complex64>(product(&[kpoints.len(), near, members.len()])?)?;
-        for range in sphere.chunks(CHUNK_POINTS) {
+        let chunk_max = CHUNK_POINTS;
+        let mut columns =
+            ctx.allocate::<Complex64>(product(&[members.len(), chunk_max])?)?;
+        for range in sphere.chunks(chunk_max) {
             let points = sphere.points(range.clone());
             let weights = sphere.weights(range.clone());
-            let mut columns =
-                ctx.allocate::<Complex64>(product(&[members.len(), weights.len()])?)?;
-            for (row, &p) in columns
-                .as_mut_slice()
-                .chunks_mut(weights.len())
+            let chunk_len = weights.len();
+            let columns_slice = &mut columns.as_mut_slice()[..members.len() * chunk_len];
+            for (row, &p) in columns_slice
+                .chunks_mut(chunk_len)
                 .zip(members)
             {
                 evaluate(ctx, &projectors[p], points, row)?;
@@ -359,7 +361,7 @@ pub fn projection_slopes(
                 kpoints,
                 &region,
                 points,
-                columns.as_slice(),
+                columns_slice,
                 axis,
                 block.as_mut_slice(),
             )?;

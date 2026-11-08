@@ -91,6 +91,7 @@ pub struct PeriodicSetup {
     pub sigma: f64,
     pub description: Option<crate::periodic::description::Description>,
     pub hubbard: Option<crate::periodic::hubbard::Spec>,
+    pub charge: Option<f64>,
 }
 
 impl PeriodicSetup {
@@ -290,11 +291,15 @@ impl PeriodicSetup {
             }
         }
 
-        let electrons: f64 = self
+        let valence_sum: f64 = self
             .atoms_species
             .iter()
             .map(|&s| self.datasets[s].valence_charge)
             .sum();
+        let electrons = valence_sum - self.charge.unwrap_or(0.0);
+        if electrons <= 0.0 {
+            return Err(invalid("charged crystal must have positive electron count"));
+        }
 
         let components = CrystalComponents {
             grid: self.grid.clone(),
@@ -490,6 +495,7 @@ impl PeriodicSetup {
             sigma: self.pins.sigma,
             description,
             hubbard: self.hubbard.clone(),
+            charge: self.charge,
         })
     }
 }

@@ -9,7 +9,7 @@ import json
 from time import perf_counter
 import numpy as np
 
-from .setup_block import setup_block
+from .setup_block import setup_block, try_native_setup
 from ..pseudopotentials.native_context import context as _default_native_ctx
 
 
@@ -152,8 +152,7 @@ def crystal_input(
         precision=precision,
         relativistic=bool(relativistic),
         permutations=hold(
-            "permutations", [] if sym is None else sym.permutations, np.uint64
-        ),
+            "permutations", [] if sym is None else sym.permutations, np.uint64),
         permutation_count=0 if sym is None else len(sym.permutations),
         qsym=hold("qsym", qsym, complex),
         provenance=dict(provenance or {}, setup_engine="python-paw-adapter"),
@@ -163,6 +162,9 @@ def crystal_input(
         core_tau = c.core_tau()
         metadata["core_tau"] = hold("core_tau", np.zeros(n) if core_tau is None else core_tau)
     return json.dumps(metadata, allow_nan=False), arrays
+
+
+_ORIGINAL_CRYSTAL_INPUT = crystal_input
 
 
 def configure(driver, atoms):
@@ -210,15 +212,16 @@ def configure(driver, atoms):
     for axis, periodic in enumerate(atoms.pbc):
         size = (
             driver._kpts_spec.get("size", (1, 1, 1))
-            if isinstance(driver._kpts_spec, dict)
-            else driver._kpts_spec
-        )
+            if isinstance(driver._kpts_spec, dict) else driver._kpts_spec)
         if not periodic and size[axis] != 1:
             raise ValueError("nonperiodic directions require one k-point")
     start = perf_counter()
     # The crystal of the previous geometry (a relaxation, a scan on one calculator) is released
     # before the next is built: two crystals and their setup arrays never coexist in memory.
     driver._drop_crystal()
+    if try_native_setup(driver, atoms, family, options, moments, spinor, time_reversal, start):
+        return
+
     crystal, context = build_crystal(
         atoms,
         driver._grid_spacing,
