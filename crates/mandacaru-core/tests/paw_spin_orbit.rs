@@ -74,6 +74,7 @@ fn parity(name: &str) {
 }
 
 #[test]
+#[ignore = "slow: 27 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_spin_orbit -- --ignored the_light_dirac_sample_equals_the_frozen_datasets"]
 fn the_light_dirac_sample_equals_the_frozen_datasets() {
     for name in LIGHT {
         parity(name);

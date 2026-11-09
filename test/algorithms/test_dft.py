@@ -955,23 +955,22 @@ class TestHybrid:
                 exxdiv_treatment="invalid_treatment", trace=False,
             )
 
-    def test_a_hybrid_on_a_symmetry_reduced_mesh_is_refused(self):
-        """The periodic exact exchange sums over the listed k-points, so the default
-        symmetry wedge of a 2x2x2 mesh would give a wrong energy with no error: it
-        raises, and names the whole mesh and the supported inputs."""
+    def test_a_hybrid_keeps_the_whole_mesh_whatever_symmetry_says(self):
+        """The periodic exact exchange sums over the listed k-points, so the setup never
+        reduces a hybrid crystal's mesh: with the default symmetry=True a 2x1x1 mesh keeps
+        both of its points, with the weights of the whole mesh."""
         from ase.build import bulk
 
         atoms = bulk("Si", "diamond", a=5.43)
         atoms.calc = Mandacaru(
-            method="dft", xc="hse06", grid_spacing=0.34,
-            kpts={"size": (2, 2, 2), "gamma": True},
+            method="dft", xc="hse06", grid_spacing=0.8,
+            kpts={"size": (2, 1, 1), "gamma": True},
             basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-            trace=False,
+            resources={"threads": 1}, trace=False,
         )
-        with pytest.raises(NotImplementedError, match="full k mesh") as raised:
-            atoms.get_potential_energy()
-        assert "symmetry=False" in str(raised.value)
-        assert "unrestricted=True" in str(raised.value)
+        assert np.isfinite(atoms.get_potential_energy())
+        weights = atoms.calc.periodic_problem.weights
+        assert len(weights) == 2 and np.allclose(weights, 0.5)
 
     @pytest.mark.slow
     def test_a_periodic_hybrid_atom_in_a_large_box_is_the_isolated_one(self):
@@ -1059,27 +1058,26 @@ class TestHybrid:
         assert snapshot["converged"] and old_stop < len(residuals) - 1
         assert residuals[old_stop] >= 1e-8 > residuals[-1]
 
-    def test_the_advice_of_the_refusal_runs_on_a_mesh_with_a_non_trim_point(self):
-        """A 3x1x1 mesh is halved by time reversal (its +-1/3 points merge), so the advice
-        has to be followed to the letter: zero initial moments still raise, nonzero ones
-        keep the whole mesh and run."""
+    def test_a_hybrid_on_a_mesh_with_a_non_trim_point_is_not_halved(self):
+        """A 3x1x1 mesh would be halved by time reversal (its +-1/3 points merge); a hybrid
+        keeps all three points, nonmagnetic or not."""
         from ase.build import bulk
 
         def hybrid(moments):
             atoms = bulk("Si", "diamond", a=5.43)
             atoms.set_initial_magnetic_moments(moments)
             atoms.calc = Mandacaru(
-                method="dft", xc="hse06", grid_spacing=0.8, symmetry=False,
-                unrestricted=True, kpts={"size": (3, 1, 1), "gamma": True},
+                method="dft", xc="hse06", grid_spacing=0.8,
+                kpts={"size": (3, 1, 1), "gamma": True},
                 basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
                 resources={"threads": 1}, trace=False,
             )
-            return atoms
+            assert np.isfinite(atoms.get_potential_energy())
+            return atoms.calc.periodic_problem.weights
 
-        with pytest.raises(NotImplementedError, match="full k mesh"):
-            hybrid([0.0, 0.0]).get_potential_energy()
-        energy = hybrid([0.3, -0.3]).get_potential_energy()
-        assert np.isfinite(energy)
+        for moments in ([0.0, 0.0], [0.3, -0.3]):
+            weights = hybrid(moments)
+            assert len(weights) == 3 and np.allclose(weights, 1 / 3)
 
     @pytest.mark.parametrize("options", [
         dict(xc="pbe", exxdiv_treatment="gygi-baldereschi"),
@@ -1204,9 +1202,31 @@ class TestSpectralKineticForces:
 
 
 class TestTheSpinOrbitDatasets:
-    def test_spin_orbit_datasets_are_refused(self):
-        """Their projector terms are not implemented in the molecular PAW
-        engine: the run raises rather than dropping them."""
+    def test_a_molecule_runs_spinor_kohn_sham_with_the_spin_orbit_term(self):
+        """``method="dft"`` on a spin-orbit dataset is the molecular spinor
+        Kohn-Sham state (a ``ghf`` reference with the functional), here HF,
+        whose F 2p shell carries the spin-orbit term. Its analytic force is the
+        derivative of its energy, on the frozen spectral grid of
+        ``TestSpectralKineticForces``. A closed shell: the Kramers-paired
+        ground state is unique, so the reconverged difference stays on it (an
+        open shell such as OH can switch Kramers branch between displaced
+        SCFs; the Rust gates use a fixed-density difference for those)."""
+        atoms = Atoms("HF", positions=[[0, 0, 0], [0.08, 0, 0.95]], cell=[6, 6, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
+                               kinetic="spectral", project_translation=False,
+                               paw_dataset="lda-fr",
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        forces = atoms.get_forces()
+        snapshot = atoms.calc.native_reference.snapshot()
+        assert (snapshot["method"], snapshot["functional"]) == ("ghf", "lda")
+        numerical = _numerical_force(atoms, 1, 2)
+        assert abs(numerical) > 0.1
+        assert forces[1, 2] == pytest.approx(numerical, abs=1e-4)
+
+    def test_spin_orbit_datasets_need_kohn_sham(self):
+        """Only spinor Kohn-Sham carries the spin-orbit term of a molecule:
+        any other method raises rather than dropping it."""
         atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[6, 6, 7])
         atoms.calc = Mandacaru(method="rhf", grid_spacing=0.4, trace=False,
                                paw_dataset="lda-fr",

@@ -58,12 +58,11 @@ def test_dft_molecule_spin_polarized_analytic_forces():
 
 
 def test_dft_molecule_soc_analytic_forces():
-    """Molecular spin-orbit PAW datasets (lda-fr/pbe-fr) compute analytic forces in Rust."""
+    """Molecular spin-orbit PAW datasets (lda-fr/pbe-fr) compute analytic forces in Rust
+    (the molecular spinor Kohn-Sham state)."""
     atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]], cell=[6.0, 6.0, 7.0])
     atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.4, paw_dataset="lda-fr",
-                           basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-                           symmetry=False, trace=False,
-                           periodic_scf_options={"max_iterations": 200, "tolerance": 1e-10})
+                           basis={"name": "PAW-LCAO", "size": "SZ"}, trace=False)
     forces = atoms.get_forces()
     assert forces.shape == (2, 3)
     assert abs(forces[0, 2] + forces[1, 2]) < 0.05

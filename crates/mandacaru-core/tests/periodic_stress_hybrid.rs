@@ -15,11 +15,13 @@ use periodic_stress_hybrid_support::check;
 const STEP: f64 = 2.5e-6;
 
 #[test]
+#[ignore = "slow: 18 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_hybrid -- --ignored the_exchange_strain_of_lih_matches_the_difference_with_no_divergence_treatment"]
 fn the_exchange_strain_of_lih_matches_the_difference_with_no_divergence_treatment() {
     check("lih_hse06", ExxDivTreatment::None, STEP);
 }
 
 #[test]
+#[ignore = "slow: 18 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_hybrid -- --ignored the_exchange_strain_of_lih_matches_the_difference_with_gygi_baldereschi"]
 fn the_exchange_strain_of_lih_matches_the_difference_with_gygi_baldereschi() {
     check("lih_hse06", ExxDivTreatment::GygiBaldereschi, STEP);
 }

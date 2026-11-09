@@ -23,10 +23,8 @@
 //! The species code works in real spherical harmonics; a crystal's projectors carry complex ones
 //! (`math::angular::complex`). `Y_lm = sum_m' S[m, m'] R_lm'` rotates the factors once,
 //! `F^c = S^* F S^T`, and `V` and `P` (both diagonal in `m`, equal for every `m`) are invariant.
-use super::{
-    screened_augmentation::{OneCenter, OneCenterTerms},
-    spinor::component,
-};
+use super::screened_augmentation::{OneCenter, OneCenterTerms};
+use crate::models::noncollinear::component;
 use crate::{
     paw::{pair_tables::Projector, screened_atom::ScreenedAtom},
     periodic::invalid,

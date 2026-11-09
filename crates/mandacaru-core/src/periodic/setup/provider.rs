@@ -533,6 +533,9 @@ impl Derivatives for SetupDerivatives<'_> {
         if self.layout.request.spinor && term == Term::Local {
             return self.spinor_local(k, fields);
         }
+        if self.layout.request.spinor && term == Term::KineticDensity {
+            return self.spinor_kinetic(k, fields);
+        }
         Ok(self
             .scalar_cross(spin, k, term, fields)?
             .map(|g| self.frame(g)))
@@ -590,11 +593,18 @@ impl Derivatives for SetupDerivatives<'_> {
             weights.as_slice().to_vec(),
             moments.as_slice().to_vec(),
         );
+        let spinor = self.layout.request.spinor;
         fields.kinetic = kinetic.map(|v| {
             let blocks: Vec<Vec<f64>> = v.as_slice().chunks(n).map(<[f64]>::to_vec).collect();
-            let average = (0..n)
-                .map(|k| blocks.iter().map(|b| b[k]).sum::<f64>() / blocks.len() as f64)
-                .collect();
+            // E6's potential: the spin average of a collinear crystal; for a spinor the charge
+            // channel, `(v_up + v_dn) / 2` of the local frame (the core tau is unpolarized).
+            let average = if spinor {
+                blocks[0].clone()
+            } else {
+                (0..n)
+                    .map(|k| blocks.iter().map(|b| b[k]).sum::<f64>() / blocks.len() as f64)
+                    .collect()
+            };
             (blocks, average)
         });
         fields.bands = bands;

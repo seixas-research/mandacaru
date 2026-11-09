@@ -81,6 +81,7 @@ fn check(name: &str) -> usize {
 }
 
 #[test]
+#[ignore = "slow: 29 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search -- --ignored the_repaired_light_datasets_select_the_frozen_attempt"]
 fn the_repaired_light_datasets_select_the_frozen_attempt() {
     for (name, index) in REPAIRED.iter().filter(|(n, _)| !n.contains("-fr_")) {
         assert!(LIGHT.contains(name));
@@ -89,6 +90,7 @@ fn the_repaired_light_datasets_select_the_frozen_attempt() {
 }
 
 #[test]
+#[ignore = "slow: 107 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search -- --ignored every_other_light_dataset_selects_the_first_attempt"]
 fn every_other_light_dataset_selects_the_first_attempt() {
     for name in LIGHT {
         if REPAIRED.iter().all(|(n, _)| *n != name) {
@@ -98,6 +100,7 @@ fn every_other_light_dataset_selects_the_first_attempt() {
 }
 
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search -- --ignored the_repaired_dirac_dataset_selects_the_frozen_attempt"]
 fn the_repaired_dirac_dataset_selects_the_frozen_attempt() {
     // Silicon in PBE with the Dirac atom: the scalar channels are searched exactly as in the
     // scalar-relativistic case, the spin-orbit block follows the selected construction.
@@ -105,6 +108,7 @@ fn the_repaired_dirac_dataset_selects_the_frozen_attempt() {
 }
 
 #[test]
+#[ignore = "slow: 40 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search -- --ignored the_light_dirac_datasets_select_the_first_attempt"]
 fn the_light_dirac_datasets_select_the_first_attempt() {
     for name in ["lda-fr_Na", "lda-fr_Fe"] {
         assert_eq!(check(name), 0, "{name}");

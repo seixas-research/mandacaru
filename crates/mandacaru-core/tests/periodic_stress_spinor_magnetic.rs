@@ -91,6 +91,7 @@ fn relative(a: &Tensor<f64>, b: &Tensor<f64>) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 48 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_magnetic -- --ignored a_rotated_moment_has_the_same_stress_and_the_transverse_blocks_matter"]
 fn a_rotated_moment_has_the_same_stress_and_the_transverse_blocks_matter() {
     let z = run(Spinor::rotated(CASE, Axis::Z, false));
     let x = run(Spinor::rotated(CASE, Axis::X, false));
@@ -253,11 +254,13 @@ fn against_the_oracle(case: &'static str, second: bool) -> Stress {
 }
 
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_magnetic -- --ignored the_magnetic_spin_orbit_stress_is_the_reconverged_free_energy"]
 fn the_magnetic_spin_orbit_stress_is_the_reconverged_free_energy() {
     against_the_oracle("nne_fr", true);
 }
 
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_magnetic -- --ignored the_magnetic_gradient_correction_is_the_reconverged_free_energy"]
 fn the_magnetic_gradient_correction_is_the_reconverged_free_energy() {
     // PBE on the eigenframe fields of a state with live transverse components: the gradients and the
     // flux of the rotated spin channels reach the spectral-gradient term through `spinor.rs`.

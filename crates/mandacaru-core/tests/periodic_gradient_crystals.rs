@@ -99,11 +99,13 @@ fn check(case: &'static str) {
 }
 
 #[test]
+#[ignore = "slow: 84 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals -- --ignored si_force_is_the_reconverged_finite_difference"]
 fn si_force_is_the_reconverged_finite_difference() {
     check("si");
 }
 
 #[test]
+#[ignore = "slow: 139 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals -- --ignored al2_force_is_the_reconverged_finite_difference"]
 fn al2_force_is_the_reconverged_finite_difference() {
     check("al2");
 }

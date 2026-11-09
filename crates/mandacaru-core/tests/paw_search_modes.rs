@@ -144,6 +144,7 @@ fn a_choice_pinned_by_the_caller_is_refused_not_overridden() {
 }
 
 #[test]
+#[ignore = "slow: 41 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_modes -- --ignored a_pinned_incomplete_construction_is_returned_flagged"]
 fn a_pinned_incomplete_construction_is_returned_flagged() {
     // Unitary aluminum without its 5 Ha raise: the s projectors miss an intruding 1s by 1.19.
     // The raise is the table's, so a repair would change what the caller pinned.
@@ -171,6 +172,7 @@ fn a_pinned_incomplete_construction_is_returned_flagged() {
 }
 
 #[test]
+#[ignore = "slow: 21 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_modes -- --ignored a_deep_ghost_walks_the_remedies_in_the_recorded_order"]
 fn a_deep_ghost_walks_the_remedies_in_the_recorded_order() {
     // Silicon with a local radius of 0.2 times the cutoff and no raise: the s ghost sits at
     // -8.08 Ha, and only the 40 Ha raise at the own cutoffs removes it (the shorter local radii
@@ -219,6 +221,7 @@ fn hopeless_silicon() -> Recipe {
 }
 
 #[test]
+#[ignore = "slow: 47 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_modes -- --ignored when_no_remedy_works_repair_raises_naming_the_ghost_and_every_attempt"]
 fn when_no_remedy_works_repair_raises_naming_the_ghost_and_every_attempt() {
     let recipe = hopeless_silicon();
     let ctx = context();
@@ -248,6 +251,7 @@ fn when_no_remedy_works_repair_raises_naming_the_ghost_and_every_attempt() {
 }
 
 #[test]
+#[ignore = "slow: 50 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_modes -- --ignored flag_returns_the_attempt_with_the_shallowest_deepest_ghost_and_records_it"]
 fn flag_returns_the_attempt_with_the_shallowest_deepest_ghost_and_records_it() {
     let recipe = hopeless_silicon();
     let ctx = context();
@@ -321,6 +325,7 @@ fn duplicated_silicon() -> Recipe {
 /// not rebuilt by `built == index` (the first construction and the attempts 2..=index), and the
 /// control that turns the reuse off builds one more.
 #[test]
+#[ignore = "slow: 37 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_modes -- --ignored an_attempt_equal_to_an_earlier_one_is_not_built_again"]
 fn an_attempt_equal_to_an_earlier_one_is_not_built_again() {
     struct Rebuilds;
     impl Review for Rebuilds {
@@ -402,6 +407,7 @@ fn a_local_shift_assigned_by_the_caller_is_refused_with_the_python_cause() {
 /// flag is never silent. The judgment is injected through the search's own review hook and the
 /// table is cut to two remedies so that the loop stays cheap.
 #[test]
+#[ignore = "slow: 16 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_modes -- --ignored a_flagged_dataset_always_carries_what_is_wrong_with_it"]
 fn a_flagged_dataset_always_carries_what_is_wrong_with_it() {
     struct MissingState;
     impl Review for MissingState {

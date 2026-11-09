@@ -71,7 +71,7 @@ pub struct PeriodicSetup {
     pub shells: shells::Shells,
     pub projectors: Vec<spheres::Projector>,
     pub spin_orbit_projectors: Vec<spheres::Projector>,
-    pub spin_orbit_couplings: std::collections::BTreeMap<(usize, usize), spin_orbit::Coupling>,
+    pub spin_orbit_couplings: std::collections::BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>,
     pub potentials: Vec<ions::LocalPotential>,
     pub datasets: Vec<Arc<PawDataset>>,
     pub kpoints_cart: Vec<[f64; 3]>,

@@ -344,8 +344,10 @@ class Mandacaru(ASEProperties, Calculator):
         ``diffuse`` (diffuse shells; molecules only, a crystal raises).
         PAW-LCAO needs the pseudopotential library (``MANDACARU_PAW_PATH``);
         without it the calculation raises ``LibraryPathError``. A spin-orbit
-        dataset (``lda-fr``, ``pbe-fr``) raises ``NotImplementedError`` for a
-        molecule and is supported for a crystal. A crystal accepts only
+        dataset (``lda-fr``, ``pbe-fr``) runs spinor (noncollinear) Kohn-Sham
+        with the spin-orbit term, for a molecule and for a crystal, with
+        ``method="dft"``; any other method on a molecule raises
+        ``NotImplementedError``. A crystal accepts only
         PAW-LCAO or UPAW-LCAO (``NotImplementedError`` at ``run()``).
     grid_spacing : float, default 0.2
         Real-space grid spacing in Angstrom; must be positive and finite
@@ -408,14 +410,13 @@ class Mandacaru(ASEProperties, Calculator):
         ``"rhf"`` run with ``xc="pbe"`` is the same Hartree-Fock). It also
         chooses the default PAW-LCAO dataset folder (``pbe-sr`` for PBE, HSE06
         and r2SCAN, ``lda-sr`` otherwise); a dataset generated with another
-        functional triggers a warning. A crystal supports every one of them,
-        ``"hse06"`` included, on the whole k mesh (see ``kpts`` and
-        ``symmetry``: a hybrid crystal on a symmetry-reduced mesh raises
-        ``NotImplementedError``); its forces and stress are analytic (Rust).
-        ``"r2scan"`` and ``"rvv10"`` crystals have analytic forces
-        (unpolarized and spin-polarized; the spin-orbit crystal SCF supports
-        neither and raises); their stress raises ``NotImplementedError``
-        naming the cause. With
+        functional triggers a warning. A crystal supports every one of them;
+        ``"hse06"`` runs on the whole k mesh (see ``symmetry``), with or
+        without spin-orbit coupling; its forces and stress are analytic (Rust).
+        ``"r2scan"`` and ``"rvv10"`` crystals have analytic forces,
+        unpolarized, spin-polarized and with spin-orbit coupling; an
+        ``"r2scan"`` crystal also has an analytic stress, and the stress of an
+        rVV10 crystal raises ``NotImplementedError`` naming the cause. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
     vdw : str or bool, optional
         Van der Waals dispersion correction, one of ``"rvv10"``, ``"ts"``
@@ -802,17 +803,10 @@ class Mandacaru(ASEProperties, Calculator):
         Reduce the k-mesh with the space-group operations of the cell (time
         reversal is always used). Spinor (spin-orbit) calculations never use
         the space-group reduction, and nonzero initial magnetic moments keep
-        the full mesh. A non-boolean raises
-        ``TypeError``. A hybrid functional (``xc="hse06"``) needs the whole
-        mesh, because its exact exchange sums over the listed k-points: a mesh
-        reduced by space-group symmetry or halved by time reversal raises
-        ``NotImplementedError`` at the first calculation. Use
-        ``symmetry=False`` together with a Gamma-centered mesh of one or two
-        points per direction (all of its points are time-reversal invariant,
-        so nothing is halved); on any other mesh use ``symmetry=False`` with
-        ``unrestricted=True`` and nonzero initial magnetic moments (only a
-        spin-polarized run keeps the whole mesh; a spin-orbit crystal has no
-        such option). Ignored for molecules.
+        the full mesh. A hybrid functional (``xc="hse06"``) always keeps the
+        whole mesh, neither reduced by the space group nor halved by time
+        reversal, because its exact exchange sums over the listed k-points.
+        A non-boolean raises ``TypeError``. Ignored for molecules.
     hubbard_u : dict, optional
         The on-site DFT+U correction (simplified rotationally invariant form of
         Dudarev et al., fully localized double counting) of a periodic
@@ -1728,7 +1722,12 @@ class Mandacaru(ASEProperties, Calculator):
         # The native integrals are lazy: the two-body integrals are built by the
         # first call that needs them, which is this one.
         with self._stage("mean-field SCF (builds the two-body integrals)"):
-            if self.method == "dft":
+            if self.method == "dft" and self._has_spin_orbit_dataset(geometry):
+                # Spinor Kohn-Sham: one set of 2m spinors with the spin-orbit term.
+                self.native_reference = self.integrals.spinor_kohn_sham(
+                    self.xc, int(sum(particles)), **self._scf_options
+                )
+            elif self.method == "dft":
                 self.native_reference = self.integrals.kohn_sham(
                     self.xc,
                     particles,
@@ -2191,23 +2190,6 @@ class Mandacaru(ASEProperties, Calculator):
         return any(getattr(get_paw(chemical_symbols[z], dataset_name, xc=self.xc),
                            "has_spin_orbit", False) for z in value.numbers)
 
-    def _molecular_soc_dft(self, value):
-        from .structure import geometry_value
-        from .integrations.ase import atoms_from_geometry
-        import numpy as np
-
-        source_atoms = atoms_from_geometry(value)
-        cell = np.asarray(source_atoms.cell, dtype=float)
-        if not np.any(cell):
-            source_atoms.center(vacuum=5.0)
-        source_atoms.pbc = True
-        box_geom = geometry_value(source_atoms)
-        self._kpts_spec = {"size": (1, 1, 1), "gamma": True}
-        self._symmetry = False
-        res = self._periodic(box_geom)
-        self._geometry = value
-        return res
-
     def _periodic_quantum_forces(self, geometry, result, step=1e-3):
         from .units import HARTREE_TO_EV, BOHR_TO_ANGSTROM
         from .structure import geometry_value
@@ -2391,13 +2373,6 @@ class Mandacaru(ASEProperties, Calculator):
                 result = self._periodic(value)
             elif (value is not None and any(value.pbc)) and self.capabilities.quantum:
                 result = self._periodic_quantum(value, initial_parameters, callback)
-            elif (
-                value is not None
-                and not any(value.pbc)
-                and self.method == "dft"
-                and self._has_spin_orbit_dataset(value)
-            ):
-                result = self._molecular_soc_dft(value)
             elif (value is not None and any(value.pbc)) and not self.capabilities.quantum:
                 result = self._periodic(value)
             elif value is not None:

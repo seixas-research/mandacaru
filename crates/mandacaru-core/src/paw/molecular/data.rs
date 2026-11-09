@@ -60,7 +60,19 @@ pub struct Species {
     pub dft_constant: f64,
     pub relativistic_exchange: bool,
     pub core_supported: bool,
+    /// The spin-orbit channels of a fully relativistic dataset (empty unless the molecule was
+    /// built with spin-orbit allowed): read as the crystal reads them
+    /// (`periodic::response::setup::spin_orbit`).
+    pub spin_orbit: Vec<SpinOrbitChannel>,
     _memory: crate::Reservation,
+}
+/// One `l` of a species' spin-orbit term: its projectors' radial tables, the sphere they live in
+/// (`max(r_cut of the scalar channel, r_cut_local)`) and the radial coupling `D^SO`.
+pub struct SpinOrbitChannel {
+    pub l: usize,
+    pub radius: f64,
+    pub radials: Vec<Cubic>,
+    pub coupling: crate::models::spin_orbit::Coupling,
 }
 impl Species {
     pub fn local(&self, r: f64) -> f64 {
@@ -418,6 +430,28 @@ impl Species {
         if charge <= 0. || local_radius <= 0. || compensation_radius <= 0. {
             return Err(invalid("PAW charges and radii must be positive"));
         }
+        let mut spin_orbit = Vec::new();
+        if allow_spin_orbit {
+            for (&l, entry) in &ds.spin_orbit {
+                let scalar = ds.channels.get(&l).ok_or_else(|| {
+                    invalid("a spin-orbit channel of the dataset has no scalar channel")
+                })?;
+                let radials = entry
+                    .projectors
+                    .iter()
+                    .map(|t| Cubic::new(ctx, ctx.copy_slice(r_slice)?, ctx.copy_slice(t.as_slice())?))
+                    .collect::<Result<Vec<_>>>()?;
+                spin_orbit.push(SpinOrbitChannel {
+                    l: l as usize,
+                    radius: scalar.r_cut.max(ds.r_cut_local),
+                    radials,
+                    coupling: crate::models::spin_orbit::Coupling {
+                        radial: entry.coupling.shape()[0],
+                        values: entry.coupling.data().to_vec(),
+                    },
+                });
+            }
+        }
         Ok(Self {
             atomic_number,
             charge,
@@ -434,6 +468,7 @@ impl Species {
             dft_constant,
             relativistic_exchange: ds.relativistic_exchange,
             core_supported,
+            spin_orbit,
             _memory: memory,
         })
     }
@@ -775,6 +810,7 @@ impl Species {
             dft_constant,
             relativistic_exchange: relativistic,
             core_supported,
+            spin_orbit: Vec::new(),
             _memory: memory,
         })
     }

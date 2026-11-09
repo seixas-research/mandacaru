@@ -21,6 +21,7 @@ use periodic_stress_crystals_hybrid_support::run;
 use periodic_stress_crystals_support::load;
 
 #[test]
+#[ignore = "slow: 15 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_crystals_hybrid -- --ignored the_stress_of_a_converged_hybrid_state_without_a_divergence_treatment"]
 fn the_stress_of_a_converged_hybrid_state_without_a_divergence_treatment() {
     // The compensation response `Z` of the pair moments is 3e-5 .. 5e-5 Ha of a stress whose
     // gates are 2e-7 .. 4e-6 Ha: it bites 76 .. 92 gates, named, not hidden (the fixed-state
@@ -29,6 +30,7 @@ fn the_stress_of_a_converged_hybrid_state_without_a_divergence_treatment() {
 }
 
 #[test]
+#[ignore = "slow: 16 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_crystals_hybrid -- --ignored the_stress_of_a_converged_hybrid_state_with_gygi_baldereschi"]
 fn the_stress_of_a_converged_hybrid_state_with_gygi_baldereschi() {
     run("lih_hse06_gb", false, &["exchange_compensation"]);
 }
@@ -60,10 +62,11 @@ fn refused(data: &Data, edit: impl FnOnce(&mut Layout)) -> String {
 #[test]
 fn what_a_hybrid_stress_does_not_differentiate_raises_with_the_cause() {
     let mut data = load("lih_hse06");
-    let cases: [(&str, fn(&mut Layout)); 3] = [
+    // A spin-polarized hybrid stress is supported; a layout whose spin channels disagree with
+    // the crystal's is an invalid request, not a refusal (`stress_terms/crystal.rs`).
+    let cases: [(&str, fn(&mut Layout)); 2] = [
         ("spin-orbit projectors", |l| l.request.spinor = true),
         ("float32", |l| l.request.single_precision = true),
-        ("spin-polarized", |l| l.spins = 2),
     ];
     for (word, edit) in cases {
         let message = refused(&data, edit);

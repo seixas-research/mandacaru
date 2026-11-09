@@ -181,6 +181,7 @@ fn check(local: &Local, pairs: &[(usize, usize)], transposed: Control, swapped: 
 }
 
 #[test]
+#[ignore = "slow: 47 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres_short_range -- --ignored the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_si"]
 fn the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_si() {
     check(
         &Local::wpx(&context(), "si"),
@@ -191,6 +192,7 @@ fn the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_si()
 }
 
 #[test]
+#[ignore = "slow: 61 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres_short_range -- --ignored the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_al2"]
 fn the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_al2() {
     check(
         &Local::wpx(&context(), "al2"),
@@ -214,6 +216,7 @@ fn the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_the_
 }
 
 #[test]
+#[ignore = "slow: 71 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres_short_range -- --ignored the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_a_skewed_al2"]
 fn the_short_range_strain_is_the_central_difference_of_the_sphere_matrix_of_a_skewed_al2() {
     check(
         &Local::al2_skew(&context()),

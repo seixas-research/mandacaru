@@ -61,6 +61,7 @@ pub fn pair(case: &'static str) -> Pair {
 }
 
 #[test]
+#[ignore = "slow: 20 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_hybrid_limit -- --ignored the_zero_coupling_limit_of_the_hybrid_force_is_the_scalar_hybrid_force"]
 fn the_zero_coupling_limit_of_the_hybrid_force_is_the_scalar_hybrid_force() {
     let p = pair("lih_hse06");
     let (s, t) = (&p.scalar, &p.spinor);

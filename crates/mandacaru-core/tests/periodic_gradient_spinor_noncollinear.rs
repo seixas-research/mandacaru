@@ -79,6 +79,7 @@ fn against_the_oracle(case: &'static str, run: &Run) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 13 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_noncollinear -- --ignored beh_lda_generic_moment_force_is_the_collinear_oracle"]
 fn beh_lda_generic_moment_force_is_the_collinear_oracle() {
     let case = "beh_lda";
     let generic = run(case, GENERIC);

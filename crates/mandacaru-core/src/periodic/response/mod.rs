@@ -12,10 +12,10 @@
 //! [`Stress`] (`sigma = (g + g^T) / (2 Omega)` in Hartree/Bohr^3, `g_ab = dF/d eps_ab`). A
 //! state that is not converged is refused: the force is first order in the SCF residual.
 //!
-//! What is refused, with its cause (the engines' own words): meta-GGA and rVV10 functionals,
-//! float32 data, DFT+U, a mesh reduced by symmetry in a snapshot without its operations, a spin-orbit
-//! or hybrid crystal on a reduced mesh, a hybrid without its PAW spheres, projectors in the dual
-//! basis and, for the stress, a spin-polarized crystal.
+//! What is refused, with its cause (the engines' own words): for the stress, the rVV10 correction;
+//! float32 data, DFT+U, a mesh reduced by symmetry in a snapshot without its operations, a
+//! spin-orbit or hybrid crystal on a reduced mesh, a hybrid without its PAW spheres and projectors
+//! in the dual basis.
 use super::{
     description::Description,
     gradient::{gradient, scf, Bands, Breakdown, State},

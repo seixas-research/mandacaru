@@ -156,6 +156,7 @@ fn check(
 }
 
 #[test]
+#[ignore = "slow: 19 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored water_pbe_forces_follow_the_energy"]
 fn water_pbe_forces_follow_the_energy() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -182,6 +183,7 @@ fn water_pbe_forces_follow_the_energy() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 39 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored water_hartree_fock_forces_follow_the_energy"]
 fn water_hartree_fock_forces_follow_the_energy() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -319,6 +321,7 @@ fn water_r2scan_forces_include_the_kinetic_density_response_and_the_core_tau() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 25 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored lithium_hydride_forces_include_the_closed_core_exchange"]
 fn lithium_hydride_forces_include_the_closed_core_exchange() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -405,6 +408,7 @@ fn rvv10_forces_follow_the_energy_closed_and_open_shell() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 45 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored the_hydroxyl_radical_has_an_open_shell_force"]
 fn the_hydroxyl_radical_has_an_open_shell_force() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -434,6 +438,7 @@ fn the_hydroxyl_radical_has_an_open_shell_force() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 32 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored every_term_on_water_agrees_with_its_oracle"]
 fn every_term_on_water_agrees_with_its_oracle() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -463,6 +468,7 @@ fn every_term_on_water_agrees_with_its_oracle() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 34 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored nitrogen_and_triplet_oxygen_follow_the_energy"]
 fn nitrogen_and_triplet_oxygen_follow_the_energy() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -492,6 +498,7 @@ fn nitrogen_and_triplet_oxygen_follow_the_energy() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 26 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored methane_follows_the_energy"]
 fn methane_follows_the_energy() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -533,6 +540,7 @@ fn net_and_torque(positions: &[[f64; 3]], f: &[f64]) -> ([f64; 3], [f64; 3]) {
     (net, torque)
 }
 #[test]
+#[ignore = "slow: 41 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored the_net_force_of_water_is_the_egg_box_ripple_and_falls_with_the_grid_spacing"]
 fn the_net_force_of_water_is_the_egg_box_ripple_and_falls_with_the_grid_spacing() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -594,6 +602,7 @@ fn the_net_force_of_water_is_the_egg_box_ripple_and_falls_with_the_grid_spacing(
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 #[test]
+#[ignore = "slow: 81 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored lithium_hydride_hse06_force_follows_the_energy_with_a_closed_core"]
 fn lithium_hydride_hse06_force_follows_the_energy_with_a_closed_core() {
     let started = std::time::Instant::now();
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
@@ -612,3 +621,74 @@ fn lithium_hydride_hse06_force_follows_the_energy_with_a_closed_core() {
     assert_eq!(ctx.memory_used(), 0);
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
+
+/// Multi-shell frozen cores (aluminum's 10-electron 1s2s2p, gold's 60), `pbe-sr`, PBE: every
+/// named term of the force against its own fixed-density oracle, and the total against the
+/// fixed-density difference. Measured 2026-11-08: AlH and Au-Be (UKS) agree to <= 3e-9 term by
+/// term. A reconverged finite difference of Au-Be had disagreed by 0.54 Ha/Bohr because the
+/// displaced open-shell SCFs land on another branch, not because the force is wrong.
+#[test]
+#[ignore = "slow: 36 s (AlH 10 s, Au-Be 26 s; measured 2026-11-09); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored --nocapture multi_shell_core_terms"]
+fn multi_shell_core_terms() {
+    let ctx = Context::new(Some(2), 768 << 20).unwrap();
+    for case in ["AlH", "AuBe"] {
+        let (elements, numbers, particles): ([&str; 2], [u8; 2], [usize; 2]) = if case == "AuBe" {
+            (["Au", "Be"], [79, 4], [11, 10])
+        } else {
+            (["Al", "H"], [13, 1], [2, 2])
+        };
+        let mut arrays = Arrays::new();
+        let mut species = Vec::new();
+        let mut valence = 0.;
+        for element in elements {
+            let data = dataset::read(&ctx, "pbe-sr", element);
+            valence += data.valence_charge;
+            let mut value = dataset::species(&ctx, &mut arrays, &data);
+            value["allow_heavy_dft"] = serde_json::json!(true);
+
+            species.push(value);
+        }
+        const ALH: [[f64; 3]; 2] = [[0.05, -0.04, 0.07], [0.11, 0.06, 3.10]];
+        const AUBE: [[f64; 3]; 2] = [[0.07, -0.04, 0.05], [0.12, 0.09, 4.35]];
+        // Two exponents per l: the one-exponent analytic shells leave the AlH SCF unconverged.
+        let radii: Vec<f64> = (0..=350).map(|k| 0.02 * k as f64).collect();
+        let shells: Vec<(usize, Vec<f64>, Vec<f64>)> = (0..=2usize)
+            .flat_map(|l| [1.1, 0.45].map(|e: f64| (l, e)))
+            .map(|(l, e)| {
+                let values = radii
+                    .iter()
+                    .map(|&r| r.powi(l as i32) * (-e * r).exp() * if r >= 7. { 0. } else { (1. - (r / 7.).powi(2)).powi(3) })
+                    .collect();
+                (l, radii.clone(), values)
+            })
+            .collect();
+        let positions = if case == "AuBe" { AUBE } else { ALH };
+        let base = molecule(&ctx, &numbers, &positions, 14., 0.5, (species, vec![0, 1], arrays), "raw", &shells);
+        let electrons = valence.round() as usize;
+        let particles = if case == "AuBe" { [electrons.div_ceil(2), electrons / 2] } else { particles };
+        let state = solve(&base, Method::Ks("pbe"), particles);
+        let gradient = base.gradient(&state).unwrap();
+        let terms = by_term(&gradient);
+        let ao = ao_state(&base, &state);
+        for (atom, axis) in [(1, 2), (0, 0)] {
+            let oracle = term_derivatives(&ctx, &base, &state, &ao, atom, axis);
+            let (fd, _) = fixed_density_derivative(&base, &state, atom, axis);
+            let total = gradient.total.as_slice()[3 * atom + axis];
+            eprintln!("{case} atom {atom} axis {axis}: total analytic {total:+.8e}, fixed-density FD {fd:+.8e}");
+            assert!((total - fd).abs() < 1e-7, "{case} atom {atom} axis {axis}: {total:e} vs {fd:e}");
+            let mut names: Vec<_> = terms.keys().collect();
+            names.sort();
+            for name in names {
+                let analytic = terms[name][3 * atom + axis];
+                match oracle.get(name.as_str()) {
+                    Some((reference, _)) => {
+                        eprintln!("  {name:<34} analytic {analytic:+.8e} oracle {reference:+.8e} diff {:+.2e}", analytic - reference);
+                        assert!((analytic - reference).abs() < 1e-7, "{case} {name}: {analytic:e} vs {reference:e}");
+                    }
+                    None => eprintln!("  {name:<34} analytic {analytic:+.8e} (no oracle)"),
+                }
+            }
+        }
+    }
+}
+

@@ -32,6 +32,7 @@ fn the_stress_of_a_converged_lih_state() {
 /// state of the oracle's own tolerances (1e-11 Ha, 1e-9 in the density) still meets the gate (it
 /// is the state the oracle was differenced at), and the miss grows as the tolerance is loosened.
 #[test]
+#[ignore = "slow: 14 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_crystals -- --ignored the_scf_residual_enters_the_stress"]
 fn the_scf_residual_enters_the_stress() {
     let mut data = load("lih");
     let volume = data.manifest["volume_bohr3"].as_f64().unwrap();

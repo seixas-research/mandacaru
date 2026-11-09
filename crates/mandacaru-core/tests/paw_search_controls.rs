@@ -123,6 +123,7 @@ impl Review for FirstEight {
 }
 
 #[test]
+#[ignore = "slow: 33 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_controls -- --ignored without_the_ghost_criterion_a_ghosted_construction_is_accepted"]
 fn without_the_ghost_criterion_a_ghosted_construction_is_accepted() {
     // Where the scattering check does not see the ghost either, the search without the ghost
     // criterion keeps the first construction; where it does (a ghost near the window), the label
@@ -221,6 +222,7 @@ fn keeping_the_first_attempt_always_returns_the_ghost_the_repair_removes() {
 }
 
 #[test]
+#[ignore = "slow: 21 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_controls -- --ignored the_reversed_ranking_keeps_the_deepest_ghost_among_real_attempts"]
 fn the_reversed_ranking_keeps_the_deepest_ghost_among_real_attempts() {
     let ctx = context();
     let recipe = deep_silicon();

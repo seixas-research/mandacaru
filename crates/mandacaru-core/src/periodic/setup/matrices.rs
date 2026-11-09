@@ -17,7 +17,7 @@ use super::{
     pulay::{kinetic_self, Mesh},
     shells::{DenseRows, Sampling, Shells},
     spheres::{self, Projector},
-    spin_orbit::{self, Coupling},
+    spin_orbit,
 };
 use crate::{
     math::{
@@ -44,7 +44,7 @@ pub struct MatrixAssembly<'a> {
     pub kpoints_frac: &'a [[f64; 3]],
     pub weights: &'a [f64],
     pub operators: &'a Operators,
-    pub spin_orbit_couplings: Option<&'a BTreeMap<(usize, usize), Coupling>>,
+    pub spin_orbit_couplings: Option<&'a BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>>,
     /// The spin-orbit dataset projectors; distinct from scalar raw projectors.
     pub spin_orbit_projectors: Option<&'a [Projector]>,
     pub sigma: f64,

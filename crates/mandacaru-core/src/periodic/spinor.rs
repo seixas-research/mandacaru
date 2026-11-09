@@ -1,6 +1,7 @@
 //! Two-component Bloch states with a vector magnetization and separable SOC.
 //! Spin-major ordering: alpha orbitals followed by beta orbitals.
 use super::{invalid, solver, Crystal, KPoint};
+use crate::models::noncollinear::{assemble_into, component};
 use crate::{
     math::{
         fft::Fft3,
@@ -17,48 +18,45 @@ type Matrix = DMatrix<C64>;
 /// Rotate the local density into its eigenframe, differentiate the collinear
 /// functional there, and rotate the functional derivative back. In a GGA the
 /// derivatives are taken on the eigenvalue fields before this final rotation.
+/// The spinor XC: the collinear functional in the local spin frame `m_hat = m / |m|`, with
+/// `n_up/dn = (n +- |m|) / 2` and, for a meta-GGA, `tau_up/dn = (tau_0 +- m_hat . tau_vec) / 2`
+/// (`tau` is [`super::fields::kinetic_density`], one block per field channel). The potentials
+/// return in the Pauli channels: `v_0 = (v_up + v_dn) / 2`, `v_a = (v_up - v_dn) / 2 m_hat_a`, and
+/// for a meta-GGA `v_tau` likewise. Because `tau_up/dn` depend on `m_hat`, the magnetization
+/// potential also carries `(v_tau,up - v_tau,dn) / 2 (tau_a - (m_hat . tau_vec) m_hat_a) / |m|`, the
+/// derivative of the frame, so the potential stays the derivative of the energy.
 pub fn exchange_correlation(
     c: &Crystal,
     fft: &mut Fft3,
     fields: &[f64],
+    tau: Option<&[f64]>,
 ) -> Result<super::fields::Terms> {
     if c.time_reversal {
-        return solver::collinear_xc(c, fft, fields, None, 1);
+        return solver::collinear_xc(c, fft, fields, tau, 1);
     }
+    use crate::models::noncollinear::{rotate, unrotate};
     let n = c.grid.index.points();
-    if fields.len() != 4 * n || fields.iter().any(|v| !v.is_finite()) {
-        return Err(invalid(
-            "spinor XC needs charge and three finite magnetization fields",
-        ));
-    }
-    let mut rotated = c.context.allocate::<f64>(2 * n)?;
-    let mut norms = c.context.allocate::<f64>(n)?;
-    for k in 0..n {
-        let norm = (1..4)
-            .map(|a| fields[a * n + k].powi(2))
-            .sum::<f64>()
-            .sqrt();
-        norms.as_mut_slice()[k] = norm;
-        rotated.as_mut_slice()[k] = 0.5 * (fields[k] + norm);
-        rotated.as_mut_slice()[n + k] = 0.5 * (fields[k] - norm);
-    }
-    let terms = solver::collinear_xc(c, fft, rotated.as_slice(), None, 2)?;
-    let mut potential = c.context.allocate::<f64>(4 * n)?;
-    for k in 0..n {
-        let up = terms.potential.as_slice()[k];
-        let down = terms.potential.as_slice()[n + k];
-        potential.as_mut_slice()[k] = 0.5 * (up + down);
-        if norms.as_slice()[k] > 1e-14 {
-            let radial = 0.5 * (up - down) / norms.as_slice()[k];
-            for a in 1..4 {
-                potential.as_mut_slice()[a * n + k] = radial * fields[a * n + k];
-            }
-        }
-    }
+    let rotated = rotate(&c.context, n, fields, tau)?;
+    let terms = solver::collinear_xc(
+        c,
+        fft,
+        rotated.densities.as_slice(),
+        rotated.tau.as_ref().map(|t| t.as_slice()),
+        2,
+    )?;
+    let (potential, kinetic) = unrotate(
+        &c.context,
+        n,
+        fields,
+        &rotated,
+        terms.potential.as_slice(),
+        terms.kinetic_potential.as_ref().map(|v| v.as_slice()),
+        tau,
+    )?;
     Ok(super::fields::Terms {
         energy: terms.energy,
         potential,
-        kinetic_potential: None,
+        kinetic_potential: kinetic,
         // The eigenframe arrays of the rotated spin channels (the stress's spectral-gradient term).
         gradients: terms.gradients,
         flux: terms.flux,
@@ -92,6 +90,13 @@ pub fn diagonalize(
              use diagonalize_with_exchange",
         ));
     }
+    // Nor is a meta-GGA's kinetic potential: refuse rather than drop its operator.
+    if crate::models::functional(&c.functional)?.requires_tau {
+        return Err(invalid(
+            "spinor diagonalize without the kinetic potential of a meta-GGA crystal; \
+             use solver::diagonalize_with_exchange",
+        ));
+    }
     diagonalize_with_exchange(c, point, fields, moments, None, None)
 }
 
@@ -108,6 +113,7 @@ pub fn diagonalize_with_exchange(
         point,
         fields,
         moments,
+        None,
         hubbard,
         exchange,
         solver::Eigensolver::Direct,
@@ -117,11 +123,16 @@ pub fn diagonalize_with_exchange(
     )
 }
 
+/// `kinetic` is a meta-GGA's `v_tau` in the Pauli channels of `fields` ([`exchange_correlation`]);
+/// each channel adds `T[v_a] = 1/2 <grad chi | v_a | grad chi>` to its spin blocks, as the
+/// local potential channels do. A meta-GGA without it is refused.
+#[allow(clippy::too_many_arguments)]
 pub fn diagonalize_with_solver(
     c: &Crystal,
     point: &KPoint,
     fields: &[f64],
     moments: &[C64],
+    kinetic: Option<&[f64]>,
     hubbard: Option<&Matrix>,
     exchange: Option<&Matrix>,
     eigensolver: solver::Eigensolver,
@@ -158,36 +169,35 @@ pub fn diagonalize_with_solver(
     let mut projector = ComplexProjector::streaming(&c.context, &point.psi, m, n)?;
     let mut scaled = c.context.allocate::<f64>(n)?;
     // Each projected Pauli component acts on its corresponding spin blocks.
+    let mut channels = Vec::with_capacity(c.field_channels());
     for a in 0..c.field_channels() {
         for k in 0..n {
             scaled.as_mut_slice()[k] = fields[a * n + k] * c.grid.index.dv();
         }
         let values = projector.project(scaled.as_slice())?;
-        for i in 0..m {
-            for j in 0..m {
-                let value = values[i + j * m];
-                match a {
-                    0 => {
-                        h[(i, j)] += value;
-                        h[(m + i, m + j)] += value;
-                    }
-                    1 => {
-                        h[(i, m + j)] += value;
-                        h[(m + i, j)] += value;
-                    }
-                    2 => {
-                        h[(i, m + j)] -= C64::i() * value;
-                        h[(m + i, j)] += C64::i() * value;
-                    }
-                    _ => {
-                        h[(i, j)] += value;
-                        h[(m + i, m + j)] -= value;
-                    }
-                }
-            }
-        }
+        channels.push(Matrix::from_fn(m, m, |i, j| values[i + j * m]));
     }
+    assemble_into(&mut h, &channels, m);
     drop(projector);
+    let meta = crate::models::functional(&c.functional)?.requires_tau;
+    match (meta, kinetic) {
+        (true, Some(v)) => {
+            if v.len() != c.field_channels() * n {
+                return Err(invalid("one kinetic potential block per spinor field channel"));
+            }
+            let channels = (0..c.field_channels())
+                .map(|a| {
+                    let t = super::fields::kinetic_operator(c, point, &v[a * n..(a + 1) * n])?;
+                    Ok(Matrix::from_fn(m, m, |i, j| t.as_slice()[i + j * m]))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            assemble_into(&mut h, &channels, m);
+        }
+        (true, None) => {
+            return Err(invalid("a spinor meta-GGA Hamiltonian needs its kinetic potential"));
+        }
+        (false, _) => {}
+    }
     if let Some(k) = exchange {
         h -= k * C64::new(c.require_screened_exchange()?.1, 0.);
     }
@@ -223,14 +233,6 @@ pub fn diagonalize_with_solver(
 
 /// Spatial Hermitian matrices for (n, mx, my, mz); public for the spinor force. This retains transverse
 /// coherences; dropping the off-diagonal spin blocks would discard SOC.
-pub fn component(d: &Matrix, m: usize, a: usize) -> Matrix {
-    Matrix::from_fn(m, m, |i, j| match a {
-        0 => d[(i, j)] + d[(m + i, m + j)],
-        1 => d[(i, m + j)] + d[(m + i, j)],
-        2 => C64::i() * (d[(i, m + j)] - d[(m + i, j)]),
-        _ => d[(i, j)] - d[(m + i, m + j)],
-    })
-}
 pub fn density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f64>, Buffer<C64>)> {
     if matrices.len() != c.points.len() {
         return Err(invalid(

@@ -19,6 +19,7 @@ fn options() -> ScfOptions {
 }
 
 #[test]
+#[ignore = "slow: 11 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_molecular_spin -- --ignored an_unrestricted_closed_shell_is_the_restricted_one_and_spin_labels_do_not_matter"]
 fn an_unrestricted_closed_shell_is_the_restricted_one_and_spin_labels_do_not_matter() {
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     let base = integrals(&ctx, &H2, "dual");

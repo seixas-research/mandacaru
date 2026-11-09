@@ -13,8 +13,10 @@ mod projections;
 mod radial;
 mod screened;
 mod spheres;
+mod spinor_screened;
 
 pub use screened::HybridResponse;
+pub use spinor_screened::{pseudo_index, SpinorExchange};
 pub use radial::{core_slope, local_slope, long_range_slope, multipole_gradient, potential_slope};
 
 use super::Setup;
@@ -24,10 +26,18 @@ use nalgebra::DVector;
 
 /// An occupied spin orbital of the converged state in the atomic-orbital
 /// (non-orthogonal) basis: `ao` are its coefficients over the basis functions.
+///
+/// It enters the force in two roles: the density `D = sum weight a a^T` and the
+/// energy-weighted density `W = sum w_weight a a^T` of the overlap derivative
+/// `-tr[W dS]`. A state's own orbitals have `w_weight = weight * energy`; a
+/// spinor state's pseudo-orbitals carry the two roles in separate entries
+/// (`w_weight = 0` for a density orbital, `weight = 0` for a `W` orbital),
+/// because its `W` is not diagonal in the eigenbasis of its density.
 pub struct Occupied {
     pub spin: usize,
     pub weight: f64,
     pub energy: f64,
+    pub w_weight: f64,
     pub ao: Vec<f64>,
 }
 /// The occupied orbitals and the valence density on the grid, as the energy

@@ -83,6 +83,7 @@ fn sum_over_atoms(term: &[[f64; 3]]) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 139 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor -- --ignored si_lda_fr_force_is_the_reconverged_finite_difference"]
 fn si_lda_fr_force_is_the_reconverged_finite_difference() {
     let breakdown = check("si_ldafr");
     let data = Data::load("si_ldafr");
@@ -151,6 +152,7 @@ fn si_lda_fr_force_is_the_reconverged_finite_difference() {
 /// The spinor GGA: PBE rotated to the local spin eigenframe (`pbe-fr` datasets). Its engine
 /// differentiates the same fields; the partial core sees `0.5 (v_up + v_dn)` of the GGA potential.
 #[test]
+#[ignore = "slow: 140 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor -- --ignored si_pbe_fr_force_is_the_reconverged_finite_difference"]
 fn si_pbe_fr_force_is_the_reconverged_finite_difference() {
     check("si_pbefr");
 }

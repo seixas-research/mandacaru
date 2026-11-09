@@ -228,6 +228,33 @@ impl PyIntegrals {
             integrals: self.inner.clone(),
         })
     }
+    /// Spinor (noncollinear) Kohn-Sham with `electrons` in one `2m x 2m` set of orbitals, the
+    /// spin-orbit term of a spin-orbit dataset included: a `ghf` state with a functional.
+    #[pyo3(signature = (functional, electrons, *, max_iterations=300, tolerance=1e-9, diis=true, guesses=3))]
+    fn spinor_kohn_sham(
+        &self,
+        py: Python<'_>,
+        functional: &str,
+        electrons: usize,
+        max_iterations: usize,
+        tolerance: f64,
+        diis: bool,
+        guesses: usize,
+    ) -> PyResult<PyMeanField> {
+        let options = ScfOptions {
+            max_iterations,
+            tolerance,
+            diis,
+            guesses,
+        };
+        let inner = py
+            .detach(|| self.inner.spinor_kohn_sham(functional, electrons, &options))
+            .map_err(error)?;
+        Ok(PyMeanField {
+            inner: Arc::new(inner),
+            integrals: self.inner.clone(),
+        })
+    }
 }
 #[pyclass(name = "MolecularHandover", module = "mandacaru._native", frozen)]
 pub struct PyHandover {

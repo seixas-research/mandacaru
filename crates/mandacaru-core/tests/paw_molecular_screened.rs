@@ -192,6 +192,7 @@ fn the_screened_augmentation_is_smaller_than_the_bare_one_and_symmetric() {
 }
 
 #[test]
+#[ignore = "slow: 20 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_molecular_screened -- --ignored a_screened_hybrid_on_a_paw_molecule_converges_and_is_stationary_in_the_forces"]
 fn a_screened_hybrid_on_a_paw_molecule_converges_and_is_stationary_in_the_forces() {
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     let base = integrals(&ctx, &H2, "dual");

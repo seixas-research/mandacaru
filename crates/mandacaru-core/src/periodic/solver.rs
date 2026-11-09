@@ -313,7 +313,7 @@ pub(super) fn exchange_correlation(
     tau: Option<&[f64]>,
 ) -> Result<super::fields::Terms> {
     if c.spinor {
-        return super::spinor::exchange_correlation(c, fft, rho);
+        return super::spinor::exchange_correlation(c, fft, rho, tau);
     }
     collinear_xc(c, fft, rho, tau, c.spins)
 }
@@ -667,6 +667,7 @@ pub fn diagonalize_with_solver_ws(
             data,
             v,
             w,
+            kinetic_potential,
             hubbard,
             exchange,
             eigensolver,
@@ -1063,9 +1064,20 @@ impl Crystal {
             None => 0,
         };
         let hybrid = c.screened_exchange()?;
-        if c.spinor && c.functional != "lda" && c.functional != "pbe" && hybrid.is_none() {
+        // The spinor XC evaluates the collinear functional in the local spin frame
+        // (`spinor::exchange_correlation`). rVV10 depends on the charge alone, n_up + n_dn, and
+        // on its gradient, sigma_uu + 2 sigma_ud + sigma_dd = |grad n|^2, both exact in that
+        // frame, so PBE+rVV10 is supported. A meta-GGA needs a spinor kinetic density, which the
+        // spinor path does not build (F5c).
+        // A meta-GGA (r2SCAN, r2SCAN+rVV10) uses the spinor kinetic density in the same frame
+        // (`fields::kinetic_density`, `spinor::exchange_correlation`).
+        let definition = crate::models::functional(&c.functional)?;
+        if c.spinor
+            && hybrid.is_none()
+            && !matches!(definition.semilocal, "lda" | "pbe" | "r2scan")
+        {
             return Err(invalid(
-                "periodic spinor XC currently requires LDA, PBE or HSE06",
+                "periodic spinor XC currently requires LDA, PBE, r2SCAN, their rVV10 forms or HSE06",
             ));
         }
         if let Some(sh) = shifts {
@@ -1227,9 +1239,14 @@ impl Crystal {
                                 &v.as_slice()[s * n..(s + 1) * n]
                             },
                             w.as_slice(),
-                            kinetic_potential
-                                .as_ref()
-                                .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
+                            // A spinor's v_tau, like its v, is one block per Pauli channel.
+                            kinetic_potential.as_ref().map(|v| {
+                                if c.spinor {
+                                    v.as_slice()
+                                } else {
+                                    &v.as_slice()[s * n..(s + 1) * n]
+                                }
+                            }),
                             effective_operators.as_ref().map(|o| &o[s]),
                             hybrid.map(|_| &exchange_in[idx]),
                             options.eigensolver,
@@ -1572,7 +1589,7 @@ impl Crystal {
                             &v[s * n..(s + 1) * n]
                         },
                         w,
-                        kinetic_potential.map(|v| &v[s * n..(s + 1) * n]),
+                        kinetic_potential.map(|v| if c.spinor { v } else { &v[s * n..(s + 1) * n] }),
                         op.as_ref(),
                         None,
                     )?;

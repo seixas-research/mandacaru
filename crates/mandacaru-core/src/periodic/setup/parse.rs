@@ -38,7 +38,8 @@ pub struct SetupInput {
     pub kpoints_frac: Vec<[f64; 3]>,
     pub weights: Vec<f64>,
     /// A Monkhorst-Pack mesh `(size, gamma)` the setup reduces itself (by the operations that keep
-    /// it, then time reversal; whole for a magnetic or a non-time-reversal spinor crystal). When
+    /// it, then time reversal; whole for a magnetic crystal, a non-time-reversal spinor crystal and
+    /// a hybrid, whose exact exchange sums over the listed k-points). When
     /// set, `kpoints_frac` and `weights` are its output and must be empty on input.
     pub mesh: Option<([usize; 3], bool)>,
     pub functional: String,
@@ -74,7 +75,7 @@ pub fn create_setup(
     if input.mesh.is_some() != input.kpoints_frac.is_empty() {
         return Err(invalid("periodic setup needs either a k mesh or explicit k-points"));
     }
-    crate::models::functional(&input.functional)?;
+    let hybrid = crate::models::functional(&input.functional)?.screened_exchange.is_some();
     if let Some(request) = &input.hubbard_u {
         request.require_scope(&input.functional, &input.precision)?;
     }
@@ -261,7 +262,7 @@ pub fn create_setup(
                         });
                     }
                 }
-                spin_orbit_couplings.insert((atom, l as usize), super::spin_orbit::Coupling {
+                spin_orbit_couplings.insert((atom, l as usize), crate::models::spin_orbit::Coupling {
                     radial: entry.coupling.shape()[0], values: entry.coupling.data().to_vec(),
                 });
             }
@@ -334,7 +335,7 @@ pub fn create_setup(
 
     // Symmetry operations
     let magnetic = input.atoms.iter().any(|a| a.moment != 0.);
-    let symmetry = if input.symmetry && !input.spinor && !magnetic {
+    let symmetry = if input.symmetry && !input.spinor && !magnetic && !hybrid {
         let labels: Vec<u32> = atomic_numbers
             .iter()
             .zip(&moments)
@@ -365,7 +366,7 @@ pub fn create_setup(
             symmetry = Some(kept);
             reduced
         } else {
-            let whole = magnetic || (input.spinor && input.spin);
+            let whole = magnetic || (input.spinor && input.spin) || hybrid;
             crate::periodic::spectrum::mesh(ctx, size, gamma, &[], !whole)?
         };
         input.kpoints_frac = reduced.points.clone();

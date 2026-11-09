@@ -72,10 +72,12 @@ pub(super) fn occupied(
         let (energies, rotation) = real_eigen((&block + block.transpose()) * 0.5)?;
         let rotated = &integrals.lowdin * (&space * rotation);
         for (i, energy) in energies.into_iter().enumerate() {
+            let weight = if restricted { 2. } else { 1. };
             orbitals.push(Occupied {
                 spin,
-                weight: if restricted { 2. } else { 1. },
+                weight,
                 energy,
+                w_weight: weight * energy,
                 ao: rotated.column(i).iter().copied().collect(),
             });
         }

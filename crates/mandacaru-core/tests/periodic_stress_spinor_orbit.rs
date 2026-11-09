@@ -133,6 +133,7 @@ fn report(label: &str, got: &Grid, want: &Grid) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 70 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_orbit -- --ignored the_silicon_term_is_the_derivative_of_the_spin_orbit_energy"]
 fn the_silicon_term_is_the_derivative_of_the_spin_orbit_energy() {
     let case = Case::new(Spinor::load("si_ldafr"), &[3]);
     let want = case.oracle(1.);
@@ -147,6 +148,7 @@ fn the_silicon_term_is_the_derivative_of_the_spin_orbit_energy() {
 }
 
 #[test]
+#[ignore = "slow: 105 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_orbit -- --ignored the_heavy_term_is_linear_in_the_coupling_and_the_controls_bite"]
 fn the_heavy_term_is_linear_in_the_coupling_and_the_controls_bite() {
     let case = Case::new(Spinor::load("auh_ldafr"), &[0]);
     let unit_term = case.analytic(1., &case.densities);

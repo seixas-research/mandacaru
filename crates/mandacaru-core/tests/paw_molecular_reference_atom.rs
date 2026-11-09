@@ -172,6 +172,7 @@ fn paw_exchange(ctx: &Context, set: &str, element: &str, number: u8, h: f64) -> 
 }
 
 #[test]
+#[ignore = "slow: 13 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_molecular_reference_atom -- --ignored the_oxygen_atom_exchange_at_its_reference_density_matches_the_all_electron_value"]
 fn the_oxygen_atom_exchange_at_its_reference_density_matches_the_all_electron_value() {
     // Measured: PAW - AE = -1.4 mHa at h 0.55 and 0.45 Bohr (grid noise), then
     // +55 uHa (0.35), -21 uHa (0.30) and -3 uHa (0.25).
@@ -192,6 +193,7 @@ fn the_oxygen_atom_exchange_at_its_reference_density_matches_the_all_electron_va
 }
 
 #[test]
+#[ignore = "slow: 32 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_molecular_reference_atom -- --ignored the_neon_atom_exchange_at_its_reference_density_converges_to_the_all_electron_value"]
 fn the_neon_atom_exchange_at_its_reference_density_converges_to_the_all_electron_value() {
     // Neon's smooth p waves are the hardest of the first row: the exchange of
     // their pair densities is grid-limited (measured PAW - AE: -138, -11, -4, -8,

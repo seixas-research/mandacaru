@@ -43,6 +43,7 @@ fn against_the_oracle(mesh: &Mesh, label: &str) {
 }
 
 #[test]
+#[ignore = "slow: 77 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_mesh -- --ignored the_half_mesh_force_is_the_whole_mesh_force"]
 fn the_half_mesh_force_is_the_whole_mesh_force() {
     let half = run("si_ldafr_tr3");
     let full = run("si_ldafr_tr3_full");
@@ -103,6 +104,7 @@ fn the_half_mesh_force_is_the_whole_mesh_force() {
 }
 
 #[test]
+#[ignore = "slow: 46 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_mesh -- --ignored eigenvalues_are_even_in_k_and_paired_at_the_time_reversal_invariant_point"]
 fn eigenvalues_are_even_in_k_and_paired_at_the_time_reversal_invariant_point() {
     let full = run("si_ldafr_tr3_full");
     let ks: Vec<[f64; 3]> = full

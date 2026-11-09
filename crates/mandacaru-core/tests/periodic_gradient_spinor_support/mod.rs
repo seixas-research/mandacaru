@@ -21,9 +21,9 @@ use mandacaru_core::{
         provider::{Core, SetupDerivatives},
         shells::Radial,
         spheres::Projector,
-        spin_orbit::Coupling,
     },
-    periodic::{spinor::component, PeriodicResult},
+    models::noncollinear::component,
+    periodic::PeriodicResult,
     Context,
 };
 use serde_json::{json, Value};
@@ -31,6 +31,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub mod altered;
 pub mod oracle;
+
+use mandacaru_core::models::spin_orbit::Coupling;
 
 pub type Couplings = BTreeMap<(usize, usize), Coupling>;
 

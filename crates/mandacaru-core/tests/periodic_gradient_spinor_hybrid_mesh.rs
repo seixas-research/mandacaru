@@ -90,6 +90,7 @@ fn complex_mesh_of(c: &Crystal) -> bool {
 }
 
 #[test]
+#[ignore = "slow: 88 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_hybrid_mesh -- --ignored the_spinor_explicit_terms_on_the_complex_k_mesh_are_the_displaced_crystal_derivative"]
 fn the_spinor_explicit_terms_on_the_complex_k_mesh_are_the_displaced_crystal_derivative() {
     let data = Data::load(CASE);
     let c = &data.crystal;
@@ -189,6 +190,7 @@ fn su2(theta: f64, n: [f64; 3]) -> Matrix {
 }
 
 #[test]
+#[ignore = "slow: 52 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_hybrid_mesh -- --ignored the_explicit_terms_are_su2_covariant_and_a_spatial_rotation_is_not_a_symmetry"]
 fn the_explicit_terms_are_su2_covariant_and_a_spatial_rotation_is_not_a_symmetry() {
     let data = Data::load(CASE);
     let c = &data.crystal;

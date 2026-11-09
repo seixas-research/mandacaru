@@ -12,7 +12,6 @@ use super::super::{
         shapes::{Atom, Channel, Shapes, Sites, COMPENSATION_CUTOFF},
         shells::{Radial, Shell, Shells},
         spheres::Projector,
-        spin_orbit::Coupling,
     },
     Crystal,
 };
@@ -277,7 +276,7 @@ impl Setup {
     pub(super) fn spin_orbit(
         &self,
         c: &Crystal,
-    ) -> Result<(Vec<Projector>, BTreeMap<(usize, usize), Coupling>)> {
+    ) -> Result<(Vec<Projector>, BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>)> {
         let (mut projectors, mut couplings) = (Vec::new(), BTreeMap::new());
         if !c.spinor {
             return Ok((projectors, couplings));
@@ -312,7 +311,7 @@ impl Setup {
                 }
                 couplings.insert(
                     (atom, l as usize),
-                    Coupling {
+                    crate::models::spin_orbit::Coupling {
                         radial: entry.coupling.shape()[0],
                         values: entry.coupling.data().to_vec(),
                     },

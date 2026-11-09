@@ -152,6 +152,7 @@ fn a_hybrid_crystal_is_differentiated_and_its_other_refusals_stand() {
 /// basis-function terms, or with a response that does not match the layout, is refused; a
 /// provider that carries no exchange at all raises (the default hook), never a zero.
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals_refusals -- --ignored an_exchange_derivative_that_disagrees_with_the_layout_is_refused"]
 fn an_exchange_derivative_that_disagrees_with_the_layout_is_refused() {
     let data = Data::load("lih_hse06");
     let cores = data.cores();

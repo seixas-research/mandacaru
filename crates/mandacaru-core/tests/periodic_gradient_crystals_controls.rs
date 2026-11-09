@@ -102,6 +102,7 @@ fn controls(case: &'static str, reported: &[&str], provider_level: bool) {
 }
 
 #[test]
+#[ignore = "slow: 88 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals_controls -- --ignored si_dropped_terms_and_the_core_sign_miss_the_oracle_by_more_than_100_gates"]
 fn si_dropped_terms_and_the_core_sign_miss_the_oracle_by_more_than_100_gates() {
     // The Si hat force is about 6e-6 Ha/Bohr, 31 plan gates: dropping it cannot bite 100 gates
     // there. The same control bites 1.4e3 (Al2) and 2.6e3 (LiH) gates below.
@@ -109,6 +110,7 @@ fn si_dropped_terms_and_the_core_sign_miss_the_oracle_by_more_than_100_gates() {
 }
 
 #[test]
+#[ignore = "slow: 167 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals_controls -- --ignored al2_dropped_terms_and_the_core_sign_miss_the_oracle_by_more_than_100_gates"]
 fn al2_dropped_terms_and_the_core_sign_miss_the_oracle_by_more_than_100_gates() {
     controls("al2", &[], false);
 }

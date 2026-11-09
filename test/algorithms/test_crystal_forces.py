@@ -190,7 +190,6 @@ def test_a_crystal_file_without_the_setup_block_has_an_energy_and_no_forces(tmp_
 
 
 @pytest.mark.parametrize("xc, cause, queries", [
-    ("r2scan", "meta-GGA", ("get_stress",)),
     ("pbe+rvv10", "rVV10", ("get_stress",)),
 ])
 def test_a_functional_the_engines_do_not_differentiate_raises_naming_the_cause(xc, cause, queries):
@@ -211,6 +210,16 @@ def test_r2scan_and_rvv10_crystals_have_analytic_forces(xc):
     forces = atoms.get_forces()
     assert forces.shape == (len(atoms), 3) and np.all(np.isfinite(forces))
     assert np.abs(forces).max() > 1e-4
+
+
+def test_an_r2scan_crystal_has_an_analytic_stress():
+    """MG-F5b: the meta-GGA crystal stress is analytic in Rust (its reconverged strain gates are in
+    ``crates/mandacaru-core/tests/periodic_stress_meta.rs``); here it reaches the calculator."""
+    atoms = lih()
+    atoms.calc = calculator(xc="r2scan")
+    stress = atoms.get_stress(voigt=False)
+    assert stress.shape == (3, 3) and np.all(np.isfinite(stress))
+    assert np.allclose(stress, stress.T) and np.abs(stress).max() > 1e-6
 
 
 def test_float32_forces_and_stress_are_refused_before_the_scf(monkeypatch):

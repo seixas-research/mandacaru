@@ -90,6 +90,7 @@ fn beh_lda_force_is_the_reconverged_finite_difference() {
 /// frozen oracle is that non-magnetic state; a ferromagnetic Fe cell did not converge), so this is
 /// the restricted limit on a mesh, not a magnetic gate.
 #[test]
+#[ignore = "slow: 125 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_polarized -- --ignored ni2_lda_zero_moment_mesh_force_is_the_reconverged_finite_difference"]
 fn ni2_lda_zero_moment_mesh_force_is_the_reconverged_finite_difference() {
     check("ni2_lda", 0.0);
 }

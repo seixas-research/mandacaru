@@ -11,6 +11,7 @@ pub mod hubbard_slater;
 pub mod hubbard_spinor;
 pub mod mixing;
 pub mod nonlocal;
+pub mod noncollinear;
 pub mod numerov;
 pub mod radial_xc;
 pub mod relativity;

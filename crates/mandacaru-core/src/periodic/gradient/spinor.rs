@@ -22,7 +22,7 @@
 //! * the local term as the Pauli sum of the per-channel row-center derivatives
 //!   ([`pauli_sum`]): `sum_a sigma_a x G^a`. Its contraction is
 //!   `sum_a tr[component_a(D) G^a]` with the Hermitian spatial combinations of
-//!   [`crate::periodic::spinor::component`], the same four fields the Hamiltonian scatters in
+//!   [`crate::models::noncollinear::component`], the same four fields the Hamiltonian scatters in
 //!   `spinor::diagonalize_with_exchange`;
 //! * the spin-orbit term through [`SpinOrbit`](super::SpinOrbit), whose projections stay in the
 //!   scalar frame.

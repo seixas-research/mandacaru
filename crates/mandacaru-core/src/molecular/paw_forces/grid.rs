@@ -170,12 +170,15 @@ pub(super) fn contract_combined(
     let worker_fn = |start: usize, end: usize| -> CombinedOutputs {
         let mut local_out = CombinedOutputs::new(atoms, &inputs);
         let mut weight = vec![0.; occupied.len()];
+        // The same orbital's weight in W = sum w_weight a a^T, for the grid Pulay term.
+        let mut pulay_weight = vec![0.; occupied.len()];
         for a in start..end {
             let orbital = &integrals.basis.orbitals[a];
-            for (w, o) in weight.iter_mut().zip(occupied) {
+            for ((w, pw), o) in weight.iter_mut().zip(pulay_weight.iter_mut()).zip(occupied) {
                 *w = 2. * o.weight * o.ao[a];
+                *pw = 2. * o.w_weight * o.ao[a];
             }
-            if weight.iter().all(|&w| w == 0.) {
+            if weight.iter().chain(&pulay_weight).all(|&w| w == 0.) {
                 continue;
             }
             let r_cut = match &orbital.radial {
@@ -233,14 +236,14 @@ pub(super) fn contract_combined(
                         let mut t_tau = 0.;
 
                         for (i, o) in occupied.iter().enumerate() {
-                            let w = weight[i];
-                            if w == 0. {
+                            let (w, pw) = (weight[i], pulay_weight[i]);
+                            if w == 0. && pw == 0. {
                                 continue;
                             }
                             let v = inputs.psi[i * n + k];
                             let wv = w * v;
                             s_wv += wv;
-                            t_pulay -= wv * o.energy;
+                            t_pulay -= pw * v;
                             if let Some(xc) = inputs.xc {
                                 t_xc += wv * xc[o.spin * n + k];
                             }

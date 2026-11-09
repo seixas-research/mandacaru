@@ -100,6 +100,7 @@ fn variant(run: &Run, wrong: Wrong) -> Vec<[f64; 3]> {
 }
 
 #[test]
+#[ignore = "slow: 23 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_hybrid_magnetic -- --ignored h2_hse06_generic_moment_force_is_the_collinear_oracle"]
 fn h2_hse06_generic_moment_force_is_the_collinear_oracle() {
     let generic = run(GENERIC);
     // FIRST: a state with all three components of the moment live, norm 2 mu_B.
@@ -145,6 +146,7 @@ fn h2_hse06_generic_moment_force_is_the_collinear_oracle() {
 /// This is the spin-orbit hybrid gate of the magnetic code path that does not need a magnetic
 /// snapshot (the extension refuses to build one).
 #[test]
+#[ignore = "slow: 68 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_hybrid_magnetic -- --ignored a_magnetic_flagged_silicon_hybrid_with_spin_orbit_is_the_time_reversal_force"]
 fn a_magnetic_flagged_silicon_hybrid_with_spin_orbit_is_the_time_reversal_force() {
     let case = "si_hsefr_tr3";
     let start = std::time::Instant::now();

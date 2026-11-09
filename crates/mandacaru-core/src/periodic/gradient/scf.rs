@@ -88,7 +88,7 @@ pub fn reduced_mesh(c: &Crystal) -> std::result::Result<(), String> {
     if c.screened_exchange().map_err(|e| e.to_string())?.is_some() {
         return Err(
             "a hybrid crystal on a k mesh reduced by space-group symmetry (a hybrid \
-                    needs the whole mesh; use symmetry=False)"
+                    needs the whole mesh, which the Mandacaru setup keeps for it)"
                 .into(),
         );
     }
@@ -225,11 +225,6 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
     // A meta-GGA is evaluated on the output density's own kinetic density, as the SCF does,
     // in the local potential and in the xc terms alike.
     let tau = if crate::models::functional(&c.functional)?.requires_tau {
-        if c.spinor {
-            return Err(crate::Error::Unsupported(
-                "crystal forces are not available for a spinor meta-GGA".into(),
-            ));
-        }
         Some(super::super::fields::kinetic_density(c, densities)?)
     } else {
         None
@@ -312,7 +307,10 @@ pub fn rediagonalize(
             } else {
                 &fields.local.as_slice()[s * n..(s + 1) * n]
             };
-            let kinetic = fields.kinetic.as_ref().map(|v| &v.as_slice()[s * n..(s + 1) * n]);
+            // A spinor's single spin block holds every Pauli channel of v_tau.
+            let kinetic = fields.kinetic.as_ref().map(|v| {
+                if c.spinor { v.as_slice() } else { &v.as_slice()[s * n..(s + 1) * n] }
+            });
             let (eps, coefficient, _) = solver::diagonalize_with_exchange(
                 c,
                 data,

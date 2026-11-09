@@ -80,6 +80,7 @@ fn check(
 }
 
 #[test]
+#[ignore = "slow: 29 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces -- --ignored closed_shell_h2_forces_follow_total_energies_for_hf_lda_and_pbe"]
 fn closed_shell_h2_forces_follow_total_energies_for_hf_lda_and_pbe() {
     let ctx = Context::new(Some(2), 512 << 20).unwrap();
     {
@@ -115,6 +116,7 @@ fn closed_shell_h2_forces_follow_total_energies_for_hf_lda_and_pbe() {
     assert_eq!(ctx.memory_used(), 0);
 }
 #[test]
+#[ignore = "slow: 16 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces -- --ignored meta_gga_h2_forces_follow_total_energies"]
 fn meta_gga_h2_forces_follow_total_energies() {
     let ctx = Context::new(Some(2), 512 << 20).unwrap();
     {
@@ -131,6 +133,7 @@ fn meta_gga_h2_forces_follow_total_energies() {
     assert_eq!(ctx.memory_used(), 0);
 }
 #[test]
+#[ignore = "slow: 42 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces -- --ignored open_shell_forces_follow_total_energies_for_uhf_and_uks"]
 fn open_shell_forces_follow_total_energies_for_uhf_and_uks() {
     let ctx = Context::new(Some(2), 512 << 20).unwrap();
     {

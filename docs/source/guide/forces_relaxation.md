@@ -30,9 +30,10 @@ relax: a converged optimizer is not evidence that the model has a minimum.
 | `rhf`, `uhf`, `dft` with an all-electron basis | analytic stationary gradient (converged, real, collinear state; `kinetic="spectral"`) |
 | `rhf`, `uhf`, `dft` with a PAW-LCAO basis | [finite difference of the energy at fixed densities](#forces-paw-lcao) |
 | `vqe`, `adapt-vqe`, `mcas-vqe`, `valqa` on the local state-vector simulator | [displaced energies of the converged state](#forces-variational) |
+| `dft` with a spin-orbit PAW-LCAO dataset (`lda-fr`, `pbe-fr`) on a molecule | analytic spinor gradient in Rust for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`; stress raises `PropertyNotImplementedError` |
 | `ghf`, `subspace-vqe`, `subspace-adapt-vqe` | not available |
 | any run with `shots > 0` or a device other than `AER_simulator` | not available |
-| `dft` on periodic structures (crystals) | analytic Rust gradient for LDA, PBE and HSE06; stress tensor via `get_stress()` (restricted scalar and spinor); DFT+U crystal forces/stress raise `NotImplementedError` |
+| `dft` on periodic structures (crystals) | analytic Rust gradient for LDA, PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling; stress tensor via `get_stress()` for the same functionals except rVV10 (which raises `NotImplementedError`); a DFT+U crystal with a hybrid or a spin-orbit dataset raises `NotImplementedError` |
 
 Forces require the default `kinetic="spectral"`. Asking for forces where they are not available raises ASE's
 `PropertyNotImplementedError` or `NotImplementedError`. An SCF that does not
@@ -138,14 +139,17 @@ resolve.
 
 PAW-LCAO mean-field forces raise for:
 
-- generalized (`ghf`) states, and anything that is not real and collinear;
+- generalized Hartree–Fock (`ghf`) states, and anything that is not real and
+  collinear (the spinor Kohn–Sham state of a spin-orbit dataset has its own
+  gradient, above);
 - nonlocal correlation (`"pbe+rvv10"`, `"r2scan+rvv10"`) on a PAW-LCAO basis;
 - `precision="float32"`, because the difference needs `float64` samples;
 - a state that does not reproduce its own energy on the rebuilt integrals.
 
-Frozen-core exchange in Hartree–Fock is limited to an empty core or a single
-closed 1s shell, and spin-orbit datasets are refused; both are listed with the
-other [open items](#not-yet-available). Nothing falls back to a
+The force contraction accepts a frozen core of several shells. The limit of
+Hartree–Fock frozen-core exchange to an empty core or a single closed 1s shell
+belongs to the energy and is listed with the other
+[open items](#not-yet-available). Nothing falls back to a
 different calculation.
 
 (forces-relaxation-run)=

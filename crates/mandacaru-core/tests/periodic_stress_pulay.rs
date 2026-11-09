@@ -137,16 +137,19 @@ fn run(case: &'static str, kpoints: &[[f64; 3]], plus_u: bool) {
 }
 
 #[test]
+#[ignore = "slow: 28 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_pulay -- --ignored the_matrix_terms_lih"]
 fn the_matrix_terms_lih() {
     run("lih", &[GAMMA, GENERIC_K], true);
 }
 
 #[test]
+#[ignore = "slow: 83 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_pulay -- --ignored the_matrix_terms_si"]
 fn the_matrix_terms_si() {
     run("si", &[GENERIC_K], false);
 }
 
 #[test]
+#[ignore = "slow: 139 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_pulay -- --ignored the_matrix_terms_al2"]
 fn the_matrix_terms_al2() {
     run("al2", &[GENERIC_K], false);
 }

@@ -162,6 +162,32 @@ class TestASpinOrbitCrystal:
         assert np.allclose(gamma[0::2], gamma[1::2], atol=1e-8)
 
     @pytest.mark.slow
+    def test_spinor_hse06_keeps_a_mesh_with_non_trim_points_whole(self, monkeypatch):
+        """HSE06 with spin-orbit coupling on 3x1x1 (k = 0, +-1/3): time reversal would merge
+        the +-1/3 points, which the exact exchange needs both of, so the mesh stays whole;
+        the force of the displaced cell is the analytic one (Rust). Measured 65 s."""
+        from ase.build import bulk
+
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("a crystal force reached the finite-difference driver")
+
+        monkeypatch.setattr(Mandacaru, "_periodic_quantum_forces", refuse)
+        atoms = bulk("Si", "diamond", a=5.43)
+        atoms.positions[1] += [0.05, -0.03, 0.02]
+        atoms.calc = Mandacaru(method="dft", xc="hse06", paw_dataset="pbe-fr", grid_spacing=0.8,
+                               kpts={"size": (3, 1, 1), "gamma": True},
+                               smearing={"method": "fermi-dirac", "width": 0.01},
+                               basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+                               resources={"threads": 1}, trace=False)
+        forces = atoms.get_forces()
+        weights = atoms.calc.periodic_problem.weights
+        assert len(weights) == 3 and np.allclose(weights, 1 / 3)
+        # The displaced atom is pulled back. (The accuracy is gated in Rust; at this coarse grid
+        # the egg-box term leaves a net force of 0.1-0.2 eV/A, as it does for PBE.)
+        assert np.all(np.isfinite(forces))
+        assert np.all(np.sign(forces[1]) == -np.sign([0.05, -0.03, 0.02]))
+
+    @pytest.mark.slow
     def test_spinor_crystal_forces(self, spinor_silicon):
         """The analytic spinor force (Rust); the ideal crystal's vanish by symmetry. Measured 48 s
         (the SCF of the shared fixture is charged to the first test that uses it)."""

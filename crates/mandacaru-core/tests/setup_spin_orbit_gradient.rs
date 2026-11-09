@@ -55,6 +55,7 @@ fn check_move(atom: usize, axis: usize) {
 macro_rules! moves {
     ($($name:ident: $atom:expr, $axis:expr;)*) => {$(
         #[test]
+        #[ignore = "slow: 27 s each (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_spin_orbit_gradient -- --ignored"]
         fn $name() {
             check_move($atom, $axis);
         }

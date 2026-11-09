@@ -58,6 +58,7 @@ fn band_mismatch(c: &Crystal, r: &PeriodicResult) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 25 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_spinor_scf -- --ignored without_spin_orbit_coupling_the_spinor_hybrid_is_the_scalar_hybrid_on_the_same_mesh"]
 fn without_spin_orbit_coupling_the_spinor_hybrid_is_the_scalar_hybrid_on_the_same_mesh() {
     for name in MESHES {
         let zero = |v: &mut serde_json::Value| map_spin_orbit(v, &|h| h * C64::new(0., 0.));
@@ -88,6 +89,7 @@ fn without_spin_orbit_coupling_the_spinor_hybrid_is_the_scalar_hybrid_on_the_sam
 }
 
 #[test]
+#[ignore = "slow: 15 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_spinor_scf -- --ignored the_bands_are_kramers_pairs_even_in_k_and_rebuilt_from_the_density"]
 fn the_bands_are_kramers_pairs_even_in_k_and_rebuilt_from_the_density() {
     for name in MESHES {
         let (c, r) = solve(name, &|_| {});
@@ -122,6 +124,7 @@ fn the_bands_are_kramers_pairs_even_in_k_and_rebuilt_from_the_density() {
 }
 
 #[test]
+#[ignore = "slow: 13 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_spinor_scf -- --ignored a_global_spin_rotation_of_the_spin_orbit_block_leaves_the_hybrid_energy_unchanged"]
 fn a_global_spin_rotation_of_the_spin_orbit_block_leaves_the_hybrid_energy_unchanged() {
     let name = "si_so_tr3.json";
     let (_, base) = solve(name, &|_| {});
@@ -145,6 +148,7 @@ fn a_global_spin_rotation_of_the_spin_orbit_block_leaves_the_hybrid_energy_uncha
 }
 
 #[test]
+#[ignore = "slow: 26 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_spinor_scf -- --ignored the_hybrid_free_energy_is_stationary_in_the_spin_orbit_strength"]
 fn the_hybrid_free_energy_is_stationary_in_the_spin_orbit_strength() {
     // dF/dlambda = tr(D h_SO) = E_SO / lambda at self-consistency: a stationarity test of the whole
     // hybrid energy in D, with the compensation and one-center terms.

@@ -344,12 +344,9 @@ pub(super) fn hybrid_needs_the_full_mesh(points: &[KPoint], permutations: usize)
     }
     Err(crate::Error::Unsupported(
         "a hybrid functional needs the full k mesh: its exact exchange sums over the listed \
-         k-points, and these are a symmetry or time-reversal reduction of the mesh. Use \
-         symmetry=False together with a Gamma-centered mesh of one or two points per direction \
-         (all of its points are time-reversal invariant, so nothing is halved); on any other \
-         mesh use symmetry=False with unrestricted=True and nonzero initial magnetic moments \
-         (only a spin-polarized run keeps the whole mesh; a spin-orbit crystal has no such \
-         option)"
+         k-points, and these are a symmetry or time-reversal reduction of the mesh. The \
+         Mandacaru setup keeps the whole mesh for a hybrid; a crystal from another source must \
+         list every point of its mesh"
             .into(),
     ))
 }

@@ -35,12 +35,15 @@ reads the dataset tables and prepares the radial basis tables.
 | Methods | `rhf`, `uhf`, `dft` (`lda`, `pbe`, `r2scan` and the screened hybrid `hse06`), and the variational methods through an RHF or UHF reference |
 | Frozen-core exchange (Hartree–Fock, variational) | an empty core or a single closed 1s shell |
 | Forces | RHF, UHF and Kohn–Sham, `hse06` included ([Forces](forces_relaxation.md)) |
+| Spin-orbit datasets | a molecule on `lda-fr` or `pbe-fr` with `method="dft"` runs spinor (noncollinear, generalized) Kohn–Sham with the PAW spin-orbit projector term, for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`, with analytic forces; the reference state is a `ghf`-shaped spinor state carrying the functional (one set of 2m spinors) |
 | Geometry | molecules; a crystal reads its own datasets through the periodic setup |
 
 The following raise, or are not yet available ([open items](#not-yet-available)):
-nonlocal correlation (`pbe+rvv10`, `r2scan+rvv10`) with PAW; multi-shell
-frozen-core exchange; spin-orbit projectors, so a molecule on a `-fr` dataset raises `NotImplementedError`;
-`precision="float32"` forces; the GHF-to-quantum handoff.
+nonlocal correlation (`pbe+rvv10`, `r2scan+rvv10`) with a scalar-relativistic
+PAW dataset; multi-shell frozen-core exchange; any method other than `dft` on a
+molecule with a spin-orbit dataset (`NotImplementedError`: "a molecule with a
+spin-orbit dataset needs method='dft' (spinor Kohn-Sham)"), and DFT+U there;
+molecular stress; `precision="float32"` forces; the GHF-to-quantum handoff.
 
 The two families of one-center terms differ by method. Kohn–Sham keeps the
 dataset's frozen one-center Hartree and exchange–correlation terms. Hartree–Fock
@@ -148,8 +151,8 @@ Running a Kohn–Sham functional on the other functional's set works but warns
 about the mismatch. `paw_dataset=` with a basis that reads no
 library is refused. A missing folder or an unset variable raises
 `LibraryPathError`, naming the `mandacaru-paw --set` command that fixes it. The
-spin-orbit sets serve periodic two-component calculations; a molecule on them
-raises (above).
+spin-orbit sets serve two-component (spinor) Kohn–Sham: a crystal, or a molecule
+with `method="dft"`; any other method on a molecule raises (above).
 
 ### Dataset files
 

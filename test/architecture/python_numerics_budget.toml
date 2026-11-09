@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 5616
+zero_sloc = 5615
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -65,7 +65,7 @@ zero_sloc = 5616
 "integrals/packed.py" = { np = 4, meth = 3, bi = 1, arith = 8, arithmax = 2, sloc = 135, wave = "W4", dies = "2027-07-16" }
 "integrations/ase_properties.py" = { np = 1, meth = 2 }
 "integrations/paw.py" = { sloc = 49, wave = "3b", dies = "2027-05-07" }
-"integrations/paw_molecular.py" = { bi = 1, arith = 1, arithmax = 1, sloc = 135, wave = "W4", dies = "2027-07-16" }
+"integrations/paw_molecular.py" = { bi = 1, arith = 1, arithmax = 1, sloc = 134, wave = "W4", dies = "2027-07-16" }
 "integrations/reporting.py" = { np = 2, meth = 3 }
 "models/basis.py" = { arith = 2, arithmax = 2, sloc = 293, category = "validation" }
 "models/datasets.py" = { sloc = 32, category = "validation" }

@@ -45,6 +45,7 @@ fn partial_bands(data: &Data) -> usize {
 }
 
 #[test]
+#[ignore = "slow: 138 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_crystals_metal -- --ignored the_stress_of_a_converged_fermi_dirac_metal"]
 fn the_stress_of_a_converged_fermi_dirac_metal() {
     let (mut data, stress, want) = check("al_small", true);
     let partial = partial_bands(&data);

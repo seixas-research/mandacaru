@@ -1,4 +1,5 @@
-//! S-1..S-5: the matrix terms of the stress, `sum_{s,k} deg w_k Re tr[D dh_ab - W dS_ab]`.
+//! S-1..S-6: the matrix terms of the stress, `sum_{s,k} deg w_k Re tr[D dh_ab - W dS_ab]` (S-6 is a
+//! meta-GGA's kinetic-density operator, [`Term::KineticDensity`]).
 //!
 //! The force engine's algebra with the strain tangent: the overlap enters through `-W dS`, the
 //! kinetic, local and short-range matrices through `D dM`, and the projections through
@@ -19,6 +20,8 @@ pub struct Terms {
     pub local: Tensor<f64>,
     pub short_range: Tensor<f64>,
     pub projection: Tensor<f64>,
+    /// S-6, a meta-GGA's `T_tau = 1/2 <grad chi | v_tau | grad chi>` (zero otherwise).
+    pub kinetic_density: Tensor<f64>,
     /// SO-1 (spinor requests; zero otherwise).
     pub spin_orbit: Tensor<f64>,
 }
@@ -59,8 +62,10 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Terms> {
         local: [[0.; 3]; 3],
         short_range: [[0.; 3]; 3],
         projection: [[0.; 3]; 3],
+        kinetic_density: [[0.; 3]; 3],
         spin_orbit: [[0.; 3]; 3],
     };
+    let terms = Term::of(&l.request.functional)?;
     for k in 0..l.weights.len() {
         let c = s.projection(k)?;
         let dc = s.projection_strain(k)?;
@@ -68,7 +73,7 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Terms> {
             let bands = &frozen.state.bands[spin][k];
             let (density, weighted) = (bands.density(), bands.weighted(l.reference));
             let w = l.degeneracy * l.weights[k];
-            for term in Term::ALL {
+            for &term in &terms {
                 let dm = s.matrix_strain(spin, k, term, &frozen.fields)?;
                 // P1 enters the energy through -W dS, every other term through D dH.
                 let (m, sign, to) = match term {
@@ -76,8 +81,7 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Terms> {
                     Term::Kinetic => (&density, 1., &mut out.kinetic),
                     Term::Local => (&density, 1., &mut out.local),
                     Term::ShortRange => (&density, 1., &mut out.short_range),
-                    // Not in `Term::ALL`; the meta-GGA stress (MG-F5b) refuses before this loop.
-                    Term::KineticDensity => unreachable!("Term::ALL holds no meta-GGA term"),
+                    Term::KineticDensity => (&density, 1., &mut out.kinetic_density),
                 };
                 for a in 0..3 {
                     for b in 0..3 {

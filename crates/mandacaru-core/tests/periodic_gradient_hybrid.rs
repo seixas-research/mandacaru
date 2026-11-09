@@ -143,16 +143,19 @@ fn check(case: &'static str) {
 }
 
 #[test]
+#[ignore = "slow: 19 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_hybrid -- --ignored lih_hse06_force_is_the_reconverged_finite_difference"]
 fn lih_hse06_force_is_the_reconverged_finite_difference() {
     check("lih_hse06");
 }
 
 #[test]
+#[ignore = "slow: 171 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_hybrid -- --ignored si_hse06_force_is_the_reconverged_finite_difference"]
 fn si_hse06_force_is_the_reconverged_finite_difference() {
     check("si_hse06");
 }
 
 #[test]
+#[ignore = "slow: 172 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_hybrid -- --ignored si_hse06_with_gygi_baldereschi_is_the_reconverged_finite_difference"]
 fn si_hse06_with_gygi_baldereschi_is_the_reconverged_finite_difference() {
     check("si_hse06_gb");
 }
@@ -183,6 +186,7 @@ fn miss_at(data: &Data, cores: &[Option<Core<'_>>], options: &Options) -> f64 {
 /// the exchange operators the SCF stops at), so a force at the gate needs a converged state.
 /// LiH solved at three tolerances.
 #[test]
+#[ignore = "slow: 36 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_hybrid -- --ignored the_hybrid_force_follows_the_scf_residual"]
 fn the_hybrid_force_follows_the_scf_residual() {
     let data = Data::load("lih_hse06");
     let cores = data.cores();

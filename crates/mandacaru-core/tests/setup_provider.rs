@@ -175,11 +175,13 @@ const SI_MOVES: [(usize, usize); 3] = [(0, 0), (1, 1), (1, 2)];
 const AL2_MOVES: [(usize, usize); 3] = [(0, 2), (1, 0), (1, 2)];
 
 #[test]
+#[ignore = "slow: 82 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_provider -- --ignored the_matrix_terms_of_the_force_equal_the_derivative_of_the_frozen_energy_si"]
 fn the_matrix_terms_of_the_force_equal_the_derivative_of_the_frozen_energy_si() {
     matrix_terms("si", &SI_MOVES);
 }
 
 #[test]
+#[ignore = "slow: 126 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_provider -- --ignored the_matrix_terms_of_the_force_equal_the_derivative_of_the_frozen_energy_al2"]
 fn the_matrix_terms_of_the_force_equal_the_derivative_of_the_frozen_energy_al2() {
     matrix_terms("al2", &AL2_MOVES);
 }

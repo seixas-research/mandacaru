@@ -13,7 +13,6 @@ use mandacaru_core::{
         images::Region,
         shells::{DenseRows, Radial, Sampling, Shell, Shells},
         spheres::Projector,
-        spin_orbit::Coupling,
     },
     Context,
 };
@@ -427,7 +426,7 @@ pub fn spin_orbit_list(
     ctx: &Context,
     ds: &PawDataset,
     centers: &[[f64; 3]],
-) -> (Vec<Projector>, BTreeMap<(usize, usize), Coupling>) {
+) -> (Vec<Projector>, BTreeMap<(usize, usize), mandacaru_core::models::spin_orbit::Coupling>) {
     let (mut out, mut couplings) = (Vec::new(), BTreeMap::new());
     for (atom, center) in centers.iter().enumerate() {
         for (&l, entry) in &ds.spin_orbit {
@@ -452,7 +451,7 @@ pub fn spin_orbit_list(
             }
             couplings.insert(
                 (atom, l as usize),
-                Coupling {
+                mandacaru_core::models::spin_orbit::Coupling {
                     radial: entry.coupling.shape()[0],
                     values: entry.coupling.data().to_vec(),
                 },

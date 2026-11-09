@@ -149,11 +149,13 @@ fn controls(exxdiv: ExxDivTreatment, head: bool) {
 }
 
 #[test]
+#[ignore = "slow: 13 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_hybrid_controls -- --ignored every_wrong_exchange_strain_misses_the_difference_without_a_divergence_treatment"]
 fn every_wrong_exchange_strain_misses_the_difference_without_a_divergence_treatment() {
     controls(ExxDivTreatment::None, false);
 }
 
 #[test]
+#[ignore = "slow: 15 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_hybrid_controls -- --ignored every_wrong_exchange_strain_misses_the_difference_with_gygi_baldereschi"]
 fn every_wrong_exchange_strain_misses_the_difference_with_gygi_baldereschi() {
     controls(ExxDivTreatment::GygiBaldereschi, true);
 }

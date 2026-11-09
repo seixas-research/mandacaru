@@ -310,6 +310,7 @@ impl World {
                 gradients: xc.gradients,
                 flux: xc.flux,
             },
+            kinetic: None,
         }
     }
 

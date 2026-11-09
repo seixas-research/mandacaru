@@ -66,8 +66,9 @@ fn the_stress_is_the_derivative_of_the_frozen_energy() {
     }
     let mut total: Tensor = [[0.; 3]; 3];
     for (i, (name, term)) in b.terms().iter().enumerate() {
-        // A scalar-relativistic semilocal crystal has no spin-orbit and no exchange term: exactly zero.
-        if matches!(*name, "spin_orbit" | "exchange") {
+        // A scalar-relativistic semilocal crystal has no spin-orbit, exchange or meta-GGA term:
+        // exactly zero.
+        if matches!(*name, "spin_orbit" | "exchange" | "kinetic_density" | "xc_core_kinetic") {
             assert!(
                 term.iter().flatten().all(|x| *x == 0.),
                 "{name} must vanish"
@@ -87,7 +88,7 @@ fn the_stress_is_the_derivative_of_the_frozen_energy() {
     println!("  sum miss {m:.2e}");
     // A single missing term in the sum is far above the gate.
     for (i, (name, _)) in b.terms().iter().enumerate() {
-        if matches!(*name, "spin_orbit" | "exchange") {
+        if matches!(*name, "spin_orbit" | "exchange" | "kinetic_density" | "xc_core_kinetic") {
             continue;
         }
         let without = map(&sum, |a, c, x| x - b.terms()[i].1[a][c]);
@@ -118,17 +119,12 @@ fn what_is_not_differentiated_yet_raises_with_its_cause() {
             "hybrid",
             Box::new(|l: &mut _| set(l, "hse06")) as Box<dyn Fn(&mut _)>,
         ),
-        ("meta-GGA", Box::new(|l: &mut _| set(l, "r2scan"))),
         ("rVV10", Box::new(|l: &mut _| set(l, "pbe+rvv10"))),
         (
             "float32",
             Box::new(|l: &mut mandacaru_core::periodic::gradient::Layout| {
                 l.request.single_precision = true
             }),
-        ),
-        (
-            "spin polarized",
-            Box::new(|l: &mut mandacaru_core::periodic::gradient::Layout| l.spins = 2),
         ),
     ] {
         match refused(&*edit) {
@@ -140,6 +136,18 @@ fn what_is_not_differentiated_yet_raises_with_its_cause() {
             }
             other => panic!("{what}: expected Unsupported, got {:?}", other.map(|_| ())),
         }
+    }
+    // A meta-GGA's stress is analytic (`periodic_stress_meta.rs`); its request with fields that
+    // carry no v_tau is invalid, never a stress without the kinetic-density terms.
+    match refused(&|l: &mut mandacaru_core::periodic::gradient::Layout| set(l, "r2scan")) {
+        Err(Error::Invalid(message)) => assert!(message.contains("v_tau"), "{message}"),
+        other => panic!("a meta-GGA without v_tau: expected Invalid, got {:?}", other.map(|_| ())),
+    }
+    // Spin-polarized stress is analytic (`test_native_periodic_response.py` pins it); two spin
+    // channels on an unpolarized crystal are an invalid request, never a silent stress.
+    match refused(&|l: &mut mandacaru_core::periodic::gradient::Layout| l.spins = 2) {
+        Err(Error::Invalid(message)) => assert!(message.contains("spin"), "{message}"),
+        other => panic!("a mismatched spin layout: expected Invalid, got {:?}", other.map(|_| ())),
     }
 }
 

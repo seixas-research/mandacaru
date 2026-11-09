@@ -105,8 +105,9 @@ fn gate(name: &str) {
 }
 
 macro_rules! sample {
-    ($($test:ident: $name:literal),+ $(,)?) => {$(
+    ($($(#[$meta:meta])* $test:ident: $name:literal),+ $(,)?) => {$(
         #[test]
+        $(#[$meta])*
         fn $test() {
             assert!(LIGHT.contains(&$name));
             gate($name);
@@ -116,9 +117,19 @@ macro_rules! sample {
 
 sample! {
     h_lda: "lda-sr_H", c_lda: "lda-sr_C", o_lda: "lda-sr_O", na_lda: "lda-sr_Na",
-    mg_lda: "lda-sr_Mg", si_lda_after_a_repair: "lda-sr_Si", k_lda_after_a_repair: "lda-sr_K",
-    fe_lda: "lda-sr_Fe", o_pbe: "pbe-sr_O", cu_pbe: "pbe-sr_Cu",
-    h_upaw: "upaw_H", o_upaw: "upaw_O", al_upaw: "upaw_Al", cr_upaw: "upaw_Cr",
+    mg_lda: "lda-sr_Mg", si_lda_after_a_repair: "lda-sr_Si",
+    #[ignore = "slow: 18 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_diagnose_freeze -- --ignored"]
+    k_lda_after_a_repair: "lda-sr_K",
+    #[ignore = "slow: 27 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_diagnose_freeze -- --ignored"]
+    fe_lda: "lda-sr_Fe",
+    o_pbe: "pbe-sr_O",
+    #[ignore = "slow: 32 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_diagnose_freeze -- --ignored"]
+    cu_pbe: "pbe-sr_Cu",
+    h_upaw: "upaw_H", o_upaw: "upaw_O",
+    #[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_diagnose_freeze -- --ignored"]
+    al_upaw: "upaw_Al",
+    #[ignore = "slow: 29 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_diagnose_freeze -- --ignored"]
+    cr_upaw: "upaw_Cr",
 }
 
 #[test]

@@ -104,6 +104,7 @@ fn check(coordinates: &[(usize, usize)]) {
 /// One coordinate, the one the frozen Si oracle misses most (atom 1, x), in the default suite:
 /// every build re-reads the datasets and the screened tables (about 15 s each).
 #[test]
+#[ignore = "slow: 133 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_hybrid_mesh -- --ignored the_explicit_exchange_terms_on_the_k_mesh_are_the_displaced_crystal_derivative"]
 fn the_explicit_exchange_terms_on_the_k_mesh_are_the_displaced_crystal_derivative() {
     check(&[(1, 0)]);
 }

@@ -31,7 +31,6 @@ use crate::{
         setup::{
             provider::{Inputs, Operators, SetupDerivatives},
             spheres::Projector,
-            spin_orbit::Coupling,
             strain_provider::{StrainFields, StrainSetup, XcFields},
         },
         solver, Crystal, Options,
@@ -46,14 +45,14 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy)]
 pub struct SpinOrbitInputs<'a> {
     pub projectors: &'a [Projector],
-    pub couplings: &'a BTreeMap<(usize, usize), Coupling>,
+    pub couplings: &'a BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>,
 }
 
 /// The crystals this stress does not differentiate, from the crystal itself: DFT+U (AS-7) and a k
 /// mesh reduced by space-group symmetry whose operations the snapshot does not carry (CF-6: with
 /// them the stress is averaged over the group; a spin-orbit crystal or a hybrid needs the whole
-/// mesh). A hybrid, float32 data, a meta-GGA, rVV10 and `spins != 1` are refused by
-/// [`check_request`] from the layout.
+/// mesh). Float32 data, rVV10 and more than two spin channels are refused by [`check_request`]
+/// from the layout (a hybrid goes through its own entry).
 pub fn refuse(c: &Crystal) -> Result<()> {
     let no = |what: &str| {
         Err(Error::Unsupported(format!(
@@ -107,7 +106,13 @@ fn output_data(
     let densities = crate::periodic::gradient::scf::densities(c, &state.bands)?;
     let (rho, _) = solver::density(c, &densities)?;
     let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
-    let terms = solver::exchange_correlation(c, &mut fft, rho.as_slice(), None)?;
+    // A meta-GGA is evaluated on the output density's own kinetic density, as the force's fields are.
+    let tau = if crate::models::functional(&c.functional)?.requires_tau {
+        Some(crate::periodic::fields::kinetic_density(c, &densities)?)
+    } else {
+        None
+    };
+    let terms = solver::exchange_correlation(c, &mut fft, rho.as_slice(), tau.as_ref().map(|t| t.as_slice()))?;
     let mut total = vec![0.; n];
     for s in 0..c.spins {
         for (t, r) in total.iter_mut().zip(&rho.as_slice()[s * n..(s + 1) * n]) {
@@ -195,6 +200,7 @@ pub fn crystal_strain<'a>(
             gradients,
             flux,
         },
+        kinetic: frozen.fields.kinetic.clone(),
     };
     let frozen = Frozen {
         state: frozen.state,

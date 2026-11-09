@@ -1,6 +1,7 @@
 //! Angular L.S operators and their separable radial-projector contractions.
 use super::invalid;
 use crate::{product, Buffer, Context, Result};
+use std::collections::BTreeMap;
 use nalgebra::DMatrix;
 use num_complex::Complex64 as C64;
 
@@ -163,3 +164,79 @@ pub fn pair(
     })?;
     Ok(out)
 }
+
+/// The radial coupling `D^{SO}` of one `(atom, l)`: `radial x radial`, row-major.
+#[derive(Clone, Debug)]
+pub struct Coupling {
+    pub radial: usize,
+    pub values: Vec<f64>,
+}
+
+/// The label of one spin-orbit projector: its atom, `l`, `m` and radial index.
+#[derive(Clone, Copy, Debug)]
+pub struct Label {
+    pub atom: usize,
+    pub l: usize,
+    pub m: i32,
+    pub index: usize,
+}
+
+/// The channels of the term for projectors labeled `labels` (in projector order): for each
+/// `(atom, l)` with a coupling and `l > 0`, in order of first appearance, the projector positions
+/// ordered `m = -l..l` outer and radial index inner, with complex (`real = false`, a crystal) or
+/// real (`real = true`, a molecule) harmonics. A channel that lacks any `(m, index)` of its
+/// rectangle, or a duplicated label, is refused.
+pub fn channels(
+    ctx: &Context,
+    labels: &[Label],
+    couplings: &BTreeMap<(usize, usize), Coupling>,
+    real: bool,
+) -> Result<Vec<Channel>> {
+    let mut order: Vec<(usize, usize)> = Vec::new();
+    let mut positions: BTreeMap<(usize, usize), BTreeMap<(i32, usize), usize>> = BTreeMap::new();
+    for (position, p) in labels.iter().enumerate() {
+        let group = positions.entry((p.atom, p.l)).or_insert_with(|| {
+            order.push((p.atom, p.l));
+            BTreeMap::new()
+        });
+        if group.insert((p.m, p.index), position).is_some() {
+            return Err(invalid("duplicate spin-orbit projector label"));
+        }
+    }
+    let mut out = Vec::new();
+    for key in order {
+        let l = key.1;
+        let Some(coupling) = couplings.get(&key) else {
+            continue;
+        };
+        if l == 0 {
+            continue;
+        }
+        let group = &positions[&key];
+        let mut radial: Vec<usize> = group.keys().map(|(_, i)| *i).collect();
+        radial.sort_unstable();
+        radial.dedup();
+        let expected: Vec<(i32, usize)> = (-(l as i32)..=l as i32)
+            .flat_map(|m| radial.iter().map(move |&i| (m, i)))
+            .collect();
+        if expected.len() != group.len() || expected.iter().any(|e| !group.contains_key(e)) {
+            return Err(invalid("spin-orbit channel needs every angular and radial projector"));
+        }
+        if coupling.radial != radial.len()
+            || coupling.values.len() != product(&[coupling.radial, coupling.radial])?
+        {
+            return Err(invalid("spin-orbit block dimensions must match its radial projectors"));
+        }
+        let mut indices = ctx.allocate::<usize>(expected.len())?;
+        for (to, e) in indices.as_mut_slice().iter_mut().zip(&expected) {
+            *to = group[e];
+        }
+        let mut matrix = ctx.allocate::<C64>(coupling.values.len())?;
+        for (to, v) in matrix.as_mut_slice().iter_mut().zip(&coupling.values) {
+            *to = C64::new(*v, 0.);
+        }
+        out.push(Channel { l, real, indices, radial: radial.len(), coupling: matrix });
+    }
+    Ok(out)
+}
+

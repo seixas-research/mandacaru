@@ -48,6 +48,7 @@ fn swapped(terms: &Terms) -> Terms {
 }
 
 #[test]
+#[ignore = "slow: 157 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_hybrid_controls -- --ignored spinor_hybrid_wrong_spin_structure_misses_the_oracle_by_more_than_100_gates"]
 fn spinor_hybrid_wrong_spin_structure_misses_the_oracle_by_more_than_100_gates() {
     let spinor = Spinor::load(CASE);
     let data = &spinor.data;

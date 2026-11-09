@@ -46,6 +46,7 @@ fn real(got: &[f64], want: &[f64]) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 61 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals_setup -- --ignored the_rust_setup_is_the_snapshot_crystal"]
 fn the_rust_setup_is_the_snapshot_crystal() {
     for case in CASES {
         let data = Data::load(case);
@@ -105,6 +106,7 @@ fn the_rust_setup_is_the_snapshot_crystal() {
 /// the snapshot's `fixed` (the SCF's own operator), to the same gate as `fixed` itself. The
 /// distance to the second is a report.
 #[test]
+#[ignore = "slow: 21 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals_setup -- --ignored the_kinetic_form_is_the_kinetic_matrix_of_the_snapshot"]
 fn the_kinetic_form_is_the_kinetic_matrix_of_the_snapshot() {
     for case in CASES {
         let data = Data::load(case);

@@ -68,6 +68,30 @@ impl SpinTerms {
         Ok((energy, fock))
     }
 
+    /// The non-collinear polarization energy of the spheres (see
+    /// [`crate::paw::screened_polarization`]'s `vector`) and its channel Fock matrices
+    /// `C O^a C^T` for the four real Pauli components `pauli` (`D_0 = D_uu + D_dd`, ...) of a
+    /// spinor density in the orthonormal frame. A collinear density gives [`Self::polarization`]
+    /// with `O^0 +- O^3` its spin matrices.
+    pub fn vector_polarization(
+        &self,
+        ctx: &Context,
+        pauli: &[DMatrix<f64>; 4],
+    ) -> Result<(f64, [DMatrix<f64>; 4])> {
+        let m = pauli[0].nrows();
+        let mut energy = 0.;
+        let mut fock: [DMatrix<f64>; 4] = std::array::from_fn(|_| DMatrix::zeros(m, m));
+        for (species, c) in &self.spheres {
+            let projected: [DMatrix<f64>; 4] = std::array::from_fn(|a| c.transpose() * &pauli[a] * c);
+            let terms = self.atoms[*species].polarization.evaluate_vector(ctx, &projected)?;
+            energy += terms.energy;
+            for (f, o) in fock.iter_mut().zip(&terms.operators) {
+                *f += c * o * c.transpose();
+            }
+        }
+        Ok((energy, fock))
+    }
+
     /// The spheres' short-range semilocal exchange (all-electron minus smooth,
     /// spherically averaged) at the spin densities `up` and `down`, summed over
     /// the atoms: `(exact, frozen)`, where `exact` evaluates the functional on the

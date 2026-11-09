@@ -5,7 +5,8 @@ mod setup_shells_support;
 
 use mandacaru_core::{
     math::linalg::eigen,
-    periodic::setup::spin_orbit::{channels, matrices, Coupling},
+    models::spin_orbit::Coupling,
+    periodic::setup::spin_orbit::{labels, matrices},
     Context, Error,
 };
 use nalgebra::{Cholesky, DMatrix, Matrix3};
@@ -14,6 +15,15 @@ use setup_shells_support::*;
 use std::collections::BTreeMap;
 
 const T2: f64 = 1e-9;
+
+/// The channels of the crystal's projectors (`models::spin_orbit::channels` on their labels).
+fn channels(
+    ctx: &Context,
+    projectors: &[mandacaru_core::periodic::setup::spheres::Projector],
+    couplings: &BTreeMap<(usize, usize), Coupling>,
+) -> mandacaru_core::Result<Vec<mandacaru_core::models::spin_orbit::Channel>> {
+    mandacaru_core::models::spin_orbit::channels(ctx, &labels(projectors), couplings, false)
+}
 
 struct Silicon {
     ctx: Context,

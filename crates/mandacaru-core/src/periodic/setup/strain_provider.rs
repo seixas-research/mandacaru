@@ -31,7 +31,7 @@ use super::{
     pulay::{mesh_dot, projection, Matrix, Mesh},
     shapes::visit_lattice,
     strain_grid::{core_strain, hats_strain, ions_strain, kernel_strain, VOIGT},
-    strain_pulay::{bloch_values, grid_strain, kinetic_strain, Tensor as Matrices},
+    strain_pulay::{bloch_values, grid_strain, kinetic_strain, tau_strain, Tensor as Matrices},
     strain_samples::StrainSamples,
     strain_spheres::{linear_strain, projection_strain, short_range_strain},
     strain_sums::CouplingsStrainSum,
@@ -77,6 +77,10 @@ pub struct StrainFields {
     /// `rho_G = dv sum_i rho_i e^{-iG.r_i}` (the spin sum), per node of the reciprocal set.
     pub density: Vec<C64>,
     pub xc: XcFields,
+    /// A meta-GGA's `v_tau`, one block per spin channel (per Pauli channel for a spinor), and its
+    /// spin average, the potential the partial core's kinetic density is differentiated against
+    /// (X-5). `None` for every other functional.
+    pub kinetic: Option<(Vec<Vec<f64>>, Vec<f64>)>,
 }
 
 /// The strain provider.
@@ -178,7 +182,12 @@ impl<'a> StrainSetup<'a> {
             && fields.weights.len() == n
             && fields.density.len() == n
             && fields.xc.potential.len() == n
-            && fields.moments.len() == self.inputs.sites.channels.len();
+            && fields.moments.len() == self.inputs.sites.channels.len()
+            && fields.kinetic.as_ref().is_none_or(|(blocks, average)| {
+                blocks.len() == fields.local.len()
+                    && blocks.iter().all(|v| v.len() == n)
+                    && average.len() == n
+            });
         if fine {
             Ok(())
         } else {
@@ -186,6 +195,17 @@ impl<'a> StrainSetup<'a> {
                 "crystal stress: the fields need one value per mesh node and one moment per channel",
             ))
         }
+    }
+
+    /// `v_tau` of channel `spin`; a meta-GGA's fields without it raise (never a zero term).
+    fn kinetic_block<'f>(&self, spin: usize, fields: &'f StrainFields) -> Result<&'f [f64]> {
+        let (blocks, _) = fields.kinetic.as_ref().ok_or_else(|| {
+            invalid("crystal stress: the meta-GGA term needs the fields' v_tau")
+        })?;
+        blocks
+            .get(spin)
+            .map(|v| v.as_slice())
+            .ok_or_else(|| invalid("crystal stress: one v_tau per channel"))
     }
 
     /// The matrix tangent of one term in the SCALAR frame (`M x M`) for the potential of channel
@@ -201,12 +221,9 @@ impl<'a> StrainSetup<'a> {
         let strain = || StrainSamples::new(shells, self.lattice(), &self.mesh, kpoint);
         let values = || bloch_values(ctx, shells, self.lattice(), &self.mesh, kpoint);
         let tensor: Matrices = match term {
-            // The meta-GGA stress is its own package (MG-F5b); the stress engine refuses a
-            // meta-GGA before it asks, so this arm is a guard, never a zero.
             Term::KineticDensity => {
-                return Err(crate::Error::Unsupported(
-                    "crystal stress is not available for a meta-GGA".into(),
-                ))
+                let v = self.kinetic_block(spin, fields)?;
+                tau_strain(ctx, self.inputs.grid, &self.mesh, &strain(), values()?.as_slice(), kpoint, v)?
             }
             Term::Overlap => {
                 grid_strain(ctx, &self.mesh, &strain(), values()?.as_slice(), None, true)?
@@ -319,6 +336,9 @@ impl Strain for StrainSetup<'_> {
         if self.layout.request.spinor && term == Term::Local {
             return self.spinor_local(k, fields);
         }
+        if self.layout.request.spinor && term == Term::KineticDensity {
+            return self.spinor_kinetic(k, fields);
+        }
         Ok(self.frame_tensor(self.scalar_strain(spin, k, term, fields)?))
     }
 
@@ -419,10 +439,14 @@ impl Strain for StrainSetup<'_> {
     fn xc(&self, fields: &StrainFields) -> Result<xc::Terms> {
         self.check_fields(fields)?;
         // A gradient functional without its gradients and flux would give a silently zero term.
-        let gga = matches!(
-            models::functional(&self.layout.request.functional)?.semilocal,
-            "pbe" | "hse06"
-        );
+        let definition = models::functional(&self.layout.request.functional)?;
+        let gga = matches!(definition.semilocal, "pbe" | "hse06" | "r2scan");
+        if definition.requires_tau != fields.kinetic.is_some() {
+            return Err(invalid(
+                "crystal stress: a meta-GGA needs its v_tau and the spin average, another \
+                 functional has none",
+            ));
+        }
         if gga != fields.xc.gradients.is_some() || gga != fields.xc.flux.is_some() {
             return Err(invalid(
                 "crystal stress: a gradient functional needs the gradients and the flux of its \
@@ -432,15 +456,31 @@ impl Strain for StrainSetup<'_> {
         let (ctx, grid) = (self.ctx, self.inputs.grid);
         let n = self.mesh.len();
         let mut core = [[0.; 3]; 3];
+        let mut core_kinetic = [[0.; 3]; 3];
         for (atom, table) in self.inputs.cores.iter().enumerate() {
             let Some(table) = table else { continue };
             let center = self.inputs.sites.atoms[atom].center;
+            // X-5: the von Weizsaecker kinetic density of the same smooth core (the table the SCF
+            // samples for a meta-GGA), against the spin-averaged v_tau.
+            let kinetic = match &fields.kinetic {
+                Some((_, average)) => {
+                    let density = crate::math::spline::Cubic::new(ctx, ctx.copy_slice(table.radius)?, ctx.copy_slice(table.values)?)?;
+                    Some((crate::paw::fields::core_kinetic(ctx, &density)?, average))
+                }
+                None => None,
+            };
             for &(a, b) in &VOIGT {
                 let slope = core_strain(ctx, grid, table.radius, table.values, &[center], (a, b))?;
-                let t = mesh_dot(&self.mesh, &fields.xc.potential, slope.as_slice())?;
-                core[a][b] += t;
-                if a != b {
-                    core[b][a] += t;
+                let mut t = [mesh_dot(&self.mesh, &fields.xc.potential, slope.as_slice())?, 0.];
+                if let Some((tau, average)) = &kinetic {
+                    let slope = core_strain(ctx, grid, table.radius, tau.values.as_slice(), &[center], (a, b))?;
+                    t[1] = mesh_dot(&self.mesh, average, slope.as_slice())?;
+                }
+                for (to, value) in [&mut core, &mut core_kinetic].into_iter().zip(t) {
+                    to[a][b] += value;
+                    if a != b {
+                        to[b][a] += value;
+                    }
                 }
             }
         }
@@ -453,6 +493,7 @@ impl Strain for StrainSetup<'_> {
                 fields.xc.flux.as_deref(),
             )?,
             core,
+            core_kinetic,
         })
     }
 }

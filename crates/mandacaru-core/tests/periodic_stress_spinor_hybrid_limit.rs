@@ -31,6 +31,7 @@ fn converge(data: &mut Data) -> (f64, mandacaru_core::periodic::gradient::State)
 }
 
 #[test]
+#[ignore = "slow: 29 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_hybrid_limit -- --ignored the_zero_coupling_spinor_hybrid_stress_is_the_scalar_hybrid_stress"]
 fn the_zero_coupling_spinor_hybrid_stress_is_the_scalar_hybrid_stress() {
     let mut scalar = Data::load("lih_hse06");
     let (e_scalar, state) = converge(&mut scalar);

@@ -86,6 +86,7 @@ fn the_hand_built_densities_are_magnetic_so_the_remainder_of_the_spheres_is_live
 }
 
 #[test]
+#[ignore = "slow: 22 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_hybrid_controls -- --ignored wrong_spin_structures_miss_the_difference_by_more_than_100_gates"]
 fn wrong_spin_structures_miss_the_difference_by_more_than_100_gates() {
     let mut r = rig("lih_hse06", ExxDivTreatment::None, false);
     let right = r.analytic(&Production);

@@ -14,87 +14,19 @@
 use super::shells::Shells;
 use super::spheres::{projection_slopes, projections, Projector};
 use crate::{
-    models::spin_orbit::{pair, Channel, Projectors},
+    models::spin_orbit::{channels, pair, Coupling, Label, Projectors},
     product, Buffer, Context, Error, Result,
 };
 use nalgebra::Matrix3;
 use num_complex::Complex64;
 use std::collections::BTreeMap;
 
-/// The radial coupling `D^{SO}` of one `(atom, l)`: `radial x radial`, row-major.
-#[derive(Clone, Debug)]
-pub struct Coupling {
-    pub radial: usize,
-    pub values: Vec<f64>,
-}
-
-/// The channels of the term: for each `(atom, l)` with a coupling and `l > 0`, in order of first
-/// appearance, the projector positions ordered `m = -l..l` outer and radial index inner. A
-/// channel that lacks any `(m, index)` of its rectangle, or a duplicated label, is refused.
-pub fn channels(
-    ctx: &Context,
-    projectors: &[Projector],
-    couplings: &BTreeMap<(usize, usize), Coupling>,
-) -> Result<Vec<Channel>> {
-    let mut order: Vec<(usize, usize)> = Vec::new();
-    let mut labels: BTreeMap<(usize, usize), BTreeMap<(i32, usize), usize>> = BTreeMap::new();
-    for (position, p) in projectors.iter().enumerate() {
-        let group = labels.entry((p.atom, p.l)).or_insert_with(|| {
-            order.push((p.atom, p.l));
-            BTreeMap::new()
-        });
-        if group.insert((p.m, p.index), position).is_some() {
-            return Err(Error::Invalid(
-                "duplicate spin-orbit projector label".into(),
-            ));
-        }
-    }
-    let mut out = Vec::new();
-    for key in order {
-        let l = key.1;
-        let Some(coupling) = couplings.get(&key) else {
-            continue;
-        };
-        if l == 0 {
-            continue;
-        }
-        let positions = &labels[&key];
-        let mut radial: Vec<usize> = positions.keys().map(|(_, i)| *i).collect();
-        radial.sort_unstable();
-        radial.dedup();
-        let expected: Vec<(i32, usize)> = (-(l as i32)..=l as i32)
-            .flat_map(|m| radial.iter().map(move |&i| (m, i)))
-            .collect();
-        if expected.len() != positions.len() || expected.iter().any(|e| !positions.contains_key(e))
-        {
-            return Err(Error::Invalid(
-                "spin-orbit channel needs every angular and radial projector".into(),
-            ));
-        }
-        if coupling.radial != radial.len()
-            || coupling.values.len() != product(&[coupling.radial, coupling.radial])?
-        {
-            return Err(Error::Invalid(
-                "spin-orbit block dimensions must match its radial projectors".into(),
-            ));
-        }
-        let mut indices = ctx.allocate::<usize>(expected.len())?;
-        for (to, e) in indices.as_mut_slice().iter_mut().zip(&expected) {
-            *to = positions[e];
-        }
-        let mut matrix = ctx.allocate::<Complex64>(coupling.values.len())?;
-        for (to, v) in matrix.as_mut_slice().iter_mut().zip(&coupling.values) {
-            *to = Complex64::new(*v, 0.);
-        }
-        out.push(Channel {
-            l,
-            real: false,
-            indices,
-            radial: radial.len(),
-            coupling: matrix,
-        });
-    }
-    Ok(out)
+/// The labels of the crystal's spin-orbit projectors, for [`crate::models::spin_orbit::channels`].
+pub fn labels(projectors: &[Projector]) -> Vec<Label> {
+    projectors
+        .iter()
+        .map(|p| Label { atom: p.atom, l: p.l, m: p.m, index: p.index })
+        .collect()
 }
 
 /// `(k, 2M, 2M)` row-major: `h^{SO}(k)` at the Cartesian `kpoints`, Hermitian. Zero (and still
@@ -112,7 +44,7 @@ pub fn matrices(
     if couplings.is_empty() {
         return Ok(out);
     }
-    let found = channels(ctx, projectors, couplings)?;
+    let found = channels(ctx, &labels(projectors), couplings, false)?;
     let c = projections(ctx, shells, lattice, kpoints, projectors)?;
     let count = projectors.len();
     for k in 0..kpoints.len() {
@@ -176,7 +108,7 @@ pub fn matrix_derivative(
     if couplings.is_empty() {
         return Ok(out);
     }
-    let found = channels(ctx, projectors, couplings)?;
+    let found = channels(ctx, &labels(projectors), couplings, false)?;
     let c = projections(ctx, shells, lattice, &[k], projectors)?;
     let mut moved = projection_slopes(ctx, shells, lattice, &[k], projectors, Some(axis))?;
     for (mu, row) in moved.as_mut_slice().chunks_mut(count).enumerate() {

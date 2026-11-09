@@ -14,14 +14,19 @@
 //!   spin-averaged xc potential (the core is spin-unpolarized: it sees the average, never `v_up`
 //!   alone), `d rho_core / d eps_ab = sum rho_c'(|d|) d_a d_b / |d|` from the analytic slope of
 //!   the cubic the placement samples.
+//! * X-5: a meta-GGA's partial-core kinetic density (the von Weizsaecker `tau` of the same smooth
+//!   core), `dE = dv sum_i vbar_tau,i d tau_core,i` with the spin-averaged `v_tau`, placed and
+//!   differentiated like X-4. The kinetic density of the bands is in the matrix term S-6.
 use super::Tensor;
 use crate::{periodic::invalid, Result};
 
-/// X-1, X-3, X-4, `dE/d eps_ab`.
+/// X-1, X-3, X-4, X-5, `dE/d eps_ab`.
 pub struct Terms {
     pub jacobian: Tensor<f64>,
     pub gradient: Tensor<f64>,
     pub core: Tensor<f64>,
+    /// X-5, zero for a functional without `tau`.
+    pub core_kinetic: Tensor<f64>,
 }
 
 /// X-1: `delta_ab E_xc`.

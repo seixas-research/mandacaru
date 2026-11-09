@@ -54,6 +54,7 @@ fn parity(name: &str) {
 }
 
 #[test]
+#[ignore = "slow: 64 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_generate -- --ignored the_light_sample_equals_the_frozen_datasets"]
 fn the_light_sample_equals_the_frozen_datasets() {
     for name in LIGHT {
         parity(name);
@@ -134,6 +135,7 @@ const PRODUCTION_LDA: [(&str, f64, f64); 3] = [
 ];
 
 #[test]
+#[ignore = "slow: 20 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_generate -- --ignored the_production_path_equals_the_freeze_for_lda_to_the_size_of_the_far_tail"]
 fn the_production_path_equals_the_freeze_for_lda_to_the_size_of_the_far_tail() {
     for (name, sphere_gate, tail_gate) in PRODUCTION_LDA {
         let f = Frozen::open(name);
@@ -184,6 +186,7 @@ fn the_production_path_equals_the_freeze_for_lda_to_the_size_of_the_far_tail() {
 }
 
 #[test]
+#[ignore = "slow: 31 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_generate -- --ignored the_production_path_moves_the_pbe_dataset_by_the_measured_scheme_difference"]
 fn the_production_path_moves_the_pbe_dataset_by_the_measured_scheme_difference() {
     for (name, e1c_bounds) in [("pbe-sr_O", (1e-5, 1e-3)), ("pbe-sr_Cu", (1e-5, 1e-3))] {
         let f = Frozen::open(name);

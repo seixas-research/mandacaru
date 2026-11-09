@@ -98,6 +98,7 @@ fn the_magnetic_spinor_hybrid_stress_matches_the_collinear_reconverged_free_ener
 }
 
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_hybrid_magnetic -- --ignored the_magnetic_spinor_hybrid_stress_does_not_depend_on_the_direction_of_the_moment"]
 fn the_magnetic_spinor_hybrid_stress_does_not_depend_on_the_direction_of_the_moment() {
     let (_, along_z) = run([0., 0., 1.]);
     let (_, generic) = run([1., 2., 2.]);

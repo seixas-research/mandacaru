@@ -18,6 +18,7 @@ use periodic_stress_crystals_support::run::stress_at;
 const ENVELOPE: f64 = 4.5;
 
 #[test]
+#[ignore = "slow: 140 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_crystals_hybrid_complex_k -- --ignored the_scalar_hybrid_stress_at_complex_k_is_within_the_measured_envelope"]
 fn the_scalar_hybrid_stress_at_complex_k_is_within_the_measured_envelope() {
     run_enveloped(
         "si_hse06_tr3",

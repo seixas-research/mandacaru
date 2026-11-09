@@ -473,6 +473,13 @@ impl MolecularIntegrals {
                 "invalid SCF method, occupation, iteration budget or tolerance",
             ));
         }
+        if self.paw_setup.as_ref().is_some_and(|s| s.has_spin_orbit()) {
+            return Err(crate::Error::Unsupported(
+                "Hartree-Fock of a molecule with spin-orbit datasets is not available: the spin-orbit \
+                 term is carried by spinor Kohn-Sham (spinor_kohn_sham) only"
+                    .into(),
+            ));
+        }
         self.eri()?;
         let workspace = ctx.reserve(
             product(&[2 * m, 2 * m, 16, 160])?

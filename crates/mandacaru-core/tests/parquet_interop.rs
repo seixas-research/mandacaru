@@ -654,6 +654,7 @@ fn every_shipped_footer_matches_the_frozen_references() {
 /// slowly, so they check five files (one per library); release builds check
 /// all that are installed.
 #[test]
+#[ignore = "slow: 11 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test parquet_interop -- --ignored every_shipped_file_matches_the_frozen_digests"]
 fn every_shipped_file_matches_the_frozen_digests() {
     let references = json("references.json");
     let ctx = Context::new(Some(1), 2 << 30).unwrap();

@@ -53,11 +53,13 @@ fn projection_identity(g: &Matrix, own_rows: &[bool], own_columns: &[bool]) -> M
 }
 
 #[test]
+#[ignore = "slow: 40 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_pulay_spheres -- --ignored the_projection_gradient_obeys_the_ownership_identity_si"]
 fn the_projection_gradient_obeys_the_ownership_identity_si() {
     projection_identity_of(MOVES[0].0, &MOVES[0].1);
 }
 
 #[test]
+#[ignore = "slow: 64 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_pulay_spheres -- --ignored the_projection_gradient_obeys_the_ownership_identity_al2"]
 fn the_projection_gradient_obeys_the_ownership_identity_al2() {
     projection_identity_of(MOVES[1].0, &MOVES[1].1);
 }
@@ -126,6 +128,7 @@ fn row_trace(g: &Matrix, d: &Matrix, rows: &[bool]) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 53 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_pulay_spheres -- --ignored the_short_range_force_needs_the_sphere_that_moves_with_its_atom"]
 fn the_short_range_force_needs_the_sphere_that_moves_with_its_atom() {
     for name in CASES {
         let ctx = context();

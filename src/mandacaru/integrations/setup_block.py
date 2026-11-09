@@ -90,7 +90,8 @@ def native_setup(driver, atoms, family, options, moments, spinor, time_reversal,
         'grid_shape': list(g.shape),
         'atoms': atoms_spec,
         # The Rust setup reduces the mesh itself: by the operations that keep it, then time
-        # reversal; the whole mesh for a magnetic or a non-time-reversal spinor crystal.
+        # reversal; the whole mesh for a magnetic or a non-time-reversal spinor crystal and for
+        # a hybrid.
         'mesh': {'size': list(map(int, size)), 'gamma': bool(gamma)},
         'functional': driver.xc,
         'precision': driver._precision,

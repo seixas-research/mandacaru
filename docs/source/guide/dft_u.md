@@ -339,7 +339,7 @@ Every unsupported combination raises an explicit error; none silently runs a dif
 | Periodic crystal with `symmetry=True` on a reduced $k$-mesh | Raises `ValueError` ("DFT+U needs the shell occupations symmetrized with the density... use symmetry=False"). Nonzero magnetic moments preserve the full mesh automatically. |
 | Periodic crystal with `xc="hse06"` (screened hybrid) | Raises `NotImplementedError` ("DFT+U is implemented for semilocal functionals only"). |
 | Single precision (`precision="float32"`) | Raises `ValueError` ("precision='float64'"). |
-| Fully relativistic / spin-orbit datasets (`lda-fr`, `pbe-fr`) | Raises `NotImplementedError` ("scalar-relativistic datasets only"). |
+| Periodic crystal on a fully relativistic / spin-orbit dataset (`lda-fr`, `pbe-fr`) | Raises `NotImplementedError` ("scalar-relativistic datasets only"). A molecule on such a dataset runs spinor Kohn–Sham without DFT+U; spinor molecular DFT+U is not implemented. |
 | Isolated molecule (`pbc=False`) | Raises `ValueError` ("needs a periodic cell: DFT+U is implemented for crystals only"). |
 | Basis without PAW datasets (`HAO`, Gaussian STO-3G) | Raises `ValueError` ("hubbard_u needs a PAW-LCAO or UPAW-LCAO basis"). |
 | Element not in system, or channel absent from dataset | Raises `ValueError` naming element and shell. |

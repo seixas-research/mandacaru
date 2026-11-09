@@ -150,9 +150,25 @@ pub fn molecule(
     positions: &[[f64; 3]],
     cell: f64,
     spacing: f64,
+    parts: (Vec<Value>, Vec<usize>, Arrays),
+    basis_kind: &str,
+    shells: &[Shell],
+) -> MolecularIntegrals {
+    molecule_with(ctx, numbers, positions, cell, spacing, parts, basis_kind, shells, &[])
+}
+
+/// [`molecule`] with `extra` metadata keys (for example `("spin_orbit", true)`).
+#[allow(clippy::too_many_arguments)]
+pub fn molecule_with(
+    ctx: &Context,
+    numbers: &[u8],
+    positions: &[[f64; 3]],
+    cell: f64,
+    spacing: f64,
     (species, atoms, mut arrays): (Vec<Value>, Vec<usize>, Arrays),
     basis_kind: &str,
     shells: &[Shell],
+    extra: &[(&str, Value)],
 ) -> MolecularIntegrals {
     let geometry = Geometry::new(
         numbers.to_vec(),
@@ -191,6 +207,10 @@ pub fn molecule(
         "species": species,
         "basis": basis,
     });
+    let mut metadata = metadata;
+    for (key, value) in extra {
+        metadata[*key] = value.clone();
+    }
     build(
         ctx,
         geometry,

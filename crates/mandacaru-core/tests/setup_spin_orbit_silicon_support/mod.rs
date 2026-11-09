@@ -10,7 +10,7 @@ use mandacaru_core::{
         pulay::Matrix,
         shells::{Shell, Shells},
         spheres::Projector,
-        spin_orbit::{matrices, matrix_derivative, Block, Coupling},
+        spin_orbit::{matrices, matrix_derivative, Block},
     },
     Context,
 };
@@ -29,7 +29,7 @@ pub struct Silicon {
     pub shells: Shells,
     pub row_owner: Vec<usize>,
     pub projectors: Vec<Projector>,
-    pub couplings: BTreeMap<(usize, usize), Coupling>,
+    pub couplings: BTreeMap<(usize, usize), mandacaru_core::models::spin_orbit::Coupling>,
 }
 
 pub fn silicon() -> Silicon {

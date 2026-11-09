@@ -18,7 +18,7 @@ use crate::periodic::{
         provider::Operators,
         pulay::Matrix,
         spheres::Projector,
-        spin_orbit::{channels, Coupling},
+        spin_orbit::labels,
     },
     stress_terms::Tensor,
 };
@@ -81,6 +81,27 @@ impl<'a> StrainSetup<'a> {
         Ok(out)
     }
 
+    /// The meta-GGA tangent of a spinor: `sum_a sigma_a x dT_tau^a`, one tangent per Pauli
+    /// channel of `v_tau` (one for a time-reversal crystal, four otherwise), as [`Self::spinor_local`].
+    pub(super) fn spinor_kinetic(&self, k: usize, fields: &StrainFields) -> Result<Tensor<Matrix>> {
+        let channels = fields.kinetic.as_ref().map_or(0, |(blocks, _)| blocks.len());
+        if channels == 0 {
+            return Err(invalid("crystal stress: the meta-GGA term needs the fields' v_tau"));
+        }
+        let mut parts: Vec<Matrices> = Vec::with_capacity(channels);
+        for channel in 0..channels {
+            parts.push(self.scalar_strain(channel, k, Term::KineticDensity, fields)?);
+        }
+        let mut out: Matrices =
+            std::array::from_fn(|_| std::array::from_fn(|_| Matrix::zeros(0, 0)));
+        for (a, row) in out.iter_mut().enumerate() {
+            for (b, to) in row.iter_mut().enumerate() {
+                let channels: Vec<Matrix> = parts.iter().map(|t| t[a][b].clone()).collect();
+                *to = pauli_sum(&channels)?;
+            }
+        }
+        Ok(out)
+    }
     /// Gives a spinor geometry its spin-orbit union projectors (every atom's, with
     /// `Projector::atom` the owner) and the radial couplings `D^SO` per `(atom, l)`. Empty
     /// couplings are a crystal whose spin-orbit matrix is zero (`B = 0`); the projections are still
@@ -88,14 +109,14 @@ impl<'a> StrainSetup<'a> {
     pub fn with_spin_orbit(
         mut self,
         projectors: &'a [Projector],
-        couplings: &BTreeMap<(usize, usize), Coupling>,
+        couplings: &BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>,
     ) -> Result<Self> {
         if !self.layout.request.spinor {
             return Err(invalid(
                 "crystal stress: spin-orbit projectors belong to a spinor request",
             ));
         }
-        let found = channels(self.ctx, projectors, couplings)?;
+        let found = crate::models::spin_orbit::channels(self.ctx, &labels(projectors), couplings, false)?;
         let b = operator(self.ctx, projectors.len(), &found)?;
         let owner = self.layout.row_owner[..self.functions].to_vec();
         let operator = SpinOrbit::new(

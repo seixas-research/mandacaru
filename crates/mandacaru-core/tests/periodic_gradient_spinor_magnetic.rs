@@ -74,6 +74,7 @@ fn largest_gap(a: &[[f64; 3]], b: &[[f64; 3]]) -> f64 {
 }
 
 #[test]
+#[ignore = "slow: 17 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_magnetic -- --ignored the_magnetic_spinor_force_is_the_reconverged_finite_difference"]
 fn the_magnetic_spinor_force_is_the_reconverged_finite_difference() {
     let z = run(Spinor::load(CASE));
     // FIRST: the state is magnetic and canted by the anisotropy: the transverse components of the
@@ -113,6 +114,7 @@ fn the_magnetic_spinor_force_is_the_reconverged_finite_difference() {
 }
 
 #[test]
+#[ignore = "slow: 15 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_magnetic -- --ignored a_rotated_moment_has_the_same_force_and_the_transverse_blocks_matter"]
 fn a_rotated_moment_has_the_same_force_and_the_transverse_blocks_matter() {
     let z = run(Spinor::rotated(CASE, Axis::Z, false));
     let x = run(Spinor::rotated(CASE, Axis::X, false));

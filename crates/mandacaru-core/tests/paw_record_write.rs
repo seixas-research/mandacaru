@@ -98,6 +98,7 @@ fn pb_pbe_fr_rewrites_at_stride_1_bit_for_bit_with_both_codecs() {
 }
 
 #[test]
+#[ignore = "slow: 29 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_record_write -- --ignored the_whole_library_rewrites_at_stride_1_one_file_at_a_time"]
 fn the_whole_library_rewrites_at_stride_1_one_file_at_a_time() {
     let ctx = context();
     let dir = TempDir::new("all");

@@ -65,6 +65,7 @@ fn nan_max(a: f64, b: f64) -> f64 {
 /// with the same numbers in `the_production_pbe_atoms_move_by_the_scheme_difference`, and LDA,
 /// whose schemes differ only in the far tail, equals them through both.
 #[test]
+#[ignore = "slow: 100 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test atom_solver -- --ignored matches_the_frozen_python_atoms"]
 fn matches_the_frozen_python_atoms() {
     let frozen = reference();
     let ctx = context();

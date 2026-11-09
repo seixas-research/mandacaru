@@ -58,10 +58,11 @@
 //!
 //! Atomic units; derivatives and the [`Breakdown`] are `dE/dtau` (the force is the negative);
 //! every contraction is per spin channel times `Layout::degeneracy`. The collinear
-//! scalar-relativistic LDA/PBE/HSE06 case (restricted or collinear spin-polarized) and the spinor
-//! (spin-orbit) LDA/PBE/HSE06 case with float64 data are supported (a spinor hybrid only for the
-//! time-reversal-symmetric crystal [`Crystal`](crate::periodic::Crystal) can build); [`gradient`]
-//! raises `Unsupported` for meta-GGA, rVV10 and float32 requests. Derivative data are requested one k-point at a time and dropped after use.
+//! scalar-relativistic case (restricted or collinear spin-polarized) and the spinor (spin-orbit)
+//! case are supported for LDA, PBE, r2SCAN, their rVV10 forms and HSE06 with float64 data (a
+//! spinor hybrid only for the time-reversal-symmetric crystal
+//! [`Crystal`](crate::periodic::Crystal) can build); [`gradient`] raises `Unsupported` for
+//! float32 requests. Derivative data are requested one k-point at a time and dropped after use.
 //!
 //! # The spinor frame (the contract of a spinor provider)
 //!
@@ -75,8 +76,8 @@
 //! [`Derivatives::spin_orbit_projection`], and [`SpinOrbit::add_k`] contracts them with the
 //! full `2M x 2M` density of the frozen state, once per k-point, in [`pulay::contract`]
 //! (`Breakdown::spin_orbit_rows` / `spin_orbit_columns`). A provider without spin-orbit data
-//! raises `Unsupported`, never a zero term. [`gradient`] differentiates the LDA/PBE/HSE06
-//! spinor; DFT+U, a meta-GGA and float32 raise with their cause. The exact-exchange response of
+//! raises `Unsupported`, never a zero term. [`gradient`] differentiates the spinor of every
+//! supported functional; DFT+U and float32 raise with their cause. The exact-exchange response of
 //! a spinor is in the scalar frame of one spin block ([`exchange`]).
 pub mod core;
 pub mod electrostatic;
@@ -423,20 +424,16 @@ pub fn check_request(request: &Request) -> Result<()> {
             "crystal forces are not available for {what}"
         )))
     };
-    let definition = models::functional(&request.functional)?;
+    // An unknown functional raises here; every known one is differentiated (a meta-GGA through
+    // P6/E6, spinor included; rVV10 through `v_xc`).
+    models::functional(&request.functional)?;
     if request.single_precision {
         return refuse("float32 data");
     }
-    if definition.requires_tau && request.spinor {
-        return refuse(&format!("the spinor meta-GGA {}", definition.name));
-    }
     // rVV10 needs no term of its own: its kernel depends on the positions only through the
     // density, and its partials join the semilocal ones in `v_xc` (`periodic::fields`), which the
-    // Local and core terms contract (`tests/periodic_gradient_xc.rs`). The spinor SCF has no
-    // rVV10 (F6c), so a spinor rVV10 request is refused here as it is there.
-    if definition.nonlocal_b.is_some() && request.spinor {
-        return refuse(&format!("the spinor rVV10 correction of {}", definition.name));
-    }
+    // Local and core terms contract (`tests/periodic_gradient_xc.rs`); for a spinor its partials
+    // sit in the charge channel of the Pauli sum the spinor terms contract.
     Ok(())
 }
 

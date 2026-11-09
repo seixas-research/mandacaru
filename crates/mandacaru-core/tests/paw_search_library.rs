@@ -152,12 +152,14 @@ fn run(set: &str, max_z: u8, clean: bool) -> Vec<String> {
 /// H to Ar: the first construction for most, zero norm deficit for Be, B and Ne, the shorter
 /// local radius for Al and the third-row p block (PBE takes zero deficit for Si and P).
 #[test]
+#[ignore = "slow: 92 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_library -- --ignored search_census_light_lda"]
 fn search_census_light_lda() {
     let mismatches = run("lda-sr", 18, true);
     assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
 
 #[test]
+#[ignore = "slow: 96 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_search_library -- --ignored search_census_light_pbe"]
 fn search_census_light_pbe() {
     let mismatches = run("pbe-sr", 18, true);
     assert!(mismatches.is_empty(), "{mismatches:#?}");

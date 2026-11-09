@@ -15,9 +15,9 @@ use crate::periodic::{
     },
     invalid,
     setup::{
-        pulay::{grid_cross, projection, Matrix},
+        pulay::{grid_cross, projection, tau_cross, Matrix},
         spheres::Projector,
-        spin_orbit::{channels, Coupling},
+        spin_orbit::labels,
     },
 };
 use crate::{Error, Result};
@@ -65,6 +65,28 @@ impl<'a> SetupDerivatives<'a> {
         Ok(out)
     }
 
+    /// P6 for a spinor: the meta-GGA operator of each Pauli channel of `v_tau`
+    /// (`tau_cross`), combined like the local potential's (`pauli_sum`).
+    pub(super) fn spinor_kinetic(&self, k: usize, fields: &Fields) -> Result<[Matrix; 3]> {
+        let (blocks, _) = fields.kinetic.as_ref().ok_or_else(|| {
+            invalid("crystal gradient: the meta-GGA term needs the fields' v_tau")
+        })?;
+        let mut channels = Vec::with_capacity(blocks.len());
+        for v in blocks {
+            channels.push(self.with_samples(k, |s| tau_cross(self.ctx, self.inputs.grid, s, v))?);
+        }
+        let mut out = [
+            Matrix::zeros(0, 0),
+            Matrix::zeros(0, 0),
+            Matrix::zeros(0, 0),
+        ];
+        for (axis, to) in out.iter_mut().enumerate() {
+            let parts: Vec<Matrix> = channels.iter().map(|g| g[axis].clone()).collect();
+            *to = pauli_sum(&parts)?;
+        }
+        Ok(out)
+    }
+
     /// Gives a spinor geometry its spin-orbit union projectors (every atom's, with `Projector::atom`
     /// the owner) and the radial couplings `D^SO` per `(atom, l)`. Empty couplings are a crystal
     /// whose spin-orbit matrix is zero (`B = 0`); the projections are still formed. Refused for a
@@ -72,14 +94,14 @@ impl<'a> SetupDerivatives<'a> {
     pub fn with_spin_orbit(
         mut self,
         projectors: &'a [Projector],
-        couplings: &BTreeMap<(usize, usize), Coupling>,
+        couplings: &BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>,
     ) -> Result<Self> {
         if !self.layout.request.spinor {
             return Err(invalid(
                 "crystal gradient: spin-orbit projectors belong to a spinor request",
             ));
         }
-        let found = channels(self.ctx, projectors, couplings)?;
+        let found = crate::models::spin_orbit::channels(self.ctx, &labels(projectors), couplings, false)?;
         let b = operator(self.ctx, projectors.len(), &found)?;
         let owner = self.layout.row_owner[..self.functions].to_vec();
         let operator = SpinOrbit::new(

@@ -27,11 +27,13 @@
 //! # Terms (a [`Breakdown`] entry each, `g_ab` per entry)
 //!
 //! * [`pulay`]: S-1 overlap (`-W dS`), S-2 kinetic, S-3 local potential, S-4 short-range spheres,
-//!   S-5 projections (through the engine's `Z`).
+//!   S-5 projections (through the engine's `Z`), S-6 a meta-GGA's kinetic-density operator
+//!   (`v_tau` fixed at its nodes, no Jacobian of its own: X-1 holds the `dv` of `E_xc`).
 //! * [`electrostatic`]: E-1 Hartree Jacobian, E-2 kernel, E-3 hats, E-4 ions, E-5 dense sums,
 //!   E-6 short-range ion compensation, E-7 ion constants.
-//! * [`xc`]: X-1 Jacobian, X-3 GGA spectral gradient, X-4 partial core (X-2, the xc potential
-//!   through `rho_i`, is inside S-3).
+//! * [`xc`]: X-1 Jacobian, X-3 GGA spectral gradient, X-4 partial core, X-5 a meta-GGA's
+//!   partial-core kinetic density (X-2, the xc potential through `rho_i`, is inside S-3, and the
+//!   bands' `tau` is inside S-6).
 //! * [`spin_orbit`] (AS-8): SO-1, the spin-orbit union-projector term of a spinor crystal.
 //! * [`hybrid`] (AS-9, AS-10): H-1..H-6, the explicit derivative of the screened exact exchange at
 //!   fixed `D` of a scalar collinear or a spinor hybrid, entered through [`stress_hybrid`] (the
@@ -51,7 +53,8 @@
 //! (`n_up/dn = (n +- |m|)/2`, SO-3): the pointwise rotation holds the node values fixed, and the
 //! spectral gradient strain acts after it. The strain acts on space only (`T (x) I2`).
 //!
-//! [`stress`] raises `Unsupported` for hybrids (they go through [`stress_hybrid`]), meta-GGA, rVV10, float32 and `spins != 1` until their packages; a missing term would give a silently wrong stress, so a
+//! [`stress`] raises `Unsupported` for hybrids (they go through [`stress_hybrid`]), rVV10, float32
+//! and more than two spin channels; a missing term would give a silently wrong stress, so a
 //! provider that cannot supply a term raises, it never returns zero.
 pub mod crystal;
 pub mod electrostatic;
@@ -106,7 +109,7 @@ pub trait Strain {
     fn projection_strain(&self, k: usize) -> Result<Tensor<Matrix>>;
     /// `d M_ab` of one matrix term for `spin` at k-point `k` (`m x m`) with the potentials of
     /// `fields` held fixed. [`Term::Overlap`] and [`Term::Kinetic`] carry the `delta_ab` of their
-    /// `dv`; [`Term::Local`] does not (the node values `rho_i` stay fixed: the `dv` Jacobian of the
+    /// `dv`; [`Term::Local`] and [`Term::KineticDensity`] do not (the node values `rho_i` stay fixed: the `dv` Jacobian of the
     /// charge is [`electrostatic`]'s E-1), [`Term::ShortRange`] is the sum over the spheres.
     fn matrix_strain(
         &self,
@@ -123,7 +126,7 @@ pub trait Strain {
     fn dense(&self) -> Result<Dense>;
     /// E-7.
     fn constants(&self) -> Result<Tensor<f64>>;
-    /// X-1, X-3, X-4.
+    /// X-1, X-3, X-4, X-5.
     fn xc(&self, fields: &Self::Fields) -> Result<xc::Terms>;
 
     /// The spin-orbit operator `B` of a spinor crystal ([`SpinOrbit`]). A provider without
@@ -164,6 +167,10 @@ pub struct Breakdown {
     pub xc_jacobian: Tensor<f64>,
     pub xc_gradient: Tensor<f64>,
     pub xc_core: Tensor<f64>,
+    /// S-6, zero for a functional without `tau`.
+    pub kinetic_density: Tensor<f64>,
+    /// X-5, zero for a functional without `tau`.
+    pub xc_core_kinetic: Tensor<f64>,
     /// SO-1, zero for a scalar crystal.
     pub spin_orbit: Tensor<f64>,
     /// H-1..H-6, the explicit derivative of the screened exact exchange at fixed `D` (AS-9): the
@@ -194,12 +201,14 @@ impl Breakdown {
             &mut self.xc_core,
             &mut self.spin_orbit,
             &mut self.exchange,
+            &mut self.kinetic_density,
+            &mut self.xc_core_kinetic,
         ] {
             group.tensor(term);
         }
     }
 
-    pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 17] {
+    pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 19] {
         [
             ("overlap", &self.overlap),
             ("kinetic", &self.kinetic),
@@ -218,6 +227,8 @@ impl Breakdown {
             ("xc_core", &self.xc_core),
             ("spin_orbit", &self.spin_orbit),
             ("exchange", &self.exchange),
+            ("kinetic_density", &self.kinetic_density),
+            ("xc_core_kinetic", &self.xc_core_kinetic),
         ]
     }
 
@@ -303,9 +314,6 @@ fn check(layout: &Layout, hybrid: bool) -> Result<()> {
     }
     if request.single_precision {
         return refuse("float32 data");
-    }
-    if definition.requires_tau {
-        return refuse(&format!("the meta-GGA {}", definition.name));
     }
     if definition.nonlocal_b.is_some() {
         return refuse(&format!("the rVV10 correction of {}", definition.name));
@@ -405,6 +413,8 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Breakdow
         xc_jacobian: xc.jacobian,
         xc_gradient: xc.gradient,
         xc_core: xc.core,
+        kinetic_density: matrix.kinetic_density,
+        xc_core_kinetic: xc.core_kinetic,
         spin_orbit: matrix.spin_orbit,
         exchange: [[0.; 3]; 3],
         exchange_parts: None,

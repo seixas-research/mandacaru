@@ -134,6 +134,7 @@ fn every_term_of_the_closed_shell_gradient_has_its_own_oracle() {
     assert_eq!(ctx.memory_used(), 0);
 }
 #[test]
+#[ignore = "slow: 11 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_terms -- --ignored every_term_of_the_open_shell_gradient_has_its_own_oracle"]
 fn every_term_of_the_open_shell_gradient_has_its_own_oracle() {
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     {

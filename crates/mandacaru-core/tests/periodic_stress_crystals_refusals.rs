@@ -1,5 +1,5 @@
 //! AS-6 refusals: what the crystal stress does not differentiate raises with the cause, taken from
-//! the crystal itself (a hybrid, a spinor without its spin-orbit projectors, float32, a meta-GGA, rVV10, spin polarization, DFT+U, a
+//! the crystal itself (a hybrid, a spinor without its spin-orbit projectors, float32, rVV10, more than two spin channels, DFT+U, a
 //! k mesh reduced by space-group symmetry), and a setup that is not the crystal's is refused (the
 //! cell, the atom centers, the weights, the reference). No refusal reaches an SCF or a stress:
 //! nothing is silently differentiated as another calculation. Needs `MANDACARU_PAW_PATH`.
@@ -49,7 +49,6 @@ fn what_is_not_differentiated_raises_with_the_cause() {
     let original = data.crystal.functional.clone();
     for (functional, word) in [
         ("hse06", "hybrid"),
-        ("r2scan", "meta-GGA"),
         ("pbe+rvv10", "rVV10"),
     ] {
         data.crystal.functional = functional.to_string();

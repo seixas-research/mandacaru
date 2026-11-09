@@ -81,34 +81,52 @@ fn sphere(
     }
     Ok(())
 }
-/// The quadrature of the projections of one atom, offsets from its center: the
-/// projector values of every channel's sphere, already carrying the quadrature
-/// weight, one entry per projector of the atom.
+/// One sphere of projectors about an atom: its radius and, per projector, the column it fills,
+/// its radial table, `l` and `m` (real harmonics).
+struct ProjectorSphere<'a> {
+    radius: f64,
+    entries: Vec<(usize, &'a Cubic, usize, i32)>,
+}
+
+/// The scalar PAW projectors of an atom as spheres: one per channel, of radius
+/// `max(channel radius, local radius)`, in channel order.
+fn scalar_spheres<'a>(species: &'a Species, terms: &onecenter::AtomTerms) -> Vec<ProjectorSphere<'a>> {
+    species
+        .channels
+        .iter()
+        .enumerate()
+        .map(|(index, ch)| ProjectorSphere {
+            radius: ch.radius.max(species.local_radius),
+            entries: terms
+                .projectors
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.channel == index)
+                .map(|(b, p)| (b, &*ch.projectors[p.radial], p.l, p.m))
+                .collect(),
+        })
+        .collect()
+}
+
+/// The quadrature of the projections of one atom, offsets from its center: the projector values
+/// of every sphere, already carrying the quadrature weight, one entry per projector (`columns`).
 fn projection_points(
-    species: &Species,
-    terms: &onecenter::AtomTerms,
+    spheres: &[ProjectorSphere<'_>],
+    columns: usize,
     mut visit: impl FnMut([f64; 3], &[f64]) -> Result<()>,
 ) -> Result<()> {
-    let mut target = vec![0.; terms.projectors.len()];
-    for (index, ch) in species.channels.iter().enumerate() {
+    let mut target = vec![0.; columns];
+    for sphere_entry in spheres {
         sphere(
-            ch.radius.max(species.local_radius),
+            sphere_entry.radius,
             0.,
             PROJECTION[0],
             PROJECTION[1],
             PROJECTION[2],
             |offset, r, weight| {
                 target.fill(0.);
-                for (b, p) in terms
-                    .projectors
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| p.channel == index)
-                {
-                    let value = ch.projectors[p.radial].value_slope(r).0
-                        * harmonic(p.l, p.m, offset)
-                        * weight;
-                    target[b] = value;
+                for &(b, radial, l, m) in &sphere_entry.entries {
+                    target[b] = radial.value_slope(r).0 * harmonic(l, m, offset) * weight;
                 }
                 visit(offset, &target)
             },
@@ -116,6 +134,7 @@ fn projection_points(
     }
     Ok(())
 }
+
 fn projection(
     ctx: &Context,
     basis: &Basis,
@@ -123,8 +142,20 @@ fn projection(
     terms: &onecenter::AtomTerms,
     center: [f64; 3],
 ) -> Result<DMatrix<f64>> {
+    project_spheres(ctx, basis, &scalar_spheres(species, terms), terms.projectors.len(), center)
+}
+
+/// `<chi_mu | p_b>` of every basis function and every projector of `spheres` about `center`
+/// (`m x columns`), by the spheres' quadrature.
+fn project_spheres(
+    ctx: &Context,
+    basis: &Basis,
+    spheres: &[ProjectorSphere<'_>],
+    columns: usize,
+    center: [f64; 3],
+) -> Result<DMatrix<f64>> {
     let m = basis.orbitals.len();
-    let p = terms.projectors.len();
+    let p = columns;
     let _memory = ctx.reserve(
         product(&[m, p, 8, 2])?
             .checked_add(product(&[m, 8, 2])?)
@@ -132,11 +163,7 @@ fn projection(
     )?;
     let mut accumulator = PointAccumulator::new(ctx, m, p)?;
     let mut phi = vec![0.; m];
-    let max_radius = species
-        .channels
-        .iter()
-        .map(|ch| ch.radius.max(species.local_radius))
-        .fold(0.0f64, f64::max);
+    let max_radius = spheres.iter().map(|s| s.radius).fold(0.0f64, f64::max);
     let active_orbitals: Vec<(usize, f64)> = basis
         .orbitals
         .iter()
@@ -156,7 +183,7 @@ fn projection(
             }
         })
         .collect();
-    projection_points(species, terms, |offset, target| {
+    projection_points(spheres, p, |offset, target| {
         if target.iter().all(|&t| t == 0.) {
             return Ok(());
         }
@@ -176,6 +203,76 @@ fn projection(
     let values = accumulator.finish()?;
     Ok(DMatrix::from_column_slice(m, p, values.as_slice()))
 }
+
+/// `G[mu, b] = <grad chi_mu | p_b>` (one `m x columns` matrix per axis) of every basis function
+/// and every projector of `spheres` about `center`, on the spheres' quadrature: the derivative the
+/// ownership identity turns into `dC / dR` (`gradient/projections.rs`).
+fn project_sphere_gradients(
+    ctx: &Context,
+    basis: &Basis,
+    spheres: &[ProjectorSphere<'_>],
+    columns: usize,
+    center: [f64; 3],
+) -> Result<[DMatrix<f64>; 3]> {
+    let m = basis.orbitals.len();
+    let _memory = ctx.reserve(product(&[m, columns, 8, 3])?)?;
+    let mut out = [(); 3].map(|_| DMatrix::<f64>::zeros(m, columns));
+    let max_radius = spheres.iter().map(|s| s.radius).fold(0.0f64, f64::max);
+    let active: Vec<(usize, f64)> = basis
+        .orbitals
+        .iter()
+        .enumerate()
+        .filter_map(|(i, orbital)| {
+            let r_cut = match &orbital.radial {
+                crate::basis::Radial::Tabulated(table) => {
+                    *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
+                }
+                _ => f64::INFINITY,
+            };
+            (distance(center, orbital.center) <= max_radius + r_cut)
+                .then_some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+        })
+        .collect();
+    projection_points(spheres, columns, |offset, target| {
+        let point: [f64; 3] = std::array::from_fn(|i| center[i] + offset[i]);
+        for &(i, support2) in &active {
+            let orbital = &basis.orbitals[i];
+            let r2 = (0..3).map(|k| (point[k] - orbital.center[k]).powi(2)).sum::<f64>();
+            if r2 > support2 {
+                continue;
+            }
+            let gradient = orbital.gradient(point);
+            for (b, &t) in target.iter().enumerate() {
+                if t != 0. {
+                    for axis in 0..3 {
+                        out[axis][(i, b)] += gradient[axis] * t;
+                    }
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// The spin-orbit projectors of one atom as spheres, with their labels in column order
+/// (`l` outer, then `m = -l..l`, then radial index): the layout `models::spin_orbit::channels`
+/// reads.
+fn spin_orbit_spheres(species: &Species, atom: usize) -> (Vec<ProjectorSphere<'_>>, Vec<crate::models::spin_orbit::Label>) {
+    let (mut spheres, mut labels) = (Vec::new(), Vec::new());
+    for channel in &species.spin_orbit {
+        let mut entries = Vec::new();
+        for m in -(channel.l as i32)..=channel.l as i32 {
+            for (index, radial) in channel.radials.iter().enumerate() {
+                entries.push((labels.len(), radial, channel.l, m));
+                labels.push(crate::models::spin_orbit::Label { atom, l: channel.l, m, index });
+            }
+        }
+        spheres.push(ProjectorSphere { radius: channel.radius, entries });
+    }
+    (spheres, labels)
+}
+
 /// Radius of the sphere in which the short-range local potential of a species
 /// is integrated: the Gaussian-filtered compensation tail, the dataset's local
 /// radius or the radius past which its potential is its long-range tail.
@@ -203,6 +300,162 @@ pub struct Setup {
     /// The species-level terms of a screened hybrid, built once per screening.
     screened: std::sync::Mutex<Vec<(f64, Arc<Vec<ScreenedAtom>>)>>,
     hubbard: Option<crate::models::hubbard_request::Request>,
+}
+
+impl Setup {
+    /// The explicit spin-orbit term of the gradient, `dE_SO / dR_X = Re tr(D_ao dh^SO / dR_X)` per
+    /// atom and axis at a fixed AO-frame spinor density `d_ao` (`2m x 2m`). `h^SO = C K C^+`
+    /// ([`Self::spin_orbit`]) changes through its projections only, with the ownership identity
+    /// `dC[mu, p] / dR_X = (delta_{X, atom(p)} - delta_{X, atom(mu)}) G[mu, p]`,
+    /// `G = <grad chi_mu | p>`, so `d tr(D h) = 2 Re tr(D dC K C^+)`. The change of the orthonormal
+    /// frame (the overlap) is the overlap term's, with `W` built from the Fock that holds `h^SO`.
+    pub fn spin_orbit_gradient(
+        &self,
+        ctx: &Context,
+        positions: &[[f64; 3]],
+        d_ao: &DMatrix<num_complex::Complex64>,
+    ) -> Result<Vec<[f64; 3]>> {
+        use crate::models::spin_orbit::{channels, pair, Projectors};
+        use num_complex::Complex64 as C64;
+        let (m, atoms) = (self.basis.orbitals.len(), self.atoms.len());
+        if positions.len() != atoms || d_ao.shape() != (2 * m, 2 * m) {
+            return Err(invalid("one position per atom and a 2m x 2m AO-frame spinor density"));
+        }
+        let basis = self.basis_at(ctx, positions)?;
+        let mut out = vec![[0.; 3]; atoms];
+        let (mut values, mut slopes, mut labels, mut owners, mut couplings) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
+        for (atom, &s) in self.atoms.iter().enumerate() {
+            let species = &self.species[s];
+            if species.spin_orbit.is_empty() {
+                continue;
+            }
+            let (spheres, own) = spin_orbit_spheres(species, atom);
+            values.push(project_spheres(ctx, &basis, &spheres, own.len(), positions[atom])?);
+            slopes.push(project_sphere_gradients(ctx, &basis, &spheres, own.len(), positions[atom])?);
+            owners.extend(std::iter::repeat_n(atom, own.len()));
+            labels.extend(own);
+            for channel in &species.spin_orbit {
+                couplings.insert((atom, channel.l), channel.coupling.clone());
+            }
+        }
+        if labels.is_empty() {
+            return Ok(out);
+        }
+        let count = labels.len();
+        let stack = |blocks: &[DMatrix<f64>]| -> Vec<C64> {
+            let mut c = vec![C64::new(0., 0.); m * count];
+            let mut column = 0;
+            for block in blocks {
+                for j in 0..block.ncols() {
+                    for i in 0..m {
+                        c[i * count + column + j] = C64::new(block[(i, j)], 0.);
+                    }
+                }
+                column += block.ncols();
+            }
+            c
+        };
+        let c = stack(&values);
+        let found = channels(ctx, &labels, &couplings, true)?;
+        let row_owner: Vec<usize> = basis.orbitals.iter().map(|orbital| orbital.atom).collect();
+        for axis in 0..3 {
+            let g: Vec<DMatrix<f64>> = slopes.iter().map(|s| s[axis].clone()).collect();
+            let g = stack(&g);
+            for x in 0..atoms {
+                // dC_X = (columns of X's projectors) G - (rows of X's functions) G.
+                let mut dc = vec![C64::new(0., 0.); m * count];
+                for mu in 0..m {
+                    for p in 0..count {
+                        let sign = f64::from(u8::from(owners[p] == x)) - f64::from(u8::from(row_owner[mu] == x));
+                        if sign != 0. {
+                            dc[mu * count + p] = g[mu * count + p] * sign;
+                        }
+                    }
+                }
+                if dc.iter().all(|v| *v == C64::new(0., 0.)) {
+                    continue;
+                }
+                let x_matrix = pair(
+                    ctx,
+                    Projectors { left: &dc, right: &c, rows: m, columns: m, count },
+                    &found,
+                    false,
+                )?;
+                let x_matrix = DMatrix::from_row_slice(2 * m, 2 * m, x_matrix.as_slice());
+                out[x][axis] = 2. * (d_ao * x_matrix).trace().re;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The setup's basis with every function on its atom at `positions`. A setup is shared by
+    /// every geometry continued from it (`at_geometry`), so its stored `basis` keeps the centers of
+    /// the geometry it was built at; a geometry-dependent term must place the functions itself.
+    fn basis_at(&self, ctx: &Context, positions: &[[f64; 3]]) -> Result<Basis> {
+        let mut orbitals = self.basis.orbitals.clone();
+        for orbital in &mut orbitals {
+            orbital.center = positions[orbital.atom];
+        }
+        Basis::from_orbitals(ctx, orbitals)
+    }
+
+    /// Whether any species carries a spin-orbit term (only spinor Kohn-Sham can hold it).
+    pub fn has_spin_orbit(&self) -> bool {
+        self.species.iter().any(|s| !s.spin_orbit.is_empty())
+    }
+
+    /// The PAW spin-orbit term of the molecule at `positions`, `h^SO` (`2m x 2m`, alpha block
+    /// first) in the basis of the setup's functions: `models::spin_orbit::pair` on the projections
+    /// of the basis on every atom's spin-orbit projectors, real harmonics. `None` when no species
+    /// carries a spin-orbit term (a scalar-relativistic molecule, or one built without spin-orbit).
+    pub fn spin_orbit(
+        &self,
+        ctx: &Context,
+        positions: &[[f64; 3]],
+    ) -> Result<Option<DMatrix<num_complex::Complex64>>> {
+        use crate::models::spin_orbit::{channels, pair, Projectors};
+        if positions.len() != self.atoms.len() {
+            return Err(invalid("one position per atom of the setup"));
+        }
+        let m = self.basis.orbitals.len();
+        let basis = self.basis_at(ctx, positions)?;
+        let (mut blocks, mut labels, mut couplings) = (Vec::new(), Vec::new(), BTreeMap::new());
+        for (atom, &s) in self.atoms.iter().enumerate() {
+            let species = &self.species[s];
+            if species.spin_orbit.is_empty() {
+                continue;
+            }
+            let (spheres, own) = spin_orbit_spheres(species, atom);
+            blocks.push(project_spheres(ctx, &basis, &spheres, own.len(), positions[atom])?);
+            labels.extend(own);
+            for channel in &species.spin_orbit {
+                couplings.insert((atom, channel.l), channel.coupling.clone());
+            }
+        }
+        if labels.is_empty() {
+            return Ok(None);
+        }
+        let count = labels.len();
+        let mut c = ctx.allocate::<num_complex::Complex64>(product(&[m, count])?)?;
+        let mut column = 0;
+        for block in &blocks {
+            for j in 0..block.ncols() {
+                for i in 0..m {
+                    c.as_mut_slice()[i * count + column + j] = num_complex::Complex64::new(block[(i, j)], 0.);
+                }
+            }
+            column += block.ncols();
+        }
+        let found = channels(ctx, &labels, &couplings, true)?;
+        let h = pair(
+            ctx,
+            Projectors { left: c.as_slice(), right: c.as_slice(), rows: m, columns: m, count },
+            &found,
+            true,
+        )?;
+        Ok(Some(DMatrix::from_row_slice(2 * m, 2 * m, h.as_slice())))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -235,6 +488,9 @@ pub fn build(
         _ => return Err(invalid("PAW projector basis must be raw or dual")),
     };
     let allow_heavy_dft = metadata.get("allow_heavy_dft").and_then(|v| v.as_bool()).unwrap_or(false);
+    // A molecule for spinor Kohn-Sham keeps its datasets' spin-orbit terms; every other one refuses
+    // them (`Species::from_dataset`).
+    let allow_spin_orbit = metadata.get("spin_orbit").and_then(|v| v.as_bool()).unwrap_or(false);
     let hubbard = match metadata.get("hubbard") {
         Some(serde_json::Value::String(s)) => Some(crate::models::hubbard_request::Request::parse(s)?),
         _ => None,
@@ -247,7 +503,7 @@ pub fn build(
             let allow_heavy = allow_heavy_dft || s.get("allow_heavy_dft").and_then(|v| v.as_bool()).unwrap_or(false);
             if let Some(file) = s.get("file").and_then(|f| f.as_str()) {
                 let ds = crate::paw::record::PawDataset::read(ctx, std::path::Path::new(file))?;
-                Species::from_dataset(ctx, &ds, raw, false, allow_heavy)
+                Species::from_dataset(ctx, &ds, raw, allow_spin_orbit, allow_heavy)
             } else {
                 Species::parse_with_options(ctx, s, &mut arrays, raw, false, allow_heavy)
             }
@@ -347,11 +603,7 @@ impl Setup {
                 "PAW setup needs the same isolated atomic composition",
             ));
         }
-        let mut orbitals = self.basis.orbitals.clone();
-        for orbital in &mut orbitals {
-            orbital.center = geometry.positions()[orbital.atom];
-        }
-        let basis = Basis::from_orbitals(ctx, orbitals)?;
+        let basis = self.basis_at(ctx, geometry.positions())?;
         let species = &self.species;
         let atoms = &self.atoms;
         let species_terms = &self.species_terms;

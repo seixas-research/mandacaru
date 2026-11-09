@@ -73,14 +73,14 @@ def build(driver, geometry):
         species=[],
         basis=[],
         allow_heavy_dft=(driver.method == "dft"),
+        spin_orbit=any(species[symbol].has_spin_orbit for symbol in unique),
         **({"hubbard": driver._hubbard_u} if getattr(driver, "_hubbard_u", None) is not None else {}),
     )
+    # A spin-orbit dataset keeps its spin-orbit term for spinor Kohn-Sham only.
+    if metadata["spin_orbit"] and driver.method != "dft":
+        raise NotImplementedError("a molecule with a spin-orbit dataset needs method='dft' (spinor Kohn-Sham)")
     for symbol in unique:
         dataset = species[symbol]
-        if dataset.has_spin_orbit:
-            raise NotImplementedError(
-                "native molecular PAW spin-orbit projector terms are not yet implemented"
-            )
         if getattr(dataset, "source", None) is not None:
             metadata["species"].append(
                 dict(file=str(dataset.source), allow_heavy_dft=(driver.method == "dft"))

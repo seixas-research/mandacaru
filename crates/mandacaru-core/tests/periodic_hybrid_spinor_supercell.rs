@@ -15,6 +15,7 @@ use periodic_hybrid_spinor_support::*;
 const GATE_HA: f64 = 1e-11;
 
 #[test]
+#[ignore = "slow: 16 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_spinor_supercell -- --ignored the_four_atom_mesh_equals_the_eight_atom_gamma_hybrid"]
 fn the_four_atom_mesh_equals_the_eight_atom_gamma_hybrid() {
     for exxdiv in [NONE, GB] {
         let options = Options {

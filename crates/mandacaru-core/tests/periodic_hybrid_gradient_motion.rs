@@ -150,6 +150,7 @@ fn the_rust_setup_reproduces_the_snapshots_samples_and_projections() {
 }
 
 #[test]
+#[ignore = "slow: 64 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_gradient_motion -- --ignored the_explicit_terms_and_the_chain_equal_the_energy_slope_of_the_displaced_crystal"]
 fn the_explicit_terms_and_the_chain_equal_the_energy_slope_of_the_displaced_crystal() {
     let r = reference();
     let (bra, ket, phase) = terms(r);
@@ -180,6 +181,7 @@ fn the_explicit_terms_and_the_chain_equal_the_energy_slope_of_the_displaced_crys
 }
 
 #[test]
+#[ignore = "slow: 64 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_gradient_motion -- --ignored a_wrong_chain_misses_the_energy_slope_by_far_more_than_the_gate"]
 fn a_wrong_chain_misses_the_energy_slope_by_far_more_than_the_gate() {
     let r = reference();
     let (bra, ket, phase) = terms(r);

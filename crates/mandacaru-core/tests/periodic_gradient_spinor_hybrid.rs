@@ -40,6 +40,7 @@ fn chain(rows: &[[f64; 3]], columns: &[[f64; 3]]) -> Vec<[f64; 3]> {
 }
 
 #[test]
+#[ignore = "slow: 63 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_hybrid -- --ignored si_hse06_fr_force_is_the_reconverged_finite_difference"]
 fn si_hse06_fr_force_is_the_reconverged_finite_difference() {
     let start = std::time::Instant::now();
     let spinor = Spinor::load(CASE);

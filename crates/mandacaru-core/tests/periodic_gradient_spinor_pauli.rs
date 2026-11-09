@@ -2,18 +2,18 @@
 //!
 //! The local potential of a non-collinear spinor is `sum_a sigma_a x V^a`; its force contracts the
 //! row-center derivatives `G^a` with the spatial combinations `component_a(D)` of the spinor
-//! density (`periodic::spinor::component`, the definition `spinor::density` scatters the four
+//! density (`models::noncollinear::component`, the definition `spinor::density` scatters the four
 //! fields with). `gradient::spinor::pauli_sum` is the block assembly the provider hands the
 //! engine, so `Re tr[D pauli_sum(G)]` must equal `sum_a Re tr[component_a(D) G^a]` for ANY
 //! Hermitian `D` and ANY `G^a`: here random ones with every spin block populated, so a wrong
 //! channel, a transposed block or a dropped transverse block is a large miss.
+use mandacaru_core::models::noncollinear::component;
 use mandacaru_core::{
     periodic::{
         gradient::{
             spinor::{doubled, doubled_layout, pauli_sum},
             Layout, Matrix, Request,
         },
-        spinor::component,
     },
     quantum::C64,
 };

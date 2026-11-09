@@ -44,6 +44,7 @@ const DENSE_STEP: f64 = 2e-5;
 const ENERGY_GATE: f64 = 1e-10;
 
 #[test]
+#[ignore = "slow: 32 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_crystal -- --ignored the_stress_of_a_converged_lih_state"]
 fn the_stress_of_a_converged_lih_state() {
     let mut data = periodic_gradient_crystals_support::Data::load("lih");
     // The oracle tolerances of the freeze are 1e-11 Ha and 1e-9 in the density; the stress of a
@@ -401,10 +402,10 @@ fn the_stress_of_a_converged_lih_state() {
     // A stress without any one of its terms misses the whole functional.
     for (name, term) in analytic.breakdown.terms() {
         if periodic_stress_support::gates::peak(term) == 0. {
-            // The local functional has no gradient term, a scalar semilocal crystal no spin-orbit and
-            // no exchange term: nothing to remove.
+            // The local functional has no gradient term, a scalar semilocal crystal no spin-orbit,
+            // exchange or meta-GGA term: nothing to remove.
             assert!(
-                matches!(name, "xc_gradient" | "spin_orbit" | "exchange"),
+                matches!(name, "xc_gradient" | "spin_orbit" | "exchange" | "kinetic_density" | "xc_core_kinetic"),
                 "{name}"
             );
             continue;

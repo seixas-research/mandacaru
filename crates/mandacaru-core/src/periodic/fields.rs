@@ -118,7 +118,15 @@ pub(super) fn initial_kinetic_density(
                 * vectors.adjoint()
         })
         .collect();
-    kinetic_density(c, &matrices)
+    let scalar = scalar_kinetic_density(c, &matrices)?;
+    if !c.spinor || c.time_reversal {
+        return Ok(scalar);
+    }
+    // A magnetic spinor starts from the unpolarized core-Hamiltonian tau in the charge channel.
+    let n = c.grid.index.points();
+    let mut out = c.context.allocate::<f64>(c.field_channels() * n)?;
+    out.as_mut_slice()[..n].copy_from_slice(scalar.as_slice());
+    Ok(out)
 }
 
 pub struct Terms {
@@ -334,7 +342,61 @@ fn orbital_gradient(
     Ok(gradient)
 }
 
+/// `tau` of the density matrices, one block per field channel: the spin channels of a collinear
+/// crystal, or for a spinor the Pauli channels `(tau_0, tau_x, tau_y, tau_z)` (only `tau_0` with
+/// time reversal), in the layout of [`super::spinor::density`].
 pub fn kinetic_density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<Buffer<f64>> {
+    if c.spinor {
+        return spinor_kinetic_density(c, matrices);
+    }
+    scalar_kinetic_density(c, matrices)
+}
+
+/// The spinor kinetic density: `tau_a = 1/2 sum_k w_k sum_axis (d chi)^+ D_a (d chi)` with
+/// `D_a = models::noncollinear::component(D_k, m, a)`, the components [`super::spinor::density`] builds the
+/// charge and magnetization from, so `tau` and the density share one convention. Like the spinor
+/// density, a time-reversal crystal keeps the symmetrized charge channel only, and a magnetic one
+/// is not symmetrized.
+fn spinor_kinetic_density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<Buffer<f64>> {
+    if matrices.len() != c.points.len() {
+        return Err(invalid("a spinor kinetic density needs one matrix per k-point"));
+    }
+    let n = c.grid.index.points();
+    let channels = c.field_channels();
+    let mut raw = c.context.allocate::<f64>(channels * n)?;
+    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+    for (k, data) in c.points.iter().enumerate() {
+        let matrix = matrices[k].matrix(&c.context)?;
+        if matrix.shape() != (2 * c.m, 2 * c.m) {
+            return Err(invalid("spinor matrix dimensions disagree with the basis"));
+        }
+        let symbols = reciprocal::bloch(&c.context, &c.grid, data.k)?;
+        for axis in 0..3 {
+            let gradient = orbital_gradient(c, data, axis, &symbols, &mut fft)?;
+            for a in 0..channels {
+                let d = crate::models::noncollinear::component(&matrix, c.m, a);
+                let density = hermitian_density(&c.context, gradient.as_slice(), &d, n)?;
+                for i in 0..n {
+                    raw.as_mut_slice()[a * n + i] += 0.5 * data.weight * density.as_slice()[i];
+                }
+            }
+        }
+    }
+    if c.time_reversal {
+        let mut charge = c.context.allocate::<f64>(n)?;
+        sym_field(c, &raw.as_slice()[..n], charge.as_mut_slice());
+        for value in charge.as_mut_slice() {
+            *value = value.max(0.);
+        }
+        return Ok(charge);
+    }
+    for value in &mut raw.as_mut_slice()[..n] {
+        *value = value.max(0.);
+    }
+    Ok(raw)
+}
+
+fn scalar_kinetic_density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<Buffer<f64>> {
     if matrices.len() != c.spins * c.points.len() {
         return Err(invalid(
             "kinetic density needs a matrix for each spin and k-point",

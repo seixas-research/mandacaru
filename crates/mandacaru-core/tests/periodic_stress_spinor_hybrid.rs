@@ -18,12 +18,14 @@ use periodic_stress_spinor_hybrid_support::rig;
 const STEP: f64 = 2.5e-6;
 
 #[test]
+#[ignore = "slow: 29 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_hybrid -- --ignored the_spinor_exchange_strain_of_lih_matches_the_difference_with_no_divergence_treatment"]
 fn the_spinor_exchange_strain_of_lih_matches_the_difference_with_no_divergence_treatment() {
     let r = rig("lih_hse06", ExxDivTreatment::None, false);
     check_rig(r, "lih_hse06 spinor", STEP);
 }
 
 #[test]
+#[ignore = "slow: 29 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_hybrid -- --ignored the_spinor_exchange_strain_of_lih_matches_the_difference_with_gygi_baldereschi"]
 fn the_spinor_exchange_strain_of_lih_matches_the_difference_with_gygi_baldereschi() {
     let r = rig("lih_hse06", ExxDivTreatment::GygiBaldereschi, false);
     check_rig(r, "lih_hse06 spinor", STEP);

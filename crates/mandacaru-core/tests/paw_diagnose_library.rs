@@ -291,6 +291,7 @@ fn sweep(sets: &[&str]) {
 }
 
 #[test]
+#[ignore = "slow: 19 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_diagnose_library -- --ignored a_stratified_sample_of_the_library_diagnoses_to_its_stored_defects"]
 fn a_stratified_sample_of_the_library_diagnoses_to_its_stored_defects() {
     // light elements in the four sets that a default run can afford (the heavy atoms and the
     // flagged lanthanides are in the ignored sweep)

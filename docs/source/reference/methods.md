@@ -33,8 +33,14 @@ or `execute_circuits=True`). Otherwise it raises `PropertyNotImplementedError` o
 - All-electron HF and Kohn-Sham: analytic stationary forces on the frozen grid.
 - PAW-LCAO RHF, UHF and semilocal Kohn-Sham (`lda`, `pbe`, `r2scan`): the force is
   a Richardson difference of the total energy at fixed orbital-frame densities.
-  GHF, rVV10 functionals, `precision="float32"` and an unconverged state
-  raise.
+  Hartree-Fock GHF, rVV10 functionals, `precision="float32"` and an unconverged
+  state raise.
+- PAW-LCAO `dft` on a spin-orbit dataset (`paw_dataset="lda-fr"` or `"pbe-fr"`):
+  spinor Kohn-Sham with analytic forces in Rust for `lda`, `pbe`, `pbe+rvv10`,
+  `r2scan` and `hse06`. A molecule on such a dataset runs only `dft`: every other
+  method raises `NotImplementedError` ("a molecule with a spin-orbit dataset
+  needs method='dft' (spinor Kohn-Sham)"). Its stress raises
+  `PropertyNotImplementedError`, and `hubbard_u` raises.
 - The quantum methods (`vqe`, `adapt-vqe`, `mcas-vqe`, `valqa`): spin-summed
   reduced density matrices of the variational state contract displaced reduced
   Hamiltonians. They need the local state vector; on a circuit device

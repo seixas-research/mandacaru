@@ -9,6 +9,7 @@ use mandacaru_core::periodic::gradient::gradient;
 use periodic_gradient_crystals_support::{gates::*, *};
 
 #[test]
+#[ignore = "slow: 81 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_crystals_pbe -- --ignored si_pbe_force_is_the_reconverged_finite_difference"]
 fn si_pbe_force_is_the_reconverged_finite_difference() {
     let data = Data::load("si_pbe");
     let result = data.solve();

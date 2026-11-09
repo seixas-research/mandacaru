@@ -123,7 +123,7 @@ fn spinor_xc_is_the_derivative_in_all_four_density_components() {
         for functional in ["lda", "pbe"] {
             c.functional = functional.into();
             let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
-            let terms = spinor::exchange_correlation(&c, &mut fft, &rho).unwrap();
+            let terms = spinor::exchange_correlation(&c, &mut fft, &rho, None).unwrap();
             for axis in 0..4 {
                 let energy = |sign: f64| {
                     let mut shifted = rho.clone();
@@ -131,7 +131,7 @@ fn spinor_xc_is_the_derivative_in_all_four_density_components() {
                         shifted[axis * n + k] += sign * 1e-5 * direction[k];
                     }
                     let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
-                    spinor::exchange_correlation(&c, &mut fft, &shifted)
+                    spinor::exchange_correlation(&c, &mut fft, &shifted, None)
                         .unwrap()
                         .energy
                 };
@@ -143,6 +143,61 @@ fn spinor_xc_is_the_derivative_in_all_four_density_components() {
                     (fd - analytic).abs() < 2e-9,
                     "{functional}, component {axis}: {fd} vs {analytic}"
                 );
+            }
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+/// F5c: the spinor meta-GGA in the local spin frame is the derivative of its energy in all four
+/// density components (which includes the frame term: `tau_up/dn` depend on `m_hat`) and in all
+/// four kinetic-density components.
+#[test]
+fn spinor_meta_gga_xc_is_the_derivative_in_every_density_and_kinetic_component() {
+    let ctx = Context::new(Some(1), 32 << 20).unwrap();
+    {
+        let mut c = Crystal::from_json(&ctx, &source(true, 0.)).unwrap();
+        let n = c.grid.index.points();
+        for a in 0..3 {
+            for k in 0..n {
+                let q = (k / 4usize.pow(2 - a as u32)) % 4;
+                c.xc_wave.as_mut_slice()[a * n + k] = if q == 1 {
+                    std::f64::consts::PI / 2.
+                } else if q == 3 {
+                    -std::f64::consts::PI / 2.
+                } else {
+                    0.
+                };
+            }
+        }
+        c.core_tau = Some(ctx.allocate::<f64>(n).unwrap());
+        c.functional = "r2scan".into();
+        let rho: Vec<_> = (0..4 * n)
+            .map(|i| if i < n { 0.04 + 0.003 * (i as f64 * 0.2).sin() } else { 0.002 * (i as f64 * 0.4).cos() })
+            .collect();
+        let tau: Vec<_> = (0..4 * n)
+            .map(|i| if i < n { 0.05 + 0.004 * (i as f64 * 0.7).cos() } else { 0.003 * (i as f64 * 0.9).sin() })
+            .collect();
+        let direction: Vec<_> = (0..n).map(|i| 0.01 * (i as f64 * 0.3).cos()).collect();
+        let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
+        let terms = spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau)).unwrap();
+        let kinetic = terms.kinetic_potential.as_ref().expect("a meta-GGA returns v_tau");
+        for (which, field) in [("density", 0), ("kinetic density", 1)] {
+            for axis in 0..4 {
+                let energy = |sign: f64| {
+                    let (mut r, mut t) = (rho.clone(), tau.clone());
+                    let target = if field == 0 { &mut r } else { &mut t };
+                    for k in 0..n {
+                        target[axis * n + k] += sign * 1e-5 * direction[k];
+                    }
+                    let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
+                    spinor::exchange_correlation(&c, &mut fft, &r, Some(&t)).unwrap().energy
+                };
+                let fd = (energy(1.) - energy(-1.)) / (2e-5);
+                let potential = if field == 0 { terms.potential.as_slice() } else { kinetic.as_slice() };
+                let analytic = (0..n).map(|k| potential[axis * n + k] * direction[k]).sum::<f64>();
+                eprintln!("r2SCAN {which}, component {axis}: fd {fd:+.10e}, analytic {analytic:+.10e}");
+                assert!((fd - analytic).abs() < 2e-9, "{which}, component {axis}: {fd} vs {analytic}");
             }
         }
     }

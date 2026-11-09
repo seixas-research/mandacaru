@@ -31,6 +31,7 @@ fn scale(m: &DMatrix<f64>) -> f64 {
 /// The `(2j+1)`-weighted average of the Dirac levels of each `(n, l)` is the level of the
 /// scalar atom the construction is built on.
 #[test]
+#[ignore = "slow: 17 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_spin_orbit_identities -- --ignored the_dirac_levels_of_the_atom_average_to_its_scalar_levels"]
 fn the_dirac_levels_of_the_atom_average_to_its_scalar_levels() {
     let ctx = context();
     for name in LIGHT {
@@ -129,6 +130,7 @@ fn numerov_level(case: &Case, n: usize, l: usize, kappa: i32) -> Option<f64> {
 /// same number; elsewhere the atom's level is a grid-limited one and the difference is reported
 /// (it is the discretization of the atom, not of the branch).
 #[test]
+#[ignore = "slow: 28 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_spin_orbit_identities -- --ignored the_branch_levels_are_the_dirac_atoms_where_the_atom_is_a_shot_level"]
 fn the_branch_levels_are_the_dirac_atoms_where_the_atom_is_a_shot_level() {
     let mut gated = 0;
     for name in LIGHT {
@@ -176,6 +178,7 @@ fn the_branch_levels_are_the_dirac_atoms_where_the_atom_is_a_shot_level() {
 /// independent estimate (no Dirac solver involved), good to a few percent for the light shells it
 /// is applied to; it is not applied where the splitting is a large relativistic effect.
 #[test]
+#[ignore = "slow: 28 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_spin_orbit_identities -- --ignored the_branch_splitting_agrees_with_first_order_perturbation_theory"]
 fn the_branch_splitting_agrees_with_first_order_perturbation_theory() {
     let mut compared = 0;
     for (name, l) in [("lda-fr_Na", 1), ("lda-fr_Fe", 1), ("lda-fr_Fe", 2)] {
@@ -238,6 +241,7 @@ fn level(
 /// terms, so the gate is a fraction of the splitting between the two j: the measured worst is
 /// 0.9% (iron 3p), the gate 2%.
 #[test]
+#[ignore = "slow: 28 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_spin_orbit_identities -- --ignored the_j_average_reduces_to_the_scalar_channel"]
 fn the_j_average_reduces_to_the_scalar_channel() {
     let mut compared = 0;
     for name in LIGHT {
@@ -291,6 +295,7 @@ fn the_j_average_reduces_to_the_scalar_channel() {
 /// read back, the matrices and level data are the generated ones to that precision and the
 /// union projectors are the generated tables at every fourth node.
 #[test]
+#[ignore = "slow: 22 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_spin_orbit_identities -- --ignored a_dirac_dataset_survives_the_record_round_trip"]
 fn a_dirac_dataset_survives_the_record_round_trip() {
     use mandacaru_core::paw::record::{PawDataset, WriteSpec};
     let shared = loaded("lda-fr_Na");

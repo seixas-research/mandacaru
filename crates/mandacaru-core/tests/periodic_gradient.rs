@@ -427,10 +427,6 @@ fn unsupported_requests_raise() {
             Box::new(|d| d.layout.request.functional = "r2scan".into()),
         ),
         (
-            "rvv10",
-            Box::new(|d| d.layout.request.functional = "pbe+rvv10".into()),
-        ),
-        (
             "float32",
             Box::new(|d| d.layout.request.single_precision = true),
         ),
@@ -453,9 +449,13 @@ fn unsupported_requests_raise() {
             ),
         }
     }
+    // rVV10 adds no term of its own (MG-F6, `periodic_gradient_xc.rs`): it is no refusal.
+    for functional in ["pbe", "pbe+rvv10"] {
+        let mut d = ToyDerivatives::new(&s.model);
+        d.layout.request.functional = functional.into();
+        assert!(gradient(&d, &s.solution.state, None).is_ok(), "{functional}");
+    }
     let mut d = ToyDerivatives::new(&s.model);
-    d.layout.request.functional = "pbe".into();
-    assert!(gradient(&d, &s.solution.state, None).is_ok());
     d.layout.request.functional = "not-a-functional".into();
     assert!(matches!(
         gradient(&d, &s.solution.state, None),

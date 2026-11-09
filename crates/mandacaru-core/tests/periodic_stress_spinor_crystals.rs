@@ -57,6 +57,7 @@ fn print_share(stress: &Stress, want: &[[Entry; 3]; 3]) {
 }
 
 #[test]
+#[ignore = "slow: 146 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_crystals -- --ignored silicon_with_spin_orbit_matches_the_reconverged_free_energy"]
 fn silicon_with_spin_orbit_matches_the_reconverged_free_energy() {
     let (data, stress, want) = check_with("si_ldafr_tr3", true, &stress_of_data);
     assert!(data.crystal.spinor && data.crystal.time_reversal);
@@ -71,6 +72,7 @@ fn silicon_with_spin_orbit_matches_the_reconverged_free_energy() {
 }
 
 #[test]
+#[ignore = "slow: 146 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_crystals -- --ignored the_spinor_gradient_correction_matches_the_reconverged_free_energy"]
 fn the_spinor_gradient_correction_matches_the_reconverged_free_energy() {
     let (data, stress, want) = check_with("si_pbefr_tr3", true, &stress_of_data);
     assert_eq!(data.crystal.functional, "pbe");
@@ -229,6 +231,7 @@ fn heavy(case: &'static str, metal: bool, resolved: f64) {
 }
 
 #[test]
+#[ignore = "slow: 42 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_crystals -- --ignored gold_hydride_matches_the_reconverged_free_energy_and_the_wrong_frames_bite"]
 fn gold_hydride_matches_the_reconverged_free_energy_and_the_wrong_frames_bite() {
     // The spin-orbit term of AuH is 1.7e-4 Ha, 2.8e3 times the tightest (shear) gate but 49 gates in the entry it
     // is largest in relative to ITS gate: the plan's gate of a 216 A^3 box is large. Reported, asserted above 10
@@ -237,6 +240,7 @@ fn gold_hydride_matches_the_reconverged_free_energy_and_the_wrong_frames_bite() 
 }
 
 #[test]
+#[ignore = "slow: 143 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_spinor_crystals -- --ignored gold_metal_agrees_with_the_reconverged_free_energy_within_the_oracles_spread"]
 fn gold_metal_agrees_with_the_reconverged_free_energy_within_the_oracles_spread() {
     // The spin-orbit term (2.1e-4 Ha) is resolved at 1.3e3 plan gates in the entry it is largest in.
     heavy("au_fcc", true, 100.);

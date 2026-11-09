@@ -165,6 +165,7 @@ fn kpoints(case: &Case) -> Vec<[f64; 3]> {
 }
 
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_basis_gradient -- --ignored the_short_range_cross_blocks_equal_the_frozen_python"]
 fn the_short_range_cross_blocks_equal_the_frozen_python() {
     for name in ["si", "al2", "al"] {
         let case = Case::load(name);

@@ -8,7 +8,7 @@
 //! `G = <grad chi_a' | p_q>` on the same rule. Every energy term that depends on
 //! the geometry through `C` is a matrix `Gamma = dE / dC` contracted with `G`.
 use super::{
-    super::{projection, projection_points, Setup},
+    super::{projection, projection_points, scalar_spheres, Setup},
     compensation::{Channel, Moments},
     Occupied,
 };
@@ -96,7 +96,7 @@ pub(super) fn derivative_samples(
             })
             .collect();
 
-        projection_points(species, terms, |offset, target| {
+        projection_points(&scalar_spheres(species, terms), terms.projectors.len(), |offset, target| {
             let active_targets: Vec<(usize, f64)> = target
                 .iter()
                 .enumerate()
@@ -224,7 +224,7 @@ pub(super) fn derivatives(
                 vj += factor * x * (terms.weights[k] * moment[k]);
             }
             potential.push(vp * (2. * f));
-            over.push((&overlap * x) * (-2. * f * occupied[o].energy));
+            over.push((&overlap * x) * (-2. * occupied[o].w_weight));
             coulomb.push(vj * (2. * f));
         }
         pi.potential.push(potential);

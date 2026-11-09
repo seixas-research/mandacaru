@@ -40,6 +40,7 @@ fn with_spin_orbit_scaled(b: &Breakdown, rows: f64, columns: f64) -> Vec<[f64; 3
 }
 
 #[test]
+#[ignore = "slow: 42 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_controls -- --ignored the_heavy_spinor_force_and_its_spin_orbit_term_are_resolved"]
 fn the_heavy_spinor_force_and_its_spin_orbit_term_are_resolved() {
     let spinor = Spinor::load(CASE);
     let result = spinor.data.solve();

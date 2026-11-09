@@ -11,7 +11,7 @@ use mandacaru_core::periodic::{
     gradient::spin_orbit::{operator, Gradient, SpinOrbit},
     setup::{
         pulay::{projection, projection_gradient},
-        spin_orbit::{channels, matrices},
+        spin_orbit::{labels, matrices},
     },
 };
 use num_complex::Complex64;
@@ -21,7 +21,7 @@ use setup_spin_orbit_silicon_support::*;
 const FORCE_GATE: f64 = 1e-11;
 
 fn spin_orbit(t: &Silicon) -> SpinOrbit {
-    let found = channels(&t.ctx, &t.projectors, &t.couplings).unwrap();
+    let found = mandacaru_core::models::spin_orbit::channels(&t.ctx, &labels(&t.projectors), &t.couplings, false).unwrap();
     SpinOrbit::new(
         operator(&t.ctx, t.projectors.len(), &found).unwrap(),
         t.row_owner.clone(),
@@ -32,6 +32,7 @@ fn spin_orbit(t: &Silicon) -> SpinOrbit {
 }
 
 #[test]
+#[ignore = "slow: 35 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spin_orbit_silicon -- --ignored the_force_term_equals_the_trace_of_the_block_derivative_and_its_parts"]
 fn the_force_term_equals_the_trace_of_the_block_derivative_and_its_parts() {
     let t = silicon();
     let m = t.shells.functions();

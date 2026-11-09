@@ -111,12 +111,32 @@ pub(super) fn response_with_energy(
     d: &[Matrix],
     name: &str,
 ) -> Result<(Vec<Matrix>, Fields, f64)> {
+    let (fock, fields, energy, _) = response_with_parts(integrals, d, name)?;
+    Ok((fock, fields, energy))
+}
+/// [`response_with_energy`] and the Hartree energy of the same evaluation.
+pub(super) fn response_with_parts(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    name: &str,
+) -> Result<(Vec<Matrix>, Fields, f64, f64)> {
     let screened = integrals.screening(name)?;
     let gradients = if crate::models::functional(name)?.requires_tau {
         Some(orbital_gradients(integrals)?)
     } else {
         None
     };
+    response_with_shared(integrals, d, name, gradients.as_ref(), screened.as_ref())
+}
+/// [`response_with_parts`] with the orbital gradients of a meta-GGA and the screening of a
+/// hybrid built by the caller, once for every evaluation that shares them.
+pub(super) fn response_with_shared(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    name: &str,
+    gradients: Option<&RealSamples>,
+    screened: Option<&Screening>,
+) -> Result<(Vec<Matrix>, Fields, f64, f64)> {
     let mut poisson = Poisson::isolated(&integrals.context, &integrals.grid)?;
     let evaluation = evaluate_with(
         integrals,
@@ -124,15 +144,15 @@ pub(super) fn response_with_energy(
         d,
         name,
         &mut poisson,
-        gradients.as_ref(),
-        screened.as_ref(),
+        gradients,
+        screened,
         true,
         None,
     )?;
     let fields = evaluation
         .fields
         .ok_or_else(|| invalid("the evaluation retained no grid fields"))?;
-    Ok((evaluation.f, fields, evaluation.energy))
+    Ok((evaluation.f, fields, evaluation.energy, evaluation.hartree))
 }
 /// Orbital gradients `[axis][orbital][point]`, stored in the calculation's
 /// precision. Each row is differentiated in float64 from the widened stored
@@ -155,7 +175,44 @@ pub(super) fn orbital_gradients(integrals: &MolecularIntegrals) -> Result<RealSa
     }
     Ok(gradients)
 }
+/// The real parts of `d`, column-major, one `m x m` block each.
+fn column_major(ctx: &crate::Context, d: &[Matrix], m: usize) -> Result<Buffer<f64>> {
+    let mut out = ctx.allocate::<f64>(product(&[m, m, d.len()])?)?;
+    for (c, matrix) in d.iter().enumerate() {
+        for b in 0..m {
+            for a in 0..m {
+                out.as_mut_slice()[c * m * m + a + b * m] = matrix[(a, b)].re;
+            }
+        }
+    }
+    Ok(out)
+}
+/// `out(i, b) = sum_a left(i, a) matrix(a, b)` for the `width` points of a tile: `left` holds
+/// `m` sample rows of stride `w`, `matrix` is column-major and `out` has the leading stride `tile`.
+fn tile_product(left: &[f64], w: usize, width: usize, m: usize, matrix: &[f64], tile: usize, out: &mut [f64]) -> Result<()> {
+    gemm::multiply(
+        MatrixRef { values: left, rows: width, columns: m, leading: w },
+        MatrixRef { values: matrix, rows: m, columns: m, leading: m },
+        MatrixMut { values: out, rows: width, columns: m, leading: tile },
+        1.,
+        0.,
+    )
+}
 pub(super) fn grid_kinetic(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    gradients: &RealSamples,
+) -> Result<Buffer<f64>> {
+    let spins = [&d[0], &d[if d.len() == 1 { 0 } else { 1 }]].map(|m| m.clone());
+    let mut tau = kinetic_channels(integrals, &spins, gradients)?;
+    for value in tau.as_mut_slice() {
+        *value = value.max(0.);
+    }
+    Ok(tau)
+}
+/// `tau_c = 1/2 sum_ab Re M_c[a, b] grad phi_a . grad phi_b` of each matrix of `d`, one block of the
+/// grid each, unclamped (a spinor's magnetization channels take either sign).
+pub(super) fn kinetic_channels(
     integrals: &MolecularIntegrals,
     d: &[Matrix],
     gradients: &RealSamples,
@@ -165,26 +222,29 @@ pub(super) fn grid_kinetic(
     if gradients.len() != product(&[3, m, n])? {
         return Err(invalid("orbital gradients have inconsistent dimensions"));
     }
-    let mut tau = integrals.context.allocate::<f64>(2 * n)?;
-    let mut blocks = SampleBlocks::new(&integrals.context, gradients, 3 * m, n)?;
+    let ctx = &integrals.context;
+    let mut tau = ctx.allocate::<f64>(product(&[d.len(), n])?)?;
+    let mut blocks = SampleBlocks::new(ctx, gradients, 3 * m, n)?;
+    let tile = 256.min(blocks.block());
+    let mut contracted = ctx.allocate::<f64>(product(&[tile, m])?)?;
+    let matrices = column_major(ctx, d, m)?;
     for start in (0..n).step_by(blocks.block()) {
         let count = blocks.load(start)?;
         let (gradients, w) = (blocks.values(), blocks.stride());
-        for spin in 0..2 {
-            let density = &d[if d.len() == 1 { 0 } else { spin }];
-            for i in 0..count {
-                let mut value = 0.;
+        for c in 0..d.len() {
+            let matrix = &matrices.as_slice()[c * m * m..(c + 1) * m * m];
+            for offset in (0..count).step_by(tile) {
+                let width = tile.min(count - offset);
+                let out = &mut tau.as_mut_slice()[c * n + start + offset..c * n + start + offset + width];
+                out.fill(0.);
                 for axis in 0..3 {
-                    for a in 0..m {
-                        for b in 0..m {
-                            value += 0.5
-                                * density[(a, b)].re
-                                * gradients[(axis * m + a) * w + i]
-                                * gradients[(axis * m + b) * w + i];
-                        }
+                    let slope = &gradients[axis * m * w + offset..];
+                    // `(G D)(i, b)` for the tile, then `1/2 sum_b G(i, b) (G D)(i, b)`.
+                    tile_product(slope, w, width, m, matrix, tile, contracted.as_mut_slice())?;
+                    for (i, out) in out.iter_mut().enumerate() {
+                        *out += 0.5 * (0..m).map(|b| slope[b * w + i] * contracted.as_slice()[b * tile + i]).sum::<f64>();
                     }
                 }
-                tau.as_mut_slice()[spin * n + start + i] = value.max(0.);
             }
         }
     }
@@ -210,25 +270,26 @@ pub(super) fn grid_density_gradients(
     let mut field = ctx.allocate::<f64>(product(&[6, n])?)?;
     let mut orbitals = SampleBlocks::new(ctx, &integrals.orthonormal_samples, m, n)?;
     let mut slopes = SampleBlocks::new(ctx, gradients, 3 * m, n)?;
+    let tile = 256.min(orbitals.block());
+    let mut contracted = ctx.allocate::<f64>(product(&[tile, m])?)?;
+    let matrices = column_major(ctx, d, m)?;
     for start in (0..n).step_by(orbitals.block()) {
         let count = orbitals.load(start)?;
         slopes.load(start)?;
         let (phi, gradients, w) = (orbitals.values(), slopes.values(), orbitals.stride());
-        for spin in 0..2 {
-            let density = &d[if d.len() == 1 { 0 } else { spin }];
-            for axis in 0..3 {
-                let out = &mut field.as_mut_slice()
-                    [(spin * 3 + axis) * n + start..(spin * 3 + axis) * n + start + count];
-                for (i, out) in out.iter_mut().enumerate() {
-                    let mut value = 0.;
-                    for a in 0..m {
-                        for b in 0..m {
-                            value += density[(a, b)].re
-                                * phi[a * w + i]
-                                * gradients[(axis * m + b) * w + i];
-                        }
+        for offset in (0..count).step_by(tile) {
+            let width = tile.min(count - offset);
+            for spin in 0..2 {
+                let c = if d.len() == 1 { 0 } else { spin };
+                let matrix = &matrices.as_slice()[c * m * m..(c + 1) * m * m];
+                // `(phi D)(i, b)` for the tile, then `2 sum_b (phi D)(i, b) grad phi_b(i)`.
+                tile_product(&phi[offset..], w, width, m, matrix, tile, contracted.as_mut_slice())?;
+                for axis in 0..3 {
+                    let slope = &gradients[axis * m * w + offset..];
+                    let at = (spin * 3 + axis) * n + start + offset;
+                    for (i, out) in field.as_mut_slice()[at..at + width].iter_mut().enumerate() {
+                        *out = 2. * (0..m).map(|b| slope[b * w + i] * contracted.as_slice()[b * tile + i]).sum::<f64>();
                     }
-                    *out = 2. * value;
                 }
             }
         }
@@ -626,7 +687,7 @@ impl MolecularIntegrals {
 impl MolecularIntegrals {
     /// One-electron matrix of the Kohn-Sham model: the shared core operator
     /// plus the frozen atomic one-center Kohn-Sham difference of a PAW setup.
-    fn kohn_sham_core(&self) -> Matrix {
+    pub(super) fn kohn_sham_core(&self) -> Matrix {
         let m = self.m();
         Matrix::from_fn(m, m, |a, b| {
             C64::new(
@@ -668,6 +729,71 @@ impl MolecularIntegrals {
         )?
         .energy)
     }
+    /// One start of a Kohn-Sham SCF, for any state shape: `start` are the coefficient matrices (one
+    /// per spin channel, or one 2m x 2m for a spinor) with `occupations`, and `step` evaluates a
+    /// density list to its Fock list and energy. Plain DIIS first; a start that does not converge
+    /// is retried with a level shift switched on by the first energy rise (a degenerate open shell
+    /// can flip its occupied orbital between iterations). Returns `(c, d, history, converged)`.
+    pub(crate) fn iterate_start(
+        &self,
+        start: &[Matrix],
+        occupations: &[usize],
+        options: &ScfOptions,
+        mut step: impl FnMut(&[Matrix]) -> Result<(Vec<Matrix>, f64)>,
+    ) -> Result<(Vec<Matrix>, Vec<Matrix>, Vec<Iteration>, bool)> {
+        let density = |c: &[Matrix]| -> Vec<Matrix> {
+            c.iter().zip(occupations).map(|(c, &n)| scf::density(c, n)).collect()
+        };
+        let mut c = start.to_vec();
+        let mut d = density(&c);
+        let mut history = vec![];
+        let mut converged = false;
+        for retry in [false, true] {
+            if retry {
+                c = start.to_vec();
+                d = density(&c);
+                history = vec![];
+            }
+            let mut previous: Option<f64> = None;
+            let mut mixer = Diis::new();
+            let mut shift = 0.;
+            for iteration in 1..=options.max_iterations {
+                let (f, energy) = step(&d)?;
+                if retry && previous.is_some_and(|p| energy > p + 1e-10) && shift == 0. {
+                    shift = 0.5;
+                }
+                let mut effective = if options.diis { mixer.extrapolate(&f, &d) } else { f };
+                if shift > 0. {
+                    for (f, d) in effective.iter_mut().zip(&d) {
+                        *f += (Matrix::identity(f.nrows(), f.nrows()) - d) * C64::new(shift, 0.);
+                    }
+                }
+                c = effective
+                    .into_iter()
+                    .map(|f| crate::math::linalg::eigen(f).map(|(_, c)| c))
+                    .collect::<Result<_>>()?;
+                let next = density(&c);
+                let residual = d
+                    .iter()
+                    .zip(&next)
+                    .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).norm()))
+                    .fold(0f64, f64::max);
+                let delta = previous.map(|p| energy - p);
+                history.push(Iteration { iteration, energy, delta, residual });
+                d = next;
+                previous = Some(energy);
+                if delta.is_some_and(|de: f64| de.abs() < options.tolerance) && residual < options.tolerance {
+                    converged = true;
+                    break;
+                }
+            }
+            if converged {
+                break;
+            }
+        }
+        Ok((c, d, history, converged))
+    }
+
     pub fn kohn_sham(
         &self,
         functional: &str,
@@ -678,6 +804,13 @@ impl MolecularIntegrals {
         if self.corrections.as_ref().is_some_and(|c| c.dft.is_none()) {
             return Err(invalid(
                 "native molecular PAW Kohn-Sham augmentation is not yet implemented",
+            ));
+        }
+        if self.paw_setup.as_ref().is_some_and(|s| s.has_spin_orbit()) {
+            return Err(crate::Error::Unsupported(
+                "a molecule with spin-orbit datasets needs spinor Kohn-Sham (spinor_kohn_sham); \
+                 restricted and unrestricted Kohn-Sham cannot carry the spin-orbit term"
+                    .into(),
             ));
         }
         let definition = crate::models::functional(functional)?;
@@ -768,97 +901,27 @@ impl MolecularIntegrals {
                 Option<(f64, Vec<crate::molecular::hubbard::MolecularHubbardReport>)>,
             )> = None;
             for start in starts {
-                let density = |c: &Vec<Matrix>| -> Vec<Matrix> {
-                    c.iter()
-                        .zip(&occupations)
-                        .map(|(c, &n)| scf::density(c, n))
-                        .collect()
-                };
-                let mut c = start.clone();
-                let mut d = density(&c);
-                let mut history = vec![];
-                let mut converged = false;
-                // The plain DIIS iteration decides every start that converges with it. A
-                // start that does not converge is retried with a level shift: a degenerate
-                // open shell (a diatomic radical's pi electron) lets the occupied orbital
-                // flip between iterations, and the first rise in energy then switches on a
-                // shift, as in the Hartree-Fock loop, that damps the flip. The shift is not
-                // used for a start that converges without it, because a shifted iteration
-                // can settle into a different stationary point than the plain one.
-                for retry in [false, true] {
-                    if retry {
-                        c = start.clone();
-                        d = density(&c);
-                        history = vec![];
-                    }
-                    let mut previous = None;
-                    let mut mixer = Diis::new();
-                    let mut shift = 0.;
-                    let n_pts = self.grid.index.points();
-                    let mut total_scratch = ctx.allocate::<C64>(n_pts)?;
-                    let mut hartree_scratch = ctx.allocate::<C64>(n_pts)?;
-                    for iteration in 1..=options.max_iterations {
+                let n_pts = self.grid.index.points();
+                let mut total_scratch = ctx.allocate::<C64>(n_pts)?;
+                let mut hartree_scratch = ctx.allocate::<C64>(n_pts)?;
+                let (c, d, history, converged) = self.iterate_start(
+                    &start,
+                    &occupations,
+                    options,
+                    |d: &[Matrix]| {
                         let value = evaluate_scratch(
                             self,
                             &h,
-                            &d,
+                            d,
                             functional,
                             &mut poisson,
                             orbital_gradients.as_ref(),
                             screened.as_ref(),
                             Some((total_scratch.as_mut_slice(), hartree_scratch.as_mut_slice())),
                         )?;
-                        if retry
-                            && previous.is_some_and(|p: f64| value.energy > p + 1e-10)
-                            && shift == 0.
-                        {
-                            shift = 0.5;
-                        }
-                        let mut effective = if options.diis {
-                            mixer.extrapolate(&value.f, &d)
-                        } else {
-                            value.f
-                        };
-                        if shift > 0. {
-                            for (f, d) in effective.iter_mut().zip(&d) {
-                                *f += (Matrix::identity(f.nrows(), f.nrows()) - d)
-                                    * C64::new(shift, 0.);
-                            }
-                        }
-                        c = effective
-                            .into_iter()
-                            .map(|f| crate::math::linalg::eigen(f).map(|(_, c)| c))
-                            .collect::<Result<_>>()?;
-                        let next = c
-                            .iter()
-                            .zip(&occupations)
-                            .map(|(c, &n)| scf::density(c, n))
-                            .collect::<Vec<_>>();
-                        let residual = d
-                            .iter()
-                            .zip(&next)
-                            .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).norm()))
-                            .fold(0f64, f64::max);
-                        let delta = previous.map(|p| value.energy - p);
-                        history.push(Iteration {
-                            iteration,
-                            energy: value.energy,
-                            delta,
-                            residual,
-                        });
-                        d = next;
-                        previous = Some(value.energy);
-                        if delta.is_some_and(|de: f64| de.abs() < options.tolerance)
-                            && residual < options.tolerance
-                        {
-                            converged = true;
-                            break;
-                        }
-                    }
-                    if converged {
-                        break;
-                    }
-                }
+                        Ok((value.f, value.energy))
+                    },
+                )?;
                 let value = evaluate(
                     self,
                     &h,

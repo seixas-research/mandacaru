@@ -27,6 +27,25 @@ use nalgebra::DMatrix;
 mod frame;
 mod grid;
 
+/// The frozen description of a converged state that the force contraction consumes.
+pub(crate) struct Frozen {
+    pub functional: Option<String>,
+    pub unrestricted: bool,
+    pub hf: bool,
+    /// The valence spin densities on the grid (two blocks).
+    pub valence: crate::Buffer<f64>,
+    /// The Hartree potential of their sum.
+    pub hartree: crate::Buffer<f64>,
+    /// The exchange-correlation terms (potentials per spin channel) of a Kohn-Sham state.
+    pub xc: Option<crate::models::xc::Xc>,
+    pub orbitals: Vec<Occupied>,
+    pub stationarity: f64,
+    /// Whether the contraction includes a hybrid's exact exchange of `orbitals`. A spinor state
+    /// contracts its own ([`MolecularIntegrals::spinor_exchange_terms`]): its pseudo-orbitals
+    /// carry the charge, not the exchange pairs.
+    pub exact_exchange: bool,
+}
+
 impl MolecularIntegrals {
     /// The energy-weighted density `W = sum_i f_i eps_i a_i a_i^T` of the
     /// occupied orbitals of a converged state in the atomic-orbital basis: the
@@ -44,10 +63,28 @@ impl MolecularIntegrals {
         let mut w = DMatrix::<f64>::zeros(m, m);
         for o in &frame.orbitals {
             let a = nalgebra::DVector::from_column_slice(&o.ao);
-            w += &a * a.transpose() * (o.weight * o.energy);
+            w += &a * a.transpose() * o.w_weight;
         }
         Ok(w)
     }
+/// A test seam: the gradient of `state` with every occupied orbital carried as two entries, its
+    /// density role (`w_weight = 0`) and its W role (`weight = 0`). It equals [`Self::gradient`] when
+    /// the contraction keeps the two roles apart, as a spinor state's pseudo-orbitals need.
+    #[doc(hidden)]
+    pub fn gradient_with_split_roles(&self, state: &MeanField) -> Result<Gradient> {
+        let setup = self.paw_setup.as_ref().ok_or_else(|| invalid("forces need a PAW setup"))?;
+        self.context.run(|| {
+            let mut frozen = self.freeze(state)?;
+            let mut split = Vec::with_capacity(2 * frozen.orbitals.len());
+            for o in frozen.orbitals {
+                split.push(Occupied { spin: o.spin, weight: o.weight, energy: 0., w_weight: 0., ao: o.ao.clone() });
+                split.push(Occupied { spin: o.spin, weight: 0., energy: o.energy, w_weight: o.w_weight, ao: o.ao });
+            }
+            frozen.orbitals = split;
+            self.contract_frozen(frozen, setup)
+        })
+    }
+
     pub(super) fn paw_gradient(&self, state: &MeanField) -> Result<Gradient> {
         let m = self.m();
         let setup = self.paw_setup.as_ref().ok_or_else(|| {
@@ -84,11 +121,18 @@ impl MolecularIntegrals {
         state: &MeanField,
         setup: &crate::paw::molecular::Setup,
     ) -> Result<Gradient> {
+        let frozen = self.freeze(state)?;
+        self.contract_frozen(frozen, setup)
+    }
+
+    /// Everything the force contraction needs from a converged collinear state: its fields at
+    /// the converged densities, its occupied orbitals (with their density and W roles) and its
+    /// stationarity. A spinor state builds the same description its own way
+    /// (`molecular::spinor_dft`).
+    fn freeze(&self, state: &MeanField) -> Result<Frozen> {
         let ctx = &self.context;
         let n = self.grid.index.points();
-        let m = self.m();
         let atoms = self.geometry.numbers().len();
-        let hf = state.functional.is_none();
         let _workspace = ctx.reserve(product(&[3 * atoms, 64])?)?;
         // The Fock matrices and grid potentials of the converged densities.
         let mut poisson = Poisson::isolated(ctx, &self.grid)?;
@@ -126,28 +170,37 @@ impl MolecularIntegrals {
             ));
         }
         let frame = frame::occupied(self, state, &fock)?;
+        Ok(Frozen {
+            functional: state.functional.clone(),
+            unrestricted: state.method == "uhf",
+            hf: state.functional.is_none(),
+            valence,
+            hartree,
+            xc,
+            orbitals: frame.orbitals,
+            stationarity: frame.stationarity,
+            exact_exchange: true,
+        })
+    }
+
+    /// The force contraction of a frozen description.
+    pub(crate) fn contract_frozen(
+        &self,
+        frozen: Frozen,
+        setup: &crate::paw::molecular::Setup,
+    ) -> Result<Gradient> {
+        let ctx = &self.context;
+        let n = self.grid.index.points();
+        let atoms = self.geometry.numbers().len();
+        let hf = frozen.hf;
+        let _workspace = ctx.reserve(product(&[3 * atoms, 64])?)?;
+        let mut poisson = Poisson::isolated(ctx, &self.grid)?;
+        let Frozen { valence, hartree, xc, orbitals, stationarity, functional: frozen_functional, unrestricted: frozen_unrestricted, exact_exchange, .. } = frozen;
+        let frame = frame::Frame { orbitals, stationarity };
         let nocc = frame.orbitals.len();
         let occupied: &[Occupied] = &frame.orbitals;
         let _orbital_memory = ctx.reserve(product(&[nocc.max(1), n, 8, 2])?)?;
-        // The occupied orbitals on the grid, from the stored samples.
-        let mut psi = ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?;
-        {
-            let mut row = ctx.allocate::<f64>(n)?;
-            for a in 0..m {
-                self.samples.widen_range(a * n, row.as_mut_slice())?;
-                for (i, o) in occupied.iter().enumerate() {
-                    let c = o.ao[a];
-                    if c != 0. {
-                        for (to, from) in psi.as_mut_slice()[i * n..(i + 1) * n]
-                            .iter_mut()
-                            .zip(row.as_slice())
-                        {
-                            *to += c * from;
-                        }
-                    }
-                }
-            }
-        }
+        let psi = self.on_grid(occupied)?;
         let mut rho = ctx.allocate::<f64>(n)?;
         for k in 0..n {
             rho.as_mut_slice()[k] = valence.as_slice()[k] + valence.as_slice()[n + k];
@@ -243,9 +296,9 @@ impl MolecularIntegrals {
         }
         terms.push(("pairs_coulomb/compensation_basis", combined.coulomb));
         terms.push(("pulay_grid/basis", combined.pulay));
-        let hybrid = match state.functional.as_deref() {
-            Some(name) => crate::models::functional(name)?.screened_exchange,
-            None => None,
+        let hybrid = match frozen_functional.as_deref() {
+            Some(name) if exact_exchange => crate::models::functional(name)?.screened_exchange,
+            _ => None,
         };
         let mut action = if hf || hybrid.is_some() {
             ctx.allocate::<f64>(product(&[nocc.max(1), n])?)?
@@ -265,7 +318,7 @@ impl MolecularIntegrals {
             terms.push(contract("pairs_exchange/compensation_basis", &compensation));
         }
         let screened = hybrid
-            .map(|(omega, fraction)| response.hybrid(omega, fraction, state.method == "uhf"))
+            .map(|(omega, fraction)| response.hybrid(omega, fraction, frozen_unrestricted))
             .transpose()?;
         if let (Some((omega, fraction)), Some(screened)) = (hybrid, screened.as_ref()) {
             let mut solver = Poisson::screened(ctx, &self.grid, omega)?;
@@ -316,6 +369,71 @@ impl MolecularIntegrals {
             stationarity: Some(frame.stationarity),
             terms: named,
         })
+    }
+}
+
+impl MolecularIntegrals {
+    /// The occupied orbitals on the grid, from the stored samples (`occupied.len() x n`).
+    fn on_grid(&self, occupied: &[Occupied]) -> Result<Buffer<f64>> {
+        let (ctx, n, m) = (&self.context, self.grid.index.points(), self.m());
+        let mut psi = ctx.allocate::<f64>(product(&[occupied.len().max(1), n])?)?;
+        psi.as_mut_slice().fill(0.);
+        let mut row = ctx.allocate::<f64>(n)?;
+        for a in 0..m {
+            self.samples.widen_range(a * n, row.as_mut_slice())?;
+            for (i, o) in occupied.iter().enumerate() {
+                let c = o.ao[a];
+                if c != 0. {
+                    for (to, from) in psi.as_mut_slice()[i * n..(i + 1) * n].iter_mut().zip(row.as_slice()) {
+                        *to += c * from;
+                    }
+                }
+            }
+        }
+        Ok(psi)
+    }
+
+    /// The explicit derivative of a screened hybrid's exact exchange (`omega`, `fraction`) of a
+    /// spinor state of unit occupations, `spinors[i] = [c_i,up, c_i,dn]` in the atomic-orbital
+    /// basis (MG-F2c): [`crate::paw::molecular::Setup::spinor_hybrid`] on the four real
+    /// pseudo-orbitals of each spinor, its grid actions contracted here with the basis derivative.
+    pub(crate) fn spinor_exchange_terms(
+        &self,
+        setup: &crate::paw::molecular::Setup,
+        spinors: &[[Vec<C64>; 2]],
+        omega: f64,
+        fraction: f64,
+    ) -> Result<Vec<(&'static str, Vec<f64>)>> {
+        use crate::paw::molecular::gradient::pseudo_index;
+        let m = self.m();
+        if spinors.iter().any(|c| c[0].len() != m || c[1].len() != m) {
+            return Err(invalid("a spinor's components must span the basis"));
+        }
+        let mut pseudo: Vec<Occupied> = Vec::with_capacity(4 * spinors.len());
+        for (i, spinor) in spinors.iter().enumerate() {
+            for (s, component) in spinor.iter().enumerate() {
+                for part in 0..2 {
+                    debug_assert_eq!(pseudo.len(), pseudo_index(i, s, part));
+                    let ao = component.iter().map(|c| if part == 0 { c.re } else { c.im }).collect();
+                    pseudo.push(Occupied { spin: 0, weight: 1., energy: 0., w_weight: 0., ao });
+                }
+            }
+        }
+        let psi = self.on_grid(&pseudo)?;
+        let exchange = setup.spinor_hybrid(self, omega, fraction, &pseudo, psi.as_slice())?;
+        drop(psi);
+        let points = grid::points(self)?;
+        let mut terms = vec![
+            ("hybrid_grid/basis", grid::contract(self, &pseudo, points.as_slice(), exchange.grid.as_slice())),
+            (
+                "hybrid_pairs/compensation_basis",
+                grid::contract(self, &pseudo, points.as_slice(), exchange.compensation.as_slice()),
+            ),
+        ];
+        for part in exchange.contributions {
+            terms.push((part.name, part.gradient));
+        }
+        Ok(terms)
     }
 }
 

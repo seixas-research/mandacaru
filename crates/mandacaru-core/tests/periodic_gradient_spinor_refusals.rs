@@ -35,11 +35,9 @@ fn cause<T>(r: Result<T>) -> String {
 fn refused_by_the_crystal(crystal: &mut Crystal) {
     scf::refuse(crystal).expect("a spinor LDA crystal is supported");
     let original = crystal.functional.clone();
-    for (functional, word) in [
-        ("hse06", "PAW spheres"),
-        ("r2scan", "meta-GGA"),
-        ("pbe+rvv10", "rVV10"),
-    ] {
+    // PBE+rVV10 (F6c) and r2SCAN (F5c) are differentiated for a spinor too
+    // (`periodic_gradient_xc.rs`).
+    for (functional, word) in [("hse06", "PAW spheres")] {
         crystal.functional = functional.to_string();
         let message = cause(scf::refuse(crystal));
         assert!(message.contains(word), "{functional}: {message}");
@@ -58,6 +56,7 @@ fn what_a_spinor_does_not_differentiate_raises_with_the_cause() {
 }
 
 #[test]
+#[ignore = "slow: 17 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_spinor_refusals -- --ignored the_spin_orbit_data_of_the_provider_is_the_crystals_own"]
 fn the_spin_orbit_data_of_the_provider_is_the_crystals_own() {
     let spinor = Spinor::load("si_ldafr");
     let cores = spinor.data.cores();

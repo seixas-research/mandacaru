@@ -72,6 +72,7 @@ fn tiled_projector_products_match_general_complex_matrix_products() {
 }
 
 #[test]
+#[ignore = "slow: 11 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_matrices -- --ignored test_kpoint_matrices_properties"]
 fn test_kpoint_matrices_properties() {
     let ctx = context();
     let (cell, basis) = silicon(&ctx);
@@ -182,6 +183,7 @@ fn test_kpoint_matrices_properties() {
 }
 
 #[test]
+#[ignore = "slow: 18 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_matrices -- --ignored skew_lih_native_setup_response_matches_active_setup"]
 fn skew_lih_native_setup_response_matches_active_setup() {
     use mandacaru_core::{paw::digest::sha256_file, periodic::{response, solver::Options}};
     let ctx = context();
@@ -295,6 +297,7 @@ fn test_the_sphere_bloch_sums_k_together_vs_one_by_one() {
 }
 
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_matrices -- --ignored test_periodic_setup_build_and_with_cell"]
 fn test_periodic_setup_build_and_with_cell() {
     let ctx = context();
     let ds = Arc::new(dataset(&ctx, "lda-sr", "Si"));

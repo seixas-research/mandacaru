@@ -215,11 +215,13 @@ fn check(name: &str, toy: &Toy, transposed: Control) {
 }
 
 #[test]
+#[ignore = "slow: 67 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres_hubbard -- --ignored the_plus_u_strain_of_si_equals_the_layer"]
 fn the_plus_u_strain_of_si_equals_the_layer() {
     check("si", &si_like(&context(), "si", 2), Control::Skip);
 }
 
 #[test]
+#[ignore = "slow: 62 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres_hubbard -- --ignored the_plus_u_strain_of_al2_equals_the_layer"]
 fn the_plus_u_strain_of_al2_equals_the_layer() {
     check("al2", &si_like(&context(), "al2", 1), Control::Skip);
 }
@@ -230,6 +232,7 @@ fn the_plus_u_strain_of_the_skew_lih_cell_equals_the_layer() {
 }
 
 #[test]
+#[ignore = "slow: 92 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres_hubbard -- --ignored the_plus_u_strain_of_a_skewed_al2_equals_the_layer"]
 fn the_plus_u_strain_of_a_skewed_al2_equals_the_layer() {
     let ctx = context();
     let fx = Fixture::new(&ctx, "al2");

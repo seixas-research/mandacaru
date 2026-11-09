@@ -143,17 +143,17 @@ A periodic structure (`pbc=True` on the atoms) runs the periodic engine: `lda`,
 (`xc="hse06"`) evaluate the non-singular reciprocal screened exchange operator across the
 Brillouin zone in Rust (self-consistent crystal SCF, band structures, DOS/PDOS, and
 two-component spinor calculations with spin-orbit coupling). The exact exchange sums over
-the listed $k$-points, so a hybrid crystal needs the **whole** $k$ mesh: a mesh reduced by
-space-group symmetry (the default `symmetry=True` on a crystal that has symmetry) or
-halved by time reversal raises `NotImplementedError`. Give `symmetry=False` together
-with a Gamma-centered mesh of one or two points per direction (all of its points are
-time-reversal invariant, so nothing is halved). On any other mesh give `symmetry=False`
-with `unrestricted=True` and **nonzero** initial magnetic moments: only a spin-polarized run
-keeps the whole mesh, and zero moments do not (a spin-orbit crystal has no such option).
-One Gamma point needs neither. PAW geometry
+the listed $k$-points, so a hybrid crystal always runs on the **whole** $k$ mesh: the setup
+neither reduces it by space-group symmetry (whatever `symmetry` says) nor halves it by time
+reversal, with or without spin-orbit coupling. A wedge costs fewer points, so a hybrid on a
+crystal with symmetry takes more k-points than the same semilocal run. PAW geometry
 and dataset assembly still go through a Python adapter. Forces and stress of crystals are computed via `atoms.get_forces()` and
-`atoms.get_stress()` as analytic Rust gradients of the converged Kohn–Sham state for LDA, PBE, and
-HSE06 (restricted and collinear spin-polarized forces; restricted stress, scalar and spinor; for a hybrid the analytic force and stress carry the one-center screened and compensation terms). Forces and stress for a DFT+U crystal, r2SCAN/rVV10 functionals, or spin-polarized stress currently raise `NotImplementedError` naming the cause.
+`atoms.get_stress()` as analytic Rust gradients of the converged Kohn–Sham state: forces for LDA,
+PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling, and stress
+for the same functionals except rVV10 (for a hybrid the analytic force and stress carry the
+one-center screened and compensation terms). The stress of an rVV10 crystal, and the forces and
+stress of a DFT+U crystal with a hybrid or a spin-orbit dataset, raise `NotImplementedError`
+naming the cause.
 
 A hybrid crystal is built from its PAW spheres. The setup records the atom centers,
 the projector basis and, per atom, the dataset file with its SHA-256 digest; Rust

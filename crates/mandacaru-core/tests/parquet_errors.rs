@@ -1618,6 +1618,7 @@ fn snappy_pages_the_decoder_must_refuse() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "slow: 20 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test parquet_errors -- --ignored truncating_every_fixture_at_every_length_never_panics_or_leaks"]
 fn truncating_every_fixture_at_every_length_never_panics_or_leaks() {
     let dir = Directory::new();
     let path = dir.file("t.parquet");
@@ -1676,6 +1677,7 @@ const MUTATION_TARGETS: [&str; 16] = [
 const MUTATION_CASES: usize = 120_000;
 
 #[test]
+#[ignore = "slow: 18 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test parquet_errors -- --ignored a_seeded_mutation_sweep_never_panics_or_allocates_beyond_the_budget"]
 fn a_seeded_mutation_sweep_never_panics_or_allocates_beyond_the_budget() {
     let targets: Vec<Target> = MUTATION_TARGETS.iter().map(|n| target(n)).collect();
     // Every region kind must be present among the targets, or the sweep would

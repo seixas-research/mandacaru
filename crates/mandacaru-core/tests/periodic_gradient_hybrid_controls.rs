@@ -146,6 +146,7 @@ fn controls(case: &'static str, reported: &[&str], provider_level: bool) {
 }
 
 #[test]
+#[ignore = "slow: 23 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_hybrid_controls -- --ignored lih_every_wrong_variant_misses_the_oracle_by_more_than_100_gates"]
 fn lih_every_wrong_variant_misses_the_oracle_by_more_than_100_gates() {
     // The phase terms of the two atoms are alike in this pair (7.1e-5 and 5.8e-5 Ha/Bohr along x),
     // so exchanging their owners moves the force by only 66 gates: reported; dropping the phase
@@ -154,6 +155,7 @@ fn lih_every_wrong_variant_misses_the_oracle_by_more_than_100_gates() {
 }
 
 #[test]
+#[ignore = "slow: 149 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_hybrid_controls -- --ignored si_dropped_and_misowned_exchange_terms_miss_the_oracle_by_more_than_100_gates"]
 fn si_dropped_and_misowned_exchange_terms_miss_the_oracle_by_more_than_100_gates() {
     // The phase force of this Si cell is about 2.3e-6 Ha/Bohr, 12 plan gates: dropping it cannot
     // bite 100 gates here. The same control bites 362 gates on the LiH pair.

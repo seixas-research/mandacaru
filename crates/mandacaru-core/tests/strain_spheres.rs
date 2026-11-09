@@ -236,11 +236,13 @@ fn check(case: &Case, differenced: &[(usize, usize)], transposed: Control) {
 }
 
 #[test]
+#[ignore = "slow: 118 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres -- --ignored the_sphere_form_is_the_central_difference_of_the_projections_of_si"]
 fn the_sphere_form_is_the_central_difference_of_the_projections_of_si() {
     check(&scalar(&context(), "si"), &DIFFERENCED, Control::Skip);
 }
 
 #[test]
+#[ignore = "slow: 148 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres -- --ignored the_sphere_form_is_the_central_difference_of_the_projections_of_al2"]
 fn the_sphere_form_is_the_central_difference_of_the_projections_of_al2() {
     // The larger cell: one off-diagonal component keeps the case well under the time budget
     // (132 s for two); the diagonal and the other off-diagonals are gated on Si and the spin-orbit
@@ -249,18 +251,21 @@ fn the_sphere_form_is_the_central_difference_of_the_projections_of_al2() {
 }
 
 #[test]
+#[ignore = "slow: 67 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres -- --ignored the_sphere_form_is_the_central_difference_of_the_spin_orbit_projections"]
 fn the_sphere_form_is_the_central_difference_of_the_spin_orbit_projections() {
     let ctx = context();
     check(&spin_orbit(&ctx), &DIFFERENCED, Control::Skip);
 }
 
 #[test]
+#[ignore = "slow: 12 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres -- --ignored the_sphere_form_is_the_central_difference_of_the_projections_of_the_skew_lih_cell"]
 fn the_sphere_form_is_the_central_difference_of_the_projections_of_the_skew_lih_cell() {
     // Both orders of an off-diagonal pair: a swapped index or a transposed lattice shows in one.
     check(&lih(), &[(0, 1), (2, 0)], Control::Asserted);
 }
 
 #[test]
+#[ignore = "slow: 183 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test strain_spheres -- --ignored the_sphere_form_is_the_central_difference_of_the_projections_of_a_skewed_al2"]
 fn the_sphere_form_is_the_central_difference_of_the_projections_of_a_skewed_al2() {
     let mut case = scalar(&context(), "al2");
     case.name = "al2_skew";

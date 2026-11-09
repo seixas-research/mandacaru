@@ -35,6 +35,7 @@ fn closed_form(l: usize, a: f64, b: f64, omega: f64) -> (f64, f64) {
 }
 
 #[test]
+#[ignore = "slow: 17 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_screened_kernel -- --ignored the_erfc_screened_energy_of_two_multipole_gaussians_is_analytic_at_every_level"]
 fn the_erfc_screened_energy_of_two_multipole_gaussians_is_analytic_at_every_level() {
     let ctx = Context::new(Some(1), 256 << 20).unwrap();
     let r: Vec<f64> = (0..1600).map(|i| 9. * i as f64 / 1599.).collect();

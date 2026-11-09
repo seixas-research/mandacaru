@@ -176,6 +176,7 @@ fn phases(b: &Bench) -> Vec<(usize, f64, f64)> {
 }
 
 #[test]
+#[ignore = "slow: 31 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test paw_diagnose_controls -- --ignored scaling_the_screened_coupling_by_one_point_three_scatters_wrongly"]
 fn scaling_the_screened_coupling_by_one_point_three_scatters_wrongly() {
     // vera's figures for this change are the s channel's phase error: 0.19 rad (O), 1.18 rad (Fe).
     for (element, vera) in [("O", 0.19), ("Fe", 1.18)] {

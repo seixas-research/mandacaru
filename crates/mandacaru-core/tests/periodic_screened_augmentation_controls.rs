@@ -182,6 +182,7 @@ fn least_headroom(rig: &Rig, fixture: &str, gamma: bool, augmented: bool) -> usi
 }
 
 #[test]
+#[ignore = "slow: 11 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test periodic_screened_augmentation_controls -- --ignored the_compensation_costs_one_channels_by_grid_block_and_obeys_the_budget"]
 fn the_compensation_costs_one_channels_by_grid_block_and_obeys_the_budget() {
     let (fixture, gamma) = ("si_crystal.json", true);
     let rig = Rig::new(fixture, gamma, &[4]);

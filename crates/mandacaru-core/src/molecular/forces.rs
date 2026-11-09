@@ -26,7 +26,11 @@ impl MolecularIntegrals {
             return Err(invalid("forces require a converged SCF state"));
         }
         if state.method == "ghf" {
-            return Err(invalid("native spinor gradients are not implemented"));
+            // A spinor Kohn-Sham state (`spinor_kohn_sham`); spinor Hartree-Fock has no gradient.
+            if state.functional.is_some() && self.corrections.is_some() {
+                return self.spinor_gradient(state);
+            }
+            return Err(invalid("native spinor Hartree-Fock gradients are not implemented"));
         }
         if self.corrections.is_some() {
             return self.paw_gradient(state);

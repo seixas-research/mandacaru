@@ -163,3 +163,56 @@ pub fn kinetic_strain(
     }
     Ok(out)
 }
+
+/// `d T_tau / d eps_ab` of the meta-GGA operator `T_tau = sum_c g_c^+ diag(dv v_tau / 2) g_c`
+/// ([`crate::periodic::fields::kinetic_operator`]), `g_c` the SCF's spectral gradient of the Bloch
+/// sums along `c` ([`crate::periodic::fields::bloch_gradients`], the alias-MEAN wave vector `Q`),
+/// with the node values of `v_tau` fixed. No `delta_ab` term: like the local form, the operator's
+/// `dv` belongs to `E_xc = dv sum_i f(..., tau_i)`, whose Jacobian is X-1. The wave vectors move as
+/// `Q -> (1 - eps^T) Q`, so `d g_c / d eps_ab = -delta_cb g_a` at fixed samples (the symbol term
+/// `-(g_a^+ W g_b + g_b^+ W g_a)`, `W = diag(dv v_tau / 2)`), and the samples move by the tangent
+/// `A_ab` (the term `G + G^+`, `G = sum_c (g_c A_ab)^+ W g_c`).
+pub fn tau_strain(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    mesh: &Mesh,
+    strain: &StrainSamples,
+    values: &[Complex64],
+    k: [f64; 3],
+    potential: &[f64],
+) -> Result<Tensor> {
+    use crate::periodic::fields::bloch_gradients;
+    let (m, n) = (strain.functions(), mesh.len());
+    if values.len() != m * n || potential.len() != n || n != grid.index.points() {
+        return Err(invalid(
+            "the kinetic-density strain needs the Bloch sums and one v_tau value per grid node",
+        ));
+    }
+    // The untracked copies: the weighted ket and the two column-major views (three axes each).
+    let _held = ctx.reserve(product(&[m, n, 16, 9])?)?;
+    let half_dv = 0.5 * mesh.dv;
+    // [axis][function][point]: the gradients, and the ket weighted by dv v_tau / 2.
+    let gradients = bloch_gradients(ctx, grid, k, values, m)?;
+    let mut ket = gradients.as_slice().to_vec();
+    for row in ket.chunks_mut(n) {
+        for (value, v) in row.iter_mut().zip(potential) {
+            *value *= half_dv * v;
+        }
+    }
+    let axis = |data: &[Complex64], c: usize| columns(&data[c * m * n..(c + 1) * m * n], n, m).into_owned();
+    let g: [Matrix; 3] = std::array::from_fn(|c| axis(gradients.as_slice(), c));
+    let w: [Matrix; 3] = std::array::from_fn(|c| axis(&ket, c));
+    let mut out = zeros(m);
+    for (a, row) in out.iter_mut().enumerate() {
+        for (b, to) in row.iter_mut().enumerate() {
+            let tangent = strain.tangent(ctx, a, b)?;
+            let moved = bloch_gradients(ctx, grid, k, tangent.as_slice(), m)?;
+            let mut cross = Matrix::zeros(m, m);
+            for c in 0..3 {
+                cross += axis(moved.as_slice(), c).adjoint() * &w[c];
+            }
+            *to = &cross + cross.adjoint() - g[a].adjoint() * &w[b] - g[b].adjoint() * &w[a];
+        }
+    }
+    Ok(out)
+}
