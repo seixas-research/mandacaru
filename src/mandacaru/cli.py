@@ -40,6 +40,10 @@ def main(argv=None):
     parser.add_argument("--load-hamiltonian")
     parser.add_argument("--save-hamiltonian")
     parser.add_argument("--load-crystal")
+    parser.add_argument(
+        "--crystal-orbitals", choices=("k-space", "real-space"), default=None,
+        help="orbitals of a quantum method on a crystal (default k-space, which is not yet "
+             "implemented and raises; real-space is the Born-von Karman supercell)")
     parser.add_argument("--output")
     options = parser.parse_args(argv)
     from . import Mandacaru
@@ -60,6 +64,9 @@ def main(argv=None):
             geometry = read(path)
     if geometry is None and not (options.load_hamiltonian or options.load_crystal):
         parser.error("provide geometry or a cached problem")
+    # Passed only when given, so the calculator's own default and refusals apply.
+    extra = ({} if options.crystal_orbitals is None
+             else {"crystal_orbitals": options.crystal_orbitals})
     with Mandacaru(
         method=options.method,
         xc=options.xc or ("lda" if options.method == "dft" else None),
@@ -73,6 +80,7 @@ def main(argv=None):
         load_hamiltonian=options.load_hamiltonian,
         save_hamiltonian=options.save_hamiltonian,
         load_crystal=options.load_crystal,
+        **extra,
     ) as calculator:
         result = (
             calculator.calculate(geometry, properties=("energy", "forces"))

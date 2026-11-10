@@ -162,16 +162,12 @@ class TestASpinOrbitCrystal:
         assert np.allclose(gamma[0::2], gamma[1::2], atol=1e-8)
 
     @pytest.mark.slow
-    def test_spinor_hse06_keeps_a_mesh_with_non_trim_points_whole(self, monkeypatch):
+    def test_spinor_hse06_keeps_a_mesh_with_non_trim_points_whole(self):
         """HSE06 with spin-orbit coupling on 3x1x1 (k = 0, +-1/3): time reversal would merge
         the +-1/3 points, which the exact exchange needs both of, so the mesh stays whole;
         the force of the displaced cell is the analytic one (Rust). Measured 65 s."""
         from ase.build import bulk
 
-        def refuse(*_args, **_kwargs):
-            raise AssertionError("a crystal force reached the finite-difference driver")
-
-        monkeypatch.setattr(Mandacaru, "_periodic_quantum_forces", refuse)
         atoms = bulk("Si", "diamond", a=5.43)
         atoms.positions[1] += [0.05, -0.03, 0.02]
         atoms.calc = Mandacaru(method="dft", xc="hse06", paw_dataset="pbe-fr", grid_spacing=0.8,

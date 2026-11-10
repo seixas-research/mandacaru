@@ -24,9 +24,9 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
                         ("screen_insertions", screen_insertions)):
         if type(value) is not int or value < (1 if name == "max_length" else 0):
             raise ValueError(f"{name} must be a {'positive' if name == 'max_length' else 'nonnegative'} integer")
-    names = ("insert", "delete", "replace", "swap")
+    names = ("insert", "delete", "replace")
     if move_weights is None:
-        weights = [1.] * 4
+        weights = [1.] * 3
     else:
         if set(move_weights) - set(names):
             raise ValueError(f"move_weights accepts {names}")
@@ -49,8 +49,8 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
     if screen_insertions and destination is None:
         raise ValueError("screen_insertions records its measurements; supply a record directory")
     driver._search_record = None if destination is None else Path(destination)
-    if proposal_model is not None and driver.method != "valqa":
-        raise ValueError("proposal_model requires valqa")
+    if proposal_model is not None and driver.method != "valsqa":
+        raise ValueError("proposal_model requires valsqa")
     driver._proposal_model = proposal_model
     driver._search = dict(max_steps=max_steps, max_length=max_length,
                           move_weights=weights, temperatures=temperatures,
@@ -67,7 +67,7 @@ def run(driver, initial_parameters):
         raise NotImplementedError("native architecture search currently uses local state vectors and fresh chains")
     model = None
     reason = None
-    if driver.method == "valqa":
+    if driver.method == "valsqa":
         from ..analysis.proposals import MODEL_FILE, ProposalModel
         candidate = driver._proposal_model
         if candidate is None:
@@ -92,7 +92,7 @@ def run(driver, initial_parameters):
         initial_parameters=carried["parameters"] if carry else initial_parameters,
         transfer_steps=driver._transfer_steps,
         proposal_model=None if model is None else model.native_json)
-    if driver.method == "valqa":
+    if driver.method == "valsqa":
         raw.update(proposal_ready=model is not None and model.ready,
                    proposal_reason=reason)
         if driver._update_between_geometries:
@@ -104,7 +104,7 @@ def run(driver, initial_parameters):
     records = details.pop("records")
     details["chain_steps"] = details.pop("steps")
     details["acceptance_by_move"] = dict(zip(
-        ("insert", "delete", "replace", "swap"), details["acceptance_by_move"]))
+        ("insert", "delete", "replace"), details["acceptance_by_move"]))
     raw.update(details)
     if driver._search_record is not None:
         save_records(driver, records)

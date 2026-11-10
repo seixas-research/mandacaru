@@ -325,3 +325,37 @@ fn the_recording_rule_keeps_ghosts_alone_and_applies_each_tolerance() {
     clean.missing.insert(1, 0.5);
     assert!(!clean.is_clean() && clean.defects().phases.is_empty());
 }
+
+/// An all-electron reference atom that did not converge is refused in words that say so, with
+/// the iteration count; the functional/treatment mismatch is a separate message. (The audit read
+/// "converged false" inside a mismatch sentence for the pbe lanthanides.)
+#[test]
+fn an_unconverged_reference_atom_is_named_as_such() {
+    use mandacaru_core::models::{
+        atom::{solve_model, AtomModel, AtomOptions},
+        relativity::Treatment,
+    };
+    use mandacaru_core::paw::diagnose::reference::check_reference;
+    let ctx = context();
+    let ds = read(&ctx, &dataset_path("lda-sr", "O"));
+    let options = |max_iterations| AtomOptions {
+        points: 4000,
+        r_max: 25.,
+        max_iterations,
+        tolerance: 1e-7,
+        mixing: 0.25,
+    };
+    let model = |functional: &str| AtomModel {
+        functional: functional.into(),
+        relativity: Treatment::Scalar,
+        polish: 0,
+    };
+    let stopped = solve_model(&ctx, 8, &options(2), &model("lda"), None, None).unwrap();
+    assert!(!stopped.converged);
+    let message = check_reference(&ds, &stopped).unwrap_err().to_string();
+    assert!(message.contains("did not converge in 2 iterations"), "{message}");
+    let other = solve_model(&ctx, 8, &options(200), &model("pbe"), None, None).unwrap();
+    assert!(other.converged);
+    let message = check_reference(&ds, &other).unwrap_err().to_string();
+    assert!(message.contains("is not the one the record asks for") && !message.contains("converge"), "{message}");
+}

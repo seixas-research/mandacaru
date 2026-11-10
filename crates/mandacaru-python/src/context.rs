@@ -3009,7 +3009,7 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[atoms, 3], projected.as_slice().to_vec())
     }
-    #[pyo3(signature=(data,*,group_by="molecule",fractions=vec![0.25,0.5,1.0],seed=0,folds=None,gnn_epochs=100,mixing=0.3,temperature=1.0))]
+    #[pyo3(signature=(data,*,group_by="molecule",fractions=vec![0.25,0.5,1.0],seed=0,folds=None,gnn_epochs=100,mixing=0.3,temperature=1.0,kinds=vec!["graph".to_string()]))]
     fn fit_proposal(
         &self,
         py: Python<'_>,
@@ -3021,8 +3021,10 @@ impl PyContext {
         gnn_epochs: usize,
         mixing: f64,
         temperature: f64,
+        kinds: Vec<String>,
     ) -> PyResult<String> {
-        use mandacaru_core::quantum::search::learning::training::{self, Options};
+        use mandacaru_core::quantum::search::learning::training::{self, Kind, Options};
+        let kinds = kinds.iter().map(|k| Kind::parse(k)).collect::<mandacaru_core::Result<Vec<_>>>().map_err(error)?;
         py.detach(|| {
             let options = Options {
                 fractions,
@@ -3031,6 +3033,7 @@ impl PyContext {
                 epochs: gnn_epochs,
                 mixing,
                 temperature,
+                kinds,
                 ..Default::default()
             };
             training::fit_json(&self.inner, data, group_by, &options)
@@ -3102,7 +3105,7 @@ impl PyContext {
             .map_err(error)?;
         array(py, &[axis.len()], out.as_slice().to_vec())
     }
-    #[pyo3(signature=(operator,n_spatial_orbitals,num_particles,*,mapping="jordan_wigner",sector=true,include_singles=true,sparse=false,pool="fermionic",precision="float64"))]
+    #[pyo3(signature=(operator,n_spatial_orbitals,num_particles,*,mapping="jordan_wigner",sector=true,include_singles=true,sparse=false,pool="fermionic",precision="float64",taper=false,register_free=false))]
     fn quantum_problem(
         &self,
         py: Python<'_>,
@@ -3115,19 +3118,26 @@ impl PyContext {
         sparse: bool,
         pool: &str,
         precision: &str,
+        taper: bool,
+        register_free: bool,
     ) -> PyResult<quantum::PyProblem> {
         let precision = quantum::parse_precision(precision)?;
+        if register_free && sparse {
+            return Err(PyValueError::new_err(
+                "a sparse Hamiltonian matrix needs a state-vector register; a register-free (shot-based) problem builds none",
+            ));
+        }
         let inner = py
             .detach(|| {
                 let modes = n_spatial_orbitals.checked_mul(2).ok_or(Error::Overflow)?;
                 let encoding =
                     mandacaru_core::quantum::Encoding::new(mapping, modes, num_particles)?;
                 let operator = operator.inner.copy_into(&self.inner)?;
-                let mut problem = mandacaru_core::quantum::CachedProblem::new(
+                let mut problem = mandacaru_core::quantum::CachedProblem::new_in(
                     &self.inner,
                     encoding,
                     operator,
-                    sector,
+                    quantum::space(register_free, sector),
                     false,
                     include_singles,
                 )?
@@ -3135,16 +3145,16 @@ impl PyContext {
                 if pool != "fermionic" {
                     problem.use_pool(pool, include_singles)?;
                 }
-                if sparse {
-                    problem.sparse = Some(mandacaru_core::quantum::sparse::SparseMatrix::new(
-                        &self.inner,
-                        &problem.basis,
-                        &problem.hamiltonian,
-                    )?);
+                if taper {
+                    problem.taper()?;
                 }
                 Ok::<_, Error>(problem)
             })
             .map_err(error)?;
+        let mut inner = inner;
+        if sparse {
+            quantum::attach_sparse(py, &mut inner)?;
+        }
         Ok(quantum::PyProblem { inner })
     }
     #[pyo3(signature=(variables,*,omega=mandacaru_core::models::HSE06_OMEGA))]
@@ -4167,11 +4177,34 @@ impl PyContext {
         &self,
         py: Python<'_>,
         n_modes: usize,
-        num_particles: [usize; 2],
+        num_particles: Option<[usize; 2]>,
         terms: quantum::FermionTerms,
         mapping: &str,
     ) -> PyResult<quantum::PyOperator> {
         py.detach(|| quantum::fermion(&self.inner, n_modes, num_particles, mapping, terms))
+    }
+    /// `((ladders, re, im), ...)` of spin-orbital integrals `h_pq` and `<pq|rs>`.
+    #[pyo3(signature=(one,two=None,*,tol=1e-12))]
+    fn fermion_integral_terms(
+        &self,
+        py: Python<'_>,
+        one: &Bound<'_, PyAny>,
+        two: Option<&Bound<'_, PyAny>>,
+        tol: f64,
+    ) -> PyResult<quantum::FermionTerms> {
+        quantum::fermion_integral_terms(py, &self.inner, one, two, tol)
+    }
+    /// `(n_modes, terms)` of spatial (or spin-resolved) integrals in spin-orbital order.
+    #[pyo3(signature=(one,two=None,spin=None,*,tol=1e-12))]
+    fn fermion_spatial_terms(
+        &self,
+        py: Python<'_>,
+        one: &Bound<'_, PyAny>,
+        two: Option<&Bound<'_, PyAny>>,
+        spin: Option<&Bound<'_, PyAny>>,
+        tol: f64,
+    ) -> PyResult<(usize, quantum::FermionTerms)> {
+        quantum::fermion_spatial_terms(py, &self.inner, one, two, spin, tol)
     }
     #[pyo3(signature=(path,*,sector=true,dense=false,include_singles=true,sparse=false,precision="float64"))]
     fn load_hamiltonian(
@@ -4203,16 +4236,7 @@ impl PyContext {
             })
             .map_err(error)?;
         if sparse {
-            inner.sparse = Some(
-                py.detach(|| {
-                    mandacaru_core::quantum::sparse::SparseMatrix::new(
-                        &self.inner,
-                        &inner.basis,
-                        &inner.hamiltonian,
-                    )
-                })
-                .map_err(error)?,
-            );
+            quantum::attach_sparse(py, &mut inner)?;
         }
         Ok(quantum::PyProblem { inner })
     }
@@ -5032,4 +5056,17 @@ impl PyContext {
             Err(PyValueError::new_err("box_values and alias_values must be arrays of float or complex"))
         }
     }
+}
+
+/// The worker count a context takes when none is requested (`MANDACARU_NUM_THREADS`, then
+/// `OMP_NUM_THREADS`, then the hardware parallelism).
+#[pyfunction]
+pub fn num_threads() -> usize {
+    mandacaru_core::default_threads()
+}
+
+/// The hardware threads this process may use: the width of a dense product over a grid.
+#[pyfunction]
+pub fn grid_blas_threads() -> usize {
+    mandacaru_core::hardware_threads()
 }

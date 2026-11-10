@@ -433,6 +433,12 @@ class CalculationResult:
         }
 
     def _molecular_observables(self, *, state=0, **options):
+        if self._problem is not None and self._raw.get("state_kind") == "none":
+            raise ValueError(
+                "a shot-based run builds no state vector (its Hamiltonian, pool and observables "
+                "are Pauli operators measured on the device), so it has no density matrices or "
+                "orbitals to read; run with shots=0 for the state"
+            )
         if self._reference is None or self._integrals is None:
             raise ValueError(
                 "molecular fields require the calculation's retained basis and orbitals"
@@ -525,6 +531,10 @@ class CalculationResult:
         """Forces in eV/Angstrom; variational steps are specified in Bohr.
 
         Richardson extrapolation is available for force convergence checks.
+        A variational state is differentiated with the Lagrangian (Z-vector) correction of its
+        residual parameter gradient; ``force_details`` reports ``stationarity``,
+        ``parameter_gradient_norm``, ``z_vector_norm``, ``correction_norm_ha_per_bohr`` and the
+        ``uncorrected_gradient`` the correction was added to.
         A stationary mean-field state ignores ``step`` and ``extrapolate``: its
         gradient, all-electron or PAW-LCAO, is analytic, and ``force_details``
         names the scheme and the stationarity of the state it differentiated.
@@ -548,7 +558,10 @@ class CalculationResult:
                     self._problem, self._model,
                     np.ascontiguousarray(self._raw["state"]),
                     active_spec=None if self._active_space is None else json.dumps(self._active_space),
-                    internal=internal, step=step, extrapolate=extrapolate)
+                    internal=internal, step=step, extrapolate=extrapolate,
+                    indices=[int(i) for i in self._raw["indices"]],
+                    parameters=np.ascontiguousarray(self._raw["parameters"], dtype=float),
+                    product_form=self.solver.ansatz.product_form)
             gradient = self._gradient_cache[cache_key]["gradient"]
             self.force_details = {
                 key: value.copy() if isinstance(value, np.ndarray) else value

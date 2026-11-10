@@ -1,5 +1,5 @@
 //! AS-6 refusals: what the crystal stress does not differentiate raises with the cause, taken from
-//! the crystal itself (a hybrid, a spinor without its spin-orbit projectors, float32, rVV10, more than two spin channels, DFT+U, a
+//! the crystal itself (a hybrid, a spinor without its spin-orbit projectors, float32, more than two spin channels, DFT+U, a
 //! k mesh reduced by space-group symmetry), and a setup that is not the crystal's is refused (the
 //! cell, the atom centers, the weights, the reference). No refusal reaches an SCF or a stress:
 //! nothing is silently differentiated as another calculation. Needs `MANDACARU_PAW_PATH`.
@@ -47,10 +47,8 @@ fn unsupported(data: &Data) -> String {
 fn what_is_not_differentiated_raises_with_the_cause() {
     let mut data = load("lih");
     let original = data.crystal.functional.clone();
-    for (functional, word) in [
-        ("hse06", "hybrid"),
-        ("pbe+rvv10", "rVV10"),
-    ] {
+    // The rVV10 forms are differentiated (X-6, `periodic_stress_rvv10.rs`): no refusal to pin.
+    for (functional, word) in [("hse06", "hybrid")] {
         data.crystal.functional = functional.to_string();
         let message = unsupported(&data);
         assert!(message.contains(word), "{functional}: {message}");

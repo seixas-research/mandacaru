@@ -185,19 +185,8 @@ def test_a_crystal_file_without_the_setup_block_has_an_energy_and_no_forces(tmp_
 
 
 # --------------------------------------------------------------------------- #
-# What the engines do not differentiate raises with its cause.
+# The meta-GGA and rVV10 crystals reach the analytic route; float32 and hybrid +U raise.
 # --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("xc, cause, queries", [
-    ("pbe+rvv10", "rVV10", ("get_stress",)),
-])
-def test_a_functional_the_engines_do_not_differentiate_raises_naming_the_cause(xc, cause, queries):
-    for query in queries:
-        atoms = lih()
-        atoms.calc = calculator(xc=xc)
-        with pytest.raises(NotImplementedError, match=cause):
-            getattr(atoms, query)()
 
 
 @pytest.mark.parametrize("xc", ["r2scan", "pbe+rvv10"])
@@ -217,6 +206,17 @@ def test_an_r2scan_crystal_has_an_analytic_stress():
     ``crates/mandacaru-core/tests/periodic_stress_meta.rs``); here it reaches the calculator."""
     atoms = lih()
     atoms.calc = calculator(xc="r2scan")
+    stress = atoms.get_stress(voigt=False)
+    assert stress.shape == (3, 3) and np.all(np.isfinite(stress))
+    assert np.allclose(stress, stress.T) and np.abs(stress).max() > 1e-6
+
+
+def test_an_rvv10_crystal_has_an_analytic_stress():
+    """AS-X: the rVV10 crystal stress is analytic in Rust (its reconverged strain gates are in
+    ``crates/mandacaru-core/tests/periodic_stress_rvv10.rs``, the kernel term alone in
+    ``nonlocal_strain.rs``); here it reaches the calculator."""
+    atoms = lih()
+    atoms.calc = calculator(xc="pbe+rvv10")
     stress = atoms.get_stress(voigt=False)
     assert stress.shape == (3, 3) and np.all(np.isfinite(stress))
     assert np.allclose(stress, stress.T) and np.abs(stress).max() > 1e-6
@@ -263,34 +263,22 @@ def test_dft_plus_u_forces_and_stress_semilocal():
     assert not np.isnan(stress).any()
 
 
-def test_a_hybrid_on_a_symmetry_reduced_mesh_raises_before_any_force():
-    """The energy path's own rule: a hybrid sums over the listed k-points, so it needs the whole mesh."""
-    atoms = bulk("Si", "diamond", a=5.43)
-    atoms.calc = calculator(xc="hse06", grid_spacing=0.5, kpts={"size": (2, 2, 2), "gamma": True}, symmetry=True)
-    with pytest.raises(NotImplementedError, match="whole k mesh|full k mesh"):
-        atoms.get_forces()
-
-
-def test_a_hybrid_with_symmetry_operations_on_a_gamma_mesh_raises_naming_the_reduction():
-    """Gamma is one point, so the energy path accepts the symmetry table; the derivative engines do not average a hybrid.
-
-    H2 in a cubic box (16 operations) at Gamma with ``symmetry=True``: the energy is computed, the force and the stress
-    raise naming the reduction and the way out. The control is the same crystal with ``symmetry=False``, which
-    differentiates (measured 7 s for the SCF and the two refusals, 6.5 s for the control's forces)."""
+def test_a_hybrid_with_symmetry_on_keeps_the_whole_mesh_and_differentiates_the_same_crystal():
+    """A hybrid sums its exchange over the listed k-points, so the setup keeps the whole mesh for it
+    whatever ``symmetry`` says (MG-F3 part 1, owner decision Q11): ``symmetry=True`` reduces
+    nothing, and the forces and the stress are those of ``symmetry=False``. (The engines still
+    refuse a hybrid crystal that does list a reduced mesh, from another source:
+    ``periodic_response_refusals.rs``.) H2 in a cubic box at Gamma; measured about 14 s."""
 
     def hydrogen(symmetry):
         atoms = Atoms("H2", positions=[[3.0, 3.0, 2.63], [3.0, 3.0, 3.37]], cell=[6.0] * 3, pbc=True)
         atoms.calc = calculator(xc="hse06", symmetry=symmetry)
         return atoms
 
-    atoms = hydrogen(True)
-    for query, word in (("get_forces", "crystal forces"), ("get_stress", "analytic crystal stress")):
-        with pytest.raises(NotImplementedError, match=f"{word} (are|is) not available for a hybrid crystal on a k mesh reduced "
-                                                      "by space-group symmetry.*symmetry=False"):
-            getattr(atoms, query)()
-    assert atoms.calc.periodic_problem.symmetry.n_operations == 16
-    whole = hydrogen(False)
-    assert whole.get_forces().shape == (2, 3)
+    reduced, whole = hydrogen(True), hydrogen(False)
+    assert reduced.get_forces() == pytest.approx(whole.get_forces(), abs=1e-8)
+    assert reduced.get_stress() == pytest.approx(whole.get_stress(), abs=1e-8)
+    assert abs(reduced.get_forces()[1, 2]) > 0.1
 
 
 def test_the_stress_of_a_molecule_is_refused_naming_the_cause():

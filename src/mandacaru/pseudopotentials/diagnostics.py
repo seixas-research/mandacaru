@@ -34,9 +34,10 @@ def diagnose(pp, *, levels: bool = False) -> dict:
     miss of the s channel, ``None`` without one), ``missing`` (``{l: level - reference}`` of
     the channels that do not bind a physical reference), ``branch_ghosts`` (``{"l:kappa":
     depth}`` of the ``j`` branches of a fully relativistic dataset), ``branch_phases``,
-    ``wrong_phases`` (the phases outside their tolerances) and ``defects`` (what a
-    ``ghosts="flag"`` generation records).  With ``levels``, ``levels`` holds the lowest
-    levels the ghost test reads for each channel.
+    ``wrong_phases`` (the phases outside their tolerances), ``unprojected_missing``
+    (``{l: offset}``, Hartree, of the bound all-electron levels a channel without projectors
+    does not reproduce) and ``defects`` (what a ``ghosts="flag"`` generation records).  With
+    ``levels``, ``levels`` holds the lowest levels the ghost test reads for each channel.
     """
     answer = _native.paw_diagnose(context(), *record_of(pp), levels=bool(levels))
     if "unevaluated" in answer:

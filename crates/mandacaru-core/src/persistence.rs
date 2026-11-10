@@ -5,7 +5,7 @@ use crate::{
     product,
     quantum::{
         evolution, solver::by_precision, Amplitude, Basis, CachedProblem, Encoding, Operator,
-        SolveOptions, SolveResult, State, C64,
+        SolveOptions, SolveResult, Space, State, C64,
     },
     snapshot_table, Buffer, Context, Error, Reservation, Result,
 };
@@ -288,7 +288,11 @@ impl Document {
             ];
             if let Some(spatial) = spatial {
                 let m = integer(spatial, "spatial orbital count")?;
-                if Encoding::new(mapping, product(&[m, 2])?, counts)?.n_qubits() != n {
+                // A Z2-tapered register is the encoding's minus the qubits the taper removed.
+                let removed = p["metadata"]["taper"]["anchors"]
+                    .as_array()
+                    .map_or(0, Vec::len);
+                if Encoding::new(mapping, product(&[m, 2])?, counts)?.n_qubits() != n + removed {
                     return Err(invalid(
                         "snapshot qubits disagree with mapping and orbitals",
                     ));
@@ -390,6 +394,21 @@ impl Document {
         dense: bool,
         singles: bool,
     ) -> Result<CachedProblem> {
+        let space = if sector {
+            Space::Sector
+        } else {
+            Space::Register
+        };
+        self.problem_in(ctx, space, dense, singles)
+    }
+    /// The quantum problem of this Hamiltonian snapshot in `space` (see [`Space`]).
+    pub fn problem_in(
+        &self,
+        ctx: &Context,
+        space: Space,
+        dense: bool,
+        singles: bool,
+    ) -> Result<CachedProblem> {
         let p = &self.payload;
         if p["format"] != HAMILTONIAN {
             return Err(invalid("expected a Hamiltonian snapshot"));
@@ -412,7 +431,7 @@ impl Document {
                 h.decomposition.push(Self::embedded(ctx, group, h.n)?);
             }
         }
-        CachedProblem::new(ctx, encoding, h, sector, dense, singles)
+        CachedProblem::new_in(ctx, encoding, h, space, dense, singles)
     }
     /// The state this checkpoint prepares, stored in `precision` (complex128
     /// or complex64); the generators and parameters stay float64.
@@ -426,8 +445,16 @@ impl Document {
             }
             let p = &self.payload;
             let n = integer(&p["n_qubits"], "qubits")?;
-            let basis = Basis::register(ctx, n)?;
-            let mut initial = ctx.allocate::<A>(basis.len())?;
+            // A wide register (a shot run's) cannot be held as a state vector: say so by name.
+            let too_wide = |e: crate::Error| match e {
+                crate::Error::Budget { .. } | crate::Error::Overflow => invalid(&format!(
+                    "this checkpoint's state has 2^{n} amplitudes, beyond the calculation's memory \
+                     budget; a wide (shot-run) checkpoint is prepared on the device: use its circuit"
+                )),
+                other => other,
+            };
+            let basis = Basis::register(ctx, n).map_err(too_wide)?;
+            let mut initial = ctx.allocate::<A>(basis.len()).map_err(too_wide)?;
             let mut index = 0;
             for q in p["reference_qubits"].as_array().unwrap() {
                 index |= 1usize << (n - 1 - integer(q, "reference qubit")?);
@@ -481,11 +508,12 @@ impl Document {
         let p = &self.payload;
         if p["format"] != CHECKPOINT
             || p["mapping"] != problem.encoding.mapping
-            || integer(&p["n_qubits"], "qubits")? != problem.encoding.n_qubits()
+            || integer(&p["n_qubits"], "qubits")? != problem.n_qubits()
+            || p["metadata"].get("taper").unwrap_or(&Value::Null) != &taper_record(problem)
         {
             return Err(invalid("checkpoint mapping/register differs from problem"));
         }
-        let n = problem.encoding.n_qubits();
+        let n = problem.n_qubits();
         let ctx = &problem.context;
         if p["method"] != if options.adapt { "adapt-vqe" } else { "vqe" } {
             return Err(invalid("checkpoint method differs from solver"));
@@ -498,7 +526,7 @@ impl Document {
         for q in p["reference_qubits"].as_array().unwrap() {
             reference |= 1u64 << (n - 1 - integer(q, "reference qubit")?);
         }
-        if reference != problem.encoding.reference() {
+        if reference != problem.register_reference() {
             return Err(invalid(
                 "checkpoint reference differs from Hartree-Fock reference",
             ));
@@ -587,6 +615,14 @@ impl Document {
         )
     }
 }
+/// The Z2 tapering a checkpoint was written on (`null` for an untapered register): its anchors,
+/// the sector signs and the generators, so a resume on another register is refused.
+fn taper_record(problem: &CachedProblem) -> Value {
+    problem.taper.as_ref().map_or(
+        Value::Null,
+        |t| json!({"anchors": t.anchors, "signs": t.signs, "generators": t.labels()}),
+    )
+}
 fn same_operator(a: &Operator, b: &Operator) -> bool {
     a.n == b.n
         && a.terms.len() == b.terms.len()
@@ -609,13 +645,13 @@ pub fn checkpoint(
         || indices.iter().any(|&i| i >= problem.pool.len())
         || parameters.iter().any(|x| !x.is_finite())
         || !energy.is_finite()
-        || !["vqe", "adapt-vqe", "mcas-vqe", "valqa"].contains(&method)
+        || !["vqe", "adapt-vqe", "vasqa", "valsqa"].contains(&method)
         || (method != "vqe" && !product_form)
     {
         return Err(invalid("invalid checkpoint ansatz parameters or energy"));
     }
-    let n = problem.encoding.n_qubits();
-    let reference = problem.encoding.reference();
+    let n = problem.n_qubits();
+    let reference = problem.register_reference();
     let entries = indices
         .iter()
         .try_fold(problem.hamiltonian.terms.len(), |total, &i| {
@@ -638,6 +674,10 @@ pub fn checkpoint(
     } else {
         (indices.iter().zip(parameters).map(|(&i,&t)|json!({"label":problem.pool[i].label,"kind":"fermionic","parameter":t,"generator":pauli_payload(&problem.pool[i].operator)})).collect::<Vec<_>>(),json!({"engine":"rust"}))
     };
+    let mut metadata = metadata;
+    if problem.taper.is_some() {
+        metadata["taper"] = taper_record(problem);
+    }
     let payload = json!({"format":CHECKPOINT,"version":2,"energy_unit":"Ha","n_qubits":n,"mapping":problem.encoding.mapping,"num_particles":problem.encoding.particles,"n_spatial_orbitals":problem.encoding.modes/2,"reference_qubits":(0..n).filter(|q| reference & (1<<(n-1-q))!=0).collect::<Vec<_>>(),"preparation":if problem.hva.is_some() || product_form {"product"} else {"sum"},"method":method,"energy":energy,"operators":operators,"hamiltonian":pauli_payload(&problem.hamiltonian),"status":status,"metadata":metadata});
     Document::parse(ctx, &payload.to_string(), CHECKPOINT)
 }

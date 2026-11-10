@@ -181,8 +181,8 @@ class HamiltonianRecord:
     metadata: dict | None = None
 
     def __post_init__(self):
-        from .mapping import _canonical_method
-        self.mapping = _canonical_method(self.mapping)
+        from .mapping import resolve_mapping
+        self.mapping = resolve_mapping(self.mapping)
 
     @property
     def num_qubits(self) -> int:
@@ -277,8 +277,8 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *, mapping: str = "jordan_wign
         repetitive Pauli strings very effectively).  Ignored for JSON; any
         other name raises ``ValueError`` for Parquet.
     """
-    from .mapping import _canonical_method
-    mapping = _canonical_method(mapping)
+    from .mapping import resolve_mapping
+    mapping = resolve_mapping(mapping)
     named = EXTENSION_FORMATS.get(os.path.splitext(os.fspath(path))[1].lower())
     if format is None:
         format = named if named is not None else DEFAULT_FORMAT
@@ -392,8 +392,8 @@ class HamiltonianHeader:
     n_terms: int | None = None
 
     def __post_init__(self):
-        from .mapping import _canonical_method
-        self.mapping = _canonical_method(self.mapping)
+        from .mapping import resolve_mapping
+        self.mapping = resolve_mapping(self.mapping)
 
 
 def read_hamiltonian_header(path, format: str | None = None, *,

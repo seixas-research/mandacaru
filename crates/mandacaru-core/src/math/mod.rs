@@ -7,6 +7,8 @@ pub mod fft;
 pub mod gemm;
 pub mod grid;
 pub mod index;
+pub mod isosurface;
+pub mod krylov;
 pub mod lattice;
 pub mod linalg;
 pub mod projection;

@@ -40,7 +40,7 @@ replaces which numerical Python; it does not infer parity from a module name.
 | --- | --- | --- |
 | Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, PAW Kohn–Sham (including HSE06 screened exchange, one-center terms and, for open shells, the spin-scaling remainder of the spheres' short-range semilocal exchange), stationary all-electron forces, stationary PAW-LCAO RHF/UHF/KS forces (including HSE06), variational molecular PAW forces and real/radial bases | Multi-shell core exchange; PAW forces for nonlocal correlation |
 | Periodic calculations | LDA/PBE/meta-GGA/HSE06 iterations (a hybrid crystal carries the compensation charges and the one-center screened terms of its PAW spheres, read from the dataset files recorded with their SHA-256 in the snapshot's `sites` block; the exchange operator is part of the mixed state), two-component LDA/PBE/HSE06 spinor SCF and bands, spectra, Ewald primitives, DFT+U (Dudarev, fully localized limit, scalar-relativistic collinear crystals on a full k mesh) and native finite-size corrections (KZK, MPC, CCMH) | Geometry assembly, electronic response, and a density symmetrizer for DFT+U. A hybrid (HSE06) runs on the whole k mesh: its exact exchange sums over the listed points, so the setup never reduces a hybrid crystal's mesh by symmetry or time reversal. Periodic forces and stress are ASE central finite differences of the energy (an interim Python route, to be replaced by native derivatives), not analytic; for a hybrid they include the one-center terms, and the analytic gradient and stress have no compensation or one-center hybrid term. Crystal HSE06 energies and gaps are not validated against an all-electron reference; a magnetic spinor hybrid and a hybrid snapshot without its `sites` block raise; `resources` threads do not yet bound the Bloch kernels reached from the Python setup |
-| Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, MCAS-VQE/VALQA, graph proposals and SDK execution | GHF-to-quantum handoff and optional GP/ranker proposal models |
+| Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, VASQA/VALSQA, ranker and graph proposals and SDK execution | GHF-to-quantum handoff and optional GP/ranker proposal models |
 | Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods and their forces (multi-shell frozen cores included in the force contraction); empty/closed-1s cores, HSE06 screened exchange; spinor Kohn–Sham with the PAW spin-orbit projector term on a spin-orbit dataset (LDA, PBE, PBE+rVV10, r²SCAN, HSE06) and its analytic forces | Basis recipe preparation, multi-shell core exchange and spinor DFT+U |
 | Radial PAW spectrum | Generalized separable eigenpairs, overlap normalization, confined and free channel spectra | Remaining dataset construction and basis recipes |
 | Correlation | Closed-shell MP2/FNO, local pair domains and PNOs, coupled local MP2 amplitudes, symmetry-preserving active spaces | Open-shell correlation and correlating-pair constraints |
@@ -345,10 +345,10 @@ or disconnected from their native replacements:
 | Public functionality | Remaining gap |
 | --- | --- |
 | Active spaces | Correlating-pair constraints and open-shell MP2 |
-| Variational methods | Optional Gaussian-process and pairwise-ranker proposal models; subspace checkpoint continuation |
+| Variational methods | Subspace checkpoint continuation (the pairwise-ranker proposal is native; the Gaussian-process proposal was refuted and is not planned) |
 | Molecular PAW | Nonlinear one-center XC, multi-shell frozen-core exchange, spinor DFT+U and forces for nonlocal correlation on a scalar-relativistic dataset |
-| Dispersion and advanced periodic DFT | Complete D4, the analytic stress of rVV10 (refused with `NotImplementedError`), and a hybrid or spin-orbit SCF on a symmetry-reduced k mesh (both run on the whole mesh) |
-| Periodic quantum calculations | Bloch VQE/ADAPT, quasiparticle weights, interacting spectral functions and quantum unit-cell relaxation |
+| Dispersion and advanced periodic DFT | Complete D4 and a hybrid or spin-orbit SCF on a symmetry-reduced k mesh (both run on the whole mesh) |
+| Periodic quantum calculations | The supercell Hamiltonian, the Lehmann spectral function at the mesh points, the unfolded mean-field bands and the tetrahedron DOS are native ([the crystal guide](../guide/bloch.md)); missing are the per-k register (`crystal_orbitals="k-space"`), a PAW-LCAO supercell, the irreducible zone and band paths on the mesh, and crystal forces and stress for the quantum methods (refused: the supercell energy depends on the atoms' placement on the grid), hence quantum unit-cell relaxation |
 | Electronic response | Wannier construction, constrained RPA and downfolding |
 | Circuit execution | Multi-reference SDK execution and continuation of device runs |
 | Geometry workflows | Remaining ethanol relaxation verification and periodic force/stress response |
@@ -386,7 +386,7 @@ reports bare physical energies. SLSQP (unconstrained), BFGS, L-BFGS, CG, COBYLA
 (unconstrained), Nelder–Mead and seeded SPSA execute in Rust. The classical
 optimizer comparison, HVA and deflation examples exercise these paths.
 
-MCAS-VQE performs bounded insertion, deletion, replacement and swap edits in
+VASQA performs bounded insertion, deletion, replacement and swap edits in
 Rust. Proposal masses include every edit leading to the same architecture.
 Native parameter relaxation, gradient softmax, geometric temperature schedules,
 length penalties, reproducible streams and recorded insertion screens are
@@ -395,7 +395,7 @@ the separation of best cost from best energy, and checkpoint/state consistency.
 A completed chain does not certify eigenstate convergence: `result.completed`
 and `result.converged` report those distinct facts.
 
-VALQA graph proposals train and score in Rust. The term/qubit factor graph has
+VALSQA graph proposals train and score in Rust. The term/qubit factor graph has
 two message-passing layers, a state-conditioned scoring head and a within-state
 first-choice loss. A shared reverse-derivative tape reuses graph embeddings
 within each minibatch; Adam and normalization statistics also run natively.

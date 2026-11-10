@@ -23,7 +23,7 @@ pub struct Options {
     pub max_steps: usize,
     pub transfer_steps: Option<usize>,
     pub max_length: usize,
-    pub move_weights: [f64; 4],
+    pub move_weights: [f64; 3],
     pub temperatures: [f64; 2],
     pub length_penalty: f64,
     pub proposal_temperature: f64,
@@ -41,7 +41,7 @@ impl Default for Options {
             max_steps: 200,
             transfer_steps: None,
             max_length: 20,
-            move_weights: [1.; 4],
+            move_weights: [1.; 3],
             temperatures: [0.1 / 27.211386245988, 0.001 / 27.211386245988],
             length_penalty: 0.,
             proposal_temperature: 0.2,
@@ -87,6 +87,11 @@ struct Evaluated {
     cost: f64,
     gradients: Vec<f64>,
     probabilities: Vec<f64>,
+    /// Each operator's importance: the |gradient| it would have if re-inserted at its own position
+    /// (its angle zero, the other angles of this state).
+    importances: Vec<f64>,
+    /// The deletion and replacement position weights of [`kernel::removal`].
+    removal: Vec<f64>,
     success: bool,
     message: String,
 }
@@ -94,7 +99,7 @@ pub struct SearchResult {
     pub solution: SolveResult,
     pub records: Vec<Value>,
     pub steps: Vec<Value>,
-    pub acceptance: [(usize, usize); 4],
+    pub acceptance: [(usize, usize); 3],
     pub optimal_cost: f64,
     pub best_energy: f64,
     pub best_energy_indices: Vec<usize>,
@@ -185,12 +190,26 @@ impl Evaluator<'_> {
                 if scores.iter().any(|v| !v.is_finite()) {
                     return Err(invalid("learned proposal temperature overflows scores"));
                 }
-                let learned = training::softmax(&scores);
-                for (p, learned) in probabilities.iter_mut().zip(learned) {
-                    *p = model.mixing * *p + (1. - model.mixing) * learned;
+                // A ready model draws from its own proposal alone: the gradient enters only the
+                // first stage of its training (owner, 2026-11-09).
+                probabilities = training::softmax(&scores);
+                // Every operator must keep a positive probability, or an insertion loses its reverse
+                // deletion and the Metropolis-Hastings ratio is no longer exact.
+                if probabilities.iter().any(|p| *p <= 0.) {
+                    return Err(invalid(
+                        "the learned proposal gives an operator zero probability (its scores span more \
+                         than the float range at this temperature): raise the model's temperature",
+                    ));
                 }
             }
         }
+        let mut importances = Vec::with_capacity(sequence.len());
+        for i in 0..sequence.len() {
+            let mut zeroed = parameters.clone();
+            zeroed[i] = 0.;
+            importances.push(self.problem.evaluate(&sequence, &zeroed, true)?.gradient[i].abs());
+        }
+        let removal = kernel::removal(&importances, self.options.proposal_temperature)?;
         let result = Evaluated {
             cost: energy + self.options.length_penalty * sequence.len() as f64,
             sequence,
@@ -198,6 +217,8 @@ impl Evaluator<'_> {
             energy,
             gradients,
             probabilities,
+            importances,
+            removal,
             success,
             message,
         };
@@ -217,11 +238,11 @@ fn record(
 ) -> Value {
     json!({"step":step,"move":action.kind.name(),"position":action.position,
         "operator":if matches!(action.kind,Move::Insert|Move::Replace) {Some(action.operator)} else {None},
-        "other":if action.kind==Move::Swap {Some(action.other)} else {None},
         "source":source.sequence,"proposed":proposed.sequence,"source_parameters":source.parameters,"parameters":proposed.parameters,
         "source_energy":source.energy,"energy":proposed.energy,"source_cost":source.cost,"cost":proposed.cost,
         "delta_energy":proposed.energy-source.energy,"delta_cost":proposed.cost-source.cost,
         "source_gradients":source.gradients,"source_probabilities":source.probabilities,
+        "source_importances":source.importances,"source_removal":source.removal,
         "temperature":temperature,"log_q_forward":outcome.map(|v|v.0),"log_q_reverse":outcome.map(|v|v.1),
         "log_acceptance":outcome.map(|v|v.2),"accepted":outcome.map(|v|v.3),"screened":outcome.is_none(),
         "optimizer_success":proposed.success,"optimizer_message":proposed.message})
@@ -281,7 +302,7 @@ impl CachedProblem {
             let mut screening_random = Rng(options.seed ^ 0xd1b54a32d192ed03);
             let mut records = Vec::new();
             let mut steps = Vec::new();
-            let mut acceptance = [(0,0);4];
+            let mut acceptance = [(0,0);3];
             let mut screened = BTreeSet::new();
             for step in 0..if kernel.is_some() {chain_steps} else {0} {
                 let kernel = kernel.as_ref().unwrap();
@@ -293,25 +314,25 @@ impl CachedProblem {
                         let mut selected = remaining.len()-1;
                         for (j,&i) in remaining.iter().enumerate() {draw-=current.probabilities[i];if draw<0. {selected=j;break;}}
                         let operator = remaining.remove(selected);
-                        let action = Action {kind:Move::Insert,position:screening_random.index(current.sequence.len()+1),operator,other:0};
+                        let action = Action {kind:Move::Insert,position:screening_random.index(current.sequence.len()+1),operator};
                         let sequence = action.apply(&current.sequence);
                         let initial = if options.warm_start {action.transfer(&current.parameters,options.replace_inherit)} else {vec![0.;sequence.len()]};
                         let proposed = evaluator.evaluate(sequence,initial,step+1)?;
                         records.push(record(step+1,action,&current,&proposed,temperature,None));
                     }
                 }
-                let action = kernel.draw(ctx,&current.sequence,&current.probabilities,&mut random)?;
+                let action = kernel.draw(ctx,&current.sequence,&current.probabilities,&current.removal,&mut random)?;
                 let sequence = action.apply(&current.sequence);
                 let initial = if options.warm_start {action.transfer(&current.parameters,options.replace_inherit)} else {vec![0.;sequence.len()]};
                 let proposed = evaluator.evaluate(sequence,initial,step+1)?;
-                let forward = kernel.log_q(ctx,&proposed.sequence,&current.sequence,&current.probabilities)?;
-                let reverse = kernel.log_q(ctx,&current.sequence,&proposed.sequence,&proposed.probabilities)?;
+                let forward = kernel.log_q(ctx,&proposed.sequence,&current.sequence,&current.probabilities,&current.removal)?;
+                let reverse = kernel.log_q(ctx,&current.sequence,&proposed.sequence,&proposed.probabilities,&proposed.removal)?;
                 let ratio = kernel::log_acceptance(temperature,current.cost,proposed.cost,forward,reverse);
                 let accepted = ratio>=0. || random.uniform().ln()<ratio;
                 let row = record(step+1,action,&current,&proposed,temperature,Some((forward,reverse,ratio,accepted)));
                 if options.record {records.push(row.clone());}
                 steps.push(row);
-                let move_index = match action.kind {Move::Insert=>0,Move::Delete=>1,Move::Replace=>2,Move::Swap=>3};
+                let move_index = match action.kind {Move::Insert=>0,Move::Delete=>1,Move::Replace=>2};
                 acceptance[move_index].1+=1;
                 if accepted {acceptance[move_index].0+=1;}
                 if proposed.energy<best_energy.energy {best_energy=proposed.clone();}

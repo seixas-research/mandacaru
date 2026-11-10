@@ -19,6 +19,6 @@ pes_scan
 vqe_h2
 energy_levels
 subspace_vqe
-mcas_vqe
-valqa
+vasqa
+valsqa
 ```

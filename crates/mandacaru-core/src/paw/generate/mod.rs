@@ -49,8 +49,8 @@ use self::{
     assemble::{assemble, Atomic, Partial, PawChannel},
     finish::{finish, Parts},
     recipe::Recipe,
-    reference::{check_atom, solve_reference_with},
-    shells::{cutoff_table, partition},
+    reference::{check_atom, reference_waves, solve_reference_with},
+    shells::{cutoff_table, partition, Shells},
     waves::{pseudize_channels, screened_local_potential},
 };
 use crate::{
@@ -90,6 +90,41 @@ pub fn generate_with(ctx: &Context, recipe: &Recipe, source: &dyn XcSource) -> R
     generate_with_atom(ctx, recipe, &atom, source)
 }
 
+/// The empty channels above the highest valence one. A frozen shell above the highest remaining
+/// valence l keeps a channel of its own, empty and scattering at a positive energy; some elements
+/// always carry a few empty channels.
+fn extra_channels(recipe: &Recipe, shells: &Shells) -> usize {
+    let highest = shells.valence.iter().map(|s| s.0 .1).max().unwrap_or(0);
+    let frozen_top = shells.frozen.iter().map(|s| s.1).max().unwrap_or(highest);
+    recipe.extra_l.max(frozen_top.saturating_sub(highest)).max(
+        recipe
+            .highest_channel
+            .unwrap_or(highest)
+            .saturating_sub(highest),
+    )
+}
+
+/// The augmentation radius of every channel the construction of `recipe` on `atom` builds, empty
+/// channels included: the same partition, table and references [`generate_with_atom`] uses, without
+/// the smooth waves. A search plans its remedies from these when the first construction itself
+/// cannot be built.
+pub fn channel_radii(ctx: &Context, recipe: &Recipe, atom: &Atom) -> Result<BTreeMap<usize, f64>> {
+    recipe.validate()?;
+    check_atom(atom, recipe)?;
+    let shells = partition(atom, recipe)?;
+    let table = cutoff_table(atom, recipe, &shells)?;
+    let (channels, _) = reference_waves(
+        ctx,
+        recipe,
+        atom,
+        &shells,
+        &table,
+        extra_channels(recipe, &shells),
+        None,
+    )?;
+    Ok(channels.iter().map(|(&l, c)| (l, c.r_cut)).collect())
+}
+
 #[doc(hidden)]
 /// [`generate_with`] on a reference atom already solved with the recipe's functional and
 /// treatment (a search shares one atom across its constructions).
@@ -108,17 +143,7 @@ pub fn generate_with_atom(
     // context one by one: a bound on what they hold at once.
     let _workspace = ctx.reserve(product(&[n, 8, 48])?)?;
 
-    // A frozen shell above the highest remaining valence l keeps a channel of its own, empty and
-    // scattering at a positive energy; some elements always carry a few empty channels.
-    let highest = shells.valence.iter().map(|s| s.0 .1).max().unwrap_or(0);
-    let frozen_top = shells.frozen.iter().map(|s| s.1).max().unwrap_or(highest);
-    let extra_l = recipe.extra_l.max(frozen_top.saturating_sub(highest)).max(
-        recipe
-            .highest_channel
-            .unwrap_or(highest)
-            .saturating_sub(highest),
-    );
-
+    let extra_l = extra_channels(recipe, &shells);
     let table = cutoff_table(atom, recipe, &shells)?;
     let pseudized = pseudize_channels(ctx, recipe, atom, &shells, &table, extra_l)?;
     let radii = pseudized.channels.values().map(|c| c.r_cut);

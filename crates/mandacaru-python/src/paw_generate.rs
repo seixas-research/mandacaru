@@ -59,6 +59,7 @@ fn overrides(options: &Bound<'_, PyDict>) -> PyResult<Overrides> {
                     Cutoffs::Uniform(float()?)
                 })
             }
+            "cutoff_table" => out.cutoff_table = Some(by_l(&name, &value)?),
             "rc_factor" => out.rc_factor = Some(float()?),
             "r_cut_local" => out.r_cut_local = Some(float()?),
             "local_factor" => out.local_factor = Some(float()?),

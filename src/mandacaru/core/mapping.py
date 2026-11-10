@@ -10,10 +10,12 @@ r"""Fermionic operators and fermion-to-qubit mappings.
 
 This module provides
 
-* :class:`PauliSum` -- a lightweight linear combination of Pauli strings (the
-  qubit-operator output type), with the algebra needed to compose mappings;
-* :class:`Fermion` -- second-quantized fermionic operators with full operator
-  algebra and a builder for the molecular Hamiltonian in physicists' notation,
+* :class:`PauliSum` -- a linear combination of Pauli strings (the qubit-operator
+  input and output type): a validated ``{label: coefficient}`` view whose
+  products, commutators and matrices are computed by the native
+  ``PauliOperator`` (``mandacaru-core::quantum::algebra``);
+* :class:`Fermion` -- second-quantized fermionic operators with the builder
+  algebra and the molecular Hamiltonian in physicists' notation,
 
   .. math::
 
@@ -22,57 +24,42 @@ This module provides
 
   where :math:`\langle pq|rs\rangle = \iint \phi_p^*(1)\phi_q^*(2)\,
   r_{12}^{-1}\,\phi_r(1)\phi_s(2)` is the two-electron integral in physicists'
-  notation;
-
+  notation; the terms of the integral arrays and the mapping to qubits are
+  native too;
 * three fermion-to-qubit encodings -- **Jordan-Wigner** (default), **parity**
   and **Bravyi-Kitaev** -- plus the reduced parity variant
   ``"parity_reduced"``.
 
-All four schemes share one construction.  An encoding is fixed by an invertible
-binary *encoding matrix* :math:`\beta` acting on the occupation vector,
-:math:`q = \beta f \pmod 2`:
+An encoding is an invertible binary matrix :math:`\beta` acting on the
+occupation vector, :math:`q = \beta f \pmod 2`; the native ``Encoding`` builds
+the Pauli image of every ladder operator from it, so each scheme is one
+construction: Jordan-Wigner :math:`\beta = I`, parity the lower-triangular
+matrix of ones, Bravyi-Kitaev the Fenwick-tree matrix.  The registers the
+native operator holds are at most 62 qubits wide.
 
-* Jordan-Wigner: :math:`\beta = I`;
-* parity: :math:`\beta` lower-triangular of ones (:math:`q_i=\sum_{k\le i} f_k`);
-* Bravyi-Kitaev: the Fenwick-tree matrix (update support ``j -> j|(j+1) -> ...``).
-
-From :math:`\beta` and :math:`\beta^{-1}` one reads the *update* set ``U(j)``
-(qubits that flip with mode ``j``), the *parity* set ``P(j)`` (qubits holding the
-parity of modes ``< j``) and the *flip* set ``F(j)`` (qubits, besides ``j``,
-whose ``Z`` reads ``f_j``).  Each ladder operator is then
-
-.. math::
-
-    a_j = \tfrac12\big(X_{U(j)} X_j Z_{P(j)} + i\, X_{U(j)} Y_j Z_{P(j)\triangle F(j)}\big),
-
-which gives the correct number operator ``n_j = (I - Z_{\{j\}\cup F(j)})/2`` for
-any encoding.  Bravyi-Kitaev's Fenwick structure makes ``|U|, |P|, |F|`` all
-``O(log N)``, so each ladder operator is an ``O(log N)``-weight Pauli sum.
+Qubit ``k`` of a label is character ``k`` and the most significant bit of a
+basis-state index.  The results of the native algebra are simplified: strings
+whose coefficient is at most :data:`SIMPLIFY_ATOL` in magnitude are dropped.
 """
 
 from __future__ import annotations
 
+import cmath
 from functools import lru_cache
 
 import numpy as np
 
-# --------------------------------------------------------------------------- #
-# Single-qubit Pauli algebra.
-# --------------------------------------------------------------------------- #
+from .. import _native
 
-# (a, b) -> (phase, c) with a*b = phase * c.
-_MUL: dict[tuple[str, str], tuple[complex, str]] = {
-    ("I", "I"): (1, "I"), ("I", "X"): (1, "X"), ("I", "Y"): (1, "Y"), ("I", "Z"): (1, "Z"),
-    ("X", "I"): (1, "X"), ("X", "X"): (1, "I"), ("X", "Y"): (1j, "Z"), ("X", "Z"): (-1j, "Y"),
-    ("Y", "I"): (1, "Y"), ("Y", "X"): (-1j, "Z"), ("Y", "Y"): (1, "I"), ("Y", "Z"): (1j, "X"),
-    ("Z", "I"): (1, "Z"), ("Z", "X"): (1j, "Y"), ("Z", "Y"): (-1j, "X"), ("Z", "Z"): (1, "I"),
-}
-_SINGLE = {
-    "I": np.eye(2, dtype=complex),
-    "X": np.array([[0, 1], [1, 0]], dtype=complex),
-    "Y": np.array([[0, -1j], [1j, 0]], dtype=complex),
-    "Z": np.array([[1, 0], [0, -1]], dtype=complex),
-}
+#: Magnitude at or below which the algebra drops a Pauli string.
+SIMPLIFY_ATOL = 1e-12
+
+
+@lru_cache(maxsize=1)
+def _context():
+    """The native context of the operator algebra: one thread, shared by every
+    ``PauliSum`` and ``Fermion`` (they belong to no calculation)."""
+    return _native.Context(threads=1)
 
 
 class PauliSum:
@@ -107,7 +94,7 @@ class PauliSum:
                         f"invalid Pauli string {label!r}: expected characters "
                         f"from 'IXYZ'")
                 value = complex(coeff)
-                if not (np.isfinite(value.real) and np.isfinite(value.imag)):
+                if not cmath.isfinite(value):
                     raise ValueError(
                         f"non-finite coefficient {coeff!r} for term {label!r}")
                 self.terms[label] = self.terms.get(label, 0j) + value
@@ -128,16 +115,30 @@ class PauliSum:
                           num_qubits: int) -> "PauliSum":
         """Wrap labels that are valid by construction, skipping the checks.
 
-        For operators decoded from bit tables
-        (:class:`~mandacaru.core.pauli_algebra.PauliTable`): every label has
-        ``num_qubits`` letters from ``IXYZ`` and every coefficient is a
-        finite complex, so re-validating them character by character -- a
-        Python pass over millions of letters for a large Hamiltonian -- would
-        only cost time.
+        For operators that come out of the native algebra: every label has
+        ``num_qubits`` letters from ``IXYZ`` and every coefficient is a finite
+        complex, so re-validating them character by character would only cost
+        time.
         """
         out = cls(num_qubits=num_qubits)
         out.terms = terms
         return out
+
+    @classmethod
+    def _from_native(cls, operator) -> "PauliSum":
+        """The simplified :class:`PauliSum` of a native ``PauliOperator``."""
+        terms = {}
+        for label, re, im in operator.terms:
+            value = complex(re, im)
+            if abs(value) > SIMPLIFY_ATOL:
+                terms[label] = value
+        return cls._from_valid_terms(terms, operator.num_qubits)
+
+    def _native_operator(self, width: int | None = None):
+        """This operator as a native ``PauliOperator`` on ``width`` qubits."""
+        width = self.num_qubits if width is None else width
+        return _context().pauli_operator(
+            width, [(label, c.real, c.imag) for label, c in self.terms.items()])
 
     def _shared_width(self, other: "PauliSum", what: str) -> int | None:
         """The common register width of two operands, or ``None`` if unknown."""
@@ -156,7 +157,7 @@ class PauliSum:
 
     def __mul__(self, scalar: complex) -> "PauliSum":
         value = complex(scalar)
-        if not (np.isfinite(value.real) and np.isfinite(value.imag)):
+        if not cmath.isfinite(value):
             raise ValueError(f"non-finite scalar {scalar!r}")
         return PauliSum._from_valid_terms(
             {label: coeff * value for label, coeff in self.terms.items()},
@@ -167,33 +168,27 @@ class PauliSum:
     def compose(self, other: "PauliSum") -> "PauliSum":
         """Operator product ``self * other`` (matrix multiplication order).
 
-        Both operands must act on the same register: zipping labels of unequal
-        length would silently truncate to the shorter one.
+        Both operands must act on the same register.  The product is formed by
+        the native algebra and simplified.
         """
         width = self._shared_width(other, "compose")
-        out = PauliSum(num_qubits=width)
-        for l1, c1 in self.terms.items():
-            for l2, c2 in other.terms.items():
-                phase = 1 + 0j
-                chars = []
-                for a, b in zip(l1, l2):
-                    p, c = _MUL[(a, b)]
-                    phase *= p
-                    chars.append(c)
-                label = "".join(chars)
-                out.terms[label] = out.terms.get(label, 0j) + c1 * c2 * phase
-        return out
+        if width is None:
+            return PauliSum()
+        return PauliSum._from_native(self._native_operator(width).compose(
+            other._native_operator(width)))
 
     def commutator(self, other: "PauliSum") -> "PauliSum":
         """``[self, other]`` from the Pauli algebra, never from matrices.
 
-        Vectorized over bit tables
-        (:func:`~mandacaru.core.pauli_algebra.commutator`), so it is as cheap
-        on 100 qubits as on 10.  Equal to ``self.compose(other) -
-        other.compose(self)`` without the commuting pairs that cancel there.
+        Only the pairs of strings that anticommute contribute (each twice
+        their product), so it is as cheap on 50 qubits as on 10.  Equal to
+        ``self.compose(other) - other.compose(self)``.
         """
-        from .pauli_algebra import commutator
-        return commutator(self, other)
+        width = self._shared_width(other, "commute")
+        if width is None:
+            return PauliSum()
+        return PauliSum._from_native(self._native_operator(width).commutator(
+            other._native_operator(width)))
 
     def simplify(self, atol: float = 1e-12) -> "PauliSum":
         """Drop terms with negligible coefficient, keeping the register width."""
@@ -214,40 +209,16 @@ class PauliSum:
 
     def to_matrix(self) -> np.ndarray:
         """Dense matrix (qubit 0 is the leftmost Kronecker factor)."""
-        from .matrix_free import register_indices
-        from .sector import flip_groups, group_amplitudes
-
-        n = self.num_qubits
-        dim = 1 << n
-        mat = np.zeros((dim, dim), dtype=complex)
-        if not self.terms:
-            return mat
-        cols = register_indices(n)
-        for flip, members in flip_groups(self).items():
-            rows = cols ^ np.int64(flip) if flip else cols
-            mat[rows, cols] = group_amplitudes(members, cols)
-        return mat
+        return self._native_operator().matrix()
 
     def to_sparse_matrix(self):
         """Sparse CSR matrix (qubit 0 is the leftmost Kronecker factor).
 
-        Built by flip mask, as :meth:`ParticleSector.restrict
-        <mandacaru.core.sector.ParticleSector.restrict>` does on a sector: the
-        strings sharing the qubits they flip share every image state, so each
-        flip mask is one pass over the ``2^n`` basis states, written straight
-        into the CSR arrays -- no Kronecker product per term, and memory of
-        the result plus a few vectors.  Used by the memory-light path of
-        :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE` for larger active
-        spaces.
+        Built natively by flip mask: the strings sharing the qubits they flip
+        share every image state, so the matrix is written straight into its
+        compressed rows with memory of the result plus a row of scratch.
         """
-        from .matrix_free import register_indices
-        from .sector import csr_from_flip_groups, flip_groups
-
-        n = self.num_qubits
-        dim = 1 << n
-        return csr_from_flip_groups(
-            flip_groups(self), register_indices(n),
-            lambda images: images, dim)
+        return self._native_operator().sparse_matrix()
 
     def hermitian_part(self) -> "PauliSum":
         r""":math:`\tfrac12(A + A^\dagger)` as a Pauli sum.
@@ -256,9 +227,7 @@ class PauliSum:
         :math:`\sum_P c_P P` is :math:`\sum_P \mathrm{Re}(c_P)\,P`: the
         imaginary parts of the coefficients are dropped, with no matrix formed.
         """
-        return PauliSum({label: coeff.real for label, coeff in
-                         self.terms.items() if coeff.real != 0.0},
-                        num_qubits=self.num_qubits)
+        return PauliSum._from_native(self._native_operator().hermitian_part())
 
     def to_sparse_pauli_op(self):
         """Convert to a qiskit ``SparsePauliOp`` (requires qiskit)."""
@@ -275,211 +244,6 @@ class PauliSum:
 
 
 # --------------------------------------------------------------------------- #
-# Encoding matrices and the update / parity / flip sets.
-# --------------------------------------------------------------------------- #
-
-def _gf2_inverse(mat: np.ndarray) -> np.ndarray:
-    """Inverse of a binary matrix over GF(2) by Gauss-Jordan elimination."""
-    n = mat.shape[0]
-    a = (mat % 2).astype(np.int8).copy()
-    inv = np.eye(n, dtype=np.int8)
-    for col in range(n):
-        pivot = next((r for r in range(col, n) if a[r, col]), None)
-        if pivot is None:
-            raise ValueError("encoding matrix is singular over GF(2)")
-        if pivot != col:
-            a[[col, pivot]] = a[[pivot, col]]
-            inv[[col, pivot]] = inv[[pivot, col]]
-        for r in range(n):
-            if r != col and a[r, col]:
-                a[r] ^= a[col]
-                inv[r] ^= inv[col]
-    return inv
-
-
-@lru_cache(maxsize=64)
-def _encoding_matrix_cached(method: str, n: int) -> np.ndarray:
-    if method == "jordan_wigner":
-        beta = np.eye(n, dtype=np.int8)
-    elif method == "parity":
-        beta = np.tril(np.ones((n, n), dtype=np.int8))
-    elif method == "bravyi_kitaev":
-        beta = np.zeros((n, n), dtype=np.int8)
-        for j in range(n):
-            i = j
-            while i < n:
-                beta[i, j] = 1
-                i = i | (i + 1)         # Fenwick-tree update ancestor
-    else:
-        raise ValueError(f"unknown mapping method {method!r}")
-    beta.flags.writeable = False
-    return beta
-
-
-def _encoding_matrix(method: str, n: int) -> np.ndarray:
-    return _encoding_matrix_cached(_base_method(method), int(n))
-
-
-@lru_cache(maxsize=64)
-def _encoding_inverse(method: str, n: int) -> np.ndarray:
-    inv = _gf2_inverse(_encoding_matrix(method, int(n)))
-    inv.flags.writeable = False
-    return inv
-
-
-@lru_cache(maxsize=64)
-def _mapping_sets(method: str, n: int):
-    """Return per-mode ``(U, P, R)`` sets (R = parity-set XOR flip-set)."""
-    base = _base_method(method)
-    n = int(n)
-    beta = _encoding_matrix_cached(base, n)
-    inv = _encoding_inverse(base, n)
-    update, parity, remainder = [], [], []
-    for j in range(n):
-        U = frozenset(i for i in range(n) if beta[i, j] and i != j)
-        F = frozenset(i for i in range(n) if inv[j, i] and i != j)
-        row = np.zeros(n, dtype=np.int8)
-        for k in range(j):                     # parity of modes 0..j-1
-            row ^= inv[k]
-        P = frozenset(i for i in range(n) if row[i])
-        R = P ^ F                              # symmetric difference
-        update.append(U)
-        parity.append(P)
-        remainder.append(R)
-    return tuple(update), tuple(parity), tuple(remainder)
-
-
-def _ladder_pauli(n: int, j: int, dagger: bool,
-                  U: set[int], P: set[int], R: set[int]) -> PauliSum:
-    """Pauli representation of ``a_j`` (or ``a_j^dagger``) for the given sets."""
-    x_term = ["I"] * n
-    for i in U:
-        x_term[i] = "X"
-    x_term[j] = "X"
-    for i in P:
-        x_term[i] = "Z"
-
-    y_term = ["I"] * n
-    for i in U:
-        y_term[i] = "X"
-    y_term[j] = "Y"
-    for i in R:
-        y_term[i] = "Z"
-
-    y_coeff = -0.5j if dagger else 0.5j
-    return PauliSum({"".join(x_term): 0.5, "".join(y_term): y_coeff})
-
-
-def _qubit_ladder_pauli(n: int, j: int, dagger: bool,
-                        U: set[int], F: set[int]) -> PauliSum:
-    r"""Pauli form of the **qubit** ladder operator on occupation ``j``.
-
-    The fermionic ladder operator carries the encoding's parity string
-    :math:`Z_{P(j)}`, which supplies the antisymmetry sign.  A *qubit*
-    excitation is the same occupation-number move **without** that sign:
-
-    .. math::
-
-        q_j = \tfrac12\big(X_{U(j)}X_j + i\, X_{U(j)} Y_j Z_{F(j)}\big),
-
-    with the update set :math:`U(j)` (the qubits that flip when occupation
-    ``j`` flips) and the flip set :math:`F(j)` (the qubits whose ``Z``, with
-    ``j``, reads ``(-1)^{f_j}``).  Both sets are defined in every encoding, so
-    this is the encoding-general qubit excitation -- in Jordan-Wigner, where
-    ``U`` and ``F`` are empty, it reduces to the familiar
-    :math:`(X_j \pm i Y_j)/2`.
-    """
-    x_term = ["I"] * n
-    for i in U:
-        x_term[i] = "X"
-    x_term[j] = "X"
-
-    y_term = ["I"] * n
-    for i in U:
-        y_term[i] = "X"
-    y_term[j] = "Y"
-    for i in F:
-        y_term[i] = "Z"
-
-    y_coeff = -0.5j if dagger else 0.5j
-    return PauliSum({"".join(x_term): 0.5, "".join(y_term): y_coeff},
-                    num_qubits=n)
-
-
-@lru_cache(maxsize=512)
-def _qubit_ladder_pauli_cached(base_method: str, n: int, j: int,
-                               dagger: bool) -> PauliSum:
-    update, parity, remainder = _mapping_sets(base_method, n)
-    return _qubit_ladder_pauli(
-        n, j, dagger, update[j], parity[j] ^ remainder[j])
-
-
-@lru_cache(maxsize=32768)
-def _qubit_excitation_terms(modes_out: tuple[int, ...],
-                            modes_in: tuple[int, ...],
-                            n: int, canonical: str,
-                            num_particles: tuple[int, int] | None
-                            ) -> tuple[tuple[str, complex], ...]:
-    reduced = canonical == "parity_reduced"
-    base_method = _base_method(canonical)
-    term = PauliSum.identity(n)
-    for j in modes_out:
-        term = term.compose(_qubit_ladder_pauli_cached(
-            base_method, n, j, True))
-    for j in modes_in:
-        term = term.compose(_qubit_ladder_pauli_cached(
-            base_method, n, j, False))
-    # A Pauli string is Hermitian, so the adjoint only conjugates coefficients.
-    adjoint = PauliSum({label: np.conj(coeff)
-                        for label, coeff in term.terms.items()}, num_qubits=n)
-    generator = (term + (-1.0) * adjoint).simplify()
-    if reduced:
-        if num_particles is None:
-            raise ValueError("parity_reduced requires num_particles")
-        generator = two_qubit_reduce(generator, n, num_particles)
-    return tuple(generator.terms.items())
-
-
-def qubit_excitation(modes_out, modes_in, n_modes: int,
-                     method: str = "jordan_wigner",
-                     num_particles: tuple[int, int] | None = None) -> PauliSum:
-    r"""Anti-Hermitian **qubit excitation** :math:`T - T^\dagger` in any encoding.
-
-    :math:`T = \prod_{a \in \text{out}} q^\dagger_a \prod_{i \in \text{in}} q_i`
-    moves particles between occupation-number states without the fermionic
-    parity sign (:func:`_qubit_ladder_pauli`).  Unlike "take the Jordan-Wigner
-    image and delete the ``Z`` strings", this is defined in the *requested*
-    encoding, so the generator commutes with that encoding's number operators
-    -- which is what keeps the ansatz in the physical sector.
-
-    Parameters
-    ----------
-    modes_out, modes_in : sequence of int
-        Spin-orbitals that gain and lose a particle.  Order follows the
-        fermionic convention ``a+_a a+_b a_j a_i``: ``modes_out = (a, b)`` and
-        ``modes_in = (j, i)``.
-    n_modes : int
-        Spin-orbital count (the untapered register width).
-    method : str
-        Fermion-to-qubit encoding.
-    num_particles
-        Particle numbers required by ``"parity_reduced"`` to taper the two
-        fixed parity qubits.  A qubit excitation conserves both particle
-        numbers, so the tapering is exact.
-    """
-    canonical = _canonical_method(method)
-    n = int(n_modes)
-    np_key = (None if num_particles is None
-              else (int(num_particles[0]), int(num_particles[1])))
-    terms = _qubit_excitation_terms(
-        tuple(int(j) for j in modes_out),
-        tuple(int(j) for j in modes_in),
-        n, canonical, np_key)
-    width = n - 2 if canonical == "parity_reduced" else n
-    return PauliSum._from_valid_terms(dict(terms), num_qubits=width)
-
-
-# --------------------------------------------------------------------------- #
 # Fermionic operators.
 # --------------------------------------------------------------------------- #
 
@@ -488,14 +252,18 @@ FermionTerm = tuple[tuple[int, bool], ...]
 
 
 
-def _one_body_terms(h: np.ndarray, tol: float) -> dict:
-    """``{((p, True), (q, False)): h_pq}`` over the entries above ``tol``,
-    in ``(p, q)`` lexicographic order."""
-    terms: dict = {}
-    for p, q in zip(*np.nonzero(np.abs(h) > tol)):
-        key = ((int(p), True), (int(q), False))
-        terms[key] = terms.get(key, 0j) + complex(h[p, q])
-    return terms
+def _integrals(values) -> np.ndarray:
+    """``values`` as a C-contiguous float64 or complex128 array, the dtypes the
+    native term builders take."""
+    values = np.asarray(values)
+    target = complex if values.dtype.kind == "c" else float
+    return np.ascontiguousarray(values, dtype=target)
+
+
+def _term_dict(terms) -> dict:
+    """``{ladder product: coefficient}`` of native ``(ladders, re, im)`` terms,
+    in their order."""
+    return {tuple(ladders): complex(re, im) for ladders, re, im in terms}
 
 
 class Fermion:
@@ -571,7 +339,7 @@ class Fermion:
         out = Fermion(n_modes=self._n_modes)
         for term, coeff in self.terms.items():
             rev = tuple((i, not d) for (i, d) in reversed(term))
-            out.terms[rev] = out.terms.get(rev, 0j) + np.conj(coeff)
+            out.terms[rev] = out.terms.get(rev, 0j) + coeff.conjugate()
         return out
 
     def n_modes(self) -> int:
@@ -599,25 +367,10 @@ class Fermion:
         factor ``1/2`` are the standard physicists'-notation convention -- see
         the class docstring.
         """
-        h_pq = np.asarray(h_pq)
-        m = h_pq.shape[0]
-        terms = _one_body_terms(h_pq, tol)
-        if g_pqrs is not None:
-            g = np.asarray(g_pqrs)
-            # Only the entries above ``tol`` are visited, one slab g[p] at a
-            # time: np.nonzero returns them in the same (p, q, r, s)
-            # lexicographic order the nested loops over every entry did, so
-            # the terms -- and every sum over them -- keep their order, and
-            # the magnitude, mask and index arrays are the slab's size, not
-            # the tensor's.
-            for p in range(g.shape[0]):
-                slab = g[p]
-                q, r, s = np.nonzero(np.abs(slab) > tol)
-                for qq, rr, ss, value in zip(q.tolist(), r.tolist(),
-                                             s.tolist(), slab[q, r, s].tolist()):
-                    key = ((p, True), (qq, True), (ss, False), (rr, False))
-                    terms[key] = terms.get(key, 0j) + 0.5 * complex(value)
-        return cls(terms, n_modes=m)
+        h_pq = _integrals(h_pq)
+        g = None if g_pqrs is None else _integrals(g_pqrs)
+        terms = _context().fermion_integral_terms(h_pq, g, tol=tol)
+        return cls(_term_dict(terms), n_modes=h_pq.shape[0])
 
     @classmethod
     def from_spatial_integrals(cls, h: np.ndarray, eri: np.ndarray | None = None,
@@ -635,9 +388,6 @@ class Fermion:
         formed: the nonzero entries of each spatial slab ``eri[p]`` are found
         once and written out for the four spin blocks they populate.
 
-        ``eri`` may be a :class:`~mandacaru.integrals.packed.PackedERI`, read
-        one slab ``eri[p]`` at a time.
-
         Spin-resolved integrals (a spin-polarized model, one set of spatial
         functions per spin) are ``h`` of shape ``(2, M, M)`` and ``eri`` of
         shape ``(2, 2, M, M, M, M)``: ``eri[sigma, tau]`` is the block whose
@@ -645,63 +395,28 @@ class Fermion:
         terms in the same order as the spin-orbital tensor holding those
         blocks.
         """
-        h = np.asarray(h)
-        resolved = h.ndim == 3
-        if resolved and h.shape[0] != 2:
-            raise ValueError(f"spin-resolved one-body integrals are (2, M, M), "
-                             f"got {h.shape}")
-        M = h.shape[-1]
-        n = 2 * M
-        h_so = np.zeros((n, n), dtype=complex)
-        h_so[:M, :M] = h[0] if resolved else h
-        h_so[M:, M:] = h[1] if resolved else h
-        if h_spin is not None:
-            h_spin = np.asarray(h_spin)
-            if h_spin.shape != (n, n):
-                raise ValueError(
-                    f"h_spin must be ({n}, {n}) for {M} spatial orbitals, "
-                    f"got {h_spin.shape}")
-            h_so = h_so + h_spin
-        terms = _one_body_terms(h_so, tol)
-        if eri is not None:
-            from ..integrals.packed import is_packed
+        n_modes, terms = _context().fermion_spatial_terms(
+            _integrals(h), None if eri is None else _integrals(eri),
+            None if h_spin is None else _integrals(h_spin), tol=tol)
+        return cls(_term_dict(terms), n_modes=n_modes)
 
-            # A packed tensor is read slab by slab, never written out.
-            slab_of = (eri.slab if is_packed(eri)
-                       else (lambda p, _e=np.asarray(eri): _e[p]))
-            eri = eri if is_packed(eri) else np.asarray(eri)
-            if resolved and eri.shape != (2, 2) + (M,) * 4:
-                raise ValueError(f"spin-resolved two-body integrals are "
-                                 f"(2, 2, {M}, {M}, {M}, {M}), got "
-                                 f"{eri.shape}")
+    # -- native operators --------------------------------------------------- #
 
-            def scan(slab):
-                q, r, s = np.nonzero(np.abs(slab) > tol)
-                return (q.tolist(), r.tolist(), s.tolist(),
-                        [0.5 * complex(v) for v in slab[q, r, s].tolist()])
+    def _native_terms(self) -> list:
+        """The terms as native ``(ladders, re, im)`` triples."""
+        return [(list(term), c.real, c.imag) for term, c in self.terms.items()]
 
-            # One scan per slab: shared by the four spin blocks of a
-            # spin-independent tensor, one per block when resolved.
-            entries = ({(sigma, tau, p): scan(eri[sigma, tau, p])
-                        for sigma in range(2) for tau in range(2)
-                        for p in range(M)} if resolved
-                       else {p: scan(slab_of(p)) for p in range(M)})
-            for P in range(n):
-                # Row P of the spin-orbital tensor: electron 1 keeps P's spin
-                # (R in its block), electron 2 runs over both spins with
-                # Q and S in the same block -- alpha first, the C order.
-                sigma, p = divmod(P, M)
-                shift_r = sigma * M
-                for tau, shift in enumerate((0, M)):
-                    q, r, s, values = entries[(sigma, tau, p) if resolved
-                                              else p]
-                    for qq, rr, ss, value in zip(q, r, s, values):
-                        key = ((P, True), (qq + shift, True),
-                               (ss + shift, False), (rr + shift_r, False))
-                        terms[key] = terms.get(key, 0j) + value
-        return cls(terms, n_modes=n)
+    def _constant(self) -> complex:
+        """The coefficient of the empty product."""
+        return self.terms.get((), 0j)
 
-    # -- mapping to qubits ------------------------------------------------- #
+    def _check_modes(self, n: int) -> None:
+        """Refuse a term that acts on a mode outside the ``n``-mode register."""
+        for term in self.terms:
+            for mode, _dagger in term:
+                if not 0 <= mode < n:
+                    raise ValueError(
+                        f"a fermion mode outside the {n}-mode register")
 
     def map_to_qubits(self, method: str = "jordan_wigner",
                       n_modes: int | None = None,
@@ -717,39 +432,31 @@ class Fermion:
         num_particles : (int, int)
             ``(n_alpha, n_beta)`` required by ``"parity_reduced"``, assuming
             a spin-blocked ordering (first half alpha, second half beta).
+            Every term must then conserve the alpha and total particle
+            parities, whose two qubits the reduction removes.
         """
-        method = _canonical_method(method)
+        method = resolve_mapping(method)
         reduced = method == "parity_reduced"
-        base_method = _base_method(method)
+        if reduced and num_particles is None:
+            raise ValueError("parity_reduced requires num_particles")
         n = n_modes if n_modes is not None else self.n_modes()
-        # Every term's product of ladder operators is expanded on bit tables,
-        # all terms of one length at once (pauli_algebra.map_fermion_terms):
-        # linear in the term count with a small constant, which is what keeps
-        # a 100-spin-orbital Hamiltonian's mapping in minutes.
-        from .pauli_algebra import map_fermion_terms
-        result = map_fermion_terms(self.terms, n, base_method)
+        if n == 0:
+            self._check_modes(0)
+            return PauliSum({"": self._constant()}, num_qubits=0).simplify()
+        particles = [int(v) for v in num_particles] if reduced else None
+        return PauliSum._from_native(_context().fermion_operator(
+            n, particles, self._native_terms(), mapping=method))
 
-        if reduced:
-            if num_particles is None:
-                raise ValueError("parity_reduced requires num_particles")
-            result = _parity_two_qubit_reduction(result, n, num_particles)
-        return result
-
-    # -- reference matrix (Fock space, independent JW oracle) -------------- #
+    # -- reference matrix (Fock space) ------------------------------------- #
 
     def to_matrix(self, n_modes: int | None = None) -> np.ndarray:
-        """Dense matrix in the ``2^N`` occupation basis (numeric Jordan-Wigner)."""
+        """Dense matrix in the ``2^N`` occupation basis (Jordan-Wigner)."""
         n = n_modes if n_modes is not None else self.n_modes()
-        annih = _numeric_annihilators(n)
-        dim = 2 ** n
-        mat = np.zeros((dim, dim), dtype=complex)
-        for term, coeff in self.terms.items():
-            op = np.eye(dim, dtype=complex)
-            for (mode, dagger) in term:
-                a = annih[mode]
-                op = op @ (a.conj().T if dagger else a)
-            mat += coeff * op
-        return mat
+        if n == 0:
+            self._check_modes(0)
+            return np.array([[self._constant()]], dtype=complex)
+        return _context().fermion_operator(
+            n, None, self._native_terms(), mapping="jordan_wigner").matrix()
 
     def __repr__(self) -> str:
         return f"Fermion({len(self.terms)} terms, n_modes={self.n_modes()})"
@@ -763,160 +470,11 @@ class Fermion:
 MAPPINGS = ("jordan_wigner", "parity", "parity_reduced", "bravyi_kitaev")
 
 
-def _canonical_method(method: str) -> str:
+def resolve_mapping(method: str) -> str:
+    """Validate and return one of the four accepted mapping names."""
     if method not in MAPPINGS:
         raise ValueError(f"unknown mapping {method!r}; use one of {MAPPINGS}")
     return method
-
-
-def _base_method(method: str) -> str:
-    """Return the underlying encoding for a public mapping variant."""
-    canonical = _canonical_method(method)
-    return "parity" if canonical == "parity_reduced" else canonical
-
-
-def resolve_mapping(method: str) -> str:
-    """Validate and return one of the four accepted mapping names."""
-    return _canonical_method(method)
-
-
-def parity_tapered_qubits(n_modes: int) -> tuple[int, int]:
-    """The two parity-register qubits the two-qubit reduction removes.
-
-    In the spin-blocked ordering qubit ``n/2 - 1`` holds the alpha-sector
-    parity and qubit ``n - 1`` the total parity; both are fixed by the
-    particle numbers, so they carry no information.
-    """
-    n = int(n_modes)
-    return (n // 2 - 1, n - 1)
-
-
-def two_qubit_reduce(op: PauliSum, n_modes: int,
-                     num_particles: tuple[int, int]) -> PauliSum:
-    """Taper a parity-mapped operator to ``n_modes - 2`` qubits.
-
-    Valid for operators that conserve the alpha and total particle numbers
-    (the Hamiltonian, and the spin-conserving excitation generators): on the
-    two tapered qubits they carry only ``I`` or ``Z``, and ``Z`` evaluates to
-    the sector's parity eigenvalue.
-    """
-    return _parity_two_qubit_reduction(op, int(n_modes), tuple(num_particles))
-
-
-def reencode_pauli(operator: PauliSum, mapping: str, *,
-                   num_particles: tuple[int, int] | None = None) -> PauliSum:
-    r"""Conjugate a Jordan-Wigner Pauli sum into another fermionic encoding.
-
-    The occupation-to-register map is the binary basis permutation
-    ``q = beta @ f (mod 2)``.  Under its Clifford unitary, a Pauli string's
-    ``X`` bits transform as ``beta @ x`` and its ``Z`` bits as
-    ``beta**(-T) @ z``.  The phase restores the canonical ``Y = i X Z``
-    convention.  ``parity_reduced`` then evaluates its two fixed parity qubits
-    in the supplied particle-number sector.  Each input Pauli string maps to
-    one output string, so callers can preserve an ordered product formula.
-
-    Parameters
-    ----------
-    operator : PauliSum
-        Operator written in Jordan-Wigner occupation qubits.
-    mapping : str
-        Target encoding: Jordan-Wigner, parity, parity-reduced or
-        Bravyi-Kitaev.
-    num_particles : tuple[int, int], optional
-        Required for parity reduction.
-    """
-    if not isinstance(operator, PauliSum):
-        raise TypeError("operator must be a PauliSum")
-    canonical = resolve_mapping(mapping)
-    n = operator.num_qubits
-    beta = _encoding_matrix(canonical, n)
-    inverse = _encoding_inverse(canonical, n)
-    out: dict[str, complex] = {}
-    for label, coefficient in operator.terms.items():
-        x = np.fromiter((letter in "XY" for letter in label), dtype=np.int8)
-        z = np.fromiter((letter in "ZY" for letter in label), dtype=np.int8)
-        new_x = (beta @ x) % 2
-        new_z = (inverse.T @ z) % 2
-        old_y = int(np.count_nonzero(x & z))
-        new_y = int(np.count_nonzero(new_x & new_z))
-        phase = 1j ** (old_y - new_y)
-        encoded = "".join("Y" if xx and zz else
-                          "X" if xx else "Z" if zz else "I"
-                          for xx, zz in zip(new_x, new_z))
-        out[encoded] = out.get(encoded, 0j) + phase * coefficient
-    mapped = PauliSum(out, num_qubits=n).simplify()
-    if canonical == "parity_reduced":
-        if num_particles is None:
-            raise ValueError("parity_reduced needs num_particles")
-        return two_qubit_reduce(mapped, n, num_particles)
-    return mapped
-
-
-def reference_qubit_bits(method: str, n_modes: int, occupied) -> np.ndarray:
-    r"""Qubit bit-string of a Slater determinant under a fermion-to-qubit map.
-
-    A determinant is the occupation vector ``x`` (``x_j = 1`` iff spin-orbital
-    ``j`` is filled).  Under the encoding matrix :math:`\beta` the qubit register
-    stores ``q = beta x  (mod 2)``: for Jordan-Wigner ``q = x`` (qubit ``j`` holds
-    the occupation of orbital ``j``), but for parity / Bravyi-Kitaev the qubits
-    hold parity sums, so the Hartree-Fock reference is a *different* computational
-    basis state.  Returns ``q`` as a length-``n_modes`` array with ``q[i]`` the
-    state of qubit ``i``.
-    """
-    x = np.zeros(int(n_modes), dtype=np.int8)
-    for j in occupied:
-        x[int(j)] = 1
-    canonical = _canonical_method(method)
-    beta = _encoding_matrix(canonical, int(n_modes))
-    bits = (beta @ x) % 2
-    reduced = canonical == "parity_reduced"
-    if reduced:
-        drop = parity_tapered_qubits(n_modes)
-        bits = np.array([b for k, b in enumerate(bits) if k not in drop],
-                        dtype=np.int8)
-    return bits
-
-
-def _numeric_annihilators(n: int) -> list[np.ndarray]:
-    """Fock-space annihilation matrices with Jordan-Wigner Z-strings (qubit 0 first)."""
-    lower = np.array([[0, 1], [0, 0]], dtype=complex)   # |1> -> |0>
-    z = _SINGLE["Z"]
-    eye = _SINGLE["I"]
-    ops = []
-    for j in range(n):
-        factors = [z] * j + [lower] + [eye] * (n - 1 - j)
-        m = np.array([[1.0 + 0j]])
-        for f in factors:
-            m = np.kron(m, f)
-        ops.append(m)
-    return ops
-
-
-def _parity_two_qubit_reduction(op: PauliSum, n: int,
-                                num_particles: tuple[int, int]) -> PauliSum:
-    """Taper the two parity qubits fixed by particle number (spin-blocked)."""
-    n_alpha, n_beta = num_particles
-    # Qubit n//2 - 1 holds the alpha-sector parity; qubit n-1 the total parity.
-    positions = {n // 2 - 1: (-1) ** n_alpha,
-                 n - 1: (-1) ** (n_alpha + n_beta)}
-    out = PauliSum()
-    for label, coeff in op.terms.items():
-        c = coeff
-        keep = []
-        for k, ch in enumerate(label):
-            if k in positions:
-                if ch in ("X", "Y"):
-                    raise ValueError(
-                        "parity_reduced is defined only for operators that "
-                        "preserve the alpha and total particle parities")
-                if ch == "Z":
-                    c *= positions[k]
-            else:
-                keep.append(ch)
-        if c != 0:
-            new_label = "".join(keep)
-            out.terms[new_label] = out.terms.get(new_label, 0j) + c
-    return out.simplify()
 
 
 # Convenience module-level mapping functions -------------------------------- #

@@ -190,7 +190,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         ground state unless it leaves the valence unbound.
     confinement : callable or ndarray, optional
         An extra external potential (Hartree) added **only when integrating the orbitals**
-        -- a confining wall for a localized basis (see :mod:`mandacaru.basis.nao_ae`).  A
+        -- a confining wall for a localized basis (the all-electron NAO family of the Rust engine).  A
         callable is evaluated on the radial grid; an array must already be on it.  It is
         *not* part of the returned ``v_effective`` / ``v_hartree`` / ``v_xc``, which remain
         the genuine self-consistent potentials of the (confined) density.

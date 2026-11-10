@@ -62,50 +62,6 @@ FILE_EXTENSION = ".json"
 # Preparing the state from the description.
 # --------------------------------------------------------------------------- #
 
-def reference_vector(n_qubits: int, reference_qubits) -> np.ndarray:
-    """The computational-basis state with ``reference_qubits`` set to ``|1>``.
-
-    Qubit 0 is the most significant bit, Mandacaru's convention throughout.
-    """
-    n = int(n_qubits)
-    index = 0
-    for k in reference_qubits:
-        k = int(k)
-        if not 0 <= k < n:
-            raise ValueError(f"reference qubit {k} outside a {n}-qubit register")
-        index |= 1 << (n - 1 - k)
-    vec = np.zeros(2 ** n, dtype=complex)
-    vec[index] = 1.0
-    return vec
-
-
-def apply_exponential(generator: PauliSum, angle: float, vector) -> np.ndarray:
-    r"""``exp(angle * A) @ vector`` for an anti-Hermitian generator ``A``.
-
-    The excitation generators satisfy :math:`A^3 = -A`, for which the
-    exponential has the closed form
-    :math:`e^{\theta A} = 1 + \sin\theta\,A + (1-\cos\theta)\,A^2` -- two sparse
-    matrix-vector products.  A generator that fails the identity goes through
-    native sparse scaling and squaring instead, so the result is exact either way.
-    """
-    from .. import _native
-
-    vector = np.asarray(vector, dtype=complex)
-    if generator.num_qubits and vector.shape[0] != 2 ** generator.num_qubits:
-        raise ValueError(
-            f"a {generator.num_qubits}-qubit generator cannot act on a vector "
-            f"of {vector.shape[0]} amplitudes")
-    A = generator.to_sparse_matrix()
-    A2 = (A @ A).tocsr()
-    residual = A @ A2 + A
-    data = residual.tocoo().data
-    scale = max(1.0, float(np.max(np.abs(A.tocoo().data))) if A.nnz else 1.0)
-    if data.size == 0 or float(np.max(np.abs(data))) < 1e-9 * scale:
-        return (vector + np.sin(angle) * (A @ vector)
-                + (1.0 - np.cos(angle)) * (A2 @ vector))
-    return _native.sparse_expm_multiply(A.data, A.indices, A.indptr, float(angle), vector)
-
-
 #: How the generators act on the reference.  ``"product"`` is
 #: :math:`\prod_k e^{\theta_k A_k}|ref\rangle` (ADAPT-VQE, Trotterized UCCSD --
 #: what a circuit prepares); ``"sum"`` is :math:`e^{\sum_k\theta_k A_k}|ref\rangle`
@@ -181,7 +137,7 @@ class WavefunctionCheckpoint:
     Attributes
     ----------
     n_qubits : int
-        Register width (after any two-qubit reduction).
+        Register width (after any two-qubit reduction or Z2 tapering).
     reference_qubits : list of int
         Qubits set to ``|1>`` in the reference determinant, in register terms
         (i.e. *after* the fermion-to-qubit mapping and any tapering).

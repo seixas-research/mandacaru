@@ -24,12 +24,13 @@ different parts of convergence. A small pool gradient does not establish
 exactness, grid convergence or basis completeness. Compare the reference energy,
 the final energy, the selected operators and both convergence outcomes: the outer
 `result.converged`, and `result.optimizer_failures` for the inner minimizations.
-`max_iterations` caps the number of operators the run may add.
+`max_iterations` caps the number of growth steps; a step of the default `ceo` pool can
+add two operators, so the selected-operator count can exceed it.
 
 ## Pools
 
-`pool=` chooses the operator pool: `"fermionic"` (the default), `"qubit"`, `"qeb"`,
-`"ceo"`, `"ceo-ovp"` or `"spin-orbit"`. The pools differ in circuit depth and in
+`pool=` chooses the operator pool: `"ceo"` (the default of `adapt-vqe`), `"fermionic"`,
+`"qubit"`, `"qeb"`, `"ceo-ovp"` or `"spin-orbit"`. The pools differ in circuit depth and in
 how many gradients each step measures, and they are not alternate spellings of
 one another. Because the Hamiltonian is cached, comparing pools costs only the
 ADAPT runs:
@@ -45,8 +46,8 @@ for pool in ("fermionic", "qubit", "qeb", "ceo"):
 
 The `"qubit"` and `"spin-orbit"` pools do not conserve the particle number, so
 they run without the particle-number sector. Architecture search over the same
-pools is [MCAS-VQE](mcas_vqe.md), and its learned-proposal variant is
-[VALQA](valqa.md).
+pools is [VASQA](vasqa.md), and its learned-proposal variant is
+[VALSQA](valsqa.md).
 
 ## Checkpoints
 

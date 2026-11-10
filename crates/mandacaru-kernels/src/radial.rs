@@ -5,13 +5,7 @@
 
 pub const MANDACARU_RADIAL_ABI: i32 = 2;
 
-#[no_mangle]
-pub unsafe extern "C" fn mandacaru_radial_abi_version() -> i32 {
-    MANDACARU_RADIAL_ABI
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn mandacaru_numerov_outward(
+pub unsafe fn mandacaru_numerov_outward(
     n: i32,
     f_ptr: *const f64,
     s_ptr: *const f64,
@@ -35,8 +29,7 @@ pub unsafe extern "C" fn mandacaru_numerov_outward(
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn mandacaru_numerov_inward(
+pub unsafe fn mandacaru_numerov_inward(
     n: i32,
     f_ptr: *const f64,
     h2: f64,
@@ -207,8 +200,7 @@ fn twisted_vector(
     0
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn mandacaru_tridiagonal_eigenpair(
+pub unsafe fn mandacaru_tridiagonal_eigenpair(
     n: i32,
     d_ptr: *const f64,
     e_ptr: *const f64,

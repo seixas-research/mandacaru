@@ -499,6 +499,7 @@ pub(super) fn collinear_xc(
         kinetic_potential: None,
         gradients: (c.functional == "pbe").then_some(gradients),
         flux: (c.functional == "pbe").then_some(flux),
+        nonlocal_source: None,
     })
 }
 pub(super) struct LocalPotential {

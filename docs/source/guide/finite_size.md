@@ -212,14 +212,16 @@ $S_c(k) = a k^2 + b k^4$ reliably extracts the curvature $\lim_{k \to 0} S_c(k)/
 Finite-size corrections are accessible via the `finite_size_correction` method on the calculator:
 
 ```python
-from ase.build import bulk
+from ase import Atoms
 from mandacaru import Mandacaru
 
-# Build a periodic supercell (e.g. bulk silicon or hydrogen chain)
-atoms = bulk("Si", "diamond", a=5.43)
-atoms = atoms.repeat((2, 2, 2))
+# The primitive cell of a hydrogen chain; the mesh is solved as its 2-cell supercell
+# (see the crystal guide, bloch.md)
+atoms = Atoms("H", positions=[[0, 0, 0]], cell=[2.0, 10.0, 10.0], pbc=[True, False, False])
 
-calc = Mandacaru(method="bloch-adapt-vqe", kpts={"size": (2, 2, 2), "gamma": True})
+calc = Mandacaru(method="adapt-vqe", crystal_orbitals="real-space", basis="HAO",
+                 grid_spacing=0.35,
+                 kpts={"size": (2, 1, 1), "gamma": True})
 atoms.calc = calc
 energy = atoms.get_potential_energy()
 
@@ -231,7 +233,7 @@ print(mpc.summary())
 
 # Convert to electronvolts
 mpc_ev = mpc.in_units("eV")
-print(f"Corrected energy: {mpc_ev.mpc_energy:.4f} eV")
+print(f"Corrected energy: {mpc_ev.mpc_energy_per_cell:.4f} eV per cell")
 ```
 
 Low-level functions are also available in `mandacaru.core`:

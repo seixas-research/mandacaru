@@ -109,11 +109,11 @@ fn sparse_dense_and_matrix_free_hamiltonians_agree_in_float32() {
         for storage in 0..3 {
             let mut problem = hubbard(&ctx, 4, true, Precision::Float32);
             if storage == 1 {
-                problem.dense = Some(problem.hamiltonian.dense(&ctx, &problem.basis).unwrap());
+                problem.dense = Some(problem.hamiltonian.dense(&ctx, problem.register("test").unwrap()).unwrap());
             }
             if storage == 2 {
                 problem.sparse =
-                    Some(SparseMatrix::new(&ctx, &problem.basis, &problem.hamiltonian).unwrap());
+                    Some(SparseMatrix::new(&ctx, problem.register("test").unwrap(), &problem.hamiltonian).unwrap());
             }
             let value = problem
                 .evaluate(&[0, 1, 2], &[0.2, -0.1, 0.15], false)
@@ -268,7 +268,7 @@ fn the_exponential_action_keeps_one_apply_definition_for_both_precisions() {
     let ctx = context(64);
     {
         let problem = hubbard(&ctx, 4, true, Precision::Float64);
-        let basis: &Basis = &problem.basis;
+        let basis: &Basis = problem.register("test").unwrap();
         let state: Vec<C64> = (0..basis.len())
             .map(|k| C64::new(((k * 5 + 1) % 7) as f64 - 3., ((k * 3) % 5) as f64 - 2.))
             .collect();

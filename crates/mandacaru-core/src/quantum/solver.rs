@@ -1,5 +1,8 @@
 use super::amplitude::{self, inner_wide, Amplitude, State};
-use super::{algebra::Generator, evolution, optimizer, Basis, Encoding, Operator, C64};
+use super::factorized_measurement::FactorizedMeasurement;
+use super::{
+    algebra::Generator, evolution, optimizer, tapering::Taper, Basis, Encoding, Operator, C64,
+};
 use crate::{math::storage::Precision, product, Buffer, Context, Error, Reservation, Result};
 use num_complex::Complex32;
 use std::{path::Path, time::Instant};
@@ -26,6 +29,50 @@ pub(crate) use by_precision;
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
 }
+/// What a problem holds its states in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Space {
+    /// The particle-number sector: a basis of the determinants with the requested counts.
+    Sector,
+    /// The whole `2^n` register.
+    Register,
+    /// No register: the Hamiltonian, the pool and the measured observables are Pauli operators
+    /// and nothing else, so no object of size `2^n` or of the sector's size exists. This is the
+    /// shot-based mode: only a circuit executor can evaluate it. With `number_conserving`, the
+    /// Hamiltonian and every generator are checked algebraically to commute with the alpha and
+    /// beta number operators.
+    Pauli { number_conserving: bool },
+}
+
+/// The refusal of a state-vector operation on a register-free problem, naming the operation.
+pub fn register_free_refusal(what: &str) -> Error {
+    Error::Invalid(format!(
+        "{what} needs a state-vector register, but this problem is register-free (a shot-based \
+         run holds Pauli operators only and builds no 2^n or sector-sized object); run with \
+         shots=0 on a register that fits in memory"
+    ))
+}
+
+/// `Basis::check_invariant` when there is a basis; otherwise the commutation with the particle
+/// number operators when the register-free problem asked for it (nothing to check without them).
+fn check_invariant(
+    basis: Option<&Basis>,
+    conserved: &[Operator],
+    ctx: &Context,
+    operator: &Operator,
+) -> Result<()> {
+    if let Some(basis) = basis {
+        return basis.check_invariant(operator);
+    }
+    for number in conserved {
+        if !operator.commutes_with(ctx, number)? {
+            return Err(invalid(
+                "operator does not preserve the requested particle sector",
+            ));
+        }
+    }
+    Ok(())
+}
 pub type GrowthObserver<'a> = dyn FnMut(&[usize], &[f64], f64) -> Result<()> + 'a;
 
 /// External circuit execution. Optimization and operator construction stay native.
@@ -49,7 +96,14 @@ pub struct CachedProblem {
     pub context: Context,
     pub encoding: Encoding,
     pub hamiltonian: Operator,
-    pub basis: Basis,
+    /// The state-vector register (the particle sector or the whole register), or `None` for a
+    /// register-free problem: Pauli operators only, built for shot-based execution, where no
+    /// `2^n` or sector-sized object may exist. Read it through [`CachedProblem::register`].
+    pub basis: Option<Basis>,
+    /// The alpha and beta number operators a register-free problem checks its Hamiltonian and
+    /// pool generators against (algebraically, in place of `Basis::check_invariant`); empty when
+    /// a basis checks them, or when the register-free problem asked for no check.
+    pub conserved: Vec<Operator>,
     pub pool: Vec<Generator>,
     pub dense: Option<Buffer<C64>>,
     /// Storage precision of every state this problem prepares. The
@@ -59,6 +113,20 @@ pub struct CachedProblem {
     pub pool_screenable: Vec<bool>,
     pub growth_members: Vec<Vec<usize>>,
     pub hva: Option<super::hva::HVA>,
+    /// The name of the pool `pool` was built from (`pools::kind` describes it).
+    pub pool_name: String,
+    /// The Z2 symmetries removed from the register, when [`CachedProblem::taper`] found any. Then
+    /// `hamiltonian`, `pool` and `basis` live on the tapered register while `encoding` still
+    /// describes the fermionic problem.
+    pub taper: Option<Taper>,
+    /// The pool generators dropped as symmetry-changing by `taper`: their index in the pool as
+    /// built, and their label.
+    pub dropped: Vec<(usize, String)>,
+    /// The `O(M)` basis-rotation measurement of the energy, when the problem was built from a
+    /// molecular model and asked for it (`CachedProblem::factorize`). Circuit execution then
+    /// measures the energy in its `L + 1` bases instead of the qubit-wise commuting groups of
+    /// `hamiltonian`; pool gradients stay on the commuting groups.
+    pub factorized: Option<FactorizedMeasurement>,
     pub(super) _pool_metadata: Reservation,
 }
 impl CachedProblem {
@@ -73,7 +141,6 @@ impl CachedProblem {
         crate::persistence::Document::read(ctx, path, crate::persistence::HAMILTONIAN)?
             .problem(ctx, sector, dense, singles)
     }
-
     pub fn new(
         ctx: &Context,
         encoding: Encoding,
@@ -82,28 +149,60 @@ impl CachedProblem {
         dense: bool,
         singles: bool,
     ) -> Result<Self> {
+        let space = if sector {
+            Space::Sector
+        } else {
+            Space::Register
+        };
+        Self::new_in(ctx, encoding, hamiltonian, space, dense, singles)
+    }
+
+    /// A problem in the given [`Space`]: the particle sector, the whole register, or no register
+    /// at all (Pauli operators only, for shot-based execution).
+    pub fn new_in(
+        ctx: &Context,
+        encoding: Encoding,
+        hamiltonian: Operator,
+        space: Space,
+        dense: bool,
+        singles: bool,
+    ) -> Result<Self> {
         if hamiltonian.n != encoding.n_qubits() || !hamiltonian.is_hermitian() {
             return Err(invalid(
                 "Hamiltonian must be Hermitian and match its encoding",
             ));
         }
-        let basis = Basis::new(ctx, &encoding, sector)?;
-        basis.check_invariant(&hamiltonian)?;
+        let (basis, conserved) = match space {
+            Space::Sector => (Some(Basis::new(ctx, &encoding, true)?), Vec::new()),
+            Space::Register => (Some(Basis::new(ctx, &encoding, false)?), Vec::new()),
+            Space::Pauli { number_conserving } => {
+                if dense {
+                    return Err(register_free_refusal("a dense Hamiltonian matrix"));
+                }
+                let conserved = if number_conserving {
+                    encoding.number_operators(ctx)?.into()
+                } else {
+                    Vec::new()
+                };
+                (None, conserved)
+            }
+        };
+        check_invariant(basis.as_ref(), &conserved, ctx, &hamiltonian)?;
         let built = super::pools::build(ctx, &encoding, "fermionic", singles)?;
         let pool = built.operators;
         for g in &pool {
-            basis.check_invariant(&g.operator)?;
+            check_invariant(basis.as_ref(), &conserved, ctx, &g.operator)?;
         }
-        let dense = if dense {
-            Some(hamiltonian.dense(ctx, &basis)?)
-        } else {
-            None
+        let dense = match (&basis, dense) {
+            (Some(basis), true) => Some(hamiltonian.dense(ctx, basis)?),
+            _ => None,
         };
         Ok(Self {
             context: ctx.clone(),
             encoding,
             hamiltonian,
             basis,
+            conserved,
             pool,
             dense,
             precision: Precision::Float64,
@@ -111,23 +210,115 @@ impl CachedProblem {
             pool_screenable: built.screenable,
             growth_members: built.growth_members,
             hva: None,
+            pool_name: "fermionic".into(),
+            taper: None,
+            dropped: Vec::new(),
+            factorized: None,
             _pool_metadata: built.memory,
         })
+    }
+    /// Whether this problem holds no state-vector register (see [`Space::Pauli`]).
+    pub fn is_register_free(&self) -> bool {
+        self.basis.is_none()
+    }
+    /// The state-vector register, or a refusal that names `what` needed it. Every state-vector
+    /// method reaches the basis through here, so a register-free problem can never compute one
+    /// silently.
+    pub fn register(&self, what: &str) -> Result<&Basis> {
+        self.basis
+            .as_ref()
+            .ok_or_else(|| register_free_refusal(what))
+    }
+    /// Check that `operator` preserves the particle sector: with the basis when there is one,
+    /// with the number operators when the problem is register-free and asked for the check.
+    pub fn check_invariant(&self, operator: &Operator) -> Result<()> {
+        check_invariant(
+            self.basis.as_ref(),
+            &self.conserved,
+            &self.context,
+            operator,
+        )
+    }
+    /// The state a result carries: the prepared one, or the empty state of a register-free problem.
+    pub(super) fn result_state(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+    ) -> Result<State> {
+        if self.is_register_free() {
+            return State::zeros(&self.context, self.precision, 0);
+        }
+        self.prepare_state(indices, parameters, trotter)
+    }
+    /// `<r| [H, G_k] |r>` for every pool generator at the reference determinant `r`: the first
+    /// ADAPT screening of a register-free problem, exact and `O(pool * terms^2)`, with no state.
+    pub(super) fn reference_gradients(&self) -> Result<Vec<f64>> {
+        let reference = self.register_reference();
+        self.pool
+            .iter()
+            .map(|g| {
+                Ok(self
+                    .hamiltonian
+                    .commutator(&self.context, &g.operator)?
+                    .expectation_at(reference)
+                    .re)
+            })
+            .collect()
+    }
+    /// The register width the Hamiltonian and the states live on: the encoding's, or the tapered
+    /// one.
+    pub fn n_qubits(&self) -> usize {
+        self.hamiltonian.n
+    }
+    /// The reference determinant on that register (occupation bits, qubit zero the most
+    /// significant).
+    pub fn register_reference(&self) -> u64 {
+        let reference = self.encoding.reference();
+        self.taper.as_ref().map_or(reference, |t| t.bits(reference))
     }
     /// State storage: complex128 (`Float64`, the default) or complex64.
     pub fn with_precision(mut self, precision: Precision) -> Self {
         self.precision = precision;
         self
     }
+    /// Measure the energy of circuit executions in the `L + 1` bases of `plan`, the double
+    /// factorization of the molecular model this problem was built from. Refuses what it cannot
+    /// express, naming it: a tapered register, a Hamiltonian-variational ansatz, an encoding that
+    /// is not Jordan-Wigner, a plan of another register width.
+    pub fn factorize(&mut self, plan: FactorizedMeasurement) -> Result<()> {
+        if self.encoding.mapping != "jordan_wigner" {
+            return Err(invalid(
+                "the factorized measurement reads occupations off the computational basis, \
+                 which is the Jordan-Wigner picture; measure other mappings on the commuting \
+                 groups",
+            ));
+        }
+        if self.taper.is_some() || self.hva.is_some() {
+            return Err(invalid(
+                "the factorized measurement does not apply to a tapered register or a \
+                 Hamiltonian-variational ansatz",
+            ));
+        }
+        if plan.bases.iter().any(|b| b.observable.n != self.hamiltonian.n) {
+            return Err(invalid("the measurement plan is not for this register"));
+        }
+        self.factorized = Some(plan);
+        Ok(())
+    }
     pub fn use_pool(&mut self, name: &str, singles: bool) -> Result<()> {
+        if self.taper.is_some() {
+            return Err(invalid("choose the pool before tapering the register"));
+        }
         let pool = super::pools::build(&self.context, &self.encoding, name, singles)?;
         for generator in &pool.operators {
-            self.basis.check_invariant(&generator.operator)?;
+            self.check_invariant(&generator.operator)?;
         }
         self.pool = pool.operators;
         self.pool_screenable = pool.screenable;
         self.growth_members = pool.growth_members;
         self._pool_metadata = pool.memory;
+        self.pool_name = name.into();
         self.hva = None;
         Ok(())
     }
@@ -170,11 +361,12 @@ impl CachedProblem {
         parameters: &[f64],
         trotter: bool,
     ) -> Result<evolution::Evaluation> {
+        let basis = self.register("a state-vector energy evaluation")?;
         if let Some(hva) = &self.hva {
             let expanded = hva.expand(&self.pool, indices, parameters)?;
             let mut out = evolution::evaluate::<A>(
                 &self.context,
-                &self.basis,
+                basis,
                 &self.hamiltonian,
                 self.dense.as_ref().map(|d| d.as_slice()),
                 self.sparse.as_ref(),
@@ -200,7 +392,7 @@ impl CachedProblem {
             .collect();
         evolution::evaluate::<A>(
             &self.context,
-            &self.basis,
+            basis,
             &self.hamiltonian,
             self.dense.as_ref().map(|d| d.as_slice()),
             self.sparse.as_ref(),
@@ -233,10 +425,11 @@ impl CachedProblem {
         parameters: &[f64],
         trotter: bool,
     ) -> Result<Buffer<A>> {
+        let basis = self.register("prepare_state")?;
         let expanded = self.sequence(indices, parameters)?;
         evolution::state_from::<A>(
             &self.context,
-            &self.basis,
+            basis,
             &expanded.operators,
             &expanded.parameters,
             trotter || self.hva.is_some(),
@@ -257,7 +450,8 @@ impl CachedProblem {
     }
     fn pool_gradients_of<A: Amplitude>(&self, state: &[A], centered: bool) -> Result<Vec<f64>> {
         let ctx = &self.context;
-        let d = self.basis.len();
+        let basis = self.register("pool gradients on a local state")?;
+        let d = basis.len();
         if state.len() != d || !amplitude::finite(state) {
             return Err(invalid("state must be finite and match the operator basis"));
         }
@@ -267,18 +461,17 @@ impl CachedProblem {
             A::with_wide(hpsi.as_mut_slice(), acc.as_mut_slice(), |wide| {
                 if centered {
                     self.hamiltonian
-                        .add_centered_into(&self.basis, state, C64::new(1., 0.), wide)
+                        .add_centered_into(basis, state, C64::new(1., 0.), wide)
                 } else {
                     self.hamiltonian
-                        .add_into(&self.basis, state, C64::new(1., 0.), wide)
+                        .add_into(basis, state, C64::new(1., 0.), wide)
                 }
             });
         }
         let mut action = ctx.allocate::<C64>(d)?;
         let mut out = Vec::with_capacity(self.pool.len());
         for g in &self.pool {
-            g.operator
-                .apply_into(&self.basis, state, action.as_mut_slice());
+            g.operator.apply_into(basis, state, action.as_mut_slice());
             out.push(2. * inner_wide(hpsi.as_slice(), action.as_slice()).re);
         }
         Ok(out)
@@ -349,6 +542,9 @@ impl CachedProblem {
         mut observer: Option<&mut GrowthObserver<'_>>,
         mut execution: Option<&mut dyn Execution>,
     ) -> Result<SolveResult> {
+        if self.is_register_free() && execution.is_none() {
+            return Err(register_free_refusal("a native simulation"));
+        }
         // A circuit executor measures energies: the state floors do not apply.
         options.validate(if execution.is_none() {
             self.precision
@@ -402,7 +598,16 @@ impl CachedProblem {
             .checked_add(product(&[max_parameters, 256])?)
             .ok_or(Error::Overflow)?,
         )?;
-        let reference = self.evaluate(&[], &[], true)?.energy;
+        // The energy of the reference determinant. A register-free problem reads it off the
+        // Hamiltonian's diagonal Pauli terms (exact, no state); otherwise it is the native
+        // evaluation of the reference state.
+        let reference = if self.is_register_free() {
+            self.hamiltonian
+                .expectation_at(self.register_reference())
+                .re
+        } else {
+            self.evaluate(&[], &[], true)?.energy
+        };
         let derivatives = !matches!(
             options.optimizer.method,
             optimizer::Method::Cobyla | optimizer::Method::NelderMead | optimizer::Method::Spsa
@@ -454,7 +659,11 @@ impl CachedProblem {
             measured = Some(outcome.energy);
             stopped = outcome.interrupted;
             final_gradient = f64::NAN;
-            if stopped.is_none() {
+            // A measured gradient is two device evaluations per rotation: only a gradient-based
+            // optimizer, which already pays for them, reports one. A derivative-free shot-based
+            // run (register-free) leaves it NaN rather than spending thousands of jobs on a
+            // diagnostic; a simulated one is free and keeps it.
+            if stopped.is_none() && (!self.is_register_free() || derivatives) {
                 match evaluate(&indices, &parameters, options.trotter, true) {
                     Ok(v) => {
                         final_gradient = v.gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
@@ -511,16 +720,22 @@ impl CachedProblem {
                 let mut selected = 0;
                 final_gradient = 0.;
                 let mut gradients = vec![0.; self.pool.len()];
-                for (i, signed) in self
-                    .pool_gradients(&evaluation.state, true)?
-                    .into_iter()
-                    .enumerate()
-                {
-                    let magnitude = signed.abs();
-                    gradients[i] = magnitude;
-                    if self.pool_screenable[i] && magnitude > final_gradient {
-                        final_gradient = magnitude;
-                        selected = i;
+                // Local screening is the first step only (the reference determinant, where the
+                // gradients are exact); from the second step on the device measures them all.
+                // A register-free problem reads the first step off Pauli terms, never a state.
+                if execution.is_none() || indices.is_empty() {
+                    let signed = if self.is_register_free() {
+                        self.reference_gradients()?
+                    } else {
+                        self.pool_gradients(&evaluation.state, true)?
+                    };
+                    for (i, signed) in signed.into_iter().enumerate() {
+                        let magnitude = signed.abs();
+                        gradients[i] = magnitude;
+                        if self.pool_screenable[i] && magnitude > final_gradient {
+                            final_gradient = magnitude;
+                            selected = i;
+                        }
                     }
                 }
                 if !indices.is_empty() {
@@ -647,7 +862,7 @@ impl CachedProblem {
             Some(evaluation) => (evaluation.energy, evaluation.state),
             None => (
                 measured.expect("a stop keeps a measured point"),
-                self.prepare_state(&indices, &parameters, trotter)?,
+                self.result_state(&indices, &parameters, trotter)?,
             ),
         };
         if let Some(reason) = &stopped {

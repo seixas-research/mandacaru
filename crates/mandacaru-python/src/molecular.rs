@@ -263,8 +263,8 @@ pub struct PyHandover {
 
 #[pyclass(name = "MeanField", module = "mandacaru._native", frozen)]
 pub struct PyMeanField {
-    inner: Arc<MeanField>,
-    integrals: Arc<MolecularIntegrals>,
+    pub(crate) inner: Arc<MeanField>,
+    pub(crate) integrals: Arc<MolecularIntegrals>,
 }
 #[pymethods]
 impl PyMeanField {
@@ -325,7 +325,7 @@ impl PyMeanField {
         out.set_item("reason", seed.reason)?;
         Ok(out)
     }
-    #[pyo3(signature=(problem,model,state,*,active_spec=None,step=1e-3,internal=false,extrapolate=true))]
+    #[pyo3(signature=(problem,model,state,*,active_spec=None,step=1e-3,internal=false,extrapolate=true,indices=None,parameters=None,product_form=false,gradient_floor=None))]
     #[allow(clippy::too_many_arguments)]
     fn quantum_gradient<'py>(
         &self,
@@ -337,7 +337,12 @@ impl PyMeanField {
         step: f64,
         internal: bool,
         extrapolate: bool,
+        indices: Option<Vec<usize>>,
+        parameters: Option<PyReadonlyArray1<'py, f64>>,
+        product_form: bool,
+        gradient_floor: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        use mandacaru_core::molecular::response::Stationarity;
         if problem.inner.precision != mandacaru_core::math::storage::Precision::Float64 {
             return Err(PyValueError::new_err(
                 "quantum forces need a complex128 state: the Richardson step turns complex64 \
@@ -345,6 +350,30 @@ impl PyMeanField {
             ));
         }
         let (values, _memory) = copy(&self.integrals.context, &state)?;
+        let (theta, _theta_memory) = match &parameters {
+            Some(parameters) => {
+                let (copied, memory) = copy(&self.integrals.context, parameters)?;
+                (Some(copied), Some(memory))
+            }
+            None => (None, None),
+        };
+        let ansatz = match (&indices, &theta) {
+            (Some(indices), Some(theta)) => Some(mandacaru_core::quantum::lagrangian::Ansatz {
+                indices,
+                parameters: theta,
+                product_form,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "the Lagrangian force correction needs both the operator indices and the parameters of the optimized ansatz",
+                ))
+            }
+        };
+        let mut lagrangian = mandacaru_core::quantum::lagrangian::Options::default();
+        if let Some(floor) = gradient_floor {
+            lagrangian.floor = floor;
+        }
         let response = py
             .detach(|| {
                 mandacaru_core::molecular::response::gradient(
@@ -354,6 +383,8 @@ impl PyMeanField {
                     &problem.inner,
                     &values,
                     &mandacaru_core::molecular::response::Options {
+                        ansatz,
+                        lagrangian,
                         active_spec,
                         step,
                         internal,
@@ -363,13 +394,11 @@ impl PyMeanField {
             })
             .map_err(error)?;
         let out = PyDict::new(py);
+        let shape = [self.integrals.geometry.numbers().len(), 3];
+        out.set_item("gradient", array(py, &shape, response.gradient.as_slice().to_vec())?)?;
         out.set_item(
-            "gradient",
-            array(
-                py,
-                &[self.integrals.geometry.numbers().len(), 3],
-                response.gradient.as_slice().to_vec(),
-            )?,
+            "uncorrected_gradient",
+            array(py, &shape, response.uncorrected.as_slice().to_vec())?,
         )?;
         out.set_item("energy_ha", response.energy)?;
         out.set_item("directions", response.directions)?;
@@ -377,6 +406,35 @@ impl PyMeanField {
         out.set_item("scheme", response.scheme)?;
         out.set_item("step_error_estimate", response.estimate)?;
         out.set_item("orbital_response", "displaced-SCF-and-selector")?;
+        match response.stationarity {
+            Stationarity::Assumed => {
+                out.set_item("stationarity", "assumed")?;
+            }
+            Stationarity::Stationary { gradient_norm } => {
+                out.set_item("stationarity", "stationary")?;
+                out.set_item("parameter_gradient_norm", gradient_norm)?;
+            }
+            Stationarity::Lagrangian {
+                gradient_norm,
+                z_norm,
+                correction_norm,
+                iterations,
+                gradient_evaluations,
+                residual,
+                truncated,
+                lowest_curvature,
+            } => {
+                out.set_item("stationarity", "lagrangian")?;
+                out.set_item("parameter_gradient_norm", gradient_norm)?;
+                out.set_item("z_vector_norm", z_norm)?;
+                out.set_item("correction_norm_ha_per_bohr", correction_norm)?;
+                out.set_item("z_vector_iterations", iterations)?;
+                out.set_item("z_vector_gradient_evaluations", gradient_evaluations)?;
+                out.set_item("z_vector_residual", residual)?;
+                out.set_item("z_vector_truncated", truncated)?;
+                out.set_item("hessian_lowest_curvature", lowest_curvature)?;
+            }
+        }
         Ok(out)
     }
     #[pyo3(signature=(*,gamma=None,active=None,frozen=Vec::new(),model=None,grid=None,quantity=None,index=0,component="auto"))]
@@ -754,7 +812,7 @@ impl PyMeanField {
 #[pyclass(name = "MolecularModel", module = "mandacaru._native", frozen)]
 pub struct PyModel {
     context: Context,
-    source: Arc<Model>,
+    pub(crate) source: Arc<Model>,
 }
 impl PyModel {
     fn inner(&self) -> &Model {
@@ -912,7 +970,7 @@ impl PyModel {
             inner,
         })
     }
-    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64"))]
+    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64",taper=false,register_free=false,measurement="qwc"))]
     fn problem(
         &self,
         py: Python<'_>,
@@ -923,17 +981,39 @@ impl PyModel {
         sparse: bool,
         pool: &str,
         precision: &str,
+        taper: bool,
+        register_free: bool,
+        measurement: &str,
     ) -> PyResult<PyProblem> {
+        let factorized = match measurement {
+            "qwc" => false,
+            "double-factorized" => true,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown measurement scheme {other:?}; choose 'qwc' or 'double-factorized'"
+                )))
+            }
+        };
         if sparse && dense {
             return Err(PyValueError::new_err(
                 "choose either dense or sparse storage",
             ));
         }
+        if register_free && (sparse || dense) {
+            return Err(PyValueError::new_err(
+                "a dense or sparse Hamiltonian matrix needs a state-vector register; a register-free (shot-based) problem builds none",
+            ));
+        }
         let precision = super::quantum::parse_precision(precision)?;
         let mut inner = py
             .detach(|| {
-                self.inner()
-                    .problem(&self.context, mapping, sector, dense, include_singles)
+                self.inner().problem_in(
+                    &self.context,
+                    mapping,
+                    super::quantum::space(register_free, sector),
+                    dense,
+                    include_singles,
+                )
             })
             .map_err(error)?
             .with_precision(precision);
@@ -941,17 +1021,18 @@ impl PyModel {
             py.detach(|| inner.use_pool(pool, include_singles))
                 .map_err(error)?;
         }
+        if factorized {
+            py.detach(|| {
+                let plan = self.inner().factorized_measurement(&self.context)?;
+                inner.factorize(plan)
+            })
+            .map_err(error)?;
+        }
+        if taper {
+            py.detach(|| inner.taper()).map_err(error)?;
+        }
         if sparse {
-            inner.sparse = Some(
-                py.detach(|| {
-                    mandacaru_core::quantum::sparse::SparseMatrix::new(
-                        &self.context,
-                        &inner.basis,
-                        &inner.hamiltonian,
-                    )
-                })
-                .map_err(error)?,
-            );
+            super::quantum::attach_sparse(py, &mut inner)?;
         }
         Ok(PyProblem { inner })
     }

@@ -14,7 +14,7 @@ except OSError:
 
 chain = Atoms("H", positions=[[0.0, 0.0, 0.0]],
               cell=[1.0, 10.0, 10.0], pbc=[True, False, False])
-chain.calc = Mandacaru(method="bloch-adapt-vqe",
+chain.calc = Mandacaru(method="adapt-vqe", crystal_orbitals="real-space",
                        basis="HAO",
                        grid_spacing=0.25,
                        kpts={"size": (4, 1, 1), "gamma": True})
@@ -28,7 +28,7 @@ for k, band in zip(k_coords, bands[:, 0]):
 
 # Save band dispersion figure
 fig, ax = plt.subplots(figsize=(6, 4))
-ax.plot(k_coords, bands[:, 0], "o-", color="#1f77b4", label="Bloch-ADAPT-VQE quasiparticle band")
+ax.plot(k_coords, bands[:, 0], "o-", color="#1f77b4", label="ADAPT-VQE quasiparticle band")
 ax.set_xlabel(r"$k_x$ (fractional)")
 ax.set_ylabel("Energy (eV)")
 ax.set_title("Quasiparticle Bands of 1D Periodic Hydrogen Chain")

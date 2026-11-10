@@ -759,6 +759,7 @@ impl MolecularIntegrals {
             let mut shift = 0.;
             for iteration in 1..=options.max_iterations {
                 let (f, energy) = step(&d)?;
+                let gradient = scf::stationarity(&f, &d);
                 if retry && previous.is_some_and(|p| energy > p + 1e-10) && shift == 0. {
                     shift = 0.5;
                 }
@@ -782,7 +783,10 @@ impl MolecularIntegrals {
                 history.push(Iteration { iteration, energy, delta, residual });
                 d = next;
                 previous = Some(energy);
-                if delta.is_some_and(|de: f64| de.abs() < options.tolerance) && residual < options.tolerance {
+                if delta.is_some_and(|de: f64| de.abs() < options.tolerance)
+                    && residual < options.tolerance
+                    && gradient < options.tolerance
+                {
                     converged = true;
                     break;
                 }
@@ -943,6 +947,7 @@ impl MolecularIntegrals {
                     coefficients: c,
                     densities: d,
                     energies,
+                    unstable_pair: None,
                 };
                 let hubbard_data = match (value.hubbard_energy, value.hubbard_report) {
                     (Some(e), Some(r)) => Some((e, r)),

@@ -16,35 +16,24 @@ bibliography quietly omits the method it used.
 
 from __future__ import annotations
 
-import os
 import re
 
 import pytest
-from ase import Atoms
 
-from mandacaru import Mandacaru
-from mandacaru.circuits.pools import available_pools
+from mandacaru import _native
+from mandacaru.calculation import OPERATOR_POOLS
 from mandacaru.core.mapping import MAPPINGS
 from mandacaru.optimizers.optim import NAMED_OPTIMIZERS
 from mandacaru.pseudopotentials.families import PSEUDO_FAMILIES
 from mandacaru.utils import bibliography as bib
-from mandacaru.utils.citations import (DEFAULT_REFERENCES_FILE, _ANSATZ_KEYS,
+from mandacaru.utils.citations import (_ANSATZ_KEYS,
                                        _FAMILY_KEYS, _MAPPING_KEYS,
                                        _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
                                        _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS,
-                                       _TWO_BODY_KEYS, _TWO_CENTER_KEYS,
+                                       _MEASUREMENT_SCHEME_KEYS, _TWO_BODY_KEYS,
                                        citation_keys,
-                                       provenance_keys,
-                                       resolve_references_path,
-                                       write_references)
-
-
-def h2(cell=8.0):
-    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]],
-                  cell=[cell] * 3, pbc=True)
-    atoms.center()
-    return atoms
+                                       provenance_keys)
 
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +112,8 @@ class TestEveryRegisteredChoiceIsCitable:
     """A method a user can select must have a paper behind it."""
 
     def test_every_pool(self):
-        for pool in available_pools():
+        for pool in OPERATOR_POOLS:
+            assert _native.pool_kind(pool), pool
             assert _POOL_KEYS.get(pool), pool
             assert citation_keys(pool=pool) != citation_keys()
 
@@ -141,40 +131,51 @@ class TestEveryRegisteredChoiceIsCitable:
             assert _FAMILY_KEYS.get(family), family
 
     def test_every_ansatz(self):
-        from mandacaru.algorithms.ansatz_spec import ANSATZ_NAMES
+        from mandacaru.calculation import ANSATZ_NAMES
         for name in ANSATZ_NAMES:
             assert _ANSATZ_KEYS.get(name), name
             assert citation_keys(ansatz=name) != citation_keys()
+        assert set(_ANSATZ_KEYS) == set(ANSATZ_NAMES)
 
     def test_every_two_body_representation(self):
-        """The dense tensor needs no paper of its own; the Cholesky factors
-        cite theirs."""
-        from mandacaru.integrals.cholesky import TWO_BODY_METHODS
+        """The dense default (``None``) needs no paper of its own; the Cholesky
+        factors cite theirs."""
+        from mandacaru.calculation import TWO_BODY_METHODS
         for name in TWO_BODY_METHODS:
-            assert name in _TWO_BODY_KEYS, name
-        assert set(_TWO_BODY_KEYS["cholesky"]) <= set(
-            citation_keys(two_body="cholesky"))
-        assert citation_keys(two_body="dense") == citation_keys()
+            assert _TWO_BODY_KEYS.get(name), name
+            assert set(_TWO_BODY_KEYS[name]) <= set(citation_keys(two_body=name))
+        assert set(_TWO_BODY_KEYS) == set(TWO_BODY_METHODS)
+        assert citation_keys(two_body=None) == citation_keys()
 
-    def test_every_two_center_route(self):
-        """The grid integrals need no paper; the analytic tables cite theirs."""
-        from mandacaru.integrals.two_center import TWO_CENTER_METHODS
-        for name in TWO_CENTER_METHODS:
-            assert name in _TWO_CENTER_KEYS, name
-        assert set(_TWO_CENTER_KEYS["analytic"]) <= set(
-            citation_keys(two_center="analytic"))
-        assert citation_keys(two_center="grid") == citation_keys()
+    def test_every_measurement_scheme(self):
+        """The commuting groups are the Pauli terms themselves; the double-factorized
+        measurement cites the factorization, its measurement and the Givens networks."""
+        from mandacaru.integrations.measurement_scheme import SCHEMES
+        assert set(_MEASUREMENT_SCHEME_KEYS) == set(SCHEMES)
+        assert citation_keys(measurement_scheme="qwc") == citation_keys()
+        cited = citation_keys(measurement_scheme="double-factorized")
+        assert set(_MEASUREMENT_SCHEME_KEYS["double-factorized"]) <= set(cited)
+        assert cited != citation_keys()
 
     def test_every_stable_method(self):
         from mandacaru.calculation import STABLE_METHODS
         for method in STABLE_METHODS:
             assert _METHOD_KEYS.get(method), method
 
+    def test_a_crystal_cites_its_supercell_sampling_and_ewald_sum(self):
+        """The variational methods solve a crystal as a Born-von Karman supercell."""
+        from mandacaru.utils.citations import _PERIODIC_KEYS
+        bib.resolve(_PERIODIC_KEYS)
+        for method in ("vqe", "adapt-vqe", "vasqa", "valsqa"):
+            cited = citation_keys(method=method, periodic=True)
+            assert set(_PERIODIC_KEYS) <= set(cited), method
+            assert not set(_PERIODIC_KEYS) & set(citation_keys(method=method))
+
     def test_every_active_space_method(self):
         # "energy" is the exception the table states outright: it is the
         # canonical orbital order the mean field already produced, so it
-        # borrows nothing and cites nothing.  The other two are constructions.
-        from mandacaru.algorithms.active_space import ACTIVE_SPACE_METHODS
+        # borrows nothing and cites nothing.  The others are constructions.
+        from mandacaru._native import ACTIVE_SPACE_METHODS
 
         for method in ACTIVE_SPACE_METHODS:
             assert method in _ACTIVE_METHOD_KEYS, method
@@ -182,11 +183,13 @@ class TestEveryRegisteredChoiceIsCitable:
                 assert _ACTIVE_METHOD_KEYS[method], method
                 assert (citation_keys(active_method=method)
                         != citation_keys())
+        assert set(_ACTIVE_METHOD_KEYS) == set(ACTIVE_SPACE_METHODS)
 
     def test_every_key_in_every_table_exists(self):
         tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _ANSATZ_KEYS,
-                  _OPTIMIZER_KEYS, _TWO_CENTER_KEYS,
-                  _FAMILY_KEYS, _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS)
+                  _OPTIMIZER_KEYS,
+                  _FAMILY_KEYS, _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS,
+                  _MEASUREMENT_SCHEME_KEYS)
         for table in tables:
             for name, keys in table.items():
                 bib.resolve(keys)             # raises on an unknown key
@@ -286,6 +289,11 @@ class TestTheSelector:
         assert set(parity) < set(tapered)
         assert "Bravyi2017" in tapered
 
+    def test_the_taper_option_cites_the_tapering_paper(self):
+        assert "Bravyi2017" not in citation_keys(mapping="parity")
+        assert "Bravyi2017" in citation_keys(mapping="parity", taper=True)
+        assert "Bravyi2017" in citation_keys(mapping="jordan_wigner", taper=True)
+
     def test_a_pseudopotential_family_cites_its_generator(self):
         assert "Bloechl1994" in citation_keys(family="paw-lcao")
         assert "Ivanov2024" in citation_keys(family="upaw-lcao")
@@ -342,129 +350,3 @@ class TestTheSelector:
         assert len(keys) == len(set(keys))
         order = list(bib.REFERENCES)
         assert keys == sorted(keys, key=order.index)
-
-
-class TestThePathOption:
-    def test_auto_follows_the_log(self, tmp_path):
-        log = tmp_path / "run" / "output.txt"
-        assert resolve_references_path("auto", log) == \
-            os.path.join(str(tmp_path / "run"), DEFAULT_REFERENCES_FILE)
-
-    def test_auto_without_a_log_writes_nothing(self):
-        assert resolve_references_path("auto", None) is None
-
-    def test_true_and_false_and_a_path(self):
-        assert resolve_references_path(True) == DEFAULT_REFERENCES_FILE
-        assert resolve_references_path(False) is None
-        assert resolve_references_path(None) is None
-        assert resolve_references_path("papers.bib") == "papers.bib"
-
-    def test_an_unknown_value_raises(self):
-        with pytest.raises(ValueError, match="is not a path"):
-            resolve_references_path(3)
-
-    def test_write_creates_the_parent_directory(self, tmp_path):
-        target = tmp_path / "deep" / "refs.bib"
-        write_references(target, ["Grimsley2019"])
-        assert "Grimsley2019" in target.read_text()
-
-    def test_writing_leaves_no_temporary_behind(self, tmp_path):
-        target = tmp_path / "refs.bib"
-        write_references(target, ["Grimsley2019"])
-        assert [p.name for p in tmp_path.iterdir()] == ["refs.bib"]
-
-
-class TestARunWritesIt:
-    def test_a_log_gets_a_bibliography_beside_it(self, tmp_path):
-        atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe",
-                               basis="HAO",
-                               grid_spacing=0.35,
-                               txt=str(tmp_path / "output.txt"),
-                               trace=False)
-        atoms.get_total_energy()
-        text = (tmp_path / "references.bib").read_text()
-        assert "@article{Grimsley2019," in text        # ADAPT-VQE
-        assert "@article{Jordan1928," in text          # the mapping
-        assert "@software{Mandacaru," in text
-
-    def test_no_log_means_no_file(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False)
-        atoms.get_total_energy()
-        assert list(tmp_path.iterdir()) == []
-
-    def test_references_true_writes_in_the_working_directory(self, tmp_path,
-                                                             monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
-                               references=True)
-        atoms.get_total_energy()
-        assert (tmp_path / DEFAULT_REFERENCES_FILE).is_file()
-        assert atoms.calc.solver.references_written == DEFAULT_REFERENCES_FILE
-
-    def test_an_explicit_path_is_honored(self, tmp_path):
-        atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
-                               references=str(tmp_path / "papers.bib"))
-        atoms.get_total_energy()
-        assert (tmp_path / "papers.bib").is_file()
-
-    def test_the_file_describes_the_basis_that_ran_not_the_one_asked_for(self):
-        """A PAW-LCAO basis is filtered and confined by default; both are cited."""
-        atoms = h2()
-        atoms.calc = Mandacaru(method="vqe",
-                               basis={"name": "PAW-LCAO", "size": "SZ"},
-                               grid_spacing=0.35,
-                               trace=False)
-        atoms.get_total_energy()
-        keys = atoms.calc.citation_keys()
-        assert {"Bloechl1994", "Anglada2006", "Junquera2001"} <= set(keys)
-
-    def test_the_analytic_two_center_route_cites_its_paper(self):
-        atoms = h2()
-        atoms.calc = Mandacaru(method="vqe",
-                               basis={"name": "PAW-LCAO", "size": "SZ"},
-                               grid_spacing=0.35, two_center="analytic",
-                               trace=False)
-        atoms.get_total_energy()
-        assert "Larsen2009" in atoms.calc.citation_keys()
-
-    def test_a_bad_value_is_refused_at_construction(self):
-        with pytest.raises(ValueError, match="is not a path"):
-            Mandacaru(method="vqe", basis="HAO", references=3)
-
-    def test_a_collision_with_the_log_is_refused(self, tmp_path):
-        path = str(tmp_path / "same.bib")
-        with pytest.raises(ValueError, match="both resolve to"):
-            Mandacaru(method="adapt-vqe", basis="HAO", txt=path,
-                      references=path)
-
-    def test_a_dry_run_writes_nothing(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        calc = Mandacaru(method="adapt-vqe", basis="HAO", references=True,
-                         dry_run=True)
-        calc.dry_run(h2())
-        assert list(tmp_path.iterdir()) == []
-
-    def test_excited_states_add_their_own_reference(self, tmp_path):
-        target = tmp_path / "papers.bib"
-        atoms = h2()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
-                               references=str(target))
-        atoms.get_total_energy()
-        assert "Higgott2019" not in target.read_text()
-        atoms.calc.energy_levels(num_states=2)
-        assert "Higgott2019" in target.read_text()
-
-    def test_a_failure_to_write_warns_but_does_not_end_the_run(self, tmp_path):
-        atoms = h2()
-        # A directory where the file should be: opening it for writing fails.
-        (tmp_path / "papers.bib").mkdir()
-        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.35, trace=False,
-                               references=str(tmp_path / "papers.bib"))
-        with pytest.warns(RuntimeWarning, match="could not write"):
-            energy = atoms.get_total_energy()
-        assert energy < 0.0

@@ -59,11 +59,7 @@ def test_a_molecular_force_is_the_analytic_gradient(xc, spin):
 @pytest.mark.slow
 @pytest.mark.parametrize("spin", SPINS)
 @pytest.mark.parametrize("xc", FUNCTIONALS)
-def test_a_crystal_force_comes_from_the_periodic_engine(xc, spin, monkeypatch):
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("a crystal force reached the finite-difference driver")
-
-    monkeypatch.setattr(Mandacaru, "_periodic_quantum_forces", refuse)
+def test_a_crystal_force_comes_from_the_periodic_engine(xc, spin):
     atoms = _crystal(spin)
     atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.45, trace=False,
                            basis={**BASIS, "filter_cutoff": 200},
@@ -76,14 +72,10 @@ def test_a_crystal_force_comes_from_the_periodic_engine(xc, spin, monkeypatch):
     assert atoms.calc.result.periodic is not None
 
 
-def test_a_magnetic_spinor_hybrid_crystal_force_comes_from_the_periodic_engine(monkeypatch):
+def test_a_magnetic_spinor_hybrid_crystal_force_comes_from_the_periodic_engine():
     """F2b: HSE06 on a spin-orbit dataset with nonzero moments is a magnetic spinor hybrid (not
     time-reversal symmetric); its force is analytic (gated in Rust by
     ``periodic_gradient_spinor_hybrid_magnetic``). Measured 4 s."""
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("a crystal force reached the finite-difference driver")
-
-    monkeypatch.setattr(Mandacaru, "_periodic_quantum_forces", refuse)
     atoms = _crystal("spin-polarized")
     atoms.calc = Mandacaru(method="dft", xc="hse06", paw_dataset="pbe-fr", grid_spacing=0.45,
                            trace=False, basis={**BASIS, "filter_cutoff": 200},

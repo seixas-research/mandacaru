@@ -115,12 +115,11 @@ pub fn double_factorization<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (h, eri=None, packed_eri=None, factors=None, coupling=None, tol=1e-8, coefficient_tol=1e-10, max_leaves=None, constant=0.0))]
+#[pyo3(signature = (h, eri=None, factors=None, coupling=None, tol=1e-8, coefficient_tol=1e-10, max_leaves=None, constant=0.0))]
 pub fn spatial_double_factorization<'py>(
     py: Python<'py>,
     h: PyReadonlyArray2<'py, f64>,
     eri: Option<PyReadonlyArray4<'py, f64>>,
-    packed_eri: Option<PyReadonlyArray1<'py, f64>>,
     factors: Option<PyReadonlyArray3<'py, f64>>,
     coupling: Option<PyReadonlyArray2<'py, f64>>,
     tol: f64,
@@ -160,12 +159,6 @@ pub fn spatial_double_factorization<'py>(
         dense_holder = Some((e.as_slice()?, m));
     }
 
-    let mut packed_holder = None;
-    if let Some(ref p) = packed_eri {
-        layout(p)?;
-        packed_holder = Some((p.as_slice()?, m));
-    }
-
     let mut factors_holder = None;
     if let Some(ref f) = factors {
         layout(f)?;
@@ -190,7 +183,7 @@ pub fn spatial_double_factorization<'py>(
         h_slice,
         m,
         dense_holder,
-        packed_holder,
+        None,
         factors_holder,
         coupling_holder,
         tol,
@@ -231,12 +224,10 @@ pub fn spatial_double_factorization<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (eri=None, packed_eri=None, packed_m=None, factors=None, coupling=None))]
+#[pyo3(signature = (eri=None, factors=None, coupling=None))]
 pub fn pair_spectrum<'py>(
     py: Python<'py>,
     eri: Option<PyReadonlyArray4<'py, f64>>,
-    packed_eri: Option<PyReadonlyArray1<'py, f64>>,
-    packed_m: Option<usize>,
     factors: Option<PyReadonlyArray3<'py, f64>>,
     coupling: Option<PyReadonlyArray2<'py, f64>>,
 ) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
@@ -245,13 +236,6 @@ pub fn pair_spectrum<'py>(
         layout(e)?;
         let m = e.shape()[0];
         dense_holder = Some((e.as_slice()?, m));
-    }
-
-    let mut packed_holder = None;
-    if let Some(ref p) = packed_eri {
-        layout(p)?;
-        let m = packed_m.ok_or_else(|| PyValueError::new_err("packed_m required for packed eri"))?;
-        packed_holder = Some((p.as_slice()?, m));
     }
 
     let mut factors_holder = None;
@@ -268,13 +252,9 @@ pub fn pair_spectrum<'py>(
         coupling_holder = Some((c.as_slice()?, c_shape[0]));
     }
 
-    let (weights, vectors) = native::pair_spectrum(
-        dense_holder,
-        packed_holder,
-        factors_holder,
-        coupling_holder,
-    )
-    .map_err(PyValueError::new_err)?;
+    let (weights, vectors) =
+        native::pair_spectrum(dense_holder, None, factors_holder, coupling_holder)
+            .map_err(PyValueError::new_err)?;
 
     let w_len = weights.len();
     let weights_arr = array(py, &[w_len], weights.as_slice().to_vec())?;

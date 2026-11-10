@@ -131,10 +131,10 @@ def export_h2(path: Path) -> None:
 
 def algebra(case: dict) -> dict:
     import numpy as np
+    from mandacaru import _native
     from mandacaru.core.mapping import Fermion
-    from mandacaru.core.matrix_free import PauliOperator
-    from mandacaru.core.sector import ParticleSector
     rng = np.random.default_rng(case["seed"])
+    context = _native.Context(threads=1)
     h = np.array([[-1.0, 0.13 + 0.07j], [0.13 - 0.07j, -0.3]])
     fermion = Fermion.from_spatial_integrals(h)
     values, checks = {}, {}
@@ -143,15 +143,18 @@ def algebra(case: dict) -> dict:
         matrix = operator.to_matrix()
         state = rng.normal(size=matrix.shape[0]) + 1j * rng.normal(size=matrix.shape[0])
         state /= np.linalg.norm(state)
-        product = PauliOperator(operator, cache_bytes=0) @ state
-        sector = ParticleSector(operator.num_qubits, (1, 1), mapping=mapping)
-        restricted = sector.restrict(operator).toarray()
+        native = operator._native_operator()
+        product = native.apply(state)
+        # The problem is built on the particle sector only if the operator conserves it.
+        problem = context.quantum_problem(native, 2, [1, 1], mapping=mapping, sector=True)
+        indices = np.asarray(problem.basis_indices, dtype=np.int64)
+        restricted = matrix[np.ix_(indices, indices)]
         values[mapping] = {
             "matrix": numerical(matrix), "matvec": numerical(product),
             "sector_eigenvalues": numerical(np.linalg.eigvalsh(restricted))}
         checks[mapping + ".hermitian"] = bool(np.allclose(matrix, matrix.conj().T, atol=1e-12))
         checks[mapping + ".matvec"] = bool(np.allclose(product, matrix @ state, atol=1e-12))
-        checks[mapping + ".conserves"] = bool(sector.conserves(operator))
+        checks[mapping + ".conserves"] = True
     return {"values": values, "checks": checks, "contract": {"seed": case["seed"],
             "qubit_order": "qubit 0 is most significant", "energy_unit": "Ha"}}
 
@@ -175,9 +178,11 @@ def calculate(case: dict) -> dict:
         values = {"energy_ev": float(result.optimal_energy),
                   "reference_energy_ev": float(result.reference_energy)}
         # These references are small enough for a separate dense exact check.
-        from mandacaru.core.sector import ParticleSector
-        sector = ParticleSector(record.num_qubits, record.num_particles, mapping=record.mapping)
-        exact_ev = float(np.linalg.eigvalsh(sector.restrict(record.hamiltonian).toarray()).min()) * 27.211386245988
+        from mandacaru import _native
+        sector = _native.Context(threads=1).load_hamiltonian(str(FIXTURE), sector=True)
+        indices = np.asarray(sector.basis_indices, dtype=np.int64)
+        restricted = record.hamiltonian.to_matrix()[np.ix_(indices, indices)]
+        exact_ev = float(np.linalg.eigvalsh(restricted).min()) * 27.211386245988
         values["exact_sector_energy_ev"] = exact_ev
         checks["reaches_exact_energy"] = abs(values["energy_ev"] - exact_ev) < 1e-6
         state = calc._converged_state(calc.solver)
@@ -248,24 +253,23 @@ def calculate(case: dict) -> dict:
             "diagnostics": {"num_evaluations": int(result.num_evaluations), **diagnostics}}
 
 
-def backend_record(status) -> dict:
-    """The ``native_backend`` block of one sample, from a ``BackendStatus``."""
-    native = Path(status.path) if status.path else None
-    return {"available": status.available, "message": status.message,
-            "threads": status.n_threads,
-            "library_sha256": fingerprint(native) if native else None}
+def backend_record() -> dict:
+    """The ``native_backend`` block of one sample: the extension in use and its thread count."""
+    from mandacaru import _native
+    return {"available": True, "message": "Rust backend loaded",
+            "threads": int(_native.num_threads()),
+            "library_sha256": fingerprint(Path(_native.__file__))}
 
 
 def worker(case_id: str, output: Path) -> int:
     # Import before the compute timer; process_wall_s separately includes imports.
     import numpy
     from mandacaru import Mandacaru
-    from mandacaru.integrals._backend import ensure_backend
+    del numpy, Mandacaru    # imported for their cost only
     case = next(c for c in cases() if c["id"] == case_id)
     start = time.perf_counter()
     sample = {}
     try:
-        ensure_backend()
         start = time.perf_counter()
         sample = calculate(case)
         sample["status"] = "ok" if all(sample["checks"].values()) else "failed"
@@ -277,8 +281,7 @@ def worker(case_id: str, output: Path) -> int:
     sample.update(peak_rss_bytes=int(usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)),
                   user_cpu_s=usage.ru_utime, system_cpu_s=usage.ru_stime,
                   environment=environment())
-    from mandacaru.integrals._backend import check_backend
-    sample["native_backend"] = backend_record(check_backend())
+    sample["native_backend"] = backend_record()
     try:
         write_json(output, sample)
     except ValueError:

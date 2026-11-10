@@ -275,6 +275,36 @@ pub(super) struct Candidate {
     pub(super) coefficients: Vec<Matrix>,
     pub(super) densities: Vec<Matrix>,
     pub(super) energies: Vec<Vec<f64>>,
+    /// For RHF, the (occupied, empty) columns of an occupation that is not aufbau: an occupied
+    /// orbital whose unshifted Fock energy lies above an empty one's by more than
+    /// [`AUFBAU_TOLERANCE`]. Such a stationary point is not a minimum (a level shift can hold
+    /// one), so the candidate is not converged.
+    pub(super) unstable_pair: Option<(usize, usize)>,
+}
+/// The largest entry of the commutators `[F, D]` of each spin channel (orthonormal basis): the
+/// orbital gradient, zero exactly at a stationary point. A small step (energy change and density
+/// change) does not bound it, and an analytic force is first order in it, so convergence also
+/// asks it to fall below the tolerance (owner decision 2026-11-09, "Add a stationarity test").
+pub(super) fn stationarity(f: &[Matrix], d: &[Matrix]) -> f64 {
+    f.iter()
+        .zip(d)
+        .flat_map(|(f, d)| (f * d - d * f).iter().map(|v| v.norm()).collect::<Vec<_>>())
+        .fold(0f64, f64::max)
+}
+/// Hartree by which an occupied RHF orbital may lie above an empty one (a degenerate shell at
+/// the Fermi level passes).
+pub const AUFBAU_TOLERANCE: f64 = 1e-6;
+/// The highest occupied and the lowest empty column of `c` by the diagonal of `f`, when the
+/// first lies above the second by more than [`AUFBAU_TOLERANCE`].
+fn non_aufbau(f: &Matrix, c: &Matrix, occupied: usize) -> Option<(usize, usize)> {
+    let level = |j: usize| (c.column(j).adjoint() * f * c.column(j))[(0, 0)].re;
+    let n = c.ncols();
+    if occupied == 0 || occupied >= n {
+        return None;
+    }
+    let (i, high) = (0..occupied).map(|j| (j, level(j))).max_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (a, low) = (occupied..n).map(|j| (j, level(j))).min_by(|a, b| a.1.total_cmp(&b.1))?;
+    (high > low + AUFBAU_TOLERANCE).then_some((i, a))
 }
 fn iterate(
     integrals: &MolecularIntegrals,
@@ -310,6 +340,7 @@ fn iterate(
         if previous.is_some_and(|e| current > e + 1e-10) && shift == 0. {
             shift = 0.5;
         }
+        let gradient = stationarity(&f, &d);
         let mut effective = if options.diis {
             mixer.extrapolate(&f, &d)
         } else {
@@ -343,7 +374,9 @@ fn iterate(
         });
         d = next;
         previous = Some(current);
-        if delta.is_some_and(|de: f64| de.abs() < options.tolerance) && residual < options.tolerance
+        if delta.is_some_and(|de: f64| de.abs() < options.tolerance)
+            && residual < options.tolerance
+            && gradient < options.tolerance
         {
             converged = true;
             break;
@@ -351,6 +384,12 @@ fn iterate(
     }
     let final_f = fock(integrals.eri()?.as_ref(), h, &d, method);
     let final_energy = energy(&d, &final_f, h, method);
+    let unstable_pair = if method == "rhf" {
+        non_aufbau(&final_f[0], &c[0], occupations[0])
+    } else {
+        None
+    };
+    converged &= unstable_pair.is_none();
     let mut energies = Vec::new();
     for (spin, f) in final_f.into_iter().enumerate() {
         let (eps, canonical) = eigen(f)?;
@@ -366,7 +405,18 @@ fn iterate(
         coefficients: c,
         densities: d,
         energies,
+        unstable_pair,
     })
+}
+/// `c` with columns `i` and `a` rotated into each other by `angle` (radians).
+fn rotated(c: &Matrix, i: usize, a: usize, angle: f64) -> Matrix {
+    let mut out = c.clone();
+    let (cos, sin) = (angle.cos(), angle.sin());
+    for k in 0..c.nrows() {
+        out[(k, i)] = c[(k, i)] * cos + c[(k, a)] * sin;
+        out[(k, a)] = -c[(k, i)] * sin + c[(k, a)] * cos;
+    }
+    out
 }
 fn collinear(ca: &Matrix, cb: &Matrix, particles: [usize; 2]) -> Matrix {
     let m = ca.nrows();
@@ -554,14 +604,31 @@ impl MolecularIntegrals {
                 particles,
             )]);
         }
-        let mut best: Option<Candidate> = None;
-        for start in starts {
-            let candidate = iterate(self, method, &h, particles, start, options)?;
-            if best.as_ref().is_none_or(|best| {
+        // A converged candidate beats an unconverged one; then the lower energy wins.
+        let better = |candidate: &Candidate, best: Option<&Candidate>| {
+            best.is_none_or(|best| {
                 (candidate.converged && !best.converged)
                     || (candidate.converged == best.converged
                         && candidate.energy < best.energy - 1e-12)
-            }) {
+            })
+        };
+        let mut best: Option<Candidate> = None;
+        let mut restarts = Vec::new();
+        for start in starts {
+            let candidate = iterate(self, method, &h, particles, start, options)?;
+            // A non-aufbau RHF stationary point (held by the level shift) is a saddle: restart
+            // once from it with the offending pair mixed, the same 0.3 rad the UHF start uses,
+            // and the shift off. The selector keeps whichever is lower and converged.
+            if let Some((i, a)) = candidate.unstable_pair {
+                restarts.push(vec![rotated(&candidate.coefficients[0], i, a, 0.3)]);
+            }
+            if better(&candidate, best.as_ref()) {
+                best = Some(candidate);
+            }
+        }
+        for start in restarts {
+            let candidate = iterate(self, method, &h, particles, start, options)?;
+            if better(&candidate, best.as_ref()) {
                 best = Some(candidate);
             }
         }

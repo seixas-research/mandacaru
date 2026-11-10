@@ -102,7 +102,14 @@ fn lattice(ctx: &Context, grid: &SpatialGrid) -> Result<Lattice> {
         _storage,
     })
 }
-pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
+/// Calls `visit(at, vectors)` for every flat grid index (C order) with the wave vectors whose
+/// mean norm [`norms`] reports: the FFT-box vector alone when the grid's operations are signed
+/// permutations, otherwise the image of the box vector under each operation of the lattice.
+fn visit_norm_vectors(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    visit: &mut dyn FnMut(usize, &[Vector3<f64>]),
+) -> Result<()> {
     let shape = grid.index.shape();
     let Lattice {
         reciprocal,
@@ -113,16 +120,16 @@ pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
     let signed_permutations = operations
         .iter()
         .all(|v| (0..3).all(|i| (0..3).map(|j| v[(i, j)].abs()).sum::<f64>() == 1.));
-    let mut out = ctx.allocate::<f64>(grid.index.points())?;
+    let mut vectors = Vec::with_capacity(group.len());
     for i in 0..shape[0] {
         for j in 0..shape[1] {
             for k in 0..shape[2] {
                 let indices = [i, j, k];
                 let m = Vector3::from_fn(|a, _| frequency(indices[a], shape[a]));
-                let norm = if signed_permutations {
-                    (reciprocal * m).norm()
+                vectors.clear();
+                if signed_permutations {
+                    vectors.push(reciprocal * m);
                 } else {
-                    let mut sum = 0.;
                     for (w, v) in group.iter().zip(&operations) {
                         let image = v * m;
                         let wrapped = Vector3::from_fn(|a, _| {
@@ -130,14 +137,61 @@ pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
                             (image[a] + (shape[a] / 2) as f64).rem_euclid(n) - (shape[a] / 2) as f64
                         });
                         // v = w^-T, so v^-1 = w^T, exactly for integer operations.
-                        sum += (reciprocal * (w.transpose() * wrapped)).norm();
+                        vectors.push(reciprocal * (w.transpose() * wrapped));
                     }
-                    sum / group.len() as f64
-                };
-                out.as_mut_slice()[(i * shape[1] + j) * shape[2] + k] = norm;
+                }
+                visit((i * shape[1] + j) * shape[2] + k, &vectors);
             }
         }
     }
+    Ok(())
+}
+
+pub fn norms(ctx: &Context, grid: &SpatialGrid) -> Result<Buffer<f64>> {
+    let mut out = ctx.allocate::<f64>(grid.index.points())?;
+    visit_norm_vectors(ctx, grid, &mut |at, vectors| {
+        out.as_mut_slice()[at] = if vectors.len() == 1 {
+            vectors[0].norm()
+        } else {
+            vectors.iter().map(|g| g.norm()).sum::<f64>() / vectors.len() as f64
+        };
+    })?;
+    Ok(out)
+}
+
+/// `sum_i coefficient_i d norms_i / d eps_ab` (Bohr^-1 times the unit of `coefficient`), the
+/// strain derivative of [`norms`] contracted with one weight per grid node. The strain
+/// `x -> (1 + eps) x` moves a wave vector as `G -> (1 - eps^T) G`, so a norm moves as
+/// `d |G| / d eps_ab = -G_a G_b / |G|` at each alias vector, and the mean norm's derivative is
+/// the mean of these at the SAME alias vectors (the operations stay those of the reference
+/// cell). `G = 0` contributes nothing.
+pub fn norm_strain(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    coefficient: &[f64],
+) -> Result<[[f64; 3]; 3]> {
+    if coefficient.len() != grid.index.points() {
+        return Err(invalid("one strain weight per grid node"));
+    }
+    finite(coefficient, "reciprocal norm weights")?;
+    let mut out = [[0.; 3]; 3];
+    visit_norm_vectors(ctx, grid, &mut |at, vectors| {
+        let weight = coefficient[at];
+        if weight == 0. {
+            return;
+        }
+        for g in vectors {
+            let norm = g.norm();
+            if norm > 0. {
+                let scale = -weight / (norm * vectors.len() as f64);
+                for (a, row) in out.iter_mut().enumerate() {
+                    for (b, entry) in row.iter_mut().enumerate() {
+                        *entry += scale * g[a] * g[b];
+                    }
+                }
+            }
+        }
+    })?;
     Ok(out)
 }
 

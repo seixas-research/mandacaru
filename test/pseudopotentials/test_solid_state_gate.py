@@ -393,7 +393,7 @@ def _dataset(library: str, symbol: str):
 @pytest.mark.parametrize("library, symbol", _library_cases())
 def test_a_declared_semicore_has_its_channel_and_partial_waves(library, symbol):
     pp = _dataset(library, symbol)
-    from mandacaru.pseudopotentials.onecenter import _occupations
+    from mandacaru.hubbard import _occupations
     for _n, l in pp.semicore_subshells:
         assert l in pp.channels, f"{library} {symbol}: no l={l} channel for its semicore"
         # the semicore wave and the valence wave of the channel
@@ -402,7 +402,7 @@ def test_a_declared_semicore_has_its_channel_and_partial_waves(library, symbol):
 
 
 def _assert_one_center_bounded(library, symbol):
-    from mandacaru.pseudopotentials.onecenter import exact_one_center_terms
+    from .onecenter_view import exact_one_center_terms
     terms = exact_one_center_terms(_dataset(library, symbol))
     for l, (V, K, D0) in terms.items():
         for name, block in (("V", V), ("K", K), ("D0", D0)):

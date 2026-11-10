@@ -17,7 +17,7 @@ object, roughly the size of the interparticle spacing, that follows one
 electron around; in the real crystal it has no images, and in the supercell it
 interacts with ``N_c - 1`` copies of itself.  That spurious interaction is the
 leading finite-size error of a neutral cell once the Madelung term
-(:mod:`mandacaru.core.ewald`) has been accounted for, and it falls off only as
+(the Ewald sum of the Rust engine) has been accounted for, and it falls off only as
 :math:`1/\Omega`.
 
 The **model periodic Coulomb** (MPC) construction of Fraser *et al.* and
@@ -57,7 +57,7 @@ from .._native import voxel_self_potential, wigner_seitz_kernel as _native_wigne
 __all__ = ["TruncatedCoulombSolver", "wigner_seitz_kernel",
            "FiniteSizeCorrection", "exchange_correlation_hole_energy",
            "voxel_self_potential", "PeriodicPoissonSolver", "spatial_rdms",
-           "PeriodicIntegralsAdapter", "MolecularIntegrals", "minimal_hao_basis"]
+           "PeriodicIntegralsAdapter"]
 
 
 class PeriodicPoissonSolver:
@@ -323,38 +323,3 @@ class PeriodicIntegralsAdapter:
             self._cached_periodic = eri.copy()
 
         return eri
-
-
-class MolecularIntegrals:
-    """Mock/wrapper for legacy MolecularIntegrals interface."""
-
-    def __init__(self, nuclei, basis, grid, units="angstrom", softening=1e-12, orthogonalize=True, **kwargs):
-        self.nuclei = nuclei
-        self.basis = list(basis)
-        self.grid = grid
-        self.units = units
-        self.softening = softening
-        self.orthogonalize = orthogonalize
-        self.mo_coefficients = None
-        self._kwargs = kwargs
-
-    def two_body_with_kernel(self, solver=None, *, mo: bool = True):
-        if mo and self.mo_coefficients is None:
-            raise ValueError(
-                "no molecular-orbital rotation is available yet: call "
-                "molecular_hamiltonian() first, or pass mo=False to get the "
-                "tensor in the Loewdin-orthonormalized basis."
-            )
-        raise NotImplementedError("two_body_with_kernel without mo is not implemented for standalone MolecularIntegrals")
-
-
-def minimal_hao_basis(nuclei, grid_units: str = "angstrom"):
-    from ..basis import HydrogenicAtomicOrbital
-
-    basis = []
-    for Z, R in nuclei:
-        z_eff = HydrogenicAtomicOrbital.slater_effective_charge(int(round(Z)), 1, 0)
-        basis.append(
-            HydrogenicAtomicOrbital(1, 0, 0, Z=z_eff, center=R, units=grid_units)
-        )
-    return basis

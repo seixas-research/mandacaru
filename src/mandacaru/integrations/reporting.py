@@ -142,8 +142,8 @@ def _expressivity(driver, result, count):
     """The expressivity of the ansatz after ``count`` parameters, from native samples."""
     from ..analysis.expressibility import active_space_dimension, calculate_kl_divergence
 
-    # The sector lives on the spin-orbitals: a tapered register has two more.
-    modes = driver.n_qubits + (2 if driver._mapping == "parity_reduced" else 0)
+    # The sector lives on the spin-orbitals, however many qubits tapering took off.
+    modes = 2 * result.n_spatial_orbitals
     fidelities = result._problem.sample_fidelities(
         result._raw["indices"][:count], pairs=EXPRESSIVITY_PAIRS, seed=0, product_form=True
     )
@@ -154,6 +154,8 @@ def _expressivity(driver, result, count):
 
 
 def _write_variational(log, driver, result, log_expressivity):
+    if driver._energy_measurement is not None:
+        log.write_block("ENERGY MEASUREMENT", driver._energy_measurement, framed=True)
     if driver._gradient_measurement is not None:
         log.write_block("GRADIENT MEASUREMENT", driver._gradient_measurement, framed=True)
     lineage, start_energy = run_log_fields.lineage(driver)

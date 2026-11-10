@@ -31,7 +31,7 @@ method's own:
   the reference (Hartree-Fock) energy the run starts from;
 * the method's **progress table**, when it has one: ADAPT-VQE's
   ``[ITERATIONS]`` (one row per accepted operator, :meth:`Logger.write_iteration`)
-  or MCAS-VQE's ``[MARKOV CHAIN]`` (one row per proposal,
+  or VASQA's ``[MARKOV CHAIN]`` (one row per proposal,
   :meth:`Logger.write_chain_step`).  A fixed-ansatz VQE has neither: its
   optimization is a single classical minimization;
 * a **summary** block with the final variational state;
@@ -53,9 +53,7 @@ steps again (``parse_output(...)["steps"]``).
 The pool's *contents* are not listed: a realistic pool grows with the fourth
 power of the number of orbitals, and repeating it every iteration is what used
 to make this file unreadable.  ``Logger(..., log_pool=True)``
-restores the listing, but the supported route is the driver option
-``verbose_operators=True``, which writes the pool once as structured JSON (see
-:mod:`mandacaru.utils.dumps`).
+restores the listing.
 
 Above :data:`DETAILED_LOG_MAX_QUBITS` qubits the log stays smaller still: the
 selected operator's expansion and the summary's operator sequence are omitted
@@ -249,9 +247,7 @@ class Logger:
     log_pool : bool
         List the whole operator pool in every iteration block (default
         ``False``).  Off, the log records only the pool's size and the
-        operator that was selected; the driver option ``verbose_operators``
-        writes the pool once to ``pool.json``, which is easier to read and does
-        not grow with the iteration count.
+        operator that was selected.
     append : bool, optional
         Override the automatic choice: ``True`` always appends (never truncates
         an existing file), ``False`` always truncates.  ``None`` (the default)
@@ -638,9 +634,9 @@ class Logger:
     #: :data:`ITERATION_OPERATOR_MAX_CHARS`).
     #: The operator's kind is not a column: the label already says it
     #: (``D(0,2->1,3)``), and the pool is named in the setup block.  A pool
-    #: whose labels are too wide for a row gives a short name
-    #: (``PoolOperator.short_label``, e.g. ``CEO(0,1,6,7)+``); the full label
-    #: stays on the result, in checkpoints and in ``pool.json``.
+    #: whose labels are too wide for a row gives a short name (e.g.
+    #: ``CEO(0,1,6,7)+``); the full label stays on the result and in
+    #: checkpoints.
     #: Longer names or names with control characters use ``pool[index]``,
     #: the operator's zero-based index, so one iteration remains one line.
     #:
@@ -694,16 +690,15 @@ class Logger:
         Each iteration is a single line and each tracked property is a column
         (:data:`ITERATION_COLUMNS`); the heading is written once, before the
         first row.  This replaced a twelve-line block per iteration whose bulk
-        was the selected operator's Pauli expansion -- the operators belong in
-        ``pool.json`` (driver option ``verbose_operators=True``), not repeated
-        through the log.  The pool's size and type are in the setup block
+        was the selected operator's Pauli expansion, which does not belong in the
+        log.  The pool's size and type are in the setup block
         above, since neither changes between iterations.
 
         Parameters
         ----------
         iteration : int
             1-based macro-iteration index.
-        pool_operators : sequence of PoolOperator
+        pool_operators : sequence of operator records
             The operator pool at this step (only the selected entry is read).
         gradients : iterable of float
             Screening gradient of each pool operator in Hartree, in the
@@ -803,7 +798,7 @@ class Logger:
                 self._emit_body(f"[{i:3d}] {op.label}  "
                                 f"|grad|={abs(grads[i]):.6e}{marker}", level=2)
 
-    # -- Markov-chain table (MCAS-VQE) ---------------------------------------- #
+    # -- Markov-chain table (VASQA) ---------------------------------------- #
 
     #: Columns of the ``[MARKOV CHAIN]`` table, one row per proposal:
     #: ``(key, heading, width, format)``.  ``energy`` is the relaxed energy of
@@ -843,7 +838,7 @@ class Logger:
                          energy_unit: str = "eV",
                          optimizer_steps: int | None = None,
                          action: str = "") -> None:
-        """Append **one row** of the ``[MARKOV CHAIN]`` table (MCAS-VQE).
+        """Append **one row** of the ``[MARKOV CHAIN]`` table (VASQA).
 
         The counterpart of :meth:`write_iteration` for a chain: one row per
         proposal, accepted or not (:data:`CHAIN_COLUMNS`).  Energies are in
@@ -1673,6 +1668,7 @@ _SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              "[NESTED OTOC]": "nested_otoc",
              "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
+             "[ENERGY MEASUREMENT]": "energy_measurement",
              "[GRADIENT MEASUREMENT]": "gradient_measurement",
              "[OPTIMIZATION SETUP]": "setup", "[ITERATIONS]": "iterations",
              # The classical SCF's setup and summary are read under the same
@@ -1778,7 +1774,7 @@ def parse_output(path: str) -> dict:
                 elif section == "performance":
                     table = None
                     step["performance"] = {"stages_s": {}}
-                elif section in ("electrons", "measurement",
+                elif section in ("electrons", "measurement", "energy_measurement",
                                  "gradient_measurement"):
                     step[section] = {}
                 elif section in ("basis", "active_space"):
@@ -1894,7 +1890,7 @@ def parse_output(path: str) -> dict:
                     step["system"].setdefault("geometry", []).append(
                         [fields[0]] + [number(v) for v in fields[1:4]])
             elif section in ("system", "setup", "electrons", "measurement",
-                             "gradient_measurement") \
+                             "energy_measurement", "gradient_measurement") \
                     and ":" in stripped:
                 key, _, value = stripped.partition(":")
                 key, value = key.strip(), value.strip()

@@ -73,6 +73,20 @@ the whole pool-gradient step of a shot-based ADAPT-VQE run. A submission over
 either limit raises `ValueError` naming the count and the limit, before any job
 is queued. Keep the budget on for any real submission.
 
+The defaults are sized for small molecules and stay as they are. **A large run passes its
+own budget explicitly**: a 50-qubit ADAPT-VQE step at one alpha and one beta electron measures
+about 13,000 gradient bases, over the default 10,000, so it is refused with the size to pass:
+
+```text
+measurement bases budget exceeded: 13056 > 10000; ... pass measurement_budget={"bases": N}
+sized for this run (here N >= 13056)
+```
+
+Pass `measurement_budget={"bases": 13_056, "observables": 500_000}` (the numbers the refusal
+reports, with room for the observables) and bound the job size with `max_bases_per_job`. The
+run budget refuses the same way, naming `backend_options={"run_budget": {...}}` with the
+jobs or shots this run needs.
+
 (run-budget)=
 ## The run budget
 
@@ -134,7 +148,68 @@ jobs of at most that many QWC bases, never cutting a basis in half. It applies t
 an energy too: the Hamiltonian is split into weighted observables and the number
 of jobs one energy costs is what the run-budget pre-flight multiplies by. The
 ansatz is transpiled once and shared by every job. Completed chunks of an
-unfinished `expectation_values` request are kept, keyed by what was asked.
+unfinished `expectation_values` or `expectation_batch` request are kept, keyed by what was
+asked.
+
+**A measurement that needs several circuits is still one job.** The Qiskit provider's
+`expectation_batch` sends one Estimator PUB per circuit in a single job, and the limit packs
+whole circuits and chunks into jobs of at most that many bases, so the jobs of one measurement
+are $\lceil \text{bases} / \text{limit} \rceil$, as `measurement_cost` counts. Either scheme
+costs one job per energy: the commuting groups are one circuit with many observables, the
+double-factorized energy is $L + 1$ circuits. Braket submits a task per basis, so there a
+batch costs its bases in tasks.
+
+(double-factorized-measurement)=
+## Fewer bases: the double-factorized measurement
+
+The commuting-group scheme needs $O(M^3)$ bases. `measurement_scheme="double-factorized"`
+measures the energy in $L + 1$ bases instead, with $L$ the number of leaves of the
+double factorization of the molecular integrals (Motta *et al.*, npj Quantum Inf.
+**7**, 83, 2021; Huggins *et al.*, npj Quantum Inf. **7**, 23, 2021). The two-body
+operator is a sum of squares of one-body operators, and each is diagonal in an orbital
+basis of its own. A short network of Givens rotations on neighboring qubits changes the
+basis, after which one computational-basis measurement of the whole register answers for
+a whole leaf:
+
+$$H = E_0 + \sum_k \epsilon_k \tilde n_k + \tfrac12\sum_\ell \lambda_\ell
+\Bigl(\sum_k g_{\ell k}\, \tilde n^{(\ell)}_k\Bigr)^2 .$$
+
+```python
+calc = Mandacaru(method="vqe", basis="HAO", shots=20000, backend_provider="qiskit",
+                 measurement_scheme="double-factorized")
+```
+
+Everything numerical is Rust: the factorization, the Givens networks, the diagonal
+observables and the assembly of the energy. The calculator measures the energy of the
+molecular Hamiltonian that the calculation built, so the energy equals the
+commuting-group energy up to the leaf truncation (leaves below `1e-8` of the largest weight
+are dropped; the energy differs from the exact one by about $4\times10^{-13}$ Ha for LiH and
+$3\times10^{-14}$ Ha for H$_2$ in the `HAO` basis). `problem.factorized_measurement` reports
+the number of bases, the longest Givens network and the discarded tensor norm.
+
+* **The cost is priced before the first job.** The $L + 1$ bases are one batch of circuits, so
+  on a Qiskit device an energy costs one job (or $\lceil (L + 1) / \text{limit} \rceil$ under
+  `max_bases_per_job`) and $(L + 1)\times$ `shots` shots (times the resilience multipliers):
+  `measurement_cost(L + 1, ...)`; on Braket, $L + 1$ tasks (`job_per_basis=True`). An energy
+  that reuses the previous point's values costs less, never more. The run-budget pre-flight
+  multiplies that by the optimizer's evaluation bound, and `measurement_budget["bases"]` is
+  checked against $L + 1$.
+* **The Givens network is circuit depth.** Fewer bases do not make the circuit shorter: each
+  basis appends its network to the ansatz, and a rotation of two neighboring modes is two
+  commuting two-qubit Pauli rotations, four two-qubit gates before transpilation. The longest
+  network is `problem.factorized_measurement["rotations"]` (6 for LiH in the three-orbital
+  `HAO` basis, so at most 24 more entanglers). On a processor this is the third wall, the fidelity wall,
+  not the second.
+* **The pool gradients of `adapt-vqe` stay on the commuting groups.** The commutator
+  $[H, A_k]$ is not diagonal in any leaf basis; only the energies are factorized.
+* **What it refuses.** A circuit device is required (the state-vector solver measures
+  nothing). The molecular integrals must be available: a supplied or loaded Hamiltonian
+  (`hamiltonian=`, `load_hamiltonian=`), a crystal and a spinor or complex model raise
+  `ValueError`, as do mappings other than Jordan-Wigner (the scheme reads occupations off
+  the computational basis), `taper=True` and `ansatz="hva"`. Nothing falls back to another
+  scheme.
+* **The shot path stays polynomial.** The factorization works on the $M^4$ integrals and an
+  $M^2\times M^2$ pair matrix, never on a $2^n$ object.
 
 (adapt-on-a-device)=
 ## ADAPT-VQE on a device
@@ -149,6 +224,19 @@ $$g_k = \langle\psi|[H, A_k]|\psi\rangle = \sum_R c_{kR}\,\langle\psi|R|\psi\ran
 No $2^n$ array, no sector-sized vector and no local screening is built on this
 path, on any device. The `shots=0` local simulation keeps its exact state-vector
 route.
+
+The shot-based problem is built **register-free**: the Hamiltonian, the pool
+generators and the measured commutators are Pauli operators, and there is no
+state-vector basis, matrix or state. Particle-number conservation (`sector=True`)
+and Z2 tapering (`taper=True`) are checked and applied on the Pauli terms. The
+result carries no state, so everything that reads one refuses with a message
+saying the run is register-free: density matrices, natural orbitals and
+molecular fields, variational forces, `sparse=True`, `energy_levels`, and the
+subspace and architecture-search methods. A fixed-ansatz VQE with a
+derivative-free optimizer (SPSA, COBYLA, Nelder-Mead) reports no final gradient
+(`final_max_gradient` is NaN), since measuring it costs two evaluations per
+rotation. A test builds a 50-qubit problem on this path and asserts that no
+exponential object appears (`test/architecture/test_shot_path_memory.py`).
 
 * **The first step is classical and exact.** At the Hartree-Fock determinant
   $\langle b|R|b\rangle$ is $\pm1$ for an `I`/`Z` string and 0 otherwise, so no
@@ -170,16 +258,17 @@ example.
 ## What is not available
 
 The calculator measures the **energy** (and, for ADAPT-VQE, the pool gradients)
-on a circuit device. Measured reduced density matrices and forces, the
-double-factorized measurement scheme, re-measuring an optimized state with
-`remeasure()`, and a separate `measurement_provider` are not implemented; see
+on a circuit device. Measured reduced density matrices and forces,
+re-measuring an optimized state with `remeasure()`, and a separate
+`measurement_provider` are not implemented; see
 [what is not yet available](#not-yet-available). On a circuit device
 `get_forces()` raises: forces are not an implemented property there.
 
 ## What to reach for
 
 * **Too big to submit:** lower `resilience_level` in `estimator_options`, set
-  `max_bases_per_job`, or shrink the register.
+  `max_bases_per_job`, or shrink the register. A refusal by `measurement_budget` names the
+  value to pass; large runs pass it explicitly.
 * **Too expensive in shots:** a smaller basis, `mapping="parity_reduced"`, or an
   [active space](active_space.md).
 * **Too deep to trust:** `pool="ceo-ovp"`, and pin the layout with

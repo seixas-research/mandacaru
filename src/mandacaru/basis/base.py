@@ -6,16 +6,12 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Basis-function abstraction.
+"""Basis-function contract of the tabulated radial shells.
 
-The whole integral machinery is *agnostic* to the kind of localized basis
-function used.  It never manipulates analytic expressions: it only needs to
-**sample** a function on a Cartesian grid.  Consequently any localized basis --
-hydrogen-like orbitals today, Wannier functions or numerical atomic orbitals
-tomorrow -- is injected simply by implementing :meth:`BasisFunction.evaluate`.
-
-This is the single contract the C backend relies on (it receives the sampled
-values), so new bases require *zero* changes to the integral core.
+The functions that survive in Python are the tabulated radial shells of the PAW-LCAO and
+multiple-zeta tables (:class:`~mandacaru.basis.multizeta.TabulatedOrbital` and the pseudopotential
+shells); every basis the calculation samples is built and evaluated by the Rust engine. A shell
+meets this contract by evaluating its value and its gradient at Cartesian points.
 """
 
 from __future__ import annotations
@@ -24,195 +20,24 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-#: Fraction of its peak below which a tabulated radial function counts as
-#: zero when its support is measured: far below anything a grid resolves, so
-#: sampling only inside the support changes nothing measurable.
-SUPPORT_FLOOR = 1e-14
-
-#: Bohr added past the last table value above :data:`SUPPORT_FLOOR`.
-SUPPORT_MARGIN = 1.0
-
-
-def values_and_gradients(functions, x, y, z, delta: float = 1e-3, *,
-                         values: bool = True):
-    """``(values, gradients)`` of ``functions`` at the flat points ``x, y,
-    z`` (Bohr): ``(n, N)`` and ``(n, 3, N)``, ``values`` being ``None`` when
-    not asked for.
-
-    Functions with a closed form (a tabulated radial function times a
-    harmonic: ``radial``, ``radial_slope``, ``l``, ``m``, ``real`` and
-    ``center``) share the harmonic and its gradient with the others of
-    their center and ``(l, m)`` -- the zeta partners of a shell -- so those
-    are evaluated once per group; the others use :meth:`~BasisFunction.evaluate`
-    and :meth:`~BasisFunction.gradient`.
-    """
-    from ._angular import angular_factor
-
-    x, y, z = (np.asarray(c, dtype=float).reshape(-1) for c in (x, y, z))
-    dtype = (np.float64 if all(getattr(f, "real", False) for f in functions)
-             else np.complex128)
-    gradients = np.empty((len(functions), 3, x.size), dtype=dtype)
-    samples = np.empty((len(functions), x.size), dtype=dtype) if values else None
-    groups: dict = {}
-    for i, function in enumerate(functions):
-        if hasattr(function, "radial_slope"):
-            key = (tuple(np.asarray(function.center, dtype=float)),
-                   function.l, function.m, bool(function.real))
-            groups.setdefault(key, []).append(i)
-            continue
-        gradients[i] = function.gradient(x, y, z, delta)
-        if values:
-            samples[i] = np.asarray(function.evaluate(x, y, z)).reshape(-1)
-    for (center, l, m, real), members in groups.items():
-        r, offsets, harmonic, slopes = angular_factor(
-            l, m, x - center[0], y - center[1], z - center[2], real=real)
-        for i in members:
-            R, dR = functions[i].radial(r), functions[i].radial_slope(r)
-            if values:
-                samples[i] = R * harmonic
-            for axis, (offset, slope) in enumerate(zip(offsets, slopes)):
-                gradients[i, axis] = dR * offset / r * harmonic + R * slope
-    return samples, gradients
-
 
 class BasisFunction(ABC):
-    """A localized single-particle function :math:`\\phi(\\mathbf r)`.
-
-    Subclasses only have to know how to evaluate themselves on a set of
-    Cartesian coordinates.  Everything else (grids, integrals, parallel C
-    kernels) is shared and basis-independent.
-    """
+    """A localized single-particle function :math:`\\phi(\\mathbf r)`."""
 
     #: Cartesian center of the function in Bohr, shape ``(3,)``.
     center: np.ndarray
 
     #: Whether the function is real: an ``R(r) S_lm`` with real spherical
-    #: harmonics (every molecular basis) samples as ``float64``; anything
-    #: else (complex harmonics of a crystal, a Wannier function) as
-    #: ``complex128``.
+    #: harmonics (every molecular basis) is ``float64``; anything else
+    #: (complex harmonics of a crystal) is ``complex128``.
     real: bool = False
 
     @abstractmethod
     def evaluate(self, x, y, z) -> np.ndarray:
-        """Sample the (possibly complex) function on Cartesian coordinates.
-
-        Parameters
-        ----------
-        x, y, z : array_like
-            Broadcastable arrays of Cartesian coordinates in Bohr.
-
-        Returns
-        -------
-        numpy.ndarray
-            Complex128 array of values, broadcast to the shape of the inputs.
-        """
+        """Values on Cartesian coordinates (Bohr), broadcast to the shape of the inputs."""
         raise NotImplementedError
 
-    def sample(self, grid) -> np.ndarray:
-        """Evaluate on a :class:`~mandacaru.integrals.grid.Grid`, flattened.
-
-        Returns a contiguous vector of length ``grid.size``: ``float64`` for a
-        real function, ``complex128`` otherwise.
-        """
-        dtype = np.float64 if self.real else np.complex128
-        radius = self.support_radius
-        if radius is None:
-            values = self.evaluate(grid.X, grid.Y, grid.Z)
-            return np.ascontiguousarray(np.broadcast_to(values, grid.shape),
-                                        dtype=dtype).reshape(-1)
-        # A confined function is exactly zero beyond its radius: evaluate the
-        # radial spline and the harmonic only inside, so sampling a basis
-        # costs its functions' volumes rather than M whole grids (the largest
-        # setup cost of a long molecule).  Bit-identical to the full
-        # evaluation.
-        center = np.asarray(self.center, dtype=float)
-        X, Y, Z = (grid.X.reshape(-1), grid.Y.reshape(-1),
-                   grid.Z.reshape(-1))
-        dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
-        inside = np.flatnonzero(dx * dx + dy * dy + dz * dz
-                                <= radius * radius)
-        out = np.zeros(grid.size, dtype=dtype)
-        if inside.size:
-            out[inside] = self.evaluate(X[inside], Y[inside], Z[inside])
-        return out
-
+    @abstractmethod
     def gradient(self, x, y, z, delta: float = 1e-3) -> np.ndarray:
-        """``(3, n)`` gradient of the function at the points ``x, y, z``
-        (flat arrays, Bohr), by central differences of :meth:`evaluate` with
-        step ``delta``; a function with a closed form overrides it."""
-        x, y, z = (np.asarray(c, dtype=float) for c in (x, y, z))
-        out = []
-        for axis in range(3):
-            step = np.zeros(3)
-            step[axis] = delta
-            plus = self.evaluate(x + step[0], y + step[1], z + step[2])
-            minus = self.evaluate(x - step[0], y - step[1], z - step[2])
-            out.append((plus - minus) / (2.0 * delta))
-        return np.stack(out)
-
-    def sample_gradient(self, grid, delta: float = 1e-3) -> np.ndarray:
-        """``(3, grid.size)`` gradient of the function on ``grid`` (the
-        flattened layout of :meth:`sample`): ``float64`` for a real
-        function, ``complex128`` otherwise.  Like :meth:`sample`, only the
-        points inside the support are evaluated."""
-        dtype = np.float64 if self.real else np.complex128
-        radius = self.support_radius
-        X, Y, Z = (grid.X.reshape(-1), grid.Y.reshape(-1),
-                   grid.Z.reshape(-1))
-        out = np.zeros((3, grid.size), dtype=dtype)
-        if radius is None:
-            out[:] = self.gradient(X, Y, Z, delta)
-            return out
-        center = np.asarray(self.center, dtype=float)
-        reach = radius + delta
-        dx, dy, dz = X - center[0], Y - center[1], Z - center[2]
-        inside = np.flatnonzero(dx * dx + dy * dy + dz * dz <= reach * reach)
-        if inside.size:
-            out[:, inside] = self.gradient(X[inside], Y[inside], Z[inside],
-                                           delta)
-        return out
-
-    @property
-    def support_radius(self) -> float | None:
-        """Radius (Bohr) beyond which the function is exactly zero, or
-        ``None`` when it never is.
-
-        Confined radial functions carry it in one of two forms: a tabulated
-        radial table (``_r``/``_values``, or a multi-zeta ``table`` with
-        ``r``/``values``), whose last point above
-        :data:`SUPPORT_FLOOR` of the peak is the support -- the table itself
-        often runs further, out to 30 Bohr --
-        or a confinement radius (``r_c``).  Anything else (Gaussians,
-        hydrogenic orbitals) has unbounded support and is sampled on the
-        whole grid.
-        """
-        cached = self.__dict__.get("_support_radius", False)
-        if cached is not False:
-            return cached
-        radius = None
-        table, grid_r = getattr(self, "_values", None), getattr(self, "_r",
-                                                                None)
-        tabulated = getattr(self, "table", None)        # a multi-zeta table
-        if table is None and tabulated is not None:
-            table = getattr(tabulated, "values", None)
-            grid_r = getattr(tabulated, "r", None)
-        if table is not None and grid_r is not None:
-            # A Fourier-filtered function rings out to the end of its table
-            # at round-off level; below SUPPORT_FLOOR of its peak it is
-            # treated as zero (C, H PAW-LCAO-SZ: 7.8-9.4 Bohr instead of
-            # the 30 Bohr table).
-            values = np.abs(np.asarray(table, dtype=float))
-            nonzero = np.flatnonzero(values > SUPPORT_FLOOR * values.max())
-            r = np.asarray(grid_r, dtype=float)
-            # The spline reaches to the next table point beyond the last
-            # nonzero value; zero only from there on.
-            # A cubic spline is not local: just past the last table value
-            # above the floor it still carries ~1e-10 of overshoot, so the
-            # support ends SUPPORT_MARGIN further out.
-            radius = (min(float(r[min(nonzero[-1] + 1, r.size - 1)])
-                          + SUPPORT_MARGIN, float(r[-1]))
-                      if nonzero.size else 0.0)
-        elif getattr(self, "r_c", None) is not None:
-            radius = float(self.r_c)
-        self.__dict__["_support_radius"] = radius
-        return radius
+        """``(3, n)`` gradient at the points ``x, y, z`` (flat arrays, Bohr)."""
+        raise NotImplementedError

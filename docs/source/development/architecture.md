@@ -69,9 +69,9 @@ added in Python.
 | `integrations/` | ASE conversion, PAW adapters, circuit execution, run reports. |
 | `analysis/` | Views of native results. |
 | `workflows/` | Quantum phase estimation, time evolution, quantum echoes. |
-| `backends/` | Device registry, circuit providers, measurement planning. |
+| `backends/` | Device registry, circuit providers, measurement grouping and budgets. |
 | `basis/`, `models/`, `pseudopotentials/` | Basis families and metadata, input recipes, PAW-LCAO and UPAW-LCAO generation and dataset layout. |
-| `circuits/`, `core/`, `integrals/`, `optimizers/` | Ansatz and pool definitions, fermion and Pauli algebra, integral helpers, the optimizer wrapper. |
+| `circuits/`, `core/`, `integrals/`, `optimizers/` | Circuit cost profiling, fermion and Pauli algebra, integral helpers, the named-optimizer record a calculator accepts. |
 | `utils/` | The run-log protocol, profiling, bibliography, cube and XSF writers, `Viewer3D`. |
 | `cli.py`, `units.py`, `version.py`, `backend_policy.py` | The `mandacaru` command, unit constants, version, the one parser of `MANDACARU_BACKEND`. |
 
@@ -129,8 +129,9 @@ checked by tests.
 2. **Binding.** Expose it in the matching `mandacaru-python` module and update
    `_native.pyi` in the same change. Rebuild the extension (`pip install -e '.[dev]'`);
    a change under `crates/` is invisible to Python until you do.
-3. **Specification.** Add a `Capability(quantum, forces, periodic)` entry to `METHODS`
-   in `specifications.py`, and the dispatch in `calculation.py`. Reach the method
+3. **Specification.** Add a `Capability(quantum, forces, periodic, default_pool)` entry to
+   `METHODS` in `specifications.py` (`default_pool` is the operator pool the method uses when
+   `pool=` is left out, `None` for a classical method), and the dispatch in `calculation.py`. Reach the method
    only through `Mandacaru(method=...)`.
 4. **Refusals.** Every combination of options the method cannot honor must raise in
    the constructor or at the run, with a message that names the option.

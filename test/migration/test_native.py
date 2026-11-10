@@ -1,6 +1,5 @@
 """Scientific and ownership contracts of the Phase 1 checked bindings."""
 
-import ctypes
 import gc
 from concurrent.futures import ThreadPoolExecutor
 
@@ -11,7 +10,6 @@ from scipy.special import spherical_jn
 
 from mandacaru import _native
 from mandacaru.integrations.ase import geometry_from_atoms
-from mandacaru.integrals import _backend
 from mandacaru.units import ANGSTROM_TO_BOHR
 
 
@@ -200,12 +198,3 @@ def test_simultaneous_calls_on_one_context_share_the_worker_limit():
         assert np.allclose(futures[0].result(), futures[1].result(), atol=1e-12)
     assert ctx.workers_launched == 4 and ctx.worker_peak <= 2
     assert ctx.memory_used_bytes == 0
-
-
-def test_packaged_extension_also_exports_the_legacy_abi():
-    assert _native.Context.__module__ == "mandacaru._native"
-    lib = ctypes.CDLL(_native.__file__)
-    assert lib.mandacaru_backend_abi_version() == _native.ABI_VERSION == 1
-    assert lib.mandacaru_thread_policy_version() == _native.THREAD_POLICY_VERSION == 1
-    _backend._bind(lib)
-    assert ctypes.sizeof(lib.mandacaru_bloch_shell.argtypes[3]) == 8

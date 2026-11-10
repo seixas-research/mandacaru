@@ -68,11 +68,23 @@ def fit(directory=None, path=None, *, group_by="molecule", fractions=(.25,.5,1.)
         kinds=("graph",), resources=None):
     """Train native models, assess disjoint held-out groups, and save the report.
 
+    ``kinds`` names the predictors to assess and train: ``"ranker"`` (the
+    pairwise Bradley-Terry ranker on the insertion descriptors) and
+    ``"graph"`` (the graph network). A kind is ready when its within-state
+    Spearman correlation beats the gradient's by 0.05 in most held-out groups;
+    among the ready kinds the highest wins, a tie going to the ranker. With
+    none ready, the model keeps the last kind named and is not used.
+
+    ``mixing`` is the initial weight of the gradient softmax in the graph
+    model's training targets, annealed to zero over the first fifth of the
+    training; a trained model draws from its own proposal alone.
+
     Missing or insufficient observations produce an unready model with an
     explicit reason. They are never replaced by generated observations.
     """
-    if tuple(kinds) != ("graph",):
-        raise ValueError("the native proposal trainer currently accepts kinds=('graph',)")
+    kinds = tuple(kinds)
+    if not kinds or set(kinds) - {"ranker", "graph"} or len(set(kinds)) != len(kinds):
+        raise ValueError("kinds names 'ranker' and/or 'graph', each at most once")
     store = data_directory(directory)
     problems = {}
     for source in sorted((store / "problems").glob("*.json")):
@@ -89,7 +101,7 @@ def fit(directory=None, path=None, *, group_by="molecule", fractions=(.25,.5,1.)
     source = context.fit_proposal(
         json.dumps(dict(problems=problems, records=records), allow_nan=False),
         group_by=group_by, fractions=list(fractions), seed=seed, folds=folds,
-        gnn_epochs=gnn_epochs, mixing=mixing, temperature=temperature)
+        gnn_epochs=gnn_epochs, mixing=mixing, temperature=temperature, kinds=list(kinds))
     model = ProposalModel(source)
     model.save(store / MODEL_FILE if path is None else path)
     return model

@@ -108,8 +108,8 @@ What the HVA does not do:
 * It needs `method="vqe"` and the default `pool`; `method="subspace-vqe"` with
   `ansatz="hva"` is refused by the constructor.
 * An `ansatz` other than `"uccsd"` and `"hva"`, including a Python ansatz
-  object, is refused. Z2 tapering of the Hamiltonian and groups is not
-  available either. See [what is not yet available](#not-yet-available).
+  object, is refused. `taper=True` is refused too: the groups are the untapered
+  Hamiltonian's. See [what is not yet available](#not-yet-available).
 
 The checkpoint of an HVA run records its evolution policy. An exact-group
 checkpoint reproduces the state through its `state_vector()` and can initialize

@@ -51,7 +51,7 @@ pub struct SpinOrbitInputs<'a> {
 /// The crystals this stress does not differentiate, from the crystal itself: DFT+U (AS-7) and a k
 /// mesh reduced by space-group symmetry whose operations the snapshot does not carry (CF-6: with
 /// them the stress is averaged over the group; a spin-orbit crystal or a hybrid needs the whole
-/// mesh). Float32 data, rVV10 and more than two spin channels are refused by [`check_request`]
+/// mesh). Float32 data and more than two spin channels are refused by [`check_request`]
 /// from the layout (a hybrid goes through its own entry).
 pub fn refuse(c: &Crystal) -> Result<()> {
     let no = |what: &str| {
@@ -97,11 +97,18 @@ fn copy(o: &Operators) -> Operators {
     }
 }
 
+/// What [`output_data`] forms: `rho_G`, the xc energy, the gradients and the flux (a GGA) and the
+/// rVV10 kernel's strain derivative.
+struct OutputData {
+    density: Vec<C64>,
+    energy: f64,
+    gradients: Option<Vec<f64>>,
+    flux: Option<Vec<f64>>,
+    nonlocal: Option<[[f64; 3]; 3]>,
+}
+
 /// `rho_G`, the xc energy, the gradients and the flux of the density matrices of `state`.
-fn output_data(
-    c: &Crystal,
-    state: &State,
-) -> Result<(Vec<C64>, f64, Option<Vec<f64>>, Option<Vec<f64>>)> {
+fn output_data(c: &Crystal, state: &State) -> Result<OutputData> {
     let n = c.grid.index.points();
     let densities = crate::periodic::gradient::scf::densities(c, &state.bands)?;
     let (rho, _) = solver::density(c, &densities)?;
@@ -125,12 +132,32 @@ fn output_data(
             "crystal stress: the reciprocal density has one value per node",
         ));
     }
-    Ok((
-        density.as_slice().to_vec(),
-        terms.energy,
-        terms.gradients.map(|b| b.as_slice().to_vec()),
-        terms.flux.map(|b| b.as_slice().to_vec()),
-    ))
+    // X-6: the rVV10 kernel's wave numbers, on the very fields the energy was evaluated on.
+    let nonlocal = match (&terms.nonlocal_source, crate::models::functional(&c.functional)?.nonlocal_b) {
+        (Some(source), Some(b)) => Some(crate::models::nonlocal::strain(
+            &c.context,
+            &c.grid,
+            source.density.as_slice(),
+            source.sigma.as_slice(),
+            crate::models::nonlocal::Options {
+                b,
+                ..Default::default()
+            },
+        )?),
+        (None, None) => None,
+        _ => {
+            return Err(invalid(
+                "crystal stress: the rVV10 source fields and the functional disagree",
+            ))
+        }
+    };
+    Ok(OutputData {
+        density: density.as_slice().to_vec(),
+        energy: terms.energy,
+        gradients: terms.gradients.map(|b| b.as_slice().to_vec()),
+        flux: terms.flux.map(|b| b.as_slice().to_vec()),
+        nonlocal,
+    })
 }
 
 /// The strain provider of a crystal's geometry with the frozen output-density state of its
@@ -188,17 +215,18 @@ pub fn crystal_strain<'a>(
     let n = crystal.grid.index.points();
     // The copies the strain terms keep: the density, the xc gradients and flux (a GGA).
     let held = ctx.reserve(crate::product(&[n, 8 * 18])?)?;
-    let (density, energy, gradients, flux) = output_data(crystal, state)?;
+    let output = output_data(crystal, state)?;
     let fields = StrainFields {
         local: frozen.fields.local.clone(),
         moments: frozen.fields.moments.clone(),
         weights: frozen.fields.weights.clone(),
-        density,
+        density: output.density,
         xc: XcFields {
-            energy,
+            energy: output.energy,
             potential: frozen.fields.xc.clone(),
-            gradients,
-            flux,
+            gradients: output.gradients,
+            flux: output.flux,
+            nonlocal: output.nonlocal,
         },
         kinetic: frozen.fields.kinetic.clone(),
     };

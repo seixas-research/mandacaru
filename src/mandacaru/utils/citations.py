@@ -22,16 +22,8 @@ to the table, teaching a new option to cite it is an edit here.
 
 from __future__ import annotations
 
-import os
+from .bibliography import REFERENCES
 
-from ..core.atomic import atomic_path
-from .bibliography import REFERENCES, bibtex
-
-#: Written when ``references=True`` names no path.
-DEFAULT_REFERENCES_FILE = "references.bib"
-
-#: Accepted values of the ``references=`` option (besides a path).
-REFERENCES_CHOICES = (True, False, None, "auto")
 
 #: Pool name -> the papers that define it.  ``"ceo"`` couples the qubit
 #: excitations of :cite:`Yordanov2021`, so it cites both.
@@ -58,8 +50,8 @@ _METHOD_KEYS = {
     "uhf": ("PopleNesbet1954",),
     "ghf": ("JimenezHoyos2011",),
     "dft": ("HohenbergKohn1964", "KohnSham1965"),
-    # The circuit a fixed-ansatz VQE optimizes -- here and in subspace-vqe
-    # and bloch-vqe -- is cited through _ANSATZ_KEYS.
+    # The circuit a fixed-ansatz VQE optimizes -- here and in subspace-vqe --
+    # is cited through _ANSATZ_KEYS.
     "vqe": ("Peruzzo2014",),
     "adapt-vqe": ("Peruzzo2014", "Grimsley2019"),
     "subspace-vqe": ("Peruzzo2014", "Nakanishi2019"),
@@ -68,23 +60,21 @@ _METHOD_KEYS = {
     # annealing paper is cited with the rest because the default temperature
     # is annealed.
     # Grimsley2019 for the pool gradient the default proposal draws from.
-    "mcas-vqe": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
+    "vasqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
               "Hastings1970", "Kirkpatrick1983"),
-    # VALQA is the same chain; its learned proposal is a message-passing
+    # VALSQA is the same chain; its learned proposal is a message-passing
     # network over the Hamiltonian with a Gaussian-process head, mixed with
     # the gradient softmax.
-    "valqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
+    "valsqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
               "Hastings1970", "Kirkpatrick1983", "Gilmer2017",
               "Rasmussen2006"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
-    # The periodic pair cite their variational method plus the machinery that
-    # makes it a crystal: the Born-von Karman supercell the mesh realizes, the
-    # Monkhorst-Pack sampling, and the Ewald sum the electrostatics use.
-    "bloch-vqe": ("Peruzzo2014", "BornKarman1912",
-                  "MonkhorstPack1976", "Ewald1921"),
-    "bloch-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "BornKarman1912",
-                        "MonkhorstPack1976", "Ewald1921"),
 }
+
+#: A quantum method on a crystal also cites the machinery that makes it one: the
+#: Born-von Karman supercell its mesh realizes, the Monkhorst-Pack sampling and
+#: the Ewald sum of its electrostatics (``citation_keys(periodic=True)``).
+_PERIODIC_KEYS = ("BornKarman1912", "MonkhorstPack1976", "Ewald1921")
 
 #: Circuit template of ``method="vqe"`` (``ansatz=``) -> the papers that
 #: define it.
@@ -118,7 +108,6 @@ _FAMILY_KEYS = {
 _ACTIVE_METHOD_KEYS = {
     "energy": (),
     "mp2": ("Moller1934", "Sosa1989", "TaubeBartlett2005"),
-    "natural": ("Loewdin1955",),
     "dlpno-mp2": ("Moller1934", "Pinski2015", "FosterBoys1960", "Pulay1983",
                   "Sosa1989"),
 }
@@ -201,20 +190,18 @@ def _pseudo_keys(family, options) -> list:
     return keys
 
 
-#: What a ``two_body`` representation cites: the dense tensor is the
-#: integrals themselves; the Cholesky factors have their papers.
+#: What a ``two_body`` representation cites (the dense default, ``None``, is the
+#: integrals themselves and cites nothing); the Cholesky factors have their papers.
 _TWO_BODY_KEYS = {
-    "dense": (),
     "cholesky": ("BeebeLinderberg1977", "Koch2003", "Folkestad2019",
                  "Aquilante2008"),
 }
 
 
-#: What a ``two_center`` route cites: the grid integrals need no paper; the
-#: analytic Fourier-Bessel tables are Larsen et al.'s.
-_TWO_CENTER_KEYS = {
-    "grid": (),
-    "analytic": ("Larsen2009",),
+#: What a ``measurement_scheme`` cites (the commuting groups are the Pauli terms themselves).
+_MEASUREMENT_SCHEME_KEYS = {
+    "qwc": (),
+    "double-factorized": ("Motta2021", "Huggins2021", "Kivlichan2018"),
 }
 
 
@@ -225,7 +212,7 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
                   profile=False, tetris=False, prune=False,
                   has_geometry=True, built_basis=True, extras=(),
                   datasets=(), active_method=None, two_body=None,
-                  two_center=None) -> list:
+                  taper=False, measurement_scheme=None, periodic=False) -> list:
     """The bibliography keys a run with this configuration should cite.
 
     Every argument is optional: what is not known is not cited.  ``family`` and
@@ -233,7 +220,7 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     Hamiltonian builder's context), so they override what ``basis`` was
     spelled as; pass them when the run got that far.  ``extras`` adds keys for
     anything the caller knows about that this signature does not cover, such
-    as an expressibility analysis.
+    as an expressibility analysis. ``periodic`` marks a run on a crystal.
 
     The returned list is in the bibliography's own order, so the same run
     always produces the same file.
@@ -243,6 +230,8 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
         keys.append("Larsen2017")
 
     keys += list(_METHOD_KEYS.get(_dashed(method), ()))
+    if periodic:
+        keys += list(_PERIODIC_KEYS)
     keys += list(_ANSATZ_KEYS.get(_key(ansatz), ()))
     keys += list(_POOL_KEYS.get(_dashed(pool), ()))
     if tetris:
@@ -250,10 +239,12 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     if prune:
         keys.append("VaqueroSabater2025")
     keys += list(_MAPPING_KEYS.get(_key(mapping), ()))
+    if taper:
+        keys.append("Bravyi2017")
     keys += list(_OPTIMIZER_KEYS.get(_key(optimizer), ()))
     keys += list(_ACTIVE_METHOD_KEYS.get(_key(active_method), ()))
     keys += list(_TWO_BODY_KEYS.get(_key(two_body), ()))
-    keys += list(_TWO_CENTER_KEYS.get(_key(two_center), ()))
+    keys += list(_MEASUREMENT_SCHEME_KEYS.get(_key(measurement_scheme), ()))
 
     options = dict(basis_options or {})
     if family:
@@ -293,40 +284,3 @@ def _dashed(value):
     """
     key = _key(value)
     return None if key is None else key.replace("_", "-")
-
-
-def resolve_references_path(references, txt=None) -> str | None:
-    """The path ``references=`` asks for, or ``None`` when nothing is written.
-
-    ``"auto"`` (the default) writes ``references.bib`` **beside the ``txt=``
-    run log** when one is written and nothing otherwise, so a run that produces no files
-    still produces none.  ``True`` writes ``references.bib`` in the working
-    directory, a string names the file, and ``False`` / ``None`` switch it off.
-    """
-    if references is None or references is False:
-        return None
-    if references is True:
-        return DEFAULT_REFERENCES_FILE
-    if isinstance(references, str) and references != "auto":
-        return references
-    if references != "auto":
-        raise ValueError(
-            f"references={references!r} is not a path or one of "
-            f"{REFERENCES_CHOICES}")
-    if not txt:
-        return None
-    return os.path.join(os.path.dirname(os.fspath(txt)),
-                        DEFAULT_REFERENCES_FILE)
-
-
-def write_references(path, keys, header=None) -> str:
-    """Write ``keys`` to ``path`` as BibTeX and return the path.
-
-    Written through a temporary file (:func:`~mandacaru.core.atomic.atomic_path`)
-    like every other file the run produces, so a reader never sees half of it.
-    """
-    text = bibtex(keys, header=header)
-    with atomic_path(path) as temporary:
-        with open(temporary, "w", encoding="utf-8") as handle:
-            handle.write(text)
-    return str(path)

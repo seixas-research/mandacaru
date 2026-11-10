@@ -28,6 +28,7 @@ def periodic_h2_vqe():
     )
     atoms.calc = Mandacaru(
         method="vqe",
+        crystal_orbitals="real-space",
         basis="sto-3g",
         grid_spacing=0.4,
         trace=False,
@@ -49,6 +50,7 @@ def periodic_h2_adapt():
     )
     atoms.calc = Mandacaru(
         method="adapt-vqe",
+        crystal_orbitals="real-space",
         basis="sto-3g",
         grid_spacing=0.4,
         trace=False,

@@ -14,6 +14,8 @@ from mandacaru.workflows.time_evolution import SuzukiTrotter, time_evolve
 from mandacaru.core.mapping import PauliSum
 from mandacaru.units import HARTREE_TO_EV
 
+from .operator_reference import encoded_index
+
 H2 = Path(__file__).parent / "reference/h2_hamiltonian.json"
 
 
@@ -304,7 +306,7 @@ def test_public_subspace_shared_unitary_and_sorted_states(method, sector, trotte
 @pytest.mark.parametrize("mapping", ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"])
 @pytest.mark.parametrize("trotter", [False, True])
 def test_shared_unitary_against_dense_reconstruction(tmp_path, mapping, trotter):
-    from mandacaru.core.mapping import Fermion, reference_qubit_bits
+    from mandacaru.core.mapping import Fermion
     from mandacaru.core.serialization import save_hamiltonian
     terms = {((j, True), (j, False)): .13*j for j in range(6)}
     terms.update({((0, True), (1, False)): .17,
@@ -330,8 +332,7 @@ def test_shared_unitary_against_dense_reconstruction(tmp_path, mapping, trotter)
         unitary = expm(sum(t*g for t, g in zip(result.optimal_parameters, matrices)))
     expected = []
     for det in lowest_determinants(6, [0, 3], 3):
-        bits = reference_qubit_bits(mapping, 6, det)
-        encoded = sum(int(b) << (len(bits)-1-i) for i, b in enumerate(bits))
+        encoded = encoded_index(mapping, det)
         row = np.flatnonzero(basis == encoded)[0]
         expected.append(unitary[:, row])
     expected = np.asarray(expected)[result.snapshot()["reference_indices"]]
@@ -343,13 +344,11 @@ def test_shared_unitary_against_dense_reconstruction(tmp_path, mapping, trotter)
 
 def test_subspace_no_python_solver_and_inner_failure(monkeypatch):
     import scipy.optimize
-    from mandacaru.optimizers.optim import Optimizer
     def forbidden(*args, **kwargs):
         raise AssertionError("Python numerical callback used")
     # The Python subspace solver classes are gone; guard what a Python solve
-    # would still have to call: the Python optimizer wrapper, scipy, a dense
-    # eigensolver and the Python Pauli-to-matrix routes.
-    monkeypatch.setattr(Optimizer, "minimize", forbidden)
+    # would still have to call: scipy, a dense eigensolver and the Python
+    # Pauli-to-matrix routes.
     monkeypatch.setattr(scipy.optimize, "minimize", forbidden)
     monkeypatch.setattr(np.linalg, "eigh", forbidden)
     monkeypatch.setattr(PauliSum, "to_matrix", forbidden)

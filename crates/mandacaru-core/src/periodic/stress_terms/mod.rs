@@ -32,8 +32,8 @@
 //! * [`electrostatic`]: E-1 Hartree Jacobian, E-2 kernel, E-3 hats, E-4 ions, E-5 dense sums,
 //!   E-6 short-range ion compensation, E-7 ion constants.
 //! * [`xc`]: X-1 Jacobian, X-3 GGA spectral gradient, X-4 partial core, X-5 a meta-GGA's
-//!   partial-core kinetic density (X-2, the xc potential through `rho_i`, is inside S-3, and the
-//!   bands' `tau` is inside S-6).
+//!   partial-core kinetic density, X-6 the rVV10 kernel's wave numbers (X-2, the xc potential
+//!   through `rho_i`, is inside S-3, and the bands' `tau` is inside S-6).
 //! * [`spin_orbit`] (AS-8): SO-1, the spin-orbit union-projector term of a spinor crystal.
 //! * [`hybrid`] (AS-9, AS-10): H-1..H-6, the explicit derivative of the screened exact exchange at
 //!   fixed `D` of a scalar collinear or a spinor hybrid, entered through [`stress_hybrid`] (the
@@ -53,9 +53,10 @@
 //! (`n_up/dn = (n +- |m|)/2`, SO-3): the pointwise rotation holds the node values fixed, and the
 //! spectral gradient strain acts after it. The strain acts on space only (`T (x) I2`).
 //!
-//! [`stress`] raises `Unsupported` for hybrids (they go through [`stress_hybrid`]), rVV10, float32
-//! and more than two spin channels; a missing term would give a silently wrong stress, so a
-//! provider that cannot supply a term raises, it never returns zero.
+//! [`stress`] raises `Unsupported` for hybrids (they go through [`stress_hybrid`]), float32 and
+//! more than two spin channels (the rVV10 forms of PBE and r2SCAN are differentiated: X-6); a
+//! missing term would give a silently wrong stress, so a provider that cannot supply a term
+//! raises, it never returns zero.
 pub mod crystal;
 pub mod electrostatic;
 pub mod hybrid;
@@ -171,6 +172,8 @@ pub struct Breakdown {
     pub kinetic_density: Tensor<f64>,
     /// X-5, zero for a functional without `tau`.
     pub xc_core_kinetic: Tensor<f64>,
+    /// X-6, the rVV10 kernel's wave numbers, zero for a functional without rVV10.
+    pub xc_nonlocal: Tensor<f64>,
     /// SO-1, zero for a scalar crystal.
     pub spin_orbit: Tensor<f64>,
     /// H-1..H-6, the explicit derivative of the screened exact exchange at fixed `D` (AS-9): the
@@ -203,12 +206,13 @@ impl Breakdown {
             &mut self.exchange,
             &mut self.kinetic_density,
             &mut self.xc_core_kinetic,
+            &mut self.xc_nonlocal,
         ] {
             group.tensor(term);
         }
     }
 
-    pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 19] {
+    pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 20] {
         [
             ("overlap", &self.overlap),
             ("kinetic", &self.kinetic),
@@ -229,6 +233,7 @@ impl Breakdown {
             ("exchange", &self.exchange),
             ("kinetic_density", &self.kinetic_density),
             ("xc_core_kinetic", &self.xc_core_kinetic),
+            ("xc_nonlocal", &self.xc_nonlocal),
         ]
     }
 
@@ -314,9 +319,6 @@ fn check(layout: &Layout, hybrid: bool) -> Result<()> {
     }
     if request.single_precision {
         return refuse("float32 data");
-    }
-    if definition.nonlocal_b.is_some() {
-        return refuse(&format!("the rVV10 correction of {}", definition.name));
     }
     if layout.spins != 1 && layout.spins != 2 {
         return refuse("a crystal with more than two spin channels");
@@ -415,6 +417,7 @@ pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Breakdow
         xc_core: xc.core,
         kinetic_density: matrix.kinetic_density,
         xc_core_kinetic: xc.core_kinetic,
+        xc_nonlocal: xc.nonlocal,
         spin_orbit: matrix.spin_orbit,
         exchange: [[0.; 3]; 3],
         exchange_parts: None,

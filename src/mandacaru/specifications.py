@@ -6,9 +6,19 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True)
 class Capability:
+    """What a method can do.
+
+    ``default_pool`` is the operator pool a quantum method uses when ``pool=`` is left
+    out (``None`` for a classical method, which has no pool). The growing ADAPT methods
+    default to ``"ceo"``; every other quantum method keeps ``"fermionic"``, because a
+    fixed ansatz (``"vqe"``, ``ansatz="hva"``) and the search methods are built on the
+    fermionic excitations.
+    """
+
     quantum: bool
     forces: bool
     periodic: bool = False
+    default_pool: str | None = None
 
 
 METHODS = {
@@ -16,14 +26,12 @@ METHODS = {
     "uhf": Capability(False, True),
     "ghf": Capability(False, False),
     "dft": Capability(False, True, True),
-    "vqe": Capability(True, True, True),
-    "adapt-vqe": Capability(True, True, True),
-    "subspace-vqe": Capability(True, False),
-    "subspace-adapt-vqe": Capability(True, False),
-    "mcas-vqe": Capability(True, True),
-    "valqa": Capability(True, True),
-    "bloch-vqe": Capability(True, True, True),
-    "bloch-adapt-vqe": Capability(True, True, True),
+    "vqe": Capability(True, True, True, "fermionic"),
+    "adapt-vqe": Capability(True, True, True, "ceo"),
+    "subspace-vqe": Capability(True, False, False, "fermionic"),
+    "subspace-adapt-vqe": Capability(True, False, False, "ceo"),
+    "vasqa": Capability(True, True, True, "fermionic"),
+    "valsqa": Capability(True, True, True, "fermionic"),
 }
 from ._native import FUNCTIONALS as _FUNCTIONALS
 

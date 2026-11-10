@@ -232,22 +232,20 @@ def test_space_group_reduction_checks_mesh_preservation():
         ctx.kmesh([2,2,2],rotations=[[0]*9])
 
 
-@pytest.mark.parametrize('skew',[False,True])
-@pytest.mark.parametrize('eta',[None,.18,.45])
-def test_ewald_matches_python_for_energy_forces_stress_and_potential(skew,eta):
-    from mandacaru.core.ewald import ewald_energy,ewald_forces,ewald_stress,ewald_potential
-    cell=np.diag([6.,7.,8.])
-    if skew:
-        cell+=np.array([[0.,.3,.1],[.2,0.,.4],[.1,.2,0.]])
-    positions=np.array([[.7,1.,1.2],[2.1,3.,3.1]])
-    charges=np.array([1.,-2.])
-    points=np.array([[.3,2.,1.1],[3.3,1.,.9]])
+EWALD=json.loads((Path(__file__).parent/'reference'/'ewald.json').read_text())['cases']
+
+
+@pytest.mark.parametrize('case',EWALD,ids=lambda c:f"skew={c['skew']}-eta={c['eta']}")
+def test_ewald_matches_the_frozen_python_for_energy_forces_stress_and_potential(case):
+    """Against the frozen output of the deleted Python sums (``reference/ewald.json``)."""
+    cell,positions,charges,points=(np.array(case[k]) for k in ('cell','positions','charges','points'))
+    eta=case['eta']
     ctx=_native.Context(threads=1)
-    raw=ctx.ewald(positions,charges,cell,eta=eta,points_bohr=points,softening_bohr=.2)
-    assert raw['energy']==pytest.approx(ewald_energy(positions,charges,cell,eta=eta),abs=3e-12)
-    assert np.allclose(raw['forces'],ewald_forces(positions,charges,cell,eta=eta),atol=3e-12)
-    assert np.allclose(raw['stress'],ewald_stress(positions,charges,cell,eta=eta),atol=3e-12)
-    assert np.allclose(raw['potential'],ewald_potential(positions,charges,cell,points,eta=eta,softening=.2),atol=3e-12)
+    raw=ctx.ewald(positions,charges,cell,eta=eta,points_bohr=points,softening_bohr=case['softening'])
+    assert raw['energy']==pytest.approx(case['energy'],abs=3e-12)
+    assert np.allclose(raw['forces'],case['forces'],atol=3e-12)
+    assert np.allclose(raw['stress'],case['stress'],atol=3e-12)
+    assert np.allclose(raw['potential'],case['potential'],atol=3e-12)
     assert np.linalg.norm(raw['forces'].sum(axis=0))<1e-13
     moved=positions.copy();moved[0]+=cell[0]-2*cell[1]
     assert ctx.ewald(moved,charges,cell,eta=eta)['energy']==pytest.approx(raw['energy'],abs=3e-12)

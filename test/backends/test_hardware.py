@@ -14,16 +14,26 @@ falling back to a simulator.
 """
 
 import pytest
+from ase import Atoms
 
 from mandacaru import Mandacaru
 from mandacaru.backends import (available_devices, is_simulator,
                                 normalize_device)
+from mandacaru.utils.logging import parse_output
 
 
 class TestDeviceRegistry:
-    def test_aer_is_default_and_simulator(self):
-        adapt = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO")
-        assert adapt.solver.device == "AER_simulator"
+    def test_aer_is_default_and_simulator(self, tmp_path):
+        """With no ``device`` the run log names the local simulator."""
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]],
+                      cell=[5.0] * 3)
+        atoms.center()
+        log = str(tmp_path / "output.txt")
+        atoms.calc = Mandacaru(method="adapt-vqe", pool="ceo", basis="HAO",
+                               grid_spacing=0.5, max_iterations=1, txt=log,
+                               trace=False)
+        atoms.get_potential_energy()
+        assert parse_output(log)["setup"]["device"] == "AER_simulator"
         assert is_simulator("AER_simulator")
 
     def test_aliases_normalize(self):

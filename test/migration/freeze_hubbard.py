@@ -423,8 +423,8 @@ def child_scf(old: str, spec: dict):
         threads=int(os.environ.get("OMP_NUM_THREADS", "0") or 0),
     )
     try:
-        from mandacaru.integrals import _backend
-        out["threads_seen_by_native"] = int(_backend.num_threads())
+        from mandacaru import _native
+        out["threads_seen_by_native"] = int(_native.num_threads())
     except Exception as ex:
         out["threads_seen_by_native"] = f"unavailable: {type(ex).__name__}"
     out["maxrss_MB"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2 ** 20

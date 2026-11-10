@@ -1,13 +1,11 @@
-//! `mandacaru_bloch_project` under a thread policy: the workers it starts are counted and bounded
+//! `bloch::bloch_project` under a thread policy: the workers it starts are counted and bounded
 //! by the policy a `Context` installs, and the sum of their partial arrays does not depend on the
 //! order in which they finish.
 //!
 //! The policy is the one `Context::run` installs (`runtime::with_policy` with the context's thread
-//! count and its worker statistics). The Python setup reaches the same kernel through ctypes with
-//! no policy at all, which a Rust test cannot bound.
+//! count and its worker statistics). `mandacaru-core` is its only caller.
 use mandacaru_kernels::{
-    bloch::Complex64,
-    mandacaru_bloch_project,
+    bloch::{self, Complex64},
     runtime::{with_policy, WorkerStats},
 };
 use std::sync::Arc;
@@ -64,7 +62,7 @@ fn project(problem: &Problem) -> Vec<Complex64> {
     // SAFETY: every pointer addresses a live slice of the length the kernel is told (SAFETY.md,
     // "raw ABI"); `out` holds `n_images * nm * p` elements.
     unsafe {
-        mandacaru_bloch_project(
+        bloch::bloch_project(
             problem.x.as_ptr(),
             problem.y.as_ptr(),
             problem.z.as_ptr(),

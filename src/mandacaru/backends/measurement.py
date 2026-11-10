@@ -38,8 +38,6 @@ labels* and combines counts -- so any SDK backend (see
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
 from ..core.mapping import PauliSum
@@ -197,25 +195,7 @@ def shot_noise_estimate(hamiltonian: PauliSum, shots: int) -> float:
     return float(one_norm / np.sqrt(max(int(shots), 1)))
 
 
-# --------------------------------------------------------------------------- #
-# Pre-flight: what a measurement job will cost, before it is queued.
-# --------------------------------------------------------------------------- #
-
-#: Nominal two-qubit gate error used to turn a gate count into an expected
-#: circuit fidelity.  A round number, not a calibration: the point of the
-#: estimate is the order of magnitude, and the live value is on
-#: ``backend.properties()``.
-NOMINAL_2Q_ERROR = 3.0e-3
-
-#: Below this expected fidelity a plan is reported as noise rather than signal.
-#: At 0.1 an unmitigated expectation value retains a tenth of its amplitude,
-#: which is already past the point where zero-noise extrapolation has anything
-#: to extrapolate from (measured: 12-qubit LiH, 92 CZ, landed 0.5-0.8 Ha above
-#: exact; a 24-qubit PAW-LCAO-TZP ansatz transpiles to ~2,200 two-qubit gates, i.e.
-#: a fidelity of 1e-3).
-FIDELITY_WARNING = 0.1
-
-#: Default ceilings for :meth:`MeasurementPlan.check`.  They exist to stop the
+#: Default ceilings of ``measurement_budget=``.  They exist to stop the
 #: job that motivated them: LiH/PAW-LCAO-TZP submitted 97,980 observables in ~21,000
 #: measurement bases and the Runtime program died with "error code 1336;
 #: Program runtime ran out of memory" after 37 minutes in the queue.  Each
@@ -230,15 +210,6 @@ DEFAULT_MEASUREMENT_BUDGET = {
 
 #: Keys :func:`resolve_measurement_budget` accepts.
 BUDGET_KEYS = tuple(DEFAULT_MEASUREMENT_BUDGET)
-
-#: How an energy is measured on a processor.
-#:
-#: ``"qwc"`` partitions the Hamiltonian's Pauli strings into qubit-wise
-#: commuting groups -- ``O(M^3)`` measurement bases, no extra gates.
-#: ``"double-factorized"`` rotates into each factor's own orbital basis and
-#: reads occupations -- ``O(M)`` bases at the cost of a Givens network per
-#: basis (:mod:`mandacaru.backends.factorization`).
-MEASUREMENT_SCHEMES = ("qwc", "double-factorized")
 
 
 def resolve_measurement_budget(budget) -> dict:
@@ -267,157 +238,6 @@ def resolve_measurement_budget(budget) -> dict:
     return resolved
 
 
-@dataclass(frozen=True)
-class MeasurementPlan:
-    """What one measurement submission will ask a processor to do.
-
-    Everything here is computable **before** anything is queued -- the grouping
-    is local, the transpilation is local, and the multipliers come from the
-    estimator options -- which is the point: a job whose size is only discovered
-    when the Runtime program runs out of memory has already cost its queue time.
-    """
-
-    n_qubits: int
-    observables: int
-    bases: int
-    shots_per_basis: int
-    noise_factors: int
-    twirls: int
-    #: Shots each twirling randomization runs; the randomizations share
-    #: :attr:`shots_per_basis` between them (Runtime's ``auto`` rule).
-    shots_per_twirl: int | None = None
-    two_qubit_gates: int | None = None
-    circuit_depth: int | None = None
-    one_norm_hartree: float = 0.0
-    device: str = "?"
-    includes_rdms: bool = False
-    jobs: int = 1
-    #: Bases the same energy would need under double factorization (``L + 1``),
-    #: when the integrals were available to compute it.  Reported beside the
-    #: qubit-wise count because the gap is the argument for implementing the
-    #: basis-rotation circuits: measured on LiH/PAW-LCAO, 21 -> 4, 93 -> 11,
-    #: 1,600 -> 55 and 3,290 -> 73 bases at 4 / 8 / 20 / 24 spin orbitals.
-    factorized_bases: int | None = None
-    #: Which scheme this submission uses (:data:`MEASUREMENT_SCHEMES`).
-    scheme: str = "qwc"
-
-    @property
-    def circuit_instances(self) -> int:
-        """Distinct circuits the processor executes, ZNE and twirling included."""
-        return self.bases * max(self.noise_factors, 1) * max(self.twirls, 1)
-
-    @property
-    def total_shots(self) -> int:
-        """Shots across every circuit instance (an estimate: see
-        :func:`resilience_multipliers`).
-
-        Twirling randomizations divide a basis's shots among themselves, so
-        each (basis, noise factor) pair costs ``twirls * shots_per_twirl``
-        shots -- the requested count rounded up -- not ``twirls`` times it.
-        """
-        per = (self.shots_per_twirl if self.shots_per_twirl is not None
-               else max(self.shots_per_basis, 0))
-        per_instance_group = (max(self.twirls, 1) * per if self.twirls > 1
-                              else max(self.shots_per_basis, 0))
-        return (self.bases * max(self.noise_factors, 1) * per_instance_group)
-
-    @property
-    def fidelity(self) -> float | None:
-        """Expected circuit fidelity ``(1 - e)^n2q``, or ``None`` if unknown."""
-        if self.two_qubit_gates is None:
-            return None
-        return float((1.0 - NOMINAL_2Q_ERROR) ** self.two_qubit_gates)
-
-    @property
-    def shot_noise_hartree(self) -> float:
-        """1-norm bound on the standard error of ``<H>`` at this shot count."""
-        if self.shots_per_basis <= 0:
-            return 0.0
-        return float(self.one_norm_hartree / np.sqrt(self.shots_per_basis))
-
-    def fields(self) -> dict:
-        """The plan as ordered ``KEY: value`` lines for the run log."""
-        from ..units import HARTREE_TO_EV
-
-        fidelity = self.fidelity
-        fields = {
-            "device": self.device,
-            "scheme": self.scheme,
-            "measured": ("energy and RDMs" if self.includes_rdms
-                         else "energy only"),
-            "qubits": self.n_qubits,
-            "observables": self.observables,
-            "measurement_bases": self.bases,
-            "jobs": self.jobs,
-            "shots_per_basis": self.shots_per_basis,
-            "zne_noise_factors": self.noise_factors,
-            "twirling_randomizations": self.twirls,
-            "shots_per_randomization": (self.shots_per_twirl
-                                        if self.twirls > 1
-                                        else self.shots_per_basis),
-            "circuit_instances": self.circuit_instances,
-            "total_shots": self.total_shots,
-            "hamiltonian_one_norm_Ha": f"{self.one_norm_hartree:.6f}",
-            "shot_noise_bound_eV":
-                f"{self.shot_noise_hartree * HARTREE_TO_EV:.6f}",
-        }
-        if self.scheme == "double-factorized":
-            # The factorized form has a 1-norm of its own, and it is *larger*
-            # than the Pauli one: fewer bases, more shots in each.  Reporting
-            # the Pauli norm here would understate the shot cost.
-            fields["hamiltonian_one_norm_Ha"] = (
-                f"{self.one_norm_hartree:.6f} (factorized; the Pauli 1-norm "
-                f"is smaller)")
-        if self.factorized_bases and self.scheme != "double-factorized":
-            fields["double_factorized_bases"] = (
-                f"{self.factorized_bases} (available: "
-                f"measurement_scheme='double-factorized')")
-        if self.two_qubit_gates is not None:
-            fields["isa_two_qubit_gates"] = self.two_qubit_gates
-            fields["isa_depth"] = self.circuit_depth
-            fields["expected_fidelity"] = (
-                f"{fidelity:.3e} (at a nominal {NOMINAL_2Q_ERROR:g} "
-                f"two-qubit error)")
-        return fields
-
-    def warnings(self) -> list[str]:
-        """Things worth saying that are not grounds for refusing the job."""
-        notes = []
-        fidelity = self.fidelity
-        if fidelity is not None and fidelity < FIDELITY_WARNING:
-            notes.append(
-                f"the circuit transpiles to {self.two_qubit_gates} two-qubit "
-                f"gates, an expected fidelity of {fidelity:.1e} at a nominal "
-                f"{NOMINAL_2Q_ERROR:g} error per gate: the result will be "
-                f"noise, and zero-noise extrapolation has nothing to "
-                f"extrapolate from. Reduce the register (a smaller basis "
-                f"size, mapping='parity_reduced', an active_space) or the "
-                f"circuit "
-                f"(pool='ceo-ovp', tetris=True, prune=True).")
-        return notes
-
-    def check(self, budget=None) -> None:
-        """Raise when this plan exceeds ``budget`` (see the module defaults)."""
-        limits = resolve_measurement_budget(budget)
-        measured = {"observables": self.observables, "bases": self.bases,
-                    "circuit_instances": self.circuit_instances,
-                    "total_shots": self.total_shots}
-        over = [(key, measured[key], limits[key]) for key in BUDGET_KEYS
-                if limits.get(key) is not None and measured[key] > limits[key]]
-        if not over:
-            return
-        detail = "; ".join(f"{key} {value:,} > {limit:,}"
-                           for key, value, limit in over)
-        raise MeasurementBudgetError(
-            f"this measurement would exceed the budget ({detail}). "
-            f"Plan: {self.observables:,} observables in {self.bases:,} "
-            f"measurement bases, {self.circuit_instances:,} circuit "
-            f"instances, {self.total_shots:,} shots on {self.device}. "
-            f"Ask for the energy without forces (the RDM operators are the "
-            f"O(M^4) part), shrink the register, lower resilience_level, or "
-            f"raise measurement_budget= if you mean it.", self)
-
-
 #: Run-wide ceiling of a submission sequence on a **processor** (an ``ibm_*``
 #: device, an AWS Braket QPU or simulator), on by default there: an
 #: optimization on hardware submits a job per objective evaluation, so a
@@ -427,7 +247,7 @@ class MeasurementPlan:
 #: Only the job count is bounded by default: the size of each job is already
 #: bounded by the measurement budget (:data:`DEFAULT_MEASUREMENT_BUDGET`), and
 #: a default shot ceiling below what that budget admits would refuse a job
-#: its own plan had just approved.
+#: the measurement budget had just approved.
 DEFAULT_HARDWARE_RUN_BUDGET = {"jobs": 250, "total_shots": None}
 RUN_BUDGET_KEYS = tuple(DEFAULT_HARDWARE_RUN_BUDGET)
 
@@ -469,15 +289,6 @@ class RunBudgetExceeded(RuntimeError):
     Raised *before* the job is queued.  Whatever the run had reached -- the
     optimizer's best point, the checkpoint -- is kept by the caller.
     """
-
-
-class MeasurementBudgetError(RuntimeError):
-    """A measurement job refused before it was submitted; carries its plan."""
-
-    def __init__(self, message: str, plan: MeasurementPlan):
-        super().__init__(message)
-        #: The :class:`MeasurementPlan` that was refused.
-        self.plan = plan
 
 
 #: Runtime's resilience level when the options leave it unset (the V2
@@ -582,73 +393,13 @@ def resilience_multipliers(provider) -> tuple[int, int, int]:
     return max(int(noise_factors), 1), max(int(count), 1), max(int(per), 1)
 
 
-def measurement_plan(provider, n_qubits: int, labels, hamiltonian=None,
-                     includes_rdms: bool = False, isa_circuit=None,
-                     jobs: int = 1,
-                     factorized_bases: int | None = None,
-                     scheme: str = "qwc", bases: int | None = None,
-                     observables: int | None = None,
-                     one_norm: float | None = None) -> MeasurementPlan:
-    """Cost of measuring ``labels`` for one state on ``provider``.
-
-    ``labels`` are the Pauli strings that will be submitted; ``hamiltonian``
-    (optional) supplies the coefficient 1-norm behind the shot-noise bound,
-    ``isa_circuit`` a transpiled circuit whose two-qubit count and depth decide
-    the fidelity estimate, and ``factorized_bases`` the number of bases a
-    double-factorized measurement would need instead
-    (:mod:`mandacaru.backends.factorization`).
-    """
-    labels = [str(label) for label in labels]
-    identity = "I" * n_qubits
-    payload = [label for label in labels if label != identity]
-    if bases is None:
-        # The same partition the execution uses: weighted by the
-        # Hamiltonian's coefficients when the labels are its terms (an
-        # energy), lexical otherwise (RDM operators carry no weights).
-        weights = None
-        if hamiltonian is not None:
-            terms = hamiltonian.simplify().terms
-            if all(label in terms for label in payload):
-                weights = [abs(complex(terms[label])) for label in payload]
-        bases = len(_greedy_bases(payload, weights)) if payload else 0
-
-    if one_norm is None:
-        one_norm = 0.0
-        if hamiltonian is not None:
-            one_norm = sum(abs(complex(c)) for label, c
-                           in hamiltonian.simplify().terms.items()
-                           if set(label) != {"I"})
-
-    two_q = depth = None
-    if isa_circuit is not None:
-        two_q = two_qubit_gate_count(isa_circuit)
-        depth = int(isa_circuit.depth())
-
-    noise_factors, twirls, per_twirl = resilience_multipliers(provider)
-    return MeasurementPlan(
-        n_qubits=int(n_qubits),
-        observables=len(labels) if observables is None else int(observables),
-        bases=int(bases),
-        shots_per_basis=int(getattr(provider, "shots", 0) or 0),
-        noise_factors=noise_factors, twirls=twirls,
-        shots_per_twirl=per_twirl,
-        two_qubit_gates=two_q, circuit_depth=depth,
-        one_norm_hartree=float(one_norm),
-        device=str(getattr(provider, "device_spec", provider)),
-        includes_rdms=bool(includes_rdms), jobs=int(jobs),
-        scheme=str(scheme),
-        factorized_bases=(None if factorized_bases is None
-                          else int(factorized_bases)))
-
-
 def qwc_partition(labels, weights=None, *, resources=None, context=None) -> list[tuple[str, list[int]]]:
     """The one qubit-wise-commuting partition every path uses.
 
     Returns ``[(basis, [index, ...]), ...]``: the measurement bases in the
     order they were opened and, for each, the positions in ``labels`` of the
-    strings it measures.  Executing a Braket energy, chunking a Runtime
-    submission and sizing a plan all read this, so the count a plan reports
-    is the count that is executed.
+    strings it measures.  Executing a Braket energy and chunking a Runtime
+    submission both read this, so the count reported is the count executed.
 
     The policy is greedy first fit: labels are visited largest ``weight``
     first (the energetically important terms land in the earliest, largest
@@ -663,76 +414,6 @@ def qwc_partition(labels, weights=None, *, resources=None, context=None) -> list
     from .._native import Context
     native = Context(**dict(resources or {})) if context is None else context
     return native.qwc_groups(labels, None if weights is None else [float(w) for w in weights])
-
-
-def qwc_groups(x: np.ndarray, z: np.ndarray, order) -> tuple:
-    """Greedy first-fit qubit-wise-commuting groups of bit-table rows.
-
-    ``x``, ``z`` are ``(terms, words)`` uint64 tables
-    (:class:`~mandacaru.core.pauli_algebra.PauliTable`), visited in ``order``.
-    A row joins the first open basis it agrees with on every qubit both act
-    on -- ``(s & s_b) & ((x ^ x_b) | (z ^ z_b)) == 0`` with ``s = x | z`` --
-    and the basis takes its letters where it had none.  Returns
-    ``(basis_x, basis_z, members)``: the bases as tables and, for each, the
-    row indices it measures.  The test is one vectorized pass over the open
-    bases per row, on 64 qubits per word: what :func:`qwc_partition` runs, and
-    what the measured pool gradients
-    (:mod:`~mandacaru.backends.gradient_measurement`) group their commutator
-    strings with, so a plan's basis count is the count that is executed.
-    """
-    order = np.asarray(order, dtype=np.int64)
-    terms, words = x.shape
-    bx = np.zeros((max(terms, 1), words), dtype=np.uint64)
-    bz = np.zeros_like(bx)
-    bs = np.zeros_like(bx)
-    members: list[list[int]] = []
-    count = 0
-    single = words == 1
-    if single:
-        x1, z1, bx1, bz1, bs1 = x[:, 0], z[:, 0], bx[:, 0], bz[:, 0], bs[:, 0]
-    for i in order.tolist():
-        if single:
-            xi, zi = x1[i], z1[i]
-            si = xi | zi
-            if count:
-                conflict = (bs1[:count] & si) & ((bx1[:count] ^ xi)
-                                                 | (bz1[:count] ^ zi))
-                fits = np.flatnonzero(conflict == 0)
-            else:
-                fits = ()
-            if len(fits):
-                g = int(fits[0])
-                bx1[g] |= xi
-                bz1[g] |= zi
-                bs1[g] |= si
-                members[g].append(i)
-                continue
-            bx1[count], bz1[count], bs1[count] = xi, zi, si
-        else:
-            xi, zi = x[i], z[i]
-            si = xi | zi
-            if count:
-                conflict = (bs[:count] & si) & ((bx[:count] ^ xi)
-                                                | (bz[:count] ^ zi))
-                fits = np.flatnonzero(~conflict.any(axis=1))
-            else:
-                fits = ()
-            if len(fits):
-                g = int(fits[0])
-                bx[g] |= xi
-                bz[g] |= zi
-                bs[g] |= si
-                members[g].append(i)
-                continue
-            bx[count], bz[count], bs[count] = xi, zi, si
-        members.append([i])
-        count += 1
-    return bx[:count], bz[:count], members
-
-
-def _greedy_bases(labels, weights=None) -> list[str]:
-    """The bases of :func:`qwc_partition` -- the count a plan needs."""
-    return [basis for basis, _members in qwc_partition(labels, weights)]
 
 
 def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=None, context=None) -> list[list[str]]:
@@ -758,10 +439,3 @@ def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=Non
         if chunk:
             chunks.append(chunk)
     return chunks
-
-
-def planned_jobs(labels, max_bases: int | None, weights=None, *, resources=None, context=None) -> int:
-    """How many submissions :func:`chunk_labels_by_basis` would produce."""
-    if max_bases is None or max_bases <= 0:
-        return 1
-    return max(len(chunk_labels_by_basis(labels, max_bases, weights, resources=resources, context=context)), 1)

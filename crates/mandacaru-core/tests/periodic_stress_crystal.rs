@@ -405,7 +405,7 @@ fn the_stress_of_a_converged_lih_state() {
             // The local functional has no gradient term, a scalar semilocal crystal no spin-orbit,
             // exchange or meta-GGA term: nothing to remove.
             assert!(
-                matches!(name, "xc_gradient" | "spin_orbit" | "exchange" | "kinetic_density" | "xc_core_kinetic"),
+                matches!(name, "xc_gradient" | "spin_orbit" | "exchange" | "kinetic_density" | "xc_core_kinetic" | "xc_nonlocal"),
                 "{name}"
             );
             continue;

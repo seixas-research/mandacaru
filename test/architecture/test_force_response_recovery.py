@@ -65,7 +65,7 @@ def test_paw_variational_force_uses_native_response_and_matches_reoptimized_bond
         moved.positions[0, 2] -= offset / 2
         moved.positions[1, 2] += offset / 2
         with Mandacaru(method="adapt-vqe", atoms=moved, basis="PAW-LCAO", grid=grid,
-                       grid_spacing=.35, resources={"threads": 1}) as displaced:
+                       grid_spacing=.35, resources={"threads": 1}):
             energies.append(moved.get_potential_energy())
     assert force[1, 2] == pytest.approx(-(energies[0] - energies[1]) / (2 * step), abs=1e-4)
     assert central[1, 2] == pytest.approx(-(energies[0] - energies[1]) / (2 * step), abs=1e-4)

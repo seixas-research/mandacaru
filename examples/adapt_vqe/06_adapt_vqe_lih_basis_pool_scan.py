@@ -40,7 +40,6 @@ def calculate(output: Path, spacing: float, half_width: float,
     import scipy
     from ase import Atoms
     from mandacaru import Mandacaru
-    from mandacaru.core.sector import ParticleSector
     from mandacaru.integrals import Grid
     from mandacaru.units import BOHR_TO_ANGSTROM
 
@@ -116,8 +115,13 @@ def calculate(output: Path, spacing: float, half_width: float,
                             raise RuntimeError(f"Non-finite energy: {basis}, {pool}, {distance}")
                         state = calc.solver.ansatz.state(result.optimal_parameters)
                         if calc.solver.ansatz.sector is None:
-                            sector = ParticleSector(calc.solver.n_qubits, (1, 1))
-                            sector_weight = float(np.sum(np.abs(state[sector.indices]) ** 2))
+                            # Jordan-Wigner: qubit k is spin-orbital k, the first half alpha,
+                            # so the (1, 1) sector holds one set bit in each half.
+                            half = calc.solver.n_qubits // 2
+                            basis_states = np.arange(state.size, dtype=np.uint64)
+                            in_sector = ((np.bitwise_count(basis_states >> np.uint64(half)) == 1)
+                                         & (np.bitwise_count(basis_states & np.uint64((1 << half) - 1)) == 1))
+                            sector_weight = float(np.sum(np.abs(state[in_sector]) ** 2))
                         else:
                             sector_weight = float(np.vdot(state, state).real)
                         writer.writerow(dict(

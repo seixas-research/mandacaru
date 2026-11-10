@@ -120,7 +120,9 @@ fn a_state_that_did_not_converge_is_refused() {
 
 /// A hybrid with the symmetry table of a reduced mesh: Gamma is one point, so the load accepts the
 /// table (the energy path refuses it only beside several points), and the derivative engines name
-/// the reduction instead of averaging a k-sum that was never reduced.
+/// the reduction instead of averaging a k-sum that was never reduced. The Mandacaru setup never
+/// builds such a crystal (a hybrid keeps the whole mesh, MG-F3 part 1); a snapshot from another
+/// source can.
 #[test]
 fn a_hybrid_with_symmetry_operations_on_a_gamma_mesh_is_refused() {
     let mut data = Data::load("lih_hse06");
@@ -132,7 +134,7 @@ fn a_hybrid_with_symmetry_operations_on_a_gamma_mesh_is_refused() {
     for message in [&forces_cause, &stress_cause] {
         assert!(
             message.contains("a hybrid crystal on a k mesh reduced by space-group symmetry")
-                && message.contains("symmetry=False"),
+                && message.contains("needs the whole mesh"),
             "{message}"
         );
     }

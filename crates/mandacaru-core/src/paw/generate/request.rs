@@ -27,6 +27,11 @@ use std::collections::BTreeMap;
 pub struct Overrides {
     /// One radius or one per channel (anything but the recipe's rule).
     pub r_cut: Option<Cutoffs>,
+    /// Radii laid over the policy table the recipe's rule consults. Unlike `r_cut` they are not
+    /// pinned: the search may still move them (a balanced sphere, a shorter s sphere) the way it
+    /// moves a tabulated radius. A candidate recipe states its spheres this way without giving
+    /// up the ghost remedies.
+    pub cutoff_table: Option<BTreeMap<usize, f64>>,
     pub rc_factor: Option<f64>,
     pub r_cut_local: Option<f64>,
     pub local_factor: Option<f64>,
@@ -58,6 +63,9 @@ impl Overrides {
     fn apply(self, recipe: &mut Recipe) {
         if let Some(v) = self.r_cut {
             recipe.cutoffs = v;
+        }
+        if let Some(table) = self.cutoff_table {
+            recipe.cutoff_table.extend(table);
         }
         macro_rules! set {
             ($($field:ident),*) => {$(

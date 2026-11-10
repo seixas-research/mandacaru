@@ -90,6 +90,20 @@ impl<T> Buffer<T> {
     }
 }
 
+/// The worker count a context takes when none is requested: `MANDACARU_NUM_THREADS`, then
+/// `OMP_NUM_THREADS`, then the parallelism the operating system offers this process.
+pub fn default_threads() -> usize {
+    mandacaru_kernels::runtime::thread_count()
+}
+
+/// The hardware threads this process may run on, whatever the environment asks for: the width at
+/// which a dense product over a grid still gains from more threads.
+pub fn hardware_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 impl Context {
     pub fn new(threads: Option<usize>, memory_bytes: usize) -> Result<Self> {
         Self::with_offload(threads, memory_bytes, DEFAULT_OFFLOAD_BYTES)
@@ -110,7 +124,7 @@ impl Context {
         offload_bytes: usize,
         scratch_parent: Option<std::path::PathBuf>,
     ) -> Result<Self> {
-        let threads = threads.unwrap_or_else(mandacaru_kernels::runtime::thread_count);
+        let threads = threads.unwrap_or_else(default_threads);
         if threads == 0 || threads > mandacaru_kernels::runtime::MAX_THREADS {
             return Err(Error::Invalid("threads must be in 1..1024".into()));
         }

@@ -42,8 +42,7 @@ For a Gaussian both are closed forms, and both scale as
 and the cut function's rms radius is :math:`\rho_l/\sqrt\alpha` with
 :math:`\rho_l` evaluated once at :math:`\alpha = 1`.  No root search is
 needed.  ``count`` shells per channel follow a geometric sequence of rms
-radii, ``ratio`` apart (default :math:`\sqrt{3.5}`, the exponent ratio
-:data:`~mandacaru.basis.gaussian_families.DIFFUSE_RATIO` of the Gaussian
+radii, ``ratio`` apart (default :math:`\sqrt{3.5}`, the diffuse exponent ratio of the Gaussian
 families as a length).
 
 Each shell is tabulated on **its own radial grid**: the dataset's grid,
@@ -52,7 +51,7 @@ reaches 30-40 Bohr).  It is Fourier-filtered like every other function of
 the basis, then **Gram-Schmidt orthogonalized on its atom** against the
 atom's functions of the same :math:`l`, compact ones first, and dropped
 when less than :data:`LINEAR_DEPENDENCE_TOL` of its squared norm is left
-(the rule of the all-electron NAO family, :mod:`mandacaru.basis.nao_ae`).
+(the rule of the all-electron NAO family of the Rust engine).
 That step depends only on the atom, never on the geometry, so it cannot make
 an energy scan discontinuous; the dependence between atoms is left to the
 Loewdin guard, which warns and refuses loudly.

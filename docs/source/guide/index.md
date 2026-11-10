@@ -43,6 +43,7 @@ optimizers
 active_space
 mean_field_hva
 target_space
+bloch
 hamiltonian_cache
 checkpoints_qpe
 quantum_echoes

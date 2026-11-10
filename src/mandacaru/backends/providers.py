@@ -240,12 +240,14 @@ class CircuitProvider(ABC):
             if over:
                 detail = "; ".join(f"{key} {value:,} > {limit:,}"
                                    for key, value, limit in over)
+                sized = {key: after[key] for key, _value, _limit in over}
                 raise RunBudgetExceeded(
                     f"{self!r}: this submission would exceed the run budget "
                     f"({detail}) after {ledger['jobs']:,} jobs and "
-                    f"{ledger['shots']:,} shots.  Raise run_budget= (a dict "
-                    f"of jobs / total_shots) if you mean it, or rehearse on "
-                    f"a fake backend first.")
+                    f"{ledger['shots']:,} shots.  Pass "
+                    f"backend_options={{\"run_budget\": {sized!r}}} sized for "
+                    f"this run if you mean it, or rehearse on a fake backend "
+                    f"first.")
         ledger["jobs"] = after["jobs"]
         ledger["shots"] = after["total_shots"]
 
@@ -346,8 +348,16 @@ class QiskitProvider(CircuitProvider):
         of those.
     shots : int
         Shots per circuit; the estimator precision is ``1/sqrt(shots)``.
-        ``0`` (default) is the exact local expectation value; a QPU requires
-        ``shots > 0``.
+        ``0`` (default) is the exact local expectation value; a QPU and
+        ``"AER_mps"`` require ``shots > 0``.
+    ``"AER_mps"`` -- Aer's matrix-product-state simulator, run locally, for circuits too
+        wide for a state vector (a few-parameter ansatz on 50 qubits).  It samples, so it needs
+        ``shots > 0``, cannot return a state vector, and takes no ``physical_qubits``,
+        ``enable_fractional_gates`` or ``estimator_options``.
+    max_bond_dimension : int, optional
+        ``"AER_mps"`` only: the largest bond dimension the simulator keeps.  Its memory grows
+        as the square of it, and a circuit that needs more is truncated -- the approximation.
+        ``None`` keeps Aer's default (no cap).  Any other device refuses it.
     instance, token, channel : str, optional
         Passed to :class:`qiskit_ibm_runtime.QiskitRuntimeService`; with none
         given the account saved by ``QiskitRuntimeService.save_account`` is
@@ -370,6 +380,7 @@ class QiskitProvider(CircuitProvider):
     LOCAL_DEVICES = ("statevector", "aer_simulator", "aer", "simulator", "local")
     LEAST_BUSY = ("ibm-quantum", "ibm", "ibmq", "ibm_quantum")
     FAKE_PREFIX = "fake_"
+    MPS_DEVICES = ("aer_mps", "aer-mps", "mps")
 
     def __init__(self, device: str = "statevector", shots: int = 0,
                  instance: str | None = None, token: str | None = None,
@@ -378,7 +389,7 @@ class QiskitProvider(CircuitProvider):
                  physical_qubits=None, seed: int | None = None,
                  max_bases_per_job: int | None = None,
                  enable_fractional_gates: bool = False,
-                 run_budget=None):
+                 run_budget=None, max_bond_dimension: int | None = None):
         self.device_spec = str(device).strip()
         self.physical_qubits = (None if physical_qubits is None
                                 else [int(q) for q in physical_qubits])
@@ -404,7 +415,8 @@ class QiskitProvider(CircuitProvider):
         #: reproducible.  ``None`` samples freshly, which is what a real
         #: measurement does; a seed is for tests and for comparing two runs
         #: whose difference should not be shot noise.  Hardware and the fake
-        #: backends ignore it -- their randomness is not ours to fix.
+        #: backends ignore it -- their randomness is not ours to fix; the
+        #: ``"AER_mps"`` simulator seeds its sampling with it.
         self.seed = None if seed is None else int(seed)
         #: Largest number of qubit-wise-commuting measurement bases in one
         #: submission (``None`` = no limit).  One PUB carrying ~10^5
@@ -417,6 +429,15 @@ class QiskitProvider(CircuitProvider):
         #: Run-wide limit on jobs and shots (on by default for an ``ibm_*``
         #: device; see :func:`~mandacaru.backends.measurement.resolve_run_budget`).
         self.run_budget = run_budget
+        #: Bond-dimension cap of the matrix-product-state simulator (``None``: Aer's default).
+        self.max_bond_dimension = (None if max_bond_dimension is None
+                                   else self._bond_dimension(max_bond_dimension))
+        if self.is_mps_device:
+            self._refuse_for_mps()
+        elif self.max_bond_dimension is not None:
+            raise ValueError(
+                f"max_bond_dimension is an option of the 'AER_mps' device; "
+                f"{self.device_spec!r} has no bond dimension")
         self._backend = None
         self._estimator = None
         #: The Runtime job of the last hardware submission (``None`` locally).
@@ -439,7 +460,27 @@ class QiskitProvider(CircuitProvider):
     def __repr__(self) -> str:
         return f"QiskitProvider(device={self.device_spec!r}, shots={self.shots})"
 
-    capabilities = ("energy", "expectation_values", "batch")
+    @staticmethod
+    def _bond_dimension(value) -> int:
+        if type(value) is not int or value < 1:
+            raise ValueError(
+                f"max_bond_dimension must be a positive integer, got {value!r}")
+        return value
+
+    def _refuse_for_mps(self) -> None:
+        """What the sampled matrix-product-state simulator cannot do, refused by name."""
+        if self.shots <= 0:
+            raise ValueError(
+                "the 'AER_mps' device samples its circuits, so it requires shots > 0 (a "
+                "matrix-product state has no state vector to read an exact energy from)")
+        for name, given in (("physical_qubits", self.physical_qubits is not None),
+                            ("enable_fractional_gates", self.enable_fractional_gates),
+                            ("estimator_options", self.estimator_options is not None)):
+            if given:
+                raise ValueError(
+                    f"{name} describes a processor; the 'AER_mps' simulator has none")
+
+    capabilities = ("energy", "expectation_values", "expectation_batch", "batch")
 
     def _constructor_options(self) -> dict:
         return {"device": self.device_spec, "shots": self.shots,
@@ -450,7 +491,8 @@ class QiskitProvider(CircuitProvider):
                 "physical_qubits": self.physical_qubits, "seed": self.seed,
                 "max_bases_per_job": self.max_bases_per_job,
                 "enable_fractional_gates": self.enable_fractional_gates,
-                "run_budget": self.run_budget}
+                "run_budget": self.run_budget,
+                "max_bond_dimension": self.max_bond_dimension}
 
     @property
     def is_hardware(self) -> bool:
@@ -467,9 +509,14 @@ class QiskitProvider(CircuitProvider):
         return self.device_spec.lower().startswith(self.FAKE_PREFIX)
 
     @property
+    def is_mps_device(self) -> bool:
+        """True for the local matrix-product-state simulator (``"AER_mps"``)."""
+        return self.device_spec.lower() in self.MPS_DEVICES
+
+    @property
     def is_ibm_device(self) -> bool:
         """True when this provider submits to IBM Quantum hardware."""
-        return not (self.is_local or self.is_fake_device)
+        return not (self.is_local or self.is_fake_device or self.is_mps_device)
 
     @property
     def precision(self) -> float:
@@ -494,9 +541,22 @@ class QiskitProvider(CircuitProvider):
         if self._backend is None:
             if self.is_fake_device:
                 self._backend = self._fake_backend(self.device_spec)
+            elif self.is_mps_device:
+                self._backend = self._mps_backend()
             else:
                 self._backend = self._ibm_backend(self._service())
         return self._backend
+
+    def _mps_backend(self):
+        """Aer's matrix-product-state simulator, with the bond-dimension cap and the seed."""
+        from qiskit_aer import AerSimulator
+
+        options = {"method": "matrix_product_state"}
+        if self.max_bond_dimension is not None:
+            options["matrix_product_state_max_bond_dimension"] = self.max_bond_dimension
+        if self.seed is not None:
+            options["seed_simulator"] = self.seed
+        return AerSimulator(**options)
 
     def _ibm_backend(self, service):
         name = self.device_spec.lower()
@@ -533,12 +593,14 @@ class QiskitProvider(CircuitProvider):
                 from qiskit.primitives import StatevectorEstimator
                 self._estimator = StatevectorEstimator(
                     default_precision=self.precision, seed=self.seed)
-            elif self.is_fake_device:
+            elif self.is_fake_device or self.is_mps_device:
                 from qiskit.primitives import BackendEstimatorV2
                 from qiskit_aer import AerSimulator
 
+                backend = (self.backend() if self.is_mps_device
+                           else AerSimulator.from_backend(self.backend()))
                 self._estimator = BackendEstimatorV2(
-                    backend=AerSimulator.from_backend(self.backend()),
+                    backend=backend,
                     options={"default_precision": self.precision})
             else:
                 from qiskit_ibm_runtime import Estimator
@@ -843,16 +905,42 @@ class QiskitProvider(CircuitProvider):
 
         Returns ``({label: value}, {label: standard error})``.  One circuit and
         an array of observables: what measuring the RDMs of an optimized state
-        on a processor costs.
+        on a processor costs.  It is :meth:`expectation_batch` of one request.
+        """
+        return self.expectation_batch(
+            n_qubits, occupied, [(generators, thetas, labels)],
+            max_bases_per_job)[0]
+
+    @staticmethod
+    def _read_chunk(chunk, data):
+        """``({label: value}, {label: standard error})`` of a PUB's data."""
+        return (dict(zip(chunk, np.asarray(data.evs, dtype=float).reshape(-1))),
+                dict(zip(chunk, np.asarray(data.stds, dtype=float).reshape(-1))))
+
+    def expectation_batch(self, n_qubits: int, occupied, requests,
+                          max_bases_per_job: int | None = None):
+        """``<P>`` of several states, each for its own Pauli strings, in as few
+        jobs as the limit allows.
+
+        ``requests`` is a list of ``(generators, thetas, labels)``: the ansatz
+        circuit (its generators and angles, on one register and reference) and
+        the strings to read off it.  Returns one ``({label: value},
+        {label: standard error})`` per request.  Every request is one Estimator
+        PUB -- one circuit and an array of observables -- and **all the PUBs ride
+        in one job**: a measurement that needs several circuits (the
+        double-factorized energy, one basis rotation per circuit) still costs
+        one submission.
 
         With ``max_bases_per_job`` (or the constructor's
-        :attr:`max_bases_per_job`) the observables are split into several
-        submissions of at most that many **qubit-wise commuting measurement
-        bases**, never cutting a basis in half.  The ansatz is transpiled once
-        and shared by every chunk, so the split costs nothing but job
-        overhead, and it bounds what any single Runtime program has to hold --
-        the unsplit form submitted 97,980 observables in one PUB and died with
-        "Program runtime ran out of memory".
+        :attr:`max_bases_per_job`) each request's observables are split into
+        chunks of at most that many **qubit-wise commuting measurement bases**,
+        never cutting a basis in half, and the chunks are packed in order into
+        jobs of at most that many bases in all, so the jobs are
+        ``ceil(bases / limit)`` as :func:`measurement_cost` counts.  The ansatz
+        is transpiled once per circuit and shared by its chunks, so the split
+        costs nothing but job overhead, and it bounds what any single Runtime
+        program has to hold -- the unsplit form submitted 97,980 observables in
+        one PUB and died with "Program runtime ran out of memory".
 
         Completed chunks are **kept**: each is stored, keyed by the circuit,
         the labels and the options, as soon as its job returns, and a repeat
@@ -864,43 +952,55 @@ class QiskitProvider(CircuitProvider):
 
         from .measurement import chunk_labels_by_basis, qwc_partition
 
-        labels = [str(label) for label in labels]
         limit = (self.max_bases_per_job if max_bases_per_job is None
                  else max_bases_per_job)
-        key = self._submission_key(n_qubits, occupied, generators, thetas,
-                                   labels, limit)
-        done = self._completed_chunks.setdefault(key, {})
-        chunks = chunk_labels_by_basis(labels, limit, **self._core_options())
-        values: dict[str, float] = {}
-        stds: dict[str, float] = {}
+        plans, pending = [], []
+        for index, (generators, thetas, labels) in enumerate(requests):
+            labels = [str(label) for label in labels]
+            key = self._submission_key(n_qubits, occupied, generators, thetas,
+                                       labels, limit)
+            done = self._completed_chunks.setdefault(key, {})
+            chunks = chunk_labels_by_basis(labels, limit, **self._core_options())
+            plans.append((key, done, len(chunks)))
+            for chunk_index, chunk in enumerate(chunks):
+                if chunk_index not in done:
+                    bases = len(qwc_partition(chunk, **self._core_options()))
+                    pending.append((index, chunk_index, chunk, bases))
+        jobs, current, load = [], [], 0
+        for item in pending:
+            if current and limit and load + item[3] > limit:
+                jobs.append((current, load))
+                current, load = [], 0
+            current.append(item)
+            load += item[3]
+        if current:
+            jobs.append((current, load))
         self.jobs = []
-        qc = layout = None
-        for index, chunk in enumerate(chunks):
-            if index in done:
-                values.update(done[index][0])
-                stds.update(done[index][1])
-                continue
-            if qc is None:
-                qc, layout, params = self.compiled(n_qubits, occupied,
-                                                   generators)
-            observables = [SparsePauliOp(label) for label in chunk]
-            if layout is not None:
-                observables = [o.apply_layout(layout) for o in observables]
-            result = self._run_pubs(
-                [self._bound_pub(qc, params, observables, thetas)],
-                bases=len(qwc_partition(chunk, **self._core_options())))
+        for job, bases in jobs:
+            pubs = []
+            for index, _chunk_index, chunk, _bases in job:
+                generators, thetas, _labels = requests[index]
+                qc, layout, params = self.compiled(n_qubits, occupied, generators)
+                observables = [SparsePauliOp(label) for label in chunk]
+                if layout is not None:
+                    observables = [o.apply_layout(layout) for o in observables]
+                pubs.append(self._bound_pub(qc, params, observables, thetas))
+            result = self._run_pubs(pubs, bases=bases)
             if self.last_job is not None and self.is_ibm_device:
                 self.jobs.append(self.last_job)
-            chunk_values = dict(zip(chunk, np.asarray(
-                result[0].data.evs, dtype=float).reshape(-1)))
-            chunk_stds = dict(zip(chunk, np.asarray(
-                result[0].data.stds, dtype=float).reshape(-1)))
-            done[index] = (chunk_values, chunk_stds)
-            values.update(chunk_values)
-            stds.update(chunk_stds)
-        # Complete: nothing left to resume.
-        self._completed_chunks.pop(key, None)
-        return values, stds
+            for position, (index, chunk_index, chunk, _bases) in enumerate(job):
+                plans[index][1][chunk_index] = self._read_chunk(chunk, result[position].data)
+        outputs = []
+        for key, done, count in plans:
+            values: dict[str, float] = {}
+            stds: dict[str, float] = {}
+            for chunk_index in range(count):
+                values.update(done[chunk_index][0])
+                stds.update(done[chunk_index][1])
+            outputs.append((values, stds))
+            # Complete: nothing left to resume.
+            self._completed_chunks.pop(key, None)
+        return outputs
 
     def completed_chunks(self) -> int:
         """Chunks of unfinished ``expectation_values`` requests already
@@ -1154,44 +1254,79 @@ class BraketProvider(CircuitProvider):
         counts_per_group = [self._counts(task.result()) for task in tasks]
         return energy_from_group_counts(groups, identity, counts_per_group, **self._core_options())
 
-    capabilities = ("energy", "expectation_values")
+    capabilities = ("energy", "expectation_values", "expectation_batch")
 
     def expectation_values(self, n_qubits: int, occupied, generators, thetas,
                            labels, max_bases_per_job: int | None = None):
         """``<P>`` of one state for several Pauli strings, from shots.
 
-        Returns ``({label: value}, {label: standard error})``.  The strings
-        are partitioned into qubit-wise-commuting bases
-        (:func:`~mandacaru.backends.measurement.qwc_partition`), one quantum
-        task per basis, all queued before any is awaited; each string is read
-        off its basis's counts.  ``max_bases_per_job`` is accepted for the
-        provider protocol and has no effect: a Braket submission is a task
-        per basis already.  With ``shots = 0`` the values are the exact
-        state-vector expectations (simulator only).
+        It is :meth:`expectation_batch` of one request.
         """
-        from .measurement import pauli_expectation_from_counts, qwc_partition
+        return self.expectation_batch(
+            n_qubits, occupied, [(generators, thetas, labels)],
+            max_bases_per_job)[0]
 
-        labels = [str(label) for label in labels]
+    def expectation_batch(self, n_qubits: int, occupied, requests,
+                          max_bases_per_job: int | None = None):
+        """``<P>`` of several states, each for its own Pauli strings, from shots.
+
+        ``requests`` is a list of ``(generators, thetas, labels)``; the result is
+        one ``({label: value}, {label: standard error})`` per request.  Each
+        request's strings are partitioned into qubit-wise-commuting bases
+        (:func:`~mandacaru.backends.measurement.qwc_partition`), one quantum
+        task per basis, and the tasks of **every** request are queued before
+        any is awaited; each string is read off its basis's counts.  A Braket
+        submission is a task per basis, so the batch costs the sum of the
+        requests' bases in tasks, which is what
+        ``measurement_cost(..., job_per_basis=True)`` counts.
+        ``max_bases_per_job`` is accepted for the provider protocol and has no
+        effect.  With ``shots = 0`` the values are the exact state-vector
+        expectations (simulator only).
+        """
+        from .measurement import qwc_partition
+
+        requests = [(generators, thetas, [str(label) for label in labels])
+                    for generators, thetas, labels in requests]
         if not self.shots:
-            psi = self.statevector(n_qubits, occupied, generators, thetas)
-            values = {label: float(np.real(np.vdot(
-                psi, PauliSum({label: 1.0}).to_sparse_matrix() @ psi)))
-                for label in labels}
-            return values, dict.fromkeys(labels, 0.0)
-        partition = qwc_partition(labels, **self._core_options())
-        tasks = [self._submit(self.build(n_qubits, occupied, generators,
-                                         thetas, measure_basis=basis),
-                              self.shots)
-                 for basis, _members in partition]
-        values, stds = {}, {}
-        for (_basis, members), task in zip(partition, tasks):
-            counts = self._counts(task.result())
-            for i in members:
-                value = pauli_expectation_from_counts(labels[i], counts, **self._core_options())
-                values[labels[i]] = value
-                stds[labels[i]] = float(np.sqrt(max(1.0 - value ** 2, 0.0)
-                                                / self.shots))
-        return values, stds
+            return [self._exact_expectations(
+                self.statevector(n_qubits, occupied, generators, thetas), labels)
+                for generators, thetas, labels in requests]
+        partitions = [qwc_partition(labels, **self._core_options())
+                      for _generators, _thetas, labels in requests]
+        tasks = [[self._submit(self.build(n_qubits, occupied, generators,
+                                          thetas, measure_basis=basis),
+                               self.shots)
+                  for basis, _members in partition]
+                 for (generators, thetas, _labels), partition
+                 in zip(requests, partitions)]
+        outputs = []
+        for (_generators, _thetas, labels), partition, submitted in zip(
+                requests, partitions, tasks):
+            values, stds = {}, {}
+            for (_basis, members), task in zip(partition, submitted):
+                self._read_basis(labels, members, self._counts(task.result()),
+                                 values, stds)
+            outputs.append((values, stds))
+        return outputs
+
+    @staticmethod
+    def _exact_expectations(psi, labels):
+        """The state-vector ``({label: value}, {label: 0})`` of a simulator run."""
+        values = {label: float(np.real(np.vdot(
+            psi, PauliSum({label: 1.0}).to_sparse_matrix() @ psi)))
+            for label in labels}
+        return values, dict.fromkeys(labels, 0.0)
+
+    def _read_basis(self, labels, members, counts, values, stds):
+        """Read the strings ``members`` of ``labels`` off one basis's counts."""
+        from .measurement import pauli_expectation_from_counts
+
+        for i in members:
+            value = pauli_expectation_from_counts(
+                labels[i], counts, **self._core_options())
+            values[labels[i]] = value
+            stds[labels[i]] = float(np.sqrt(max(1.0 - value ** 2, 0.0)
+                                            / self.shots))
 
     @staticmethod
     def _counts(result) -> dict:

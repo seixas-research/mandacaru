@@ -129,7 +129,7 @@ ansatz approximation.
 Mandacaru evaluates both forms. With `method="vqe"` on the local state vector the
 default is the exact exponential of the summed operator, with exact derivatives. The
 ordered product is used when you set `trotter=True`, and always for the ADAPT-VQE
-family, for MCAS-VQE and VALQA, for the Hamiltonian variational ansatz
+family, for VASQA and VALSQA, for the Hamiltonian variational ansatz
 (`ansatz={"name": "hva", ...}`) and whenever circuits
 are executed (`shots > 0`, a device, or `execute_circuits=True`), because a circuit
 can only implement the product. `include_singles=False` drops the single

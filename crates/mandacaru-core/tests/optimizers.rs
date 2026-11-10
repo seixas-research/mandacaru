@@ -351,3 +351,29 @@ fn evaluation_bound_matches_the_instrumented_call_count() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
+
+#[test]
+fn convergence_needs_patience_calm_steps_a_finite_cost_and_works_without_parameters() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let flat = |_: &[f64]| Ok((1., vec![0.]));
+    // `patience` consecutive calm steps are required before success, not one.
+    for patience in [1, 5] {
+        let options = Options {
+            method: Method::Spsa,
+            max_iterations: 30,
+            tolerance: Some(1e-9),
+            patience,
+            ..Default::default()
+        };
+        let result = optimizer::minimize(&ctx, &[0.3], &options, flat).unwrap();
+        assert!(result.success && result.steps == patience, "patience {patience}: {} steps", result.steps);
+    }
+    // A non-finite cost is refused, never minimized.
+    let options = Options { method: Method::Cobyla, max_iterations: 5, ..Default::default() };
+    let nan = |_: &[f64]| Ok((f64::NAN, vec![0.]));
+    assert!(optimizer::minimize(&ctx, &[0.1], &options, nan).is_err());
+    // A problem without parameters is one evaluation and a success.
+    let result = optimizer::minimize(&ctx, &[], &options, |_: &[f64]| Ok((1., vec![]))).unwrap();
+    assert!(result.success && result.history.len() == 1, "{}", result.message);
+    assert_eq!(ctx.memory_used(), 0);
+}

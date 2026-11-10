@@ -17,12 +17,11 @@ import numpy as np
 import pytest
 from ase.data import atomic_numbers
 
-from mandacaru.basis import BasisSet
+from mandacaru import _native
 from mandacaru.basis._config import ground_state_config, valence_subshells
-from mandacaru.basis.multizeta import (ZETA_NAMES,
+from mandacaru.basis.multizeta import (DEFAULT_NAO_SIZE, ZETA_NAMES,
                                        RadialTable, TabulatedOrbital,
                                        resolve_zeta, zeta_tables)
-from mandacaru.basis.nao import solve_confined_radial
 from mandacaru.integrals import Grid
 
 
@@ -41,8 +40,8 @@ def frozen():
 @pytest.fixture(scope="module")
 def hydrogen_1s():
     """A confined hydrogen 1s: the reference first zeta."""
-    r, radial, _energy = solve_confined_radial(1, 0, 1.0, 4.0, 800)
-    return r, radial
+    solved = _native.Context(threads=1).confined_radial(1, 0, 1.0, 4.0, intervals=800)
+    return solved["r"], solved["radial"]
 
 
 class TestZetaNames:
@@ -177,7 +176,7 @@ class TestTabulatedOrbital:
         r, radial = hydrogen_1s
         orbital = TabulatedOrbital(RadialTable(r, radial, 1, 0), 0)
         grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.10)
-        values = orbital.sample(grid)
+        values = orbital.evaluate(grid.X, grid.Y, grid.Z)
         norm = float(np.sum(np.abs(values) ** 2) * grid.dV)
         assert norm == pytest.approx(1.0, abs=2e-2)
 
@@ -217,55 +216,20 @@ class TestAnalyticGradient:
         assert analytic.dtype == (np.float64 if real else np.complex128)
         assert np.abs(analytic - numeric).max() < 1e-7
 
-    def test_sampling_it_on_a_grid_matches_the_central_difference(
-            self, hydrogen_1s):
-        """The base class's difference (what a function without a closed
-        form gets) agrees with the closed form on the whole grid."""
-        from mandacaru.basis.base import BasisFunction
-
-        r, radial = hydrogen_1s
-        orbital = TabulatedOrbital(RadialTable(r, radial, 1, 0), 0,
-                                   center=[0.11, 0.037, 0.21], units="bohr")
-        grid = Grid(center=[0, 0, 0], box_size=5.0, grid_spacing=0.25,
-                    units="bohr")
-        analytic = orbital.sample_gradient(grid)
-        difference = BasisFunction.gradient(
-            orbital, grid.X.ravel(), grid.Y.ravel(), grid.Z.ravel(), 1e-6)
-        assert analytic.shape == (3, grid.size)
-        assert np.allclose(analytic, difference, atol=1e-6)
-
-    def test_zeta_partners_share_the_harmonic_without_changing_a_number(self):
-        """``values_and_gradients`` evaluates a shell's harmonic once; every
-        function still gets exactly its own samples and gradient, whatever
-        else (a function with no closed form, another center) is in the
-        list."""
-        from mandacaru.basis import GaussianOrbital
-        from mandacaru.basis.base import values_and_gradients
-
-        r = np.linspace(0.05, 6.0, 300)
-        center = [0.1, -0.2, 0.3]
-        functions = [
-            TabulatedOrbital(RadialTable(r, r * np.exp(-z * r), 2, 1, zeta=k),
-                             m, center=center, units="bohr")
-            for k, z in ((1, 1.0), (2, 1.7)) for m in (-1, 0)]
-        functions.append(TabulatedOrbital(
-            RadialTable(r, np.exp(-r), 1, 0), 0, center=[-0.5, 0.2, 0.0],
-            units="bohr"))
-        functions.append(GaussianOrbital(0, 0, [0.9], [1.0], center=center,
-                                         units="bohr"))
-        rng = np.random.default_rng(4)
-        points = rng.uniform(-3.0, 3.0, size=(3, 60))
-        values, gradients = values_and_gradients(functions, *points)
-        for i, function in enumerate(functions):
-            assert np.allclose(values[i], function.evaluate(*points),
-                               atol=1e-13)
-            assert np.allclose(gradients[i], function.gradient(*points),
-                               atol=1e-6 if i == len(functions) - 1 else 1e-12)
-        assert values_and_gradients(functions, *points, values=False)[0] is None
-
 
 class TestBasisConstruction:
-    """What ``BasisSet.build("NAO", size=...)`` actually produces."""
+    """What ``{"name": "NAO", "size": ...}`` builds, counted by the native engine."""
+
+    @staticmethod
+    def count(symbol, **options):
+        from ase import Atoms
+
+        from mandacaru.integrations.ase import geometry_from_atoms
+        from mandacaru.specifications import basis_specification
+
+        atoms = Atoms(symbol, positions=[[0.0, 0.0, 0.0]])
+        spec = json.dumps(basis_specification(dict(name="NAO", **options)))
+        return _native.Context(threads=1).basis_size(geometry_from_atoms(atoms), basis_spec=spec)
 
     @pytest.mark.parametrize("symbol, size, n_functions", [
         # H: 1 s shell; polarization adds a p shell (3 functions).
@@ -276,50 +240,12 @@ class TestBasisConstruction:
         ("O", "DZP", 8 + 5), ("O", "TZP", 12 + 5),
     ])
     def test_function_counts(self, symbol, size, n_functions):
-        assert len(BasisSet.build("NAO", size=size).atom(symbol)) == n_functions
-
-    def test_polarization_shell_is_present_and_flagged(self):
-        """The regression this guards: polarization silently absent."""
-        for symbol, l_pol in (("H", 1), ("O", 2)):
-            functions = BasisSet.build("NAO", size="DZP").atom(symbol)
-            polarizing = [f for f in functions if f.polarization]
-            assert len(polarizing) == 2 * l_pol + 1
-            assert {f.l for f in polarizing} == {l_pol}
-
-    def test_polarization_is_one_l_above_the_valence(self):
-        """It must add angular freedom the occupied shells do not have."""
-        for symbol in ("H", "C", "O", "Si"):
-            Z = atomic_numbers[symbol]
-            l_max = max(l for (_n, l) in valence_subshells(Z))
-            functions = BasisSet.build("NAO", size="DZP").atom(symbol)
-            assert {f.l for f in functions if f.polarization} == {l_max + 1}
-
-    def test_second_polarization_shell(self):
-        functions = BasisSet.build("NAO", size="TZ2P").atom("H")
-        assert sorted({f.l for f in functions if f.polarization}) == [1, 2]
-
-    def test_single_zeta_is_unchanged_by_the_new_machinery(self):
-        """SZ must still take the original NumericalAtomicOrbital path."""
-        from mandacaru.basis.nao import NumericalAtomicOrbital
-        functions = BasisSet.build("NAO", size="SZ").atom("O")
-        assert all(isinstance(f, NumericalAtomicOrbital) for f in functions)
+        assert self.count(symbol, size=size) == n_functions
 
     def test_default_size_is_dzp(self):
         """DZP is the default: 8 (double-zeta s+p) + 5 (d polarization)."""
-        from mandacaru.basis.multizeta import DEFAULT_NAO_SIZE
         assert DEFAULT_NAO_SIZE == "DZP"
-        assert len(BasisSet.build("NAO").atom("O")) == 13
-        assert len(BasisSet.build("NAO").atom("O")) == \
-            len(BasisSet.build("NAO", size="DZP").atom("O"))
-
-    def test_centering_is_applied(self):
-        center = [0.5, 0.0, 0.0]
-        for function in BasisSet.build("NAO", size="DZP").atom("H",
-                                                               center=center):
-            assert function.center[0] > 0.0
-
-
-
+        assert self.count("O") == 13 == self.count("O", size="DZP")
 
 
 class TestValenceSubshells:

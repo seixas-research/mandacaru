@@ -547,3 +547,80 @@ fn unsupported_requests_raise_instead_of_choosing_another_calculation() {
     )
     .is_err());
 }
+
+/// `max |v_{i+1} - 2 v_i + v_{i-1}| / h^2` over `lo <= r < hi`: the roughness of a potential.
+fn roughness(r: &[f64], v: &[f64], lo: f64, hi: f64) -> f64 {
+    let h = r[1] - r[0];
+    (1..r.len() - 1)
+        .filter(|&i| r[i] >= lo && r[i] < hi)
+        .map(|i| (v[i + 1] - 2. * v[i] + v[i - 1]).abs() / (h * h))
+        .fold(0., nan_max)
+}
+
+/// The lanthanide PBE reference atoms on the generation grid (1500 Z points to 30 Bohr). With a
+/// nearest-neighbour gradient the cerium SCF locked into a five-point density ripple: `v_xc`
+/// swung by +-6 Ha at 4.7 Bohr (roughness 1.5e8 against 0.35 on 40000 points), the total energy
+/// sat 111 Ha above the LDA one, and the relaxed-configuration path did not converge in 600
+/// iterations (11.7 min). Smoothed over `min(0.01 r, 1e-3 Bohr)`, the gradient leaves the [2, 6)
+/// Bohr potential as smooth as the legacy scheme's (measured Ce 0.35 against 0.38, Gd 0.50
+/// against 0.54), the SCF converges in 31-38 iterations, PBE - LDA is -5.77 Ha for cerium as
+/// 40000 points give (-5.89), and the valence levels are the legacy ones to 1e-5 Ha.
+/// The legacy atom-solver scheme (derivatives on subset nodes) is the independent check on the
+/// same grid: the valence eigenvalues agree to the size of the scheme difference.
+#[test]
+#[ignore = "slow: 618 s (measured 2026-11-09); run: cargo test --profile release-test -p mandacaru-core --test atom_solver -- --ignored heavy_pbe_atoms_converge_on_the_generation_grid --nocapture"]
+fn heavy_pbe_atoms_converge_on_the_generation_grid() {
+    use mandacaru_core::{models::xc_scheme::Variational, paw::generate::tables_elements};
+    let ctx = context();
+    for z in [58u8, 64, 70] {
+        let points = tables_elements::generation_points(z);
+        let opts = AtomOptions {
+            points,
+            r_max: 30.,
+            max_iterations: 600,
+            tolerance: 1e-7,
+            mixing: 0.25,
+        };
+        let aufbau = configuration::ground_state(z).unwrap();
+        let solve = |functional: &str, scheme: &dyn mandacaru_core::models::xc_scheme::XcSource| {
+            let started = std::time::Instant::now();
+            let atom = atom::solve_model_with(
+                &ctx,
+                z,
+                &opts,
+                &model(functional, Treatment::Scalar),
+                Some(&aufbau),
+                None,
+                scheme,
+            )
+            .unwrap();
+            (atom, started.elapsed().as_secs_f64())
+        };
+        let (pbe, t_pbe) = solve("pbe", &Variational);
+        let (lda, _) = solve("lda", &Variational);
+        let (legacy, t_legacy) = solve("pbe", &AtomSolver);
+        let r = pbe.r.as_slice();
+        let rough = roughness(r, pbe.xc.as_slice(), 2., 6.);
+        let rough_lda = roughness(r, lda.xc.as_slice(), 2., 6.);
+        let rough_legacy = roughness(r, legacy.xc.as_slice(), 2., 6.);
+        let valence = configuration::valence_subshells(&pbe.occupations);
+        let mut worst = 0f64;
+        for (i, s) in pbe.occupations.iter().enumerate() {
+            if valence.contains(&(s.0, s.1)) {
+                worst = nan_max(worst, (pbe.eigenvalues[i] - legacy.eigenvalues[i]).abs());
+                println!(
+                    "Z={z} {}{}: production {:.6} legacy {:.6}",
+                    s.0, s.1, pbe.eigenvalues[i], legacy.eigenvalues[i]
+                );
+            }
+        }
+        println!(
+            "Z={z} points={points}: converged {} in {} it ({t_pbe:.0} s; legacy {} in {} it, {t_legacy:.0} s); E_pbe - E_lda = {:.4} Ha, E_pbe - E_legacy = {:.2e} Ha; roughness [2,6) pbe {rough:.3e} legacy {rough_legacy:.3e} lda {rough_lda:.3e}; worst valence level vs legacy {worst:.2e} Ha",
+            pbe.converged, pbe.iterations, legacy.converged, legacy.iterations,
+            pbe.energy - lda.energy, pbe.energy - legacy.energy
+        );
+        assert!(pbe.converged && pbe.iterations < 150, "Z={z}");
+        assert!(rough < 100. * rough_lda.max(1.), "Z={z}: {rough:e}");
+        assert!(worst < 2e-3, "Z={z}: {worst:e}");
+    }
+}

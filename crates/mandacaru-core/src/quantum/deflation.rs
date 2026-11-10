@@ -43,7 +43,8 @@ impl CachedProblem {
                 "sequential deflation currently uses a fixed ansatz".into(),
             ));
         }
-        if count == 0 || count > self.basis.len() || restarts == 0 {
+        let basis = self.register("sequential deflation")?;
+        if count == 0 || count > basis.len() || restarts == 0 {
             return Err(Error::Invalid(
                 "deflation needs a positive state/restart count fitting the simulation basis"
                     .into(),
@@ -58,7 +59,7 @@ impl CachedProblem {
         self.context.run(|| {
             let start = Instant::now();
             let ctx = &self.context;
-            let d = self.basis.len();
+            let d = basis.len();
             let indices: Vec<_> = (0..self.pool.len())
                 .filter(|&i| self.pool_screenable[i])
                 .collect();
@@ -98,7 +99,7 @@ impl CachedProblem {
                         let sequence = self.sequence(&indices, theta)?;
                         let data = evolution::state_from::<A>(
                             ctx,
-                            &self.basis,
+                            basis,
                             &sequence.operators,
                             &sequence.parameters,
                             options.trotter || self.hva.is_some(),
@@ -108,7 +109,7 @@ impl CachedProblem {
                         let psi = &data.as_slice()[..d];
                         let mut action = ctx.allocate::<C64>(d)?;
                         self.hamiltonian
-                            .apply_into(&self.basis, psi, action.as_mut_slice());
+                            .apply_into(basis, psi, action.as_mut_slice());
                         for previous in states.as_slice()[..level * d].chunks_exact(d) {
                             let overlap = evolution::inner(previous, psi);
                             for (h, s) in action.as_mut_slice().iter_mut().zip(previous) {
@@ -138,7 +139,7 @@ impl CachedProblem {
                 let (out, state) = best.unwrap();
                 let mut action = ctx.allocate::<C64>(d)?;
                 self.hamiltonian
-                    .apply_into(&self.basis, state.as_slice(), action.as_mut_slice());
+                    .apply_into(basis, state.as_slice(), action.as_mut_slice());
                 energies.push(inner_wide(state.as_slice(), action.as_slice()).re);
                 parameters.push(out.parameters);
                 success.push(out.success);

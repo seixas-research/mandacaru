@@ -139,6 +139,10 @@ pub struct Terms {
     pub gradients: Option<Buffer<f64>>,
     /// `d f / d (partial_c n_s)`, the same layout: the flux whose divergence is in `potential`.
     pub flux: Option<Buffer<f64>>,
+    /// The charge and its squared gradient the rVV10 correlation was evaluated on (half core
+    /// included, clamped as the energy saw them); `None` for a functional without it. The
+    /// crystal stress differentiates the kernel's wave numbers on these ([`nonlocal::strain`]).
+    pub nonlocal_source: Option<nonlocal::Source>,
 }
 
 /// The semilocal functional of the spin layout `spins` of `rho` (and `tau`): one block holds the
@@ -200,6 +204,7 @@ pub fn evaluate(
             }
         }
     }
+    let mut nonlocal_source = None;
     let nonlocal = if let Some(b) = definition.nonlocal_b {
         let mut total = ctx.allocate::<f64>(n)?;
         let mut total_sigma = ctx.allocate::<f64>(n)?;
@@ -209,7 +214,7 @@ pub fn evaluate(
                 (sigma.as_slice()[k] + 2. * sigma.as_slice()[n + k] + sigma.as_slice()[2 * n + k])
                     .max(0.);
         }
-        Some(nonlocal::evaluate(
+        let terms = nonlocal::evaluate(
             ctx,
             &c.grid,
             total.as_slice(),
@@ -218,7 +223,12 @@ pub fn evaluate(
                 b,
                 ..Default::default()
             },
-        )?)
+        )?;
+        nonlocal_source = Some(nonlocal::Source {
+            density: total,
+            sigma: total_sigma,
+        });
+        Some(terms)
     } else {
         None
     };
@@ -305,6 +315,7 @@ pub fn evaluate(
         kinetic_potential: vtau,
         gradients: Some(gradients),
         flux: Some(flux),
+        nonlocal_source,
     })
 }
 

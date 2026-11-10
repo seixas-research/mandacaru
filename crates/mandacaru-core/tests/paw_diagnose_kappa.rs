@@ -86,10 +86,16 @@ fn the_two_recoveries_of_a_branch_agree_and_its_level_is_the_stored_one() {
 
 /// The deviation of a recomputed branch level from the stored one is of the size of the
 /// sensitivity of that level to the spacing of the table it is computed from: on tables twice as
-/// coarse the level moves by more than half the deviation (for Ne, Na and Fe it moves by 3e-4,
-/// 2.6e-7 and 7e-5 Ha against deviations of 6e-5, 4e-8 and 1e-6), and does not converge toward
-/// the stored value as `h^4` would (the extrapolations land at 8e-5, 3e-8 and 4e-6 off). It is
-/// not an error of the port: the stored value comes from a table of another spacing.
+/// coarse the level moves by more than half the deviation (Ne and Na, unchanged files: 3e-4 and
+/// 2.6e-7 Ha against deviations of 6e-5 and 4e-8), and does not converge toward the stored value
+/// as `h^4` would. It is not an error of the port: the stored value comes from a table of another
+/// spacing. Fe is the lda-fr file regenerated on 2026-11-09 (Rust search, 3s3p semicore; the file
+/// this test was written on had 8 valence electrons): measured by this test, its p branches
+/// deviate by 3.5e-7 and 3.6e-7 Ha and move by 6.7e-7 and 6.8e-7 on the coarse table; its d branch
+/// deviates by 1.3e-8 Ha and moves by 4e-10, a deviation below `RESAMPLING_FLOOR`, which is the
+/// resampling floor of the stride-4 tables, not a spacing effect to be explained.
+const RESAMPLING_FLOOR: f64 = 5e-8;
+
 #[test]
 fn the_level_deviation_of_a_shipped_file_is_within_its_sensitivity_to_the_table_spacing() {
     for element in ["Na", "Ne", "Fe"] {
@@ -107,7 +113,8 @@ fn the_level_deviation_of_a_shipped_file_is_within_its_sensitivity_to_the_table_
                 key.l, key.kappa, e4 - stored, e8 - stored
             );
             assert!(
-                (e8 - e4).abs() > 0.5 * (e4 - stored).abs(),
+                (e4 - stored).abs() < RESAMPLING_FLOOR
+                    || (e8 - e4).abs() > 0.5 * (e4 - stored).abs(),
                 "{element} l={}",
                 key.l
             );
@@ -247,14 +254,16 @@ fn a_deep_well_binds_a_ghost_in_every_branch_the_criterion_finds_and_the_scalar_
     assert!(ghost_errors(&ctx, &set, None).unwrap().is_empty());
 }
 
-/// Lead, shipped lda-fr: no branch holds a ghost (the stored `level_errors` of its p branches are
-/// -2.3e-3 and -4.3e-6 Ha), and the empty f branches sit 0.21 Ha below their scattering
-/// reference, the box continuum following the wall, which is no ghost and is not reported. The
-/// wrong criterion, "any branch whose level error is below -GHOST_TOLERANCE", flags both f
-/// branches (2,000 tolerances) and is compared with the oracle. A dataset *generated today* for
-/// lead is different: its `j = 3/2` p branch binds a ghost 3.7363 Ha below the reference (the
-/// live Python generator, `PB_PYTHON_LEVEL_ERRORS`, and the Rust one, `paw_search.rs`), which the
-/// shipped file (generated earlier) does not have.
+/// Lead, shipped lda-fr (the file regenerated on 2026-11-09 by the Rust search with the sr
+/// partition, 5s5p semicore, 22 valence electrons): no branch holds a ghost. Its stored p
+/// `level_errors` are -2.313e-3 and -1.523e-3 Ha (Rust-measured, the recomputed ones within
+/// `LEVEL_GATE`; the file this test was first written on stored -2.3e-3 and -4.3e-6). The empty f
+/// branches sit 0.21 Ha below their scattering reference, the box continuum following the wall,
+/// which is no ghost and is not reported. The wrong criterion, "any branch whose level error is
+/// below -GHOST_TOLERANCE", flags both f branches (2,000 tolerances) and is compared with the
+/// oracle. The first construction of the Python generator was different: its `j = 3/2` p branch
+/// bound a ghost 3.7363 Ha below the reference (`PB_PYTHON_LEVEL_ERRORS`), which the search
+/// repairs and the shipped file does not have.
 #[test]
 fn the_shipped_lead_has_no_branch_ghost_and_its_empty_f_branches_are_not_ghosts() {
     let ctx = context();
@@ -268,10 +277,11 @@ fn the_shipped_lead_has_no_branch_ghost_and_its_empty_f_branches_are_not_ghosts(
         "Pb shipped: p level errors recomputed {:?}, stored {stored_p:?}; Python regenerated {:?}",
         levels[&1], PB_PYTHON_LEVEL_ERRORS[1]
     );
-    // The shipped p branches are within the stride-4 floor of their stored levels, and nowhere
-    // near today's j = 3/2 level.
+    // The shipped p branches are within the stride-4 floor of their stored levels, a few
+    // millihartree from their references, and nowhere near the ghost of the Python construction.
     assert!((levels[&1][1] - stored_p[1]).abs() <= LEVEL_GATE);
-    assert!(stored_p[1] > -1e-3 && PB_PYTHON_LEVEL_ERRORS[1][1] < -3.0);
+    assert!(stored_p.iter().all(|e| *e > -1e-2), "{stored_p:?}");
+    assert!(PB_PYTHON_LEVEL_ERRORS[1][1] < -3.0);
     // The f branches: -0.21 Ha, a scattering reference, no ghost.
     let f = levels[&3];
     assert!(f.iter().all(|e| *e < -0.15), "f level errors {f:?}");

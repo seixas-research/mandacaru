@@ -6,11 +6,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 from ase import Atoms
+from scipy.integrate import simpson
 
 from mandacaru import Mandacaru, _native
 from mandacaru.integrations.ase import geometry_from_atoms
-from mandacaru.specifications import basis_specification
-from mandacaru.basis import BasisSet
 from mandacaru.integrals import Grid
 from mandacaru.units import ANGSTROM_TO_BOHR, HARTREE_TO_EV
 
@@ -182,51 +181,15 @@ def test_kohn_sham_energy_density_and_spectrum_match_python(functional, system):
         assert quantum.success and quantum.optimal_energy <= expectation + 1e-8
 
 
-@pytest.mark.parametrize("size,scheme", [("SZ", None), ("DZ", None), ("DZP", None),
-                  ("TZ2P", "last_zeta"), ("QZ", [.2, .1, .05])])
-@pytest.mark.parametrize("z", [1, 8, 26])
-def test_numerical_atomic_orbitals_match_python_splines_and_shell_order(z, size, scheme):
-    atoms = Atoms(numbers=[z], positions=[[0, 0, 0]])
-    options = dict(size=size, r_c=7., n_grid=300, zeta_split=scheme)
-    spec = dict(name="NAO", **options)
-    points = np.ascontiguousarray(np.random.default_rng(55).normal(size=(90, 3))*1.5)
-    points[:4] = [[0, 0, 0], [0, 0, 1], [0, 0, -2], [0, 0, 8]]
-    # Three more points 1e-4 Bohr from the nucleus along each axis: the
-    # direction is defined there, so the near-nucleus behavior of every shell
-    # is compared at the full tolerance.
-    points = np.ascontiguousarray(np.vstack([points, 1e-4*np.eye(3)]))
-    actual = _native.Context(threads=1).sample_basis(geometry_from_atoms(atoms), points,
-                           basis_spec=json.dumps(basis_specification(spec)))
-    functions = BasisSet.build("NAO", **options).atom(z)
-    expected = np.stack([f.evaluate(*points.T) for f in functions])
-    assert actual.shape == expected.shape
-    # Point 0 is the nucleus, where the direction of a shell with l > 0 is
-    # undefined.  The tabulated radial function starts at r = 0 with a small
-    # nonzero R(0) for those shells (1.6e-4 for the hydrogen polarization p,
-    # 2e-2 for the oxygen p), so the value there is R(0) times a harmonic of an
-    # arbitrary direction: the Python sampler used theta = pi/2, phi = 0, the
-    # native one the zero vector (p and m != 0 shells give 0, d_z2 keeps its
-    # -0.315 R(0)).  Only l = 0 is well defined there and is compared at the
-    # full tolerance; for l > 0 the sample must stay within the harmonic's
-    # bound times R(0).
-    for i, f in enumerate(functions):
-        if f.l > 0:
-            bound = abs(float(f.radial(np.zeros(1))[0])) * np.sqrt(2*(2*f.l + 1)/(4*np.pi))
-            assert abs(actual[i, 0]) <= bound + 1e-15
-            expected[i, 0] = actual[i, 0]
-    assert np.allclose(actual, expected, atol=2e-10, rtol=2e-9)
-    assert np.all(actual[:, 3] == 0.)
-
-
 @pytest.mark.parametrize("n,l,z", [(1, 0, 1.), (2, 0, 2.), (2, 1, 1.), (3, 2, 4.)])
-def test_native_confined_radial_equation_matches_python_and_hydrogen_limit(n, l, z):
-    from mandacaru.basis.nao import solve_confined_radial
-    expected_r, expected, energy = solve_confined_radial(n, l, z, 25., 800)
+def test_native_confined_radial_equation_has_the_hydrogen_limit_and_a_confined_wall(n, l, z):
     context = _native.Context(threads=1)
     actual = context.confined_radial(n, l, z, 25., intervals=800)
-    assert np.allclose(actual["r"], expected_r, atol=1e-14)
-    assert np.allclose(actual["radial"], expected, atol=2e-11)
-    assert actual["energy"] == pytest.approx(energy, abs=1e-11)
+    r, radial = actual["r"], actual["radial"]
+    assert r[0] == 0. and r[-1] == pytest.approx(25., abs=1e-12) and radial[-1] == 0.
+    # Normalized to the grid's resolution: an s state carries 6e-5 of near-origin discretization
+    # error at 800 intervals, a p or d state 1e-9.
+    assert simpson(radial**2 * r**2, x=r) == pytest.approx(1., abs=1e-4)
     if n == 1:
         assert actual["energy"] == pytest.approx(-z*z/(2*n*n), abs=.0002)
     assert context.memory_used_bytes == 0
@@ -268,15 +231,14 @@ def test_native_radial_atom_confinement_and_nonconvergence_are_honest():
 
 
 def test_phase4_pipeline_does_not_call_python_numerical_implementations(monkeypatch):
-    from mandacaru.basis import atomic_solver, nao, nao_ae
+    from mandacaru.basis import atomic_solver
     def forbidden(*args, **kwargs):
         raise AssertionError("Python numerical callback entered native Phase 4")
-    # The Python Kohn-Sham loop, Poisson solver, force module and Hamiltonian
-    # builder are deleted (mandacaru.algorithms, integrals.poisson no longer
-    # exist), so absence is their guard; every Python numerical entry point
-    # that survives is poisoned, and a missing name fails the patch loudly.
-    for cls, name in [(BasisSet, "build"), (np.linalg, "eigh"), (np.linalg, "solve"),
-                      (atomic_solver, "solve_radial"), (nao, "solve_confined_radial"), (nao_ae, "build_species")]:
+    # The Python Kohn-Sham loop, Poisson solver, force module, Hamiltonian builder and the
+    # all-electron basis families are deleted (their modules no longer exist), so absence is
+    # their guard; every Python numerical entry point that survives is poisoned, and a missing
+    # name fails the patch loudly.
+    for cls, name in [(np.linalg, "eigh"), (np.linalg, "solve"), (atomic_solver, "solve_radial")]:
         monkeypatch.setattr(cls, name, forbidden)
     for functional in ["lda", "pbe"]:
         atoms = h2()
@@ -327,36 +289,3 @@ def test_dft_force_failures_and_budget_lifetimes_are_explicit():
         atoms.calc = Mandacaru( grid_spacing=.35, trace=False, **options)
         with pytest.raises(NotImplementedError):
             atoms.get_forces()
-
-
-@pytest.mark.parametrize("tier", [0, 1, 2])
-@pytest.mark.parametrize("z", [1, 8])
-def test_all_electron_nao_tiers_match_python_species_and_irregular_wall_spline(tier, z):
-    options = dict(tier=tier, onset=1.5, width=.8, points=500, r_max=12.)
-    spec = dict(name="NAO-AE", **options)
-    atom = Atoms(numbers=[z], positions=[[0., 0., 0.]])
-    wall = (options["onset"] + options["width"]) * ANGSTROM_TO_BOHR
-    points = np.ascontiguousarray(np.random.default_rng(27).normal(size=(91, 3)))
-    points[:5] = [[0, 0, 0], [0, 0, .7], [0, 0, -1.3], [0, 0, wall-.003], [0, 0, wall+.001]]
-    actual = _native.Context(threads=1).sample_basis(geometry_from_atoms(atom), points,
-                           basis_spec=json.dumps(basis_specification(spec)))
-    expected = np.stack([f.evaluate(*points.T) for f in BasisSet.build("NAO-AE", **options).atom(z)])
-    assert actual.shape == expected.shape
-    assert np.allclose(actual, expected, atol=8e-7, rtol=3e-6)
-    assert np.all(actual[:, 4] == 0.)
-
-
-def test_all_electron_nao_custom_functions_and_failed_species_are_explicit():
-    options = dict(tier=0, onset=1.5, width=.8, points=400, r_max=12.,
-                   extra=[(2, 1, 1.2), (2, 0, .6)], tail_norm=None)
-    atom = Atoms("He", positions=[[0., 0., 0.]])
-    points = np.ascontiguousarray(np.random.default_rng(28).normal(size=(41, 3)))
-    spec = basis_specification(dict(name="NAO-AE", **options))
-    actual = _native.Context().sample_basis(geometry_from_atoms(atom), points, basis_spec=json.dumps(spec))
-    expected = np.stack([f.evaluate(*points.T) for f in BasisSet.build("NAO-AE", **options).atom(2)])
-    assert np.allclose(actual, expected, atol=1e-6, rtol=3e-6)
-    ctx = _native.Context()
-    for invalid in (dict(spec, tier=3), dict(spec, r_max=1.), dict(spec, width=0.)):
-        with pytest.raises(ValueError):
-            ctx.sample_basis(geometry_from_atoms(atom), points, basis_spec=json.dumps(invalid))
-        assert ctx.memory_used_bytes == 0

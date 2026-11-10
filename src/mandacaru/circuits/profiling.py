@@ -18,13 +18,13 @@ any driver) so any algorithm growing such an ansatz can profile it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
 
 from ..core.mapping import PauliSum
-from .pools import PoolOperator
 
 
 @dataclass
@@ -112,9 +112,12 @@ def _profile_qiskit_cached(n_qubits: int, occupied: tuple[int, ...],
 
 
 def profile_ansatz(n_qubits: int, occupied: tuple[int, ...],
-                   operators: list[PoolOperator],
+                   operators: Sequence,
                    provider=None) -> CircuitMetrics:
     """Compile ``|HF>`` + product of ``exp(A_k)`` to ``{cx, u}`` and count cost.
+
+    ``operators`` are objects with a ``generator`` attribute, the anti-Hermitian
+    :class:`~mandacaru.core.mapping.PauliSum` of ``A_k``.
 
     Returns a :class:`CircuitMetrics`; ``cnot_count`` / ``depth`` are ``None`` if
     the SDK is not installed.

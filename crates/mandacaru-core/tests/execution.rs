@@ -1,7 +1,7 @@
 //! A circuit executor that answers `Stop` ends the solve at its best point.
 use mandacaru_core::{
     quantum::{
-        execution::{CircuitExecution, Response},
+        execution::{CircuitExecution, Request, Response},
         optimizer::{Method, Options},
         CachedProblem, SolveOptions,
     },
@@ -50,7 +50,7 @@ impl<'p> Executor<'p> {
             measured_labels: labels,
         }
     }
-    fn answer(&self, angles: &[f64], observables: &[String]) -> Response {
+    fn answer(&self, angles: &[f64], observables: &[String]) -> Vec<f64> {
         // Rotation angles of one generator can cancel in a plain sum, so the
         // weights differ from one rotation to the next.
         let total: f64 = angles
@@ -84,9 +84,11 @@ impl<'p> Executor<'p> {
                 .sum();
             self.energies.borrow_mut().push(energy);
         }
-        Response::Expectations(values)
+        values
     }
-    fn call(&self, angles: &[f64], observables: &[String]) -> Response {
+    /// One call carries a batch of circuits (the factorized energy sends one per basis); each
+    /// is answered in turn.
+    fn call(&self, requests: &[Request]) -> Response {
         if self.stopped_on.get() != 0 {
             self.after_stop.set(self.after_stop.get() + 1);
         }
@@ -95,7 +97,12 @@ impl<'p> Executor<'p> {
             self.stopped_on.set(self.calls.get());
             return Response::Stop("test budget".into());
         }
-        self.answer(angles, observables)
+        Response::Expectations(
+            requests
+                .iter()
+                .map(|r| self.answer(&r.angles, &r.observables))
+                .collect(),
+        )
     }
 }
 
@@ -131,9 +138,7 @@ fn fixed_ansatz_stop_keeps_the_best_completed_point_for_every_derivative_free_me
     ] {
         for stop_at in [2, 6, 11] {
             let executor = Executor::new(&problem, stop_at);
-            let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
-                Ok(executor.call(angles, observables))
-            };
+            let mut call = |requests: &[Request]| Ok(executor.call(requests));
             let mut execution = CircuitExecution::new(&mut call);
             let result = problem
                 .solve_executed(
@@ -156,7 +161,7 @@ fn fixed_ansatz_stop_keeps_the_best_completed_point_for_every_derivative_free_me
             assert_eq!(result.history.len(), stop_at - 1, "{label}");
             let lowest = energies.iter().copied().fold(f64::INFINITY, f64::min);
             assert!((result.energy - lowest).abs() < 1e-12, "{label}");
-            assert!(result.state.len() == problem.basis.len(), "{label}");
+            assert!(result.state.len() == problem.register("test").unwrap().len(), "{label}");
         }
     }
     drop(problem);
@@ -169,9 +174,7 @@ fn a_stop_before_any_energy_is_measured_is_an_interruption_error() {
     let problem = h2(&ctx);
     for adapt in [false, true] {
         let executor = Executor::new(&problem, 1);
-        let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
-            Ok(executor.call(angles, observables))
-        };
+        let mut call = |requests: &[Request]| Ok(executor.call(requests));
         let mut execution = CircuitExecution::new(&mut call);
         let outcome = problem.solve_executed(
             &options(adapt, Method::NelderMead, true),
@@ -197,11 +200,11 @@ fn gradient_methods_stopped_inside_a_parameter_shift_keep_the_last_complete_poin
     // third call of the second evaluation, inside a parameter shift, so only
     // the first evaluation completed.
     let executor = Executor::new(&problem, 0);
-    let mut call = |labels: &[String], angles: &[f64], observables: &[String]| {
+    let mut call = |requests: &[Request]| {
         if executor.calls.get() == 0 {
-            executor.stop_at.set(1 + 2 * labels.len() + 3);
+            executor.stop_at.set(1 + 2 * requests[0].labels.len() + 3);
         }
-        Ok(executor.call(angles, observables))
+        Ok(executor.call(requests))
     };
     let mut execution = CircuitExecution::new(&mut call);
     let result = problem
@@ -226,9 +229,7 @@ fn adapt_stop_ends_growth_at_the_last_accepted_ansatz() {
     // Call 1 measures the reference. Calls 2.. are the first operator's
     // optimization. A stop at call 2 leaves the empty reference ansatz.
     let executor = Executor::new(&problem, 2);
-    let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
-        Ok(executor.call(angles, observables))
-    };
+    let mut call = |requests: &[Request]| Ok(executor.call(requests));
     let mut execution = CircuitExecution::new(&mut call);
     let result = problem
         .solve_executed(
@@ -246,9 +247,7 @@ fn adapt_stop_ends_growth_at_the_last_accepted_ansatz() {
     // A stop in the middle of the first operator's optimization keeps it at
     // its best point.
     let executor = Executor::new(&problem, 6);
-    let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
-        Ok(executor.call(angles, observables))
-    };
+    let mut call = |requests: &[Request]| Ok(executor.call(requests));
     let mut execution = CircuitExecution::new(&mut call);
     let result = problem
         .solve_executed(
@@ -279,15 +278,17 @@ fn adapt_stop_during_pool_gradient_measurement_keeps_the_accepted_ansatz() {
     let executor = PoolStop(inner);
     let stopped = Cell::new(false);
     let after = Cell::new(0);
-    let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
+    let mut call = |requests: &[Request]| {
         if stopped.get() {
             after.set(after.get() + 1);
         }
-        if observables.len() != executor.0.measured_labels {
+        if requests[0].observables.len() != executor.0.measured_labels {
             stopped.set(true);
             return Ok(Response::Stop("test budget".into()));
         }
-        Ok(executor.0.answer(angles, observables))
+        Ok(Response::Expectations(vec![executor
+            .0
+            .answer(&requests[0].angles, &requests[0].observables)]))
     };
     let mut execution = CircuitExecution::new(&mut call);
     let result = problem
@@ -314,9 +315,7 @@ fn an_uninterrupted_executed_run_is_not_flagged() {
     let ctx = context();
     let problem = h2(&ctx);
     let executor = Executor::new(&problem, 0);
-    let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
-        Ok(executor.call(angles, observables))
-    };
+    let mut call = |requests: &[Request]| Ok(executor.call(requests));
     let mut execution = CircuitExecution::new(&mut call);
     let result = problem
         .solve_executed(
@@ -341,11 +340,11 @@ fn adapt_stop_when_the_next_step_is_first_measured_reports_the_optimized_energy(
     // re-measurement of the first optimized ansatz.
     let executor = Executor::new(&problem, 0);
     let pool_call = Cell::new(0);
-    let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
-        if observables.len() != executor.measured_labels && pool_call.get() == 0 {
+    let mut call = |requests: &[Request]| {
+        if requests[0].observables.len() != executor.measured_labels && pool_call.get() == 0 {
             pool_call.set(executor.calls.get() + 1);
         }
-        Ok(executor.call(angles, observables))
+        Ok(executor.call(requests))
     };
     let mut execution = CircuitExecution::new(&mut call);
     problem
@@ -360,9 +359,7 @@ fn adapt_stop_when_the_next_step_is_first_measured_reports_the_optimized_energy(
 
     let stop_at = pool_call.get() - 1;
     let executor = Executor::new(&problem, stop_at);
-    let mut call = |_: &[String], angles: &[f64], observables: &[String]| {
-        Ok(executor.call(angles, observables))
-    };
+    let mut call = |requests: &[Request]| Ok(executor.call(requests));
     let mut execution = CircuitExecution::new(&mut call);
     let result = problem
         .solve_executed(

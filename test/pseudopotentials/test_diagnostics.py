@@ -15,7 +15,9 @@ import dataclasses
 import numpy as np
 import pytest
 
+from mandacaru import _native
 from mandacaru.pseudopotentials import diagnostics as dx
+from mandacaru.pseudopotentials.diagnostics import context, record_of
 from mandacaru.pseudopotentials.generation import generate_paw
 
 
@@ -58,6 +60,24 @@ class TestDiagnose:
         assert found["missing"] == {0: pytest.approx(0.0556, abs=1e-3)}
         assert found["defects"]["phases"] == found["wrong_phases"]
         assert found["defects"]["missing"] == found["missing"]
+
+
+def quality(pp, **options):
+    return _native.paw_quality(context(), *record_of(pp), **options)
+
+
+class TestQuality:
+    def test_a_soft_dataset_works_at_the_coarsest_spacing(self, hydrogen):
+        q = quality(hydrogen, bond=1.4, twin=record_of(hydrogen))
+        assert q["hard"] == {} and q["partition"] is None
+        assert q["working_spacing"] == 0.2
+        assert set(q["grid_residual"]) == {0.2, 0.15, 0.12, 0.1}
+        # Hydrogen's 1.0 Bohr s sphere stays clear of a neighbor 1.4 Bohr away, not of one at 0.9.
+        assert q["sphere"] is None
+        assert quality(hydrogen, bond=0.9)["sphere"] == pytest.approx(hydrogen.channels[0].r_cut, rel=0.1)
+
+    def test_diagnose_reports_the_levels_a_channel_without_projectors_misses(self, hydrogen):
+        assert "unprojected_missing" in dx.diagnose(hydrogen)
 
 
 class TestRefusals:

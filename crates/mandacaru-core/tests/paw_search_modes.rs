@@ -472,3 +472,34 @@ fn a_flagged_dataset_always_carries_what_is_wrong_with_it() {
     );
     assert_eq!(near.compare(&far), std::cmp::Ordering::Less);
 }
+
+/// When the first construction cannot be built the search plans its remedies from
+/// `channel_radii`, which must be the radii that construction would have had: for oxygen (and for
+/// lithium, whose empty p channel takes the widest sphere) they equal the radii of the built one.
+#[test]
+fn the_radii_a_failed_first_construction_would_have_had_are_those_of_the_built_one() {
+    use mandacaru_core::models::relativity::Treatment;
+    use mandacaru_core::paw::generate::{
+        channel_radii, generate_with_atom, recipe::Recipe, reference::solve_reference,
+    };
+    let ctx = mandacaru_core::Context::new(Some(1), 1 << 30).unwrap();
+    for symbol in ["O", "Li"] {
+        let recipe = Recipe::for_dataset(symbol, "lda", Treatment::Scalar).unwrap();
+        let atom = solve_reference(&ctx, &recipe).unwrap();
+        let built = generate_with_atom(
+            &ctx,
+            &recipe,
+            &atom,
+            &mandacaru_core::models::xc_scheme::Variational,
+        )
+        .unwrap();
+        let planned = channel_radii(&ctx, &recipe, &atom).unwrap();
+        let radii = built
+            .dataset
+            .channels
+            .iter()
+            .map(|(&l, c)| (l as usize, c.r_cut))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(planned, radii, "{symbol}");
+    }
+}

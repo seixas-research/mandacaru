@@ -141,8 +141,8 @@ concurrent ledger accounting and independent volumetric readers passed their tes
 
 Later work is recorded on [the cutover page](native_cutover.md), which carries the live
 coverage table. In outline: the six exchange-correlation choices (including HSE06,
-r2SCAN and the rVV10 pairings), molecular PAW-LCAO with its forces, native MCAS-VQE
-and VALQA, native measured-gradient ADAPT-VQE, the run budget, and the removal of the
+r2SCAN and the rVV10 pairings), molecular PAW-LCAO with its forces, native VASQA
+and VALSQA, native measured-gradient ADAPT-VQE, the run budget, and the removal of the
 `engine` option and of JAX as a dependency. Several features that existed in the
 Python implementation are not yet ported; they are in the
 [not-yet-available table](#not-yet-available).

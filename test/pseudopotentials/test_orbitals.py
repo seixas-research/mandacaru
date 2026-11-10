@@ -177,11 +177,12 @@ class TestFrozenPythonOutputs:
 
 class TestShells:
     """A zeta, polarization or diffuse shell evaluated by the native table
-    routines, against the SciPy ``TabulatedOrbital`` of the multiple-zeta stack."""
+    routines, against the multiple-zeta stack's ``TabulatedOrbital`` (the
+    native orbital evaluator): values, slopes and the sampled kind."""
 
     @pytest.mark.parametrize("l", [0, 1, 2])
     @pytest.mark.parametrize("start", [0.0, 0.02])
-    def test_it_samples_like_the_scipy_orbital(self, l, start):
+    def test_it_samples_like_the_tabulated_orbital(self, l, start):
         r = start + 0.02 * np.arange(500)
         table = RadialTable(r, r ** l * np.exp(-r) * (1 + 0.3 * np.cos(r)),
                             l + 1, l, zeta=2, polarization=True)
@@ -191,8 +192,6 @@ class TestShells:
                                 [r[-1] + 1.0]])
         close(shell.radial(nodes), old.radial(nodes), 1e-12)
         close(shell.radial_slope(nodes), old.radial_slope(nodes), 1e-11)
-        np.testing.assert_allclose(shell._spline.x, old._spline.x)
-        close(shell._spline.c, old._spline.c, 1e-11)
         assert shell.r_c == old.r_c
         assert (shell.kind, shell.zeta, shell.state) == (
             old.kind, old.zeta, old.state)

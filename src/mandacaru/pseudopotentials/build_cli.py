@@ -177,9 +177,9 @@ def worker_threads(workers: int) -> int:
     ran 48 threads each on 12 cores (load average 150) and built a library
     set at a quarter of its speed.
     """
-    from ..integrals._backend import grid_blas_threads
+    from .. import _native
 
-    return max(1, grid_blas_threads() // max(1, int(workers)))
+    return max(1, _native.grid_blas_threads() // max(1, int(workers)))
 
 
 def _limit_threads(threads: int) -> None:

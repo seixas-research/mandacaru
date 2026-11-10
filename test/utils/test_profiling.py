@@ -5,7 +5,7 @@
 
 Covers the resource-reporting features:
 
-* the native backend exposes its thread count (``_backend.num_threads``);
+* the native engine exposes its thread count (``_native.num_threads``);
 * a calculation times its integral stages and records the cores / backend /
   peak memory (``CalculationResult.timings``);
 * :class:`~mandacaru.utils.profiling.Timings` accumulates named stage wall-times.
@@ -13,7 +13,7 @@ Covers the resource-reporting features:
 
 import pytest
 
-from mandacaru.integrals import _backend
+from mandacaru import _native
 from mandacaru.utils.profiling import Timings, backend_cores, peak_memory_mb
 from ase import Atoms
 from mandacaru import Mandacaru
@@ -21,9 +21,18 @@ from mandacaru import Mandacaru
 
 class TestBackendCores:
     def test_num_threads_reports_positive_int_when_native_backend(self):
-        n = _backend.num_threads()
+        n = _native.num_threads()
         assert isinstance(n, int) and n >= 1
         assert backend_cores() == n
+
+    def test_the_label_names_the_engine_and_its_threads(self):
+        from mandacaru.utils.profiling import backend_label
+
+        n = _native.num_threads()
+        assert backend_label() == (f"Rust ({n} threads)" if n > 1 else "Rust (serial)")
+
+    def test_the_cores_for_a_grid_product_are_the_hardware_threads(self):
+        assert _native.grid_blas_threads() >= 1
 
     def test_peak_memory_is_positive(self):
         assert peak_memory_mb() > 0.0

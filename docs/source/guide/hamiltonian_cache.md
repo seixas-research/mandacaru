@@ -135,3 +135,7 @@ a native Pauli operator, and needs `n_spatial_orbitals` and `num_particles` with
 it.
 It is how `result.as_quantum_problem()` hands a mean-field Hamiltonian to a
 quantum method; see [mean field and HVA](mean_field_hva.md).
+
+`Fermion` and `PauliSum` are builders and transport types: their algebra (products,
+commutators, matrices, the qubit mappings) runs in the Rust engine, on registers of at
+most 62 qubits. A wider operator raises `ValueError` naming the limit.

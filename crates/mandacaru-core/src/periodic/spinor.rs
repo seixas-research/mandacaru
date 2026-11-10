@@ -60,6 +60,7 @@ pub fn exchange_correlation(
         // The eigenframe arrays of the rotated spin channels (the stress's spectral-gradient term).
         gradients: terms.gradients,
         flux: terms.flux,
+        nonlocal_source: terms.nonlocal_source,
     })
 }
 

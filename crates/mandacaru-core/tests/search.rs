@@ -34,7 +34,12 @@ fn architectures(pool: usize, maximum: usize) -> Vec<Vec<usize>> {
 #[test]
 fn proposal_mass_and_metropolis_balance_include_every_duplicate_edit() {
     let context = Context::new(Some(1), 16 << 20).unwrap();
-    let kernel = Kernel::new(3, 3, [1.; 4]).unwrap();
+    let kernel = Kernel::new(3, 3, [1.; 3]).unwrap();
+    // Importances as a function of the state (position and operator), as the driver's are.
+    let removal = |state: &[usize]| {
+        let importances: Vec<f64> = state.iter().enumerate().map(|(i, &op)| 1. / (1. + i as f64) + 0.1 * op as f64).collect();
+        kernel::removal(&importances, 0.4).unwrap()
+    };
     let states = architectures(3, 3);
     let probabilities =
         |state: &[usize]| kernel::softmax(&[1. + state.len() as f64, 0.2, 0.5], 0.4).unwrap();
@@ -42,17 +47,17 @@ fn proposal_mass_and_metropolis_balance_include_every_duplicate_edit() {
         |state: &[usize]| 0.1 * state.len() as f64 + 0.03 * state.iter().sum::<usize>() as f64;
     for source in &states {
         let p = probabilities(source);
-        let actions = kernel.actions(&context, source, &p).unwrap();
+        let actions = kernel.actions(&context, source, &p, &removal(source)).unwrap();
         assert!((actions.items.iter().map(|(_, p)| p).sum::<f64>() - 1.).abs() < 1e-12);
         let mut exhaustive = BTreeMap::<Vec<usize>, f64>::new();
         for &(action, probability) in &actions.items {
             *exhaustive.entry(action.apply(source)).or_default() += probability;
         }
         for target in &states {
-            let forward = kernel.log_q(&context, target, source, &p).unwrap();
+            let forward = kernel.log_q(&context, target, source, &p, &removal(source)).unwrap();
             assert!((forward.exp() - exhaustive.get(target).copied().unwrap_or(0.)).abs() < 1e-13);
             let reverse = kernel
-                .log_q(&context, source, target, &probabilities(target))
+                .log_q(&context, source, target, &probabilities(target), &removal(target))
                 .unwrap();
             if forward.is_finite() && reverse.is_finite() {
                 let temperature = 0.2;
@@ -83,7 +88,7 @@ fn proposal_mass_and_metropolis_balance_include_every_duplicate_edit() {
         }
     }
     let q = kernel
-        .log_q(&context, &[0, 0], &[0], &[0.2, 0.3, 0.5])
+        .log_q(&context, &[0, 0], &[0], &[0.2, 0.3, 0.5], &[1.])
         .unwrap()
         .exp();
     assert!((q - 0.2 / 3.).abs() < 1e-14);
@@ -91,7 +96,6 @@ fn proposal_mass_and_metropolis_balance_include_every_duplicate_edit() {
         kind: Move::Insert,
         position: 1,
         operator: 2,
-        other: 0,
     };
     assert_eq!(action.transfer(&[0.1, 0.2], false), vec![0.1, 0., 0.2]);
     assert_eq!(kernel::log_acceptance(0., 1., 0., -1., -2.), f64::INFINITY);
@@ -148,7 +152,7 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
             .hamiltonian
             .apply(
                 &context,
-                &problem.basis,
+                problem.register("test").unwrap(),
                 first.solution.state.complex128().unwrap(),
             )
             .unwrap();
@@ -198,4 +202,31 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
         assert_eq!(refused.steps.len(), 40);
     }
     assert_eq!(context.memory_used(), 0);
+}
+
+#[test]
+fn a_less_important_operator_is_more_likely_to_be_removed_or_replaced() {
+    let context = Context::new(Some(1), 16 << 20).unwrap();
+    let kernel = Kernel::new(3, 4, [1.; 3]).unwrap();
+    // Operator 0 was included with the largest gradient, the last one with the smallest.
+    let removal = kernel::removal(&[0.9, 0.4, 0.05], 0.5).unwrap();
+    assert!(removal[0] < removal[1] && removal[1] < removal[2], "{removal:?}");
+    let source = [0, 1, 2];
+    let p = [0.2, 0.3, 0.5];
+    let actions = kernel.actions(&context, &source, &p, &removal).unwrap();
+    let mass = |kind: Move, position: usize| -> f64 {
+        actions.items.iter().filter(|(a, _)| a.kind == kind && a.position == position).map(|(_, q)| q).sum()
+    };
+    for kind in [Move::Delete, Move::Replace] {
+        assert!(mass(kind, 0) < mass(kind, 1) && mass(kind, 1) < mass(kind, 2), "{kind:?}");
+        // Each position's share of the move is its removal weight.
+        let total: f64 = (0..3).map(|i| mass(kind, i)).sum();
+        for i in 0..3 {
+            assert!((mass(kind, i) / total - removal[i]).abs() < 1e-14);
+        }
+    }
+    // Equal importances are a uniform choice, and there is no swap move.
+    assert_eq!(kernel::removal(&[0.3, 0.3], 0.5).unwrap(), vec![0.5, 0.5]);
+    assert_eq!(kernel::removal(&[0., 0.], 0.5).unwrap(), vec![0.5, 0.5]);
+    assert!(actions.items.iter().all(|(a, _)| a.kind != Move::Replace || a.operator != source[a.position]));
 }

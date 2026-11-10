@@ -31,6 +31,19 @@ pub struct Term {
     pub coefficient: C64,
 }
 impl Term {
+    /// The Pauli string on `n` qubits, qubit zero first (`I`, `X`, `Y`, `Z`).
+    pub fn label(&self, n: usize) -> String {
+        (0..n)
+            .map(
+                |j| match (self.x & bit(n, j) != 0, self.z & bit(n, j) != 0) {
+                    (false, false) => 'I',
+                    (true, false) => 'X',
+                    (false, true) => 'Z',
+                    (true, true) => 'Y',
+                },
+            )
+            .collect()
+    }
     pub(super) fn amplitude(&self, ket: u64) -> C64 {
         self.coefficient
             * phase((self.x & self.z).count_ones() as i32)
@@ -137,21 +150,7 @@ impl Operator {
     pub fn labels(&self) -> Vec<(String, C64)> {
         self.terms
             .iter()
-            .map(|t| {
-                (
-                    (0..self.n)
-                        .map(
-                            |j| match (t.x & bit(self.n, j) != 0, t.z & bit(self.n, j) != 0) {
-                                (false, false) => 'I',
-                                (true, false) => 'X',
-                                (false, true) => 'Z',
-                                (true, true) => 'Y',
-                            },
-                        )
-                        .collect(),
-                    t.coefficient,
-                )
-            })
+            .map(|t| (t.label(self.n), t.coefficient))
             .collect()
     }
     pub fn is_hermitian(&self) -> bool {
@@ -219,9 +218,67 @@ impl Operator {
         }
         Self::from_masks(ctx, self.n, terms)
     }
+    /// `[self, other]` from the pairs of strings that anticommute, each contributing
+    /// `2 sigma_a sigma_b`: the commuting pairs, which cancel in `AB - BA`, are never formed.
     pub fn commutator(&self, ctx: &Context, other: &Self) -> Result<Self> {
-        self.compose(ctx, other)?
-            .add(ctx, &other.compose(ctx, self)?, C64::new(-1., 0.))
+        if self.n != other.n {
+            return Err(invalid("operator register mismatch"));
+        }
+        let _temporary = ctx.reserve(product(&[self.terms.len(), other.terms.len(), 32])?)?;
+        let mut terms = Vec::new();
+        for a in &self.terms {
+            for b in &other.terms {
+                if ((a.x & b.z).count_ones() + (a.z & b.x).count_ones()) % 2 == 0 {
+                    continue;
+                }
+                let (x, z) = (a.x ^ b.x, a.z ^ b.z);
+                let exponent = (a.x & a.z).count_ones() as i32 + (b.x & b.z).count_ones() as i32
+                    - (x & z).count_ones() as i32
+                    + 2 * (a.z & b.x).count_ones() as i32;
+                terms.push(Term {
+                    x,
+                    z,
+                    coefficient: 2. * a.coefficient * b.coefficient * phase(exponent),
+                });
+            }
+        }
+        Self::from_masks(ctx, self.n, terms)
+    }
+    /// `(A + A^dagger) / 2`. Every Pauli string is Hermitian, so this keeps the real part of each
+    /// coefficient and drops the imaginary one; no matrix is formed.
+    pub fn hermitian_part(&self, ctx: &Context) -> Result<Self> {
+        let _temporary = ctx.reserve(product(&[self.terms.len(), 32])?)?;
+        Self::from_masks(
+            ctx,
+            self.n,
+            self.terms
+                .iter()
+                .filter(|t| t.coefficient.re != 0.)
+                .map(|t| Term {
+                    coefficient: C64::new(t.coefficient.re, 0.),
+                    ..*t
+                })
+                .collect(),
+        )
+    }
+    /// Whether `[self, other]` vanishes as a Pauli sum: an algebraic test, `O(terms^2)`, with no
+    /// state vector and no matrix.
+    pub fn commutes_with(&self, ctx: &Context, other: &Self) -> Result<bool> {
+        Ok(self
+            .commutator(ctx, other)?
+            .terms
+            .iter()
+            .all(|t| t.coefficient.norm() <= 1e-11))
+    }
+    /// `<ket| self |ket>` for the computational basis state `ket` (qubit zero the most
+    /// significant bit): only the terms without an `X` or `Y` contribute, each `+-` its
+    /// coefficient. `O(terms)`, no state vector.
+    pub fn expectation_at(&self, ket: u64) -> C64 {
+        self.terms
+            .iter()
+            .filter(|t| t.x == 0)
+            .map(|t| t.amplitude(ket))
+            .sum()
     }
     /// Apply without constructing a matrix. Projection is allowed only after
     /// `Basis::check_invariant` has validated a solver's Hamiltonian/generators.
@@ -354,6 +411,69 @@ impl Operator {
         self.apply_into(basis, input, out.as_mut_slice());
         Ok(out)
     }
+    /// The matrix on `basis` in compressed-row storage: `(row offsets, column indices, values)`
+    /// with the columns of each row ascending and the cancelled entries dropped. Strings that
+    /// share a flip mask `x` send column `c` to the one row `c ^ x`, so each mask contributes at
+    /// most one entry per row and no two masks reach the same entry: nothing is summed twice and
+    /// the storage is the result plus one row of scratch.
+    pub fn csr(&self, ctx: &Context, basis: &Basis) -> Result<Csr> {
+        if self.n != basis.n {
+            return Err(invalid("operator basis mismatch"));
+        }
+        let d = basis.len();
+        let _scratch = ctx.reserve(product(&[self.terms.len(), 128])?)?;
+        let mut flips = BTreeMap::<u64, Vec<(u64, C64)>>::new();
+        for t in &self.terms {
+            flips.entry(t.x).or_default().push((t.z, t.amplitude(0)));
+        }
+        let mut capacity = 0usize;
+        for &ket in basis.indices.as_slice() {
+            for &flip in flips.keys() {
+                if basis.index(ket ^ flip).is_some() {
+                    capacity = capacity.checked_add(1).ok_or(Error::Overflow)?;
+                }
+            }
+        }
+        let mut offsets = ctx.allocate(d.checked_add(1).ok_or(Error::Overflow)?)?;
+        let mut columns = ctx.allocate(capacity)?;
+        let mut values = ctx.allocate(capacity)?;
+        let mut row_entries: Vec<(usize, C64)> = Vec::with_capacity(flips.len());
+        let mut cursor = 0;
+        for (row, &ket) in basis.indices.as_slice().iter().enumerate() {
+            row_entries.clear();
+            for (&flip, group) in &flips {
+                let source = ket ^ flip;
+                if let Some(column) = basis.index(source) {
+                    let value: C64 = group
+                        .iter()
+                        .map(|&(z, coefficient)| {
+                            if (z & source).count_ones() % 2 == 0 {
+                                coefficient
+                            } else {
+                                -coefficient
+                            }
+                        })
+                        .sum();
+                    if value.norm() > 1e-14 {
+                        row_entries.push((column, value));
+                    }
+                }
+            }
+            row_entries.sort_unstable_by_key(|&(column, _)| column);
+            for &(column, value) in &row_entries {
+                columns.as_mut_slice()[cursor] = column;
+                values.as_mut_slice()[cursor] = value;
+                cursor += 1;
+            }
+            offsets.as_mut_slice()[row + 1] = cursor;
+        }
+        Ok(Csr {
+            offsets,
+            columns,
+            values,
+            nnz: cursor,
+        })
+    }
     pub fn dense(&self, ctx: &Context, basis: &Basis) -> Result<Buffer<C64>> {
         if self.n != basis.n {
             return Err(invalid("operator register mismatch"));
@@ -369,6 +489,14 @@ impl Operator {
         }
         Ok(out)
     }
+}
+
+/// A matrix in compressed-row storage; the buffers can be longer than `nnz` entries.
+pub struct Csr {
+    pub offsets: Buffer<usize>,
+    pub columns: Buffer<usize>,
+    pub values: Buffer<C64>,
+    pub nnz: usize,
 }
 
 /// Certify A³ = -omega² A in the complete Pauli algebra before using the
@@ -430,6 +558,22 @@ impl Encoding {
                 "spin-blocked encodings need a positive even mode count and valid particle counts",
             ));
         }
+        Self::build(mapping, modes, particles)
+    }
+    /// An encoding of any positive mode count with no particle sector: Jordan-Wigner, parity or
+    /// Bravyi-Kitaev as a plain binary change of occupation basis. The reduced parity encoding
+    /// fixes two qubits by the particle numbers and is refused here.
+    pub fn plain(mapping: &str, modes: usize) -> Result<Self> {
+        width(modes)?;
+        if modes == 0 {
+            return Err(invalid("an encoding needs at least one mode"));
+        }
+        if mapping == "parity_reduced" {
+            return Err(invalid("parity_reduced requires num_particles"));
+        }
+        Self::build(mapping, modes, [0, 0])
+    }
+    fn build(mapping: &str, modes: usize, particles: [usize; 2]) -> Result<Self> {
         let mut rows = vec![0; modes];
         for (i, row) in rows.iter_mut().enumerate() {
             match mapping {
@@ -515,6 +659,24 @@ impl Encoding {
         }
         self.transform(full, &self.inverse)
     }
+    /// The alpha and beta particle-number operators on this encoding's register. A Hamiltonian
+    /// or a pool generator that commutes with both preserves every particle sector, which is the
+    /// algebraic form of `Basis::check_invariant` and needs no basis.
+    pub fn number_operators(&self, ctx: &Context) -> Result<[Operator; 2]> {
+        let m = self.modes / 2;
+        let spin = |modes: std::ops::Range<usize>| -> Result<Operator> {
+            let mut total = Operator::from_masks(ctx, self.n_qubits(), vec![])?;
+            for j in modes {
+                total = total.add(
+                    ctx,
+                    &self.monomial(ctx, &[(j, true), (j, false)])?,
+                    C64::new(1., 0.),
+                )?;
+            }
+            Ok(total)
+        };
+        Ok([spin(0..m)?, spin(m..2 * m)?])
+    }
     pub fn reference(&self) -> u64 {
         let m = self.modes / 2;
         self.encode(
@@ -560,6 +722,27 @@ impl Encoding {
         }
         Operator::from_masks(ctx, self.n_qubits(), terms)
     }
+    /// `sum_t c_t prod a^(dagger)` of the fermionic terms, each product multiplied in the
+    /// Jordan-Wigner algebra and mapped once, merged in one pass. A reduced encoding maps each
+    /// product on its own, so every term has to preserve both tapered parities.
+    pub fn map_fermion(
+        &self,
+        ctx: &Context,
+        terms: &[(Vec<(usize, bool)>, C64)],
+    ) -> Result<Operator> {
+        let _temporary = ctx.reserve(product(&[terms.len(), 640])?)?;
+        let mut mapped = Vec::new();
+        for (ladders, coefficient) in terms {
+            if !coefficient.re.is_finite() || !coefficient.im.is_finite() {
+                return Err(invalid("nonfinite fermionic coefficient"));
+            }
+            mapped.extend(self.monomial(ctx, ladders)?.terms.iter().map(|t| Term {
+                coefficient: t.coefficient * coefficient,
+                ..*t
+            }));
+        }
+        Operator::from_masks(ctx, self.n_qubits(), mapped)
+    }
     pub fn ladder(&self, ctx: &Context, j: usize, dagger: bool) -> Result<Operator> {
         if j >= self.modes {
             return Err(invalid("fermionic mode exceeds register"));
@@ -588,7 +771,7 @@ impl Encoding {
     /// Ordered ladder product, mapped only after multiplication so a reduced
     /// encoding can represent number-conserving products of untaperable ladders.
     pub fn monomial(&self, ctx: &Context, ladders: &[(usize, bool)]) -> Result<Operator> {
-        let jw = Self::new("jordan_wigner", self.modes, self.particles)?;
+        let jw = Self::build("jordan_wigner", self.modes, self.particles)?;
         let mut op = Operator::from_masks(
             ctx,
             self.modes,
@@ -675,8 +858,16 @@ impl Basis {
         Ok(out)
     }
     pub fn register(ctx: &Context, n: usize) -> Result<Self> {
+        Self::register_at(ctx, n, 0)
+    }
+    /// The whole `n`-qubit register with the computational state `reference` (occupation bits,
+    /// qubit zero the most significant) as the state an ansatz starts from.
+    pub fn register_at(ctx: &Context, n: usize, reference: u64) -> Result<Self> {
         width(n)?;
         let d = 1usize.checked_shl(n as u32).ok_or(Error::Overflow)?;
+        if reference >= d as u64 {
+            return Err(invalid("the reference determinant exceeds the register"));
+        }
         let mut indices = ctx.allocate(d)?;
         for (k, v) in indices.as_mut_slice().iter_mut().enumerate() {
             *v = k as u64;
@@ -685,7 +876,7 @@ impl Basis {
             context: ctx.clone(),
             n,
             indices,
-            reference: 0,
+            reference: reference as usize,
             full_register: true,
             lookup: None,
         })

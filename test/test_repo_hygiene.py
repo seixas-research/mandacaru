@@ -36,7 +36,7 @@ ROOT_ALLOWED = {".gitignore", ".readthedocs.yaml", "CLAUDE.md",
                 "Cargo.toml", "Cargo.lock",
                 "pyproject.toml"}
 
-#: The development plans (DFT, PAW-LCAO datasets, VALQA, diffuse functions):
+#: The development plans (DFT, PAW-LCAO datasets, VALSQA, diffuse functions):
 #: one folder, git-ignored like the plans were, and held to the same rules as
 #: the tracked files (:func:`test_no_file_names_another_code`).
 DEV_PLAN_DIR = "dev_plan"
@@ -70,7 +70,7 @@ _BARE_WRITE = re.compile(
 
 
 def test_the_development_plans_live_in_their_folder():
-    """``DFT_PLAN.md``, ``PAW_SAGA.md``, ``VALQA_PLAN.md`` and the other
+    """``DFT_PLAN.md``, ``PAW_SAGA.md``, ``VALSQA_PLAN.md`` and the other
     plans are in ``dev_plan/``, not in the root, and the folder holds only
     Markdown."""
     folder = os.path.join(REPO, DEV_PLAN_DIR)

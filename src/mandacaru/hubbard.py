@@ -72,10 +72,14 @@ def paw_basis(spec, basis):
     return family.name, dict(options)
 
 
+def _occupations(dataset, l: int) -> list[float]:
+    """The reference atom's electrons in each partial wave of channel ``l``."""
+    channel = dataset.channels[int(l)]
+    return [float(o) for o in (getattr(channel, "occupations", None) or [channel.occupation])]
+
+
 def _channels(dataset):
     """The reference occupations of each channel of ``dataset``, one number per partial wave."""
-    from .pseudopotentials.onecenter import _occupations
-
     return {
         int(l): np.asarray(_occupations(dataset, l), dtype=float) for l in dataset.channels
     }

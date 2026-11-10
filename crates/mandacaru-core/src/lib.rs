@@ -17,7 +17,7 @@ pub mod snapshot_table;
 pub mod units;
 pub mod volumetric;
 
-pub use context::{Buffer, Context, Reservation};
+pub use context::{default_threads, hardware_threads, Buffer, Context, Reservation};
 pub use geometry::Geometry;
 pub use mandacaru_kernels::bloch::Complex64;
 pub use mandacaru_kernels::runtime::WorkerStats;

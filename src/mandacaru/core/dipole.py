@@ -67,8 +67,9 @@ def electric_dipole_potential(
     mapping, num_particles
         Fermion-to-qubit encoding and, for reduced parity, particle counts.
         Hamiltonian, perturbation, and state must use the same encoding.
-        Any further symmetry tapering must also be applied consistently;
-        dipole transitions can leave a symmetry sector used for the ground state.
+        A Z2-tapered register (``Mandacaru(taper=True)``) is not covered: this
+        builder maps the whole fermionic register, and a dipole transition can
+        leave the symmetry sector the ground state was tapered into.
     nuclear_dipole
         Fixed nuclear dipole (and optionally frozen-core contribution) in
         atomic units. Adds ``-E . mu_nuc`` times identity, a global phase.

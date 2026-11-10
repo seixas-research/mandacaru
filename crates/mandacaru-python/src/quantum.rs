@@ -2,7 +2,8 @@ use super::{array, copy, error, Array};
 use mandacaru_core::{
     math::storage::Precision,
     quantum::{
-        optimizer, Amplitude, Basis, CachedProblem, Encoding, Operator, SolveOptions, State, C64,
+        optimizer, Amplitude, Basis, CachedProblem, Encoding, Operator, SolveOptions, Space, State,
+        C64,
     },
     Context, Reservation,
 };
@@ -39,6 +40,34 @@ macro_rules! typed {
 }
 pub(crate) use typed;
 
+/// The space a problem is built in: the sector or the whole register, or, `register_free` (a
+/// shot-based run), no register at all, where `sector` asks for the algebraic number-conservation
+/// check.
+pub(crate) fn space(register_free: bool, sector: bool) -> Space {
+    if register_free {
+        Space::Pauli {
+            number_conserving: sector,
+        }
+    } else if sector {
+        Space::Sector
+    } else {
+        Space::Register
+    }
+}
+/// Build the sparse Hamiltonian matrix of `problem` (refused when it is register-free).
+pub(crate) fn attach_sparse(py: Python<'_>, problem: &mut CachedProblem) -> PyResult<()> {
+    let matrix = py
+        .detach(|| {
+            mandacaru_core::quantum::sparse::SparseMatrix::new(
+                &problem.context,
+                problem.register("a sparse Hamiltonian matrix")?,
+                &problem.hamiltonian,
+            )
+        })
+        .map_err(error)?;
+    problem.sparse = Some(matrix);
+    Ok(())
+}
 pub(crate) fn parse_precision(name: &str) -> PyResult<Precision> {
     Precision::parse(name).map_err(error)
 }
@@ -295,6 +324,37 @@ impl PyOperator {
             inner,
         })
     }
+    /// `(A + A^dagger) / 2`: the real parts of the coefficients.
+    fn hermitian_part(&self, py: Python<'_>) -> PyResult<Self> {
+        let inner = py
+            .detach(|| self.inner.hermitian_part(&self.context))
+            .map_err(error)?;
+        Ok(Self {
+            context: self.context.clone(),
+            inner,
+        })
+    }
+    /// The matrix on the whole register as a compressed-row sparse matrix.
+    fn sparse_matrix(&self, py: Python<'_>) -> PyResult<crate::sparse::PyCSRMatrix> {
+        let (d, csr) = py
+            .detach(|| {
+                let basis = Basis::register(&self.context, self.inner.n)?;
+                let csr = self.inner.csr(&self.context, &basis)?;
+                Ok::<_, mandacaru_core::Error>((basis.len(), csr))
+            })
+            .map_err(error)?;
+        let nnz = csr.nnz;
+        Ok(crate::sparse::PyCSRMatrix {
+            shape: (d, d),
+            rust_indices: csr.columns.as_slice()[..nnz].to_vec(),
+            rust_indptr: csr.offsets.as_slice().to_vec(),
+            is_complex: true,
+            real_data: Vec::new(),
+            complex_data: csr.values.as_slice()[..nnz].to_vec(),
+            has_sorted_indices: true,
+            use_int32: d < i32::MAX as usize && nnz < i32::MAX as usize,
+        })
+    }
     fn matrix<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, C64>> {
         let (d, out) = py
             .detach(|| {
@@ -347,13 +407,13 @@ pub struct PyProblem {
 }
 #[pymethods]
 impl PyProblem {
-    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;4],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.2,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None))]
+    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.2,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None))]
     fn search<'py>(
         &self,
         py: Python<'py>,
         max_steps: usize,
         max_length: usize,
-        move_weights: [f64; 4],
+        move_weights: [f64; 3],
         temperatures: [f64; 2],
         length_penalty: f64,
         proposal_temperature: f64,
@@ -374,6 +434,11 @@ impl PyProblem {
         transfer_steps: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
         use mandacaru_core::quantum::search::driver::Options;
+        if self.inner.taper.is_some() {
+            return Err(PyValueError::new_err(
+                "architecture search builds its reference from the untapered register and cannot run on a tapered one",
+            ));
+        }
         if !["gradient", "uniform"].contains(&proposal)
             || !["zero", "inherit"].contains(&replace_start)
         {
@@ -463,6 +528,11 @@ impl PyProblem {
         steps: usize,
         seed_angle: f64,
     ) -> PyResult<Self> {
+        if self.inner.taper.is_some() {
+            return Err(PyValueError::new_err(
+                "the Hamiltonian-variational ansatz is built from the untapered Hamiltonian groups and cannot be tapered",
+            ));
+        }
         let inner = py
             .detach(|| {
                 let encoding = Encoding::new(
@@ -471,26 +541,29 @@ impl PyProblem {
                     self.inner.encoding.particles,
                 )?;
                 let h = self.inner.hamiltonian.copy_into(&self.inner.context)?;
-                let mut problem = CachedProblem::new(
+                let mut problem = CachedProblem::new_in(
                     &self.inner.context,
                     encoding,
                     h,
-                    false,
+                    if self.inner.is_register_free() {
+                        Space::Pauli {
+                            number_conserving: false,
+                        }
+                    } else {
+                        Space::Register
+                    },
                     self.inner.dense.is_some(),
                     true,
                 )?;
                 problem.precision = self.inner.precision;
                 problem.use_hva(layers, evolution, order, steps, seed_angle)?;
-                if self.inner.sparse.is_some() {
-                    problem.sparse = Some(mandacaru_core::quantum::sparse::SparseMatrix::new(
-                        &problem.context,
-                        &problem.basis,
-                        &problem.hamiltonian,
-                    )?);
-                }
                 Ok::<_, mandacaru_core::Error>(problem)
             })
             .map_err(error)?;
+        let mut inner = inner;
+        if self.inner.sparse.is_some() {
+            attach_sparse(py, &mut inner)?;
+        }
         Ok(Self { inner })
     }
     #[getter]
@@ -524,6 +597,7 @@ impl PyProblem {
             },
             ..Default::default()
         };
+        let dimension = self.dimension()?;
         let result = py
             .detach(|| {
                 self.inner
@@ -534,7 +608,7 @@ impl PyProblem {
         out.set_item("energies_ha", array(py, &[num_states], result.energies)?)?;
         out.set_item(
             "states",
-            state_array(py, &[num_states, self.inner.basis.len()], result.states)?,
+            state_array(py, &[num_states, dimension], result.states)?,
         )?;
         out.set_item("parameters", result.parameters)?;
         out.set_item("success", result.success)?;
@@ -550,7 +624,8 @@ impl PyProblem {
         state: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let shape: Vec<usize> = state.getattr("shape")?.extract()?;
-        let dimension = self.inner.basis.len();
+        let basis = self.register("expand_state")?;
+        let dimension = basis.len();
         if !(1..=2).contains(&shape.len()) || shape[shape.len() - 1] != dimension {
             return Err(PyValueError::new_err(
                 "states need shape (sector_dimension,) or (states,sector_dimension)",
@@ -558,7 +633,7 @@ impl PyProblem {
         }
         let rows = if shape.len() == 1 { 1 } else { shape[0] };
         let n = 1usize
-            .checked_shl(self.inner.basis.n as u32)
+            .checked_shl(basis.n as u32)
             .ok_or_else(|| error(mandacaru_core::Error::Overflow))?;
         let flat = state.call_method1("reshape", (rows * dimension,))?;
         let input = input_state(&self.inner.context, self.inner.precision, &flat)?;
@@ -593,13 +668,10 @@ impl PyProblem {
             .detach(|| {
                 let state = self.inner.prepare_state(&indices, &parameters, trotter)?;
                 let ctx = &self.inner.context;
+                let basis = self.inner.register("state")?;
                 Ok::<_, mandacaru_core::Error>(match &state {
-                    State::Float64(v) => {
-                        State::Float64(self.inner.basis.expand_state(ctx, v.as_slice())?)
-                    }
-                    State::Float32(v) => {
-                        State::Float32(self.inner.basis.expand_state(ctx, v.as_slice())?)
-                    }
+                    State::Float64(v) => State::Float64(basis.expand_state(ctx, v.as_slice())?),
+                    State::Float32(v) => State::Float32(basis.expand_state(ctx, v.as_slice())?),
                 })
             })
             .map_err(error)?;
@@ -682,6 +754,7 @@ impl PyProblem {
                 ..Default::default()
             },
         };
+        let dimension = self.dimension()?;
         let result = py
             .detach(|| {
                 self.inner
@@ -696,7 +769,7 @@ impl PyProblem {
         )?;
         out.set_item(
             "states",
-            state_array(py, &[weights.len(), self.inner.basis.len()], result.states)?,
+            state_array(py, &[weights.len(), dimension], result.states)?,
         )?;
         out.set_item("reference_ha", result.reference)?;
         out.set_item(
@@ -719,7 +792,46 @@ impl PyProblem {
     }
     #[getter]
     fn num_qubits(&self) -> usize {
-        self.inner.encoding.n_qubits()
+        self.inner.n_qubits()
+    }
+    /// What Z2 tapering removed, or `None` for an untapered register: the register widths, the
+    /// anchor qubits, the sector signs, the symmetry generators and the pool generators dropped as
+    /// symmetry-changing.
+    #[getter]
+    fn taper<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(taper) = &self.inner.taper else {
+            return Ok(None);
+        };
+        let out = PyDict::new(py);
+        out.set_item("qubits_before", taper.n)?;
+        out.set_item("qubits", taper.width())?;
+        out.set_item("removed", taper.anchors.len())?;
+        out.set_item("anchors", taper.anchors.clone())?;
+        out.set_item("signs", taper.signs.clone())?;
+        out.set_item("generators", taper.labels())?;
+        out.set_item(
+            "dropped",
+            self.inner.dropped.iter().map(|(_, label)| label.clone()).collect::<Vec<_>>(),
+        )?;
+        Ok(Some(out))
+    }
+    /// The factorized energy measurement this problem was built with, or `None` for the
+    /// qubit-wise commuting groups: the number of measurement bases (`L + 1`, each a single
+    /// commuting group), the largest number of Givens rotations a basis change needs, and the
+    /// Frobenius norm of the two-body tensor the leaf cutoff discarded.
+    #[getter]
+    fn factorized_measurement<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(plan) = &self.inner.factorized else {
+            return Ok(None);
+        };
+        let out = PyDict::new(py);
+        out.set_item("bases", plan.measurement_bases())?;
+        out.set_item(
+            "rotations",
+            plan.bases.iter().map(|b| b.rotation.len() / 2).max().unwrap_or(0),
+        )?;
+        out.set_item("truncation_error", plan.truncation_error)?;
+        Ok(Some(out))
     }
     #[getter]
     fn n_spatial_orbitals(&self) -> usize {
@@ -731,8 +843,8 @@ impl PyProblem {
     }
     #[getter]
     fn reference_qubits(&self) -> Vec<usize> {
-        let n = self.inner.encoding.n_qubits();
-        let reference = self.inner.encoding.reference();
+        let n = self.inner.n_qubits();
+        let reference = self.inner.register_reference();
         (0..n)
             .filter(|&q| reference & (1u64 << (n - 1 - q)) != 0)
             .collect()
@@ -742,8 +854,8 @@ impl PyProblem {
         self.inner.encoding.mapping.clone()
     }
     #[getter]
-    fn dimension(&self) -> usize {
-        self.inner.basis.len()
+    fn dimension(&self) -> PyResult<usize> {
+        Ok(self.register("dimension")?.len())
     }
     #[getter]
     fn pool_labels(&self) -> Vec<String> {
@@ -753,6 +865,8 @@ impl PyProblem {
     fn pool_screenable(&self) -> Vec<bool> {
         self.inner.pool_screenable.clone()
     }
+    /// Every pool commutator `[H, A_k]` as its Pauli terms, all at once: for the independent
+    /// checks of small problems. A measured run reads `pool_paulis`, which never holds them all.
     #[getter]
     fn pool_observables(&self, py: Python<'_>) -> PyResult<Vec<Vec<(String, f64, f64)>>> {
         py.detach(|| {
@@ -774,6 +888,22 @@ impl PyProblem {
         })
         .map_err(error)
     }
+    /// The distinct Pauli strings of every pool commutator `[H, A_k]` and how many of the
+    /// commutators are not zero, found in bounded batches (`quantum::pool_measurement`).
+    #[getter]
+    fn pool_paulis<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let paulis = py
+            .detach(|| {
+                self.inner.pool_paulis(mandacaru_core::quantum::pool_measurement::batch_bytes(
+                    &self.inner.context,
+                ))
+            })
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        out.set_item("labels", paulis.set.labels())?;
+        out.set_item("measured_operators", paulis.measured)?;
+        Ok(out)
+    }
     #[getter]
     fn pool_terms(&self) -> Vec<Vec<(String, f64, f64)>> {
         self.inner
@@ -790,11 +920,12 @@ impl PyProblem {
     }
     #[getter]
     fn basis_indices<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, u64>> {
-        array(
-            py,
-            &[self.inner.basis.len()],
-            self.inner.basis.indices.as_slice().to_vec(),
-        )
+        let basis = self.register("basis_indices")?;
+        array(py, &[basis.len()], basis.indices.as_slice().to_vec())
+    }
+    #[getter]
+    fn register_free(&self) -> bool {
+        self.inner.is_register_free()
     }
     #[getter]
     fn hamiltonian_terms(&self) -> Vec<(String, f64, f64)> {
@@ -931,28 +1062,39 @@ impl PyProblem {
                     })
                 };
                 if let Some(executor) = executor.as_ref() {
-                    use mandacaru_core::quantum::execution::{CircuitExecution, Response};
-                    let mut invoke = |labels: &[String], angles: &[f64], observables: &[String]| {
+                    use mandacaru_core::quantum::execution::{
+                        CircuitExecution, Request, Response,
+                    };
+                    let mut invoke = |requests: &[Request]| {
                         Python::attach(|py| {
                             let invoke = || -> PyResult<Response> {
-                                let response = executor.bind(py).call1((
-                                    labels.to_vec(),
-                                    angles.to_vec(),
-                                    observables.to_vec(),
-                                ))?;
+                                let batch: Vec<_> = requests
+                                    .iter()
+                                    .map(|r| {
+                                        (r.labels.clone(), r.angles.clone(), r.observables.clone())
+                                    })
+                                    .collect();
+                                let response = executor.bind(py).call1((batch,))?;
                                 if let Ok(stop) = response.get_item("stop") {
                                     return Ok(Response::Stop(stop.extract()?));
                                 }
-                                if let Ok(state) = response.get_item("state") {
-                                    let state: PyReadonlyArray1<'_, C64> = state.extract()?;
-                                    let mut owned =
-                                        self.inner.context.allocate(state.len()).map_err(error)?;
-                                    for (out, value) in
-                                        owned.as_mut_slice().iter_mut().zip(state.as_array())
-                                    {
-                                        *out = *value;
+                                if let Ok(states) = response.get_item("states") {
+                                    let states: Vec<PyReadonlyArray1<'_, C64>> = states.extract()?;
+                                    let mut owned = Vec::with_capacity(states.len());
+                                    for state in &states {
+                                        let mut copy = self
+                                            .inner
+                                            .context
+                                            .allocate(state.len())
+                                            .map_err(error)?;
+                                        for (out, value) in
+                                            copy.as_mut_slice().iter_mut().zip(state.as_array())
+                                        {
+                                            *out = *value;
+                                        }
+                                        owned.push(copy);
                                     }
-                                    Ok(Response::State(owned))
+                                    Ok(Response::States(owned))
                                 } else {
                                     Ok(Response::Expectations(
                                         response.get_item("expectations")?.extract()?,
@@ -1021,8 +1163,11 @@ fn solution_dict<'py>(
         "parameters",
         array(py, &[result.parameters.len()], result.parameters)?,
     )?;
+    // A register-free (shot-based) result carries no state vector, so the key is absent.
     let length = result.state.len();
-    out.set_item("state", state_array(py, &[length], result.state)?)?;
+    if length > 0 {
+        out.set_item("state", state_array(py, &[length], result.state)?)?;
+    }
     out.set_item("success", result.success)?;
     out.set_item("message", result.message)?;
     out.set_item("budget_stopped", result.budget_stopped)?;
@@ -1077,26 +1222,161 @@ pub fn operator(
     })
 }
 pub type FermionTerms = Vec<(Vec<(usize, bool)>, f64, f64)>;
+/// A fermionic operator mapped to qubits. `particles` fixes the spin-blocked sector (required by
+/// `parity_reduced`); without it any mode count is taken and the reduced mapping is refused.
 pub fn fermion(
     context: &Context,
     modes: usize,
-    particles: [usize; 2],
+    particles: Option<[usize; 2]>,
     mapping: &str,
     terms: FermionTerms,
 ) -> PyResult<PyOperator> {
-    let encoding = Encoding::new(mapping, modes, particles).map_err(error)?;
-    let mut inner = Operator::new(context, encoding.n_qubits(), &[]).map_err(error)?;
-    for (ladders, re, im) in terms {
-        let term = encoding.monomial(context, &ladders).map_err(error)?;
-        inner = inner.add(context, &term, C64::new(re, im)).map_err(error)?;
+    let encoding = match particles {
+        Some(particles) => Encoding::new(mapping, modes, particles),
+        None => Encoding::plain(mapping, modes),
     }
+    .map_err(error)?;
+    let terms: Vec<_> = terms
+        .into_iter()
+        .map(|(ladders, re, im)| (ladders, C64::new(re, im)))
+        .collect();
     Ok(PyOperator {
         context: context.clone(),
-        inner,
+        inner: encoding.map_fermion(context, &terms).map_err(error)?,
     })
+}
+/// A real or complex array as complex values, with its shape; the reservation keeps the copy
+/// charged to the budget.
+fn complex_values(
+    context: &Context,
+    values: &Bound<'_, PyAny>,
+) -> PyResult<(Vec<usize>, Vec<C64>, Reservation)> {
+    if let Ok(array) = values.extract::<PyReadonlyArrayDyn<'_, C64>>() {
+        let (data, reservation) = copy(context, &array)?;
+        return Ok((array.shape().to_vec(), data, reservation));
+    }
+    if let Ok(array) = values.extract::<PyReadonlyArrayDyn<'_, f64>>() {
+        let (data, reservation) = copy(context, &array)?;
+        let data = data.into_iter().map(|v| C64::new(v, 0.)).collect();
+        return Ok((array.shape().to_vec(), data, reservation));
+    }
+    Err(PyTypeError::new_err(
+        "integrals must be float64 or complex128 arrays",
+    ))
+}
+fn fermion_term_list(terms: Vec<mandacaru_core::quantum::fermion_terms::FermionTerm>) -> FermionTerms {
+    terms
+        .into_iter()
+        .map(|(ladders, c)| (ladders, c.re, c.im))
+        .collect()
+}
+/// The terms of `H = sum h_pq a+_p a_q + 1/2 sum <pq|rs> a+_p a+_q a_s a_r` from spin-orbital
+/// integrals, entries at or below `tol` skipped.
+pub fn fermion_integral_terms(
+    py: Python<'_>,
+    context: &Context,
+    one: &Bound<'_, PyAny>,
+    two: Option<&Bound<'_, PyAny>>,
+    tol: f64,
+) -> PyResult<FermionTerms> {
+    let (shape, one, _one) = complex_values(context, one)?;
+    if shape.len() != 2 || shape[0] != shape[1] {
+        return Err(PyValueError::new_err(format!(
+            "one-body integrals must be square, got {shape:?}"
+        )));
+    }
+    let n = shape[0];
+    let two = two.map(|g| complex_values(context, g)).transpose()?;
+    if let Some((shape, _, _)) = &two {
+        if shape != &[n; 4] {
+            return Err(PyValueError::new_err(format!(
+                "two-body integrals must be ({n}, {n}, {n}, {n}), got {shape:?}"
+            )));
+        }
+    }
+    let terms = py
+        .detach(|| {
+            mandacaru_core::quantum::fermion_terms::from_spin_orbital(
+                context,
+                n,
+                &one,
+                two.as_ref().map(|(_, g, _)| g.as_slice()),
+                tol,
+            )
+        })
+        .map_err(error)?;
+    Ok(fermion_term_list(terms))
+}
+/// The terms of spatial integrals over `M` orbitals in the spin-orbital order `P = p + sigma M`,
+/// the `(2M)^4` tensor never formed; `(2, M, M)` and `(2, 2, M, M, M, M)` are spin-resolved.
+pub fn fermion_spatial_terms(
+    py: Python<'_>,
+    context: &Context,
+    one: &Bound<'_, PyAny>,
+    two: Option<&Bound<'_, PyAny>>,
+    spin: Option<&Bound<'_, PyAny>>,
+    tol: f64,
+) -> PyResult<(usize, FermionTerms)> {
+    let (shape, one, _one) = complex_values(context, one)?;
+    let resolved = shape.len() == 3;
+    if resolved && shape[0] != 2 {
+        return Err(PyValueError::new_err(format!(
+            "spin-resolved one-body integrals are (2, M, M), got {shape:?}"
+        )));
+    }
+    if !(shape.len() == 2 || resolved) || shape[shape.len() - 1] != shape[shape.len() - 2] {
+        return Err(PyValueError::new_err(format!(
+            "one-body integrals are (M, M) or (2, M, M), got {shape:?}"
+        )));
+    }
+    let m = shape[shape.len() - 1];
+    let n = 2 * m;
+    let spin = spin.map(|h| complex_values(context, h)).transpose()?;
+    if let Some((shape, _, _)) = &spin {
+        if shape != &[n, n] {
+            return Err(PyValueError::new_err(format!(
+                "h_spin must be ({n}, {n}) for {m} spatial orbitals, got {shape:?}"
+            )));
+        }
+    }
+    let two = two.map(|g| complex_values(context, g)).transpose()?;
+    if let Some((shape, _, _)) = &two {
+        let expected: Vec<usize> = if resolved {
+            vec![2, 2, m, m, m, m]
+        } else {
+            vec![m; 4]
+        };
+        if shape != &expected {
+            return Err(PyValueError::new_err(if resolved {
+                format!(
+                    "spin-resolved two-body integrals are (2, 2, {m}, {m}, {m}, {m}), got {shape:?}"
+                )
+            } else {
+                format!("two-body integrals are ({m}, {m}, {m}, {m}), got {shape:?}")
+            }));
+        }
+    }
+    let terms = py
+        .detach(|| {
+            mandacaru_core::quantum::fermion_terms::from_spatial(
+                context,
+                m,
+                resolved,
+                &one,
+                spin.as_ref().map(|(_, h, _)| h.as_slice()),
+                two.as_ref().map(|(_, g, _)| g.as_slice()),
+                tol,
+            )
+        })
+        .map_err(error)?;
+    Ok((n, fermion_term_list(terms)))
 }
 
 impl PyProblem {
+    /// The state-vector register, refusing by name when the problem is register-free.
+    fn register(&self, what: &str) -> PyResult<&Basis> {
+        self.inner.register(what).map_err(error)
+    }
     fn expand_rows<A: Amplitude>(
         &self,
         values: &[A],
@@ -1104,13 +1384,12 @@ impl PyProblem {
         n: usize,
     ) -> mandacaru_core::Result<State> {
         let ctx = &self.inner.context;
-        let dimension = self.inner.basis.len();
+        let basis = self.inner.register("expand_state")?;
+        let dimension = basis.len();
         let mut out = ctx.allocate::<A>(mandacaru_core::product(&[rows, n])?)?;
         for row in 0..rows {
-            let expanded = self
-                .inner
-                .basis
-                .expand_state(ctx, &values[row * dimension..(row + 1) * dimension])?;
+            let expanded =
+                basis.expand_state(ctx, &values[row * dimension..(row + 1) * dimension])?;
             out.as_mut_slice()[row * n..(row + 1) * n].copy_from_slice(expanded.as_slice());
         }
         Ok(A::wrap(out))
@@ -1122,22 +1401,7 @@ impl PyProblem {
         state: &[A],
         two_body: bool,
     ) -> mandacaru_core::Result<mandacaru_core::quantum::properties::Rdms> {
-        let compressed = if state.len() != self.inner.basis.len() {
-            Some(
-                self.inner
-                    .basis
-                    .compress_state(&self.inner.context, state)?,
-            )
-        } else {
-            None
-        };
-        mandacaru_core::quantum::properties::rdms(
-            &self.inner.context,
-            &self.inner.encoding,
-            &self.inner.basis,
-            compressed.as_ref().map_or(state, |v| v.as_slice()),
-            two_body,
-        )
+        self.inner.rdms(state, two_body)
     }
 }
 

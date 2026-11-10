@@ -35,7 +35,7 @@ fn energy_gradients_are_invariant_under_large_identity_shifts_in_every_storage()
             .unwrap();
             if storage == 2 {
                 problem.sparse =
-                    Some(SparseMatrix::new(&ctx, &problem.basis, &problem.hamiltonian).unwrap());
+                    Some(SparseMatrix::new(&ctx, problem.register("test").unwrap(), &problem.hamiltonian).unwrap());
             }
             let value = problem.evaluate(&[0], &[0.21], true).unwrap();
             if let Some((energy, gradient)) = expected {

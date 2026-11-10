@@ -65,7 +65,7 @@ def solved_chain():
     """A solved 4-qubit periodic H chain, shared by the state-level tests."""
     atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                   cell=np.diag([2.0, 10.0, 10.0]), pbc=[True, False, False])
-    atoms.calc = Mandacaru(method="bloch-adapt-vqe",
+    atoms.calc = Mandacaru(method="adapt-vqe", crystal_orbitals="real-space",
                            kpts={"size": (2, 1, 1), "gamma": True},
                            basis="HAO", grid_spacing=0.35, trace=False, optimizer=SLSQP)
     atoms.get_potential_energy()
@@ -233,20 +233,6 @@ class TestTheSecondTensorIsComparable:
         # <pq|rs> = <qp|sr> for a real symmetric kernel.
         assert truncated == pytest.approx(
             np.einsum("pqrs->qpsr", truncated), abs=1e-10)
-
-    def test_the_mo_rotation_must_exist(self, solved_chain):
-        """Asking for the MO basis before there is one is refused, not faked."""
-        from mandacaru.core import MolecularIntegrals, minimal_hao_basis
-        from mandacaru.integrals import Grid
-
-        cell = np.diag([6.0, 6.0, 6.0])
-        nuclei = [(1.0, np.array([3.0, 3.0, 3.0]))]
-        grid = Grid(center=[3.0] * 3, box_size=0.0, grid_spacing=0.6, units="angstrom",
-                    cell=cell)
-        integrals = MolecularIntegrals(nuclei, minimal_hao_basis(nuclei), grid,
-                                       units="angstrom")
-        with pytest.raises(ValueError, match="molecular_hamiltonian"):
-            integrals.two_body_with_kernel(None, mo=True)
 
 
 class TestTheCorrectionOnARun:

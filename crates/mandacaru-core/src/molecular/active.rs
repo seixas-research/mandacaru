@@ -5,6 +5,9 @@ use nalgebra::DMatrix;
 use serde_json::Value;
 use std::sync::Arc;
 
+/// The active-space selection methods, in one place (the bibliography sweep reads them).
+pub const METHODS: &[&str] = &["energy", "mp2", "dlpno-mp2"];
+
 fn indices(value: &Value, m: usize) -> Result<Vec<usize>> {
     let mut out = if let Some(n) = value.as_u64() {
         if n > m as u64 {
@@ -78,7 +81,7 @@ impl MeanField {
                 .as_str()
                 .ok_or_else(|| invalid("active-space method must be a string"))?
         };
-        if !["energy", "mp2", "dlpno-mp2"].contains(&method) {
+        if !METHODS.contains(&method) {
             return Err(invalid(format!(
                 "native active-space method {method:?} is not yet implemented"
             )));

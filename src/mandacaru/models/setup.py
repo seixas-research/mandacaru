@@ -22,7 +22,3 @@ def monkhorst_pack_kpts(value):
     size=tuple(options.get("size",(1,1,1)));gamma=options.get("gamma",False)
     mesh=_native.Context(threads=1).kmesh(size,gamma=gamma,time_reversal=False)
     return size,gamma,mesh["full"]
-
-def validate_ghosts(value,count):
-    if value is not None and len(value):raise NotImplementedError("native ghost-basis geometry assembly is unavailable")
-    return ()

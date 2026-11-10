@@ -12,8 +12,7 @@
 //! [`Stress`] (`sigma = (g + g^T) / (2 Omega)` in Hartree/Bohr^3, `g_ab = dF/d eps_ab`). A
 //! state that is not converged is refused: the force is first order in the SCF residual.
 //!
-//! What is refused, with its cause (the engines' own words): for the stress, the rVV10 correction;
-//! float32 data, DFT+U, a mesh reduced by symmetry in a snapshot without its operations, a
+//! What is refused, with its cause (the engines' own words): float32 data, DFT+U, a mesh reduced by symmetry in a snapshot without its operations, a
 //! spin-orbit or hybrid crystal on a reduced mesh, a hybrid without its PAW spheres and projectors
 //! in the dual basis.
 use super::{

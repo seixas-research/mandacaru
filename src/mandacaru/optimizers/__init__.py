@@ -9,9 +9,7 @@
 """Classical optimizers for hybrid variational loops."""
 
 from .optim import (DEFAULT_MAXITER, DEFAULT_OPTIMIZER, DEFAULT_TOL,
-                    NAMED_OPTIMIZERS, Optimizer, OptimizeResult,
-                    resolve_optimizer)
+                    NAMED_OPTIMIZERS, Optimizer)
 
-__all__ = ["Optimizer", "OptimizeResult", "resolve_optimizer",
-           "DEFAULT_OPTIMIZER", "DEFAULT_MAXITER", "DEFAULT_TOL",
+__all__ = ["Optimizer", "DEFAULT_OPTIMIZER", "DEFAULT_MAXITER", "DEFAULT_TOL",
            "NAMED_OPTIMIZERS"]

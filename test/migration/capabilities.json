@@ -75,13 +75,9 @@
         "radial and real-space kernels"
       ],
       "sources": [
-        "src/mandacaru/backend_policy.py",
-        "src/mandacaru/integrals/_backend.py",
-        "src/mandacaru/basis/radial_backend.py"
+        "src/mandacaru/backend_policy.py"
       ],
-      "tests": [
-        "test/basis/test_radial_backend.py"
-      ],
+      "tests": [],
       "reference_cases": [
         "h2_rhf"
       ]
@@ -98,17 +94,18 @@
       ],
       "sources": [
         "src/mandacaru/core/mapping.py",
-        "src/mandacaru/core/sector.py",
-        "src/mandacaru/core/matrix_free.py",
-        "src/mandacaru/core/tapering.py",
-        "src/mandacaru/core/symmetry.py"
+        "crates/mandacaru-core/src/quantum/algebra.rs",
+        "crates/mandacaru-core/src/quantum/fermion_terms.rs",
+        "crates/mandacaru-core/src/quantum/tapering.rs",
+        "crates/mandacaru-core/src/quantum/tapered_problem.rs"
       ],
       "tests": [
         "test/core/test_mapping.py",
-        "test/core/test_pauli_algebra.py",
-        "test/core/test_sector.py",
-        "test/core/test_matrix_free.py",
-        "test/core/test_tapering.py"
+        "test/migration/test_native_operator_algebra.py",
+        "crates/mandacaru-core/tests/operator_algebra.rs",
+        "crates/mandacaru-core/tests/tapering.rs",
+        "crates/mandacaru-core/tests/tapered_problem.rs",
+        "test/migration/test_native_tapering.py"
       ],
       "reference_cases": [
         "operator_algebra",
@@ -126,11 +123,10 @@
         "pool screening"
       ],
       "sources": [
-        "src/mandacaru/circuits/pools.py"
+        "crates/mandacaru-core/src/quantum/pools.rs"
       ],
       "tests": [
-        "test/circuits/test_adapt_ansatz.py",
-        "test/circuits/test_pools.py"
+        "test/circuits/test_adapt_ansatz.py"
       ],
       "reference_cases": [
         "h2_cached_vqe",
@@ -170,7 +166,6 @@
       ],
       "tests": [
         "test/optimizers/test_optim.py",
-        "test/optimizers/test_convergence_status.py",
         "test/backends/test_measurement_cost.py"
       ],
       "reference_cases": [
@@ -189,14 +184,9 @@
         "triclinic grids and finite differences"
       ],
       "sources": [
-        "src/mandacaru/basis/factory.py",
-        "src/mandacaru/basis/gaussian_families.py",
         "src/mandacaru/integrals/grid.py"
       ],
       "tests": [
-        "test/basis/test_factory.py",
-        "test/basis/test_gaussian_families.py",
-        "test/basis/test_sto_ng.py",
         "test/integrals/test_grid.py"
       ],
       "reference_cases": [
@@ -251,16 +241,10 @@
         "scalar relativity and spin XC"
       ],
       "sources": [
-        "src/mandacaru/basis/atomic_solver.py",
-        "src/mandacaru/basis/nao.py",
-        "src/mandacaru/basis/nao_ae.py",
-        "src/mandacaru/pseudopotentials/partial_waves.py"
+        "src/mandacaru/basis/atomic_solver.py"
       ],
       "tests": [
-        "test/basis/test_atomic_solver.py",
-        "test/basis/test_nao.py",
-        "test/basis/test_nao_ae.py",
-        "test/pseudopotentials/test_partial_waves.py"
+        "test/basis/test_atomic_solver.py"
       ],
       "reference_cases": []
     },
@@ -276,7 +260,6 @@
       ],
       "sources": [
         "src/mandacaru/pseudopotentials/paw.py",
-        "src/mandacaru/pseudopotentials/onecenter.py",
         "src/mandacaru/pseudopotentials/io.py",
         "src/mandacaru/pseudopotentials/environment.py",
         "src/mandacaru/pseudopotentials/build_cli.py"
@@ -302,14 +285,10 @@
         "optional D4",
         "Hubbard U and onsite terms"
       ],
-      "sources": [
-        "src/mandacaru/integrals/exchange_correlation.py"
-      ],
+      "sources": [],
       "tests": [
         "test/algorithms/test_dft.py",
-        "test/algorithms/test_spinor_dft.py",
-        "test/integrals/test_exchange_correlation.py",
-        "test/integrals/test_vv10.py"
+        "test/algorithms/test_spinor_dft.py"
       ],
       "reference_cases": [
         "h2_dft_lda_forces",
@@ -358,12 +337,8 @@
         "Berry phase/polarization/dielectric/Born/piezoelectric response",
         "finite-size corrections and Ewald"
       ],
-      "sources": [
-        "src/mandacaru/core/ewald.py"
-      ],
-      "tests": [
-        "test/core/test_ewald.py"
-      ],
+      "sources": [],
+      "tests": [],
       "reference_cases": []
     },
     {
@@ -371,7 +346,7 @@
       "phase": 6,
       "features": [
         "subspace VQE/ADAPT and deflation",
-        "MCAS-VQE/VALQA",
+        "VASQA/VALSQA",
         "learned GP/ranker/GNN proposals and JAX training",
         "time evolution/echoes/nested OTOC/QPE",
         "expressivity"
@@ -445,8 +420,7 @@
         "test/backends/test_providers.py",
         "test/backends/test_ibm_quantum.py",
         "test/backends/test_braket.py",
-        "test/backends/test_measurement_cost.py",
-        "test/backends/test_gradient_measurement.py"
+        "test/backends/test_measurement_cost.py"
       ],
       "reference_cases": []
     },
@@ -462,7 +436,6 @@
         "resource reporting"
       ],
       "sources": [
-        "src/mandacaru/integrals/_backend.py",
         "src/mandacaru/utils/profiling.py"
       ],
       "tests": [

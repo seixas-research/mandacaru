@@ -17,7 +17,7 @@ measured the full 1- and 2-RDM operator set it never used.
 Each class here pins one of the fixes, and the arithmetic behind it:
 
 * an energy goes as **one weighted observable**, not N single-Pauli ones;
-* a plan sizes the job *before* it is queued, and a budget refuses it;
+* a budget refuses an oversized job *before* it is queued;
 * observables are chunked into jobs of bounded size, and completed chunks are
   kept when a later one fails;
 * the run-wide budget stops a paid run before it crosses its ceiling;
@@ -33,15 +33,14 @@ from mandacaru import Mandacaru
 from mandacaru.backends.factorization import (double_factorization,
                                               spatial_double_factorization)
 from mandacaru.backends.measurement import (DEFAULT_MEASUREMENT_BUDGET,
-                                            MeasurementBudgetError,
-                                            MeasurementPlan,
                                             chunk_labels_by_basis,
-                                            measurement_plan, planned_jobs,
                                             qubit_wise_commuting_groups,
+                                            qwc_partition,
+                                            resilience_multipliers,
                                             resolve_measurement_budget)
 from mandacaru.backends.providers import (QiskitProvider, build_provider,
                                           qpu_usage)
-from mandacaru.core.mapping import Fermion, PauliSum
+from mandacaru.core.mapping import PauliSum
 
 qiskit = pytest.importorskip("qiskit")
 
@@ -70,15 +69,11 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
         plain = QiskitProvider(device="statevector", shots=100)
         mitigated = QiskitProvider(device="statevector", shots=100,
                                    estimator_options={"resilience_level": 2})
-        labels = ["XXII", "ZZII", "IIXY"]
-        a = measurement_plan(plain, 4, labels)
-        b = measurement_plan(mitigated, 4, labels)
         # ZNE's three noise factors and the twirling randomizations are
         # circuits the processor runs.  At 100 shots Runtime's "auto" rule
-        # takes 64 shots per randomization, so two randomizations: 6x.
-        assert b.circuit_instances == a.circuit_instances * 3 * 2
-        # The randomizations share the shots; the factors each pay in full.
-        assert b.total_shots == a.total_shots * 3 * 128 // 100
+        # takes 64 shots per randomization, so two randomizations.
+        assert resilience_multipliers(plain) == (1, 1, 100)
+        assert resilience_multipliers(mitigated) == (3, 2, 64)
 
     def test_the_nested_runtime_schema_is_read(self):
         """``resilience.zne`` and an explicit ``zne_mitigation`` override the
@@ -90,12 +85,8 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
                                   "zne": {"noise_factors": [1, 3, 5, 7, 9]}},
                    "twirling": {"enable_gates": True,
                                 "num_randomizations": 32}}
-        plan = measurement_plan(QiskitProvider(shots=4096,
-                                               estimator_options=options),
-                                1, ["Z"])
-        assert (plan.noise_factors, plan.twirls, plan.shots_per_twirl) == \
-            (5, 32, 128)
-        assert plan.total_shots == 5 * 4096
+        provider = QiskitProvider(shots=4096, estimator_options=options)
+        assert resilience_multipliers(provider) == (5, 32, 128)
 
     def test_the_options_dataclass_reads_like_the_dict(self):
         from qiskit_ibm_runtime.options import EstimatorOptions
@@ -104,35 +95,30 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
                                   "zne": {"noise_factors": [1, 2]}},
                    "twirling": {"enable_gates": False,
                                 "enable_measure": False}}
-        as_dict = measurement_plan(QiskitProvider(shots=1000,
-                                                  estimator_options=options),
-                                   1, ["Z"])
-        as_object = measurement_plan(
+        as_dict = resilience_multipliers(
+            QiskitProvider(shots=1000, estimator_options=options))
+        as_object = resilience_multipliers(
             QiskitProvider(shots=1000,
-                           estimator_options=EstimatorOptions(**options)),
-            1, ["Z"])
-        assert (as_dict.noise_factors, as_dict.twirls) == (2, 1)
-        assert (as_object.noise_factors, as_object.twirls) == (2, 1)
+                           estimator_options=EstimatorOptions(**options)))
+        assert as_dict[:2] == (2, 1)
+        assert as_object[:2] == (2, 1)
 
     def test_an_explicit_off_beats_the_level(self):
         options = {"resilience_level": 2,
                    "resilience": {"zne_mitigation": False},
                    "twirling": {"enable_gates": False,
                                 "enable_measure": False}}
-        plan = measurement_plan(QiskitProvider(shots=1000,
-                                               estimator_options=options),
-                                1, ["Z"])
-        assert (plan.noise_factors, plan.twirls, plan.total_shots) == \
-            (1, 1, 1000)
+        provider = QiskitProvider(shots=1000, estimator_options=options)
+        assert resilience_multipliers(provider) == (1, 1, 1000)
 
     def test_an_unset_level_is_runtimes_default_on_a_processor(self):
         """Level 1 on IBM hardware (measurement twirling); no mitigation on
         the local estimator, which ignores Runtime options."""
-        ibm = measurement_plan(QiskitProvider(device="ibm_test", shots=4096),
-                               1, ["Z"])
-        local = measurement_plan(QiskitProvider(shots=4096), 1, ["Z"])
-        assert ibm.twirls == 32 and ibm.noise_factors == 1
-        assert local.twirls == 1 and local.total_shots == 4096
+        ibm = resilience_multipliers(QiskitProvider(device="ibm_test",
+                                                    shots=4096))
+        local = resilience_multipliers(QiskitProvider(shots=4096))
+        assert ibm[:2] == (1, 32)
+        assert local == (1, 1, 4096)
 
     def test_the_budget_refuses_an_oversized_job_before_any_job(self):
         """The refusal precedes the first submission: nothing is queued."""
@@ -154,12 +140,39 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
             calc.get_potential_energy(h2())
         assert calc.provider.run_usage()["jobs"] == 0
 
+    def test_a_refusal_names_the_option_and_the_size_to_pass(self):
+        """The default ceilings stay; a large run is told what to pass instead."""
+        import re
+
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.30,
+                         trace=False, shots=1024,
+                         measurement_budget={"bases": 1})
+        with pytest.raises(ValueError) as refused:
+            calc.get_potential_energy(h2())
+        message = str(refused.value)
+        found = re.search(r"bases budget exceeded: (\d+) > 1;", message)
+        assert found and int(found.group(1)) > 1
+        assert (f'pass measurement_budget={{"bases": N}} sized for this run '
+                f"(here N >= {found.group(1)})") in message
+        calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.30,
+                         trace=False, shots=1024,
+                         measurement_budget={"observables": 3})
+        with pytest.raises(ValueError, match=r'measurement_budget=\{"observables": N\}'):
+            calc.get_potential_energy(h2())
+
+    def test_a_run_budget_refusal_names_the_option_and_the_size_to_pass(self):
+        from mandacaru.backends.measurement import RunBudgetExceeded
+
+        provider = QiskitProvider(shots=100, run_budget={"jobs": 1})
+        h = PauliSum({"Z": 1.0}, num_qubits=1)
+        provider.energy(1, [], [], [], h)
+        with pytest.raises(RunBudgetExceeded) as refused:
+            provider.energy(1, [], [], [], h)
+        assert 'backend_options={"run_budget": {\'jobs\': 2}}' in str(refused.value)
+
     def test_budget_false_checks_nothing(self):
-        plan = MeasurementPlan(n_qubits=4, observables=10 ** 9, bases=10 ** 9,
-                               shots_per_basis=1, noise_factors=1, twirls=1)
-        plan.check(False)                       # must not raise
-        with pytest.raises(MeasurementBudgetError):
-            plan.check(None)                    # the defaults do
+        assert resolve_measurement_budget(False) == dict.fromkeys(
+            DEFAULT_MEASUREMENT_BUDGET)
 
     def test_an_unknown_budget_key_is_refused(self):
         with pytest.raises(ValueError, match="unknown measurement_budget"):
@@ -169,20 +182,6 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
 
     def test_budget_none_is_the_documented_default(self):
         assert resolve_measurement_budget(None) == DEFAULT_MEASUREMENT_BUDGET
-
-    def test_a_deep_circuit_is_reported_as_noise(self):
-        plan = MeasurementPlan(n_qubits=24, observables=1, bases=1,
-                               shots_per_basis=1, noise_factors=1, twirls=1,
-                               two_qubit_gates=2223)
-        assert plan.fidelity < 1e-2
-        assert any("noise" in note for note in plan.warnings())
-
-    def test_a_shallow_circuit_is_not(self):
-        plan = MeasurementPlan(n_qubits=4, observables=1, bases=1,
-                               shots_per_basis=1, noise_factors=1, twirls=1,
-                               two_qubit_gates=18)
-        assert plan.fidelity > 0.9
-        assert plan.warnings() == []
 
 
 class TestTheIdentityIsCountedOnce:
@@ -209,20 +208,17 @@ class TestChunkingByMeasurementBasis:
     LABELS = ["XXII", "XIII", "ZZII", "IZZI", "IIXY", "YYII", "IIIZ", "ZIII"]
 
     def test_a_chunk_is_a_whole_number_of_bases(self):
-        from mandacaru.backends.measurement import _greedy_bases
-
         chunks = chunk_labels_by_basis(self.LABELS, 1)
-        # One basis per chunk at limit 1.  The count is this module's own
-        # greedy grouping, not `qubit_wise_commuting_groups`: that one orders
-        # by coefficient (the energy's terms matter most) and a plan orders by
-        # label, so the two agree on the partition but not always on its size.
-        assert len(chunks) == len(_greedy_bases(self.LABELS))
+        # One basis per chunk at limit 1.  The count is the lexical
+        # partition's, not `qubit_wise_commuting_groups`: that one orders by
+        # coefficient (the energy's terms matter most), so the two agree on
+        # the partition but not always on its size.
+        assert len(chunks) == len(qwc_partition(self.LABELS))
         # Every label lands in exactly one chunk, none is lost or duplicated.
         assert sorted(l for chunk in chunks for l in chunk) == sorted(self.LABELS)
 
     def test_no_limit_is_one_submission(self):
         assert chunk_labels_by_basis(self.LABELS, None) == [self.LABELS]
-        assert planned_jobs(self.LABELS, None) == 1
 
     def test_a_generous_limit_does_not_split(self):
         assert len(chunk_labels_by_basis(self.LABELS, 1000)) == 1
@@ -366,54 +362,6 @@ class TestGivensRotations:
         with pytest.raises(ValueError, match="real orthogonal"):
             givens_decomposition(np.array([[1.0, 2.0], [3.0, 4.0]]))
 
-    def test_the_generator_is_two_commuting_strings(self):
-        from mandacaru.backends.factorization import givens_generator
-
-        generator = givens_generator(4, 1)
-        labels = [l for l in generator.terms if set(l) != {"I"}]
-        assert len(labels) == 2
-        # Commuting, which is what lets a provider emit the gate exactly.
-        from mandacaru.backends.providers import build_provider
-
-        list(build_provider("qiskit")._emit(4, [], [generator], [0.3]))   # raises if they do not
-
-    def test_the_circuit_induces_the_right_single_particle_matrix(self):
-        r"""The convention, extracted rather than assumed.
-
-        Two reversals cancel in :func:`basis_rotation` -- the elimination order
-        against the order a circuit applies its gates -- and getting it wrong
-        changes the energy by 0.1 Ha while every individual piece still looks
-        right.  So this measures what the circuit *does*: for the product
-        :math:`W` the circuit realizes, :math:`W^\dagger a_k W` must be
-        :math:`(UD)^T` acting on the ladder operators.
-        """
-        from scipy.linalg import expm
-
-        from mandacaru.backends.factorization import (basis_rotation,
-                                                      givens_decomposition)
-
-        m = 4
-        unitary = self.orthogonal(m, seed=7)
-        _rotations, signs = givens_decomposition(unitary)
-        generators, thetas = basis_rotation(m, unitary)
-
-        annihilators = [
-            Fermion({((p, False),): 1.0 + 0j}, n_modes=m)
-            .map_to_qubits().to_matrix() for p in range(m)]
-        basis = np.stack([a.ravel() for a in annihilators]).T
-        # A circuit applies generators[0] first, so the operator product is
-        # reversed with respect to the list.
-        circuit = np.eye(2 ** m, dtype=complex)
-        for generator, theta in zip(generators, thetas):
-            circuit = expm(theta * generator.to_matrix()) @ circuit
-
-        induced = np.zeros((m, m), dtype=complex)
-        for k in range(m):
-            rotated = (circuit.conj().T @ annihilators[k] @ circuit).ravel()
-            induced[k], *_ = np.linalg.lstsq(basis, rotated, rcond=None)
-        assert np.abs(induced - (unitary @ np.diag(signs)).T).max() < 1e-10
-
-
 
 # --------------------------------------------------------------------------- #
 # Paid-job controls: reconfiguring a retry, chunked energies, resumed chunks,
@@ -470,7 +418,7 @@ class TestEnergiesAreChunkedToo:
             [(*state, h)])[0]
         assert split == pytest.approx(whole, abs=1e-12)
 
-    def test_the_plan_predicts_the_executed_jobs(self):
+    def test_a_basis_limit_splits_an_energy_into_several_jobs(self):
         atoms = lih()
         atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO",
                                grid_spacing=0.30, pool="qeb", max_iterations=3,
@@ -482,12 +430,7 @@ class TestEnergiesAreChunkedToo:
                                num_qubits=problem.num_qubits)
         provider = build_provider("qiskit", device="statevector",
                                   max_bases_per_job=2)
-        plan = measurement_plan(provider, problem.num_qubits,
-                                list(hamiltonian.terms),
-                                hamiltonian=hamiltonian,
-                                jobs=provider.jobs_per_energy(hamiltonian))
-        assert plan.jobs > 1
-        assert plan.jobs == provider.jobs_per_energy(hamiltonian)
+        assert provider.jobs_per_energy(hamiltonian) > 1
 
 
 class TestCompletedChunksAreKept:
@@ -513,6 +456,75 @@ class TestCompletedChunksAreKept:
         values, _stds = provider.expectation_values(2, [0], [], [], labels)
         assert calls["n"] == 10 + (len(chunk_labels_by_basis(labels, 1)) - 1)
         assert set(values) == set(labels)
+        assert provider.completed_chunks() == 0
+
+
+class TestSeveralCircuitsRideInOneJob:
+    """``expectation_batch``: a measurement that needs several circuits (the double-factorized
+    energy has one per basis) is one submission, not one per circuit."""
+
+    REQUESTS = [
+        ([PauliSum({"XY": 0.5j, "YX": -0.5j}, num_qubits=2)], [0.4], ["ZI", "IZ", "XX"]),
+        ([PauliSum({"XY": 0.5j, "YX": -0.5j}, num_qubits=2)], [-0.9], ["ZZ", "YY"]),
+        ([], [], ["ZI"]),
+    ]
+
+    def test_the_circuits_are_one_job_with_the_values_one_by_one_would_give(self, monkeypatch):
+        provider = QiskitProvider()
+        jobs = []
+        original = provider._run_pubs
+
+        def spy(pubs, bases=None):
+            jobs.append((len(pubs), bases))
+            return original(pubs, bases=bases)
+
+        monkeypatch.setattr(provider, "_run_pubs", spy)
+        batch = provider.expectation_batch(2, [0], self.REQUESTS)
+        assert len(jobs) == 1 and jobs[0][0] == len(self.REQUESTS)
+        assert provider.run_usage()["jobs"] == 1
+        for (generators, thetas, labels), (values, _stds) in zip(self.REQUESTS, batch):
+            alone, _ = QiskitProvider().expectation_values(2, [0], generators, thetas, labels)
+            assert set(values) == set(labels)
+            for label in labels:
+                assert values[label] == pytest.approx(alone[label], abs=1e-12)
+
+    def test_a_basis_limit_packs_the_circuits_into_jobs_of_at_most_that_many_bases(
+            self, monkeypatch):
+        provider = QiskitProvider(max_bases_per_job=2)
+        jobs = []
+        original = provider._run_pubs
+
+        def spy(pubs, bases=None):
+            jobs.append(bases)
+            return original(pubs, bases=bases)
+
+        monkeypatch.setattr(provider, "_run_pubs", spy)
+        requests = [([], [], ["ZI"]), ([], [], ["IZ"]), ([], [], ["ZZ"]), ([], [], ["ZI", "IZ"])]
+        batch = provider.expectation_batch(2, [0], requests)
+        assert jobs == [2, 2]                    # four one-basis circuits, two bases to a job
+        assert all(len(values) == len(r[2]) for (values, _), r in zip(batch, requests))
+        assert provider.run_usage()["jobs"] == 2
+
+    def test_a_failed_job_keeps_what_the_earlier_ones_measured(self, monkeypatch):
+        provider = QiskitProvider(max_bases_per_job=1)
+        requests = [([], [], ["ZI"]), ([], [], ["XI"])]
+        original = provider._run_pubs
+        calls = {"n": 0}
+
+        def second_fails(pubs, bases=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("job 2 failed")
+            return original(pubs, bases=bases)
+
+        monkeypatch.setattr(provider, "_run_pubs", second_fails)
+        with pytest.raises(RuntimeError, match="job 2"):
+            provider.expectation_batch(2, [0], requests)
+        assert provider.completed_chunks() == 1
+        calls["n"] = 10
+        batch = provider.expectation_batch(2, [0], requests)
+        assert calls["n"] == 11                  # only the missing job is submitted
+        assert [set(values) for values, _ in batch] == [{"ZI"}, {"XI"}]
         assert provider.completed_chunks() == 0
 
 
@@ -599,22 +611,3 @@ class TestTheRunBudget:
                          backend_options={"run_budget": {"jobs": 10}})
         with pytest.raises(RunBudgetExceeded, match="jobs 201 > 10"):
             calc.get_potential_energy(h2())
-
-
-class TestOneGroupingForPlanAndExecution:
-    """The plan grouped labels lexically and Braket by coefficient: on a
-    15-term Hamiltonian that was 8 planned bases for 9 executed ones."""
-
-    def test_the_counts_agree(self):
-        rng = np.random.default_rng(7)
-        letters = "IXYZ"
-        terms = {}
-        while len(terms) < 15:
-            label = "".join(rng.choice(list(letters), size=3))
-            if label != "III":
-                terms[label] = float(rng.normal())
-        h = PauliSum(terms, num_qubits=3)
-        executed, _identity = qubit_wise_commuting_groups(h)
-        plan = measurement_plan(QiskitProvider(shots=100), 3, list(terms),
-                                hamiltonian=h)
-        assert plan.bases == len(executed)

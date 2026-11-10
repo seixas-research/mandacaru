@@ -164,87 +164,6 @@ pub fn csr_matvec<'py>(
     }
 }
 
-/// Compute exp(angle * A) @ vector for sparse CSR matrix A using Taylor scaling and squaring.
-#[pyfunction]
-pub fn sparse_expm_multiply<'py>(
-    py: Python<'py>,
-    data: PyReadonlyArray1<'_, Complex64>,
-    indices: Bound<'py, PyAny>,
-    indptr: Bound<'py, PyAny>,
-    angle: f64,
-    vector: PyReadonlyArrayDyn<'_, Complex64>,
-) -> PyResult<Bound<'py, numpy::PyArrayDyn<Complex64>>> {
-    let data_slice = data.as_slice()?;
-    let idx_vec = to_i64_vec(&indices)?;
-    let ptr_vec = to_i64_vec(&indptr)?;
-    let vec_view = vector.as_array();
-    let n = vec_view.len();
-
-    if ptr_vec.len() != n + 1 {
-        return Err(PyValueError::new_err(
-            "matrix dimension must match vector length",
-        ));
-    }
-
-    if angle == 0.0 || data_slice.is_empty() {
-        return Ok(array(py, &[n], vec_view.iter().copied().collect())?);
-    }
-
-    // 1-norm upper bound: max column sum
-    let mut col_sums = vec![0.0f64; n];
-    for (&idx, &val) in idx_vec.iter().zip(data_slice.iter()) {
-        let c = idx as usize;
-        if c < n {
-            col_sums[c] += (val.re * val.re + val.im * val.im).sqrt();
-        }
-    }
-    let norm_a = col_sums.into_iter().fold(0.0f64, f64::max);
-    let bound = angle.abs() * norm_a;
-    if bound == 0.0 {
-        return Ok(array(py, &[n], vec_view.iter().copied().collect())?);
-    }
-
-    let steps = (bound / 0.5).ceil().max(1.0) as usize;
-    let scale = angle / (steps as f64);
-    let mut curr: Vec<Complex64> = vec_view.iter().copied().collect();
-    let mut next = vec![Complex64::new(0.0, 0.0); n];
-    let mut term = vec![Complex64::new(0.0, 0.0); n];
-    let mut accum = vec![Complex64::new(0.0, 0.0); n];
-
-    for _ in 0..steps {
-        accum.copy_from_slice(&curr);
-        term.copy_from_slice(&curr);
-        for order in 1..=80 {
-            let factor = scale / (order as f64);
-            let mut term_norm_sq = 0.0;
-            for r in 0..n {
-                let start = ptr_vec[r] as usize;
-                let end = ptr_vec[r + 1] as usize;
-                let mut row_sum = Complex64::new(0.0, 0.0);
-                for k in start..end {
-                    let c = idx_vec[k] as usize;
-                    row_sum += data_slice[k] * term[c];
-                }
-                let val = row_sum * factor;
-                next[r] = val;
-                term_norm_sq += val.re * val.re + val.im * val.im;
-            }
-            term.copy_from_slice(&next);
-            let mut accum_norm_sq = 0.0;
-            for r in 0..n {
-                accum[r] += term[r];
-                accum_norm_sq += accum[r].re * accum[r].re + accum[r].im * accum[r].im;
-            }
-            if term_norm_sq < 1e-30 * accum_norm_sq {
-                break;
-            }
-        }
-        curr.copy_from_slice(&accum);
-    }
-
-    Ok(array(py, &[n], curr)?)
-}
-
 #[derive(Clone)]
 #[pyclass(name = "CSRMatrix")]
 pub struct PyCSRMatrix {
@@ -1607,6 +1526,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCSRMatrix>()?;
     m.add_function(wrap_pyfunction!(csr_from_coo, m)?)?;
     m.add_function(wrap_pyfunction!(csr_matvec, m)?)?;
-    m.add_function(wrap_pyfunction!(sparse_expm_multiply, m)?)?;
     Ok(())
 }

@@ -139,7 +139,9 @@ owns them; for geometry work use a PAW-LCAO basis.
 A periodic structure (`pbc=True` on the atoms) runs the periodic engine: `lda`,
 `pbe`, `r2scan`, `pbe+rvv10`, `r2scan+rvv10`, and `hse06`, collinear spin, `kpts` meshes,
 `smearing` for metals, and spectral observables (`band_structure()`, `dos()`,
-`pdos()`, `get_fermi_level()` on the calculator). Screened hybrid calculations
+`pdos()`, `get_fermi_level()` on the calculator; `dos` and `pdos` take
+`integration="tetrahedron"` for the linear tetrahedron method on a full Gamma-centered mesh,
+see [the crystal guide](bloch.md)). Screened hybrid calculations
 (`xc="hse06"`) evaluate the non-singular reciprocal screened exchange operator across the
 Brillouin zone in Rust (self-consistent crystal SCF, band structures, DOS/PDOS, and
 two-component spinor calculations with spin-orbit coupling). The exact exchange sums over
@@ -150,10 +152,10 @@ crystal with symmetry takes more k-points than the same semilocal run. PAW geome
 and dataset assembly still go through a Python adapter. Forces and stress of crystals are computed via `atoms.get_forces()` and
 `atoms.get_stress()` as analytic Rust gradients of the converged Kohn–Sham state: forces for LDA,
 PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling, and stress
-for the same functionals except rVV10 (for a hybrid the analytic force and stress carry the
-one-center screened and compensation terms). The stress of an rVV10 crystal, and the forces and
-stress of a DFT+U crystal with a hybrid or a spin-orbit dataset, raise `NotImplementedError`
-naming the cause.
+for the same functionals (for a hybrid the analytic force and stress carry the one-center
+screened and compensation terms; the rVV10 stress adds the strain derivative of the nonlocal
+kernel's wave numbers to the semilocal terms). The forces and stress of a DFT+U crystal with a
+hybrid or a spin-orbit dataset raise `NotImplementedError` naming the cause.
 
 A hybrid crystal is built from its PAW spheres. The setup records the atom centers,
 the projector basis and, per atom, the dataset file with its SHA-256 digest; Rust

@@ -95,6 +95,23 @@ pub fn kind(name: &str) -> Result<&'static str> {
         .ok_or_else(|| Error::Invalid("unknown ADAPT operator pool".into()))
 }
 
+/// The refusal of a pool that is register-based by construction, which only an untapered register
+/// can hold: a parity-reduced one (two qubits tapered) and a Z2-tapered one (`CachedProblem::taper`)
+/// both raise it.
+pub fn untapered_register(name: &str) -> Error {
+    Error::Invalid(
+        match name {
+            "spin-orbit" => "the spin-orbit pool changes alpha/beta parity and requires an untapered register",
+            _ => "the individual Pauli pool uses an untapered register; use qeb for a particle-conserving tapered pool",
+        }
+        .into(),
+    )
+}
+/// Whether the pool called `name` is register-based and so needs an untapered register.
+pub fn needs_untapered_register(name: &str) -> bool {
+    matches!(name, "spin-orbit" | "qubit")
+}
+
 pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> Result<Pool> {
     let mut operators = Vec::new();
     let mut screenable = Vec::new();
@@ -115,7 +132,7 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
         }
         "spin-orbit" => {
             if encoding.mapping == "parity_reduced" {
-                return Err(Error::Invalid("the spin-orbit pool changes alpha/beta parity and requires an untapered register".into()));
+                return Err(untapered_register("spin-orbit"));
             }
             let occupied: Vec<_> = (0..encoding.particles[0])
                 .chain(m..m + encoding.particles[1])
@@ -179,10 +196,7 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
         }
         "qubit" => {
             if encoding.mapping == "parity_reduced" {
-                return Err(Error::Invalid(
-                    "the individual Pauli pool uses an untapered register; use qeb for a particle-conserving tapered pool"
-                        .into(),
-                ));
+                return Err(untapered_register("qubit"));
             }
             let mut masks = BTreeSet::new();
             for generator in excitation_pool(ctx, encoding, singles)? {

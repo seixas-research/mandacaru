@@ -19,10 +19,8 @@ from mandacaru.units import HARTREE_TO_EV
 import pytest
 
 from mandacaru import Mandacaru
-from mandacaru.circuits.pools import build_pool
-from mandacaru.core.mapping import (parity_tapered_qubits, reference_qubit_bits,
-                                    two_qubit_reduce)
-from mandacaru.core import PauliSum
+from mandacaru import _native
+from mandacaru.core import Fermion, PauliSum
 from mandacaru.specifications import estimate_qubits
 
 # The classical optimizers used below, with the iteration budget and
@@ -49,45 +47,56 @@ def reference():
 
 
 class TestMapping:
-    def test_tapered_positions_and_reference_bits(self):
-        assert parity_tapered_qubits(4) == (1, 3)
-        full = reference_qubit_bits("parity", 4, [0, 2])
-        reduced = reference_qubit_bits("parity_reduced", 4, [0, 2])
-        assert list(full) == [1, 1, 0, 0]       # parity sums of |1010>
-        assert list(reduced) == [1, 0]           # positions 1 and 3 dropped
-        assert len(reference_qubit_bits("jordan_wigner", 4, [0, 2])) == 4
+    @staticmethod
+    def _problem(mapping):
+        """A 2-orbital, (1, 1) problem whose Hamiltonian is the number operator."""
+        number = Fermion.from_integrals(np.eye(4))
+        operator = number.map_to_qubits(
+            mapping, num_particles=(1, 1) if mapping == "parity_reduced" else None)
+        return _native.Context(threads=1).quantum_problem(
+            operator._native_operator(), 2, [1, 1], mapping=mapping)
 
-    def test_reduce_drops_z_on_tapered_qubits_with_the_sector_sign(self):
-        op = PauliSum({"IZIZ": 1.0, "ZIII": 0.5, "XIXI": 0.25})
-        red = two_qubit_reduce(op, 4, (1, 1))
-        # Z on both tapered qubits: (-1)^1 * (-1)^2 = -1 times the identity.
-        assert red.terms["II"] == pytest.approx(-1.0)
-        assert red.terms["ZI"] == pytest.approx(0.5)
-        assert red.terms["XX"] == pytest.approx(0.25)
+    def test_the_reference_determinant_in_each_encoding(self):
+        # The determinant 1010 (modes 0 and 2): parity sums 1100, with the
+        # alpha and total parity qubits (1 and 3) dropped by the reduction.
+        assert self._problem("parity").reference_qubits == [0, 1]
+        assert self._problem("parity_reduced").reference_qubits == [0]
+        assert self._problem("jordan_wigner").reference_qubits == [0, 2]
+        assert self._problem("parity_reduced").num_qubits == 2
+
+    def test_the_tapered_qubits_take_the_sector_sign(self):
+        """Z on the alpha-parity and total-parity qubits is the sector's parity:
+        in the (1, 1) sector the reduced register's four states are the four
+        determinants, and the number operators are constants on them."""
+        alpha = Fermion.from_integrals(np.diag([1.0, 1.0, 0.0, 0.0]))
+        total = Fermion.from_integrals(np.eye(4))
+        reduced = {name: op.map_to_qubits("parity_reduced", num_particles=(1, 1))
+                   for name, op in (("alpha", alpha), ("total", total))}
+        assert reduced["alpha"].num_qubits == 2
+        assert np.allclose(reduced["alpha"].to_matrix(), np.eye(4))
+        assert np.allclose(reduced["total"].to_matrix(), 2 * np.eye(4))
 
 
-class TestPoolsAndAnsatze:
-    def test_fermionic_pool_is_tapered(self):
-        pool = build_pool("fermionic", 2, (1, 1),
-                          mapping="parity_reduced")
-        assert pool.n_qubits == 2 and pool.n_modes == 4
-        assert all(op.generator.num_qubits == 2 for op in pool.operators())
-        assert pool.occupied_orbitals == (0, 2)
-
-    @pytest.mark.parametrize("name", ["qeb", "ceo"])
-    def test_qubit_excitation_pools_are_tapered(self, name):
+class TestPoolsOnTheReducedRegister:
+    @pytest.mark.parametrize("pool", ["qeb", "ceo"])
+    def test_qubit_excitation_pools_are_tapered(self, pool):
         """They commute with both tapered symmetries, so the taper is exact."""
-        pool = build_pool(name, 2, (1, 1), mapping="parity_reduced")
-        assert pool.n_qubits == 2 and pool.n_modes == 4
-        assert all(op.generator.num_qubits == 2 for op in pool.operators())
-        assert pool.operators()
+        atoms = _h2()
+        atoms.calc = Mandacaru(method="adapt-vqe", pool=pool, basis="HAO",
+                               grid_spacing=0.4, mapping="parity_reduced",
+                               trace=False, max_iterations=1)
+        atoms.get_total_energy()
+        assert atoms.calc.n_qubits == 2
 
     def test_the_qubit_pool_still_refuses(self):
         """Individual Pauli strings do not commute with the symmetries."""
-        with pytest.raises(ValueError, match="do not commute"):
-            build_pool("qubit", 2, (1, 1), mapping="parity_reduced")
-
-
+        atoms = _h2()
+        with pytest.raises(ValueError, match="untapered register"):
+            atoms.calc = Mandacaru(method="adapt-vqe", pool="qubit",
+                                   basis="HAO", grid_spacing=0.4,
+                                   mapping="parity_reduced", trace=False,
+                                   max_iterations=1)
+            atoms.get_total_energy()
 
 
 class TestDrivers:

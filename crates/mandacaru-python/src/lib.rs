@@ -10,18 +10,17 @@ mod basis_confinement;
 mod basis_filter;
 mod basis_table;
 mod basis_zetas;
+mod bloch;
 mod context;
 mod factorization;
 mod finite_size;
 mod geometry;
 mod hubbard;
-mod loggrid;
 mod models;
 mod molecular;
 mod orbitals;
 mod optimizers;
 mod parquet;
-mod packed;
 mod paw_basis;
 mod paw_diagnose;
 mod paw_generate;
@@ -35,6 +34,7 @@ mod quantum;
 mod run_log;
 mod symmetry;
 mod sparse;
+mod viewer;
 mod wannier;
 mod xc_grid;
 use arrays::{array, complex, complex_array, copy, error, layout, Array};
@@ -54,12 +54,14 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
             .map(|f| f.name)
             .collect::<Vec<_>>(),
     )?;
-    m.add("ABI_VERSION", 1)?;
+    m.add(
+        "ACTIVE_SPACE_METHODS",
+        mandacaru_core::molecular::active::METHODS.to_vec(),
+    )?;
     m.add(
         "OPTIMIZERS",
         mandacaru_core::quantum::optimizer::Method::NAMES.to_vec(),
     )?;
-    m.add("THREAD_POLICY_VERSION", 1)?;
     // The smallest settings a complex64 state resolves: one definition, in Rust.
     m.add(
         "FLOAT32_ENERGY_FLOOR_HA",
@@ -69,11 +71,18 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "FLOAT32_GRADIENT_FLOOR",
         mandacaru_core::quantum::amplitude::FLOAT32_FLOORS.gradient,
     )?;
+    m.add_function(wrap_pyfunction!(context::num_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(context::grid_blas_threads, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::optimizer_evaluation_bound, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::state_norm_squared, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::state_inner, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::require_normalized_state, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_fd, m)?)?;
+    m.add_function(wrap_pyfunction!(bloch::supercell_integrals, m)?)?;
+    m.add_function(wrap_pyfunction!(bloch::bloch_supercell, m)?)?;
+    m.add_function(wrap_pyfunction!(bloch::bloch_bands, m)?)?;
+    m.add_function(wrap_pyfunction!(bloch::bloch_spectral_function, m)?)?;
+    m.add_function(wrap_pyfunction!(bloch::tetrahedron_dos, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_fd, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_analytic, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_analytic, m)?)?;
@@ -93,11 +102,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     hubbard::register(m)?;
     symmetry::register(m)?;
     finite_size::register(m)?;
-    packed::register(m)?;
+    viewer::register(m)?;
     angular::register(m)?;
     models::register(m)?;
     geometry::register(m)?;
-    loggrid::register(m)?;
     orbitals::register(m)?;
     optimizers::register(m)?;
     sparse::register(m)?;

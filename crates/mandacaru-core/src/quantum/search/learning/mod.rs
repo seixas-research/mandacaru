@@ -2,4 +2,5 @@
 pub mod data;
 pub mod graph;
 pub mod network;
+pub mod ranker;
 pub mod training;

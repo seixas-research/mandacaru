@@ -184,13 +184,37 @@ pub fn calculate(
 ) -> Result<Terms> {
     ctx.run(|| evaluate(ctx, grid, density, sigma, options))
 }
-pub fn evaluate(
+
+/// The fields a correlation energy was evaluated on (the charge and its squared gradient, as
+/// [`evaluate`] receives them): what the strain derivative of the same energy needs.
+pub struct Source {
+    pub density: Buffer<f64>,
+    pub sigma: Buffer<f64>,
+}
+
+/// What the energy and its strain derivative share: the interpolation mesh, the FFTs of the local
+/// functions `theta_a` (half spectrum along z) and the wave number of each stored frequency.
+struct Spectra {
+    shape: [usize; 3],
+    padded: [usize; 3],
+    half: usize,
+    spectrum: usize,
+    nodes: usize,
+    splines: Cardinals,
+    mesh: Buffer<f64>,
+    transforms: Buffer<C64>,
+    wave: Buffer<f64>,
+    fft: Fft3,
+    work: Buffer<C64>,
+}
+
+fn spectra(
     ctx: &Context,
     grid: &SpatialGrid,
     density: &[f64],
     sigma: &[f64],
-    options: Options,
-) -> Result<Terms> {
+    options: &Options,
+) -> Result<Spectra> {
     let shape = grid.index.shape();
     let n = grid.index.points();
     finite(density, "nonlocal density")?;
@@ -232,7 +256,7 @@ pub fn evaluate(
     let half = padded[2] / 2 + 1;
     let spectrum = product(&[padded[0], padded[1], half])?;
     let nodes = options.nodes;
-    let splines = Cardinals::new(ctx, &options)?;
+    let splines = Cardinals::new(ctx, options)?;
     let mut mesh = ctx.allocate::<f64>(nodes)?;
     for a in 0..nodes {
         mesh.as_mut_slice()[a] = (options.q_min.ln() + a as f64 * splines.step).exp();
@@ -267,7 +291,7 @@ pub fn evaluate(
                 for k in 0..shape[2] {
                     let g = (i * shape[1] + j) * shape[2] + k;
                     work.as_mut_slice()[(i * padded[1] + j) * padded[2] + k] =
-                        C64::new(local(density[g], sigma[g], &options, &splines, a).0, 0.);
+                        C64::new(local(density[g], sigma[g], options, &splines, a).0, 0.);
                 }
             }
         }
@@ -277,29 +301,82 @@ pub fn evaluate(
                 .copy_from_slice(&work.as_slice()[row * padded[2]..row * padded[2] + half]);
         }
     }
-    // Tabulating the smooth analytic radial transform avoids exponentials on
-    // every FFT frequency. The same table is used in energy and response.
-    let table_scale = 800.;
-    let maximum = wave.as_slice().iter().copied().fold(0f64, f64::max);
-    let count_float = (maximum * table_scale).ceil() + 2.;
-    if count_float > usize::MAX as f64 {
-        return Err(crate::Error::Overflow);
-    }
-    let count = count_float as usize;
-    let mut table = ctx.allocate::<f64>(product(&[nodes, nodes, count])?)?;
-    for a in 0..nodes {
-        for b in a..nodes {
-            for k in 0..count {
-                let value = kernel_transform(
-                    mesh.as_slice()[a],
-                    mesh.as_slice()[b],
-                    k as f64 / table_scale,
-                )?;
-                table.as_mut_slice()[(a * nodes + b) * count + k] = value;
-                table.as_mut_slice()[(b * nodes + a) * count + k] = value;
+    Ok(Spectra {
+        shape,
+        padded,
+        half,
+        spectrum,
+        nodes,
+        splines,
+        mesh,
+        transforms,
+        wave,
+        fft,
+        work,
+    })
+}
+
+/// Tabulating the smooth analytic radial transform avoids exponentials on every FFT frequency.
+/// The same table, interpolated linearly, is used in the energy, the response and the strain.
+const TABLE_SCALE: f64 = 800.;
+
+struct Table {
+    values: Buffer<f64>,
+    count: usize,
+    nodes: usize,
+}
+impl Table {
+    fn new(ctx: &Context, mesh: &[f64], wave: &[f64]) -> Result<Self> {
+        let nodes = mesh.len();
+        let maximum = wave.iter().copied().fold(0f64, f64::max);
+        let count_float = (maximum * TABLE_SCALE).ceil() + 2.;
+        if count_float > usize::MAX as f64 {
+            return Err(crate::Error::Overflow);
+        }
+        let count = count_float as usize;
+        let mut values = ctx.allocate::<f64>(product(&[nodes, nodes, count])?)?;
+        for a in 0..nodes {
+            for b in a..nodes {
+                for k in 0..count {
+                    let value = kernel_transform(mesh[a], mesh[b], k as f64 / TABLE_SCALE)?;
+                    values.as_mut_slice()[(a * nodes + b) * count + k] = value;
+                    values.as_mut_slice()[(b * nodes + a) * count + k] = value;
+                }
             }
         }
+        Ok(Self {
+            values,
+            count,
+            nodes,
+        })
     }
+    /// The kernel of the mesh pair `(a, b)` at wave number `k`, and the slope in `k` of the
+    /// chord it is interpolated on (the derivative of the energy as discretized).
+    fn kernel(&self, a: usize, b: usize, k: f64) -> (f64, f64) {
+        let position = k * TABLE_SCALE;
+        let index = position as usize;
+        let fraction = position - index as f64;
+        let row = (a * self.nodes + b) * self.count;
+        let low = self.values.as_slice()[row + index];
+        let high = self.values.as_slice()[row + index + 1];
+        (
+            low * (1. - fraction) + high * fraction,
+            (high - low) * TABLE_SCALE,
+        )
+    }
+}
+
+pub fn evaluate(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    density: &[f64],
+    sigma: &[f64],
+    options: Options,
+) -> Result<Terms> {
+    let n = grid.index.points();
+    let mut s = spectra(ctx, grid, density, sigma, &options)?;
+    let (shape, padded, half, spectrum, nodes) = (s.shape, s.padded, s.half, s.spectrum, s.nodes);
+    let table = Table::new(ctx, s.mesh.as_slice(), s.wave.as_slice())?;
     let correction = beta(options.b);
     let mut result = Terms {
         energy: correction * density.iter().sum::<f64>() * grid.index.dv(),
@@ -308,17 +385,12 @@ pub fn evaluate(
     };
     result.density.as_mut_slice().fill(correction);
     for a in 0..nodes {
-        work.as_mut_slice().fill(C64::default());
+        s.work.as_mut_slice().fill(C64::default());
         for b in 0..nodes {
             for g in 0..spectrum {
-                let position = wave.as_slice()[g] * table_scale;
-                let index = position as usize;
-                let fraction = position - index as f64;
-                let row = (a * nodes + b) * count;
-                let kernel = table.as_slice()[row + index] * (1. - fraction)
-                    + table.as_slice()[row + index + 1] * fraction;
+                let kernel = table.kernel(a, b, s.wave.as_slice()[g]).0;
                 let full_index = (g / half) * padded[2] + g % half;
-                work.as_mut_slice()[full_index] += kernel * transforms.as_slice()[b * spectrum + g];
+                s.work.as_mut_slice()[full_index] += kernel * s.transforms.as_slice()[b * spectrum + g];
             }
         }
         // Reconstruct negative z frequencies from Hermitian symmetry. Real
@@ -331,18 +403,18 @@ pub fn evaluate(
                         * padded[2]
                         + padded[2]
                         - k;
-                    work.as_mut_slice()[(i * padded[1] + j) * padded[2] + k] =
-                        work.as_slice()[mirror].conj();
+                    s.work.as_mut_slice()[(i * padded[1] + j) * padded[2] + k] =
+                        s.work.as_slice()[mirror].conj();
                 }
             }
         }
-        fft.transform(work.as_mut_slice(), true)?;
+        s.fft.transform(s.work.as_mut_slice(), true)?;
         for i in 0..shape[0] {
             for j in 0..shape[1] {
                 for k in 0..shape[2] {
                     let g = (i * shape[1] + j) * shape[2] + k;
-                    let u = work.as_slice()[(i * padded[1] + j) * padded[2] + k].re;
-                    let (theta, dn, ds) = local(density[g], sigma[g], &options, &splines, a);
+                    let u = s.work.as_slice()[(i * padded[1] + j) * padded[2] + k].re;
+                    let (theta, dn, ds) = local(density[g], sigma[g], &options, &s.splines, a);
                     result.energy -= 0.75 * theta * u * grid.index.dv();
                     result.density.as_mut_slice()[g] -= 1.5 * u * dn;
                     result.sigma.as_mut_slice()[g] -= 1.5 * u * ds;
@@ -361,6 +433,62 @@ pub fn evaluate(
         return Err(invalid("nonfinite nonlocal correlation result"));
     }
     Ok(result)
+}
+
+/// `dE_nl / d eps_ab` at fixed node values of the density and its gradient contraction, WITHOUT
+/// the volume element: the part of the strain derivative of the correlation energy that the
+/// grid-integral Jacobian `delta_ab E_nl`, the spectral gradient (through the `sigma` response of
+/// [`Terms`]) and the density response do not carry.
+///
+/// The energy on a periodic grid of `N` nodes is
+/// `E = beta dv sum n - 3/4 (dv / N) sum_G w_G sum_ab Phi_ab(|G|) Re[conj(theta_a(G)) theta_b(G)]`
+/// over the stored half spectrum (`w_G = 2` off the `k_z = 0` and Nyquist planes, which Hermitian
+/// symmetry repeats), `theta_a(G)` the unnormalized FFT of the local function of mesh node `a`.
+/// `dv` carries the Jacobian; the node values `theta_a` are fixed, so only the kernel's wave
+/// number moves, `d |G| / d eps_ab = -G_a G_b / |G|` per alias vector, through the chord of the
+/// interpolation table the energy uses:
+/// `g_ab = +3/4 (dv / N) sum_G w_G sum_ab Phi'_ab(|G|) Re[...] G_a G_b / |G|`.
+pub fn strain(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    density: &[f64],
+    sigma: &[f64],
+    options: Options,
+) -> Result<[[f64; 3]; 3]> {
+    ctx.run(|| {
+        if !grid.periodic {
+            return Err(invalid(
+                "the nonlocal strain derivative is defined for a periodic grid",
+            ));
+        }
+        let s = spectra(ctx, grid, density, sigma, &options)?;
+        let table = Table::new(ctx, s.mesh.as_slice(), s.wave.as_slice())?;
+        let n = grid.index.points();
+        let prefactor = -0.75 * grid.index.dv() / n as f64;
+        let mut weights = ctx.allocate::<f64>(n)?;
+        for row in 0..s.padded[0] * s.padded[1] {
+            for k in 0..s.half {
+                let g = row * s.half + k;
+                // Planes that are their own Hermitian mirror count once.
+                let multiplicity = if k == 0 || (s.padded[2] % 2 == 0 && k == s.padded[2] / 2) {
+                    1.
+                } else {
+                    2.
+                };
+                let mut sum = 0.;
+                for a in 0..s.nodes {
+                    let ta = s.transforms.as_slice()[a * s.spectrum + g];
+                    for b in 0..s.nodes {
+                        let tb = s.transforms.as_slice()[b * s.spectrum + g];
+                        let slope = table.kernel(a, b, s.wave.as_slice()[g]).1;
+                        sum += slope * (ta.re * tb.re + ta.im * tb.im);
+                    }
+                }
+                weights.as_mut_slice()[row * s.padded[2] + k] = prefactor * multiplicity * sum;
+            }
+        }
+        crate::math::reciprocal::norm_strain(ctx, grid, weights.as_slice())
+    })
 }
 
 #[cfg(test)]

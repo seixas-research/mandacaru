@@ -459,3 +459,54 @@ fn an_explicit_core_radius_changes_only_what_reads_the_core() {
         "the core correction did not reach the local potential: {moved:e}"
     );
 }
+
+/// The PBE reference atom of every lanthanide, scalar-relativistic and Dirac, on the production
+/// path (`solve_reference`: the relaxed configuration on the generation grid, then the reference
+/// SCF at the generator's tolerance and mixing). Before the gradient smoothing of
+/// `spherical::exchange_correlation` the scalar Ce, Pr, Nd, Yb and the Dirac Gd atoms raised as
+/// unconverged after 11-28 minutes each and the scalar Gd was refused after 600 iterations.
+#[test]
+#[ignore = "slow: 2980 s (measured 2026-11-09); run: cargo test --profile release-test -p mandacaru-core --test paw_generate -- --ignored every_pbe_lanthanide_reference_atom_converges --nocapture"]
+fn every_pbe_lanthanide_reference_atom_converges() {
+    use mandacaru_core::models::{configuration::valence_subshells, relativity::Treatment};
+    use mandacaru_core::paw::generate::recipe::Recipe;
+    let ctx = context();
+    let mut failed = Vec::new();
+    for z in 57u8..=71 {
+        let symbol = mandacaru_core::models::elements::SYMBOLS[z as usize - 1];
+        for treatment in [Treatment::Scalar, Treatment::Dirac] {
+            let recipe = Recipe::for_dataset(symbol, "pbe", treatment).unwrap();
+            let started = std::time::Instant::now();
+            let result = solve_reference(&ctx, &recipe);
+            let seconds = started.elapsed().as_secs_f64();
+            match result {
+                Ok(atom) => {
+                    let valence = valence_subshells(&atom.occupations);
+                    let levels = atom
+                        .occupations
+                        .iter()
+                        .zip(&atom.eigenvalues)
+                        .filter(|(s, _)| valence.contains(&(s.0, s.1)))
+                        .map(|(s, e)| format!("{}{}:{e:.5}", s.0, "spdf".as_bytes()[s.1] as char))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    println!(
+                        "{symbol} {}: converged {} in {} it, {seconds:.0} s, E = {:.6} Ha; {levels}",
+                        treatment.name(),
+                        atom.converged,
+                        atom.iterations,
+                        atom.energy
+                    );
+                    if !atom.converged {
+                        failed.push(format!("{symbol} {}", treatment.name()));
+                    }
+                }
+                Err(e) => {
+                    println!("{symbol} {}: {e} ({seconds:.0} s)", treatment.name());
+                    failed.push(format!("{symbol} {}", treatment.name()));
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}

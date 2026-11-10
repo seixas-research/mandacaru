@@ -24,10 +24,9 @@ from mandacaru.units import HARTREE_TO_EV
 import pytest
 from ase import Atoms
 
-from mandacaru import Mandacaru
+from mandacaru import Mandacaru, _native
 from mandacaru.backends.providers import (BACKEND_PROVIDERS, build_provider,
                                           normalize_provider, provider_available)
-from mandacaru.circuits.pools import build_pool
 from mandacaru.core import PauliSum
 
 PROVIDERS = [
@@ -131,8 +130,13 @@ class TestPauliRotationDecomposition:
 class TestProviderProfiling:
     @pytest.mark.parametrize("name", PROVIDERS)
     def test_profile_reports_positive_counts(self, name):
-        pool = build_pool("qeb", 2, (1, 1))
-        generators = [op.generator for op in pool.operators()[:2]]
+        context = _native.Context()
+        hamiltonian = context.pauli_operator(4, [("ZIII", 1.0, 0.0)])
+        problem = context.quantum_problem(hamiltonian, 2, [1, 1], pool="qeb",
+                                          sector=False)
+        generators = [PauliSum({label: complex(re, im) for label, re, im in terms},
+                               num_qubits=4)
+                      for terms in problem.pool_terms[:2]]
         counts = build_provider(name).profile(4, [0, 2], generators)
         assert counts["cnot_count"] > 0
         assert counts["depth"] > 0

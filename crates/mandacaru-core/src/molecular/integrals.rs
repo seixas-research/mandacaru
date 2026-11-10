@@ -226,7 +226,23 @@ pub struct MolecularIntegrals {
     pub resolution_ratios: Vec<f64>,
     pub corrections: Option<MolecularCorrections>,
     pub paw_setup: Option<Arc<crate::paw::molecular::Setup>>,
+    /// The Born-von Karman supercell this Hamiltonian describes, when the grid is periodic
+    /// (`molecular::periodic`); `None` for a molecule.
+    pub supercell: Option<Arc<super::periodic::Supercell>>,
+    /// The Madelung term `1/2 N_e v_M` of a periodic cell, already included in `nuclear`;
+    /// zero for a molecule.
+    pub madelung: f64,
     _matrices: Reservation,
+}
+/// The lattice-summed electrostatics of a periodic cell, built by `molecular::periodic`.
+pub(super) struct PeriodicElectrostatics {
+    /// Zero-mean Ewald potential of the ion lattice on the grid (what an electron feels).
+    pub external: Buffer<f64>,
+    /// Ion-ion Ewald energy of the cell.
+    pub ions: f64,
+    /// `1/2 N_e v_M` for the neutral cell.
+    pub madelung: f64,
+    pub supercell: Arc<super::periodic::Supercell>,
 }
 pub fn pair_integrals<T: Sample>(
     ctx: &Context,
@@ -631,6 +647,16 @@ impl MolecularIntegrals {
                 orbital.center = geometry.positions()[orbital.atom];
             }
             let basis = Basis::from_orbitals(&self.context, orbitals)?;
+            if let Some(supercell) = &self.supercell {
+                return super::periodic::build(
+                    &self.context,
+                    supercell.clone(),
+                    geometry,
+                    self.grid.clone(),
+                    basis,
+                    Some(self.cholesky_tolerance),
+                );
+            }
             let samples = basis.sample(&self.context, &self.grid, self.precision())?;
             Self::from_basis(
                 &self.context,
@@ -670,7 +696,11 @@ impl MolecularIntegrals {
         if let Some(value) = cache.as_ref() {
             return Ok(value.clone());
         }
-        let mut solver = Poisson::isolated(&self.context, &self.grid)?;
+        let mut solver = if self.grid.periodic {
+            Poisson::periodic(&self.context, &self.grid)?
+        } else {
+            Poisson::isolated(&self.context, &self.grid)?
+        };
         let base = Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {
             cholesky_from_grid(
                 &self.context,
@@ -715,6 +745,14 @@ impl MolecularIntegrals {
                 |c| c.electrons as i128,
             ) - charge as i128
         });
+        if self.supercell.is_some() {
+            let neutral: i128 = self.geometry.numbers().iter().map(|&z| z as i128).sum();
+            if total != neutral {
+                return Err(invalid(
+                    "a periodic cell must be neutral: the periodic Coulomb kernel drops G = 0 against a uniform background, and a charged supercell needs a background correction that is not implemented",
+                ));
+            }
+        }
         if total < 0 || total > 2 * self.m() as i128 {
             return Err(invalid("electron count does not fit the spatial basis"));
         }
@@ -761,10 +799,32 @@ impl MolecularIntegrals {
         samples: RealSamples,
         kinetic: &str,
         cholesky: Option<f64>,
-        mut corrections: Option<MolecularCorrections>,
+        corrections: Option<MolecularCorrections>,
     ) -> Result<Self> {
         if grid.periodic {
-            return Err(invalid("molecular integrals require an isolated grid; periodic electrostatics is a separate native primitive"));
+            return Err(invalid("molecular integrals require an isolated grid; a periodic cell is built by molecular::periodic (the Born-von Karman supercell)"));
+        }
+        Self::assemble(ctx, geometry, grid, basis, samples, kinetic, cholesky, corrections, None)
+    }
+    /// The shared assembly: isolated electrostatics when `periodic` is `None`, the
+    /// lattice sums of `molecular::periodic` otherwise (then `samples` are image-summed).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn assemble(
+        ctx: &Context,
+        geometry: Geometry,
+        grid: SpatialGrid,
+        basis: Basis,
+        samples: RealSamples,
+        kinetic: &str,
+        cholesky: Option<f64>,
+        mut corrections: Option<MolecularCorrections>,
+        periodic: Option<PeriodicElectrostatics>,
+    ) -> Result<Self> {
+        if grid.periodic != periodic.is_some() {
+            return Err(invalid("a periodic grid needs lattice-summed electrostatics, and only a periodic grid has them"));
+        }
+        if periodic.is_some() && (corrections.is_some() || kinetic != "spectral") {
+            return Err(invalid("the periodic supercell Hamiltonian takes an all-electron basis and the spectral kinetic operator"));
         }
         if kinetic != "spectral" && kinetic != "fd" {
             return Err(invalid("kinetic must be spectral or fd"));
@@ -800,11 +860,18 @@ impl MolecularIntegrals {
         let mut overlap = ctx.allocate::<f64>(product(&[m, m])?)?;
         let mut t = ctx.allocate::<f64>(product(&[m, m])?)?;
         let mut v = ctx.allocate::<f64>(product(&[m, m])?)?;
+        if periodic.as_ref().is_some_and(|p| p.external.as_slice().len() != g) {
+            return Err(invalid("the periodic external potential does not match the grid"));
+        }
         let mut external = ctx.allocate::<f64>(g)?;
         let softening = 0.5 * grid.spacings().into_iter().fold(f64::INFINITY, f64::min);
         for k in 0..g {
             if let Some(c) = &corrections {
                 external.as_mut_slice()[k] = c.external.as_slice()[k];
+                continue;
+            }
+            if let Some(p) = &periodic {
+                external.as_mut_slice()[k] = p.external.as_slice()[k];
                 continue;
             }
             let point = grid.point(k);
@@ -977,8 +1044,12 @@ impl MolecularIntegrals {
             return Err(invalid("Cholesky tolerance must be finite and positive"));
         }
         let mut nuclear = 0.;
+        let isolated = periodic.is_none();
         for a in 0..geometry.numbers().len() {
             for b in 0..a {
+                if !isolated {
+                    break;
+                }
                 let distance = (0..3)
                     .map(|j| (geometry.positions()[a][j] - geometry.positions()[b][j]).powi(2))
                     .sum::<f64>()
@@ -994,6 +1065,13 @@ impl MolecularIntegrals {
                 nuclear += charges(a) * charges(b) / distance;
             }
         }
+        let (madelung, supercell) = match periodic {
+            Some(p) => {
+                nuclear = p.ions + p.madelung;
+                (p.madelung, Some(p.supercell))
+            }
+            None => (0., None),
+        };
         let resolution_ratios = basis
             .orbitals
             .iter()
@@ -1023,6 +1101,8 @@ impl MolecularIntegrals {
             resolution_ratios,
             corrections,
             paw_setup: None,
+            supercell,
+            madelung,
             _matrices: matrices,
         })
     }

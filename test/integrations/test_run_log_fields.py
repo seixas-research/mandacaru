@@ -28,7 +28,7 @@ def driver(**options):
         _two_body_requested=False, _cholesky_tolerance=1e-10, _grid_spacing=0.35,
         _kinetic="spectral", _charge=0, _kpts_spec={"size": (1, 1, 1), "gamma": True},
         _mapping="jordan_wigner", _atomic_units=False, _scf_options={},
-        _resume_lineage=None, _resume_path=None, _shots=0, _sparse=False, _sector=True,
+        _resume_lineage=None, _resume_path=None, _shots=0, _sparse=False, _sector=True, _taper=False,
         n_qubits=4, integrals=SimpleNamespace(grid=grid((18, 18, 18), np.eye(3) * 0.6614)))
     values.update(options)
     return SimpleNamespace(**values)
@@ -97,6 +97,20 @@ class TestTheElectronsBlock:
         monkeypatch.setattr(fields, "two_body_text", lambda _driver: "Cholesky factors")
         keys = list(fields.electrons(driver(), result(), GEOMETRY))
         assert keys[keys.index("kinetic operator") + 1] == "two-body integrals"
+
+    def test_the_tapering_line_reads_what_rust_removed(self, monkeypatch):
+        monkeypatch.setattr(fields._native, "problem_term_count", lambda _problem: 15)
+        found = SimpleNamespace(taper={"removed": 3, "qubits_before": 4, "qubits": 1,
+                                       "signs": [1, -1, 1], "dropped": ["S(0->1)", "S(2->3)"]})
+        block = fields.electrons(driver(_taper=True, n_qubits=1), result(problem=found), GEOMETRY)
+        assert block["Z2 tapering"] == (
+            "3 qubit(s) removed from a 4-qubit register, sector signs (+ - +); "
+            "2 pool generator(s) dropped as symmetry-changing")
+        assert block["qubits"] == "1"
+        nothing = SimpleNamespace(taper=None)
+        assert fields.electrons(driver(_taper=True), result(problem=nothing), GEOMETRY)[
+            "Z2 tapering"] == "none found (no Z2 symmetry beyond the identity)"
+        assert fields.electrons(driver(), result(problem=nothing), GEOMETRY)["Z2 tapering"] == "none"
 
     def test_a_classical_run_describes_no_register_it_did_not_build(self):
         block = fields.electrons(driver(), result(problem=None), GEOMETRY)

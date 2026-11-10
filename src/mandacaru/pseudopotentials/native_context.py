@@ -9,11 +9,13 @@
 """The native execution context the PAW radial routines run in."""
 
 from functools import lru_cache
-import os
 
 from .. import _native
 
 
 @lru_cache(maxsize=8)
 def context(threads=None):
-    return _native.Context(threads=threads or int(os.environ.get("OMP_NUM_THREADS", "8")))
+    """The shared context of ``threads`` workers; ``None`` takes the one thread
+    policy of the engine (``MANDACARU_NUM_THREADS``, ``OMP_NUM_THREADS``, then
+    the hardware), which Rust owns."""
+    return _native.Context(threads=threads)

@@ -1,7 +1,7 @@
-"""Silicon diamond crystal: Bloch-ADAPT-VQE band structure and spectral function, saved as PNG.
+"""Silicon diamond crystal: ADAPT-VQE band structure and spectral function, saved as PNG.
 
 Calculates the correlated band structure along the high-symmetry path L -> Gamma -> X -> W -> K -> Gamma
-and the interacting Lehmann spectral function A(E, k) using Bloch-ADAPT-VQE with multiple k-points
+and the interacting Lehmann spectral function A(E, k) using ADAPT-VQE on the supercell with multiple k-points
 (2x1x1 Monkhorst-Pack mesh), PAW-LCAO DZP basis, an active space of 12 orbitals (24 qubits)
 selected via MP2 natural orbitals with threshold 0.003, CEO operator pool, and matrix-free
 Cholesky decomposition. Saves the resulting figure as a PNG.
@@ -26,7 +26,8 @@ except OSError:
 si = bulk("Si", "diamond", a=5.43)
 
 calc = Mandacaru(
-    method="bloch-adapt-vqe",
+    method="adapt-vqe",
+    crystal_orbitals="real-space",
     basis={"name": "PAW-LCAO", "size": "DZP"},
     two_body="cholesky",
     pool="ceo",

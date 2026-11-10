@@ -91,7 +91,7 @@ fn native_training_lowers_observed_loss_preserves_archives_and_releases_every_bu
         options.min_steps = 30;
         let model = training::train(&context, &states, &options).unwrap();
         let mut baseline = model.as_json();
-        baseline["weights"] = initial.parameters.as_json();
+        baseline["weights"] = initial.parameters.as_ref().unwrap().as_json();
         let baseline = Model::from_json(&context, &baseline.to_string()).unwrap();
         let before = loss(&baseline);
         assert!(loss(&model) < before - 0.05, "{} vs {before}", loss(&model));
@@ -132,4 +132,76 @@ fn native_training_lowers_observed_loss_preserves_archives_and_releases_every_bu
     let small = Context::new(Some(1), 1024).unwrap();
     assert!(Dataset::from_json(&small, &observations(), "molecule").is_err());
     assert_eq!(small.memory_used(), 0);
+}
+
+#[test]
+fn both_kinds_are_assessed_and_the_ranker_draws_from_its_own_scores() {
+    use mandacaru_core::quantum::search::learning::training::Kind;
+    let context = Context::new(Some(1), 256 << 20).unwrap();
+    let data = Dataset::from_json(&context, &observations(), "molecule").unwrap();
+    let options = Options {
+        kinds: vec![Kind::Ranker, Kind::Graph],
+        min_steps: 1,
+        epochs: 1,
+        fractions: vec![1.],
+        ..Default::default()
+    };
+    let model = training::fit(&context, &data, &options).unwrap();
+    // The synthetic gradient ranks every decrease perfectly: neither kind can beat it, so the model
+    // keeps the last kind named, holds both predictors, and is not ready.
+    assert!(!model.ready);
+    assert_eq!(model.kind, Kind::Graph);
+    assert!(model.ranker.is_some() && model.parameters.is_some());
+    let within = &model.report["curve"][0]["within_state"];
+    assert!(within["ranker"]["spearman"].is_number() && within["graph"]["spearman"].is_number(), "{within}");
+    assert_eq!(model.report["kinds"], json!(["ranker", "graph"]));
+    // A ranker model round-trips and scores with the ranker alone.
+    let mut ranker = model;
+    ranker.kind = Kind::Ranker;
+    let restored = Model::from_json(&context, &ranker.as_json().to_string()).unwrap();
+    assert_eq!(restored.kind, Kind::Ranker);
+    assert_eq!(restored.ranker, ranker.ranker);
+    let state = &data.states[0];
+    let scores = restored.scores(&context, &state.graph, &state.rows).unwrap();
+    let r = restored.ranker.as_ref().unwrap();
+    for (row, score) in (0..state.rows.descriptors.nrows()).zip(&scores) {
+        let x: [f64; 9] = std::array::from_fn(|c| state.rows.descriptors[(row, c)]);
+        assert_eq!(*score, r.score(&x));
+    }
+    // A ranker-only fit holds no network, and its file says so.
+    let only = training::fit(&context, &data, &Options { kinds: vec![Kind::Ranker], ..options.clone() }).unwrap();
+    assert!(only.parameters.is_none() && only.as_json().get("weights").is_none());
+    let mut missing = only.as_json();
+    missing["kind"] = json!("graph");
+    assert!(Model::from_json(&context, &missing.to_string()).is_err());
+    assert!(training::fit(&context, &data, &Options { kinds: vec![], ..options.clone() }).is_err());
+    drop((ranker, restored, only, data));
+    assert_eq!(context.memory_used(), 0);
+}
+
+#[test]
+fn the_gradient_teaches_only_the_first_stage_of_training() {
+    use mandacaru_core::quantum::search::learning::training::{first_choice, taught_choice, teacher_weight, softmax};
+    // The weight starts at `mixing` and reaches zero at the fraction of the steps, then stays there.
+    assert_eq!(teacher_weight(0.3, 0.2, 0, 100), 0.3);
+    assert!((teacher_weight(0.3, 0.2, 10, 100) - 0.15).abs() < 1e-15);
+    assert_eq!(teacher_weight(0.3, 0.2, 20, 100), 0.);
+    assert_eq!(teacher_weight(0.3, 0.2, 99, 100), 0.);
+    let (scores, targets, teacher) = ([0.2, -0.4, 1.1], [0.5, -0.2, 0.1], [0.6, 0.3, 0.1]);
+    // Weight zero is the observed likelihood; weight one has the teacher as its target.
+    assert_eq!(taught_choice(&scores, &targets, 0.7, &teacher, 0.).unwrap(), first_choice(&scores, &targets, 0.7).unwrap());
+    let (_, adjoint) = taught_choice(&scores, &targets, 0.7, &teacher, 1.).unwrap();
+    let p = softmax(&scores);
+    for i in 0..3 {
+        assert!((adjoint[i] - (p[i] - teacher[i])).abs() < 1e-15);
+    }
+    // The adjoint is the derivative of the blended loss.
+    let loss = |s: &[f64]| taught_choice(s, &targets, 0.7, &teacher, 0.4).unwrap().0;
+    let (_, adjoint) = taught_choice(&scores, &targets, 0.7, &teacher, 0.4).unwrap();
+    for i in 0..3 {
+        let (mut up, mut down) = (scores, scores);
+        up[i] += 1e-6;
+        down[i] -= 1e-6;
+        assert!(((loss(&up) - loss(&down)) / 2e-6 - adjoint[i]).abs() < 1e-8);
+    }
 }

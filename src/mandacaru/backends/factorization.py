@@ -60,8 +60,7 @@ under Jordan-Wigner each of those is a two-qubit number-conserving gate on
 neighboring wires (Clements *et al.*, Optica **3**, 1460, 2016; Kivlichan
 *et al.*, Phys. Rev. Lett. **120**, 110501, 2018).  After the rotation every
 occupation is diagonal, so the leaf's whole contribution is a single
-**diagonal** observable in ``I`` and ``Z`` -- one PUB per leaf, one job for the
-energy (:func:`factorized_energy`).
+**diagonal** observable in ``I`` and ``Z`` -- one measurement basis per leaf.
 """
 
 from __future__ import annotations
@@ -69,8 +68,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-
-from ..integrals.packed import is_packed
 
 #: Leaves whose weight is below this fraction of the largest are dropped.  The
 #: first factorization's eigenvalues fall off fast -- the two-body tensor is
@@ -133,12 +130,6 @@ class DoubleFactorization:
     def measurement_bases(self) -> int:
         """``L + 1``: one basis per leaf, plus one for the one-body term."""
         return len(self.leaves) + 1
-
-    def measurement_problems(self, n_qubits, occupied, generators, thetas,
-                             mapping: str = "jordan_wigner") -> list[tuple]:
-        """See :func:`measurement_problems`."""
-        return measurement_problems(self, n_qubits, occupied, generators,
-                                    thetas, mapping=mapping)
 
     @property
     def one_norm(self) -> float:
@@ -264,9 +255,6 @@ def _pair_spectrum(eri=None, factors=None, coupling=None):
         k_arr = (np.ascontiguousarray(coupling, dtype=np.float64)
                  if coupling is not None else None)
         return _native_pair_spectrum(factors=f_arr, coupling=k_arr)
-    if is_packed(eri):
-        p_arr = np.ascontiguousarray(eri.data, dtype=np.float64)
-        return _native_pair_spectrum(packed_eri=p_arr, packed_m=int(eri.n))
     g_arr = np.ascontiguousarray(eri, dtype=np.float64)
     return _native_pair_spectrum(eri=g_arr)
 
@@ -282,9 +270,7 @@ def spatial_double_factorization(h, eri=None, *, factors=None, coupling=None,
 
     ``h`` is the ``(M, M)`` spatial one-body matrix; the two-body part is
     either the spatial tensor ``eri`` (:math:`\langle pq|rs\rangle`,
-    physicists' notation; a
-    :class:`~mandacaru.integrals.packed.PackedERI` is read packed, its
-    leaves from the ``P x P`` pair matrix) or pair ``factors`` ``(k, M, M)``
+    physicists' notation) or pair ``factors`` ``(k, M, M)``
     with the
     symmetric ``coupling`` ``(k, k)`` -- :math:`(pr|qs) = \sum_{ij}
     K_{ij}(F_i)_{pr}(F_j)_{qs}`, Cholesky factors with :math:`K = 1`, plus
@@ -319,16 +305,6 @@ def spatial_double_factorization(h, eri=None, *, factors=None, coupling=None,
             tol=float(tol), coefficient_tol=float(coefficient_tol),
             max_leaves=max_leaves, constant=float(constant)
         )
-    elif is_packed(eri):
-        if eri.n != m:
-            raise ValueError(f"two-body tensor {eri.shape} does not match a "
-                             f"{m}-orbital one-body matrix")
-        p_arr = np.ascontiguousarray(eri.data, dtype=np.float64)
-        n_modes, c, ob, ob_rot, ob_e, leaves_raw, trunc = _native_sdf(
-            h_arr, packed_eri=p_arr,
-            tol=float(tol), coefficient_tol=float(coefficient_tol),
-            max_leaves=max_leaves, constant=float(constant)
-        )
     else:
         g_arr = np.ascontiguousarray(eri, dtype=np.float64)
         if g_arr.shape != (m, m, m, m):
@@ -352,16 +328,11 @@ def factorized_measurement_bases(factorization: DoubleFactorization) -> int:
 
     ``L + 1``.  Compare against
     :func:`~mandacaru.backends.measurement.qubit_wise_commuting_groups` on the
-    same Hamiltonian: this is the number the pre-flight plan reports as the
-    alternative, and the reason to implement the basis-rotation circuits.
-
-    .. note::
-       Mandacaru computes the factorization and can **evaluate** the energy
-       through it exactly (:meth:`DoubleFactorization.energy`), but it does not
-       yet emit the Givens-rotation circuits that realize ``U_l`` on a
-       processor, so a shot-based run still goes through the qubit-wise
-       commuting path.  What this function gives today is the honest count of
-       what that path would cost.
+    same Hamiltonian.  A circuit run measures the energy in exactly these bases
+    with ``Mandacaru(measurement_scheme="double-factorized")``: the Givens
+    networks, the diagonal observables and the assembly of the energy are Rust
+    (``quantum::factorized_measurement``), planned from the molecular model the
+    calculation built, not from this object.
     """
     return factorization.measurement_bases
 
@@ -407,145 +378,3 @@ def givens_decomposition(unitary, tol: float = GIVENS_TOLERANCE):
         np.asarray(unitary, dtype=np.float64),
         tol=float(tol),
     )
-
-
-def givens_generator(n_modes: int, p: int, mapping: str = "jordan_wigner"):
-    r"""The anti-Hermitian generator of a Givens rotation on modes ``p``, ``p+1``.
-
-    :math:`A = a^\dagger_p a_{p+1} - a^\dagger_{p+1} a_p`, so that
-    :math:`e^{\theta A}` rotates the pair by :math:`\theta`.  Mapped to qubits
-    it is two Pauli strings that **commute** (``XY`` and ``YX`` on the two
-    wires, both squaring to ``ZZ``), which is what lets a circuit provider emit
-    it exactly as a basis change, one CNOT ladder and one ``Rz``.
-    """
-    from ..core.mapping import Fermion
-
-    operator = Fermion({((p, True), (p + 1, False)): 1.0 + 0j,
-                        ((p + 1, True), (p, False)): -1.0 + 0j},
-                       n_modes=int(n_modes))
-    return operator.map_to_qubits(mapping)
-
-
-def basis_rotation(n_modes: int, unitary, mapping: str = "jordan_wigner"):
-    r"""``(generators, thetas)`` preparing the basis in which ``unitary`` is diagonal.
-
-    The list is in **circuit order** -- the order a provider applies the gates
-    in -- and the resulting unitary satisfies
-
-    .. math::
-
-        W^\dagger a_k W = \pm\, \bigl(U^\dagger a\bigr)_k ,
-
-    so measuring the occupation of wire ``k`` on :math:`W|\psi\rangle` returns
-    :math:`\langle \tilde n_k \rangle` in the rotated orbitals.  The sign is the
-    leftover :math:`D` of :func:`givens_decomposition`; it cancels in every
-    occupation, which is all this is used for.
-
-    **Two reversals cancel here, and getting it wrong is silent.**  The
-    verified identity is
-    :math:`W = e^{A_{r_1}} \cdots e^{A_{r_K}}` over the *reversed* elimination
-    order, while a circuit given ``[g_1, ..., g_K]`` applies ``g_1`` first and
-    so realizes :math:`e^{g_K} \cdots e^{g_1}`.  The list is therefore the
-    elimination order as it comes.  Written with one reversal too many the
-    energy came out 0.15 Ha low with every individual piece looking sound, so
-    a test extracts the single-particle matrix the circuit *actually* induces
-    rather than trusting either convention.
-    """
-    rotations, _signs = givens_decomposition(unitary)
-    generators, thetas = [], []
-    for p, theta in rotations:
-        generators.append(givens_generator(n_modes, p, mapping))
-        thetas.append(float(theta))
-    return generators, thetas
-
-
-def _diagonal_observable(n_modes: int, coefficients, weight: float,
-                         square: bool, mapping: str):
-    """``weight * (sum_k c_k n_k)`` (or its square) as a qubit operator.
-
-    Built through :class:`~mandacaru.core.mapping.Fermion` rather than by
-    substituting ``n_k = (I - Z_k)/2`` by hand, so the convention is the one
-    the rest of Mandacaru uses.  The result **must** be diagonal -- only ``I``
-    and ``Z`` -- because that is the whole claim: after the rotation, one
-    computational-basis measurement answers for the entire leaf.
-    """
-    from ..core.mapping import Fermion
-
-    single = Fermion.from_integrals(np.diag(np.asarray(coefficients,
-                                                       dtype=float)))
-    operator = (single * single) if square else single
-    qubit_operator = (weight * operator).map_to_qubits(mapping).simplify()
-    offending = [label for label in qubit_operator.terms
-                 if set(label) - {"I", "Z"}]
-    if offending:
-        raise RuntimeError(
-            f"a rotated leaf should be diagonal, but {offending[:3]} are not; "
-            f"the factorization or the mapping is wrong")
-    return qubit_operator
-
-
-def measurement_problems(factorization: "DoubleFactorization", n_qubits: int,
-                         occupied, generators, thetas,
-                         mapping: str = "jordan_wigner") -> list[tuple]:
-    """One ``(n_qubits, occupied, generators, thetas, observable)`` per basis.
-
-    Exactly the tuples
-    :meth:`~mandacaru.backends.providers.QiskitProvider.energies` consumes, so
-    the whole energy is **one job** of ``L + 1`` PUBs.  Each problem is the
-    ansatz followed by that basis's Givens network, measured against a diagonal
-    observable; summing the results and
-    :attr:`DoubleFactorization.constant` gives the energy.
-
-    ``generators`` / ``thetas`` describe the state to measure -- an ansatz's
-    own, as ``driver.ansatz_problem()`` returns them.
-    """
-    if mapping != "jordan_wigner":
-        raise NotImplementedError(
-            f"the factorized measurement reads occupations off the "
-            f"computational basis, which is the Jordan-Wigner picture; "
-            f"mapping={mapping!r} does not have one.  Measure it through the "
-            f"qubit-wise commuting path instead.")
-    if int(n_qubits) != factorization.n_modes:
-        raise ValueError(
-            f"the factorization has {factorization.n_modes} modes but the "
-            f"state has {n_qubits} qubits")
-    base_generators, base_thetas = list(generators), list(thetas)
-    problems = []
-
-    def problem(rotation, observable):
-        rotation_generators, rotation_thetas = rotation
-        return (int(n_qubits), list(occupied),
-                base_generators + rotation_generators,
-                base_thetas + rotation_thetas, observable)
-
-    # The one-body term, in the basis that diagonalizes it.
-    problems.append(problem(
-        basis_rotation(factorization.n_modes,
-                       factorization.one_body_orbitals, mapping),
-        _diagonal_observable(factorization.n_modes,
-                             factorization.one_body_energies, 1.0, False,
-                             mapping)))
-    # One leaf, one rotation, one diagonal observable.
-    for leaf in factorization.leaves:
-        problems.append(problem(
-            basis_rotation(factorization.n_modes, leaf.orbitals, mapping),
-            _diagonal_observable(factorization.n_modes, leaf.coefficients,
-                                 0.5 * leaf.weight, True, mapping)))
-    return problems
-
-
-def factorized_energy(provider, problem, factorization: "DoubleFactorization",
-                      mapping: str = "jordan_wigner") -> float:
-    """``<H>`` measured through the factorized form, in **one** job.
-
-    ``problem`` is the ``(n_qubits, occupied, generators, thetas)`` tuple that
-    describes the optimized state -- what
-    ``driver.ansatz_problem()[:4]`` returns.
-
-    The ``L + 1`` PUBs go to ``provider.energies`` together, so this costs one
-    submission whatever the register size, against the ``O(M^3)`` measurement
-    bases the qubit-wise commuting path needs.
-    """
-    problems = measurement_problems(factorization, *problem, mapping=mapping)
-    values = provider.energies(problems)
-    return float(factorization.constant + sum(float(v) for v in values))

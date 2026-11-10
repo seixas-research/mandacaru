@@ -308,61 +308,22 @@ pub fn givens_decomposition<'py>(
     unitary: numpy::PyReadonlyArray2<'py, f64>,
     tol: f64,
 ) -> PyResult<(Vec<(usize, f64)>, crate::arrays::Array<'py, f64>)> {
+    crate::arrays::layout(&unitary)?;
     let shape = unitary.shape();
-    if shape.len() != 2 || shape[0] != shape[1] {
+    if shape[0] != shape[1] {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "expected a square matrix, got {:?}",
             shape
         )));
     }
     let m = shape[0];
-    let arr = unitary.as_array();
-    let mut u = vec![0.0f64; m * m];
-    for i in 0..m {
-        for j in 0..m {
-            u[i * m + j] = arr[[i, j]];
-        }
-    }
-
-    for i in 0..m {
-        for j in 0..m {
-            let mut dot = 0.0;
-            for k in 0..m {
-                dot += u[i * m + k] * u[j * m + k];
-            }
-            let expected = if i == j { 1.0 } else { 0.0 };
-            if (dot - expected).abs() > 1e-8 {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "the Givens decomposition needs a real orthogonal matrix; this one is not",
-                ));
-            }
-        }
-    }
-
-    let mut rotations = Vec::new();
-    for column in 0..(m - 1) {
-        for row in (column + 1..m).rev() {
-            let below = u[row * m + column];
-            let above = u[(row - 1) * m + column];
-            if below.abs() <= tol {
-                continue;
-            }
-            let theta = below.atan2(above);
-            let cos = theta.cos();
-            let sin = theta.sin();
-            for col in 0..m {
-                let r1 = u[(row - 1) * m + col];
-                let r2 = u[row * m + col];
-                u[(row - 1) * m + col] = cos * r1 + sin * r2;
-                u[row * m + col] = -sin * r1 + cos * r2;
-            }
-            rotations.push((row - 1, theta));
-        }
-    }
-
-    let signs: Vec<f64> = (0..m).map(|i| u[i * m + i]).collect();
-    let py_signs = crate::arrays::array(py, &[m], signs)?;
-    Ok((rotations, py_signs))
+    let matrix: Vec<f64> = unitary.as_array().iter().copied().collect();
+    let (rotations, signs) = py
+        .detach(|| {
+            mandacaru_core::quantum::factorized_measurement::givens_decomposition(&matrix, m, tol)
+        })
+        .map_err(error)?;
+    Ok((rotations, crate::arrays::array(py, &[m], signs)?))
 }
 
 /// `(energies, amplitudes)` of a sampled correlation (`dynamics::fourier_spectrum`).

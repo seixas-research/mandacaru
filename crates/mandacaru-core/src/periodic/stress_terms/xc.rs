@@ -1,4 +1,4 @@
-//! X-1..X-4: the strain terms of the grid exchange-correlation energy
+//! X-1..X-6: the strain terms of the grid exchange-correlation energy
 //! `E_xc = dv sum_i f(n_up, n_dn, sigma_uu, sigma_ud, sigma_dd)`, `n_s = rho_s + rho_core/2`
 //! (the clamp at zero is the one non-smooth point), at the frozen output density.
 //!
@@ -17,16 +17,23 @@
 //! * X-5: a meta-GGA's partial-core kinetic density (the von Weizsaecker `tau` of the same smooth
 //!   core), `dE = dv sum_i vbar_tau,i d tau_core,i` with the spin-averaged `v_tau`, placed and
 //!   differentiated like X-4. The kinetic density of the bands is in the matrix term S-6.
+//! * X-6: the rVV10 kernel's wave numbers. `E_nl` depends on the cell through the integration
+//!   volume (inside X-1), the gradient of the density (inside X-3, the flux carries `dE_nl /
+//!   d sigma`), the density (inside S-3 and X-4) and the kernel `Phi_ab(|G|)` of the FFT
+//!   frequencies, `d |G| / d eps_ab = -G_a G_b / |G|`: this term, `nonlocal::strain`, zero without
+//!   rVV10.
 use super::Tensor;
 use crate::{periodic::invalid, Result};
 
-/// X-1, X-3, X-4, X-5, `dE/d eps_ab`.
+/// X-1, X-3, X-4, X-5, X-6, `dE/d eps_ab`.
 pub struct Terms {
     pub jacobian: Tensor<f64>,
     pub gradient: Tensor<f64>,
     pub core: Tensor<f64>,
     /// X-5, zero for a functional without `tau`.
     pub core_kinetic: Tensor<f64>,
+    /// X-6, zero for a functional without rVV10.
+    pub nonlocal: Tensor<f64>,
 }
 
 /// X-1: `delta_ab E_xc`.

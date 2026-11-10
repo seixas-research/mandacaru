@@ -100,9 +100,8 @@ def mp2_natural_orbitals_from_block(oovv: np.ndarray, energies: np.ndarray, n_oc
     chemists' :math:`(ia|jb)`) in the semicanonical basis that ``canonical``
     takes the input orbitals to, and ``energies`` its orbital energies
     (:func:`semicanonical_rotation`).  :math:`o^2 v^2` numbers, which an
-    integral-direct build forms without the :math:`M^4` tensor
-    (:meth:`~mandacaru.algorithms.orbital_integrals.DirectOrbitalIntegrals.mp2_natural_orbitals`);
-    the arithmetic is :func:`mp2_energy` and :func:`mp2_density` on it.
+    integral-direct build forms without the :math:`M^4` tensor (the native
+    ``active_space={"method": "mp2"}`` selection does so); the arithmetic is :func:`mp2_energy` and :func:`mp2_density` on it.
     """
     from .._native import Context
     return MP2Result(**Context(**dict(resources or {})).mp2_from_block(np.ascontiguousarray(_real(oovv, 'MP2 block')), np.ascontiguousarray(_real(energies, 'orbital energies')), n_occ, np.ascontiguousarray(_real(canonical, 'canonical rotation'))))

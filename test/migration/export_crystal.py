@@ -15,9 +15,7 @@ def main():
         os.environ[name] = '1'
     from ase.build import bulk
     from mandacaru import Mandacaru
-    from mandacaru.integrals import ensure_backend
     from inventory import source_manifest, digest_manifest
-    ensure_backend(build=False)
     here = Path(__file__).parent
     case = next(c for c in json.loads((here/'cases.json').read_text())['cases'] if c['id']=='si_periodic_lda')
     args.output.parent.mkdir(parents=True, exist_ok=True)

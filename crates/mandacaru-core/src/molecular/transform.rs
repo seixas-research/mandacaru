@@ -1,5 +1,8 @@
 use super::{integrals::Eri, invalid};
-use crate::quantum::{algebra::Term, CachedProblem, Encoding, Operator, C64};
+use crate::quantum::{
+    algebra::Term, factorized_measurement::FactorizedMeasurement, CachedProblem, Encoding,
+    Operator, Space, C64,
+};
 use crate::{product, Buffer, Context, Reservation, Result};
 use nalgebra::DMatrix;
 
@@ -385,11 +388,47 @@ impl Model {
         }
         Ok(operator)
     }
+    /// The `O(M)` basis-rotation measurement plan of this model's energy: its double
+    /// factorization, Jordan-Wigner, with the Givens networks and the diagonal observables.
+    /// Refuses a spinor model and complex integrals (the scheme is spin-free and real).
+    pub fn factorized_measurement(&self, ctx: &Context) -> Result<FactorizedMeasurement> {
+        if self.spinor {
+            return Err(invalid(
+                "the factorized measurement needs a spin-free model; this one is a spinor",
+            ));
+        }
+        let (one, two) = (self.one.as_slice(), self.two.as_slice());
+        let scale = one.iter().chain(two).fold(1., |a: f64, c| a.max(c.norm()));
+        if one.iter().chain(two).any(|c| c.im.abs() > 1e-10 * scale) {
+            return Err(invalid(
+                "the factorized measurement needs real integrals; this model has an imaginary part",
+            ));
+        }
+        let h: Vec<f64> = one.iter().map(|c| c.re).collect();
+        let eri: Vec<f64> = two.iter().map(|c| c.re).collect();
+        FactorizedMeasurement::from_integrals(ctx, self.m, &h, &eri, self.constant)
+    }
     pub fn problem(
         &self,
         ctx: &Context,
         mapping: &str,
         sector: bool,
+        dense: bool,
+        singles: bool,
+    ) -> Result<CachedProblem> {
+        let space = if sector {
+            Space::Sector
+        } else {
+            Space::Register
+        };
+        self.problem_in(ctx, mapping, space, dense, singles)
+    }
+    /// The quantum problem of this model in `space` (see [`Space`]).
+    pub fn problem_in(
+        &self,
+        ctx: &Context,
+        mapping: &str,
+        space: Space,
         dense: bool,
         singles: bool,
     ) -> Result<CachedProblem> {
@@ -400,6 +439,6 @@ impl Model {
         }
         let encoding = Encoding::new(mapping, 2 * self.m, self.particles)?;
         let h = self.operator(ctx, mapping)?;
-        CachedProblem::new(ctx, encoding, h, sector, dense, singles)
+        CachedProblem::new_in(ctx, encoding, h, space, dense, singles)
     }
 }

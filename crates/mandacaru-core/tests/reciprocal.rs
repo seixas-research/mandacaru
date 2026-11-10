@@ -334,3 +334,40 @@ fn symmetric_wavevectors_commute_with_the_operations_and_zero_the_cube_faces() {
     }
     assert_eq!(context.memory_used(), 0);
 }
+
+/// `norm_strain` is the strain derivative of `norms` contracted with per-node weights: a central
+/// difference of the weighted norms of the grid whose cell is `(1 + eps) cell`, for a cell whose
+/// operations are signed permutations and for a hexagonal one (alias-averaged norms).
+#[test]
+fn the_norm_strain_is_the_derivative_of_the_alias_averaged_norms() {
+    let context = Context::new(Some(1), 4 << 20).unwrap();
+    for (shape, step) in [
+        ([6, 5, 4], [0.9, 0., 0., 0., 1.1, 0., 0., 0., 1.3]),
+        ([6, 6, 4], [1., 0.5, 0., 0., 3f64.sqrt() / 2., 0., 0., 0., 1.2]),
+    ] {
+        let n = shape[0] * shape[1] * shape[2];
+        let weights: Vec<f64> = (0..n).map(|i| 0.3 + ((i * 7) % 11) as f64 / 11.).collect();
+        let weighted = |eps: Matrix3<f64>| {
+            let moved = (Matrix3::identity() + eps) * Matrix3::from_row_slice(&step);
+            let grid = SpatialGrid::new(shape, [0.; 3], std::array::from_fn(|k| moved[(k / 3, k % 3)]), true).unwrap();
+            let norms = reciprocal::norms(&context, &grid).unwrap();
+            norms.as_slice().iter().zip(&weights).map(|(g, w)| g * w).sum::<f64>()
+        };
+        let grid = SpatialGrid::new(shape, [0.; 3], step, true).unwrap();
+        let analytic = reciprocal::norm_strain(&context, &grid, &weights).unwrap();
+        for (a, b) in [(0, 0), (1, 1), (2, 2), (0, 1), (1, 2)] {
+            let h = 1e-5;
+            let (mut up, mut down) = (Matrix3::zeros(), Matrix3::zeros());
+            up[(a, b)] = h;
+            down[(a, b)] = -h;
+            let numeric = (weighted(up) - weighted(down)) / (2. * h);
+            assert!(
+                (analytic[a][b] - numeric).abs() < 1e-7 * (1. + numeric.abs()),
+                "{shape:?} ({a},{b}): {} against {numeric}",
+                analytic[a][b]
+            );
+        }
+    }
+    assert!(reciprocal::norm_strain(&context, &SpatialGrid::new([4; 3], [0.; 3], [0.4, 0., 0., 0., 0.4, 0., 0., 0., 0.4], true).unwrap(), &[1.; 3]).is_err());
+    assert_eq!(context.memory_used(), 0);
+}

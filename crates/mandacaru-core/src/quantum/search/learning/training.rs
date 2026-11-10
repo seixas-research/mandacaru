@@ -1,8 +1,15 @@
-//! State-wise first-choice likelihood, native Adam, and held-out ranking.
+//! State-wise first-choice likelihood, native Adam, and held-out ranking of the two proposal
+//! kinds of VALSQA's decision A: the pairwise ranker ([`super::ranker`]) and the graph network.
+//!
+//! Readiness is judged within states: a kind's pooled within-state Spearman correlation must exceed
+//! the gradient's by 0.05, and it must beat the gradient in most held-out groups. Among the kinds
+//! that pass, the highest correlation is chosen; a tie goes to the simpler kind (the ranker). With
+//! none passing, the model keeps the last kind requested and is not ready.
 use super::{
     data::{Dataset, State},
     graph::{Candidates, Graph, Matrix},
     network::{self, Parameters},
+    ranker::{Ranker, Sample, DESCRIPTORS},
 };
 use crate::{
     math::{autodiff::Tape, random::Rng},
@@ -13,6 +20,28 @@ use std::collections::BTreeMap;
 
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
+}
+
+/// A proposal predictor, the simpler first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    Ranker,
+    Graph,
+}
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Ranker => "ranker",
+            Kind::Graph => "graph",
+        }
+    }
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "ranker" => Ok(Kind::Ranker),
+            "graph" => Ok(Kind::Graph),
+            _ => Err(invalid("proposal kinds are \"ranker\" and \"graph\"")),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -26,8 +55,16 @@ pub struct Options {
     pub label_temperature: f64,
     pub fractions: Vec<f64>,
     pub folds: Option<usize>,
+    /// The initial weight of the gradient softmax in the graph model's training targets.
     pub mixing: f64,
+    /// The share of the training steps over which that weight falls linearly to zero; the rest of
+    /// the training, and every draw of a trained model, uses the model alone.
+    pub mixing_fraction: f64,
     pub temperature: f64,
+    /// The predictors to assess and train (at least one, no repeat).
+    pub kinds: Vec<Kind>,
+    /// The ranker's ridge: the mean pairwise loss plus `l2 |w|^2`.
+    pub l2: f64,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -42,7 +79,10 @@ impl Default for Options {
             fractions: vec![0.25, 0.5, 1.],
             folds: None,
             mixing: 0.3,
+            mixing_fraction: 0.2,
             temperature: 1.,
+            kinds: vec![Kind::Graph],
+            l2: 1e-2,
         }
     }
 }
@@ -68,14 +108,24 @@ impl Options {
                 .iter()
                 .any(|v| !v.is_finite() || *v <= 0. || *v > 1.)
             || self.fractions.last() != Some(&1.)
+            || self.kinds.is_empty()
+            || (1..self.kinds.len()).any(|i| self.kinds[..i].contains(&self.kinds[i]))
+            || !self.l2.is_finite()
+            || self.l2 <= 0.
+            || !(self.mixing_fraction > 0. && self.mixing_fraction <= 1.)
         {
-            return Err(invalid("training needs positive epochs, batch and temperatures, at least two folds, fractions in (0,1] ending at one, and mixing in (0,1]"));
+            return Err(invalid("training needs positive epochs, batch and temperatures, at least two folds, fractions in (0,1] ending at one, mixing in (0,1], at least one proposal kind without repeats, and a positive ranker l2"));
         }
         Ok(())
     }
 }
 pub struct Model {
-    pub parameters: Parameters,
+    /// The kind the proposal draws from.
+    pub kind: Kind,
+    /// The graph network, when trained.
+    pub parameters: Option<Parameters>,
+    /// The pairwise ranker, when trained (`None` also when no state holds a pair).
+    pub ranker: Option<Ranker>,
     pub mean: [f64; 9],
     pub std: [f64; 9],
     pub ready: bool,
@@ -85,8 +135,13 @@ pub struct Model {
 }
 impl Model {
     pub fn scores(&self, context: &Context, graph: &Graph, rows: &Candidates) -> Result<Vec<f64>> {
+        if self.kind == Kind::Ranker {
+            let ranker = self.ranker.as_ref().ok_or_else(|| invalid("a ranker model holds no ranker"))?;
+            return Ok(descriptor_rows(rows).iter().map(|row| ranker.score(row)).collect());
+        }
+        let parameters = self.parameters.as_ref().ok_or_else(|| invalid("a graph model holds no network"))?;
         let mut tape = Tape::new(context);
-        let variables = self.parameters.variables(&mut tape)?;
+        let variables = parameters.variables(&mut tape)?;
         let scores = network::scores(&mut tape, &variables, graph, rows, &self.mean, &self.std)?;
         let values = tape.value(scores).as_slice().to_vec();
         if values.iter().any(|v| !v.is_finite()) {
@@ -95,19 +150,27 @@ impl Model {
         Ok(values)
     }
     pub fn as_json(&self) -> Value {
-        json!({"format":"mandacaru-proposal-model","version":1,"kind":"graph",
-            "weights":self.parameters.as_json(),"mean":self.mean,"std":self.std,
-            "ready":self.ready,"report":self.report,"mixing":self.mixing,"temperature":self.temperature})
+        let mut out = json!({"format":"mandacaru-proposal-model","version":1,"kind":self.kind.name(),
+            "mean":self.mean,"std":self.std,
+            "ready":self.ready,"report":self.report,"mixing":self.mixing,"temperature":self.temperature});
+        if let Some(parameters) = &self.parameters {
+            out["weights"] = parameters.as_json();
+        }
+        if let Some(r) = &self.ranker {
+            out["ranker"] = json!({"weights":r.weights,"mean":r.mean,"std":r.std,"pairs":r.pairs});
+        }
+        out
     }
     pub fn from_json(context: &Context, source: &str) -> Result<Self> {
         let _parse = context.reserve(product(&[source.len(), 32])?)?;
         let v: Value = serde_json::from_str(source).map_err(|e| invalid(&e.to_string()))?;
-        if v["format"] != "mandacaru-proposal-model" || v["version"] != 1 || v["kind"] != "graph" {
+        if v["format"] != "mandacaru-proposal-model" || v["version"] != 1 {
             return Err(invalid("unsupported native proposal model schema"));
         }
-        let array = |name: &str| -> Result<[f64; 9]> {
+        let kind = Kind::parse(v["kind"].as_str().unwrap_or(""))?;
+        let nine = |from: &Value, name: &str| -> Result<[f64; 9]> {
             let mut out = [0.; 9];
-            let entries = v[name]
+            let entries = from[name]
                 .as_array()
                 .filter(|a| a.len() == 9)
                 .ok_or_else(|| invalid("proposal normalization requires nine descriptors"))?;
@@ -119,8 +182,30 @@ impl Model {
             }
             Ok(out)
         };
-        let mean = array("mean")?;
-        let std = array("std")?;
+        let mean = nine(&v, "mean")?;
+        let std = nine(&v, "std")?;
+        let ranker = match v.get("ranker") {
+            Some(r) => {
+                let ranker = Ranker {
+                    weights: nine(r, "weights")?,
+                    mean: nine(r, "mean")?,
+                    std: nine(r, "std")?,
+                    pairs: r["pairs"].as_u64().ok_or_else(|| invalid("a ranker needs its pair count"))? as usize,
+                };
+                if ranker.std.iter().any(|s| *s <= 0.) {
+                    return Err(invalid("a ranker's scales must be positive"));
+                }
+                Some(ranker)
+            }
+            None => None,
+        };
+        let parameters = match v.get("weights") {
+            Some(w) => Some(Parameters::from_json(context, w)?),
+            None => None,
+        };
+        if (kind == Kind::Graph && parameters.is_none()) || (kind == Kind::Ranker && ranker.is_none()) {
+            return Err(invalid("a proposal model must hold the predictor of its kind"));
+        }
         let mixing = v["mixing"].as_f64().unwrap_or(f64::NAN);
         let temperature = v["temperature"].as_f64().unwrap_or(f64::NAN);
         if std.iter().any(|s| *s <= 0.)
@@ -135,7 +220,9 @@ impl Model {
             ));
         }
         Ok(Self {
-            parameters: Parameters::from_json(context, &v["weights"])?,
+            kind,
+            parameters,
+            ranker,
             mean,
             std,
             ready: v["ready"]
@@ -157,6 +244,33 @@ pub fn softmax(values: &[f64]) -> Vec<f64> {
     out
 }
 /// Returns the exact score adjoint of the state-wise cross entropy.
+/// The gradient's weight in the training targets at `step` of `steps`: `mixing`, falling linearly
+/// to zero at `fraction` of the steps.
+pub fn teacher_weight(mixing: f64, fraction: f64, step: usize, steps: usize) -> f64 {
+    let end = fraction * steps as f64;
+    mixing * (1. - step as f64 / end).max(0.)
+}
+
+/// [`first_choice`] against the observed distribution blended with a teacher's: `(1 - w) q + w t`.
+pub fn taught_choice(scores: &[f64], targets: &[f64], scale: f64, teacher: &[f64], weight: f64) -> Result<(f64, Vec<f64>)> {
+    if weight == 0. {
+        return first_choice(scores, targets, scale);
+    }
+    if teacher.len() != scores.len() || !(0. ..=1.).contains(&weight) {
+        return Err(invalid("a teacher needs one probability per candidate and a weight in [0, 1]"));
+    }
+    let (_, adjoint) = first_choice(scores, targets, scale)?;
+    let p = softmax(scores);
+    // q = p - adjoint; the blended target and its cross-entropy gradient.
+    let q: Vec<f64> = p.iter().zip(&adjoint).zip(teacher).map(|((p, a), t)| (1. - weight) * (p - a) + weight * t).collect();
+    let top = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let log_sum = top + scores.iter().map(|v| (v - top).exp()).sum::<f64>().ln();
+    Ok((
+        q.iter().zip(scores).map(|(q, s)| q * (log_sum - s)).sum(),
+        p.iter().zip(&q).map(|(p, q)| p - q).collect(),
+    ))
+}
+
 pub fn first_choice(scores: &[f64], targets: &[f64], scale: f64) -> Result<(f64, Vec<f64>)> {
     if scores.len() != targets.len()
         || scores.is_empty()
@@ -275,10 +389,15 @@ pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<
                 };
                 let output =
                     network::head(&mut tape, &variables, zh, za, &state.rows, &mean, &std)?;
-                let (_, adjoint) = first_choice(
+                // The gradient softmax aids the first stage of the training only.
+                let weight = teacher_weight(options.mixing, options.mixing_fraction, step - 1, steps);
+                let teacher = crate::quantum::search::kernel::softmax(&state.gradients, 1.)?;
+                let (_, adjoint) = taught_choice(
                     tape.value(output).as_slice(),
                     &state.targets,
                     target_scale * options.label_temperature,
+                    &teacher,
+                    weight,
                 )?;
                 outputs.push((
                     output,
@@ -314,7 +433,9 @@ pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<
         }
     }
     Ok(Model {
-        parameters,
+        kind: Kind::Graph,
+        parameters: Some(parameters),
+        ranker: None,
         mean,
         std,
         ready: false,
@@ -368,6 +489,48 @@ fn average(values: &[f64]) -> Option<f64> {
         Some(values.iter().sum::<f64>() / values.len() as f64)
     }
 }
+/// The descriptor rows of a state's candidates.
+fn descriptor_rows(rows: &Candidates) -> Vec<[f64; DESCRIPTORS]> {
+    let d = &rows.descriptors;
+    (0..d.nrows()).map(|r| std::array::from_fn(|c| d[(r, c)])).collect()
+}
+
+/// The pairwise ranker of `states` (their descriptor rows and targets).
+pub fn ranker(states: &[&State], l2: f64) -> Result<Option<Ranker>> {
+    let rows: Vec<Vec<[f64; DESCRIPTORS]>> = states.iter().map(|s| descriptor_rows(&s.rows)).collect();
+    let samples: Vec<Sample> = states
+        .iter()
+        .zip(&rows)
+        .map(|(s, d)| Sample { descriptors: d, targets: &s.targets })
+        .collect();
+    Ranker::fit(&samples, l2)
+}
+
+/// Every kind of `options.kinds` trained on `states`, the proposal kind being the last one.
+fn trained(context: &Context, states: &[&State], options: &Options) -> Result<Model> {
+    let mut model = if options.kinds.contains(&Kind::Graph) {
+        train(context, states, options)?
+    } else {
+        let (mean, std, _) = normalized(states);
+        Model {
+            kind: Kind::Ranker,
+            parameters: None,
+            ranker: None,
+            mean,
+            std,
+            ready: false,
+            report: Value::Null,
+            mixing: options.mixing,
+            temperature: options.temperature,
+        }
+    };
+    if options.kinds.contains(&Kind::Ranker) {
+        model.ranker = ranker(states, options.l2)?;
+    }
+    model.kind = *options.kinds.last().expect("validated: at least one kind");
+    Ok(model)
+}
+
 pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Model> {
     options.validate()?;
     let mut random = Rng(options.seed);
@@ -375,17 +538,17 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
     shuffle(&mut groups, &mut random);
     let nfolds = options.folds.unwrap_or(groups.len()).min(groups.len());
     let mut curve = Vec::new();
-    let mut full_graph = Vec::new();
+    // Of the full-data point: the pooled within-state correlations per kind and of the gradient,
+    // and per held-out group the averages that decide the wins.
+    let mut pooled = BTreeMap::<Kind, Vec<f64>>::new();
     let mut full_gradient = Vec::new();
-    let mut valid_groups = 0;
-    let mut wins = 0;
+    let mut per_group: Vec<(BTreeMap<Kind, Option<f64>>, f64)> = Vec::new();
     if groups.len() >= 3 {
         for &fraction in &options.fractions {
             let mut folds = Vec::new();
-            full_graph.clear();
+            pooled.clear();
             full_gradient.clear();
-            valid_groups = 0;
-            wins = 0;
+            per_group.clear();
             for fold in 0..nfolds {
                 let held_out: Vec<_> = groups
                     .iter()
@@ -400,19 +563,25 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
                     .collect();
                 shuffle(&mut training, &mut random);
                 training.truncate(((training.len() as f64 * fraction).ceil() as usize).max(1));
-                let model = train(context, &training, options)?;
-                let mut by_group = BTreeMap::<String, (Vec<f64>, Vec<f64>)>::new();
+                let mut model = trained(context, &training, options)?;
+                let mut by_group = BTreeMap::<String, (BTreeMap<Kind, Vec<f64>>, Vec<f64>)>::new();
                 for state in dataset
                     .states
                     .iter()
                     .filter(|s| held_out.contains(&s.group.as_str()) && s.targets.len() >= 3)
                 {
-                    let scores = model.scores(context, &state.graph, &state.rows)?;
                     let observed: Vec<_> = state.changes.iter().map(|v| -v).collect();
                     let entry = by_group.entry(state.group.clone()).or_default();
-                    if let Some(value) = spearman(&scores, &observed) {
-                        entry.0.push(value);
-                        full_graph.push(value);
+                    for &kind in &options.kinds {
+                        if kind == Kind::Ranker && model.ranker.is_none() {
+                            continue;
+                        }
+                        model.kind = kind;
+                        let scores = model.scores(context, &state.graph, &state.rows)?;
+                        if let Some(value) = spearman(&scores, &observed) {
+                            entry.0.entry(kind).or_default().push(value);
+                            pooled.entry(kind).or_default().push(value);
+                        }
                     }
                     if let Some(value) = spearman(&state.gradients, &observed) {
                         entry.1.push(value);
@@ -421,45 +590,72 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
                 }
                 let mut metrics = Vec::new();
                 for (group, (learned, gradient)) in by_group {
-                    let learned = average(&learned);
+                    let learned: BTreeMap<Kind, Option<f64>> =
+                        options.kinds.iter().map(|&k| (k, learned.get(&k).and_then(|v| average(v)))).collect();
                     let gradient = average(&gradient);
-                    if let Some(baseline) = gradient {
-                        valid_groups += 1;
-                        if learned.is_some_and(|v| v > baseline) {
-                            wins += 1;
-                        }
+                    let mut entry = json!({"group":group,"gradient":gradient});
+                    for (kind, value) in &learned {
+                        entry[kind.name()] = json!(value);
                     }
-                    metrics.push(json!({"group":group,"states":gradient.map(|_|true),"graph":learned,"gradient":gradient}));
+                    metrics.push(entry);
+                    if let Some(baseline) = gradient {
+                        per_group.push((learned, baseline));
+                    }
                 }
-                folds.push(
-                    json!({"held_out":held_out,"train_states":training.len(),"groups":metrics}),
-                );
+                folds.push(json!({"held_out":held_out,"train_states":training.len(),"groups":metrics}));
             }
-            curve.push(json!({"fraction":fraction,"folds":folds,"within_state":{"graph":{"spearman":average(&full_graph)},"gradient":{"spearman":average(&full_gradient)}}}));
+            let mut within = json!({"gradient":{"spearman":average(&full_gradient)}});
+            for kind in &options.kinds {
+                within[kind.name()] = json!({"spearman": pooled.get(kind).and_then(|v| average(v))});
+            }
+            curve.push(json!({"fraction":fraction,"folds":folds,"within_state":within}));
         }
     }
-    let learned = average(&full_graph);
     let gradient = average(&full_gradient);
-    let ready = valid_groups >= 3
-        && wins * 2 > valid_groups
-        && learned.zip(gradient).is_some_and(|(g, b)| g >= b + 0.05);
+    let valid_groups = per_group.len();
+    let metric = |value: Option<f64>| value.map_or_else(|| "undefined".into(), |v| format!("{v:.3}"));
+    let mut passed: Vec<(f64, Kind, usize)> = Vec::new();
+    let mut verdicts = Vec::new();
+    for &kind in &options.kinds {
+        let value = pooled.get(&kind).and_then(|v| average(v));
+        let wins = per_group
+            .iter()
+            .filter(|(learned, baseline)| learned.get(&kind).copied().flatten().is_some_and(|v| v > *baseline))
+            .count();
+        if valid_groups >= 3
+            && wins * 2 > valid_groups
+            && value.zip(gradient).is_some_and(|(v, b)| v >= b + 0.05)
+        {
+            passed.push((value.expect("checked"), kind, wins));
+        }
+        verdicts.push(format!("{} {} ({wins} of {valid_groups} groups)", kind.name(), metric(value)));
+    }
+    // The highest correlation; a tie goes to the simpler kind (the ranker).
+    let chosen = passed.iter().copied().max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
     let reason = if groups.len() < 3 {
-        format!(
-            "{} groups; at least three are needed to hold one out and train on two",
-            groups.len()
-        )
+        format!("{} groups; at least three are needed to hold one out and train on two", groups.len())
     } else if valid_groups < 3 {
         format!("only {valid_groups} held-out groups have nonconstant states with three or more insertions; record chains with screen_insertions")
+    } else if let Some((value, kind, wins)) = chosen {
+        format!("{}: within-state Spearman {value:.3} against the gradient's {}, better in {wins} of {valid_groups} groups", kind.name(), metric(gradient))
     } else {
-        let metric =
-            |value: Option<f64>| value.map_or_else(|| "undefined".into(), |v| format!("{v:.3}"));
-        format!("within-state Spearman: graph {}, gradient {}; improved in {wins} of {valid_groups} groups; readiness requires a 0.05 margin and a strict majority",metric(learned),metric(gradient))
+        format!("within-state Spearman: gradient {}, {}; a model needs the gradient's plus 0.05 and most groups", metric(gradient), verdicts.join(", "))
     };
     let states: Vec<_> = dataset.states.iter().collect();
-    let mut model = train(context, &states, options)?;
-    model.ready = ready;
-    model.report = json!({"ready":ready,"kind":"graph","reason":reason,"groups":groups.len(),"states":states.len(),
-        "insertions":dataset.observations,"curve":curve,"kinds":["graph"],"held_out_groups":valid_groups,"wins":wins});
+    let mut model = trained(context, &states, options)?;
+    let ready = chosen.is_some();
+    if let Some((_, kind, _)) = chosen {
+        model.kind = kind;
+    }
+    if model.kind == Kind::Ranker && model.ranker.is_none() {
+        // No state holds a pair: the ranker cannot draw, and the model is not ready.
+        model.kind = *options.kinds.iter().find(|&&k| k == Kind::Graph).unwrap_or(&Kind::Ranker);
+    }
+    model.ready = ready && (model.kind != Kind::Ranker || model.ranker.is_some());
+    let kinds: Vec<_> = options.kinds.iter().map(|k| k.name()).collect();
+    model.report = json!({"ready":model.ready,"kind":model.kind.name(),"reason":reason,"groups":groups.len(),"states":states.len(),
+        "insertions":dataset.observations,"curve":curve,"kinds":kinds,"held_out_groups":valid_groups,
+        "wins":chosen.map_or(0, |c| c.2)});
     Ok(model)
 }
 

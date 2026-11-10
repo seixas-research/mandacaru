@@ -63,6 +63,9 @@ pub struct XcFields {
     pub gradients: Option<Vec<f64>>,
     /// `d f / d (partial_c n_s)`, the same layout; `None` for a local functional.
     pub flux: Option<Vec<f64>>,
+    /// X-6, `dE_nl / d eps_ab` of the rVV10 kernel's wave numbers at the output density
+    /// (`nonlocal::strain`); `Some` exactly for a functional with the rVV10 correction.
+    pub nonlocal: Option<[[f64; 3]; 3]>,
 }
 
 /// The fields of one output density as the strain terms read them.
@@ -453,6 +456,12 @@ impl Strain for StrainSetup<'_> {
                  rotated spin channels, a local one has none",
             ));
         }
+        if definition.nonlocal_b.is_some() != fields.xc.nonlocal.is_some() {
+            return Err(invalid(
+                "crystal stress: the rVV10 functional needs the strain derivative of its \
+                 kernel, another functional has none",
+            ));
+        }
         let (ctx, grid) = (self.ctx, self.inputs.grid);
         let n = self.mesh.len();
         let mut core = [[0.; 3]; 3];
@@ -494,6 +503,7 @@ impl Strain for StrainSetup<'_> {
             )?,
             core,
             core_kinetic,
+            nonlocal: fields.xc.nonlocal.unwrap_or_default(),
         })
     }
 }

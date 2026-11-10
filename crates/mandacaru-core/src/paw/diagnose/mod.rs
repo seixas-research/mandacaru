@@ -11,6 +11,9 @@
 //! - [`kappa`]: the `j` branches of a fully relativistic dataset as channels of their own.
 //! - [`reference`]: the all-electron side (atom, equation, core shells, cached logarithmic
 //!   derivatives). [`view`]: the smooth side, the one thing the checks read.
+//! - [`quality`]: verification gates the search does not act on (a bound level in a channel
+//!   without projectors, hardness, sphere against bond, sr/fr partition, defects the record does
+//!   not store).
 //!
 //! [`Diagnosis::run`] evaluates every check; [`Diagnosis::defects`] applies the recording rule
 //! of the generator (`ghosts="flag"`): a dataset with a ghost records the ghosts alone, one
@@ -25,6 +28,7 @@
 pub mod ghosts;
 pub mod intruding;
 pub mod kappa;
+pub mod quality;
 pub mod reconstruct;
 pub mod reference;
 pub mod scattering;
@@ -234,4 +238,25 @@ pub fn diagnose_record(
     let smooth = Smooth::scalar(ctx, dataset)?;
     let ae = AllElectron::new(atom, smooth.atomic_number, &smooth.frozen, &smooth.semicore);
     Diagnosis::run(ctx, &smooth, &ae, cache)?.with_branches(ctx, dataset)
+}
+
+/// [`diagnose_record`] and, on the same atom, the bound all-electron levels of the channels
+/// without projectors that the dataset misses ([`quality::unprojected_missing_states`]), which
+/// the recording rule does not act on.
+pub fn diagnose_record_with_unprojected(
+    ctx: &Context,
+    dataset: &crate::paw::record::PawDataset,
+    cache: &mut AeLogs,
+) -> Outcome<(Diagnosis, BTreeMap<usize, f64>)> {
+    let atom = reference::reference_atom(ctx, dataset)?;
+    let diagnosis = diagnose_record(ctx, dataset, Some(&atom), cache)?;
+    let smooth = Smooth::scalar(ctx, dataset)?;
+    let ae = AllElectron::new(
+        &atom,
+        smooth.atomic_number,
+        &smooth.frozen,
+        &smooth.semicore,
+    );
+    let missing = quality::unprojected_missing_states(&smooth, &ae)?;
+    Ok((diagnosis, missing))
 }

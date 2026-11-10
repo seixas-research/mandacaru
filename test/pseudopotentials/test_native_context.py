@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import numpy as np
 
+from mandacaru import _native
 from mandacaru.pseudopotentials import multipoles
 from mandacaru.pseudopotentials.native_context import context
 
 
-def test_one_single_threaded_context_serves_the_process():
+def test_one_context_serves_each_thread_request():
+    """A request is served by one shared context; no request takes the
+    engine's own thread policy (``MANDACARU_NUM_THREADS``, ``OMP_NUM_THREADS``,
+    then the hardware), a request for ``n`` threads takes ``n``."""
     assert context() is context()
-    assert context().threads == 1
+    assert context().threads == _native.num_threads()
+    assert context(2) is context(2)
+    assert context(2).threads == 2
 
 
 def test_a_radial_call_releases_its_memory():

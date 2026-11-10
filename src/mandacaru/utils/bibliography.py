@@ -663,8 +663,8 @@ _ALGORITHMS = [
   pages   = {1087},
   year    = {1953},
   doi     = {10.1063/1.1699114}
-}""", "the Metropolis acceptance of the MCAS-VQE architecture chain",
-         verified=False, topics=("mcas",)),
+}""", "the Metropolis acceptance of the VASQA architecture chain",
+         verified=False, topics=("vasqa",)),
     _ref("Hastings1970", """
 @article{Hastings1970,
   author  = {Hastings, W. K.},
@@ -675,8 +675,8 @@ _ALGORITHMS = [
   pages   = {97},
   year    = {1970},
   doi     = {10.1093/biomet/57.1.97}
-}""", "the proposal-ratio correction of the MCAS-VQE architecture chain",
-         verified=False, topics=("mcas",)),
+}""", "the proposal-ratio correction of the VASQA architecture chain",
+         verified=False, topics=("vasqa",)),
     _ref("Kirkpatrick1983", """
 @article{Kirkpatrick1983,
   author  = {Kirkpatrick, S. and Gelatt, C. D. and Vecchi, M. P.},
@@ -686,8 +686,8 @@ _ALGORITHMS = [
   pages   = {671},
   year    = {1983},
   doi     = {10.1126/science.220.4598.671}
-}""", "the annealed architecture temperature of MCAS-VQE", verified=False,
-         topics=("mcas",)),
+}""", "the annealed architecture temperature of VASQA", verified=False,
+         topics=("vasqa",)),
     _ref("Gilmer2017", """
 @inproceedings{Gilmer2017,
   author    = {Gilmer, Justin and Schoenholz, Samuel S. and Riley, Patrick F.
@@ -699,16 +699,16 @@ _ALGORITHMS = [
   volume    = {70},
   pages     = {1263--1272},
   year      = {2017}
-}""", "the Hamiltonian message-passing network of VALQA's proposal",
-         verified=False, topics=("mcas",)),
+}""", "the Hamiltonian message-passing network of VALSQA's proposal",
+         verified=False, topics=("vasqa",)),
     _ref("Rasmussen2006", """
 @book{Rasmussen2006,
   author    = {Rasmussen, Carl Edward and Williams, Christopher K. I.},
   title     = {Gaussian Processes for Machine Learning},
   publisher = {MIT Press},
   year      = {2006}
-}""", "the Gaussian-process head of VALQA's proposal", verified=False,
-         topics=("mcas",)),
+}""", "the Gaussian-process head of VALSQA's proposal", verified=False,
+         topics=("vasqa",)),
     _ref("Kitaev1995", """
 @misc{Kitaev1995,
   author        = {Kitaev, A. Yu.},
@@ -853,6 +853,50 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevB.71.035105}
 }""", "the linear response determination of Hubbard parameters",
          verified=False, topics=("dft", "hubbard", "response")),
+    _ref("Motta2021", """
+@article{Motta2021,
+  author  = {Motta, Mario and Ye, Erika and McClean, Jarrod R. and Li, Zhendong
+             and Minnich, Austin J. and Babbush, Ryan and Chan, Garnet Kin-Lic},
+  title   = {Low rank representations for quantum simulation of electronic
+             structure},
+  journal = {npj Quantum Inf.},
+  volume  = {7},
+  pages   = {83},
+  year    = {2021},
+  doi     = {10.1038/s41534-021-00416-z}
+}""", "the double factorization of the two-body operator behind "
+         "measurement_scheme='double-factorized'", verified=False,
+         topics=("measurement", "double_factorization")),
+    _ref("Huggins2021", """
+@article{Huggins2021,
+  author  = {Huggins, William J. and McClean, Jarrod R. and Rubin, Nicholas C.
+             and Jiang, Zhang and Wiebe, Nathan and Whaley, K. Birgitta and
+             Babbush, Ryan},
+  title   = {Efficient and noise resilient measurements for quantum chemistry
+             on near-term quantum computers},
+  journal = {npj Quantum Inf.},
+  volume  = {7},
+  pages   = {23},
+  year    = {2021},
+  doi     = {10.1038/s41534-020-00341-7}
+}""", "measuring an energy in the bases of a factorized Hamiltonian "
+         "(measurement_scheme='double-factorized')", verified=False,
+         topics=("measurement", "double_factorization")),
+    _ref("Kivlichan2018", """
+@article{Kivlichan2018,
+  author  = {Kivlichan, Ian D. and McClean, Jarrod and Wiebe, Nathan and
+             Gidney, Craig and Aspuru-Guzik, Al{\\'a}n and Chan, Garnet Kin-Lic
+             and Babbush, Ryan},
+  title   = {Quantum simulation of electronic structure with linear depth and
+             connectivity},
+  journal = {Phys. Rev. Lett.},
+  volume  = {120},
+  pages   = {110501},
+  year    = {2018},
+  doi     = {10.1103/PhysRevLett.120.110501}
+}""", "the Givens rotations on neighboring modes that change the measurement "
+         "basis of measurement_scheme='double-factorized'", verified=False,
+         topics=("measurement", "double_factorization", "givens")),
 ]
 
 # --------------------------------------------------------------------------- #
@@ -972,7 +1016,7 @@ _MAPPINGS = [
   primaryClass  = {quant-ph},
   doi           = {10.48550/arXiv.1701.08213}
 }""", "the two-qubit reduction of the parity mapping (parity_reduced) and "
-         "Z2 symmetry tapering (mandacaru.core.tapering)",
+         "Z2 symmetry tapering (the taper option)",
          verified=False, topics=("mapping", "parity_reduced", "tapering",
                                  "symmetry")),
 ]
@@ -1039,8 +1083,8 @@ _BASES = [
   pages   = {195112},
   year    = {2009},
   doi     = {10.1103/PhysRevB.80.195112}
-}""", "analytic two-center integrals of atom-centered radial functions "
-         "(two_center=)", verified=False,
+}""", "analytic two-center integrals of atom-centered radial functions",
+         verified=False,
          topics=("two_center", "paw-lcao")),
     _ref("Junquera2001", """
 @article{Junquera2001,
@@ -1352,6 +1396,18 @@ _BASES = [
   doi     = {10.1007/BF02783624}
 }""", "the spectral representation `get_spectral_function` evaluates",
          verified=False, topics=("periodic", "spectral")),
+    _ref("GaglianoBalseiro1987", """
+@article{GaglianoBalseiro1987,
+  author  = {Gagliano, E. R. and Balseiro, C. A.},
+  title   = {Dynamical properties of quantum many-body systems at zero
+             temperature},
+  journal = {Phys. Rev. Lett.},
+  volume  = {59},
+  pages   = {2999--3002},
+  year    = {1987},
+  doi     = {10.1103/PhysRevLett.59.2999}
+}""", "the Lanczos recursion that resolves each part of the Lehmann sum of "
+         "`get_spectral_function`", verified=False, topics=("periodic", "spectral")),
     _ref("Ewald1921", """
 @article{Ewald1921,
   author  = {Ewald, P. P.},

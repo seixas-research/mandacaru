@@ -210,35 +210,19 @@ def test_adapt_vqe_molecule_spin_orbit_pool_variational_forces():
 
 
 # ============================================================================ #
-# 4. VQE / ADAPT-VQE Crystals: Periodic Forces and Stresses (All Spin Cases)
+# 4. Quantum methods on a crystal: forces and stress are refused
 # ============================================================================ #
 
-def test_vqe_crystal_unpolarized_forces_and_stress():
-    """Unpolarized crystal with VQE: forces and stress are computed in Rust."""
+@pytest.mark.parametrize("method, options", [
+    ("vqe", {}), ("adapt-vqe", {}), ("adapt-vqe", {"pool": "spin-orbit"}),
+    ("vasqa", {"seed": 0}), ("valsqa", {"seed": 0})])
+@pytest.mark.parametrize("prop", ["forces", "stress"])
+def test_a_quantum_crystal_refuses_forces_and_stress(method, options, prop):
+    """Only a finite difference of the supercell energy could give them, and that energy moves
+    by meV to 0.65 eV under a rigid translation of the crystal against the grid
+    (``integrations/bloch.py::refuse_derivatives``): a refusal, not a grid artifact."""
     atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]], cell=[4.0, 4.0, 4.0], pbc=True)
-    atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.5, resources={"threads": 1})
-    forces = atoms.get_forces()
-    stress = atoms.get_stress()
-    assert forces.shape == (2, 3)
-    assert stress.shape == (6,)
-
-
-def test_adapt_vqe_crystal_spin_polarized_forces_and_stress():
-    """Collinear spin-polarized crystal with ADAPT-VQE: forces and stress are computed in Rust."""
-    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.2]], cell=[4.0, 4.0, 4.0], pbc=True)
-    atoms.set_initial_magnetic_moments([1.0, 1.0])
-    atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.5, resources={"threads": 1})
-    forces = atoms.get_forces()
-    stress = atoms.get_stress()
-    assert forces.shape == (2, 3)
-    assert stress.shape == (6,)
-
-
-def test_adapt_vqe_crystal_spin_orbit_forces_and_stress():
-    """Spin-orbit coupling crystal with ADAPT-VQE: forces and stress are computed in Rust."""
-    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]], cell=[4.0, 4.0, 4.0], pbc=True)
-    atoms.calc = Mandacaru(method="adapt-vqe", pool="spin-orbit", basis="HAO", grid_spacing=0.5, resources={"threads": 1})
-    forces = atoms.get_forces()
-    stress = atoms.get_stress()
-    assert forces.shape == (2, 3)
-    assert stress.shape == (6,)
+    atoms.calc = Mandacaru(method=method, crystal_orbitals="real-space", basis="HAO",
+                           grid_spacing=0.5, resources={"threads": 1}, trace=False, **options)
+    with pytest.raises(NotImplementedError, match="crystal"):
+        atoms.get_forces() if prop == "forces" else atoms.get_stress()

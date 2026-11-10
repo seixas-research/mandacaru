@@ -221,7 +221,7 @@ class TestOnARun:
         atoms = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                       cell=np.diag([2.0, 10.0, 10.0]),
                       pbc=[True, False, False])
-        atoms.calc = Mandacaru(method="bloch-adapt-vqe",
+        atoms.calc = Mandacaru(method="adapt-vqe", crystal_orbitals="real-space",
                                kpts={"size": (2, 1, 1), "gamma": True},
                                basis="HAO", grid_spacing=0.35, trace=False,
                                optimizer=SLSQP)

@@ -1,7 +1,7 @@
-"""Silicon diamond unit cell relaxation with Bloch-ADAPT-VQE and PAW-LCAO.
+"""Silicon diamond unit cell relaxation with ADAPT-VQE and PAW-LCAO.
 
 Relaxes the periodic unit cell (minimizing Voigt stress and forces) using
-Bloch-ADAPT-VQE, PAW-LCAO with active space (10 qubits <= 18 qubits),
+ADAPT-VQE on the supercell, PAW-LCAO with active space (10 qubits <= 18 qubits),
 matrix-free Cholesky decomposition, and ASE's ExpCellFilter with BFGS.
 """
 from ase.build import bulk
@@ -17,10 +17,11 @@ initial_volume = si.get_volume()
 initial_cell = np.array(si.get_cell())
 print(f"Initial lattice parameter: a = 5.5000 Angstrom | Volume = {initial_volume:.4f} Angstrom^3")
 
-# 2. Attach Bloch-ADAPT-VQE calculator with PAW-LCAO and Cholesky
+# 2. Attach ADAPT-VQE calculator (a crystal: the Born-von Karman supercell) with PAW-LCAO and Cholesky
 # Full valence space has 8 spatial orbitals = 16 qubits (<= 18 qubits).
 calc = Mandacaru(
-    method="bloch-adapt-vqe",
+    method="adapt-vqe",
+    crystal_orbitals="real-space",
     basis="PAW-LCAO",
     two_body="cholesky",
     kpts=(1, 1, 1),

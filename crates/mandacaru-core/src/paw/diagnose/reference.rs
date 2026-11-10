@@ -159,16 +159,26 @@ impl AeLogs {
     }
 }
 
-/// The reference atom must be the one the record was built on.
+/// The reference atom must have converged and be the one the record was built on. The two
+/// failures are told apart: an unconverged atom is a failure of the all-electron SCF, a
+/// mismatched one a wrong input.
 pub fn check_reference(ds: &PawDataset, atom: &Atom) -> Result<()> {
     let treatment = Treatment::parse(&ds.relativity)?;
-    if !atom.converged || atom.functional != ds.xc || atom.relativity != treatment {
+    if !atom.converged {
         return Err(invalid(format!(
-            "diagnose: {}: the reference atom (xc {:?}, relativity {:?}, converged {}) is not the one the record asks for (xc {:?}, relativity {:?})",
+            "diagnose: {}: the all-electron reference atom (xc {:?}, relativity {:?}) did not converge in {} iterations; the dataset cannot be checked against it",
             ds.symbol,
             atom.functional,
             atom.relativity.name(),
-            atom.converged,
+            atom.iterations
+        )));
+    }
+    if atom.functional != ds.xc || atom.relativity != treatment {
+        return Err(invalid(format!(
+            "diagnose: {}: the reference atom (xc {:?}, relativity {:?}) is not the one the record asks for (xc {:?}, relativity {:?})",
+            ds.symbol,
+            atom.functional,
+            atom.relativity.name(),
             ds.xc,
             ds.relativity
         )));

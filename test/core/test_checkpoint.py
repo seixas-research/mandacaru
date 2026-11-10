@@ -25,7 +25,7 @@ from ase import Atoms
 
 from mandacaru import Mandacaru
 from mandacaru.core import PauliSum, WavefunctionCheckpoint, load_checkpoint
-from mandacaru.core.checkpoint import prepare_state, reference_vector
+from mandacaru.core.checkpoint import prepare_state
 import warnings
 from mandacaru.core.checkpoint import fingerprint
 
@@ -129,7 +129,8 @@ class TestRecord:
 
     def test_prepare_state_handles_both_exponential_forms(self):
         """A generator with A^3 = -A takes the closed form; another does not."""
-        ref = reference_vector(2, [0])
+        ref = np.zeros(4, dtype=complex)
+        ref[0b10] = 1.0                       # qubit 0 is the leftmost bit
         excitation = PauliSum({"XY": 0.5j, "YX": -0.5j})    # A^3 = -A
         generic = PauliSum({"XX": 0.3j, "ZI": 0.2j})        # A^3 != -A
         from scipy.linalg import expm
@@ -397,3 +398,11 @@ class TestCheckpointRecordsThePreparation:
 
 
 
+
+
+def test_a_wide_checkpoint_refuses_its_state_vector_by_name():
+    """A shot run's register is too wide for a state vector: preparing one is refused with the
+    cause, not with a bare memory-budget error, and nothing is allocated."""
+    record = WavefunctionCheckpoint(50, [0, 1], [], [])
+    with pytest.raises(ValueError, match=r"2\^50 amplitudes.*use its circuit"):
+        record.state_vector()

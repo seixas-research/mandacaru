@@ -16,7 +16,7 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 5615
+zero_sloc = 3828
 
 [module]
 "analysis/correlation.py" = { np = 2 }
@@ -24,45 +24,25 @@ zero_sloc = 5615
 "analysis/expressibility.py" = { np = 1 }
 "analysis/fields.py" = { np = 1, matmul = 1 }
 "analysis/proposals.py" = { dloops = 2 }
-"backends/factorization.py" = { np = 4, matmul = 2, meth = 3, dloops = 1 }
-"backends/gradient_measurement.py" = { np = 24, matmul = 2, meth = 3, dloops = 5 }
-"backends/measurement.py" = { np = 6, dloops = 3, dcomp = 6 }
-"backends/providers.py" = { np = 8, matmul = 2, dyn = 1, dloops = 4, dcomp = 6 }
-"basis/__init__.py" = { sloc = 61, category = "hand-off" }
+"backends/factorization.py" = { np = 3, matmul = 2, meth = 3, dloops = 1 }
+"backends/measurement.py" = { np = 3, dloops = 2, dcomp = 4 }
+"backends/providers.py" = { np = 8, matmul = 2, dyn = 1, dloops = 3, dcomp = 6 }
+"basis/__init__.py" = { sloc = 30, category = "hand-off" }
 "basis/_angular.py" = { np = 1, bi = 1, aloops = 1, arith = 4, arithmax = 4, sloc = 59, wave = "BF", dies = "2027-07-16" }
 "basis/_config.py" = { dloops = 3, bi = 6, sloc = 91, wave = "BF", dies = "2027-07-16" }
 "basis/atomic_solver.py" = { bi = 2, arith = 1, arithmax = 1, sloc = 94, wave = "W4", dies = "2027-07-16" }
-"basis/base.py" = { np = 4, meth = 1, bi = 2, aloops = 4, arith = 16, arithmax = 5, sloc = 110, wave = "BF", dies = "2027-07-16" }
-"basis/factory.py" = { bi = 3, acomp = 1, arith = 1, arithmax = 1, sloc = 348, wave = "BF", dies = "2027-07-16" }
+"basis/base.py" = { sloc = 12, wave = "BF", dies = "2027-07-16" }
 "basis/filtering.py" = { np = 1, bi = 2, arith = 6, arithmax = 3, sloc = 124, wave = "W4", dies = "2027-07-16" }
-"basis/gaussian.py" = { np = 2, meth = 1, bi = 1, arith = 8, arithmax = 5, sloc = 45, wave = "BF", dies = "2027-07-16" }
-"basis/gaussian_families.py" = { np = 1, meth = 3, dloops = 5, dcomp = 5, bi = 12, aloops = 1, acomp = 2, arith = 14, arithmax = 6, sloc = 126, wave = "BF", dies = "2027-07-16" }
-"basis/hao.py" = { np = 6, dloops = 1, bi = 2, aloops = 1, arith = 18, arithmax = 10, sloc = 88, wave = "BF", dies = "2027-07-16" }
-"basis/loggrid.py" = { sloc = 63, wave = "BF", dies = "2027-07-16" }
 "basis/multizeta.py" = { dloops = 1, bi = 2, arith = 1, arithmax = 1, sloc = 131, wave = "BF", dies = "2027-07-16" }
-"basis/nao.py" = { np = 1, bi = 1, arith = 3, arithmax = 2, sloc = 61, wave = "BF", dies = "2027-07-16" }
-"basis/nao_ae.py" = { bi = 5, aloops = 2, arith = 17, arithmax = 5, sloc = 232, wave = "BF", dies = "2027-07-16" }
-"basis/pople.py" = { dloops = 1, bi = 2, arith = 4, arithmax = 2, sloc = 41, wave = "BF", dies = "2027-07-16" }
-"basis/radial_backend.py" = { np = 2, sloc = 33, wave = "W4", dies = "2027-07-16" }
 "basis/relativity.py" = { bi = 4, arith = 4, arithmax = 3, sloc = 130, wave = "W4", dies = "2027-07-16" }
-"basis/sto_ng.py" = { np = 2, bi = 1, arith = 6, arithmax = 3, sloc = 41, wave = "BF", dies = "2027-07-16" }
-"calculation.py" = { np = 9, matmul = 2, dloops = 1 }
-"circuits/pools.py" = { math = 4, dloops = 3, dcomp = 1 }
-"core/augmentation.py" = { np = 1, matmul = 2, meth = 1, dloops = 1 }
-"core/checkpoint.py" = { np = 7, matmul = 4, dcomp = 2 }
+"calculation.py" = { np = 6 }
+"core/checkpoint.py" = { np = 1, dcomp = 2 }
 "core/dipole.py" = { np = 4, matmul = 1, meth = 1 }
-"core/ewald.py" = { np = 1 }
-"core/mapping.py" = { np = 18, matmul = 4, meth = 1, dloops = 10, dcomp = 4 }
-"core/matrix_free.py" = { np = 9, matmul = 1, dloops = 4 }
-"core/mpc.py" = { np = 7, matmul = 2, dloops = 1 }
-"core/pauli_algebra.py" = { np = 14, meth = 4, dloops = 3, dcomp = 1 }
-"core/sector.py" = { np = 31, matmul = 2, meth = 2, math = 9, dloops = 5 }
+"core/mapping.py" = { dloops = 3, dcomp = 3 }
+"core/mpc.py" = { np = 7, matmul = 2 }
 "core/serialization.py" = { dcomp = 1 }
-"core/tapering.py" = { np = 5, matmul = 3, dloops = 5, dcomp = 1 }
 "integrals/__init__.py" = { sloc = 2, category = "hand-off" }
-"integrals/_backend.py" = { np = 15, matmul = 1, ctypes = 1, bi = 1, sloc = 195, wave = "W4", dies = "2027-07-16" }
 "integrals/grid.py" = { sloc = 70, wave = "W4", dies = "2027-07-16" }
-"integrals/packed.py" = { np = 4, meth = 3, bi = 1, arith = 8, arithmax = 2, sloc = 135, wave = "W4", dies = "2027-07-16" }
 "integrations/ase_properties.py" = { np = 1, meth = 2 }
 "integrations/paw.py" = { sloc = 49, wave = "3b", dies = "2027-05-07" }
 "integrations/paw_molecular.py" = { bi = 1, arith = 1, arithmax = 1, sloc = 134, wave = "W4", dies = "2027-07-16" }
@@ -71,8 +51,7 @@ zero_sloc = 5615
 "models/datasets.py" = { sloc = 32, category = "validation" }
 "models/elements.py" = { sloc = 3, category = "hand-off" }
 "models/radial.py" = { sloc = 69, category = "validation" }
-"models/setup.py" = { sloc = 22, category = "hand-off" }
-"optimizers/optim.py" = { np = 1 }
+"models/setup.py" = { sloc = 19, category = "hand-off" }
 "pseudopotentials/__init__.py" = { sloc = 16, category = "hand-off" }
 "pseudopotentials/build_cli.py" = { bi = 6, arith = 1, arithmax = 1, sloc = 225, wave = "W4", dies = "2027-07-16" }
 "pseudopotentials/confinement.py" = { bi = 2, arith = 1, arithmax = 1, sloc = 206, wave = "W4-A-py", dies = "2027-03-26" }
@@ -87,8 +66,7 @@ zero_sloc = 5615
 "pseudopotentials/io.py" = { sloc = 136, wave = "3a", dies = "2027-03-26" }
 "pseudopotentials/library_cli.py" = { acomp = 1, arith = 2, arithmax = 1, sloc = 180, category = "hand-off" }
 "pseudopotentials/multipoles.py" = { bi = 1, sloc = 56, wave = "3a", dies = "2027-03-26" }
-"pseudopotentials/native_context.py" = { sloc = 6, category = "hand-off" }
-"pseudopotentials/onecenter.py" = { bi = 3, sloc = 246, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/native_context.py" = { sloc = 5, category = "hand-off" }
 "pseudopotentials/orbitals.py" = { bi = 4, arith = 1, arithmax = 1, sloc = 197, wave = "3b", dies = "2027-05-07" }
 "pseudopotentials/paw.py" = { bi = 1, sloc = 320, wave = "3a/3b", dies = "2027-05-07" }
 "pseudopotentials/record.py" = { sloc = 190, category = "hand-off" }
@@ -97,7 +75,7 @@ zero_sloc = 5615
 "utils/banner.py" = { dyn = 3 }
 "utils/bxsf.py" = { np = 1 }
 "utils/logging.py" = { np = 15, meth = 4, dloops = 8, dcomp = 3 }
-"utils/viewer.py" = { np = 42, matmul = 2, meth = 8, dloops = 2 }
+"utils/viewer.py" = { np = 28, matmul = 1, meth = 5, dloops = 2 }
 "workflows/nested_otoc.py" = { np = 3 }
 "workflows/qpe.py" = { np = 9, dcomp = 1 }
 "workflows/quantum_echoes.py" = { np = 4 }

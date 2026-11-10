@@ -156,18 +156,30 @@ def test_native_restart_refuses_other_problem_or_state(tmp_path, mutation):
         Mandacaru(**options, resume=path).run()
 
 
+def greedy_qwc(labels, weights):
+    """The documented first-fit policy: heaviest label first, ties lexical; a
+    label joins the first open basis it commutes with qubit-wise."""
+    order = sorted(range(len(labels)), key=lambda i: (-weights[i], labels[i]))
+    bases = []
+    for index in order:
+        label = labels[index]
+        for basis in bases:
+            if all(a == "I" or b == "I" or a == b for a, b in zip(basis[0], label)):
+                basis[0] = "".join(b if a == "I" else a for a, b in zip(basis[0], label))
+                basis[1].append(index)
+                break
+        else:
+            bases.append([label, [index]])
+    return [(basis, members) for basis, members in bases]
+
+
 @pytest.mark.parametrize("width", [1, 4, 65, 137])
-def test_native_qwc_matches_greedy_policy_at_arbitrary_width(width, monkeypatch):
+def test_native_qwc_matches_greedy_policy_at_arbitrary_width(width):
     rng = np.random.default_rng(width)
     labels = ["".join(row) for row in rng.choice(list("IXYZ"), size=(70, width))]
     weights = rng.integers(0, 5, size=len(labels)).astype(float)
-    expected = qwc_partition(labels, weights)
-    import mandacaru.core.pauli_algebra as algebra
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Python grouping was used")
-    monkeypatch.setattr(algebra, "pack_labels", forbidden)
     actual = qwc_partition(labels, weights)
-    assert actual == expected
+    assert actual == greedy_qwc(labels, weights)
     assert sorted(i for basis, members in actual for i in members) == list(range(len(labels)))
 
 
@@ -213,7 +225,7 @@ def test_ledger_atomic_budget_failures_and_concurrent_completions():
     assert ledger.usage == before
     more = ledger.reserve(4, 400)
     with ThreadPoolExecutor(max_workers=4) as executor:
-        list(executor.map(lambda ticket: ledger.finish(ticket, ticket % 2 == 0), tickets+more))
+        list(executor.map(lambda ticket, ledger=ledger: ledger.finish(ticket, ticket % 2 == 0), tickets+more))
     assert ledger.usage == dict(attempted_jobs=8, completed_jobs=4, failed_jobs=4, total_shots=800)
     with pytest.raises(ValueError):
         ledger.finish(0, True)

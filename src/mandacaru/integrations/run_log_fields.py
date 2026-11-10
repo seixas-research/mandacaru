@@ -8,6 +8,7 @@ calculator already validated, and is formatted here: nothing is computed.
 import inspect
 
 from .. import _native
+from . import tapering
 from ..units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
 #: How a fermion-to-qubit mapping is spelled in the ``[ELECTRONS]`` block: the
@@ -77,7 +78,7 @@ def electrons(driver, result, geometry):
     fields["spin-polarized"] = f"{alpha != beta} (multiplicity {abs(alpha - beta) + 1})"
     if quantum:
         fields["reference state"] = "hartree-fock"
-        fields["Z2 tapering"] = "none"
+        fields["Z2 tapering"] = tapering.text(driver, result._problem)
         fields["mapping"] = MAPPING_LABELS.get(driver._mapping, driver._mapping)
         fields["Hamiltonian"] = f"{_native.problem_term_count(result._problem)} Pauli terms"
     fields["spatial orbitals"] = str(result.n_spatial_orbitals)

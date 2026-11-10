@@ -21,6 +21,13 @@ Supported names
 ``"AER_simulator"``
     The default: an ideal (noiseless) simulator -- the exact state-vector
     backend, or the local ``StatevectorEstimator`` with ``shots > 0``.
+``"AER_mps"``
+    Aer's **matrix-product-state** simulator, run locally: an opt-in simulator for circuits
+    too wide for any state vector (a few-parameter ansatz on 50 qubits). Sampled, so it
+    requires ``shots > 0`` and cannot return a state vector; the bond-dimension cap
+    (``backend_options={"max_bond_dimension": ...}``) bounds its memory and is the
+    approximation, so name it for wide circuits and leave it out when the register is small
+    enough for the exact simulator.
 ``"ibm-quantum"``
     Real IBM Quantum hardware via **Qiskit Runtime**: the least-busy
     operational QPU of your account (or of the ``instance`` named in the
@@ -74,6 +81,9 @@ class Device:
     #: Qubit capacity of a real QPU (``None`` for simulators and for devices
     #: whose size is not fixed by the name, e.g. the least-busy IBM entry).
     qubits: int | None = None
+    #: A simulator that can only sample: it requires ``shots > 0`` and returns no state vector
+    #: (the matrix-product-state simulator).
+    shots_only: bool = False
 
     @property
     def is_aws(self) -> bool:
@@ -95,6 +105,9 @@ _DEVICES: dict[str, Device] = {
     d.name: d for d in (
         Device("AER_simulator", True, True, None,
                description="ideal state-vector simulator (default)"),
+        Device("AER_mps", True, True, "qiskit", shots_only=True,
+               description="Aer matrix-product-state simulator (sampled; for circuits "
+                           "too wide for a state vector)"),
         Device("ibm-quantum", False, True, "qiskit",
                description="IBM Quantum hardware via Qiskit Runtime "
                            "(least-busy operational QPU of your account)"),
@@ -136,6 +149,9 @@ _ALIASES: dict[str, str] = {
     "aer-simulator": "AER_simulator",
     "statevector": "AER_simulator",
     "simulator": "AER_simulator",
+    "aer_mps": "AER_mps",
+    "aer-mps": "AER_mps",
+    "mps": "AER_mps",
     "ibm": "ibm-quantum",
     "ibm_quantum": "ibm-quantum",
     "ibmq": "ibm-quantum",
@@ -262,7 +278,8 @@ def requires_shots(name: str) -> bool:
     Real hardware never returns a state vector, so an energy has to be estimated
     from measurements -- see :mod:`mandacaru.backends.measurement`.
     """
-    return not get_device(name).simulator and get_device(name).runnable
+    device = get_device(name)
+    return (not device.simulator or device.shots_only) and device.runnable
 
 
 def require_runnable(name: str) -> str:
@@ -277,7 +294,7 @@ def require_runnable(name: str) -> str:
         raise NotImplementedError(
             f"device {device.name!r} is not implemented yet; execution on "
             f"{device.description} is planned for a later release. Use "
-            "'AER_simulator', an IBM Quantum device ('ibm-quantum', "
+            "'AER_simulator', 'AER_mps', an IBM Quantum device ('ibm-quantum', "
             "'ibm_torino', ...) or an Amazon Braket device "
             "(e.g. 'braket-sv1', 'braket-ionq-aria').")
     return device.name

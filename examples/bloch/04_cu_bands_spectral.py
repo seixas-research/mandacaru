@@ -1,7 +1,7 @@
-"""Copper FCC crystal: Bloch-ADAPT-VQE band structure and spectral function, saved as PNG.
+"""Copper FCC crystal: ADAPT-VQE band structure and spectral function, saved as PNG.
 
 Calculates the correlated band structure along the high-symmetry path Gamma -> X -> W -> L -> Gamma -> K
-and the interacting Lehmann spectral function A(E, k) for metallic FCC Cu using Bloch-ADAPT-VQE
+and the interacting Lehmann spectral function A(E, k) for metallic FCC Cu using ADAPT-VQE on the supercell
 with PAW-LCAO DZP basis, multiple k-points (2x1x1 Monkhorst-Pack mesh = 2 cells), active space of 10 orbitals (20 qubits <= 20 qubits),
 CEO operator pool, and matrix-free Cholesky decomposition. Saves the resulting figure as a PNG.
 """
@@ -25,7 +25,8 @@ except OSError:
 cu = bulk("Cu", "fcc", a=3.61)
 
 calc = Mandacaru(
-    method="bloch-adapt-vqe",
+    method="adapt-vqe",
+    crystal_orbitals="real-space",
     basis={"name": "PAW-LCAO", "size": "DZP"},
     two_body="cholesky",
     pool="ceo",

@@ -348,21 +348,28 @@ def test_the_rvv10_force_is_the_derivative_of_its_energy_in_an_all_electron_basi
     central difference of the energy difference.  The difference isolates it
     from the semilocal functional's force error.  Molecular PAW forces refuse
     nonlocal correlation, so this runs on the all-electron NAO basis: one
-    component, along the bond."""
+    component, along the bond.
+
+    The SCF runs to ``tolerance=1e-12``: an analytic force is first order in the
+    SCF residual, and at the default 1e-9 the converged state leaves an error
+    of 1e-5 to 3e-5 eV/A in the force that depends on the iteration path (it
+    moved rVV10's own r2SCAN force by 1.3e-5 eV/A at this geometry, while the
+    energy differences stayed exact)."""
     for semilocal in ("pbe", "r2scan"):
         pair = {}
         for xc in (semilocal, f"{semilocal}+rvv10"):
             atoms = h2()
             atoms.calc = Mandacaru(method="dft", xc=xc, grid_spacing=0.3,
                                    basis=NAO_DZ, trace=False,
-                                   project_translation=False)
+                                   project_translation=False,
+                                   scf_options={"tolerance": 1e-12})
             pair[xc] = (atoms, atoms.get_forces()[1, 2])
         assert pair[f"{semilocal}+rvv10"][0].calc.xc == f"{semilocal}+rvv10"
         rvv10 = f"{semilocal}+rvv10"
         analytic = pair[rvv10][1] - pair[semilocal][1]
         numerical = (_numerical_force(pair[rvv10][0], 1, 2)
                      - _numerical_force(pair[semilocal][0], 1, 2))
-        assert analytic == pytest.approx(numerical, abs=1e-5)
+        assert analytic == pytest.approx(numerical, abs=1e-6)
 
 
 class TestTheFunctionalNames:

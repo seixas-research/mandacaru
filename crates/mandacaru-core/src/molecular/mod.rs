@@ -8,6 +8,7 @@ pub mod hubbard;
 pub mod integrals;
 pub mod local_correlation;
 pub mod observables;
+pub mod periodic;
 pub mod spinor_dft;
 mod paw_forces;
 pub mod response;

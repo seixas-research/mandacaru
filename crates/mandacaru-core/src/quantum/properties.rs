@@ -58,6 +58,12 @@ pub fn spatial_rdms<A: Amplitude>(
     basis: &Basis,
     state: &[A],
 ) -> Result<SpatialRdms> {
+    if basis.n != encoding.n_qubits() {
+        return Err(Error::Invalid(
+            "the basis is a tapered register: lift the state to the fermionic register first"
+                .into(),
+        ));
+    }
     if encoding.modes % 2 != 0 || state.len() != basis.len() || !finite(state) {
         return Err(Error::Invalid(
             "spatial RDMs need a finite state in an even spin-blocked register".into(),
@@ -126,6 +132,12 @@ pub fn rdms<A: Amplitude>(
     state: &[A],
     two_body: bool,
 ) -> Result<Rdms> {
+    if basis.n != encoding.n_qubits() {
+        return Err(Error::Invalid(
+            "the basis is a tapered register: lift the state to the fermionic register first"
+                .into(),
+        ));
+    }
     if state.len() != basis.len() || !finite(state) {
         return Err(Error::Invalid(
             "RDM state must be finite and match the basis".into(),

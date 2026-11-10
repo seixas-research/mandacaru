@@ -89,14 +89,14 @@ fn molecular_transfer_tracks_orbital_signs_and_preserves_the_physical_density() 
         let first = properties::spatial_rdms(
             &context,
             &old_problem.encoding,
-            &old_problem.basis,
+            old_problem.register("test").unwrap(),
             first.complex128().unwrap(),
         )
         .unwrap();
         let second = properties::spatial_rdms(
             &context,
             &new_problem.encoding,
-            &new_problem.basis,
+            new_problem.register("test").unwrap(),
             second.complex128().unwrap(),
         )
         .unwrap();

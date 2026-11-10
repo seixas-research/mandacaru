@@ -9,8 +9,6 @@ from ase import Atoms
 
 from mandacaru import Mandacaru, _native
 from mandacaru.integrations.ase import geometry_from_atoms
-from mandacaru.specifications import basis_specification
-from mandacaru.basis import BasisSet
 from mandacaru.integrals import Grid
 from mandacaru.units import ANGSTROM_TO_BOHR, HARTREE_TO_EV
 
@@ -41,47 +39,6 @@ def test_geometry_mean_field_matches_frozen_phase0(case_id):
         state = result.scf_state()
         op = result.qubit_hamiltonian().matrix()
         assert np.vdot(state, op @ state).real * HARTREE_TO_EV == pytest.approx(energy, abs=1e-8)
-
-
-
-
-@pytest.mark.parametrize("z,basis", [(1, "HAO"), (8, "HAO"), (26, "HAO"), (118, "HAO"),
-                                      (8, "STO-6G"), (8, "6-31G(d)"), (8, "cc-pVTZ"),
-                                      (11, "aug-cc-pVQZ"), (8, "def2-TZVP")])
-def test_atomic_basis_sampling_matches_generated_python_families(z, basis):
-    atoms = Atoms(numbers=[z], positions=[[.1, -.2, .3]])
-    rng = np.random.default_rng(90)
-    points = np.ascontiguousarray(rng.normal(size=(91, 3)) * 2)
-    points[0] = atoms.positions[0] * ANGSTROM_TO_BOHR
-    # Three more points 1e-9 Bohr from the nucleus, where every direction is
-    # defined, are compared at the full tolerance (gradients reach 1.5e4 for
-    # the Og p shells, so this also pins the slope at the nucleus).
-    points = np.ascontiguousarray(np.vstack([points, points[0] + 1e-9 * np.eye(3)]))
-    native = _native.Context().sample_basis(geometry_from_atoms(atoms), points,
-                                          basis_spec=json.dumps(basis_specification(basis)))
-    functions = BasisSet.build(basis).atom(z, center=atoms.positions[0])
-    expected = np.stack([f.evaluate(*points.T) for f in functions])
-    # Point 0 is exactly on the nucleus (the Python center equals it bit for
-    # bit), where R(r) Y_lm ~ r^l Y_lm is exactly zero for l > 0.  The Python
-    # sampler floors r at 1e-15 Bohr and picks the arbitrary direction
-    # theta = pi/2, phi = 0, so it returned the function at a displacement of
-    # 1e-15 Bohr along +x: 1.5e-11 = 1e-15 * 1.5e4 for the Og 2p, the slope of
-    # the shell, which is not roundoff of the center.  The analytic limit
-    # replaces that artifact for l > 0; s shells stay compared as sampled.
-    nucleus = np.array([f.l > 0 for f in functions])
-    expected[nucleus, 0] = 0.
-    assert np.allclose(native, expected, atol=3e-12, rtol=1e-12)
-
-
-def test_per_element_basis_matches_each_selected_family():
-    atoms = Atoms("OH", positions=[[0, 0, 0], [0, 0, 1]])
-    spec = {"O": "STO-3G", "*": "HAO"}
-    points = np.ascontiguousarray(np.random.default_rng(9).normal(size=(41, 3)))
-    native = _native.Context().sample_basis(geometry_from_atoms(atoms), points,
-                                          basis_spec=json.dumps(basis_specification(spec)))
-    expected = np.stack([f.evaluate(*points.T) for atom in atoms
-                         for f in BasisSet.build(spec).atom(atom.symbol, atom.position)])
-    assert np.allclose(native, expected, atol=1e-13)
 
 
 

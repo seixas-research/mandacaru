@@ -10,7 +10,7 @@ os.makedirs(DATA, exist_ok=True)
 
 lattice = Atoms("H", positions=[[0.0, 0.0, 0.0]],
                 cell=[2.6, 2.6, 9.0], pbc=[True, True, False])
-lattice.calc = Mandacaru(method="bloch-adapt-vqe",
+lattice.calc = Mandacaru(method="adapt-vqe", crystal_orbitals="real-space",
                          basis="HAO",
                          grid_spacing=0.35,
                          kpts={"size": (2, 2, 1), "gamma": True},

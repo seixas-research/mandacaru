@@ -19,9 +19,8 @@ the grid:
   the nonlocal part of the potential.
 
 Both are radial tables of a family's dataset (:mod:`.dataset`), splined and
-multiplied by a spherical harmonic -- the same construction
-:class:`~mandacaru.basis.nao.NumericalAtomicOrbital` uses, so they drop into the
-integral engine unchanged.
+multiplied by a spherical harmonic -- the same construction as the numerical
+atomic orbitals of the Rust engine.
 """
 
 from __future__ import annotations

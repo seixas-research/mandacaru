@@ -479,6 +479,7 @@ impl MolecularIntegrals {
                     coefficients: c,
                     densities: d,
                     energies: vec![energies],
+                    unstable_pair: None,
                 };
                 if best.as_ref().is_none_or(|(b, _, _)| {
                     (candidate.converged && !b.converged)

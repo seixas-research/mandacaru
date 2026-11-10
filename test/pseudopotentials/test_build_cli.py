@@ -128,11 +128,11 @@ def test_a_worker_shares_the_cores_out():
     wide as the machine (seven workers ran 48 threads each on 12 cores)."""
     from concurrent.futures import ProcessPoolExecutor
 
-    from mandacaru.integrals._backend import grid_blas_threads
+    from mandacaru import _native
     from mandacaru.pseudopotentials.build_cli import (_limit_threads,
                                                      worker_threads)
 
-    assert worker_threads(1) == grid_blas_threads()
+    assert worker_threads(1) == _native.grid_blas_threads() >= 1
     assert worker_threads(10_000) == 1
 
     with ProcessPoolExecutor(max_workers=1, initializer=_limit_threads,

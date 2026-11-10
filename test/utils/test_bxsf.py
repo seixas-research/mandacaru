@@ -49,7 +49,7 @@ class TestTheFile:
         assert values[0, 0, 1] == pytest.approx(energies[0, 0, 0, 1], abs=5e-7)
 
     def test_bad_input_is_refused(self, tmp_path):
-        with pytest.raises(ValueError, match="n_bands, n1, n2, n3"):
+        with pytest.raises(ValueError, match="four-dimensional"):
             write_bxsf(tmp_path / "x.bxsf", np.zeros((4, 3, 5)), CELL, 0.0)
         with pytest.raises(ValueError, match="independent"):
             write_bxsf(tmp_path / "x.bxsf", _bands(), np.zeros((3, 3)), 0.0)

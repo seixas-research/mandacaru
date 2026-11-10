@@ -426,7 +426,10 @@ pub fn spin_orbit_list(
     ctx: &Context,
     ds: &PawDataset,
     centers: &[[f64; 3]],
-) -> (Vec<Projector>, BTreeMap<(usize, usize), mandacaru_core::models::spin_orbit::Coupling>) {
+) -> (
+    Vec<Projector>,
+    BTreeMap<(usize, usize), mandacaru_core::models::spin_orbit::Coupling>,
+) {
     let (mut out, mut couplings) = (Vec::new(), BTreeMap::new());
     for (atom, center) in centers.iter().enumerate() {
         for (&l, entry) in &ds.spin_orbit {

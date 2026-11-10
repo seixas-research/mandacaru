@@ -43,7 +43,7 @@ and `method`. With `--forces` it gains `forces_ev_per_angstrom`, one row per ato
 | Flag | Default | Sets |
 | --- | --- | --- |
 | `geometry` (positional) | none | Geometry JSON, or any file ASE can read (needs the `ase` extra). Optional with `--load-hamiltonian` or `--load-crystal`. |
-| `--method` | `dft` | `method`: one of `rhf`, `uhf`, `ghf`, `dft`, `vqe`, `adapt-vqe`, `subspace-vqe`, `subspace-adapt-vqe`, `mcas-vqe`, `valqa`. See [the methods table](#methods-table). |
+| `--method` | `dft` | `method`: one of `rhf`, `uhf`, `ghf`, `dft`, `vqe`, `adapt-vqe`, `subspace-vqe`, `subspace-adapt-vqe`, `vasqa`, `valsqa`. See [the methods table](#methods-table). |
 | `--xc` | `lda` for `dft` | `xc`: `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10` or `r2scan+rvv10`. Only `dft` uses it; with another method the calculator raises `ValueError` ("does not use: xc"). |
 | `--basis` | `HAO` | `basis`, as a name only (`HAO`, `PAW-LCAO`, a Gaussian recipe such as `STO-3G`). A basis with options needs the Python interface. |
 | `--grid-spacing` | `0.2` | `grid_spacing`, in angstrom. |
@@ -53,6 +53,7 @@ and `method`. With `--forces` it gains `forces_ev_per_angstrom`, one row per ato
 | `--load-hamiltonian FILE` | none | `load_hamiltonian`: solve a cached qubit Hamiltonian; no geometry is needed. |
 | `--save-hamiltonian FILE` | none | `save_hamiltonian`: write the Hamiltonian the run builds. |
 | `--load-crystal FILE` | none | `load_crystal`: solve a cached crystal; no geometry is needed. |
+| `--crystal-orbitals {k-space,real-space}` | not passed | `crystal_orbitals` of a quantum method on a crystal. The calculator's default, `k-space`, is not yet implemented and raises; pass `real-space` (the Born-von Karman supercell) to run one. Not passed, the calculator's own default and refusals apply. |
 | `--output FILE` | none | Write the JSON report to `FILE`. |
 | `--version`, `-h` | | Print the version, or the usage. |
 

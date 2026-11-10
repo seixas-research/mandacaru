@@ -26,6 +26,7 @@ pub mod spectrum;
 pub mod spinor;
 pub mod stress;
 pub mod stress_terms;
+pub mod tetrahedron;
 pub mod wannier;
 use crate::Error;
 pub(crate) fn invalid(message: impl Into<String>) -> Error {

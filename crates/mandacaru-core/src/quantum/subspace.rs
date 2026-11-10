@@ -1,10 +1,10 @@
 //! Weighted shared-unitary VQE/ADAPT; bare expectations, sorted with their states.
 use super::amplitude::{stack, Amplitude, State};
 use super::solver::by_precision;
-use super::{evolution, optimizer, Basis, CachedProblem, SolveOptions};
+use super::{evolution, optimizer, CachedProblem, SolveOptions};
 use crate::quantum::C64;
 use crate::{product, Error, Reservation, Result};
-use std::{cmp::Reverse, time::Instant};
+use std::time::Instant;
 
 pub struct SubspaceResult {
     pub energies: Vec<f64>,
@@ -24,37 +24,15 @@ pub struct SubspaceResult {
 impl CachedProblem {
     fn subspace_references<A: Amplitude>(&self, count: usize) -> Result<crate::Buffer<A>> {
         let ctx = &self.context;
-        let sector = Basis::new(ctx, &self.encoding, true)?;
-        if count == 0 || count > sector.len() {
+        let states = self.sector_determinants()?;
+        if count == 0 || count > states.len() {
             return Err(Error::Invalid(
                 "number of subspace states exceeds the particle sector or is zero".into(),
             ));
         }
-        let _sort = ctx.reserve(product(&[sector.len(), 32])?)?;
-        let hf = self.encoding.decode(self.encoding.reference());
-        let mut states: Vec<_> = sector
-            .indices
-            .as_slice()
-            .iter()
-            .map(|&encoded| {
-                let occupation = self.encoding.decode(encoded);
-                (
-                    (occupation & !hf).count_ones(),
-                    Reverse(occupation),
-                    encoded,
-                )
-            })
-            .collect();
-        states.sort_unstable();
-        let d = self.basis.len();
+        let d = self.register("a subspace calculation")?.len();
         let mut references = stack::<A>(ctx, count, d)?;
-        for (j, (_, _, encoded)) in states.into_iter().take(count).enumerate() {
-            let row = self
-                .basis
-                .indices
-                .as_slice()
-                .binary_search(&encoded)
-                .map_err(|_| Error::Invalid("subspace determinant is absent from basis".into()))?;
+        for (j, (_, _, row)) in states.into_iter().take(count).enumerate() {
             references.as_mut_slice()[j * d + row] = A::narrow(C64::new(1., 0.));
         }
         Ok(references)
@@ -69,7 +47,7 @@ impl CachedProblem {
         let ops: Vec<_> = indices.iter().map(|&i| &self.pool[i].operator).collect();
         evolution::evaluate_from::<A>(
             &self.context,
-            &self.basis,
+            self.register("a subspace calculation")?,
             &self.hamiltonian,
             self.dense.as_ref().map(|x| x.as_slice()),
             self.sparse.as_ref(),
@@ -109,7 +87,7 @@ impl CachedProblem {
             let start = Instant::now();
             let ctx = &self.context;
             let k = weights.len();
-            let d = self.basis.len();
+            let d = self.register("a subspace calculation")?.len();
             let references = self.subspace_references::<A>(k)?;
             let max_parameters = if options.adapt {
                 product(&[

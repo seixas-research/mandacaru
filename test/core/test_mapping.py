@@ -4,6 +4,7 @@
 import numpy as np
 import pytest
 
+from mandacaru import _native
 from mandacaru.core.mapping import (
     Fermion,
     MAPPINGS,
@@ -12,30 +13,35 @@ from mandacaru.core.mapping import (
     jordan_wigner,
     parity,
     parity_reduced,
-    reencode_pauli,
 )
 
-
-@pytest.mark.parametrize("mapping", MAPPINGS)
-def test_reencode_pauli_matches_direct_fermion_mapping(mapping):
-    """A canonical JW string decomposition survives the encoding Clifford."""
-    hopping = (Fermion.creation(0) * Fermion.annihilation(1)
-               + Fermion.creation(1) * Fermion.annihilation(0))
-    density = Fermion.creation(0) * Fermion.annihilation(0)
-    hamiltonian = hopping + density
-    jw = hamiltonian.map_to_qubits("jordan_wigner", n_modes=4)
-    expected = hamiltonian.map_to_qubits(
-        mapping, n_modes=4,
-        num_particles=(1, 1) if mapping == "parity_reduced" else None)
-    actual = reencode_pauli(
-        jw, mapping,
-        num_particles=(1, 1) if mapping == "parity_reduced" else None)
-    labels = set(expected.terms) | set(actual.terms)
-    assert all(abs(expected.terms.get(label, 0j)
-                   - actual.terms.get(label, 0j)) < 1e-10
-               for label in labels)
-
 METHODS = ["jordan_wigner", "parity", "bravyi_kitaev"]
+
+
+def fock_matrix(operator, n):
+    """The matrix of a ``Fermion`` in the ``2^n`` occupation basis.
+
+    An oracle independent of the native mapping: the annihilation operators
+    are Kronecker products ``Z ... Z (|0><1|) I ... I`` (qubit 0 first).
+    """
+    lower = np.array([[0, 1], [0, 0]], dtype=complex)
+    z, eye = np.diag([1.0, -1.0]).astype(complex), np.eye(2, dtype=complex)
+
+    def annihilator(j):
+        out = np.array([[1.0 + 0j]])
+        for factor in [z] * j + [lower] + [eye] * (n - 1 - j):
+            out = np.kron(out, factor)
+        return out
+
+    annihilators = [annihilator(j) for j in range(n)]
+    total = np.zeros((2 ** n, 2 ** n), dtype=complex)
+    for term, coeff in operator.terms.items():
+        product = np.eye(2 ** n, dtype=complex)
+        for mode, dagger in term:
+            a = annihilators[mode]
+            product = product @ (a.conj().T if dagger else a)
+        total += coeff * product
+    return total
 
 
 # --- PauliSum algebra ---
@@ -118,13 +124,13 @@ class TestFermionAlgebra:
         n = 3
         ai = Fermion.annihilation(i)
         ajd = Fermion.creation(j)
-        anti = (ai * ajd + ajd * ai).to_matrix(n_modes=n)
+        anti = fock_matrix(ai * ajd + ajd * ai, n)
         expected = (np.eye(2 ** n) if i == j else np.zeros((2 ** n, 2 ** n)))
         assert np.allclose(anti, expected)
 
     def test_number_operator_spectrum(self):
         # a_0^dagger a_0 is a projector: eigenvalues in {0, 1}.
-        num = (Fermion.creation(0) * Fermion.annihilation(0)).to_matrix(n_modes=2)
+        num = fock_matrix(Fermion.creation(0) * Fermion.annihilation(0), 2)
         assert np.allclose(np.sort(np.unique(np.round(np.linalg.eigvalsh(num), 9))),
                            [0.0, 1.0])
 
@@ -152,17 +158,19 @@ class TestMappings:
         H = Fermion.from_integrals(h)
         # The JW matrix must equal the occupation-basis reference.
         assert np.allclose(H.map_to_qubits("jordan_wigner").to_matrix(),
-                           H.to_matrix())
+                           fock_matrix(H, 2))
+        assert np.allclose(H.to_matrix(), fock_matrix(H, 2))
 
     def test_jordan_wigner_matches_fock_reference(self):
         H = _random_hermitian_fermion(3)
         assert np.allclose(H.map_to_qubits("jordan_wigner").to_matrix(),
-                           H.to_matrix(), atol=1e-9)
+                           fock_matrix(H, 3), atol=1e-9)
+        assert np.allclose(H.to_matrix(), fock_matrix(H, 3), atol=1e-12)
 
     @pytest.mark.parametrize("m", [2, 3])
     def test_all_mappings_share_spectrum(self, m):
         H = _random_hermitian_fermion(m, seed=m)
-        ref = np.linalg.eigvalsh(_herm(H.to_matrix()))
+        ref = np.linalg.eigvalsh(_herm(fock_matrix(H, m)))
         for method in METHODS:
             mat = _herm(H.map_to_qubits(method).to_matrix())
             assert np.allclose(np.linalg.eigvalsh(mat), ref, atol=1e-8), method
@@ -255,7 +263,7 @@ class TestTwoQubitReduction:
             H.map_to_qubits("parity_reduced")
 
     def test_reduced_mapping_rejects_a_sector_changing_operator(self):
-        with pytest.raises(ValueError, match="preserve"):
+        with pytest.raises(ValueError, match="tapered"):
             Fermion.creation(0).map_to_qubits(
                 "parity_reduced", n_modes=4, num_particles=(1, 1))
 
@@ -272,7 +280,7 @@ def _sector_ground_state(H, n_particles):
     whose bit-count equals ``n_particles`` isolates that sector exactly.
     """
     n = H.n_modes()
-    mat = _herm(H.to_matrix())
+    mat = _herm(fock_matrix(H, H.n_modes()))
     idx = [i for i in range(2 ** n) if bin(i).count("1") == n_particles]
     block = mat[np.ix_(idx, idx)]
     return float(np.linalg.eigvalsh(block).min())
@@ -383,24 +391,6 @@ class TestSpatialIntegrals:
         with pytest.raises(ValueError, match="spin-resolved two-body"):
             Fermion.from_spatial_integrals(h, eri[0])
 
-    def test_a_packed_tensor_gives_the_same_operator_term_for_term(self):
-        """The eightfold-packed tensor of real orbitals is read slab by slab:
-        the operator is the dense tensor's, key for key and in order."""
-        from mandacaru.integrals.packed import PackedERI
-
-        rng = np.random.default_rng(12)
-        m = 5
-        factors = [(lambda a: (a + a.T) / 2)(rng.standard_normal((m, m)))
-                   for _ in range(3)]
-        chemist = sum(np.einsum("pr,qs->prqs", L, L) for L in factors)
-        dense = chemist.transpose(0, 2, 1, 3)                    # <pq|rs>
-        h = rng.standard_normal((m, m)); h = h + h.T
-        expected = Fermion.from_spatial_integrals(h, dense)
-        packed = Fermion.from_spatial_integrals(h, PackedERI.from_dense(dense))
-        assert list(packed.terms) == list(expected.terms)
-        assert np.allclose(list(packed.terms.values()),
-                           list(expected.terms.values()), atol=1e-13, rtol=0)
-
     def test_the_slab_scan_is_the_whole_array_scan(self):
         rng = np.random.default_rng(8)
         h = rng.standard_normal((5, 5))
@@ -427,3 +417,184 @@ class TestSpatialIntegrals:
         assert len(built.terms) == 2 * M + 4 * M
         # The complex (2M)^4 tensor alone would be 5.3 MB.
         assert peak < 16 * (2 * M) ** 4 / 10
+
+
+# --- the native algebra behind PauliSum and Fermion ---
+
+def random_operator(n, n_terms, seed):
+    rng = np.random.default_rng(seed)
+    labels = set()
+    while len(labels) < n_terms:
+        labels.add("".join(rng.choice(list("IXYZ"), n)))
+    return PauliSum({label: complex(rng.normal(), rng.normal())
+                     for label in sorted(labels)}, num_qubits=n)
+
+
+def double_excitation(i, j, a, b):
+    """The anti-Hermitian generator ``a+_a a+_b a_j a_i - h.c.``."""
+    t = (Fermion.creation(a) * Fermion.creation(b)
+         * Fermion.annihilation(j) * Fermion.annihilation(i))
+    return t - t.dagger()
+
+
+def hubbard_chain(sites, hopping=1.0, repulsion=4.0):
+    """Open Hubbard chain as a spin-blocked Fermion on ``2 * sites`` modes."""
+    terms = {}
+    for spin in (0, sites):
+        for i in range(sites - 1):
+            p, q = i + spin, i + 1 + spin
+            terms[((p, True), (q, False))] = -hopping
+            terms[((q, True), (p, False))] = -hopping
+    for i in range(sites):
+        up, down = i, i + sites
+        terms[((up, True), (up, False), (down, True), (down, False))] = repulsion
+    return Fermion(terms, n_modes=2 * sites)
+
+
+class TestCommutator:
+    @pytest.mark.parametrize("n", [3, 6])
+    def test_matches_the_matrices(self, n):
+        a, b = random_operator(n, 30, seed=1), random_operator(n, 9, seed=2)
+        ma, mb = a.to_matrix(), b.to_matrix()
+        assert np.allclose(a.commutator(b).to_matrix(), ma @ mb - mb @ ma,
+                           atol=1e-12)
+
+    def test_matches_compose_on_a_wide_register(self):
+        a, b = random_operator(60, 40, seed=3), random_operator(60, 8, seed=4)
+        reference = (a.compose(b) + b.compose(a) * -1).simplify()
+        result = a.commutator(b)
+        assert set(result.terms) == set(reference.terms)
+        for label, value in reference.terms.items():
+            assert result.terms[label] == pytest.approx(value, abs=1e-12)
+
+    def test_antisymmetric(self):
+        a, b = random_operator(10, 20, seed=5), random_operator(10, 6, seed=6)
+        ab, ba = a.commutator(b), b.commutator(a)
+        assert set(ab.terms) == set(ba.terms)
+        for label, value in ab.terms.items():
+            assert value == pytest.approx(-ba.terms[label], abs=1e-12)
+
+    def test_the_gradient_observable_is_the_analytic_gradient(self):
+        # <psi|[H, A]|psi> = 2 Re <H psi|A psi> for an anti-Hermitian A: the
+        # commutator is the measurable form of the ADAPT screening gradient.
+        n = 8
+        hamiltonian = hubbard_chain(n // 2).map_to_qubits("jordan_wigner",
+                                                          n_modes=n)
+        generator = double_excitation(0, 4, 1, 5).map_to_qubits(
+            "jordan_wigner", n_modes=n)
+        rng = np.random.default_rng(7)
+        psi = rng.normal(size=2 ** n) + 1j * rng.normal(size=2 ** n)
+        psi /= np.linalg.norm(psi)
+        h, a = hamiltonian.to_sparse_matrix(), generator.to_sparse_matrix()
+        observable = hamiltonian.commutator(generator)
+        measured = np.vdot(psi, observable.to_sparse_matrix() @ psi)
+        assert measured.imag == pytest.approx(0.0, abs=1e-12)
+        assert measured.real == pytest.approx(
+            2.0 * np.real(np.vdot(h @ psi, a @ psi)), abs=1e-12)
+
+    def test_the_native_pool_observables_are_the_operator_gradients(self):
+        """The native pool's measured commutators are the energy gradients."""
+        n = 8
+        hamiltonian = hubbard_chain(n // 2).map_to_qubits("jordan_wigner",
+                                                          n_modes=n)
+        context = _native.Context()
+        native = hamiltonian._native_operator()
+        problem = context.quantum_problem(native, n // 2, [2, 2], pool="qeb",
+                                          sector=False)
+
+        def operator(terms):
+            return PauliSum({label: complex(re, im) for label, re, im in terms},
+                            num_qubits=n)
+
+        rng = np.random.default_rng(9)
+        psi = rng.normal(size=2 ** n) + 1j * rng.normal(size=2 ** n)
+        psi /= np.linalg.norm(psi)
+        h_psi = hamiltonian.to_sparse_matrix() @ psi
+        assert len(problem.pool_terms) == len(problem.pool_observables) > 0
+        for generator, observable in zip(problem.pool_terms,
+                                         problem.pool_observables):
+            analytic = 2.0 * np.real(np.vdot(
+                h_psi, operator(generator).to_sparse_matrix() @ psi))
+            measured = np.vdot(psi, operator(observable).to_sparse_matrix() @ psi)
+            assert measured == pytest.approx(analytic, abs=1e-12)
+
+
+class TestNativeRoute:
+    def test_the_product_drops_the_strings_that_cancel(self):
+        # (X + Z)^2 = 2 I + (XZ + ZX) and XZ + ZX = 0: no Y string survives.
+        a = PauliSum({"X": 1.0, "Z": 1.0})
+        product = a.compose(a)
+        assert product.terms == {"I": pytest.approx(2.0)}
+        assert product.num_qubits == 1
+
+    def test_a_vanishing_commutator_keeps_its_register(self):
+        zero = PauliSum({"ZZ": 1.0}).commutator(PauliSum({"IZ": 2.0}))
+        assert zero.terms == {} and zero.num_qubits == 2
+
+    @pytest.mark.parametrize("name", ["compose", "commutator"])
+    def test_operands_on_different_registers_raise(self, name):
+        with pytest.raises(ValueError, match="2-qubit and a 3-qubit"):
+            getattr(PauliSum({"XX": 1.0}), name)(PauliSum({"XXX": 1.0}))
+
+    def test_an_empty_operand_takes_the_width_of_the_other(self):
+        out = PauliSum({"XY": 1.0}).compose(PauliSum({}, num_qubits=2))
+        assert out.terms == {} and out.num_qubits == 2
+
+    def test_registers_wider_than_the_native_index_are_refused(self):
+        wide = PauliSum({"Z" + "I" * 62: 1.0})
+        for call in (wide.to_sparse_matrix, wide.to_matrix,
+                     lambda: wide.compose(wide), lambda: wide.commutator(wide)):
+            with pytest.raises(ValueError, match="62"):
+                call()
+        with pytest.raises(ValueError, match="62"):
+            Fermion.creation(0).map_to_qubits("jordan_wigner", n_modes=64)
+
+    def test_a_term_outside_the_register_raises(self):
+        with pytest.raises(ValueError, match="mode"):
+            Fermion.creation(5).map_to_qubits("jordan_wigner", n_modes=4)
+
+    def test_the_constant_term_maps_to_the_identity(self):
+        out = (Fermion.identity() * 0.75).map_to_qubits("parity", n_modes=3)
+        assert out.terms == {"III": 0.75}
+        assert (Fermion.identity() * 0.75).to_matrix(n_modes=2) == \
+            pytest.approx(0.75 * np.eye(4))
+
+    def test_the_two_integral_builders_refuse_wrong_shapes(self):
+        with pytest.raises(ValueError, match="square"):
+            Fermion.from_integrals(np.zeros((2, 3)))
+        with pytest.raises(ValueError, match="two-body"):
+            Fermion.from_integrals(np.zeros((2, 2)), np.zeros((2, 2, 2)))
+        with pytest.raises(TypeError, match="float64 or complex128"):
+            _native.Context(threads=1).fermion_integral_terms(
+                np.zeros((2, 2), dtype=np.float32))
+
+    def test_integer_and_single_precision_integrals_are_converted(self):
+        exact = Fermion.from_integrals(np.array([[1.0, 2.0], [0.0, 3.0]]))
+        assert (Fermion.from_integrals(np.array([[1, 2], [0, 3]])).terms
+                == exact.terms)
+        single = Fermion.from_integrals(
+            np.array([[1.0, 2.0], [0.0, 3.0]], dtype=np.float32))
+        assert single.terms == exact.terms
+
+
+class TestEncodingsAgainstTheFockMatrix:
+    @pytest.mark.parametrize("method", METHODS)
+    def test_every_encoding_matches_the_fock_matrix(self, method):
+        rng = np.random.default_rng(8)
+        n = 5
+        terms = {(): 0.3}
+        for _ in range(40):
+            k = int(rng.choice([1, 2, 3, 4]))
+            term = tuple((int(rng.integers(0, n)), bool(rng.integers(0, 2)))
+                         for _ in range(k))
+            terms[term] = complex(rng.normal(), rng.normal())
+        fermion = Fermion(terms, n_modes=n)
+        mapped = fermion.map_to_qubits(method, n_modes=n)
+        reference = fock_matrix(fermion, n)
+        assert np.allclose(fermion.to_matrix(n), reference, atol=1e-12)
+        if method == "jordan_wigner":
+            assert np.allclose(mapped.to_matrix(), reference, atol=1e-12)
+        else:
+            assert np.allclose(np.linalg.eigvalsh(_herm(mapped.to_matrix())),
+                               np.linalg.eigvalsh(_herm(reference)),
+                               atol=1e-10)

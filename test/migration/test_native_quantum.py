@@ -9,10 +9,11 @@ import pytest
 from scipy.linalg import expm
 
 from mandacaru import Mandacaru, _native
-from mandacaru.core.mapping import Fermion, PauliSum, reference_qubit_bits
-from mandacaru.core.sector import ParticleSector
+from mandacaru.core.mapping import Fermion, PauliSum
 from mandacaru.core.serialization import save_hamiltonian
 from mandacaru.units import HARTREE_TO_EV
+
+from .operator_reference import encoded_index, frozen_sector
 
 FIXTURE = Path(__file__).parent / "reference/h2_hamiltonian.json"
 MAPPINGS = ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"]
@@ -58,15 +59,10 @@ def determinant_rdms(amplitudes, n_modes):
     return one, two
 
 
-def encoded_index(mapping, occupied, n_modes=6):
-    bits = reference_qubit_bits(mapping, n_modes, list(occupied))
-    return sum(int(b) << (len(bits) - 1 - i) for i, b in enumerate(bits))
-
-
 def sector_determinants():
-    """Determinants of the (1, 1) sector, in the ParticleSector(6, (1, 1)) order."""
-    sector = ParticleSector(6, (1, 1))
-    return [tuple(j for j in range(6) if int(occupation) & (1 << (5 - j))) for occupation in sector.indices]
+    """Determinants of the (1, 1) sector, in the order of its Jordan-Wigner indices."""
+    return [tuple(j for j in range(6) if int(occupation) & (1 << (5 - j)))
+            for occupation in frozen_sector("jordan_wigner")]
 
 
 @pytest.mark.parametrize("mapping", MAPPINGS)
@@ -138,7 +134,7 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
     ctx = _native.Context()
     problem = ctx.load_hamiltonian(str(path), sector=sector)
     if sector:
-        expected_indices = ParticleSector(h.num_qubits, (1, 1), mapping=mapping).indices
+        expected_indices = frozen_sector(mapping)
         assert np.array_equal(problem.basis_indices, expected_indices)
     matrices = [PauliSum({p: complex(re, im) for p, re, im in terms}, num_qubits=h.num_qubits).to_matrix()
                 for terms in problem.pool_terms]
@@ -189,7 +185,8 @@ def test_states_and_exact_gradients_against_dense_exponential(tmp_path, mapping,
 @pytest.mark.parametrize("sparse", [False, True])
 @pytest.mark.parametrize("optimizer", ["BFGS", "L-BFGS"])
 def test_public_h2_solve_matches_phase0(method, sector, sparse, optimizer):
-    calc = Mandacaru(method=method,  load_hamiltonian=FIXTURE,
+    # The frozen operator label is the fermionic pool's; ``adapt-vqe`` defaults to ``ceo``.
+    calc = Mandacaru(method=method, pool="fermionic", load_hamiltonian=FIXTURE,
                     sector=sector, sparse=sparse, trace=False,
                     resources={"threads": 1}, optimizer={"method": optimizer, "tol": 1e-12})
     result = calc.run()
@@ -218,9 +215,7 @@ def test_entire_solve_has_no_python_scientific_callbacks(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("Python scientific computation entered a native solve")
     import scipy.optimize
-    from mandacaru.optimizers.optim import Optimizer
     from mandacaru.core import serialization
-    monkeypatch.setattr(Optimizer, "minimize", forbidden)
     monkeypatch.setattr(serialization, "load_hamiltonian", forbidden)
     monkeypatch.setattr(scipy.optimize, "minimize", forbidden)
     monkeypatch.setattr(Fermion, "map_to_qubits", forbidden)
@@ -262,18 +257,20 @@ def test_budgets_ownership_and_concurrent_contexts():
     with pytest.raises(MemoryError):
         small.load_hamiltonian(str(FIXTURE))
     assert small.memory_used_bytes == 0
-    ctx = _native.Context(threads=1)
+    # The default limit is 32 GiB, which holds the 8 GB of history that 10**9
+    # evaluations reserve: an explicit 512 MiB limit is the budget to exceed.
+    ctx = _native.Context(threads=1, memory_limit_bytes=1 << 29)
     problem = ctx.load_hamiltonian(str(FIXTURE))
     live = ctx.memory_used_bytes
     with pytest.raises(MemoryError):
         problem.solve(max_evaluations=10**9)
     assert ctx.memory_used_bytes == live
-    def run(_):
+    def run(_, problem=problem):
         return problem.solve()["state"]
     with ThreadPoolExecutor(max_workers=4) as pool:
         states = list(pool.map(run, range(8)))
     assert ctx.memory_used_bytes == live
-    del problem
+    del problem, run    # `run` holds the problem too
     gc.collect()
     assert ctx.memory_used_bytes == 0
     assert all(np.allclose(s, states[0]) for s in states)
@@ -327,9 +324,8 @@ def test_nonconserving_hamiltonian_and_unsupported_options_fail_explicitly(tmp_p
 def test_rdms_of_complex_states_are_encoding_independent(tmp_path, mapping, sector):
     path, _ = cache(tmp_path, mapping)
     problem = _native.Context().load_hamiltonian(str(path), sector=sector)
-    jw_sector = ParticleSector(6, (1, 1))
     determinants = sector_determinants()
-    amplitudes = np.random.default_rng(99).normal(size=(2, jw_sector.dim))
+    amplitudes = np.random.default_rng(99).normal(size=(2, len(frozen_sector("jordan_wigner"))))
     amplitudes = amplitudes[0] + 1j * amplitudes[1]
     amplitudes /= np.linalg.norm(amplitudes)
     encoded = np.zeros(problem.dimension, dtype=complex)

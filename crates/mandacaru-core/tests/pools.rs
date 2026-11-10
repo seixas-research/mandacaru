@@ -132,7 +132,8 @@ fn complex_spin_mixing_reaches_the_independent_one_electron_ground_state() {
         assert!(result.labels.iter().any(|l| l.starts_with("iS")));
         let mut beta = 0.;
         for (&encoded, amplitude) in p
-            .basis
+            .register("test")
+            .unwrap()
             .indices
             .as_slice()
             .iter()

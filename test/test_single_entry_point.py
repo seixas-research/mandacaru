@@ -25,7 +25,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # ``BlochCalculator`` was public until the periodic driver moved behind the
 # entry point; it is listed here so the sweep fails if it ever comes back.
 SOLVER_CLASSES = ("RHFDriver", "UHFDriver", "DFTDriver", "HVA", "VQE",
-                  "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE", "MCASVQE",
+                  "ADAPTVQE", "SubspaceVQE", "SubspaceADAPTVQE", "VASQA",
                   "BlochCalculator")
 
 

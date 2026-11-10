@@ -40,7 +40,7 @@ impl PySnapshot {
         py.detach(|| self.inner.expectation(&self.context))
             .map_err(error)
     }
-    #[pyo3(signature=(*,sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64"))]
+    #[pyo3(signature=(*,sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64",taper=false,register_free=false))]
     fn problem(
         &self,
         py: Python<'_>,
@@ -50,12 +50,23 @@ impl PySnapshot {
         sparse: bool,
         pool: &str,
         precision: &str,
+        taper: bool,
+        register_free: bool,
     ) -> PyResult<super::quantum::PyProblem> {
         let precision = super::quantum::parse_precision(precision)?;
+        if register_free && (sparse || dense) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a dense or sparse Hamiltonian matrix needs a state-vector register; a register-free (shot-based) problem builds none",
+            ));
+        }
         let mut inner = py
             .detach(|| {
-                self.inner
-                    .problem(&self.context, sector, dense, include_singles)
+                self.inner.problem_in(
+                    &self.context,
+                    super::quantum::space(register_free, sector),
+                    dense,
+                    include_singles,
+                )
             })
             .map_err(error)?
             .with_precision(precision);
@@ -63,17 +74,11 @@ impl PySnapshot {
             py.detach(|| inner.use_pool(pool, include_singles))
                 .map_err(error)?;
         }
+        if taper {
+            py.detach(|| inner.taper()).map_err(error)?;
+        }
         if sparse {
-            inner.sparse = Some(
-                py.detach(|| {
-                    mandacaru_core::quantum::sparse::SparseMatrix::new(
-                        &self.context,
-                        &inner.basis,
-                        &inner.hamiltonian,
-                    )
-                })
-                .map_err(error)?,
-            );
+            super::quantum::attach_sparse(py, &mut inner)?;
         }
         Ok(super::quantum::PyProblem { inner })
     }

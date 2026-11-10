@@ -29,11 +29,11 @@ relax: a converged optimizer is not evidence that the model has a minimum.
 | --- | --- |
 | `rhf`, `uhf`, `dft` with an all-electron basis | analytic stationary gradient (converged, real, collinear state; `kinetic="spectral"`) |
 | `rhf`, `uhf`, `dft` with a PAW-LCAO basis | [finite difference of the energy at fixed densities](#forces-paw-lcao) |
-| `vqe`, `adapt-vqe`, `mcas-vqe`, `valqa` on the local state-vector simulator | [displaced energies of the converged state](#forces-variational) |
+| `vqe`, `adapt-vqe`, `vasqa`, `valsqa` on the local state-vector simulator | [displaced energies of the converged state](#forces-variational) |
 | `dft` with a spin-orbit PAW-LCAO dataset (`lda-fr`, `pbe-fr`) on a molecule | analytic spinor gradient in Rust for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`; stress raises `PropertyNotImplementedError` |
 | `ghf`, `subspace-vqe`, `subspace-adapt-vqe` | not available |
 | any run with `shots > 0` or a device other than `AER_simulator` | not available |
-| `dft` on periodic structures (crystals) | analytic Rust gradient for LDA, PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling; stress tensor via `get_stress()` for the same functionals except rVV10 (which raises `NotImplementedError`); a DFT+U crystal with a hybrid or a spin-orbit dataset raises `NotImplementedError` |
+| `dft` on periodic structures (crystals) | analytic Rust gradient for LDA, PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling; stress tensor via `get_stress()` for the same functionals; a DFT+U crystal with a hybrid or a spin-orbit dataset raises `NotImplementedError` |
 
 Forces require the default `kinetic="spectral"`. Asking for forces where they are not available raises ASE's
 `PropertyNotImplementedError` or `NotImplementedError`. An SCF that does not
@@ -89,7 +89,7 @@ reference](#run-log-reference)).
 (forces-variational)=
 ## Forces of a VQE or ADAPT-VQE state
 
-For `vqe`, `adapt-vqe`, `mcas-vqe` and `valqa` the force contracts the reduced
+For `vqe`, `adapt-vqe`, `vasqa` and `valsqa` the force contracts the reduced
 density matrices of the converged state with the displaced Hamiltonian. The
 mean-field reference is continued to each displaced geometry and the active-space
 selection followed; the ansatz is not re-optimized. The ASE default is a
@@ -103,10 +103,44 @@ force = result.forces(step=1e-3, extrapolate=True)   # eV / angstrom, Richardson
 result.force_details["step_error_estimate"]
 ```
 
-The variational forces require a local state (no shots, no device). Run the
-optimization to tight convergence first; the force is the derivative of the
-energy of the state you have, not of the exact ground state of the sector.
+The variational forces require a local state (no shots, no device).
 `examples/relaxation/02_lih_relaxation.py` relaxes LiH with ADAPT-VQE forces.
+
+(forces-lagrangian)=
+### The residual-gradient (Z-vector) correction
+
+Contracting the state's density matrices with the displaced Hamiltonian is the
+force of the optimized energy surface only when the parameter gradient
+`g = dE/dtheta` of the state is zero. A loosely converged optimization leaves a
+residual `g`, and the bare contraction then misses the force by a term first
+order in `|g|`. The force is therefore the geometry derivative of the
+Lagrangian `E - z . g`, where `z` solves `H z = g` with `H` the parameter
+Hessian at fixed geometry. This needs no displaced re-optimization: `z` is found
+once by conjugate gradients on Hessian-vector products (central differences of
+the analytic parameter gradients, a minimum-norm solve), the two states
+`psi(theta +- e z)` give `z . g` at every displaced geometry through the same
+density-matrix contraction, and the cost is two extra contractions per
+displacement. The corrected force of a loose run differs from a tightly
+converged run's by a term of order `|g|^2`; the bare one by `|g|`.
+
+The correction is always applied to `vqe`, `adapt-vqe`, `vasqa` and `valsqa`
+and is skipped when `|g|` is below `1e-10`. `result.force_details` reports it:
+
+| key | meaning |
+| --- | --- |
+| `stationarity` | `"lagrangian"` (corrected), `"stationary"` (`|g|` under the floor, nothing added) or `"assumed"` (a state with no ansatz, an exact eigenvector) |
+| `parameter_gradient_norm` | `|g|`, Ha per parameter unit |
+| `z_vector_norm` | `|z|`, the Newton step to the optimum |
+| `correction_norm_ha_per_bohr` | the norm of the correction added to the gradient |
+| `uncorrected_gradient` | the gradient without the correction, Ha per Bohr |
+| `z_vector_iterations`, `z_vector_gradient_evaluations`, `z_vector_residual`, `z_vector_truncated`, `hessian_lowest_curvature` | the solve |
+
+The correction needs `H` positive. A negative curvature (a state that is not near
+a minimum of its parameters) raises, and a gradient component along a null
+direction of `H` raises; a null direction that carries no gradient (a redundant
+parameter) is left out of `z` (`z_vector_truncated`). The states of the subspace
+methods (`"subspace-vqe"`, `"subspace-adapt-vqe"`) are an ensemble: they have no
+single parameter gradient and their forces are refused, as before.
 
 (forces-translation)=
 ## `project_translation`
@@ -144,7 +178,10 @@ PAW-LCAO mean-field forces raise for:
   gradient, above);
 - nonlocal correlation (`"pbe+rvv10"`, `"r2scan+rvv10"`) on a PAW-LCAO basis;
 - `precision="float32"`, because the difference needs `float64` samples;
-- a state that does not reproduce its own energy on the rebuilt integrals.
+- a state that does not reproduce its own energy on the rebuilt integrals;
+- a variational state whose parameters and operator sequence do not prepare the
+  state they accompany, and a parameter Hessian that is indefinite or singular
+  along the gradient ([the Z-vector correction](#forces-lagrangian)).
 
 The force contraction accepts a frozen core of several shells. The limit of
 Hartree–Fock frozen-core exchange to an empty core or a single closed 1s shell

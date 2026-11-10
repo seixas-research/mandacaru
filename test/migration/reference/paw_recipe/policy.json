@@ -468,7 +468,12 @@
     "2": 1.006
    },
    "energy_offset": 3.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     3,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -485,7 +490,12 @@
     "2": 1.009
    },
    "energy_offset": 3.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     3,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -620,29 +630,79 @@
   },
   "Ce/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     1.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Ce/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     1.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Cl/lda": {
    "core_radius": null,
@@ -854,81 +914,231 @@
   },
   "Dy/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     9.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Dy/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     9.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Er/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     11.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Er/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     11.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Eu/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     6.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Eu/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     6.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "F/lda": {
    "core_radius": null,
@@ -1072,29 +1282,79 @@
   },
   "Gd/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     7.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Gd/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     7.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Ge/lda": {
    "core_radius": null,
@@ -1304,29 +1564,79 @@
   },
   "Ho/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     10.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Ho/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     10.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "I/lda": {
    "core_radius": null,
@@ -1336,7 +1646,12 @@
     "2": 1.113
    },
    "energy_offset": 2.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     4,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -1353,7 +1668,12 @@
     "2": 1.113
    },
    "energy_offset": 2.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     4,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -1516,7 +1836,12 @@
     "2": 1.066
    },
    "energy_offset": 1.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     3,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -1533,7 +1858,12 @@
     "2": 1.07
    },
    "energy_offset": 2.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     3,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -1952,29 +2282,79 @@
   },
   "Nd/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     3.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Nd/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     3.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Ne/lda": {
    "core_radius": null,
@@ -2314,29 +2694,79 @@
   },
   "Pm/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     4.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Pm/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     4.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Po/lda": {
    "core_radius": null,
@@ -2398,29 +2828,79 @@
   },
   "Pr/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     2.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Pr/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     2.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Pt/lda": {
    "core_radius": null,
@@ -2922,29 +3402,79 @@
   },
   "Sm/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     5.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Sm/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     5.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Sn/lda": {
    "core_radius": null,
@@ -3082,29 +3612,79 @@
   },
   "Tb/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     8.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Tb/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     8.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Tc/lda": {
    "core_radius": null,
@@ -3158,7 +3738,12 @@
    "core_radius": null,
    "cutoff_table": {},
    "energy_offset": 1.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     4,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -3171,7 +3756,12 @@
    "core_radius": null,
    "cutoff_table": {},
    "energy_offset": 1.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     4,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -3330,29 +3920,79 @@
   },
   "Tm/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     12.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Tm/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     12.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "U/lda": {
    "core_radius": null,
@@ -3554,7 +4194,12 @@
     "2": 1.07
    },
    "energy_offset": 2.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     4,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -3571,7 +4216,12 @@
     "2": 1.07
    },
    "energy_offset": 2.0,
-   "frozen_subshells": [],
+   "frozen_subshells": [
+    [
+     4,
+     2
+    ]
+   ],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
@@ -3626,29 +4276,79 @@
   },
   "Yb/lda": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     13.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Yb/pbe": {
    "core_radius": null,
-   "cutoff_table": {},
+   "cutoff_table": {
+    "0": 2.2,
+    "1": 2.2,
+    "2": 2.4,
+    "3": 2.0
+   },
    "energy_offset": 1.0,
    "frozen_subshells": [],
    "highest_channel": null,
    "local_shift": 0.0,
    "n_bessel": 8,
    "norm_deficit": 0.1,
-   "reference_configuration": [],
+   "reference_configuration": [
+    [
+     4,
+     3,
+     13.0
+    ],
+    [
+     5,
+     2,
+     1.0
+    ]
+   ],
    "second_reference": {},
-   "semicore_subshells": []
+   "semicore_subshells": [
+    [
+     5,
+     0
+    ],
+    [
+     5,
+     1
+    ]
+   ]
   },
   "Zn/lda": {
    "core_radius": null,

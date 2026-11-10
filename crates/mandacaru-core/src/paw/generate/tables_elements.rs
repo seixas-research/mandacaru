@@ -192,12 +192,18 @@ const SEMICORE: &[(&str, &[Subshell])] = &[
     ("Ba", &[(5, 0), (5, 1)]),
     ("Ca", &[(3, 0), (3, 1)]),
     ("Cd", &[(4, 0), (4, 1)]),
+    ("Ce", &[(5, 0), (5, 1)]),
     ("Co", &[(3, 0), (3, 1)]),
     ("Cs", &[(5, 0), (5, 1)]),
     ("Cu", &[(3, 0), (3, 1)]),
+    ("Dy", &[(5, 0), (5, 1)]),
+    ("Er", &[(5, 0), (5, 1)]),
+    ("Eu", &[(5, 0), (5, 1)]),
     ("Fe", &[(3, 0), (3, 1)]),
+    ("Gd", &[(5, 0), (5, 1)]),
     ("Hf", &[(5, 0), (5, 1)]),
     ("Hg", &[(5, 0), (5, 1)]),
+    ("Ho", &[(5, 0), (5, 1)]),
     ("Ir", &[(5, 0), (5, 1)]),
     ("K", &[(3, 0), (3, 1)]),
     ("La", &[(5, 0), (5, 1)]),
@@ -207,24 +213,31 @@ const SEMICORE: &[(&str, &[Subshell])] = &[
     ("Mo", &[(4, 0), (4, 1)]),
     ("Na", &[(2, 0), (2, 1)]),
     ("Nb", &[(4, 0), (4, 1)]),
+    ("Nd", &[(5, 0), (5, 1)]),
     ("Ni", &[(3, 0), (3, 1)]),
     ("Pa", &[(6, 0), (6, 1)]),
     ("Pb", &[(5, 0), (5, 1)]),
+    ("Pm", &[(5, 0), (5, 1)]),
     ("Po", &[(5, 0), (5, 1)]),
+    ("Pr", &[(5, 0), (5, 1)]),
     ("Pt", &[(5, 0), (5, 1)]),
     ("Ra", &[(6, 0), (6, 1)]),
     ("Rb", &[(4, 0), (4, 1)]),
     ("Re", &[(5, 0), (5, 1)]),
     ("Sc", &[(3, 0), (3, 1)]),
+    ("Sm", &[(5, 0), (5, 1)]),
     ("Sr", &[(4, 0), (4, 1)]),
     ("Ta", &[(5, 0), (5, 1)]),
+    ("Tb", &[(5, 0), (5, 1)]),
     ("Tc", &[(4, 0), (4, 1)]),
     ("Th", &[(6, 0), (6, 1)]),
     ("Ti", &[(3, 0), (3, 1)]),
+    ("Tm", &[(5, 0), (5, 1)]),
     ("U", &[(6, 0), (6, 1)]),
     ("V", &[(3, 0), (3, 1)]),
     ("W", &[(5, 0), (5, 1)]),
     ("Y", &[(4, 0), (4, 1)]),
+    ("Yb", &[(5, 0), (5, 1)]),
     ("Zn", &[(3, 0), (3, 1)]),
     ("Zr", &[(4, 0), (4, 1)]),
 ];
@@ -246,8 +259,21 @@ const HIGHEST_CHANNEL: &[(&str, usize)] = &[
 ];
 
 const REFERENCE_CONFIGURATIONS: &[(&str, &[(Subshell, f64)])] = &[
+    ("Ce", &[((4, 3), 1.0), ((5, 2), 1.0)]),
+    ("Dy", &[((4, 3), 9.0), ((5, 2), 1.0)]),
+    ("Er", &[((4, 3), 11.0), ((5, 2), 1.0)]),
+    ("Eu", &[((4, 3), 6.0), ((5, 2), 1.0)]),
+    ("Gd", &[((4, 3), 7.0), ((5, 2), 1.0)]),
+    ("Ho", &[((4, 3), 10.0), ((5, 2), 1.0)]),
+    ("Nd", &[((4, 3), 3.0), ((5, 2), 1.0)]),
     ("Pa", &[((5, 3), 2.0), ((6, 2), 1.0)]),
+    ("Pm", &[((4, 3), 4.0), ((5, 2), 1.0)]),
+    ("Pr", &[((4, 3), 2.0), ((5, 2), 1.0)]),
+    ("Sm", &[((4, 3), 5.0), ((5, 2), 1.0)]),
+    ("Tb", &[((4, 3), 8.0), ((5, 2), 1.0)]),
+    ("Tm", &[((4, 3), 12.0), ((5, 2), 1.0)]),
     ("U", &[((5, 3), 3.0), ((6, 2), 1.0)]),
+    ("Yb", &[((4, 3), 13.0), ((5, 2), 1.0)]),
 ];
 
 fn find<T: Copy>(table: &[(&str, T)], symbol: &str) -> Option<T> {
@@ -290,12 +316,26 @@ pub fn second_references(symbol: &str, functional: &str) -> &'static [(usize, f6
         .map_or(&[], |e| e.2)
 }
 
+/// The filled semicore d shells generated into the frozen core (2026-11-09). In valence, the 3d10
+/// of Br and Kr and the 4d10 of Te, I and Xe sit 1.5-3.3 Ha deep inside 1.0-1.1 Bohr spheres: their
+/// smooth waves kept 1.6-8.2 Ha of kinetic energy above `q_cut`, and HBr moved 186 eV between grid
+/// spacings of 0.20 and 0.15 Angstrom. Frozen, they join the core correction and an empty d
+/// channel scatters at the frozen-shell energy: pbe-sr HBr then moves 2.0 meV over that step, and
+/// its binding energy is 4.012 eV against 4.021 eV all-electron (X2C-PBE, def2-QZVPP).
+const FROZEN_D: &[(&str, &[Subshell])] = &[
+    ("Br", &[(3, 2)]),
+    ("I", &[(4, 2)]),
+    ("Kr", &[(3, 2)]),
+    ("Te", &[(4, 2)]),
+    ("Xe", &[(4, 2)]),
+];
+
 /// Occupied valence subshells generated into the frozen core by default.
 pub fn frozen_subshells(symbol: &str) -> &'static [Subshell] {
     if FROZEN.contains(&symbol) {
         &[(4, 3)]
     } else {
-        &[]
+        find(FROZEN_D, symbol).unwrap_or(&[])
     }
 }
 

@@ -379,21 +379,6 @@ class TestSplitSchemes:
         with pytest.raises(ValueError, match="zeta_split must be one of"):
             resolve_split_scheme("previous")
 
-    def test_the_all_electron_nao_family_follows(self):
-        from mandacaru.basis import BasisSet
-        from mandacaru.basis.multizeta import (DEFAULT_SPLIT_NORM,
-                                               DEFAULT_TAIL_NORMS)
-
-        default = BasisSet.build("NAO")
-        assert default.tail_norms == DEFAULT_TAIL_NORMS
-        assert default.zeta_split == "first_zeta"
-        last = BasisSet.build("NAO", zeta_split="last_zeta")
-        assert last.tail_norms is None and last.zeta_split == "last_zeta"
-        assert last.split_norm == DEFAULT_SPLIT_NORM
-        for option in ("split_norm", "tail_norm"):
-            with pytest.raises(TypeError, match=option):
-                BasisSet.build("NAO", **{option: 0.15})
-
 
 @needs_library
 class TestNewOptionsEndToEnd:

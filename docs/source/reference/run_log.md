@@ -63,10 +63,11 @@ A periodic calculation (a crystal) writes `[SYSTEM]` (from a geometry), `[BASIS]
 | `[ELECTRONS]` | every run | Always |
 | `[SCF SETUP]`, `[SCF ITERATIONS]` | molecular runs from a geometry | After `[ELECTRONS]`: the mean-field reference of every method; a crystal writes neither |
 | `[ACTIVE SPACE]` | quantum methods | Only when `active_space=` reduced the register |
+| `[ENERGY MEASUREMENT]` | quantum methods | Only for a shot-based run (`shots > 0`) |
 | `[GRADIENT MEASUREMENT]` | quantum methods | Only for a measured-gradient run (`shots > 0` with `adapt-vqe`) |
 | `[OPTIMIZATION SETUP]` | quantum methods | Always for them |
 | `[ITERATIONS]` | `adapt-vqe` | One row per accepted operator |
-| `[MARKOV CHAIN]` | `mcas-vqe`, `valqa` | One row per proposal |
+| `[MARKOV CHAIN]` | `vasqa`, `valsqa` | One row per proposal |
 | `[VARIATIONAL QUANTUM SUMMARY]` | quantum methods | Always for them |
 | `[SCF SUMMARY]` | `rhf`, `uhf`, `ghf`, `dft` | Always for them |
 | `[FORCES]` | any method | Each time forces are computed |
@@ -224,6 +225,12 @@ this order (`basis` is owned by `[BASIS]`):
     qubits: 4
 ```
 
+`Z2 tapering` is `none` unless `taper=True`. A tapered run states the qubits removed, the
+register they were removed from and the sector signs of the symmetry generators, and
+counts the pool generators dropped as symmetry-changing (`4 qubit(s) removed from a
+12-qubit register, sector signs (+ + - +); 62 pool generator(s) dropped as
+symmetry-changing`); a Hamiltonian with no symmetry to remove says `none found`. The
+`qubits` field is then the tapered width.
 `grid points` is what the cell turned the requested spacing into. `Hamiltonian` is the
 number of Pauli terms the native problem holds. A line
 `two-body integrals: Cholesky factors, tolerance ..., rank ..., largest residual
@@ -284,6 +291,23 @@ orbital counts are not repeated here: `[BASIS]` owns the number of basis functio
 `[ELECTRONS]` the number of orbitals of the register. The selector's occupation
 numbers and the reference occupancy are not in the table.
 
+## `[ENERGY MEASUREMENT]`
+
+For a run with `shots > 0`, how one energy is measured on the device: the scheme
+(`measurement_scheme`: the merged qubit-wise commuting groups, or the double-factorized
+bases), and what one energy evaluation costs. The jobs and shots are the ones the run
+budget is checked against.
+
+```text
+========================================================================
+[ENERGY MEASUREMENT]
+    scheme: double-factorized (one basis per leaf, plus the one-body basis)
+    bases_per_energy: 7
+    jobs_per_energy: 1
+    shots_per_energy: 7000
+========================================================================
+```
+
 ## `[GRADIENT MEASUREMENT]`
 
 For `adapt-vqe` with `shots > 0`, the pool gradients are measured on the device as
@@ -305,6 +329,11 @@ commutators `[H, A_k]`. The block states what each growth step costs.
 Here `shots=500` and 13 measurement bases give 6,500 shots per growth step.
 
 ## `[OPTIMIZATION SETUP]`
+
+The sample below and the iteration table after it are from runs with `pool="fermionic"`. The
+default pool of `adapt-vqe` is `ceo`, which prints `pool: ceo`, `pool_class: coupled exchange
+operators` and a larger `pool_size` (6 for H2 in the `HAO` basis, against 3), and whose
+coupled-operator labels are too long for a row, so its `operator` column reads `pool[index]`.
 
 ```text
 [OPTIMIZATION SETUP]
@@ -332,7 +361,7 @@ Here `shots=500` and 13 measurement bases give 6,500 shots per growth step.
 - `classical_optimizer` is the `optimizer["method"]` actually used (SPSA by default
   when `shots > 0`).
 - `max_iterations` is the growth budget (`max_iterations=`) for the ADAPT methods and
-  `max_steps` for `mcas-vqe` and `valqa`. A fixed-ansatz `vqe` run still prints the
+  `max_steps` for `vasqa` and `valsqa`. A fixed-ansatz `vqe` run still prints the
   growth budget, which it does not use.
 - `gradient_method` reads `analytic` in every run, including a shot-based one; the
   measured gradient is described by `[GRADIENT MEASUREMENT]`. `gradient_units` is the
@@ -388,7 +417,7 @@ prints its magnitude for the largest.
 
 ## `[MARKOV CHAIN]`
 
-For `mcas-vqe` and `valqa`, one row per proposal, accepted or not:
+For `vasqa` and `valsqa`, one row per proposal, accepted or not:
 
 ```text
 [MARKOV CHAIN]
@@ -424,7 +453,7 @@ The converged state of a quantum run.
 ```
 
 `converged` is the outer verdict. A finished Markov chain does not certify an
-eigenstate, so for `mcas-vqe` and `valqa` it can read `False` after a complete run
+eigenstate, so for `vasqa` and `valsqa` it can read `False` after a complete run
 (`result.completed` is the separate fact that the chain ran to its end). `correlation_energy` is
 `optimal_energy` minus the `reference_energy` of `[OPTIMIZATION SETUP]`.
 `final_max_gradient` is the largest pool gradient after the last step, in Ha/rad, so

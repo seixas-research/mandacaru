@@ -11,7 +11,7 @@ from mandacaru.analysis.proposals import ProposalModel, fit
 def calculator(**options):
     ctx = _native.Context(threads=1)
     h = ctx.pauli_operator(4, [("ZIII", .3, 0.), ("XXII", .2, 0.), ("YYII", .2, 0.)])
-    settings = dict(method="valqa", hamiltonian=h, n_spatial_orbitals=2,
+    settings = dict(method="valsqa", hamiltonian=h, n_spatial_orbitals=2,
                     num_particles=(1, 0), max_steps=20, max_length=3,
                     seed=7, atomic_units=True, resources={"threads": 1})
     settings.update(options)

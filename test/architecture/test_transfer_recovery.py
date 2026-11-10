@@ -6,7 +6,7 @@ import pytest
 from mandacaru import Mandacaru
 
 
-@pytest.mark.parametrize("method", ["adapt-vqe", "mcas-vqe", "valqa"])
+@pytest.mark.parametrize("method", ["adapt-vqe", "vasqa", "valsqa"])
 def test_transfer_reoptimizes_the_previous_ansatz_in_the_new_geometry(method):
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
     options = {} if method == "adapt-vqe" else dict(max_steps=20, transfer_steps=2, seed=7, record=False)
@@ -28,7 +28,7 @@ def test_transfer_reoptimizes_the_previous_ansatz_in_the_new_geometry(method):
             assert len(result.steps) == 2
         grid = calc.integrals.grid
     with Mandacaru(method="adapt-vqe", atoms=atoms, basis="HAO", pool="qeb", grid=grid,
-                   grid_spacing=.5, resources={"threads": 1}) as fresh:
+                   grid_spacing=.5, resources={"threads": 1}):
         assert energy == pytest.approx(atoms.get_potential_energy(), abs=1e-8)
 
 

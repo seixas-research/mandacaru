@@ -108,6 +108,13 @@ class TestForwardedOptions:
                                         "memory_limit_bytes": 64 * 1024**2}
         assert options["save_hamiltonian"] == "h.parquet"
 
+    def test_crystal_orbitals_are_forwarded_only_when_given(self, recorder, h2_json):
+        """Absent, the calculator's own default (and its refusals) apply."""
+        assert main([h2_json]) == 0
+        assert "crystal_orbitals" not in recorder.instances[0].options
+        assert main([h2_json, "--method", "vqe", "--crystal-orbitals", "real-space"]) == 0
+        assert recorder.instances[1].options["crystal_orbitals"] == "real-space"
+
     def test_the_precision_is_forwarded(self, recorder, h2_json):
         assert main([h2_json, "--precision", "float32"]) == 0
         assert recorder.instances[0].options["precision"] == "float32"

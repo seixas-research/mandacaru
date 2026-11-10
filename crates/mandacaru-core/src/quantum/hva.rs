@@ -66,6 +66,11 @@ impl CachedProblem {
         {
             return Err(Error::Invalid("HVA needs positive layers/steps, exact or trotter evolution, order 1 or 2 and a finite seed angle".into()));
         }
+        if self.taper.is_some() {
+            return Err(Error::Invalid(
+                "the Hamiltonian-variational ansatz is built from the untapered Hamiltonian groups and cannot be tapered".into(),
+            ));
+        }
         if self.hamiltonian.decomposition.is_empty() {
             return Err(Error::Invalid("HVA requires the physical one-/two-body decomposition of a native molecular Hamiltonian".into()));
         }
@@ -106,7 +111,7 @@ impl CachedProblem {
                         })
                         .collect(),
                 )?;
-                self.basis.check_invariant(&operator)?;
+                self.check_invariant(&operator)?;
                 pool.push(Generator {
                     label: format!("HVA({layer},{index})"),
                     operator,
@@ -128,7 +133,7 @@ impl CachedProblem {
                                     ..*term
                                 }],
                             )?;
-                            self.basis.check_invariant(&operator)?;
+                            self.check_invariant(&operator)?;
                             sequence.push((operator, weight));
                         }
                     }

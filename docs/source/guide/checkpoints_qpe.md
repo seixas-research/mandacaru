@@ -63,7 +63,7 @@ The generators and angles do not say how they are combined, so the file records
 
 | `preparation` | state | written by |
 | :--- | :--- | :--- |
-| `"product"` | $\prod_k e^{\theta_k A_k}\,\vert\mathrm{ref}\rangle$ | ADAPT-VQE, and any run with `trotter=True` (forced by `ansatz="hva"`, circuit execution, `mcas-vqe` and `valqa`) |
+| `"product"` | $\prod_k e^{\theta_k A_k}\,\vert\mathrm{ref}\rangle$ | ADAPT-VQE, and any run with `trotter=True` (forced by `ansatz="hva"`, circuit execution, `vasqa` and `valsqa`) |
 | `"sum"` | $e^{\sum_k \theta_k A_k}\,\vert\mathrm{ref}\rangle$ | the default exact UCCSD of `method="vqe"` |
 
 The two coincide only when the generators commute, so a reader must not guess.
@@ -96,7 +96,7 @@ Hamiltonian before reading any pool gradient. Resuming a completed native
 checkpoint does not restore an interrupted optimizer iteration.
 
 Subspace methods (`subspace-vqe`, `subspace-adapt-vqe`) refuse `checkpoint=`
-and `resume=`, and the architecture searches (`mcas-vqe`, `valqa`) refuse
+and `resume=`, and the architecture searches (`vasqa`, `valsqa`) refuse
 `resume=`.
 
 ## Carrying the ansatz along a relaxation
@@ -123,7 +123,7 @@ before the solver decides whether to keep the carried start or grow from the
 reference. The start is refused when an orbital's best match falls below
 `transfer_threshold` (default `0.9`). `transfer_steps` sets the shorter chain
 of the architecture searches that a carried start allows
-([MCAS-VQE tutorial](../tutorial/mcas_vqe.md)). The transfer is described in the
+([VASQA tutorial](../tutorial/vasqa.md)). The transfer is described in the
 [native coverage](../development/native_cutover.md).
 
 ## Quantum phase estimation

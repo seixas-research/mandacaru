@@ -52,10 +52,10 @@ import sys
 import warnings
 from dataclasses import dataclass, field
 import numpy as np
-from ..core import matrix_free
 from ..core.checkpoint import WavefunctionCheckpoint, prepare_state
 from ..core.mapping import PauliSum
 from ..units import energy_unit_label, from_hartree, to_hartree
+from ..utils import memory
 from .. import _native
 from .._native import state_norm_squared
 from .time_evolution import state_dtype
@@ -137,7 +137,7 @@ def qpe_memory_estimate(
         statevector_bytes=statevector,
         working_bytes=working,
         unitary_bytes=unitary,
-        available_bytes=matrix_free.available_memory_bytes(),
+        available_bytes=memory.available_memory_bytes(),
     )
 
 

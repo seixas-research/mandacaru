@@ -44,6 +44,13 @@ state:
 Circuit execution is slower and gives the same state to machine precision, so for
 a simulator it is a verification path, and for a processor the only one.
 
+With `shots > 0` the calculator holds no state vector at all, however few the
+qubits: the problem is built from Pauli operators only, every energy and every
+ADAPT pool gradient is measured through the provider, and the reference
+determinant is prepared by `X` gates in the mapping's encoding. The result has no
+state to read, so density matrices, natural orbitals and forces need
+`shots=0` (see {ref}`ADAPT-VQE on a device <adapt-on-a-device>`).
+
 ```python
 from ase.build import molecule
 from mandacaru import Mandacaru
@@ -81,6 +88,7 @@ Braket ARN. `mandacaru.backends.available_devices()` lists the registered ones.
 | device | kind | `shots > 0` |
 |---|---|---|
 | `"AER_simulator"` (default) | ideal, noiseless | optional |
+| `"AER_mps"` | Aer's matrix-product-state simulator, run locally (see below) | **required** |
 | `fake_*` (for example `fake_kingston`, `fake_manila`) | a Qiskit Runtime fake backend: the processor's transpilation and noise model, run locally | **required** |
 | `ibm_*` (for example `ibm_kingston`), or `"ibm-quantum"` for the least busy | IBM processor via Qiskit Runtime | **required** |
 | `braket-local` | local Braket simulator | optional |
@@ -106,9 +114,42 @@ the budgets that protect a real submission.
 * Qiskit: `instance`, `token`, `channel` (otherwise the account saved by
   `QiskitRuntimeService.save_account` is used), `optimization_level`,
   `estimator_options` (Runtime options), `physical_qubits`, `seed`,
-  `max_bases_per_job`, `enable_fractional_gates` and `run_budget`.
+  `max_bases_per_job`, `enable_fractional_gates`, `run_budget` and, on `"AER_mps"`,
+  `max_bond_dimension`.
 * Braket: `s3_folder`, `poll_timeout_seconds` and `run_budget`.
 * Cirq runs exactly and refuses `shots > 0`.
+
+**A simulator for 50-qubit circuits.** No state-vector simulator holds 50 qubits, so a shot
+run's circuits cannot run locally on `"AER_simulator"` or a `fake_*` backend there.
+`device="AER_mps"` (aliases `"aer-mps"`, `"mps"`) runs them on Aer's matrix-product-state
+simulator, which costs memory in the entanglement the circuit builds, not in the qubit count.
+It is opt-in and sampled:
+
+* `shots > 0` is required, and it returns no state vector, so it takes no density matrices
+  or orbitals. `physical_qubits`, `enable_fractional_gates` and `estimator_options` describe a
+  processor and are refused; a `max_bond_dimension` on any other device is refused.
+* `backend_options={"max_bond_dimension": 16}` caps the bond dimension (a positive integer).
+  Memory grows as its square, and a circuit that needs more is truncated: that cap is the
+  approximation. Without it Aer keeps every bond, exact but exponential for a wide ansatz.
+  `seed` seeds the sampling.
+* An ADAPT-VQE step measures every pool gradient in one batch, and the Estimator builds a
+  circuit per basis. At 50 qubits with one alpha and one beta electron the `"fermionic"` pool
+  needs about 13,000 bases (the default `"ceo"` pool is generalized over every spin-orbital
+  quadruple and needs millions of observables there; name `pool="fermionic"` or `"qeb"` for a
+  register this wide): one job of them took 124 s and 8.7 GB, and `max_bases_per_job=100` brought the same
+  run to 17 s and 0.35 GB with the same energy. A job of more than 1,000 bases (about
+  0.7 GB) is therefore refused before anything is simulated: pass
+  `backend_options={"max_bases_per_job": 100}` or similar. Pass `measurement_budget`
+  explicitly for such a run (see [what a measurement costs](measurement_cost.md)).
+* The test `test/architecture/test_shot_path_memory.py` runs the real 50-qubit circuits this
+  way, for a few generators and a tiny `maxiter`.
+
+`measurement_scheme` chooses how a circuit run measures the energy: `"qwc"` (the default,
+qubit-wise commuting groups) or `"double-factorized"`, the $O(M)$ basis-rotation measurement
+of the molecular Hamiltonian, in which each of the $L + 1$ bases is a Givens network on the
+ansatz register followed by one computational-basis measurement; the bases of one energy are
+one batch of circuits, so one job on a Qiskit device. It applies to `vqe` and `adapt-vqe` on a circuit device with molecular integrals; see
+[the double-factorized measurement](#double-factorized-measurement).
 
 An option the provider does not take raises. Pin the layout with `physical_qubits` on a processor: a
 qubit whose readout has drifted since the last calibration ruins an energy while
@@ -116,7 +157,7 @@ its recorded error still looks fine.
 
 ## Limits of circuit execution
 
-* Subspace methods and the architecture searches (`mcas-vqe`, `valqa`) do not
+* Subspace methods and the architecture searches (`vasqa`, `valsqa`) do not
   execute circuits and raise `NotImplementedError`.
 * Forces are not an implemented property on a circuit device, and measured
   reduced density matrices are not available; see

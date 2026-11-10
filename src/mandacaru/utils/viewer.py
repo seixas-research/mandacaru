@@ -53,10 +53,12 @@ surface.  The field itself stays in the units it was computed in.
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 
 import numpy as np
 
+from .. import _native
 from ..units import BOHR_TO_ANGSTROM
 
 #: The drawing modes :class:`Viewer3D` knows.
@@ -79,15 +81,6 @@ NEGATIVE_COLORS = ("#c2410c", "#f59e0b", "#ffd23f", "#fff3b0")
 POSITIVE_SURFACE = "#00b4d8"
 NEGATIVE_SURFACE = "#f59e0b"
 
-#: The Kuhn decomposition of a cube into six tetrahedra.  Corner ``c`` of a
-#: cell is node ``(i, j, k) = (c >> 2, (c >> 1) & 1, c & 1)`` relative to the
-#: cell's first node.  Every tetrahedron runs along the main diagonal 0 -> 7,
-#: so neighboring cells cut their shared faces the same way and the surface
-#: has no cracks.
-_KUHN_TETRAHEDRA = np.array([[0, 4, 6, 7], [0, 4, 5, 7], [0, 2, 6, 7],
-                             [0, 2, 3, 7], [0, 1, 5, 7], [0, 1, 3, 7]])
-
-
 # --------------------------------------------------------------------------- #
 # Geometry kernels, free of any plotting.
 # --------------------------------------------------------------------------- #
@@ -98,59 +91,15 @@ def marching_tetrahedra(values, X, Y, Z, level: float) -> np.ndarray:
     ``values``, ``X``, ``Y`` and ``Z`` are ``(nx, ny, nz)`` arrays: the field
     and the Cartesian coordinates of every node, so a skewed grid works as
     well as an orthogonal one.  Returns an ``(n, 3, 3)`` array -- triangle,
-    vertex, coordinate -- in the units of ``X``.  The winding is not
-    consistent; :class:`Viewer3D` lights both sides of every face.
+    vertex, coordinate -- in the units of ``X``.  Each cell is cut into the six
+    Kuhn tetrahedra along its main diagonal, so neighboring cells cut a shared
+    face the same way and the surface has no cracks (Rust,
+    ``math::isosurface``).  The winding is not consistent; :class:`Viewer3D`
+    lights both sides of every face.
     """
-    values = np.asarray(values, dtype=float)
-    nx, ny, nz = values.shape
-    if min(nx, ny, nz) < 2:
-        return np.zeros((0, 3, 3))
-    flat = values.ravel()
-    corner_offsets = np.array([(c >> 2) * ny * nz + ((c >> 1) & 1) * nz + (c & 1)
-                               for c in range(8)])
-    i, j, k = np.meshgrid(np.arange(nx - 1), np.arange(ny - 1),
-                          np.arange(nz - 1), indexing="ij")
-    base = (i * ny * nz + j * nz + k).ravel()
-
-    # Keep only the cells the surface crosses before touching coordinates:
-    # on a fine grid that is a few percent of them.
-    corner_values = flat[base[:, None] + corner_offsets]
-    above = corner_values > level
-    crossed = above.any(axis=1) & ~above.all(axis=1)
-    nodes = base[crossed][:, None] + corner_offsets[_KUHN_TETRAHEDRA.ravel()]
-    nodes = nodes.reshape(-1, 4)                                # (T, 4)
-
-    tet_values = flat[nodes]
-    inside = tet_values > level
-    count = inside.sum(axis=1)
-    keep = (count > 0) & (count < 4)
-    nodes, tet_values, inside, count = (nodes[keep], tet_values[keep],
-                                        inside[keep], count[keep])
-    points = np.stack([np.asarray(X, dtype=float).ravel(),
-                       np.asarray(Y, dtype=float).ravel(),
-                       np.asarray(Z, dtype=float).ravel()], axis=1)[nodes]
-
-    # Put the corners above the level first; then each case has a fixed shape.
-    order = np.argsort(~inside, axis=1, kind="stable")
-    v = np.take_along_axis(tet_values, order, axis=1)
-    p = np.take_along_axis(points, order[:, :, None], axis=1)
-
-    def edge(rows, a, b):
-        t = (level - v[rows, a]) / (v[rows, b] - v[rows, a])
-        return p[rows, a] + t[:, None] * (p[rows, b] - p[rows, a])
-
-    triangles = []
-    one = np.flatnonzero(count == 1)          # corner 0 alone above
-    triangles.append(np.stack([edge(one, 0, 1), edge(one, 0, 2),
-                               edge(one, 0, 3)], axis=1))
-    three = np.flatnonzero(count == 3)        # corner 3 alone below
-    triangles.append(np.stack([edge(three, 3, 0), edge(three, 3, 1),
-                               edge(three, 3, 2)], axis=1))
-    two = np.flatnonzero(count == 2)          # corners 0, 1 above; 2, 3 below
-    quad = [edge(two, 0, 2), edge(two, 0, 3), edge(two, 1, 3), edge(two, 1, 2)]
-    triangles.append(np.stack([quad[0], quad[1], quad[2]], axis=1))
-    triangles.append(np.stack([quad[0], quad[2], quad[3]], axis=1))
-    return np.concatenate(triangles, axis=0)
+    values = np.ascontiguousarray(values, dtype=float)
+    flat = [np.ascontiguousarray(a, dtype=float).ravel() for a in (X, Y, Z)]
+    return _native.isosurface_triangles(values.shape, values.ravel(), *flat, float(level))
 
 
 def enclosing_level(weights, fraction: float) -> float:
@@ -158,17 +107,9 @@ def enclosing_level(weights, fraction: float) -> float:
 
     ``weights`` are non-negative.  This is the isovalue convention for
     orbitals ("the surface enclosing 85% of the probability"), applied to the
-    weight the field is sampled with.
+    weight the field is sampled with (Rust, ``math::isosurface``).
     """
-    if not 0.0 < fraction < 1.0:
-        raise ValueError(f"enclosed must lie strictly between 0 and 1, "
-                         f"got {fraction!r}")
-    w = np.sort(np.asarray(weights, dtype=float).ravel())[::-1]
-    total = float(w.sum())
-    if total <= 0.0:
-        raise ValueError("the field is zero everywhere; there is nothing to draw")
-    cumulative = np.cumsum(w) / total
-    return float(w[min(int(np.searchsorted(cumulative, fraction)), len(w) - 1)])
+    return _native.enclosing_level(np.ascontiguousarray(weights, dtype=float).ravel(), float(fraction))
 
 
 def _ease(t):
@@ -289,7 +230,8 @@ class Viewer3D:
         Draw the nuclei (Jmol colors, covalent radii) and the bonds between
         them.
     seed : int or None
-        Seed of the point-cloud sampler; the same seed draws the same cloud.
+        Seed of the point-cloud sampler (an integer in ``[0, 2**64)``); the same
+        seed draws the same cloud on every platform.  ``None`` draws a fresh one.
     """
 
     def __init__(self, source, quantity: str = "density", index: int = 0, *,
@@ -322,7 +264,10 @@ class Viewer3D:
             else float(alpha)
         self.show_atoms = bool(atoms)
         self.show_bonds = bool(bonds)
-        self.seed = seed
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, (int, np.integer))
+                                 or not 0 <= int(seed) < 2**64):
+            raise ValueError(f"seed must be None or an integer in [0, 2**64), got {seed!r}")
+        self.seed = None if seed is None else int(seed)
         self._cloud = None
         self._surface = None
 
@@ -393,18 +338,12 @@ class Viewer3D:
         """``(positions, values)`` of the point cloud: ``(points, 3)`` in Angstrom
         and the field's value at each point."""
         if self._cloud is None:
-            weights = self._weights().ravel()
-            total = float(weights.sum())
-            if total <= 0.0:
-                raise ValueError("the field is zero everywhere; there is "
-                                 "nothing to sample")
-            rng = np.random.default_rng(self.seed)
-            picked = rng.choice(weights.size, size=self.points,
-                                p=weights / total)
-            step = np.asarray(self.field.grid.step, dtype=float) \
-                * BOHR_TO_ANGSTROM
-            jitter = rng.uniform(-0.5, 0.5, size=(self.points, 3)) @ step.T
-            self._cloud = (self._nodes()[picked] + jitter,
+            seed = secrets.randbits(64) if self.seed is None else self.seed
+            step = np.ascontiguousarray(self.field.grid.step, dtype=float) * BOHR_TO_ANGSTROM
+            picked, positions = _native.weighted_cloud(
+                np.ascontiguousarray(self._weights(), dtype=float).ravel(),
+                np.ascontiguousarray(self._nodes()), step, int(self.points), seed)
+            self._cloud = (positions,
                            np.asarray(self.field.data, dtype=float)
                            .ravel()[picked])
         return self._cloud

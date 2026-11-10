@@ -70,8 +70,8 @@ fn diagnosis_dict<'py>(py: Python<'py>, d: &Diagnosis) -> PyResult<Bound<'py, Py
 }
 
 /// Every check of a dataset against the all-electron atom solved again from the record: ghosts,
-/// scattering phases, unprojected channels, the intruding-1s miss, missing states and the
-/// ghosts of the `j` branches. With `levels`, the levels the ghost test reads for each channel.
+/// scattering phases, unprojected channels, the intruding-1s miss, missing states, the
+/// ghosts of the `j` branches and the bound levels a channel without projectors misses. With `levels`, the levels the ghost test reads for each channel.
 #[pyfunction]
 #[pyo3(signature = (context, payload, tables, *, levels = false))]
 fn paw_diagnose<'py>(
@@ -83,9 +83,15 @@ fn paw_diagnose<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let ctx = &context.inner;
     let dataset = paw_record::import(ctx, payload, tables)?;
-    let found = py.detach(|| diagnose::diagnose_record(ctx, &dataset, None, &mut AeLogs::new()));
+    let found = py.detach(|| {
+        diagnose::diagnose_record_with_unprojected(ctx, &dataset, &mut AeLogs::new())
+    });
     let out = match found {
-        Ok(diagnosis) => diagnosis_dict(py, &diagnosis)?,
+        Ok((diagnosis, unprojected_missing)) => {
+            let out = diagnosis_dict(py, &diagnosis)?;
+            out.set_item("unprojected_missing", unprojected_missing)?;
+            out
+        }
         Err(diagnose::Error::Unevaluated(text)) => {
             let out = PyDict::new(py);
             out.set_item("unevaluated", text)?;
@@ -271,7 +277,59 @@ fn paw_reconstruct<'py>(
     array(py, &[out.len()], out)
 }
 
+/// The verification gates of `diagnose::quality` that need no all-electron atom: the residual
+/// kinetic energy of each channel above `q_cut` and the hard channels, the grid residual at each
+/// gate spacing and the working spacing, the widest sphere against `bond` (Bohr), and the
+/// partition against a `twin` record of the same element (its `(payload, tables)`).
+#[pyfunction]
+#[pyo3(signature = (context, payload, tables, *, bond = None, twin = None))]
+fn paw_quality<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    payload: &str,
+    tables: &Bound<'py, PyDict>,
+    bond: Option<f64>,
+    twin: Option<(String, Bound<'py, PyDict>)>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use mandacaru_core::paw::diagnose::quality;
+    let ctx = &context.inner;
+    let dataset = paw_record::import(ctx, payload, tables)?;
+    let other = match &twin {
+        Some((p, t)) => Some(paw_record::import(ctx, p, t)?),
+        None => None,
+    };
+    let (residuals, grids, working) = py
+        .detach(|| -> mandacaru_core::Result<_> {
+            let grids = quality::GATE_SPACINGS
+                .iter()
+                .map(|&h| Ok((h, quality::grid_residual(ctx, &dataset, h)?)))
+                .collect::<mandacaru_core::Result<Vec<_>>>()?;
+            Ok((
+                quality::residual_kinetic(&dataset),
+                grids,
+                quality::working_spacing(ctx, &dataset)?,
+            ))
+        })
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item("residual_kinetic", residuals)?;
+    out.set_item("hard", quality::hardness(&dataset))?;
+    let grid = PyDict::new(py);
+    for (h, values) in grids {
+        grid.set_item(h, values)?;
+    }
+    out.set_item("grid_residual", grid)?;
+    out.set_item("working_spacing", working)?;
+    out.set_item("sphere", bond.and_then(|b| quality::sphere_reach(&dataset, b)))?;
+    out.set_item(
+        "partition",
+        other.as_ref().and_then(|o| quality::partition_mismatch(&dataset, o)),
+    )?;
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(paw_quality, m)?)?;
     m.add_function(wrap_pyfunction!(paw_diagnose, m)?)?;
     m.add_function(wrap_pyfunction!(paw_levels, m)?)?;
     m.add_function(wrap_pyfunction!(paw_ghost_levels, m)?)?;

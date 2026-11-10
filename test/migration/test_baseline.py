@@ -131,13 +131,11 @@ LIVE_BACKEND_KEYS = {"available", "message", "threads", "library_sha256"}
 
 
 def test_a_sample_records_the_native_backend_the_runner_writes_today():
-    from mandacaru.integrals._backend import check_backend
-    status = check_backend()
-    record = baseline.backend_record(status)
+    from mandacaru import _native
+    record = baseline.backend_record()
     assert set(record) == LIVE_BACKEND_KEYS and "is_rust" not in record
-    assert record["available"] is True and record["threads"] == status.n_threads >= 1
-    assert record["message"] == status.message
-    assert record["library_sha256"] == baseline.fingerprint(Path(status.path))
+    assert record["available"] is True and record["threads"] == _native.num_threads() >= 1
+    assert record["library_sha256"] == baseline.fingerprint(Path(_native.__file__))
 
 
 def test_checked_reference_corpus_is_complete_and_internally_consistent():

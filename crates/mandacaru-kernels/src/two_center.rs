@@ -60,8 +60,7 @@ pub fn spherical_bessel(l: i32, x: f64) -> f64 {
 }
 
 /// Compute spherical Bessel table block: out[i, j] = j_l(k[j] * r[i])
-#[no_mangle]
-pub unsafe extern "C" fn mandacaru_spherical_bessel_matrix(
+pub unsafe fn mandacaru_spherical_bessel_matrix(
     l: i32,
     r_ptr: *const f64,
     nr: i32,
@@ -86,8 +85,7 @@ pub unsafe extern "C" fn mandacaru_spherical_bessel_matrix(
 
 /// Fast Fourier-Bessel Transform of a radial function sampled on Gauss-Legendre panels:
 /// out_f_k[j] += sum_{i=0}^{nr-1} values[i] * j_l(k[j] * r[i])
-#[no_mangle]
-pub unsafe extern "C" fn mandacaru_fourier_bessel_transform(
+pub unsafe fn mandacaru_fourier_bessel_transform(
     l: i32,
     r_ptr: *const f64,
     f_weighted_ptr: *const f64, // values: radial(r_i) * w_i * r_i^2
@@ -139,54 +137,3 @@ pub unsafe extern "C" fn mandacaru_fourier_bessel_transform(
     });
 }
 
-/// Compute two-center wave-number integral s_L(R_i) across knot grid R_i:
-/// s_L(R_i) = 8.0 * sign * sum_{j=0}^{nk-1} weight[j] * j_L(k[j] * R_i)
-#[no_mangle]
-pub unsafe extern "C" fn mandacaru_two_center_s_table(
-    l_multipole: i32,
-    sign: f64,
-    weight_ptr: *const f64, // w_k[j] * k[j]^2 * F1[j] * F2[j] (times 0.5 * k^2 if kinetic)
-    k_ptr: *const f64,      // k nodes
-    nk: i32,
-    r_knots_ptr: *const f64, // R knot coordinates
-    nr: i32,
-    out_s: *mut f64,
-) {
-    let nk_u = nk as usize;
-    let nr_u = nr as usize;
-    let num_threads = crate::runtime::thread_count();
-
-    let pref = 8.0 * sign;
-    let w_addr = weight_ptr as usize;
-    let k_addr = k_ptr as usize;
-    let r_addr = r_knots_ptr as usize;
-    let out_addr = out_s as usize;
-
-    std::thread::scope(|s| {
-        let chunk_size = (nr_u + num_threads - 1) / num_threads;
-        for t in 0..num_threads {
-            let r_start = t * chunk_size;
-            if r_start >= nr_u {
-                break;
-            }
-            let r_end = (r_start + chunk_size).min(nr_u);
-
-            crate::runtime::spawn(s, move || {
-                let weight = std::slice::from_raw_parts(w_addr as *const f64, nk_u);
-                let k_slice = std::slice::from_raw_parts(k_addr as *const f64, nk_u);
-                let r_slice = std::slice::from_raw_parts(r_addr as *const f64, nr_u);
-                let out = out_addr as *mut f64;
-
-                for i in r_start..r_end {
-                    let r_val = r_slice[i];
-                    let mut acc = 0.0f64;
-                    for j in 0..nk_u {
-                        let j_l = spherical_bessel(l_multipole, r_val * k_slice[j]);
-                        acc += j_l * weight[j];
-                    }
-                    *out.add(i) = pref * acc;
-                }
-            });
-        }
-    });
-}

@@ -8,9 +8,8 @@
 
 """Ground-state electron configurations (aufbau filling).
 
-Shared helpers used both by Slater's rules (:mod:`mandacaru.basis.hao`) and
-by the numerical-atomic-orbital basis generation (:mod:`mandacaru.basis.nao`), so
-the periodic filling order lives in exactly one place.
+Shared helpers for the shell structure of an atom, so the periodic filling order
+lives in exactly one place.
 
 The same filling order also names the atom's **virtual** levels: the subshells
 the aufbau filling never reached, in the order it would have reached them

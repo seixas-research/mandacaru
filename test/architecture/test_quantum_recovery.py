@@ -56,6 +56,7 @@ def test_public_result_retains_inner_failures_and_honors_growth_budget(method):
     reference = Path(__file__).parents[1] / "migration/reference/h2_hamiltonian.json"
     with Mandacaru(
         method=method,
+        pool="fermionic",   # one operator per growth step: ``ceo`` may append two per step
         load_hamiltonian=reference,
         max_iterations=3,
         optimizer={"method": "BFGS", "maxiter": 0},

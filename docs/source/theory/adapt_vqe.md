@@ -104,6 +104,14 @@ The `pool` option selects one of six generator sets: `fermionic`, `qubit`, `qeb`
 `ceo`, `ceo-ovp` and `spin-orbit`. [The LiH tutorial](../tutorial/adapt_vqe_lih.md)
 compares them on one molecule.
 
+Left out, the pool is `ceo` for the growing methods (`adapt-vqe`, `subspace-adapt-vqe`)
+and `fermionic` for the others (`vqe`, whose fixed ansatz and `ansatz="hva"` are built on
+the fermionic excitations, `subspace-vqe`, `vasqa` and `valsqa`), on a molecule and on a
+crystal alike. The fermionic pool can stop above the exact energy: on
+the 4-cell metallic hydrogen chain it stops 0.0196 eV above it, where `qubit` and `ceo`
+reach it. The price of `ceo` is a larger pool, with the same measurement cost per gradient.
+An explicit `pool=` always wins.
+
 Fermionic excitation generators preserve the specified electron counts. A
 single Pauli term extracted from an excitation need not do so; a qubit-pool
 ansatz can therefore leave the intended particle-number sector. Compare the

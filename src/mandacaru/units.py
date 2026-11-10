@@ -14,11 +14,10 @@ grid Laplacians and the HAO (Hydrogenic Atomic Orbital) orbitals are written in.
 however, usually think in **Angstrom** and **electronvolts**.
 
 This module is the single source of truth for the conversion factors and small
-helpers.  The user-facing classes (``Grid``, ``HydrogenicAtomicOrbital``,
-``Potentials``, ``IntegralEngine``) accept lengths in Angstrom and return
+helpers.  The user-facing ``Grid`` accepts lengths in Angstrom and the results return
 energies in eV *by default*, converting to/from atomic units at their boundary,
-while the numerical core (the integral engine, the C backend) works throughout
-in atomic units (Bohr, Hartree).
+while the numerical core (the Rust engine) works throughout in atomic units
+(Bohr, Hartree).
 
 **Convention.**  Everything a user *sees* -- the result objects of
 the variational drivers (``optimal_energy``, ``reference_energy``, energy

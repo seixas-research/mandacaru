@@ -38,7 +38,7 @@ def test_shot_gradients_are_measured_commutators_and_budget_precedes_submission(
                    num_particles=(1, 0), backend_provider="qiskit", shots=4096,
                    optimizer={"method": "COBYLA", "maxiter": 4},
                    max_iterations=1, measurement_budget={"observables": 0}) as calc:
-        monkeypatch.setattr(calc.provider, "expectation_values",
+        monkeypatch.setattr(calc.provider, "expectation_batch",
                             lambda *args: pytest.fail("budget must precede SDK execution"))
         with pytest.raises(ValueError, match="measurement observables budget"):
             calc.run()
@@ -51,11 +51,12 @@ def test_native_solver_uses_sdk_measurements_instead_of_replacing_them():
         2, (1, 0), sector=True)
     calls = []
 
-    def measured(labels, angles, observables):
-        calls.append((labels, angles, observables))
+    def measured(requests):
+        calls.append(requests)
         # A deliberately different device state distinguishes SDK and native objectives.
-        return {"expectations": [1. if set(label) <= {"I", "Z"} else 0.
-                                 for label in observables]}
+        return {"expectations": [[1. if set(label) <= {"I", "Z"} else 0.
+                                  for label in observables]
+                                 for _labels, _angles, observables in requests]}
 
     raw = problem.solve(trotter=True, optimizer="COBYLA", max_iterations=0,
                         initial_parameters=[.21], executor=measured)
@@ -70,7 +71,7 @@ def test_sdk_error_retains_its_type_and_releases_context():
     problem = context.quantum_problem(
         context.pauli_operator(4, [("ZIII", .3, 0.)]), 2, (1, 0), sector=True)
 
-    def failed(*args):
+    def failed(requests):
         raise LookupError("SDK transport failed")
 
     with pytest.raises(LookupError, match="SDK transport failed"):
@@ -99,14 +100,17 @@ def test_measured_adapt_pool_screening_matches_independent_commutator_expectatio
 
     requests = []
 
-    def oracle(labels, angles, observables):
-        requests.append(tuple(observables))
-        state = np.zeros(16, complex)
-        state[8] = 1.
-        for label, angle in zip(labels, angles):
-            state = expm(1j * angle * matrix(label)) @ state
-        return {"expectations": [float(np.vdot(state, matrix(label) @ state).real)
-                                 for label in observables]}
+    def oracle(batch):
+        answers = []
+        for labels, angles, observables in batch:
+            requests.append(tuple(observables))
+            state = np.zeros(16, complex)
+            state[8] = 1.
+            for label, angle in zip(labels, angles):
+                state = expm(1j * angle * matrix(label)) @ state
+            answers.append([float(np.vdot(state, matrix(label) @ state).real)
+                            for label in observables])
+        return {"expectations": answers}
 
     raw = problem.solve(adapt=True, trotter=True, optimizer="COBYLA", max_iterations=12,
                         max_growth=1, executor=oracle)

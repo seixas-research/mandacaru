@@ -43,7 +43,7 @@ pub use message::{general, Error, Tried, Why};
 
 use super::ranking::{Badness, Keeper};
 use super::{
-    generate_with_atom,
+    channel_radii, generate_with_atom,
     recipe::{Cutoffs, Recipe},
     reference::solve_reference_with,
     Generated,
@@ -331,9 +331,19 @@ pub fn search_reviewed(
     source: &dyn XcSource,
     review: &dyn Review,
 ) -> Result<Searched, Error> {
-    let first = generate_with_atom(ctx, recipe, atom, source).map_err(Error::Failed)?;
-    let mut built = 1usize;
+    // An infeasible first construction (a j-branch whose overlap operator is not positive
+    // definite: pbe-fr Hf, Hg and Ra) is a failed attempt like any other, and the remedies are
+    // planned from the radii it would have had. `keep` builds one construction and reports it.
+    let (first, first_failure) = match generate_with_atom(ctx, recipe, atom, source) {
+        Ok(made) => (Some(made), None),
+        Err(error) if is_attempt_failure(&error) && options.mode != Mode::Keep => {
+            (None, Some(error.to_string()))
+        }
+        Err(error) => return Err(Error::Failed(error)),
+    };
+    let mut built = usize::from(first.is_some());
     if options.mode == Mode::Keep {
+        let first = first.expect("keep returns the error of its only construction");
         return Ok(Searched {
             generated: first,
             index: 0,
@@ -344,7 +354,11 @@ pub fn search_reviewed(
             built,
         });
     }
-    let attempts = review.remedies(plan(recipe, &radii_of(&first.dataset)));
+    let radii = match &first {
+        Some(made) => radii_of(&made.dataset),
+        None => channel_radii(ctx, recipe, atom).map_err(Error::Failed)?,
+    };
+    let attempts = review.remedies(plan(recipe, &radii));
     let mut cache = AeLogs::new();
     let mut tried = Vec::new();
     let mut keeper = Keeper::<Candidate>::new();
@@ -356,43 +370,52 @@ pub fn search_reviewed(
         examine_through(ctx, built, atom, cache, review.stops_at_ghost()).map(|d| review.judge(d))
     };
 
-    let problem = match judged(&first, &mut cache) {
-        Ok(diagnosis) => match Why::of(&diagnosis) {
-            None => {
-                return Ok(Searched {
-                    generated: first,
-                    index: 0,
-                    label: FIRST.into(),
-                    diagnosis: Some(diagnosis),
-                    tried,
-                    flagged: false,
-                    built,
-                })
-            }
-            Some(why) => {
-                let acceptance_only = !diagnosis.has_ghost() && diagnosis.wrong_phases().is_empty();
-                if options.pinned.any() && acceptance_only && options.mode != Mode::Refuse {
-                    // Only the family's acceptance failed and the caller chose what a repair
-                    // would change: keep the construction and record what it misses.
-                    return flagged(first, diagnosis, 0, FIRST.into(), tried, built);
+    let problem = match first {
+        None => Why::NotBuilt(first_failure.expect("a failed first construction has its error")),
+        Some(first) => match judged(&first, &mut cache) {
+            Ok(diagnosis) => match Why::of(&diagnosis) {
+                None => {
+                    return Ok(Searched {
+                        generated: first,
+                        index: 0,
+                        label: FIRST.into(),
+                        diagnosis: Some(diagnosis),
+                        tried,
+                        flagged: false,
+                        built,
+                    })
                 }
-                if options.mode == Mode::Flag {
-                    keeper.offer_by(
-                        Badness::of(&diagnosis),
-                        Candidate {
-                            generated: first,
-                            diagnosis,
-                            index: 0,
-                            label: FIRST.into(),
-                        },
-                        |a, b| review.rank(a, b),
-                    );
+                Some(why) => {
+                    let acceptance_only =
+                        !diagnosis.has_ghost() && diagnosis.wrong_phases().is_empty();
+                    if options.pinned.any() && acceptance_only && options.mode != Mode::Refuse {
+                        // Only the family's acceptance failed and the caller chose what a repair
+                        // would change: keep the construction and record what it misses.
+                        return flagged(first, diagnosis, 0, FIRST.into(), tried, built);
+                    }
+                    if options.mode == Mode::Flag {
+                        keeper.offer_by(
+                            Badness::of(&diagnosis),
+                            Candidate {
+                                generated: first,
+                                diagnosis,
+                                index: 0,
+                                label: FIRST.into(),
+                            },
+                            |a, b| review.rank(a, b),
+                        );
+                    }
+                    why
                 }
-                why
+            },
+            Err(diagnose::Error::Unevaluated(text)) => Why::Unevaluated(text),
+            // A check the construction itself makes impossible (its overlap operator is not positive
+            // definite: pbe-fr Hf and Hg) is a failed attempt, as it is when the generator meets it.
+            Err(diagnose::Error::Failed(error)) if is_attempt_failure(&error) => {
+                Why::Unevaluated(error.to_string())
             }
+            Err(diagnose::Error::Failed(error)) => return Err(Error::Failed(error)),
         },
-        Err(diagnose::Error::Unevaluated(text)) => Why::Unevaluated(text),
-        Err(diagnose::Error::Failed(error)) => return Err(Error::Failed(error)),
     };
     if options.mode == Mode::Refuse || options.pinned.any() {
         let why = if options.pinned.any() {
@@ -431,6 +454,9 @@ pub fn search_reviewed(
             Err(error) => return Err(Error::Failed(error)),
             Ok(made) => match judged(&made, &mut cache) {
                 Err(diagnose::Error::Unevaluated(text)) => Why::Unevaluated(text),
+                Err(diagnose::Error::Failed(error)) if is_attempt_failure(&error) => {
+                    Why::Unevaluated(error.to_string())
+                }
                 Err(diagnose::Error::Failed(error)) => return Err(Error::Failed(error)),
                 Ok(diagnosis) => match Why::of(&diagnosis) {
                     None => {

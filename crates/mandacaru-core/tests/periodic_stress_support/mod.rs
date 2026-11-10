@@ -309,6 +309,7 @@ impl World {
                 potential: xc.potential,
                 gradients: xc.gradients,
                 flux: xc.flux,
+                nonlocal: None,
             },
             kinetic: None,
         }

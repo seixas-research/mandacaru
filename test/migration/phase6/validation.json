@@ -62,7 +62,7 @@
   "new_phase6_python_cases": 46,
   "pending": [
     "variational deflation and spin-adapted/general subspace families",
-    "MCAS-VQE/VALQA, GP/ranker/GNN proposals, JAX training and expressivity",
+    "VASQA/VALSQA, GP/ranker/GNN proposals, JAX training and expressivity",
     "echo/nested-OTOC orchestration and sampled spectra",
     "open-shell/DLPNO-MP2, packed/direct MP2 input and MP2 active-space selection",
     "charges, magnetic/dipole/volumetric properties, interaction energies and general spectroscopy"

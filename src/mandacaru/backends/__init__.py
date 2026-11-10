@@ -13,24 +13,17 @@
 * :mod:`~mandacaru.backends.providers` -- the *circuit provider* registry (which
   SDK builds and executes the ansatz circuits: Qiskit, Amazon Braket or Cirq);
 * :mod:`~mandacaru.backends.measurement` -- shot-based energies, qubit-wise
-  commuting groups and the **pre-flight plan** that sizes a job before it is
-  queued;
+  commuting groups and the measurement budget that refuses an oversized job;
 * :mod:`~mandacaru.backends.factorization` -- the double-factorized Hamiltonian
-  and the ``O(M)`` basis-rotation measurement scheme built on it;
-* :mod:`~mandacaru.backends.gradient_measurement` -- ADAPT-VQE's pool
-  gradients as measured commutator observables, and the plan that sizes a
-  growth step's measurement.
+  and the Givens decomposition of its orbital rotations.
 """
 
 from .factorization import (DoubleFactorization, double_factorization,
                             factorized_measurement_bases,
                             spatial_double_factorization)
-from .gradient_measurement import GradientMeasurementPlan, PoolGradients
 from .hardware import (available_devices, is_simulator, normalize_device,
                        require_runnable)
-from .measurement import (DEFAULT_MEASUREMENT_BUDGET, MeasurementBudgetError,
-                          MeasurementPlan, chunk_labels_by_basis,
-                          measurement_plan, planned_jobs,
+from .measurement import (DEFAULT_MEASUREMENT_BUDGET, chunk_labels_by_basis,
                           qubit_wise_commuting_groups,
                           resolve_measurement_budget, shot_noise_estimate)
 from .providers import (BACKEND_PROVIDERS, BraketProvider, CircuitProvider,
@@ -39,11 +32,7 @@ from .providers import (BACKEND_PROVIDERS, BraketProvider, CircuitProvider,
 
 __all__ = [
     "DEFAULT_MEASUREMENT_BUDGET",
-    "MeasurementBudgetError",
-    "MeasurementPlan",
-    "measurement_plan",
     "chunk_labels_by_basis",
-    "planned_jobs",
     "resolve_measurement_budget",
     "qubit_wise_commuting_groups",
     "shot_noise_estimate",
@@ -51,8 +40,6 @@ __all__ = [
     "double_factorization",
     "spatial_double_factorization",
     "factorized_measurement_bases",
-    "GradientMeasurementPlan",
-    "PoolGradients",
     "available_devices",
     "normalize_device",
     "is_simulator",

@@ -29,7 +29,7 @@ use crate::{
     Buffer, Error, Result,
 };
 
-/// What this engine cannot differentiate, from the crystal itself: a meta-GGA, rVV10, float32 data,
+/// What this engine cannot differentiate, from the crystal itself: float32 data,
 /// DFT+U, a hybrid without the PAW spheres its projections were built from, and a mesh reduced by
 /// space-group symmetry whose operations the snapshot does not carry ([`reduced_mesh`]; with them
 /// the engine averages the k-sum over the group, CF-6). A collinear

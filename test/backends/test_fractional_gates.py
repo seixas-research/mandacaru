@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import pytest
 
-from mandacaru.backends.measurement import (NOMINAL_2Q_ERROR,
-                                            two_qubit_gate_count)
+from mandacaru.backends.measurement import two_qubit_gate_count
 from mandacaru.backends.providers import QiskitProvider
+
+#: A round nominal two-qubit error, for the order of magnitude of a fidelity.
+NOMINAL_2Q_ERROR = 3.0e-3
 
 
 @pytest.fixture(scope="module")

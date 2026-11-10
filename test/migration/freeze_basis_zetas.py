@@ -88,8 +88,9 @@ def paw(zeta_tables) -> tuple[dict, list]:
 def hydrogen(zeta_tables) -> tuple[dict, dict]:
     from mandacaru.basis.multizeta import (DEFAULT_SPLIT_NORM, split_radius,
                                            split_valence_tail)
-    from mandacaru.basis.nao import solve_confined_radial
-    r, values, _energy = solve_confined_radial(1, 0, 1.0, 4.0, 800)
+    from mandacaru import _native
+    solved = _native.Context(threads=1).confined_radial(1, 0, 1.0, 4.0, intervals=800)
+    r, values = solved["r"], solved["radial"]
     arrays = {"r": r, "values": values}
     tables = zeta_tables(r, values, 1, 0, 4)
     for k, table in enumerate(tables):

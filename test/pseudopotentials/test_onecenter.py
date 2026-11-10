@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 # file: test_onecenter.py
 
-"""The PAW-LCAO one-center two-body machinery (:mod:`mandacaru.pseudopotentials.onecenter`).
+"""The PAW-LCAO one-center two-body machinery (the glue is ``onecenter_view.py``).
 
 The Coulomb correction is the two-body operator of every wave-function
-Hamiltonian's spheres (:class:`~mandacaru.pseudopotentials.onecenter.OneCenterExact`,
+Hamiltonian's spheres (``OneCenterExact``,
 since 2026-10-12); before that it was measured machinery only (0.08-0.33 eV
 on oxygen, the term the linearized treatment drops).  These tests pin the
 pieces against closed forms.  Its short-range counterpart and the frozen
 semilocal exchange are the one-center terms of the HSE06 hybrid
-(:class:`~mandacaru.pseudopotentials.onecenter.OneCenterHybrid`).
+(``OneCenterHybrid``).
 """
 
 from fractions import Fraction
@@ -23,13 +23,9 @@ import pytest
 
 from mandacaru import _native
 from mandacaru.pseudopotentials.native_context import context
-from mandacaru.pseudopotentials.onecenter import (OneCenterExact,
-                                                  OneCenterHybrid,
-                                                  core_orbitals,
-                                                  exact_one_center_terms,
-                                                  frozen_exchange_terms,
-                                                  one_center_coulomb,
-                                                  one_center_exchange_tensor)
+from .onecenter_view import (OneCenterExact, OneCenterHybrid, core_orbitals,
+                             exact_one_center_terms, frozen_exchange_terms,
+                             one_center_coulomb, one_center_exchange_tensor)
 
 
 def orbital(l, m, real=True):
@@ -691,7 +687,11 @@ class TestFrozenPythonOutputs:
         shipped PBE datasets (re-frozen 2026-11-03; the atom-solver scheme the
         files were generated with is the test-only seam of the Rust tests,
         which proves the port against the earlier Python numbers); K and D0
-        and every LDA block are the Python freeze, unchanged."""
+        and every LDA block are the Python freeze, unchanged. The PBE Cu core
+        orbitals and K blocks were re-frozen on 2026-11-09, when the reference
+        atom's radial gradient began to be averaged over a short window (core
+        orbitals up to 2.8e-7 relative, K up to 7.7e-8; V and D0 unchanged; PAW
+        migration log, "PAW generation and verification")."""
         from mandacaru.pseudopotentials import get_paw
         try:
             dataset = (datasets[symbol] if functional == "lda"

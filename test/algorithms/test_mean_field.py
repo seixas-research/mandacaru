@@ -161,7 +161,7 @@ def test_classical_options_cannot_silently_request_quantum_work(option):
     {"proposal_temperature": 0.5}, {"proposal": "uniform"},
     {"move_weights": {"insert": 1.0}}])
 def test_search_controls_are_refused_outside_the_search_methods(method, option):
-    """These steer the architecture search of mcas-vqe and valqa only."""
+    """These steer the architecture search of vasqa and valsqa only."""
     with pytest.raises(ValueError, match="does not use"):
         Mandacaru(method=method, trace=False, **option)
 
@@ -175,7 +175,9 @@ def test_search_controls_are_refused_outside_the_search_methods(method, option):
     ("vqe", {"periodic_scf_options": {"mixing": 0.2}}),
     ("rhf", {"hubbard_u": {"Ni": {"l": "d", "U": 3.0}}}),
     ("adapt-vqe", {"hubbard_u": {"Ni": {"l": "d", "U": 3.0}}}),
-    ("rhf", {"pool": "qeb"}), ("dft", {"pool": "ceo"})])
+    ("rhf", {"pool": "qeb"}), ("dft", {"pool": "ceo"}),
+    # a classical method has no pool: even the quantum default is a pool it does not use
+    ("rhf", {"pool": "fermionic"}), ("dft", {"pool": "fermionic"})])
 def test_options_of_another_method_are_refused(method, option):
     with pytest.raises(ValueError, match="does not use"):
         Mandacaru(method=method, trace=False, **option)
@@ -188,10 +190,10 @@ def test_options_a_method_uses_are_accepted():
     Mandacaru(method="dft", kpts=(2, 2, 1), smearing=0.1, trace=False)
     Mandacaru(method="dft", hubbard_u={"Ni": {"l": "d", "U": 3.0}}, trace=False,
               basis={"name": "PAW-LCAO", "size": "SZ"})
-    Mandacaru(method="mcas-vqe", seed=3, max_length=8, temperature=0.05, trace=False)
+    Mandacaru(method="vasqa", seed=3, max_length=8, temperature=0.05, trace=False)
     Mandacaru(method="vqe", pool="qeb", trace=False)
     # a default value is never "given": naming it changes nothing
-    Mandacaru(method="rhf", xc=None, spin=False, pool="fermionic", seed=None, trace=False)
+    Mandacaru(method="rhf", xc=None, spin=False, pool=None, seed=None, trace=False)
 
 
 def test_the_hamiltonian_export_controls_stay_available_to_classical_methods():

@@ -96,21 +96,20 @@ def cpu_count() -> int | None:
 
 
 def backend_cores() -> int | None:
-    """Thread count of the native integral backend, or ``None`` when it cannot be read."""
+    """Thread count of the native engine, or ``None`` when it cannot be read."""
     try:
-        from ..integrals import _backend
-        return _backend.num_threads()
+        from .. import _native
+        return int(_native.num_threads())
     except Exception:
         return None
 
 
 def backend_label() -> str:
-    """Label of the active native backend (``"Rust (N threads)"``), or ``"unavailable"``."""
-    try:
-        from ..integrals import _backend
-        return _backend.check_backend().label
-    except Exception:
+    """Label of the active native engine (``"Rust (N threads)"``), or ``"unavailable"``."""
+    threads = backend_cores()
+    if threads is None:
         return "unavailable"
+    return f"Rust ({threads} threads)" if threads > 1 else "Rust (serial)"
 
 
 class Timings:
