@@ -156,7 +156,12 @@ fn a_14_qubit_solve_in_float32_stays_within_the_quantum_gate() {
         assert_eq!(low.state.precision(), Precision::Float32);
         assert!((high.energy - low.energy).abs() < 5e-4);
         assert!((high.reference - low.reference).abs() < 5e-6);
-        assert_eq!(high.indices, low.indices);
+        // The same operators: two of equal gradient (a spin pair) may be taken in either order,
+        // which float32 rounding and the carried curvature of BFGS decide.
+        let (mut high_set, mut low_set) = (high.indices.clone(), low.indices.clone());
+        high_set.sort_unstable();
+        low_set.sort_unstable();
+        assert_eq!(high_set, low_set);
     }
     assert_eq!(ctx.memory_used(), 0);
 }

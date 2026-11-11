@@ -1,0 +1,78 @@
+{
+ "lattice": [
+  5.1306064283589645,
+  0.0,
+  5.1306064283589645,
+  5.1306064283589645,
+  5.1306064283589645,
+  0.0,
+  0.0,
+  5.1306064283589645,
+  5.1306064283589645
+ ],
+ "grid_shape": [
+  8,
+  8,
+  8
+ ],
+ "atoms": [
+  {
+   "species": 0,
+   "symbol": "Si",
+   "fractional": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "moment": 0.0
+  },
+  {
+   "species": 0,
+   "symbol": "Si",
+   "fractional": [
+    0.2684162062615102,
+    0.23895027624309398,
+    0.24999999999999997
+   ],
+   "moment": 0.0
+  }
+ ],
+ "mesh": {
+  "size": [
+   3,
+   1,
+   1
+  ],
+  "gamma": true
+ },
+ "functional": "hse06",
+ "precision": "float64",
+ "basis_size": "SZ",
+ "spinor": true,
+ "spin": false,
+ "symmetry": false,
+ "charge": 0.0,
+ "projector_basis": "raw",
+ "recipes": {
+  "Si": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 3.834022544308001,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  }
+ },
+ "filter_cutoff": 3.834022544308001,
+ "_dataset_set": "pbe-fr"
+}

@@ -122,7 +122,7 @@ fn check(
     for &(atom, axis) in scf {
         let energy = |delta: f64| {
             let x = base.at_geometry(moved(base, atom, axis, delta)).unwrap();
-            solve(&x, method, particles).electronic_energy + x.nuclear
+            solve(&x, method, particles).free_energy() + x.nuclear
         };
         let h = 1e-3;
         let coarse = (energy(h) - energy(-h)) / (2. * h);
@@ -584,7 +584,7 @@ fn the_net_force_of_water_is_the_egg_box_ripple_and_falls_with_the_grid_spacing(
                 )
                 .unwrap();
                 let x = pbe.at_geometry(geometry).unwrap();
-                solve(&x, Method::Ks("pbe"), [5, 5]).electronic_energy + x.nuclear
+                solve(&x, Method::Ks("pbe"), [5, 5]).free_energy() + x.nuclear
             };
             let h = 1e-3;
             let coarse = (shifted(h) - shifted(-h)) / (2. * h);

@@ -1,7 +1,6 @@
 //! Scientific definitions shared by solvers and language bindings.
 pub mod atom;
 pub mod configuration;
-pub mod dispersion;
 pub mod elements;
 pub mod hubbard;
 pub mod hubbard_liechtenstein;

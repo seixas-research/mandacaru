@@ -43,11 +43,12 @@ class CircuitMetrics:
 
 
 def _terms_key(generator: PauliSum, time: float = 1.0) -> tuple[tuple[str, float], ...]:
-    items = []
-    for label, coeff in generator.simplify().terms.items():
-        herm = 1j * coeff
-        items.append((label[::-1], float(complex(herm).real)))
-    return tuple(items)
+    from .. import _native
+    # The Hermitian generator i G of the anti-Hermitian G, in Rust: its real coefficients.
+    rotated = _native.pauli_term_scale(
+        [(label, complex(c).real, complex(c).imag) for label, c in generator.simplify().terms.items()],
+        0.0, 1.0)
+    return tuple((label[::-1], float(re)) for label, re, _im in rotated)
 
 
 @lru_cache(maxsize=2048)

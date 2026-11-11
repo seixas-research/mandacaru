@@ -7,7 +7,7 @@ import os
 import secrets
 import uuid
 
-from ..units import HARTREE_TO_EV
+from .. import _native
 
 
 def configure(driver, *, max_steps, min_length, max_length, move_weights,
@@ -32,15 +32,16 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
             raise ValueError(f"move_weights accepts {names}")
         weights = [move_weights.get(name, 0.) for name in names]
     if temperature is None:
-        temperatures = [.1 / HARTREE_TO_EV, .001 / HARTREE_TO_EV]
+        temperatures = [_native.energy_to_hartree(.1, "eV"), _native.energy_to_hartree(.001, "eV")]
     else:
-        factor = 1. if driver._atomic_units else 1. / HARTREE_TO_EV
+        unit = "Ha" if driver._atomic_units else "eV"
         if isinstance(temperature, dict):
             if set(temperature) != {"initial", "final"}:
                 raise ValueError("an annealed temperature needs initial and final values")
-            temperatures = [temperature[name] * factor for name in ("initial", "final")]
+            temperatures = [_native.convert_energy(float(temperature[name]), unit, "Ha")
+                            for name in ("initial", "final")]
         else:
-            temperatures = [temperature * factor] * 2
+            temperatures = [_native.convert_energy(float(temperature), unit, "Ha")] * 2
     if seed is not None and (type(seed) is not int or not 0 <= seed < 2**64):
         raise ValueError("seed must be a nonnegative 64-bit integer or None")
     destination = None if record is False else record or os.environ.get("MANDACARU_PROPOSAL_DATA")
@@ -54,7 +55,8 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
     driver._proposal_model = proposal_model
     driver._search = dict(max_steps=max_steps, max_length=max_length,
                           move_weights=weights, temperatures=temperatures,
-                          length_penalty=length_penalty * (1. if driver._atomic_units else 1. / HARTREE_TO_EV),
+                          length_penalty=_native.convert_energy(
+                              float(length_penalty), "Ha" if driver._atomic_units else "eV", "Ha"),
                           warm_start=warm_start, replace_start=replace_start,
                           screen_insertions=screen_insertions,
                           proposal_temperature=proposal_temperature,

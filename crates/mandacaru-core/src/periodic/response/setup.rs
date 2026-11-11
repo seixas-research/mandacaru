@@ -25,7 +25,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 /// The geometry of a crystal as the engines read it, owned. The borrowed views (`cores`, `inputs`)
 /// are made on demand.
-pub(super) struct Setup {
+pub(in crate::periodic) struct Setup {
     records: Vec<PawDataset>,
     /// The record of every atom.
     kind: Vec<usize>,
@@ -45,7 +45,7 @@ pub(super) struct Setup {
 }
 
 impl Setup {
-    pub(super) fn new(c: &Crystal) -> Result<Self> {
+    pub(in crate::periodic) fn new(c: &Crystal) -> Result<Self> {
         let d = super::description(c)?;
         let ctx = &c.context;
         if d.projector_basis != "raw" {
@@ -204,6 +204,40 @@ impl Setup {
             ion_operator,
             blocks,
         })
+    }
+
+    /// The atoms, moment channels and cell of the crystal, as the compensation shapes read them.
+    pub(in crate::periodic) fn sites(&self) -> Sites<'_> {
+        Sites {
+            atoms: &self.atoms,
+            channels: &self.channels,
+            lattice: self.lattice,
+            sigma: self.sigma,
+        }
+    }
+    /// The compensation shape tables of the crystal's channels.
+    pub(in crate::periodic) fn shapes(&self) -> &Shapes {
+        &self.shapes
+    }
+    /// The dataset record of an atom.
+    pub(in crate::periodic) fn dataset(&self, atom: usize) -> &PawDataset {
+        &self.records[self.kind[atom]]
+    }
+    /// The species index of every atom: atoms with the same index share a dataset.
+    pub(in crate::periodic) fn species(&self) -> &[usize] {
+        &self.kind
+    }
+    /// The projector columns each atom owns, and `(l, m, radial index)` of every column, in the
+    /// order of the crystal's `p` projectors.
+    pub(in crate::periodic) fn projector_atoms(&self) -> Vec<usize> {
+        self.projectors.iter().map(|q| q.atom).collect()
+    }
+    /// `Delta S`, the overlap correction of the raw projector basis, `p x p`.
+    pub(in crate::periodic) fn overlap_correction(&self) -> &Matrix {
+        &self.augmentation
+    }
+    pub(in crate::periodic) fn projector_labels(&self) -> Vec<(usize, i32, usize)> {
+        self.projectors.iter().map(|q| (q.l, q.m, q.index)).collect()
     }
 
     /// The smooth core density of every atom's dataset, where its unscreening used one.

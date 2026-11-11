@@ -1,0 +1,96 @@
+{
+ "lattice": [
+  11.33835674775462,
+  0.755890449850308,
+  0.566917837387731,
+  0.0,
+  10.960411522829467,
+  0.377945224925154,
+  0.0,
+  0.0,
+  10.582466297904313
+ ],
+ "grid_shape": [
+  13,
+  13,
+  12
+ ],
+ "atoms": [
+  {
+   "species": 1,
+   "symbol": "Li",
+   "fractional": [
+    0.29045566502463055,
+    0.3485221674876847,
+    0.3928571428571429
+   ],
+   "moment": 0.0
+  },
+  {
+   "species": 0,
+   "symbol": "H",
+   "fractional": [
+    0.5410098522167488,
+    0.3669950738916256,
+    0.35714285714285715
+   ],
+   "moment": 0.0
+  }
+ ],
+ "mesh": {
+  "size": [
+   1,
+   1,
+   1
+  ],
+  "gamma": true
+ },
+ "functional": "hse06",
+ "precision": "float64",
+ "basis_size": "SZ",
+ "spinor": false,
+ "spin": false,
+ "symmetry": false,
+ "charge": 0.0,
+ "projector_basis": "raw",
+ "recipes": {
+  "H": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 3.834022544308001,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  },
+  "Li": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 3.834022544308001,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  }
+ },
+ "filter_cutoff": 3.834022544308001,
+ "_dataset_set": "pbe-sr"
+}

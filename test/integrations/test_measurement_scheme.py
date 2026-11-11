@@ -17,7 +17,8 @@ from mandacaru.backends.measurement import RunBudgetExceeded
 from mandacaru.core.mapping import Fermion
 from mandacaru.integrations import measurement_scheme
 
-#: The freeze's geometries and basis (``test/migration/freeze_factorization.py``).
+#: The geometries and basis of the frozen factorization reference
+#: (``test/migration/reference/factorization.json``).
 CASES = {"H2": (0.74, 8.0), "LiH": (1.60, 9.0)}
 OPTIONS = {"basis": "HAO", "grid_spacing": 0.35}
 #: Leaf truncation of the energy: 3e-14 for H2 and 4e-13 for LiH at the trial point. (The frozen
@@ -260,7 +261,12 @@ def test_an_energy_is_one_job_on_the_local_and_the_fake_devices(models, device, 
     assert calc.provider.run_usage()["jobs"] == len(jobs)
     plan = calc.problem.factorized_measurement
     if scheme == "qwc":
-        assert plan is None and set(batches) == {1}
+        # One circuit per commuting basis, rotated to Z with the products its energy's
+        # standard error needs, all in the one job.
+        labels = [label for label, _re, _im in calc.problem.hamiltonian_terms
+                  if set(label) != {"I"}]
+        bases = len(calc.context.qwc_groups(labels))
+        assert plan is None and bases > 1 and set(batches) == {bases}
     else:
         assert set(batches) == {plan["bases"]} and plan["bases"] > 1
         assert set(jobs) == {plan["bases"]}

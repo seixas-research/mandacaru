@@ -16,10 +16,43 @@ object to be read back. It serves two purposes: **resuming** a run, and
 
 ## Writing a checkpoint
 
-`checkpoint=` names the file. It is written **once, when the run ends**, with
-the solver's final status (`complete`, `converged` and the termination reason).
-There is no periodic or mid-run write; see
-[what is not yet available](#not-yet-available).
+`checkpoint=` names the file. It is written when the run ends, with the
+solver's final status (`complete`, `converged` and the termination reason).
+`checkpoint_every=N` also writes it during the run (`vqe` and `adapt-vqe`):
+
+- `adapt-vqe` writes after every `N` accepted growth steps, with what that step
+  reached.
+- `vqe` writes the best point so far after every `N` cost evaluations.
+
+A mid-run file says `"complete": false` (with `iteration` or `num_evaluations`).
+`resume=` continues from it like from a final one: LiH resumed from the file of
+its second growth step grows the same six operators to the same energy as the
+uninterrupted run. Every write is atomic, so an interrupted run leaves the last
+whole checkpoint.
+
+An `adapt-vqe` run with SLSQP (the default) or BFGS also stores the optimizer's
+curvature estimate of the angles (`status["hessian"]`, checkpoint schema version
+3: `optimizer`, `dimension` and the row-major `values`; SLSQP's is a Hessian
+approximation, BFGS's an inverse one), and a run resumed with the same optimizer
+continues from it: the growth that follows is the one the uninterrupted run would
+have taken. The two are not interchangeable and are not converted: a file written
+by SLSQP resumed with BFGS (or the reverse) starts from the identity, relaxes the
+stored sequence and raises a `RuntimeWarning` naming both optimizers. A checkpoint written
+by an earlier build (version 2) records none; resuming it works from the identity
+and raises a `RuntimeWarning`, since the growth need not then reproduce the
+uninterrupted run. A file written by another optimizer, or by a fixed ansatz,
+has no Hessian and no warning.
+
+The `subspace-*` methods write a checkpoint of their shared ansatz, with the state
+weights and the sorted state energies (the file's `subspace` entry). `resume=`
+continues from it with the same method and weights; other weights raise
+`ValueError`. `subspace-vqe` restarts its optimization from the stored
+parameters. `subspace-adapt-vqe` keeps growing from the stored sequence, its stored
+steps counting toward `max_iterations`: LiH stopped after two growth steps and
+resumed reaches the same state energies as the uninterrupted run. With SLSQP its
+checkpoint stores the Hessian approximation like the `adapt-vqe` one (above), and
+the resumed growth is the uninterrupted run's, bit for bit; a file without it
+(another optimizer, or version 2) relaxes the stored sequence first.
 
 ```python
 import os
@@ -120,7 +153,9 @@ Each geometry starts from the operator sequence and angles the previous one
 ended with. The orbitals of the two geometries are matched, generator signs
 are carried over, and the angles are re-optimized against the new Hamiltonian
 before the solver decides whether to keep the carried start or grow from the
-reference. The start is refused when an orbital's best match falls below
+reference. With SLSQP or BFGS the previous geometry's curvature estimate of the
+angles travels too (conjugated by the generator signs) and the re-optimization
+starts from it; without one it starts from the identity. The start is refused when an orbital's best match falls below
 `transfer_threshold` (default `0.9`). `transfer_steps` sets the shorter chain
 of the architecture searches that a carried start allows
 ([VASQA tutorial](../tutorial/vasqa.md)). The transfer is described in the

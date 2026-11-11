@@ -38,8 +38,6 @@ labels* and combines counts -- so any SDK backend (see
 
 from __future__ import annotations
 
-import numpy as np
-
 from ..core.mapping import PauliSum
 
 
@@ -120,28 +118,18 @@ def qubit_wise_commuting_groups(hamiltonian: PauliSum, drop_identity: bool=True,
     bases to rotate into.  ``identity`` is the coefficient of the all-``I`` term,
     which needs no measurement and is added to the energy as a constant.  With
     ``drop_identity=False`` the all-``I`` term is placed in a group instead
-    and ``identity`` is ``0``: the constant is counted exactly once either way,
-    so :func:`energy_from_group_counts` gives the same energy for both.
+    and ``identity`` is ``0``: the constant is counted exactly once either way.
 
     The partition is greedy, largest-coefficient-first (so the terms that
     dominate the energy land in the earliest, largest groups).  Greedy coloring
     is not optimal -- finding the minimum number of groups is NP-hard -- but it
     is fast and close enough in practice.
     """
-    simplified = hamiltonian.simplify()
-    identity = 0.0
-    terms = []
-    for label, coeff in simplified.terms.items():
-        if set(label) == {'I'}:
-            identity += float(np.real(coeff))
-            continue
-        terms.append((label, complex(coeff)))
-    if drop_identity is False and identity:
-        terms.append(('I' * simplified.num_qubits, complex(identity)))
-        identity = 0.0
-    labels = [label for label, _c in terms]
-    coefficients = dict(terms)
-    groups = [(basis, [(labels[i], coefficients[labels[i]]) for i in members]) for basis, members in qwc_partition(labels, weights=[abs(c) for _l, c in terms], resources=resources, context=context)]
+    native = _context(resources, context)
+    terms = [(label, complex(c).real, complex(c).imag) for label, c in hamiltonian.terms.items()]
+    raw, identity = native.qwc_hamiltonian(terms, drop_identity=bool(drop_identity))
+    groups = [(basis, [(label, complex(re, im)) for label, re, im in members])
+              for basis, members in raw]
     return (groups, identity)
 
 
@@ -153,29 +141,8 @@ def pauli_expectation_from_counts(label: str, counts: dict, *, resources=None, c
     diagonalizes ``label``.  Each shot contributes :math:`(-1)^{\\text{parity}}`
     over the qubits where ``label`` acts non-trivially.
     """
-    from .._native import Context
-    native = Context(**dict(resources or {})) if context is None else context
-    return native.count_expectations([label], [(str(k), float(v)) for k, v in counts.items()])[0]
-
-
-def energy_from_group_counts(groups, identity: float, counts_per_group, *, resources=None, context=None) -> float:
-    """Assemble :math:`\\langle H\\rangle` from one count dictionary per QWC group.
-
-    ``groups`` is the output of :func:`qubit_wise_commuting_groups` and
-    ``counts_per_group`` the measured bit-string counts for each of them, in the
-    same order.  Coefficients are Hermitian (real) for a physical Hamiltonian, so
-    only the real part contributes.
-    """
-    groups, counts_per_group = (list(groups), list(counts_per_group))
-    if len(groups) != len(counts_per_group):
-        raise ValueError('one counts dictionary is required per measurement group')
-    energy = float(identity)
-    for (_basis, payload), counts in zip(groups, counts_per_group):
-        from .._native import Context
-        native = Context(**dict(resources or {})) if context is None else context
-        values = native.count_expectations([p for p, c in payload], [(str(k), float(v)) for k, v in counts.items()])
-        energy += sum((float(np.real(c)) * v for (p, c), v in zip(payload, values)))
-    return energy
+    return _context(resources, context).count_expectations(
+        [label], [(str(k), float(v)) for k, v in counts.items()])[0]
 
 
 def shot_noise_estimate(hamiltonian: PauliSum, shots: int) -> float:
@@ -190,9 +157,9 @@ def shot_noise_estimate(hamiltonian: PauliSum, shots: int) -> float:
     :math:`\sim 4\times10^7` shots per group in the worst case, which is why
     hardware VQE needs error mitigation and smarter estimators.
     """
-    one_norm = sum(abs(complex(c)) for label, c in
-                   hamiltonian.simplify().terms.items() if set(label) != {"I"})
-    return float(one_norm / np.sqrt(max(int(shots), 1)))
+    from .._native import shot_noise
+    return shot_noise([(label, complex(c).real, complex(c).imag)
+                       for label, c in hamiltonian.terms.items()], max(int(shots), 0))
 
 
 #: Default ceilings of ``measurement_budget=``.  They exist to stop the
@@ -274,13 +241,6 @@ def resolve_run_budget(budget, hardware: bool) -> dict | None:
         raise ValueError(f"unknown run_budget key(s) {unknown}; use "
                          f"{RUN_BUDGET_KEYS}")
     return {**DEFAULT_HARDWARE_RUN_BUDGET, **budget}
-
-
-def resolve_shots_per_energy(provider, hamiltonian) -> int:
-    """Shots one energy of ``hamiltonian`` submits on ``provider`` (its
-    ``shots_per_energy``, or 0 when it cannot say)."""
-    method = getattr(provider, "shots_per_energy", None)
-    return int(method(hamiltonian)) if callable(method) else 0
 
 
 class RunBudgetExceeded(RuntimeError):
@@ -380,17 +340,18 @@ def resilience_multipliers(provider) -> tuple[int, int, int]:
     measure = level >= 1 if measure is None else bool(measure)
     if not (gates or measure) or shots <= 0:
         return max(int(noise_factors), 1), 1, shots
-    count = twirling.get("num_randomizations", "auto")
-    per = twirling.get("shots_per_randomization", "auto")
-    ceil = lambda a, b: -(-int(a) // int(b))                   # noqa: E731
-    if count in (None, "auto") and per in (None, "auto"):
-        per = max(64, ceil(shots, 32))
-        count = ceil(shots, per)
-    elif count in (None, "auto"):
-        count = ceil(shots, per)
-    elif per in (None, "auto"):
-        per = ceil(shots, count)
-    return max(int(noise_factors), 1), max(int(count), 1), max(int(per), 1)
+    from .._native import twirled_instances
+    automatic = lambda value: None if value in (None, "auto") else int(value)  # noqa: E731
+    count, per = twirled_instances(
+        shots, automatic(twirling.get("num_randomizations", "auto")),
+        automatic(twirling.get("shots_per_randomization", "auto")))
+    return max(int(noise_factors), 1), count, per
+
+
+def _context(resources, context):
+    """The caller's native context, or one built from ``resources``."""
+    from .._native import Context
+    return Context(**dict(resources or {})) if context is None else context
 
 
 def qwc_partition(labels, weights=None, *, resources=None, context=None) -> list[tuple[str, list[int]]]:
@@ -411,9 +372,8 @@ def qwc_partition(labels, weights=None, *, resources=None, context=None) -> list
     per-label test is one vectorized comparison against every open basis.
     """
     labels = [str(label) for label in labels]
-    from .._native import Context
-    native = Context(**dict(resources or {})) if context is None else context
-    return native.qwc_groups(labels, None if weights is None else [float(w) for w in weights])
+    return _context(resources, context).qwc_groups(
+        labels, None if weights is None else [float(w) for w in weights])
 
 
 def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=None, context=None) -> list[list[str]]:
@@ -428,14 +388,7 @@ def chunk_labels_by_basis(labels, max_bases: int, weights=None, *, resources=Non
     chunk, which is the unsplit submission.
     """
     labels = [str(label) for label in labels]
-    if max_bases is None or max_bases <= 0 or (not labels):
-        return [labels] if labels else []
-    partition = qwc_partition(labels, weights, resources=resources, context=context)
-    if len(partition) <= max_bases:
-        return [labels]
-    chunks = []
-    for start in range(0, len(partition), max_bases):
-        chunk = [labels[i] for _basis, members in partition[start:start + max_bases] for i in members]
-        if chunk:
-            chunks.append(chunk)
-    return chunks
+    native = _context(resources, context)
+    limit = None if max_bases is None or max_bases <= 0 else int(max_bases)
+    chunks = native.basis_chunks(labels, limit, None if weights is None else [float(w) for w in weights])
+    return [[labels[i] for i in chunk] for chunk in chunks]

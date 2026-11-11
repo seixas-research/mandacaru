@@ -332,6 +332,7 @@ fn basis_values(ctx: &Context, problem: &CachedProblem, case: &Value, drop_below
                 labels,
                 angles,
                 observables: Vec::new(),
+                priced: 0,
             };
             let Response::States(mut states) = call(&[request]).unwrap() else {
                 panic!()
@@ -549,4 +550,64 @@ fn factorizing_a_tapered_or_non_jordan_wigner_problem_is_refused() {
         .problem(&ctx, "jordan_wigner", false, false, true)
         .unwrap();
     assert!(wide.factorize(two_orbitals).is_err());
+}
+
+/// A real PAW leaf (`test/migration/reference/paw_factorization_leaf.json`) on which the bare
+/// QR iteration reconstructs the matrix with a 1.1e-4 residual: the factorization's checked
+/// solver decomposes it to rounding, so the measured leaf is the leaf of the Hamiltonian.
+#[test]
+fn a_paw_leaf_the_bare_qr_iteration_gets_wrong_is_decomposed_to_rounding() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/migration/reference/paw_factorization_leaf.json");
+    let case: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let rows = case["matrix"].as_array().unwrap();
+    let n = rows.len();
+    let matrix = nalgebra::DMatrix::from_fn(n, n, |i, j| rows[i][j].as_f64().unwrap());
+    let residual = |values: &nalgebra::DVector<f64>, vectors: &nalgebra::DMatrix<f64>| {
+        (vectors * nalgebra::DMatrix::from_diagonal(values) * vectors.transpose() - &matrix)
+            .abs()
+            .max()
+    };
+    // The failure this guards against is still in the bare solver.
+    let bare = nalgebra::SymmetricEigen::new(matrix.clone());
+    assert!(residual(&bare.eigenvalues, &bare.eigenvectors) > 1e-6);
+    let (values, vectors) =
+        mandacaru_core::math::linalg::checked_symmetric(matrix.clone()).unwrap();
+    let error = residual(&values, &vectors);
+    assert!(error < 1e-15, "{error:.3e}");
+    // And the factorization itself: this leaf as the one Cholesky vector of a model, whose
+    // double factorization must rebuild the tensor <pq|rs> = L_pr L_qs.
+    let factors: Vec<f64> = (0..n * n).map(|k| matrix[(k / n, k % n)]).collect();
+    let h = vec![0.; n * n];
+    let data = mandacaru_core::quantum::factorization::spatial_double_factorization(
+        &h, n, None, None, Some((&factors, 1, n)), None, 0., 0., None, 0.,
+    )
+    .unwrap();
+    let mut worst = 0f64;
+    for p in 0..n {
+        for q in 0..n {
+            for r in 0..n {
+                for s in 0..n {
+                    let rebuilt: f64 = data
+                        .leaves
+                        .iter()
+                        .map(|leaf| {
+                            let m = |a: usize, b: usize| {
+                                (0..n)
+                                    .map(|k| {
+                                        leaf.orbitals[(a, k)]
+                                            * leaf.coefficients[k]
+                                            * leaf.orbitals[(b, k)]
+                                    })
+                                    .sum::<f64>()
+                            };
+                            leaf.weight * m(p, r) * m(q, s)
+                        })
+                        .sum();
+                    worst = worst.max((rebuilt - matrix[(p, r)] * matrix[(q, s)]).abs());
+                }
+            }
+        }
+    }
+    assert!(worst < 1e-14, "{worst:.3e}");
 }

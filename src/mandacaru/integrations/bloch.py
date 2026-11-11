@@ -12,7 +12,6 @@ from __future__ import annotations
 import numpy as np
 
 from .. import _native
-from ..units import HARTREE_TO_EV
 
 
 def _gamma_centered(spec):
@@ -72,22 +71,82 @@ def check_geometry(calculation, geometry):
     return size
 
 
-def refuse_derivatives():
-    """Forces and stress of a quantum method on a crystal are not available.
+#: Central-difference step of the crystal forces, Bohr.
+FORCE_STEP = 1e-3
 
-    Only finite differences of the energy could give them, and that energy depends on where the
-    atoms sit relative to the fixed periodic grid: on an H2 chain (a = 3.0 A, HAO, 2 k-points)
-    a rigid translation of the crystal by 0.001 A changes the energy per cell by 6 meV at
-    grid_spacing 0.4 and by 0.65 eV after 0.1 A at grid_spacing 0.2 (the Hartree-Fock reference
-    alike), so a central difference returns grid artifacts of several eV/A (measured
-    2026-11-10). The analytic route is Stage 6 of the Bloch plan.
+
+def check_derivatives(calculation, properties):
+    """Which derivatives of a quantum method on a crystal exist, refused before any work.
+
+    Forces are central finite differences of the supercell energy per cell. The energy is exactly
+    invariant under a rigid translation of the crystal (band-limited orbitals and a G-space ion
+    potential, ``molecular::periodic``: 1e-12 eV per cell), so the forces sum to zero, and a
+    displacement only changes phases, so the energy is smooth in the positions. Stress is refused:
+    a strain moves the grid's wavevectors against the band limit, and the set of plane waves kept
+    changes discontinuously (jumps of 6 to 30 meV per cell in the second difference of E under a
+    1 percent uniaxial strain, H2 chain at grid_spacing 0.2 and 0.25, 2026-11-10).
     """
-    raise NotImplementedError(
-        "forces and stress of a quantum method on a crystal are not implemented: a finite "
-        "difference of the supercell energy measures the grid alignment of the all-electron "
-        "basis (several eV/A), not the force; use method='dft' with a PAW-LCAO basis for crystal "
-        "forces and stress"
-    )
+    if "stress" in properties:
+        raise NotImplementedError(
+            "the stress of a quantum method on a crystal is not implemented: a strain changes the "
+            "set of plane waves inside the band limit of the supercell orbitals, so a finite "
+            "difference of the energy jumps; use method='dft' with a PAW-LCAO basis for stress"
+        )
+    if "forces" in properties:
+        if calculation._execute_circuits:
+            raise NotImplementedError(
+                "crystal forces are finite differences of state-vector energies; a circuit run "
+                "(shots, a device or execute_circuits=True) has no such energy to difference"
+            )
+        if calculation.method in ("vasqa", "valsqa") and calculation._constructor_options.get(
+                "seed") is None:
+            raise ValueError(
+                "crystal forces of an architecture search difference energies of separate "
+                "searches: pass seed= so every displaced search runs the same chain"
+            )
+
+
+def _displaced_copy(calculation):
+    """The same calculation for a displaced geometry, without logs, checkpoints or caches."""
+    from ..calculation import Mandacaru
+
+    options = dict(calculation._constructor_options)
+    options.update(atoms=None, trace=False, txt=None, checkpoint=None, resume=None,
+                   save_hamiltonian=None, save_crystal=None, record=None)
+    if not isinstance(options["resources"], (dict, type(None))):
+        options["resources"] = None
+    return Mandacaru(**options)
+
+
+def finite_difference_forces(calculation, geometry, result):
+    """Central-difference forces (eV/A) on the atoms of the primitive cell.
+
+    Displacing a primitive atom moves every image of it, so the derivative of the energy per cell
+    is the force on that atom. Each displaced energy is a full calculation with the same options.
+    The error is the grid convergence of the band-limited basis (H2 chain, bond derivative:
+    -5.155, -5.033, -5.321, -5.153, -5.036, -5.056 eV/A at grid_spacing 0.25, 0.2, 0.15, 0.125,
+    0.1, 0.075), not the step (-5.03257, -5.03272, -5.03333 eV/A at 1, 2, 4 mA).
+    """
+    import itertools
+
+    from ..structure import geometry_value
+    from .ase import atoms_from_geometry
+
+    atoms = atoms_from_geometry(geometry)
+    step = _native.to_user_units(float(FORCE_STEP), "length")
+    energies = {}
+    for index, axis, sign in itertools.product(range(len(atoms)), range(3), (1.0, -1.0)):
+        moved = atoms.copy()
+        moved.positions = _native.displaced(
+            np.ascontiguousarray(atoms.positions, dtype=float), index, axis, sign, step)
+        copy = _displaced_copy(calculation)
+        copy.run(geometry_value(moved))
+        energies[index, axis, sign] = _native.energy_to_hartree(float(copy.results["energy"]), "eV")
+    plus = [[energies[i, a, 1.0] for a in range(3)] for i in range(len(atoms))]
+    minus = [[energies[i, a, -1.0] for a in range(3)] for i in range(len(atoms))]
+    raw = _native.periodic_quantum_forces_fd(plus, minus, FORCE_STEP)
+    result.force_details = {"scheme": raw["scheme"], "step_bohr": FORCE_STEP}
+    return _native.to_user_units(np.ascontiguousarray(raw["forces"], dtype=float), "force")
 
 
 def supercell(calculation):
@@ -124,14 +183,26 @@ def bands_at(calculation, fractional):
     return np.asarray(raw["eigenvalues"]), np.asarray(raw["weights"])
 
 
-def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, krylov=200):
-    """The Lehmann spectral function of the correlated supercell state at mesh k-points."""
+def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, krylov=200,
+                      path=None, irreducible=False, symprec=1e-5):
+    """The Lehmann spectral function of the correlated supercell state at mesh k-points,
+    or along a band path (``path``): the mesh points on it, in path order."""
+    import warnings
+
     from ..analysis.bloch import SpectralFunction
+    from ..analysis.kspace import KPath
+    from . import kspace
 
     if not np.isfinite(eta) or eta <= 0:
         raise ValueError("eta must be positive and finite (eV)")
     if type(krylov) is not int or krylov < 1:
         raise ValueError("krylov must be a positive integer")
+    if path is not None and kpoints is not None:
+        raise ValueError("give either kpoints or a band path, not both")
+    if irreducible and path is None:
+        raise ValueError(
+            "irreducible=True reduces the points of a band path: pass path=, e.g. path='GXMG'"
+        )
     cell = supercell(calculation)
     if calculation._shots:
         raise NotImplementedError(
@@ -144,22 +215,46 @@ def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, kryl
     reference = getattr(calculation, "_bloch_reference", None)
     if reference is None:
         raise RuntimeError("run a quantum calculation on a crystal first")
-    points = np.asarray(cell["kpoints"] if kpoints is None else kpoints, dtype=float)
-    if points.ndim != 2 or points.shape[1] != 3:
-        raise ValueError("kpoints must be a sequence of fractional (k1, k2, k3)")
-    raw = _native.bloch_spectral_function(
-        calculation.native_reference,
-        reference.hamiltonian,
-        problem,
-        np.ascontiguousarray(raw_state, dtype=np.complex128),
-        [list(map(float, k)) for k in points],
-        eta_ha=eta / HARTREE_TO_EV,
-        axis_ha=None if energies is None else np.ascontiguousarray(
-            np.asarray(energies, dtype=float) / HARTREE_TO_EV),
-        krylov=krylov,
-    )
+    state = np.ascontiguousarray(raw_state, dtype=np.complex128)
+    eta_ha = _native.energy_to_hartree(float(eta), "eV")
+    axis_ha = None if energies is None else _native.energy_to_hartree(
+        np.ascontiguousarray(energies, dtype=float), "eV")
+    if path is None:
+        points = np.asarray(cell["kpoints"] if kpoints is None else kpoints, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 3:
+            raise ValueError("kpoints must be a sequence of fractional (k1, k2, k3)")
+        raw = _native.bloch_spectral_function(
+            calculation.native_reference, reference.hamiltonian, problem, state,
+            [list(map(float, k)) for k in points],
+            eta_ha=eta_ha, axis_ha=axis_ha, krylov=krylov,
+        )
+    else:
+        lattice, pbc, positions, numbers = kspace.structure(calculation)
+        text, explicit = kspace.path_arguments(path)
+        raw = _native.bloch_path_spectral_function(
+            calculation.native_reference, reference.hamiltonian, problem, state,
+            lattice, list(pbc),
+            eta_ha=eta_ha, path=text, path_points=explicit, irreducible=bool(irreducible),
+            positions=positions, numbers=numbers, symprec=float(symprec),
+            axis_ha=axis_ha, krylov=krylov,
+        )
+    kpath = None if path is None else KPath.from_native(raw["kpath"])
+    audit = raw.get("audit")
+    if kpath is not None and not kpath.complete:
+        warnings.warn(
+            f"the band path does not pass through {', '.join(kpath.missing)} on this k-mesh: "
+            "the spectral function is resolved at the mesh points on the path only "
+            "(use a mesh that contains them)", RuntimeWarning, stacklevel=3)
+    if audit is not None and not audit["symmetric"]:
+        warnings.warn(
+            f"the state is not symmetric under the point group of the crystal: its spectral "
+            f"function at k = {audit['image']} differs from that of "
+            f"the irreducible point {audit['representative']} by "
+            f"{audit['residual']:.3g} (relative L1 over the axis), yet irreducible=True gave the "
+            "irreducible point's spectrum to all of its star; resolve the full path with "
+            "irreducible=False", RuntimeWarning, stacklevel=3)
     poles = {
-        "energies": np.asarray(raw["energies"]) * HARTREE_TO_EV,
+        "energies": _native.to_user_units(np.ascontiguousarray(raw["energies"], dtype=float), "energy"),
         "weights": np.asarray(raw["weights"]),
         "k": np.asarray(raw["k"]),
         "orbital": np.asarray(raw["orbital"]),
@@ -169,17 +264,20 @@ def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, kryl
     removal, addition = raw["removal_edge_ha"], raw["addition_edge_ha"]
     return SpectralFunction(
         kpoints=np.asarray(raw["kpoints"]),
-        energies=np.asarray(raw["axis_ha"]) * HARTREE_TO_EV,
-        values=np.asarray(raw["values"]) / HARTREE_TO_EV,
+        energies=_native.to_user_units(np.ascontiguousarray(raw["axis_ha"], dtype=float), "energy"),
+        # A density per Hartree to per eV: the same division by the factor.
+        values=_native.energy_to_hartree(np.ascontiguousarray(raw["values"], dtype=float), "eV"),
         eta=float(eta),
         poles=poles,
         sum_rule=np.asarray(raw["sum_rule"]),
-        dominant_energies=np.asarray(raw["dominant_energy"]) * HARTREE_TO_EV,
+        dominant_energies=_native.to_user_units(np.ascontiguousarray(raw["dominant_energy"], dtype=float), "energy"),
         dominant_weights=np.asarray(raw["dominant_weight"]),
-        removal_edge=removal * HARTREE_TO_EV,
-        addition_edge=addition * HARTREE_TO_EV,
-        ground_energy=raw["ground_energy_ha"] * HARTREE_TO_EV,
+        removal_edge=_native.to_user_units(float(removal), "energy"),
+        addition_edge=_native.to_user_units(float(addition), "energy"),
+        ground_energy=_native.to_user_units(float(raw["ground_energy_ha"]), "energy"),
         mesh=tuple(cell["mesh"]),
+        kpath=kpath,
+        audit=audit,
     )
 
 

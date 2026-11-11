@@ -174,3 +174,116 @@ pub fn rdms<A: Amplitude>(
     }
     Ok(Rdms { one, two })
 }
+
+/// The spin-summed spatial transition density matrices `one[p*m+q] = <bra| E_pq |ket>` and
+/// `two[((p*m+q)*m+r)*m+s] = sum_st <bra| a+_ps a+_qt a_st a_rs |ket>` in one pass over `ket`'s
+/// determinants, split over the context's threads. With `bra == ket` they are
+/// [`spatial_rdms`] (up to the order of the float64 sums).
+pub fn spatial_transition_rdms(
+    ctx: &Context,
+    encoding: &Encoding,
+    basis: &Basis,
+    bra: &[C64],
+    ket: &[C64],
+) -> Result<SpatialRdms> {
+    if basis.n != encoding.n_qubits() {
+        return Err(Error::Invalid(
+            "the basis is a tapered register: lift the state to the fermionic register first".into(),
+        ));
+    }
+    if encoding.modes % 2 != 0
+        || bra.len() != basis.len()
+        || ket.len() != basis.len()
+        || !finite(bra)
+        || !finite(ket)
+    {
+        return Err(Error::Invalid(
+            "transition RDMs need two finite states in one even spin-blocked register".into(),
+        ));
+    }
+    let n = encoding.modes;
+    let m = n / 2;
+    let (m2, m4) = (product(&[m, m])?, product(&[m, m, m, m])?);
+    let workers = ctx.threads().max(1).min(basis.len().max(1));
+    let _memory = ctx.reserve(product(&[workers, m2 + m4, 16])?)?;
+    let locate = |occupation| {
+        let encoded = encoding.encode(occupation);
+        if encoding.decode(encoded) != occupation {
+            None
+        } else {
+            basis.index(encoded)
+        }
+    };
+    let indices = basis.indices.as_slice();
+    let block = |start: usize, end: usize| -> (Vec<C64>, Vec<C64>) {
+        let (mut one, mut two) = (vec![C64::default(); m2], vec![C64::default(); m4]);
+        for column in start..end {
+            let amplitude = ket[column];
+            if amplitude == C64::default() {
+                continue;
+            }
+            let determinant = encoding.decode(indices[column]);
+            for r in 0..n {
+                let Some((first, sign_r)) = ladder(n, determinant, &[(r, false)]) else {
+                    continue;
+                };
+                let spin_r = r / m * m;
+                for p in spin_r..spin_r + m {
+                    if let Some((target, sign_p)) = ladder(n, first, &[(p, true)]) {
+                        if let Some(row) = locate(target) {
+                            one[(p % m) * m + r % m] += bra[row].conj() * amplitude * (sign_r * sign_p);
+                        }
+                    }
+                }
+                for s in 0..n {
+                    let Some((second, sign_s)) = ladder(n, first, &[(s, false)]) else {
+                        continue;
+                    };
+                    let spin_s = s / m * m;
+                    for q in spin_s..spin_s + m {
+                        let Some((third, sign_q)) = ladder(n, second, &[(q, true)]) else {
+                            continue;
+                        };
+                        for p in spin_r..spin_r + m {
+                            if let Some((target, sign_p)) = ladder(n, third, &[(p, true)]) {
+                                if let Some(row) = locate(target) {
+                                    let at = (((p % m) * m + q % m) * m + r % m) * m + s % m;
+                                    two[at] += bra[row].conj() * amplitude * (sign_r * sign_s * sign_q * sign_p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (one, two)
+    };
+    let chunk = basis.len().div_ceil(workers);
+    let block = &block;
+    let parts: Vec<(Vec<C64>, Vec<C64>)> = if workers <= 1 {
+        vec![block(0, basis.len())]
+    } else {
+        ctx.run(|| {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..workers)
+                    .map(|w| {
+                        let (start, end) = (w * chunk, ((w + 1) * chunk).min(basis.len()));
+                        mandacaru_kernels::runtime::spawn(scope, move || block(start, end.max(start)))
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().expect("an RDM worker panicked")).collect()
+            })
+        })
+    };
+    let mut one = ctx.allocate::<C64>(m2)?;
+    let mut two = ctx.allocate::<C64>(m4)?;
+    for (o, t) in &parts {
+        for (a, b) in one.as_mut_slice().iter_mut().zip(o) {
+            *a += b;
+        }
+        for (a, b) in two.as_mut_slice().iter_mut().zip(t) {
+            *a += b;
+        }
+    }
+    Ok(SpatialRdms { m, one, two })
+}

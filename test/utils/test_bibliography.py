@@ -26,12 +26,17 @@ from mandacaru.core.mapping import MAPPINGS
 from mandacaru.optimizers.optim import NAMED_OPTIMIZERS
 from mandacaru.pseudopotentials.families import PSEUDO_FAMILIES
 from mandacaru.utils import bibliography as bib
-from mandacaru.utils.citations import (_ANSATZ_KEYS,
-                                       _FAMILY_KEYS, _MAPPING_KEYS,
-                                       _METHOD_KEYS,
+from mandacaru.utils.citations import (_ANALYSIS_KEYS, _ANSATZ_KEYS,
+                                       _DEVICE_KEYS, _EIGENSOLVER_KEYS,
+                                       _EXXDIV_KEYS,
+                                       _FAMILY_KEYS, _HUBBARD_KEYS,
+                                       _MAPPING_KEYS, _METHOD_KEYS,
                                        _OPTIMIZER_KEYS, _POOL_KEYS,
                                        _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS,
                                        _MEASUREMENT_SCHEME_KEYS, _TWO_BODY_KEYS,
+                                       _FORCE_KEYS, _PARAMETER_SHIFT_KEYS,
+                                       _PERIODIC_KEYS, _SMEARING_KEYS,
+                                       _TROTTER_KEYS, _VDW_KEYS, _XC_KEYS,
                                        citation_keys,
                                        provenance_keys)
 
@@ -104,7 +109,8 @@ class TestTheDatabase:
         assert "@article{Grimsley2019," in text
 
     def test_bibtex_marks_an_unverified_record(self):
-        assert "[unverified record]" in bib.bibtex(["Jordan1928"])
+        assert "BornKarman1912" in bib.UNVERIFIED    # no DOI to check it against
+        assert "[unverified record]" in bib.bibtex(["BornKarman1912"])
         assert "[unverified record]" not in bib.bibtex(["Grimsley2019"])
 
 
@@ -147,6 +153,14 @@ class TestEveryRegisteredChoiceIsCitable:
         assert set(_TWO_BODY_KEYS) == set(TWO_BODY_METHODS)
         assert citation_keys(two_body=None) == citation_keys()
 
+    def test_every_two_body_representation_of_the_active_space(self):
+        """``dense`` is the tensor itself; the double factorization cites its papers."""
+        from mandacaru.utils.citations import _TWO_BODY_REPRESENTATION_KEYS
+        assert set(_TWO_BODY_REPRESENTATION_KEYS) == {"dense", "double-factorized"}
+        keys = _TWO_BODY_REPRESENTATION_KEYS["double-factorized"]
+        assert keys and set(keys) <= set(citation_keys(two_body_representation="double-factorized"))
+        assert citation_keys(two_body_representation="dense") == citation_keys()
+
     def test_every_measurement_scheme(self):
         """The commuting groups are the Pauli terms themselves; the double-factorized
         measurement cites the factorization, its measurement and the Givens networks."""
@@ -185,14 +199,36 @@ class TestEveryRegisteredChoiceIsCitable:
                         != citation_keys())
         assert set(_ACTIVE_METHOD_KEYS) == set(ACTIVE_SPACE_METHODS)
 
+    def test_every_functional(self):
+        """The functionals ``Mandacaru(xc=...)`` accepts, ``+rvv10`` folded in."""
+        names = {"lda", "pbe", "r2scan", "hse06", "pbe+rvv10", "r2scan+rvv10"}
+        assert set(_XC_KEYS) == names
+        for name in names:
+            assert _XC_KEYS[name], name
+            assert set(_XC_KEYS[name]) <= set(citation_keys(xc=name)), name
+
+    def test_every_smearing_and_eigensolver_and_exchange_treatment(self):
+        from mandacaru.calculation import _EXXDIV_TREATMENTS
+        assert set(_SMEARING_KEYS) == {"fermi-dirac", "gaussian",
+                                       "methfessel-paxton"}
+        assert set(_EIGENSOLVER_KEYS) == {"direct", "davidson", "rmm-diis",
+                                          "mixed"}
+        assert set(_EXXDIV_KEYS) == set(_EXXDIV_TREATMENTS)
+        assert set(_HUBBARD_KEYS) == {"dudarev-fll", "liechtenstein-fll",
+                                      "linear-response"}
+
     def test_every_key_in_every_table_exists(self):
         tables = (_POOL_KEYS, _MAPPING_KEYS, _METHOD_KEYS, _ANSATZ_KEYS,
                   _OPTIMIZER_KEYS,
                   _FAMILY_KEYS, _PROVENANCE_KEYS, _ACTIVE_METHOD_KEYS,
-                  _MEASUREMENT_SCHEME_KEYS)
+                  _MEASUREMENT_SCHEME_KEYS, _FORCE_KEYS, _XC_KEYS, _VDW_KEYS,
+                  _SMEARING_KEYS, _HUBBARD_KEYS, _EIGENSOLVER_KEYS,
+                  _EXXDIV_KEYS, _DEVICE_KEYS, _ANALYSIS_KEYS)
         for table in tables:
             for name, keys in table.items():
                 bib.resolve(keys)             # raises on an unknown key
+        for keys in (_PERIODIC_KEYS, _PARAMETER_SHIFT_KEYS, _TROTTER_KEYS):
+            bib.resolve(keys)
 
 
 class TestHowTheDatasetsWereGenerated:
@@ -289,6 +325,11 @@ class TestTheSelector:
         assert set(parity) < set(tapered)
         assert "Bravyi2017" in tapered
 
+    def test_variational_forces_cite_the_z_vector_and_its_lagrangian(self):
+        lagrangian = {"HandySchaefer1984", "Helgaker1989", "Mitarai2020"}
+        assert not lagrangian & set(citation_keys(method="vqe"))
+        assert lagrangian <= set(citation_keys(method="vqe", forces="variational"))
+
     def test_the_taper_option_cites_the_tapering_paper(self):
         assert "Bravyi2017" not in citation_keys(mapping="parity")
         assert "Bravyi2017" in citation_keys(mapping="parity", taper=True)
@@ -296,8 +337,8 @@ class TestTheSelector:
 
     def test_a_pseudopotential_family_cites_its_generator(self):
         assert "Bloechl1994" in citation_keys(family="paw-lcao")
-        assert "Ivanov2024" in citation_keys(family="upaw-lcao")
-        assert "Ivanov2024" not in citation_keys(family="paw-lcao")
+        assert "Ivanov2025" in citation_keys(family="upaw-lcao")
+        assert "Ivanov2025" not in citation_keys(family="paw-lcao")
         assert "Hamann2013" in citation_keys(family="paw-lcao")
 
     def test_basis_options_are_cited_only_when_they_did_something(self):
@@ -350,3 +391,137 @@ class TestTheSelector:
         assert len(keys) == len(set(keys))
         order = list(bib.REFERENCES)
         assert keys == sorted(keys, key=order.index)
+
+
+class TestWhatTheCodeImplementsIsCited:
+    """The configuration choices added by the 2026-11 audit: each one a user
+    can select cites the paper the implementation rests on, and the stale
+    citation of a method that was refuted and never built is gone."""
+
+    def test_valsqa_cites_its_ranker_and_not_a_gaussian_process(self):
+        keys = citation_keys(method="valsqa")
+        assert {"BradleyTerry1952", "Gilmer2017"} <= set(keys)
+        assert "Rasmussen2006" not in bib.REFERENCES
+        assert "BradleyTerry1952" not in citation_keys(method="vasqa")
+
+    def test_variational_forces_cite_their_numerical_machinery(self):
+        machinery = {"Kuhn1955", "Munkres1957", "GerrattMills1968", "Pople1979"}
+        assert not machinery & set(citation_keys(method="vqe"))
+        assert machinery <= set(citation_keys(method="vqe",
+                                              forces="variational"))
+
+    def test_analytic_forces_cite_hellmann_feynman_and_pulay(self):
+        assert not {"Feynman1939", "Pulay1969"} & set(citation_keys(method="rhf"))
+        assert {"Feynman1939", "Pulay1969"} <= set(
+            citation_keys(method="rhf", forces="analytic"))
+
+    def test_a_crystal_cites_the_localized_orbital_bloch_sum(self):
+        assert "SlaterKoster1954" in _PERIODIC_KEYS
+        assert "SlaterKoster1954" in citation_keys(method="vqe", periodic=True)
+        assert "SlaterKoster1954" not in citation_keys(method="vqe")
+
+    def test_the_level_shift_is_cited_with_the_scf(self):
+        assert "SaundersHillier1973" in citation_keys(method="rhf")
+        assert "SaundersHillier1973" not in citation_keys(
+            method="rhf", built_basis=False)
+
+    def test_a_circuit_measured_energy_cites_the_parameter_shift(self):
+        shift = {"Mitarai2018", "Schuld2019"}
+        assert not shift & set(citation_keys(method="vqe"))
+        assert shift <= set(citation_keys(method="vqe", shots=1024))
+        assert shift <= set(citation_keys(method="adapt-vqe",
+                                          execute_circuits=True))
+        # A mean-field method ignores the circuit options.
+        assert not shift & set(citation_keys(method="rhf", shots=1024))
+
+    def test_the_matrix_product_state_device_cites_its_method(self):
+        for spelling in ("AER_mps", "aer-mps", "mps"):
+            assert {"Vidal2003", "Schollwoeck2011"} <= set(
+                citation_keys(device=spelling)), spelling
+        assert not {"Vidal2003", "Schollwoeck2011"} & set(
+            citation_keys(device="AER_simulator"))
+        assert not {"Vidal2003"} & set(citation_keys(device="no-such-device"))
+
+    def test_trotter_cites_the_product_formula(self):
+        assert "Trotter1959" not in citation_keys(method="vqe")
+        assert "Trotter1959" in citation_keys(method="vqe", trotter=True)
+
+    def test_functionals_cite_their_papers(self):
+        assert "PerdewZunger1981" in citation_keys(xc="lda")
+        assert "Furness2020" in citation_keys(xc="r2scan")
+        assert {"Heyd2003", "Krukau2006", "Paier2005"} <= set(
+            citation_keys(xc="hse06"))
+        rvv10 = {"Vydrov2010", "Sabatini2013", "RomanPerez2009"}
+        assert rvv10 <= set(citation_keys(xc="pbe+rvv10"))
+        assert rvv10 | {"Furness2020", "Ning2022"} <= set(
+            citation_keys(xc="r2scan+rvv10"))
+        assert not rvv10 & set(citation_keys(xc="pbe"))
+
+    def test_the_xc_spelling_is_insensitive(self):
+        assert citation_keys(xc="HSE06") == citation_keys(xc="hse06")
+
+    def test_the_dispersion_correction_cites_its_reference_data(self):
+        ts = {"Tkatchenko2009", "ChuDalgarno2004", "Ruiz2012", "Grimme2006",
+              "Hirshfeld1977"}
+        assert ts <= set(citation_keys(vdw="ts"))
+        assert not ts & set(citation_keys())
+
+    def test_smearing_cites_its_broadening(self):
+        assert "MethfesselPaxton1989" in citation_keys(smearing="methfessel-paxton")
+        assert "FuHo1983" in citation_keys(smearing="Gaussian")
+        assert "FuHo1983" not in citation_keys(smearing="fermi-dirac")
+        assert "Mermin1965" in citation_keys(smearing="fermi-dirac")
+
+    def test_the_hubbard_forms_and_their_response_cite_their_papers(self):
+        assert "Dudarev1998" in citation_keys(hubbard="dudarev-fll")
+        assert "Liechtenstein1995" in citation_keys(hubbard="liechtenstein-fll")
+        both = citation_keys(hubbard=("dudarev-fll", "linear-response"))
+        assert {"Dudarev1998", "Cococcioni2005"} <= set(both)
+        assert not {"Dudarev1998", "Liechtenstein1995"} & set(citation_keys())
+
+    def test_the_crystal_solver_options_cite_their_algorithms(self):
+        assert "Davidson1975" in citation_keys(eigensolver="davidson")
+        assert {"WoodZunger1985", "Pulay1980"} <= set(
+            citation_keys(eigensolver="rmm-diis"))
+        assert {"Davidson1975", "WoodZunger1985"} <= set(
+            citation_keys(eigensolver="mixed"))
+        assert not {"Davidson1975", "WoodZunger1985"} & set(
+            citation_keys(eigensolver="direct"))
+        assert "GygiBaldereschi1986" in citation_keys(
+            exxdiv_treatment="gygi-baldereschi")
+        assert "GygiBaldereschi1986" not in citation_keys(
+            exxdiv_treatment="none")
+
+    def test_the_analyses_cite_their_methods(self):
+        assert {"JepsenAndersen1971", "LehmannTaut1972",
+                "BloechlJepsenAndersen1994"} <= set(
+            citation_keys(analysis="tetrahedron-dos"))
+        spectral = {"Lehmann1954", "Lanczos1950", "GaglianoBalseiro1987"}
+        assert spectral <= set(citation_keys(analysis=("spectral-function",)))
+        assert not spectral & set(citation_keys())
+        assert "Spencer2008" in citation_keys(analysis="downfold")
+        assert not {"Aryasetiawan2004", "Sasioglu2011"} & set(
+            citation_keys(analysis="downfold"))
+        assert {"Aryasetiawan2004", "Sasioglu2011", "Spencer2008"} <= set(
+            citation_keys(analysis="downfold-screening"))
+        assert not {"Aryasetiawan2004", "Sasioglu2011", "Spencer2008"} & set(
+            citation_keys())
+        assert "SetyawanCurtarolo2010" in citation_keys(analysis="band-path")
+        assert "SetyawanCurtarolo2010" not in citation_keys()
+        assert "MonkhorstPack1976" in citation_keys(analysis="irreducible-zone")
+        echoes = {"Trotter1959", "Strang1968", "Suzuki1991",
+                  "GoogleQuantumAI2025"}
+        assert echoes <= set(citation_keys(analysis=["nested-otoc"]))
+        assert echoes <= set(citation_keys(analysis="quantum-echoes"))
+        assert "GoogleQuantumAI2025" not in citation_keys(
+            analysis="time-evolution")
+        assert {"Kuhn1960", "Doi1991"} <= set(citation_keys(analysis="isosurface"))
+
+    def test_the_records_fixed_by_the_audit(self):
+        helgaker = bib.REFERENCES["Helgaker1989"]
+        assert helgaker.verified and "10.1007/BF00527713" in helgaker.entry
+        assert bib.REFERENCES["Mitarai2020"].verified
+        # The first DOI of this record was another paper's.
+        assert "10.1137/17M1129696" in bib.REFERENCES["Damle2018"].entry
+        assert "Ivanov2025" in bib.REFERENCES and "Ivanov2024" not in bib.REFERENCES
+        assert "10.1021/acs.jctc.5c00551" in bib.REFERENCES["Ivanov2025"].entry

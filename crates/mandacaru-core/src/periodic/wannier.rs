@@ -15,6 +15,7 @@ use nalgebra::{DMatrix, DVector};
 use std::f64::consts::PI;
 type Matrix = DMatrix<C64>;
 pub mod disentangle;
+pub mod downfold;
 pub mod model;
 pub mod sampling;
 pub mod setup;

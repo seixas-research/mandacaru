@@ -72,3 +72,47 @@ fn occupied_transition_rdms_match_independent_spin_orbital_expectations_for_ever
     }
     assert_eq!(context.memory_used(), 0);
 }
+
+#[test]
+fn transition_rdms_are_the_bilinear_form_of_the_rdms_on_every_thread_count() {
+    for threads in [1, 3] {
+        let context = Context::new(Some(threads), 32 << 20).unwrap();
+        {
+            for mapping in ["jordan_wigner", "parity_reduced"] {
+                let m = 3;
+                let encoding = Encoding::new(mapping, 2 * m, [2, 1]).unwrap();
+                let basis = Basis::new(&context, &encoding, true).unwrap();
+                let state = |shift: f64| -> Vec<C64> {
+                    (0..basis.len())
+                        .map(|i| C64::new((i as f64 + shift).sin(), (0.7 * i as f64 - shift).cos()))
+                        .collect()
+                };
+                let (a, b) = (state(0.2), state(1.3));
+                // With bra == ket: the RDMs themselves.
+                let same = properties::spatial_transition_rdms(&context, &encoding, &basis, &a, &a)
+                    .unwrap();
+                let rdm = properties::spatial_rdms(&context, &encoding, &basis, &a).unwrap();
+                for (x, y) in same.two.as_slice().iter().zip(rdm.two.as_slice()) {
+                    assert!((x - y).norm() < 1e-12);
+                }
+                // The polarization identity: <a|O|b> + <b|O|a> = RDM(a + b) - RDM(a) - RDM(b) (real part).
+                let sum: Vec<C64> = a.iter().zip(&b).map(|(x, y)| x + y).collect();
+                let ab = properties::spatial_transition_rdms(&context, &encoding, &basis, &a, &b)
+                    .unwrap();
+                let ba = properties::spatial_transition_rdms(&context, &encoding, &basis, &b, &a)
+                    .unwrap();
+                let (rs, ra, rb) = (
+                    properties::spatial_rdms(&context, &encoding, &basis, &sum).unwrap(),
+                    rdm,
+                    properties::spatial_rdms(&context, &encoding, &basis, &b).unwrap(),
+                );
+                for k in 0..ab.two.as_slice().len() {
+                    let lhs = ab.two.as_slice()[k] + ba.two.as_slice()[k];
+                    let rhs = rs.two.as_slice()[k] - ra.two.as_slice()[k] - rb.two.as_slice()[k];
+                    assert!((lhs - rhs).norm() < 1e-11, "{mapping} {k}");
+                }
+            }
+        }
+        assert_eq!(context.memory_used(), 0);
+    }
+}

@@ -93,15 +93,52 @@ from mandacaru import Mandacaru
 calc = Mandacaru(method="adapt-vqe",
                  basis={"name": "PAW-LCAO", "size": "DZP"},
                  active_space={"orbitals": 8, "method": "mp2"},
-                 two_body={"method": "cholesky", "tolerance": 1e-8})
+                 two_body={"method": "cholesky", "tolerance": 1e-6})
 ```
 
-`cholesky_tolerance` (default `1e-10`) and `two_body={"method": "cholesky",
-"tolerance": ...}` set the same truncation; `two_body` accepts nothing but the
-Cholesky method and its tolerance. The tolerance bounds every integral, not the
-energy: an energy sums many integrals, so confirm the tolerance on your own
+`two_body={"method": "cholesky", "tolerance": t}` sets the truncation: the
+factorization stops once the largest remaining diagonal integral is at or below
+`t`, in eV (default `1e-8` eV). The tolerance bounds every integral, not the energy: an energy sums many integrals, so confirm the tolerance on your own
 system by tightening it until the energy stops moving. A looser tolerance gives
 fewer factors and less memory.
+
+(double-factorized-representation)=
+### The double-factorized representation of the active space
+
+By default the Hamiltonian of the active space holds its $n^4$ two-electron tensor
+(`"representation": "dense"`). With
+
+```python
+two_body={"method": "cholesky", "representation": "double-factorized",
+          "truncation": 0.01}
+```
+
+it holds instead each Cholesky vector rotated into the $n$ active orbitals and that
+vector's eigen decomposition, $L^r = \sum_t \lambda^r_t u^r_t u^{rT}_t$ (at most
+$L n^2$ numbers, $L$ the number of vectors), and builds the qubit Hamiltonian from
+them one vector at a time, never forming the tensor or the list of its $n^4$ fermion
+terms. `truncation` (eV) is required: eigenpairs are dropped, smallest first, while
+$2\sum_r \big[(\sum_t|\lambda^r_t|)^2 - (\sum_{t\,\mathrm{kept}}|\lambda^r_t|)^2\big]$
+stays at or below it. That quantity bounds the norm of the change of the two-body
+operator, so **no energy of the model moves by more than `truncation`**, plus the
+roundoff of the Pauli coefficients at or below $10^{-12}$ Ha that the operator drops (as
+the dense route drops tensor elements at that level). `0` drops only roundoff, and the Hamiltonian is then the dense one to $10^{-9}$ Ha per Pauli
+coefficient. The run log's `two-body integrals` line states the truncation, the
+eigenpairs kept and the bound reached, in the log's energy unit.
+
+Measured on H₂O (PAW-LCAO DZP, `grid_spacing=0.25`, the oxygen 1s frozen), ADAPT-VQE
+on 6 active orbitals moved from the dense energy by $2\times10^{-12}$, $-7\times10^{-5}$,
+$6\times10^{-3}$ and $3\times10^{-2}$ eV at truncations of 0, 0.01, 0.1 and 1 eV. Building
+the qubit Hamiltonian of 20 active orbitals (40 qubits) peaked at 160 MB of process
+memory against 281 MB for the dense tensor. A truncation breaks the point-group zeros
+of the Hamiltonian, so it can **raise** the number of Pauli terms (on 20 orbitals,
+59,825 untruncated against 119,105 at 0.1 eV): it lowers memory, not the measurement
+count.
+
+A double-factorized model has no dense tensor, and what needs one raises
+`NotImplementedError` naming the representation: the analytic forces,
+`mp2_natural_orbitals()`, `measurement_scheme="double-factorized"` and the model's
+`two_body`. Periodic DFT takes only `"dense"`.
 
 `precision="float32"` stores the sampled orbitals in `float32`; the one-body
 matrices, the integral accumulation and the FFT workspaces stay in `float64`.

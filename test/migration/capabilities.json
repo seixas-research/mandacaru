@@ -282,7 +282,6 @@
         "restricted/unrestricted/spinor Kohn-Sham",
         "LDA/PBE/r2SCAN/HSE06",
         "PBE+rVV10/r2SCAN+rVV10",
-        "optional D4",
         "Hubbard U and onsite terms"
       ],
       "sources": [],
@@ -413,7 +412,6 @@
         "src/mandacaru/backends/providers.py",
         "src/mandacaru/backends/hardware.py",
         "src/mandacaru/backends/measurement.py",
-        "src/mandacaru/backends/factorization.py",
         "src/mandacaru/circuits/profiling.py"
       ],
       "tests": [

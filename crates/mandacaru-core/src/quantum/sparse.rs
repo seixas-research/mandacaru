@@ -1,12 +1,17 @@
-//! Compressed-column storage built directly from a Pauli sum on its basis.
-use super::{amplitude::Amplitude, Basis, Operator, C64};
+//! Compressed-row storage built directly from a Pauli sum on its basis.
+use super::{amplitude::Amplitude, parallel::parallel_rows, Basis, Operator, C64};
 use crate::{product, Buffer, Context, Error, Result};
 use std::collections::BTreeMap;
 
+/// Row `r` holds, for every flip mask that reaches it from a basis state, the column of that
+/// source state and the exact coefficient sum of the mask's strings at it; applying the matrix
+/// gathers each row from inputs it only reads, so the rows split across threads.
 pub struct SparseMatrix {
     identity: C64,
+    /// The building context: its worker pool runs every large action.
+    context: Context,
     offsets: Buffer<usize>,
-    rows: Buffer<usize>,
+    columns: Buffer<usize>,
     values: Buffer<C64>,
 }
 impl SparseMatrix {
@@ -36,16 +41,17 @@ impl SparseMatrix {
             }
         }
         let mut offsets = ctx.allocate(d.checked_add(1).ok_or(Error::Overflow)?)?;
-        let mut rows = ctx.allocate(capacity)?;
+        let mut columns = ctx.allocate(capacity)?;
         let mut values = ctx.allocate(capacity)?;
         let mut cursor = 0;
-        for (col, &ket) in basis.indices.as_slice().iter().enumerate() {
+        for (row, &ket) in basis.indices.as_slice().iter().enumerate() {
             for (&flip, terms) in &flips {
-                if let Some(row) = basis.index(ket ^ flip) {
+                let source = ket ^ flip;
+                if let Some(column) = basis.index(source) {
                     let value: C64 = terms
                         .iter()
                         .map(|&(z, coefficient)| {
-                            if (z & ket).count_ones() % 2 == 0 {
+                            if (z & source).count_ones() % 2 == 0 {
                                 coefficient
                             } else {
                                 -coefficient
@@ -55,17 +61,18 @@ impl SparseMatrix {
                     if value.norm() <= 1e-14 {
                         continue;
                     }
-                    rows.as_mut_slice()[cursor] = row;
+                    columns.as_mut_slice()[cursor] = column;
                     values.as_mut_slice()[cursor] = value;
                     cursor += 1;
                 }
             }
-            offsets.as_mut_slice()[col + 1] = cursor;
+            offsets.as_mut_slice()[row + 1] = cursor;
         }
         Ok(Self {
             identity,
+            context: ctx.clone(),
             offsets,
-            rows,
+            columns,
             values,
         })
     }
@@ -82,11 +89,21 @@ impl SparseMatrix {
         self.add_into(state, C64::new(1., 0.), out);
     }
     fn add_into<A: Amplitude>(&self, state: &[A], scale: C64, out: &mut [C64]) {
-        for (col, amplitude) in state.iter().enumerate() {
-            let weighted = scale * amplitude.widen();
-            for k in self.offsets.as_slice()[col]..self.offsets.as_slice()[col + 1] {
-                out[self.rows.as_slice()[k]] += self.values.as_slice()[k] * weighted;
+        let (offsets, columns, values) =
+            (self.offsets.as_slice(), self.columns.as_slice(), self.values.as_slice());
+        let rows = out.len();
+        parallel_rows(&self.context, rows, values.len(), out, |start, block| {
+            for (offset, value) in block.iter_mut().enumerate() {
+                let row = start + offset;
+                // Four independent partial sums in a fixed order: a row's entries no longer wait
+                // on one another, and the result does not depend on the thread split.
+                let mut partial = [C64::default(); 4];
+                let (first, last) = (offsets[row], offsets[row + 1]);
+                for (k, (&column, &entry)) in columns[first..last].iter().zip(&values[first..last]).enumerate() {
+                    partial[k % 4] += entry * state[column].widen();
+                }
+                *value += scale * ((partial[0] + partial[1]) + (partial[2] + partial[3]));
             }
-        }
+        });
     }
 }

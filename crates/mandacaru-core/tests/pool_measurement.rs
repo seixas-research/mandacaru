@@ -4,6 +4,7 @@
 use mandacaru_core::{
     quantum::{
         execution::{CircuitExecution, Request, Response},
+        pool_measurement::PoolWalk,
         solver::Execution,
         CachedProblem, Encoding, Operator, Space, C64,
     },
@@ -161,6 +162,43 @@ fn the_labels_asked_are_the_distinct_strings_of_every_commutator() {
         let labels: BTreeSet<_> = paulis.set.labels().into_iter().collect();
         assert_eq!(labels, distinct, "batch of {bytes} bytes");
         assert_eq!(paulis.set.len(), distinct.len());
+    }
+}
+
+#[test]
+fn a_ceiling_stops_the_walk_on_a_proven_excess_and_never_on_a_fit() {
+    let ctx = Context::new(Some(1), 256 << 20).unwrap();
+    let problem = problem(&ctx, [1, 1]);
+    for bytes in [1, 1 << 20] {
+        let all = problem.pool_paulis(bytes).unwrap();
+        let total = all.set.len();
+        // A ceiling at the exact count, and above it, is not an excess: the plan is identical.
+        for limit in [total, total + 1, usize::MAX] {
+            match problem.pool_paulis_within(bytes, Some(limit)).unwrap() {
+                PoolWalk::Planned(plan) => {
+                    assert_eq!(plan.set.labels(), all.set.labels());
+                    assert_eq!(plan.measured, all.measured);
+                }
+                PoolWalk::Over { .. } => panic!("a ceiling of {limit} refused {total} strings"),
+            }
+        }
+        // One below the count is an excess; what the walk reports is a count it really saw,
+        // so it is over the ceiling and never over the total.
+        match problem.pool_paulis_within(bytes, Some(total - 1)).unwrap() {
+            PoolWalk::Over {
+                distinct,
+                generators,
+            } => {
+                assert!(distinct > total - 1 && distinct <= total);
+                assert!(generators >= 1 && generators <= problem.pool.len());
+            }
+            PoolWalk::Planned(_) => panic!("{total} strings fit a ceiling of {}", total - 1),
+        }
+    }
+    // With one commutator per batch, a tiny ceiling ends the walk well before the pool's end.
+    match problem.pool_paulis_within(1, Some(20)).unwrap() {
+        PoolWalk::Over { generators, .. } => assert!(generators < problem.pool.len() / 4),
+        PoolWalk::Planned(_) => panic!("20 strings should be exceeded"),
     }
 }
 

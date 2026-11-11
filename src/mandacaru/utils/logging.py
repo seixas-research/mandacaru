@@ -79,7 +79,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 import numpy as np
 
-from ..units import HARTREE_TO_EV
+from .. import _native
 
 if TYPE_CHECKING:
     from .._native import MeanField
@@ -537,7 +537,6 @@ class Logger:
     def write_optimizer_setup(self, optimizer_method: str,
                               reference_energy: float, energy_unit: str = "eV",
                               convergence=None,
-                              energy_scale: float = 1.0,
                               max_iterations: int | None = None,
                               start_energy: float | None = None,
                               extra: dict | None = None,
@@ -563,9 +562,8 @@ class Logger:
 
         ``convergence`` is the calculator's dict: ``"gradient"`` in Hartree per
         radian and ``"energy"`` in eV, either absent or ``None`` for a criterion
-        that is not used.  ``energy_scale`` converts Hartree into
-        ``energy_unit``, so the energy threshold is written in the unit of the
-        ``dE`` column.
+        that is not used; the energy threshold is converted (in Rust) into
+        ``energy_unit``, the unit of the ``dE`` column.
         """
         # The first iteration's dE is measured from here: the reference state,
         # or the restored ansatz of a resumed run (``start_energy``).
@@ -585,7 +583,9 @@ class Logger:
             self._thresholds = {
                 "grad": convergence.get("gradient"),
                 "dE": (None if convergence.get("energy") is None
-                       else convergence["energy"] / HARTREE_TO_EV * energy_scale)}
+                       else _native.energy_from_hartree(
+                           _native.energy_to_hartree(float(convergence["energy"]), "eV"),
+                           energy_unit))}
             marked = [heading for key, heading in (("grad", "|grad|"),
                                                    ("dE", "dE"))
                       if self._thresholds[key] is not None]
@@ -644,6 +644,8 @@ class Logger:
     ITERATION_COLUMNS = (("iter", "iter", 4, "d"),
                          ("time", "time (HH:MM:SS)", 8, "s"),
                          ("energy", "energy", 18, ".10f"),
+                         # The shot-noise standard error of the energy (shot runs only).
+                         ("sigma", "sigma", 12, ".6e"),
                          ("expr", "expr", 10, ".6f"),
                          # Signed; three characters narrower than the energy.
                          ("dE", "dE", 15, "+.10f"),
@@ -671,7 +673,7 @@ class Logger:
         cells = []
         for key, heading, width, _fmt in (self._columns
                                           or self.ITERATION_COLUMNS):
-            label = f"{heading} ({energy_unit})" if key in ("energy", "dE") else heading
+            label = f"{heading} ({energy_unit})" if key in ("energy", "sigma", "dE") else heading
             cell = (label if key == "operator"
                     else f"{label:>{max(width, len(label))}}")
             if self._thresholds.get(key) is not None:
@@ -684,7 +686,8 @@ class Logger:
                         expressivity: float | None, energy: float,
                         num_parameters: int, energy_unit: str = "eV",
                         metrics: Any = None,
-                        optimizer_steps: int | None = None) -> None:
+                        optimizer_steps: int | None = None,
+                        energy_error: float | None = None) -> None:
         """Append **one row** describing this ADAPT iteration.
 
         Each iteration is a single line and each tracked property is a column
@@ -734,7 +737,8 @@ class Logger:
             # not computed anywhere, and an all-"-" column is worse than none.
             self._columns = tuple(
                 c for c in self.ITERATION_COLUMNS
-                if c[0] != "expr" or expressivity is not None)
+                if (c[0] != "expr" or expressivity is not None)
+                and (c[0] != "sigma" or energy_error is not None))
             heading = self._iteration_heading(energy_unit)
             self._emit("[ITERATIONS]")
             self._emit_body(heading, "-" * len(heading))
@@ -744,8 +748,11 @@ class Logger:
             return "-" if value is None else str(value)
 
         energy = float(energy)
-        delta = (None if self._previous_energy is None
-                 else energy - self._previous_energy)
+        thresholds = getattr(self, "_thresholds", None) or {}
+        row = _native.iteration_values(
+            energy, self._previous_energy, float(grads[selected_index]),
+            gradient_threshold=thresholds.get("grad"), energy_threshold=thresholds.get("dE"))
+        delta = row["delta"]
         self._previous_energy = energy
         values = {
             "iter": int(iteration),
@@ -753,9 +760,10 @@ class Logger:
             # re-optimization and the circuit metrics are already done.
             "time": datetime.now().strftime("%H:%M:%S"),
             "energy": energy,
+            "sigma": None if energy_error is None else float(energy_error),
             "expr": None if expressivity is None else float(expressivity),
             "dE": delta,
-            "grad": abs(grads[selected_index]) * HARTREE_TO_EV,
+            "grad": row["gradient_ev"],
             "steps": count(optimizer_steps),
             "cnot": count(getattr(metrics, "cnot_count", None)),
             "depth": count(getattr(metrics, "depth", None)),
@@ -765,7 +773,7 @@ class Logger:
         cells = []
         for key, heading, width, fmt in (self._columns
                                          or self.ITERATION_COLUMNS):
-            label = f"{heading} ({energy_unit})" if key in ("energy", "dE") else heading
+            label = f"{heading} ({energy_unit})" if key in ("energy", "sigma", "dE") else heading
             width = max(width, len(label))
             value = values[key]
             if key == "operator":
@@ -779,14 +787,11 @@ class Logger:
                 cells.append(f"{value:>+{width}{fmt[1:]}}")
             else:
                 cells.append(f"{value:>{width}{fmt}}")
-            threshold = self._thresholds.get(key)
-            if threshold is not None:
-                # The same strict test the loop applies
-                # (the solver's gradient_ok / energy_ok); a dash never meets it.
-                # Screening and its threshold remain in Hartree; only the
-                # table's displayed gradient is converted to eV.
-                criterion = abs(grads[selected_index]) if key == "grad" else value
-                met = criterion is not None and abs(criterion) < threshold
+            met = {"grad": row["gradient_met"], "dE": row["energy_met"]}.get(key)
+            if met is not None:
+                # The same strict test the loop applies (the solver's gradient_ok /
+                # energy_ok), decided in Rust; a dash never meets it. Screening and
+                # its threshold stay in Hartree; the displayed gradient is in eV.
                 cells[-1] += MARKED if met else UNMARKED
         self._emit_body("    ".join(cells).rstrip())
 
@@ -903,7 +908,9 @@ class Logger:
                       num_evaluations: int | None = None,
                       optimizer_steps: int | None = None,
                       metrics: Any = None, optimizer: str | None = None,
-                      extra: dict | None = None) -> None:
+                      extra: dict | None = None,
+                      energy_error: float | None = None,
+                      energy_error_reason: str | None = None) -> None:
         """Write this step's ``[VARIATIONAL QUANTUM SUMMARY]``: the converged state.
 
         One per geometry -- it closes the variational run, not the relaxation
@@ -933,6 +940,11 @@ class Logger:
         # written: [OPTIMIZATION SETUP] owns the optimizer, and a fact stated in
         # two blocks is a fact that can disagree with itself.
         self._emit_body(f"optimal_energy_{energy_unit}: {optimal_energy:.10f}")
+        # A shot run's energy is an estimate: this block owns its standard error.
+        if energy_error is not None:
+            self._emit_body(f"energy_standard_error_{energy_unit}: {energy_error:.6e}")
+        elif energy_error_reason is not None:
+            self._emit_body(f"energy_standard_error_{energy_unit}: {energy_error_reason}")
         if correlation_energy is not None:
             self._emit_body(f"correlation_energy_{energy_unit}: "
                             f"{correlation_energy:.10f}")
@@ -1114,12 +1126,13 @@ def _force_table(symbols: Sequence[str], vectors,
     row's norm (a force for the reported vectors, a gradient for the
     Hellmann-Feynman and Pulay breakdown).
     """
-    vectors = np.atleast_2d(np.asarray(vectors, dtype=float))
+    vectors = np.ascontiguousarray(np.atleast_2d(np.asarray(vectors, dtype=float)))
     heading = (f"{'atom':>5s} {'symbol':<6s} {'x':>16s} {'y':>16s} "
                f"{'z':>16s} {magnitude:>14s}")
     rows = [heading, "-" * len(heading)]
-    for index, (symbol, vector) in enumerate(zip(symbols, vectors), start=1):
-        norm = float(np.linalg.norm(vector))
+    norms = _native.force_summary(vectors)["norms"]
+    for index, (symbol, vector, norm) in enumerate(zip(symbols, vectors, norms), start=1):
+        norm = float(norm)
         rows.append(f"{index:5d} {str(symbol):<6s} "
                     f"{vector[0]:16.8f} {vector[1]:16.8f} {vector[2]:16.8f} "
                     f"{norm:14.8f}")
@@ -1173,16 +1186,15 @@ def _force_block_lines(symbols: Sequence[str], forces, hellmann_feynman=None,
         lines += _indent(["pulay:"]) + _indent(
             _force_table(symbols, pulay, "|dE/dR|"), 2)
 
-    norms = np.linalg.norm(forces, axis=1)
-    norm_keys = [f"max_force: {float(norms.max()):.8f}",
-                 f"rms_force: {float(np.sqrt((norms ** 2).mean())):.8f}"]
+    summary = _native.force_summary(np.ascontiguousarray(forces))
+    norm_keys = [f"max_force: {summary['max']:.8f}",
+                 f"rms_force: {summary['rms']:.8f}"]
     if len(forces) > 1:
         # A free molecule feels no net force, so this is the pure discretization
         # artifact -- the number that says whether the force is usable for
         # geometry at all.  For a single atom the grid re-centers on it, so the
         # sum is the atom's own force and says nothing: it is left out.
-        norm_keys.append(f"net_force: "
-                         f"{float(np.abs(forces.sum(axis=0)).max()):.8f}")
+        norm_keys.append(f"net_force: {summary['net']:.8f}")
     return lines + _indent(norm_keys) + [_BANNER]
 
 
@@ -1308,17 +1320,17 @@ def append_optimization_summary(path: str, history, symbols=None,
             f"initial_energy_{energy_unit}": f"{first['energy']:.10f}",
             f"final_energy_{energy_unit}": f"{last['energy']:.10f}",
             f"energy_change_{energy_unit}":
-                f"{last['energy'] - first['energy']:+.10f}",
+                f"{_native.difference_to_user(float(last['energy']), float(first['energy']), 'energy', atomic_units=True):+.10f}",
             "initial_max_force": f"{first['max_force']:.8f}",
             "final_max_force": f"{last['max_force']:.8f}",
             "final_net_force": f"{last['net_force']:.8f}"}
     if first.get("com") is not None and last.get("com") is not None:
-        drift = float(np.linalg.norm(np.asarray(last["com"], float)
-                                     - np.asarray(first["com"], float)))
+        drift = _native.distance([float(v) for v in last["com"]],
+                                 [float(v) for v in first["com"]])
         # A free molecule cannot translate under its own forces: whatever this
         # is, the grid put it there (see `project_translation`).
         keys["center_of_mass_drift"] = f"{drift:.8f}"
-    total = sum(float(entry.get("wall_time_s") or 0.0) for entry in history)
+    total = _native.total([float(entry.get("wall_time_s") or 0.0) for entry in history])
     if total:
         keys["total_wall_time_s"] = f"{total:.4f}"
     for key, value in (extra or {}).items():
@@ -1416,8 +1428,6 @@ def append_quantum_echoes(
     when the field strength is zero. :func:`parse_output` returns metadata and
     the ``samples`` and ``peaks`` tables under ``quantum_echoes``.
     """
-    from ..units import HARTREE_TO_EV
-
     fields = {
         "protocol": "U(t)^dagger exp(-i tau_p V) U(t)",
         "propagator": "Suzuki-Trotter",
@@ -1429,7 +1439,7 @@ def append_quantum_echoes(
     }
     if field is not None:
         fields["field_au"] = " ".join(f"{float(value):.12e}" for value in field)
-        fields["field_strength_au"] = f"{np.linalg.norm(field):.12e}"
+        fields["field_strength_au"] = f"{_native.vector_norm([float(v) for v in field]):.12e}"
     if field_direction is not None:
         fields["field_direction"] = " ".join(f"{float(v):.12e}" for v in field_direction)
     if orbital_reference is not None:
@@ -1438,7 +1448,7 @@ def append_quantum_echoes(
             "homo_energy_ha": f"{orbital_reference.homo_energy:.12e}",
             "lumo_energy_ha": f"{orbital_reference.lumo_energy:.12e}",
             "homo_lumo_gap_ha": f"{orbital_reference.homo_lumo_gap:.12e}",
-            "homo_lumo_gap_ev": f"{orbital_reference.homo_lumo_gap*HARTREE_TO_EV:.12e}",
+            "homo_lumo_gap_ev": f"{_native.energy_from_hartree(float(orbital_reference.homo_lumo_gap), 'eV'):.12e}",
         })
     if spectrum is not None:
         destination = (Path(spectrum_path) if spectrum_path is not None else
@@ -1457,7 +1467,7 @@ def append_quantum_echoes(
             "spectrum_time_step": f"{spectrum.time_step:.12e}",
             "spectrum_last_time": f"{spectrum.times[-1]:.12e}",
             "spectrum_resolution_ha": f"{spectrum.resolution:.12e}",
-            "spectrum_resolution_ev": f"{spectrum.resolution*HARTREE_TO_EV:.12e}",
+            "spectrum_resolution_ev": f"{_native.energy_from_hartree(float(spectrum.resolution), 'eV'):.12e}",
             "spectrum_nyquist_ha": f"{spectrum.nyquist_energy:.12e}",
             "spectrum_elastic": f"{spectrum.elastic:.12e}",
             "peak_relative_threshold": "5.000000000000e-02",
@@ -1486,7 +1496,8 @@ def append_quantum_echoes(
         intensity = spectrum.intensities
         peak_rows = []
         for i in spectrum.peaks():
-            values = (spectrum.energies[i], spectrum.energies[i]*HARTREE_TO_EV,
+            values = (spectrum.energies[i],
+                      _native.energy_from_hartree(float(spectrum.energies[i]), "eV"),
                       intensity[i], spectrum.amplitudes[i].real,
                       spectrum.amplitudes[i].imag)
             peak_rows.append([f"{value:.12e}" for value in values])
@@ -1638,20 +1649,8 @@ def _cell_parameters(cell: np.ndarray):
     Lengths in the cell's own units; angles in degrees (alpha between b and c,
     beta between a and c, gamma between a and b -- crystallographic convention).
     """
-    cell = np.asarray(cell, dtype=float)
-    a_vec, b_vec, c_vec = cell[0], cell[1], cell[2]
-    a, b, c = (np.linalg.norm(a_vec), np.linalg.norm(b_vec),
-               np.linalg.norm(c_vec))
-
-    def angle(u, v):
-        nu, nv = np.linalg.norm(u), np.linalg.norm(v)
-        if nu == 0 or nv == 0:
-            return 0.0
-        cosang = np.clip(np.dot(u, v) / (nu * nv), -1.0, 1.0)
-        return float(np.degrees(np.arccos(cosang)))
-
-    return (float(a), float(b), float(c),
-            angle(b_vec, c_vec), angle(a_vec, c_vec), angle(a_vec, b_vec))
+    rows = np.asarray(cell, dtype=float).tolist()
+    return tuple(_native.cell_parameters(rows))
 
 
 #: ``[GEOMETRY OPTIMIZATION SUMMARY]`` keys that are counts, not measurements.
@@ -1723,7 +1722,7 @@ def parse_output(path: str) -> dict:
     section = None
     columns: list[str] = []
     energy_unit = "eV"
-    gradient_scale = 1.0
+    gradient_unit = "Ha"
     table = None                      # which force table rows are landing in
     basis_columns = None              # heading of the [BASIS] table being read
     echo_columns = None               # heading of the current echo table
@@ -2004,7 +2003,7 @@ def parse_output(path: str) -> dict:
                 if not columns:
                     # A label and its parenthesized unit form one column.
                     head = stripped
-                    gradient_scale = HARTREE_TO_EV if "|grad| (eV)" in head else 1.0
+                    gradient_unit = "eV" if "|grad| (eV)" in head else "Ha"
                     for unit in ("eV", "Ha"):
                         if f"energy ({unit})" in head:
                             energy_unit = unit
@@ -2037,7 +2036,7 @@ def parse_output(path: str) -> dict:
                     "energy_unit": energy_unit,
                     "expressivity_E": record.get("expr", "-"),
                     "max_gradient": (None if gradient is None
-                                     else gradient / gradient_scale),
+                                     else _native.energy_to_hartree(gradient, gradient_unit)),
                     "gradient_met": record.get("|grad|", "").endswith(MARKER),
                     # Not serialized by the writer: reported as unknown rather
                     # than inferred from the growth index, which they coincide

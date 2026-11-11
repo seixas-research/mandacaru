@@ -108,6 +108,7 @@ pub(super) fn minimize(
         steps,
         success,
         message,
+        hessian: None,
         interrupted: None,
     })
 }

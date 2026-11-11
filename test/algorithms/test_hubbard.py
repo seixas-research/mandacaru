@@ -14,6 +14,8 @@ from ase import Atoms
 from ase.build import bulk
 
 from mandacaru import Mandacaru
+from mandacaru.integrals import Grid
+from mandacaru.units import HARTREE_TO_EV
 
 SZ = {"name": "PAW-LCAO", "size": "SZ"}
 NI_D = {"Ni": {"l": "d", "U": 3.0, "J": 0.0}}
@@ -129,6 +131,77 @@ def test_a_molecule_calculates_dft_plus_u():
     assert np.allclose(shell["trace"], [4.886], atol=1e-2)
 
 
+def frozen_cuh(spec, shift=0.0, *, spin=False):
+    """CuH on a frozen 6 A grid, the H atom displaced by ``shift`` along z (A), for the
+    force against its energy."""
+    atoms = Atoms("CuH", positions=[[3.013, 2.979, 3.007], [3.013, 2.979, 4.467 + shift]], cell=[6.0] * 3)
+    grid = Grid(center=[3.0] * 3, cell=np.eye(3) * 6.0, grid_spacing=0.3)
+    options = {"spin": True} if spin else {}
+    if spin:
+        atoms.set_initial_magnetic_moments([2.0, 0.0])
+    atoms.calc = Mandacaru(
+        method="dft", xc="lda", basis=SZ, grid=grid, grid_spacing=0.3, hubbard_u=spec,
+        project_translation=False, scf_options={"tolerance": 1e-10}, trace=False,
+        resources={"threads": 2}, **options,
+    )
+    return atoms
+
+
+@pytest.mark.parametrize(
+    "spec, spin",
+    [
+        pytest.param({"Cu": {"l": "d", "U": 4.0, "form": "dudarev-fll"}}, False, id="dudarev"),
+        pytest.param({"Cu": {"l": "d", "U": 4.0, "J": 1.0, "form": "liechtenstein-fll"}}, False, id="liechtenstein"),
+        pytest.param({"Cu": {"l": "d", "U": 4.0, "form": "dudarev-fll"}}, True, id="dudarev-spin-polarized"),
+        pytest.param(
+            {"Cu": {"l": "d", "U": 4.0, "J": 1.0, "form": "liechtenstein-fll"}}, True, id="liechtenstein-spin-polarized"
+        ),
+    ],
+)
+def test_the_force_of_a_molecule_with_hubbard_u_is_the_derivative_of_its_energy(spec, spin):
+    """The +U term of the molecular force (the energy's dependence on the shell projections of
+    the moving atom) against a central difference of the +U energy on the frozen grid. Without
+    the term the force is off by 0.07 eV/A (restricted) here, 150 times this tolerance; the
+    residual with the term is 1.2e-4 eV/A, the step's and the same as with ``U = 0``."""
+    h = 0.005
+    atoms = frozen_cuh(spec, spin=spin)
+    force = atoms.get_forces()[1, 2]
+    if spin:
+        up, down = atoms.calc.result.hubbard[0]["trace"]
+        assert abs(up - down) > 0.3  # a polarized shell, not the restricted limit
+    assert atoms.calc.result.force_details["scheme"] == "analytic"
+    energies = [frozen_cuh(spec, shift, spin=spin).get_potential_energy() for shift in (h, -h)]
+    numerical = -(energies[0] - energies[1]) / (2 * h)
+    assert force == pytest.approx(numerical, abs=5e-4)
+
+
+def test_a_molecule_naming_an_absent_element_raises_instead_of_running_without_u():
+    molecule = Atoms("CuH", positions=[[3.0, 3.0, 3.0], [3.0, 3.0, 4.46]], cell=[6.0] * 3)
+    molecule.calc = Mandacaru(method="dft", xc="lda", hubbard_u=NI_D, trace=False, basis=SZ, grid_spacing=0.3)
+    with pytest.raises(ValueError, match="hubbard_u names Ni, which is not in the system"):
+        molecule.get_potential_energy()
+
+
+def test_a_molecule_whose_dataset_lacks_the_shell_raises_instead_of_running_without_u():
+    molecule = Atoms("CuH", positions=[[3.0, 3.0, 3.0], [3.0, 3.0, 4.46]], cell=[6.0] * 3)
+    molecule.calc = Mandacaru(
+        method="dft", xc="lda", hubbard_u={"Cu": {"l": "f", "U": 4.0}}, trace=False, basis=SZ, grid_spacing=0.3
+    )
+    with pytest.raises(ValueError, match="does not have channel l = 3"):
+        molecule.get_potential_energy()
+
+
+def test_a_molecule_on_a_spin_orbit_dataset_refuses_hubbard_u():
+    """The fully relativistic datasets run spinor Kohn-Sham, which has no +U."""
+    molecule = Atoms("CuH", positions=[[3.0, 3.0, 3.0], [3.0, 3.0, 4.46]], cell=[6.0] * 3)
+    molecule.calc = Mandacaru(
+        method="dft", xc="lda", hubbard_u=CU_D, trace=False, grid_spacing=0.3,
+        basis={**SZ, "paw_dataset": "lda-fr"},
+    )
+    with pytest.raises(NotImplementedError, match="spinor molecular Kohn-Sham is not available for DFT\\+U"):
+        molecule.get_potential_energy()
+
+
 GEOMETRY_REFUSALS = [
     pytest.param(
         lambda: bulk("Si", "diamond", a=5.43),
@@ -195,20 +268,122 @@ def test_the_same_refusal_comes_at_the_first_calculation_when_atoms_come_later(
         atoms.get_potential_energy()
 
 
-def test_a_crystal_whose_mesh_is_reduced_by_symmetry_is_refused_naming_the_option():
-    """Only the assembled crystal knows the mesh was reduced: this one is refused at the run."""
-    nickel = bulk("Ni", "fcc", a=3.52)
-    nickel.set_initial_magnetic_moments([0.0])  # ASE's default moment would keep the full mesh
-    nickel.calc = Mandacaru(
-        method="dft",
-        hubbard_u=NI_D,
-        trace=False,
-        basis=SZ,
-        grid_spacing=0.4,
-        kpts={"size": (2, 2, 2), "gamma": True},
-    )
-    with pytest.raises(ValueError, match="symmetry=False"):
+# --------------------------------------------------------------------------- #
+# A k mesh reduced by symmetry (HU-4): the occupations are completed over the kept operations.
+# --------------------------------------------------------------------------- #
+
+SCF = {"max_iterations": 300, "tolerance": 1e-10, "density_tolerance": 5e-10, "mixing": 0.25, "history": 7,
+       "width_ha": 0.05 / HARTREE_TO_EV}
+
+
+def nickel_triangle(symmetry, mesh=(2, 2, 1)):
+    """Three Ni atoms around a threefold axis of a hexagonal cell: 12 operations (D3h) that permute the three Hubbard
+    atoms cyclically. The quadrature of the projector spheres is exactly invariant under them, so the reduced mesh
+    meets the 1e-10 occupation gate (cubic operations leave a 1e-7 floor, plain DFT included)."""
+    a, c, x = 5.0, 3.9, 0.28
+    atoms = Atoms("Ni3", cell=[[a, 0, 0], [-a / 2, a * np.sqrt(3) / 2, 0], [0, 0, c]], pbc=True,
+                  scaled_positions=[[x, 0, 0], [0, x, 0], [-x, -x, 0]])
+    atoms.calc = Mandacaru(method="dft", xc="lda", hubbard_u=NI_D, trace=False, basis=SZ, grid_spacing=0.42,
+                           kpts={"size": mesh, "gamma": True}, symmetry=symmetry, periodic_scf_options=SCF,
+                           smearing={"method": "fermi-dirac", "width": 0.05})
+    return atoms
+
+
+# Each quantity is its own module-scoped fixture, so that the test that first needs it is charged for it alone (the
+# stress of the whole mesh is the slow one: 85 s against 45 s reduced, measured at a low machine load).
+@pytest.fixture(scope="module")
+def triangle_whole():
+    atoms = nickel_triangle(False)
+    atoms.get_potential_energy()
+    return atoms
+
+
+@pytest.fixture(scope="module")
+def triangle_reduced():
+    atoms = nickel_triangle(True)
+    atoms.get_potential_energy()
+    return atoms
+
+
+@pytest.fixture(scope="module")
+def force_whole(triangle_whole):
+    return triangle_whole.get_forces()
+
+
+@pytest.fixture(scope="module")
+def force_reduced(triangle_reduced):
+    return triangle_reduced.get_forces()
+
+
+@pytest.fixture(scope="module")
+def stress_whole(triangle_whole):
+    return triangle_whole.get_stress()
+
+
+@pytest.fixture(scope="module")
+def stress_reduced(triangle_reduced):
+    return triangle_reduced.get_stress()
+
+
+@pytest.mark.slow
+def test_a_reduced_mesh_gives_the_whole_meshs_energy_and_occupations(triangle_whole, triangle_reduced):
+    """2x2x1 is the whole mesh with ``symmetry=False`` (every point is its own time-reversal partner): 4 points, 2 on the
+    wedge. The reference shares nothing with the symmetrizer: no operation, no completion."""
+    whole, reduced = triangle_whole, triangle_reduced
+    assert reduced.calc.periodic_problem.symmetry.n_operations == 12
+    assert len(reduced.calc.periodic_problem.kpoints) < len(whole.calc.periodic_problem.kpoints) == 4
+    assert reduced.get_potential_energy() == pytest.approx(whole.get_potential_energy(), abs=1e-8)
+    for shell_reduced, shell_whole in zip(reduced.calc.result.hubbard, whole.calc.result.hubbard):
+        assert np.abs(shell_reduced["n"] - shell_whole["n"]).max() < 1e-10
+    assert reduced.calc.result.hubbard_energy > 1e-3
+
+
+@pytest.mark.slow
+def test_the_force_of_a_reduced_mesh_is_the_whole_meshs(force_whole, force_reduced):
+    """The +U operator is completed with the occupations, so the explicit +U force term of the wedge sum is covariant and
+    the group average of the engine gives the whole mesh's. The three atoms feel a radial force (14 eV/A): 1.4e-10
+    measured on 2x2x2, gate 1e-6."""
+    assert np.abs(force_whole).max() > 1.0
+    assert np.abs(force_reduced - force_whole).max() < 1e-6
+
+
+@pytest.mark.slow
+def test_the_stress_of_a_reduced_mesh_keeps_the_hexagonal_form(stress_reduced):
+    """12 operations make the in-plane stress isotropic and the shear zero, to rounding."""
+    assert abs(stress_reduced[0] - stress_reduced[1]) < 1e-12
+    assert np.abs(stress_reduced[3:]).max() < 1e-12
+    assert abs(stress_reduced[0] - stress_reduced[2]) > 1e-3
+
+
+@pytest.mark.slow
+def test_the_stress_of_a_reduced_mesh_is_the_whole_meshs(stress_whole, stress_reduced):
+    """5e-11 eV/A^3 measured on 2x2x2, gate 1e-6."""
+    assert np.abs(stress_reduced - stress_whole).max() < 1e-6
+
+
+def test_the_response_of_a_reduced_mesh_refuses_atoms_the_operations_move():
+    """The localized shift of one atom breaks the symmetry the wedge and the density completion assume."""
+    atoms = nickel_triangle(True)
+    atoms.get_potential_energy()
+    with pytest.raises(ValueError, match="fixed by every kept operation") as error:
+        atoms.calc.hubbard_response()
+    assert "symmetry=False" in str(error.value)
+
+
+@pytest.mark.slow
+def test_the_response_of_a_reduced_mesh_is_the_whole_meshs_when_every_hubbard_atom_is_fixed():
+    """fcc Ni has one Hubbard atom that all 48 operations fix: the shift keeps the symmetry, so the wedge gives U."""
+    results = {}
+    for symmetry in (True, False):
+        nickel = bulk("Ni", "fcc", a=3.52)
+        nickel.set_initial_magnetic_moments([0.0])  # ASE's default moment would keep the full mesh
+        nickel.calc = Mandacaru(method="dft", xc="lda", hubbard_u=NI_D, trace=False, basis=SZ, grid_spacing=0.4,
+                                kpts={"size": (2, 2, 2), "gamma": True}, symmetry=symmetry, periodic_scf_options=SCF,
+                                smearing={"method": "fermi-dirac", "width": 0.05})
         nickel.get_potential_energy()
+        results[symmetry] = (len(nickel.calc.periodic_problem.kpoints), nickel.calc.hubbard_response()["u_matrix"])
+    assert results[True][0] < results[False][0] == 8
+    assert results[True][1] == pytest.approx(results[False][1], abs=1e-6)
 
 
 # --------------------------------------------------------------------------- #

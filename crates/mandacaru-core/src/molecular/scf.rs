@@ -45,6 +45,19 @@ pub struct MeanField {
     pub energies: Vec<Vec<f64>>,
     pub coefficients: Vec<Matrix>,
     pub densities: Vec<Matrix>,
+    /// Occupations (0 to 1 per spin orbital) of each channel's orbitals, in the order of
+    /// `energies`: aufbau for Hartree-Fock, Fermi-Dirac for Kohn-Sham
+    /// ([`super::occupation::fermi_dirac`]), which is exactly 0 or 1 on a gapped molecule.
+    pub occupations: Vec<Vec<f64>>,
+    /// Kohn-Sham: `-width S` of the occupations, in Hartree (0 when they are integer). The
+    /// Mermin free energy, whose derivative the analytic forces are, is
+    /// `electronic_energy + entropy_energy`.
+    pub entropy_energy: f64,
+    /// Kohn-Sham: the Fermi-Dirac width of the occupations, in Hartree.
+    pub smearing_width: Option<f64>,
+    /// Hartree by which an occupied level lies above an empty one when the Kohn-Sham state
+    /// is not aufbau (a near-degenerate frontier off a symmetry axis); `None` when it is.
+    pub aufbau_inversion: Option<f64>,
     pub natural_occupations: Vec<f64>,
     pub model_orbitals: Matrix,
     model: Mutex<Option<Arc<Model>>>,
@@ -280,6 +293,15 @@ pub(super) struct Candidate {
     /// [`AUFBAU_TOLERANCE`]. Such a stationary point is not a minimum (a level shift can hold
     /// one), so the candidate is not converged.
     pub(super) unstable_pair: Option<(usize, usize)>,
+    /// Occupations of each channel's columns when they are not aufbau (a Kohn-Sham ensemble of
+    /// a degenerate shell); `None` for the aufbau determinant.
+    pub(super) occupations: Option<Vec<Vec<f64>>>,
+    /// Kohn-Sham: Hartree by which an occupied level lies above an empty one, when the state
+    /// is not aufbau (kept and labeled, see `kohn_sham`); `None` for an aufbau state.
+    pub(super) aufbau_inversion: Option<f64>,
+    /// Kohn-Sham: `-width S` of the Fermi-Dirac occupations (0 for integer ones); the Mermin
+    /// free energy is `energy + entropy`.
+    pub(super) entropy: f64,
 }
 /// The largest entry of the commutators `[F, D]` of each spin channel (orthonormal basis): the
 /// orbital gradient, zero exactly at a stationary point. A small step (energy change and density
@@ -302,8 +324,12 @@ fn non_aufbau(f: &Matrix, c: &Matrix, occupied: usize) -> Option<(usize, usize)>
     if occupied == 0 || occupied >= n {
         return None;
     }
-    let (i, high) = (0..occupied).map(|j| (j, level(j))).max_by(|a, b| a.1.total_cmp(&b.1))?;
-    let (a, low) = (occupied..n).map(|j| (j, level(j))).min_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (i, high) = (0..occupied)
+        .map(|j| (j, level(j)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (a, low) = (occupied..n)
+        .map(|j| (j, level(j)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
     (high > low + AUFBAU_TOLERANCE).then_some((i, a))
 }
 fn iterate(
@@ -406,6 +432,9 @@ fn iterate(
         densities: d,
         energies,
         unstable_pair,
+        occupations: None,
+        aufbau_inversion: None,
+        entropy: 0.,
     })
 }
 /// `c` with columns `i` and `a` rotated into each other by `angle` (radians).
@@ -693,6 +722,21 @@ impl MolecularIntegrals {
         } else {
             0.
         };
+        let occupations = match &best.occupations {
+            Some(occupations) => occupations.clone(),
+            None => {
+                let filled: Vec<usize> = match method {
+                    "ghf" => vec![particles.iter().sum()],
+                    "rhf" => vec![particles[0]],
+                    _ => particles.to_vec(),
+                };
+                best.energies
+                    .iter()
+                    .zip(filled)
+                    .map(|(levels, n)| super::occupation::aufbau(levels.len(), n))
+                    .collect()
+            }
+        };
         workspace.shrink_to(
             product(&[2 * m, 2 * m, 16, 24])?
                 .checked_add(product(&[options.max_iterations, 128])?)
@@ -708,6 +752,10 @@ impl MolecularIntegrals {
             energies: best.energies,
             coefficients: best.coefficients,
             densities: best.densities,
+            occupations,
+            aufbau_inversion: best.aufbau_inversion,
+            entropy_energy: best.entropy,
+            smearing_width: None,
             natural_occupations,
             model_orbitals,
             model: Mutex::new(None),
@@ -752,6 +800,60 @@ impl MolecularIntegrals {
     }
 }
 impl MeanField {
+    /// How the state occupies its orbitals, as the run log writes it: `aufbau` (every
+    /// occupation 0 or 1), `fractional (Fermi-Dirac, width W Ha, -TS X Ha)` (a Kohn-Sham state
+    /// with a degenerate or nearly degenerate frontier), or `not aufbau (inversion X Ha)` when
+    /// a level holds more than one below it, `X` Hartree lower (a state a level shift held).
+    pub fn occupation_label(&self) -> String {
+        match (self.is_ensemble(), self.aufbau_inversion) {
+            (_, Some(inversion)) => format!("not aufbau (inversion {inversion:.3e} Ha)"),
+            (true, None) => format!(
+                "fractional (Fermi-Dirac, width {:.1e} Ha, -TS {:.3e} Ha)",
+                self.smearing_width.unwrap_or(0.),
+                self.entropy_energy
+            ),
+            (false, None) => "aufbau".into(),
+        }
+    }
+    /// The electronic Mermin free energy `E - width S` (Hartree; `electronic_energy` when the
+    /// occupations are integer).
+    pub fn free_energy(&self) -> f64 {
+        self.electronic_energy + self.entropy_energy
+    }
+    /// The total Mermin free energy, nuclear repulsion included (Hartree).
+    pub fn total_free_energy(&self, integrals: &MolecularIntegrals) -> f64 {
+        self.free_energy() + integrals.nuclear
+    }
+    /// Whether some occupation is fractional (Fermi-Dirac occupations of a degenerate or nearly
+    /// degenerate frontier) rather than a determinant's 0 or 1.
+    pub fn is_ensemble(&self) -> bool {
+        !self
+            .occupations
+            .iter()
+            .all(|o| super::occupation::is_integer(o))
+    }
+    /// An error for a consumer that needs a determinant (`what` names it) when the state is an
+    /// ensemble; `Ok` otherwise.
+    pub fn require_determinant(&self, what: &str) -> Result<()> {
+        if self.is_ensemble() {
+            return Err(crate::Error::Unsupported(format!(
+                "{what} needs an integer-occupation reference, and this Kohn-Sham state has \
+                 fractional occupations (a degenerate or nearly degenerate frontier shell, \
+                 Fermi-Dirac with one Fermi level per spin); request the spin state explicitly \
+                 instead: initial magnetic moments or unrestricted=True"
+            )));
+        }
+        Ok(())
+    }
+    /// Electrons per orbital of each channel, in the order of `energies`: 0 to 2 for a
+    /// spin-restricted channel, 0 to 1 otherwise (the ASE convention).
+    pub fn occupation_numbers(&self) -> Vec<Vec<f64>> {
+        let degeneracy = if self.method == "rhf" { 2. } else { 1. };
+        self.occupations
+            .iter()
+            .map(|o| o.iter().map(|f| degeneracy * f).collect())
+            .collect()
+    }
     pub fn has_model(&self) -> bool {
         self.model
             .lock()

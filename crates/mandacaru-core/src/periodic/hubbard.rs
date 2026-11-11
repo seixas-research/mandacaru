@@ -9,6 +9,9 @@
 //! Energies are Hartree, like the rest of the snapshot. A restricted run holds the spin-summed
 //! density, so each spin channel gets `n = (W^T R W) / 2` and `E_U` counts both.
 //!
+//! On a k mesh reduced by the crystal's operations or time reversal the occupations are completed
+//! over them (`hubbard_symmetry`), so the wedge gives the occupations of the full mesh.
+//!
 //! Persistence: the snapshot JSON carries a self-contained `hubbard` object
 //! (`form`, `shells[{atom, symbol, l, u, j, projectors, weights, projector_basis, seed}]`; `form` is
 //! a [`Form`] name). The table is built from the user's option by `hubbard_table`. Projectors are
@@ -226,7 +229,6 @@ impl Spec {
         spins: usize,
         spinor: bool,
         precision: Precision,
-        permutations: usize,
     ) -> Result<Option<Self>> {
         if value.is_null() {
             return Ok(None);
@@ -238,12 +240,6 @@ impl Spec {
         }
         if precision != Precision::Float64 {
             return Err(invalid("DFT+U needs float64 precision"));
-        }
-        if permutations != 0 {
-            return Err(invalid(
-                "DFT+U needs the shell occupations symmetrized with the density, and the symmetry table of this \
-                 crystal has no such map yet: use a full k mesh without symmetry (symmetry=False)",
-            ));
         }
         let form = Form::parse(
             value["form"]
@@ -353,7 +349,16 @@ impl Spec {
         }
         Ok(out)
     }
+    /// [`Spec::seed`] of the crystal's spin channels, refused when it breaks the symmetry the
+    /// crystal's mesh was reduced with ([`super::hubbard_symmetry::check_seed`]).
+    pub fn start(&self, c: &Crystal) -> Result<Vec<Vec<C64>>> {
+        let seed = self.seed(c.spins)?;
+        super::hubbard_symmetry::check_seed(self, c, &seed)?;
+        Ok(seed)
+    }
     /// `n^sigma = W^T R^sigma W` of every shell from the band density matrices, `[spin * shells + shell]`.
+    /// On a mesh reduced by symmetry or time reversal the sum over the wedge is completed first
+    /// ([`super::hubbard_symmetry`]).
     pub fn occupations(&self, c: &Crystal, matrices: &[StoredMatrix]) -> Result<Vec<Vec<C64>>> {
         let (ctx, nk, k) = (&c.context, c.points.len(), self.shells.len());
         let widest = self
@@ -384,11 +389,19 @@ impl Spec {
             for (shell, sum) in self.shells.iter().zip(&projected) {
                 let n = shell::occupation(shell.l, &shell.weights, sum)?;
                 let p = shell.size();
-                out.push(
-                    (0..p * p)
-                        .map(|i| 0.5 * (n[(i / p, i % p)] + n[(i % p, i / p)].conj()))
-                        .collect(),
-                );
+                out.push((0..p * p).map(|i| n[(i / p, i % p)]).collect());
+            }
+        }
+        // The wedge sum visits one point of every star: complete it over the kept operations and
+        // time reversal, so `n` is symmetric exactly when the density is.
+        if let Some(averager) = super::hubbard_symmetry::Averager::for_crystal(self, c)? {
+            averager.apply(self, &mut out);
+        }
+        for matrix in &mut out {
+            let p = (matrix.len() as f64).sqrt().round() as usize;
+            let raw = matrix.clone();
+            for (i, to) in matrix.iter_mut().enumerate() {
+                *to = 0.5 * (raw[i] + raw[(i % p) * p + i / p].conj());
             }
         }
         Ok(out)

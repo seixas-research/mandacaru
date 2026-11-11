@@ -83,7 +83,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .. import _native
-from ..units import BOHR_TO_ANGSTROM
+from ..units import to_angstrom
 
 #: Keys a ``diffuse`` recipe dict accepts.
 DIFFUSE_KEYS = ("shells", "count", "rms_ratio", "ratio", "rms_radius",
@@ -444,8 +444,8 @@ def box_table(rows) -> list:
     rows (lengths in Bohr and Angstrom)."""
     return [("atom", "symbol", "r_cut_Bohr", "r_cut_Angstrom",
              "face_distance_Bohr", "face_distance_Angstrom", "grid_norm")] + [
-        (atom, symbol, f"{r_cut:.4f}", f"{r_cut * BOHR_TO_ANGSTROM:.4f}",
-         f"{face:.4f}", f"{face * BOHR_TO_ANGSTROM:.4f}", f"{ratio:.6f}")
+        (atom, symbol, f"{r_cut:.4f}", f"{to_angstrom(r_cut):.4f}",
+         f"{face:.4f}", f"{to_angstrom(face):.4f}", f"{ratio:.6f}")
         for atom, symbol, r_cut, face, ratio in rows]
 
 
@@ -458,9 +458,9 @@ def shells_table(shells: dict) -> list:
     for symbol, records in shells.items():
         for s in records:
             rows.append((symbol, s.l, s.index, f"{s.rms:.4f}",
-                         f"{s.rms * BOHR_TO_ANGSTROM:.4f}", s.reference_l,
+                         f"{to_angstrom(s.rms):.4f}", s.reference_l,
                          f"{s.reference_rms:.4f}", f"{s.alpha:.6f}",
-                         f"{s.r_cut:.4f}", f"{s.r_cut * BOHR_TO_ANGSTROM:.4f}",
+                         f"{s.r_cut:.4f}", f"{to_angstrom(s.r_cut):.4f}",
                          f"{s.residual:.6f}",
                          "accepted" if s.accepted else "rejected"))
     return rows

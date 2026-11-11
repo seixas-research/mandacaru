@@ -404,17 +404,60 @@ class TestElectronsBlock:
         factors = _native.integrals_report(atoms.calc.integrals)
         rank, residual = factors["cholesky_rank"], factors["cholesky_residual"]
         line = block["two-body integrals"]
-        assert line.startswith("Cholesky factors, tolerance 1.000e-06 Ha, "
+        # The tolerance is given in eV and stops the factorization in Hartree.
+        assert residual <= 1e-6 / HARTREE_TO_EV
+        assert line.startswith("Cholesky factors, tolerance 1.000e-06 eV, "
                                f"rank {rank} (")
-        assert f"largest residual diagonal {residual:.3e} Ha" in line
+        assert f"largest residual diagonal {residual * HARTREE_TO_EV:.3e} eV" in line
         # One owner: no other block repeats the rank or the tolerance.
         text = open(out, encoding="utf-8").read()
         assert text.count(f"rank {rank}") == 1
-        assert text.count("1.000e-06 Ha") == 1
+        assert text.count("1.000e-06 eV") == 1
 
     def test_the_dense_run_has_no_two_body_line(self, run):
         out, _calc = run
         assert "two-body integrals" not in parse_output(out)["electrons"]
+
+
+class TestCrystalLog:
+    """A crystal's log states its SCF like a molecule's: the options it ran with in
+    ``[SCF SETUP]`` and its free-energy history in ``[SCF ITERATIONS]``; ``[ELECTRONS]``
+    gives the electrons per cell, not per-spin counts or a multiplicity."""
+
+    @pytest.fixture(scope="class")
+    def log(self, tmp_path_factory):
+        from ase.build import bulk
+
+        out = str(tmp_path_factory.mktemp("crystal") / "output.txt")
+        atoms = bulk("LiH", "rocksalt", a=4.0)
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, txt=out,
+                               basis={"name": "PAW-LCAO", "size": "SZ"},
+                               kpts={"size": (2, 2, 2), "gamma": True},
+                               periodic_scf_options={"max_iterations": 80})
+        energy = atoms.get_potential_energy()
+        return parse_output(out), energy, atoms.calc
+
+    def test_the_setup_states_the_options_the_scf_ran_with(self, log):
+        parsed, _, _ = log
+        setup = parsed["setup"]
+        assert setup["scf_method"] == "periodic Kohn-Sham DFT (lda), Bloch states"
+        assert setup["scf_max_iterations"] == "80"
+        assert setup["scf_smearing"].startswith("fermi-dirac, width 0.00367")
+
+    def test_the_iterations_end_on_the_converged_free_energy(self, log):
+        parsed, _, calc = log
+        rows = parsed["scf_iterations"]
+        assert len(rows) == calc.result._raw["n_iterations"]
+        free = calc.get_potential_energy(force_consistent=True)
+        assert rows[-1]["free_energy_eV"] == pytest.approx(free, abs=1e-8)
+
+    def test_the_electrons_are_per_cell(self, log):
+        parsed, _, _ = log
+        electrons = parsed["electrons"]
+        assert electrons["electrons per cell"] == "2"
+        assert electrons["k-points"] == "2x2x2 Monkhorst-Pack, 3 in the calculation"
+        assert "electrons (alpha, beta)" not in electrons
+        assert "multiplicity" not in electrons["spin-polarized"]
 
 
 class TestBasisPrecisionLine:
@@ -635,7 +678,7 @@ class TestNothingIsSaidTwice:
         out = str(tmp_path_factory.mktemp("owners") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.35,
                                pool="fermionic", max_iterations=2, txt=out)
         atoms.get_forces()
         return out
@@ -649,7 +692,7 @@ class TestNothingIsSaidTwice:
     def test_the_basis_belongs_to_the_basis_block(self, text):
         parsed = parse_output(text)
         assert "basis" not in parsed["electrons"]
-        assert parsed["basis"]["name"] == "HAO"
+        assert parsed["basis"]["name"] == "PAW-LCAO"
 
     def test_what_only_the_terminal_used_to_say_is_in_the_setup(self, text):
         setup = parse_output(text)["setup"]
@@ -737,7 +780,7 @@ class TestPerformanceBlock:
         out = str(tmp_path_factory.mktemp("perf") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-3}, txt=out)
         BFGS(atoms, logfile=None).run(fmax=0.05, steps=1)
@@ -788,7 +831,7 @@ class TestPerformanceBlock:
     def test_a_direct_run_writes_no_performance_block(self, tmp_path):
         out = str(tmp_path / "output.txt")
         atoms = h2()
-        calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+        calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.45,
                          pool="fermionic", max_iterations=2, profile=False, txt=out)
         calc.run(atoms)
         text = open(out, encoding="utf-8").read()
@@ -797,7 +840,7 @@ class TestPerformanceBlock:
     def test_forces_on_a_cached_result_get_a_block_of_their_own(self, tmp_path):
         out = str(tmp_path / "output.txt")
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.45,
                                pool="fermionic", max_iterations=2, profile=False, txt=out)
         atoms.get_potential_energy()
         atoms.get_forces()
@@ -891,7 +934,7 @@ class TestRelaxationLog:
         out = str(tmp_path_factory.mktemp("relax") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-3}, txt=out)
         opt = BFGS(atoms, logfile=None)
@@ -947,7 +990,7 @@ class TestGeometryOptimizationSummary:
         out = str(tmp_path_factory.mktemp("relaxsummary") / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
                                convergence={"gradient": 1e-3}, txt=out)
         opt = BFGS(atoms, logfile=None)
@@ -1022,7 +1065,7 @@ class TestGeometryOptimizationSummary:
         out = str(tmp_path / "output.txt")
         atoms = Atoms("H2", positions=[[3, 3, 2.6], [3, 3, 3.4]],
                       cell=[6.0, 6.0, 6.0])
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.35,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.35,
                                pool="fermionic", max_iterations=2,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
@@ -1135,7 +1178,7 @@ class TestCompletionIsNotAssumed:
     def test_the_exit_hook_does_not_claim_completion(self, tmp_path):
         out = str(tmp_path / "output.txt")
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
@@ -1153,7 +1196,7 @@ class TestCompletionIsNotAssumed:
     def test_the_exit_hook_never_raises(self, tmp_path, monkeypatch):
         out = str(tmp_path / "output.txt")
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()
@@ -1173,7 +1216,7 @@ class TestCompletionIsNotAssumed:
         import weakref
 
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
                                txt=str(tmp_path / "output.txt"))
         atoms.get_forces()
@@ -1185,7 +1228,7 @@ class TestCompletionIsNotAssumed:
         assert reference() is None
 
     def test_an_empty_trajectory_is_not_forced(self, tmp_path):
-        calc = Mandacaru(method="adapt-vqe", basis="HAO",
+        calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2},
                          txt=str(tmp_path / "output.txt"))
         # Used to raise IndexError.
         assert calc.write_optimization_summary(force=True) is False
@@ -1193,7 +1236,7 @@ class TestCompletionIsNotAssumed:
     def test_a_failed_write_can_be_retried(self, tmp_path, monkeypatch):
         out = str(tmp_path / "output.txt")
         atoms = h2()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.45,
+        atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.45,
                                pool="fermionic", max_iterations=2, profile=False,
                                convergence={"gradient": 1e-3}, txt=out)
         atoms.get_forces()

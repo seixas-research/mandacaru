@@ -246,7 +246,6 @@ fn the_table_round_trips_through_the_snapshot_text() {
         2,
         false,
         Precision::Float64,
-        0,
     )
     .unwrap()
     .expect("the table parses");
@@ -407,7 +406,6 @@ fn an_option_agrees_with_a_file_only_when_it_names_the_same_shells_and_energies(
         2,
         false,
         Precision::Float64,
-        0,
     )
     .unwrap()
     .unwrap();

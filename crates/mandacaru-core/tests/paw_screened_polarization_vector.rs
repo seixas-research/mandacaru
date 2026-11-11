@@ -49,6 +49,31 @@ fn the_energy_is_the_oracle_of_the_local_rotation_prescription() {
 }
 
 #[test]
+fn a_smooth_core_is_charge_on_the_smooth_side_and_its_operators_stay_the_derivative() {
+    // The grid evaluates the functional on the smooth valence density plus the smooth core, so
+    // the sphere's smooth side carries it as charge: the energy is the oracle's with the core,
+    // it differs from the coreless sphere's, and the operators are still dP/dQ.
+    let (ctx, toy) = (context(), toy_with_core(0.4));
+    let bare = toy_with_core(0.);
+    let q = toy.pauli(AMPLITUDE);
+    let seen = oracle(&ctx, &toy, &q, Total::Unclamped);
+    let terms = toy.polarization.evaluate_vector(&ctx, &q).unwrap();
+    let without = bare.polarization.evaluate_vector(&ctx, &q).unwrap();
+    println!(
+        "with core P {:.12e} oracle {:.12e}; without {:.12e}",
+        terms.energy, seen.energy, without.energy
+    );
+    assert_eq!(seen.clamped, 0);
+    assert!(relative(terms.energy, seen.energy) < 1e-10);
+    assert!(
+        relative(terms.energy, without.energy) > 1e-3,
+        "the core must matter"
+    );
+    let gaps = operator_against_the_oracle(&toy, &q, Total::Unclamped, "smooth core");
+    assert!(gaps.iter().all(|g| *g < GATE), "{gaps:?}");
+}
+
+#[test]
 fn a_one_signed_m_z_is_the_collinear_two_spin_evaluation() {
     // m along z: Q^0 = D_up + D_dn, Q^3 = D_up - D_dn.
     let (ctx, toy) = (context(), toy());

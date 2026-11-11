@@ -11,9 +11,13 @@
 //! `P(D_up, D_dn) = (F[2 n_up] + F[2 n_dn]) / 2 - F[n_up + n_dn]`,
 //!
 //! where `F` is the short-range hole-model exchange of the all-electron partial
-//! waves minus that of the smooth ones, and `n_s` is the spherical average of
-//! the sphere's spin density. `P` vanishes for `D_up = D_dn`, and so does its
-//! derivative, so a closed shell keeps the frozen term unchanged; an open shell
+//! waves minus that of the smooth ones plus the smooth core of the nonlinear core
+//! correction (the density the grid evaluates the functional on; the core is not
+//! polarized, so each spin carries half of it), and `n_s` is the spherical average of
+//! the sphere's spin density. Like the frozen potential, the term is integrated over the
+//! sphere (the nodes up to its edge): beyond it the smooth waves are the all-electron ones and
+//! only the tail of the smooth core, below 0.5 percent of its offset, would differ. `P`
+//! vanishes for `D_up = D_dn`, and so does its derivative, so a closed shell keeps the frozen term unchanged; an open shell
 //! gains the polarization of the spheres. It is evaluated exactly (not
 //! expanded) on the current density matrices, with its own potential, so the
 //! Fock matrices stay the derivative of the energy.
@@ -57,6 +61,8 @@ pub struct Polarization {
     tables: Vec<PairTable>,
     entries: Vec<Entry>,
     size: usize,
+    /// The smooth core on `r`, added to the smooth density (half to each spin).
+    smooth_core: Vec<f64>,
 }
 
 /// What the polarization of one sphere adds to a screened hybrid's semilocal
@@ -137,11 +143,13 @@ impl Polarization {
             tables,
             entries,
             size: layout.len(),
+            smooth_core: species.smooth_core[..upto].to_vec(),
         })
     }
 
     /// The spherical-average spin density `sum_ij (sum_m D_ij) w_i w_j / 4 pi` of
-    /// the sphere, all-electron or smooth, from `d` in the projector layout.
+    /// the sphere, all-electron or smooth (plus half the smooth core), from `d` in the
+    /// projector layout.
     fn density(&self, d: &DMatrix<f64>, smooth: bool) -> Vec<f64> {
         let mut sums = vec![0.; self.tables.len()];
         for e in &self.entries {
@@ -152,6 +160,11 @@ impl Polarization {
             let pair = if smooth { &table.ps } else { &table.ae };
             for (slot, value) in out.iter_mut().zip(pair) {
                 *slot += sum * value / (4. * PI);
+            }
+        }
+        if smooth {
+            for (slot, core) in out.iter_mut().zip(&self.smooth_core) {
+                *slot += 0.5 * core;
             }
         }
         for value in &mut out {

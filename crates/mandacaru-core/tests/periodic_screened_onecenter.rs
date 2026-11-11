@@ -59,6 +59,10 @@ fn the_complex_harmonics_are_a_unitary_rotation_of_the_real_ones() {
 fn the_species_tables_of_the_record_reproduce_the_pinned_oxygen_terms() {
     // Pins of the E4 log, section 'What is in Rust now' (pbe-sr oxygen, omega 0.11, raw basis),
     // taken from the molecular adapter's tables: the same radial code on the same waves.
+    // The frozen short-range exchange (constant, V) was re-pinned on 2026-11-10, when its smooth
+    // side began to carry the dataset's smooth core (the grid's density): constant 0.1761248251
+    // -> 0.1761542582, |V_s| 1.96921590 -> 1.96918449, |V_p| 4.63398732 -> 4.63390392 (PAW
+    // migration log). Delta W^SR does not read the core and is unchanged.
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     let (atom, projectors) = terms(&ctx, "pbe-sr", "O", Basis::Raw);
     let p = projectors.len();
@@ -89,9 +93,9 @@ fn the_species_tables_of_the_record_reproduce_the_pinned_oxygen_terms() {
         block(1)
     );
     assert!((frobenius - 80.8910441923).abs() < 1e-6);
-    assert!((atom.constant - 0.1761248251).abs() < 1e-9);
-    assert!((block(0) - 1.96921590).abs() < 1e-7);
-    assert!((block(1) - 4.63398732).abs() < 1e-7);
+    assert!((atom.constant - 0.1761542582).abs() < 1e-9);
+    assert!((block(0) - 1.96918449).abs() < 1e-7);
+    assert!((block(1) - 4.63390392).abs() < 1e-7);
 }
 
 fn model_of(ctx: &Context, set: &str, symbol: &str) -> (SphereModel, Hybrid, usize) {

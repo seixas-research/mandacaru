@@ -59,9 +59,17 @@ def _ansatz_problem(calc):
             calc.result.optimal_parameters, hamiltonian)
 
 
+def _energy_from_strings(provider, n_qubits, occupied, generators, thetas, hamiltonian):
+    """``<H>`` in Hartree from ``provider.expectation_values`` of its strings (the test's sum)."""
+    labels = [label for label in hamiltonian.terms if set(label) != {"I"}]
+    values, _errors = provider.expectation_values(n_qubits, occupied, generators, thetas, labels)
+    constant = sum(complex(c).real for label, c in hamiltonian.terms.items() if set(label) == {"I"})
+    return constant + sum(complex(hamiltonian.terms[label]).real * values[label] for label in labels)
+
+
 def _measured_energy(calc, provider):
     """The optimized state's energy, measured through ``provider``, in eV."""
-    return provider.energy(*_ansatz_problem(calc)) * HARTREE_TO_EV
+    return _energy_from_strings(provider, *_ansatz_problem(calc)) * HARTREE_TO_EV
 
 
 def _isolated(code: str) -> str:
@@ -105,7 +113,11 @@ _H2_RUN = """
                 calc.solver.ansatz.pauli_generators,
                 calc.result.optimal_parameters, hamiltonian)
     def measured_energy(provider):
-        return provider.energy(*ansatz_problem()) * HARTREE_TO_EV
+        n, occupied, generators, thetas, h = ansatz_problem()
+        labels = [l for l in h.terms if set(l) != {"I"}]
+        values, _errors = provider.expectation_values(n, occupied, generators, thetas, labels)
+        constant = sum(complex(c).real for l, c in h.terms.items() if set(l) == {"I"})
+        return (constant + sum(complex(h.terms[l]).real * values[l] for l in labels)) * HARTREE_TO_EV
 """
 
 
@@ -187,10 +199,6 @@ class TestEstimatorEnergies:
         exact = h2_run.result.optimal_energy
         assert provider.precision == 0.0
         assert _measured_energy(h2_run, provider) == pytest.approx(exact, abs=1e-9)
-        # The Estimator route (energies) gives the same number -- in the
-        # Hamiltonian's own Hartree, which the driver converts to eV.
-        assert provider.energies([_ansatz_problem(h2_run)])[0] == \
-            pytest.approx(exact / HARTREE_TO_EV, abs=1e-9)
 
     def test_sampled_estimator_converges(self, h2_run):
         provider = build_provider("qiskit", shots=4096)
@@ -220,8 +228,8 @@ class TestEstimatorEnergies:
 
     def test_processor_needs_shots(self, h2_run):
         with pytest.raises(ValueError, match="shots > 0"):
-            build_provider("qiskit", device="fake_manila", shots=0).energies(
-                [_ansatz_problem(h2_run)])
+            _energy_from_strings(build_provider("qiskit", device="fake_manila", shots=0),
+                                 *_ansatz_problem(h2_run))
 
     def test_physical_qubits_pin_the_layout(self):
         out = _isolated(_H2_RUN + """

@@ -91,10 +91,11 @@ def corpus_path(key: str) -> Path:
 def test_the_frozen_corpus_is_the_one_the_plan_names():
     totals = REFERENCES["corpus_totals"]
     assert len(CORPUS) == totals["files"] == 431
-    # 11994 at the 2026-10-29 freeze; 13130 after the 106 regenerated datasets of 2026-11-09/10
-    # (the Gd pair and the PAW phase-2 installs), re-frozen from the Rust reader ("refrozen").
+    # 11994 at the 2026-10-29 freeze; 13154 after the 113 regenerated datasets of 2026-11-09/10
+    # (the Gd pair and the PAW phase-2 and phase-3 installs), re-frozen from the Rust reader
+    # ("refrozen").
     assert sum(len(entry["columns"]) for entry in CORPUS.values()) == totals[
-        "columns"] == 13130
+        "columns"] == 13154
     assert totals["files_per_set"] == {
         "paw/lda-fr": 92, "paw/lda-sr": 92, "paw/pbe-fr": 92,
         "paw/pbe-sr": 92, "upaw/lda-sr": 63}

@@ -295,3 +295,64 @@ fn a_hybrid_spinor_fock_is_the_derivative_of_the_energy_in_every_channel() {
 fn a_hybrid_spinor_scf_without_spin_orbit_reaches_the_collinear_ground_state() {
     scf_gate(&["hse06"]);
 }
+
+/// The spin moment `(M_x, M_y, M_z)` of a `2m x 2m` spinor density in an orthonormal basis.
+fn spin_moment(d: &Matrix) -> [f64; 3] {
+    let m = d.nrows() / 2;
+    let (mut ud, mut uu, mut dd) = (C64::new(0., 0.), 0., 0.);
+    for p in 0..m {
+        ud += d[(p, m + p)];
+        uu += d[(p, p)].re;
+        dd += d[(m + p, m + p)].re;
+    }
+    [2. * ud.re, -2. * ud.im, uu - dd]
+}
+
+/// The noncollinear start (one moment vector per atom), in two exact limits of a spin-orbit-free
+/// state: along +z it is the collinear unrestricted state, and the energy does not depend on
+/// a common direction (the spin-free energy is invariant under a global spin rotation), while
+/// the spin moment turns with it.
+#[test]
+fn a_noncollinear_start_turns_the_collinear_state_without_changing_its_energy() {
+    use mandacaru_core::molecular::ScfOptions;
+    let ctx = Context::new(Some(2), 768 << 20).unwrap();
+    {
+        let base = integrals(&ctx, &H2, "dual");
+        let options = ScfOptions { tolerance: 1e-10, max_iterations: 300, ..Default::default() };
+        // H2+: one electron, half a Bohr magneton on each atom.
+        let uks = base.kohn_sham("lda", [1, 0], true, &options).unwrap();
+        let along = |v: [f64; 3]| {
+            base.spinor_kohn_sham_noncollinear("lda", 1, &[v, v], None, &options).unwrap()
+        };
+        let z = along([0., 0., 0.5]);
+        let x = along([0.5, 0., 0.]);
+        let tilted = along([0.3, -0.2, 0.33]);
+        for (label, state) in [("z", &z), ("x", &x), ("tilted", &tilted)] {
+            let moment = spin_moment(&state.densities[0]);
+            eprintln!(
+                "{label}: energy {:+.12e} (UKS {:+.12e}), spin moment {moment:?}, {} iterations",
+                state.electronic_energy,
+                uks.electronic_energy,
+                state.iterations.len()
+            );
+            assert!(state.converged, "{label}");
+            assert!((state.electronic_energy - uks.electronic_energy).abs() < 1e-8, "{label}");
+            assert_eq!(state.method, "ghf");
+        }
+        let [mx, my, mz] = spin_moment(&z.densities[0]);
+        assert!((mz - 1.).abs() < 1e-8 && mx.abs() < 1e-8 && my.abs() < 1e-8);
+        let [mx, my, mz] = spin_moment(&x.densities[0]);
+        assert!((mx - 1.).abs() < 1e-8 && my.abs() < 1e-8 && mz.abs() < 1e-8);
+        // A general direction: the unit moment points along the given vector.
+        let [mx, my, mz] = spin_moment(&tilted.densities[0]);
+        let n = (0.3f64 * 0.3 + 0.2 * 0.2 + 0.33 * 0.33).sqrt();
+        for (got, want) in [mx, my, mz].iter().zip([0.3 / n, -0.2 / n, 0.33 / n]) {
+            assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+        }
+        // One vector per atom, finite.
+        assert!(base
+            .spinor_kohn_sham_noncollinear("lda", 1, &[[0., 0., 1.]], None, &options)
+            .is_err());
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}

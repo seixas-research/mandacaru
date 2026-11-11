@@ -28,6 +28,32 @@ fn apply_stored<A: Amplitude>(
     });
 }
 
+/// The closed-form rotation of a one-generator exponential, `exp(theta G) = 1 + linear G +
+/// quadratic G^2`, as `(linear, quadratic)`, for a generator whose strings have the eigenvalue
+/// spacing `frequency`.
+fn rotation(frequency: f64, theta: f64) -> Result<(f64, f64)> {
+    let angle = theta * frequency;
+    if !angle.is_finite() {
+        return Err(Error::Invalid("excitation rotation angle overflow".into()));
+    }
+    Ok((
+        angle.sin() / frequency,
+        2. * (0.5 * angle).sin().powi(2) / frequency.powi(2),
+    ))
+}
+/// The flip mask and rotation of a generator the closed form rotates in one pass over row pairs
+/// (an excitation: one flip mask and several strings), or `None`.
+fn pair_rotation(generator: &Operator, theta: f64) -> Result<Option<(u64, f64, f64)>> {
+    let (Some(frequency), Some(x)) = (generator.rotation_frequency, generator.single_mask()) else {
+        return Ok(None);
+    };
+    if generator.terms.len() <= 1 {
+        return Ok(None);
+    }
+    let (linear, quadratic) = rotation(frequency, theta)?;
+    Ok(Some((x, linear, quadratic)))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exponential<A: Amplitude>(
     ctx: &Context,
@@ -43,13 +69,14 @@ pub(super) fn exponential<A: Amplitude>(
     if let [generator] = ops {
         if generator.terms.len() > 1 {
             if let Some(frequency) = generator.rotation_frequency {
-                let angle = theta[0] * frequency;
-                if !angle.is_finite() {
-                    return Err(Error::Invalid("excitation rotation angle overflow".into()));
-                }
-                let linear = angle.sin() / frequency;
-                let quadratic = 2. * (0.5 * angle).sin().powi(2) / frequency.powi(2);
+                let (linear, quadratic) = rotation(frequency, theta[0])?;
                 let mut first = ctx.allocate::<A>(d)?;
+                if let Some(x) = generator.single_mask() {
+                    // An excitation: one pass over the pairs it connects.
+                    for row in data.chunks_exact_mut(d).take(rows) {
+                        generator.rotate_pairs(basis, x, linear, quadratic, row, first.as_mut_slice());
+                    }
+                } else {
                 let mut own = ctx.allocate::<C64>(A::own_wide_len(d))?;
                 for row in data.chunks_exact_mut(d).take(rows) {
                     apply_stored(generator, basis, row, first.as_mut_slice(), acc);
@@ -60,6 +87,7 @@ pub(super) fn exponential<A: Amplitude>(
                     {
                         *value = A::narrow(value.widen() + (linear * a.widen() + quadratic * b));
                     }
+                }
                 }
                 if directions.iter().any(Option::is_some) {
                     apply_stored(generator, basis, &data[..d], first.as_mut_slice(), acc);
@@ -219,7 +247,22 @@ pub fn state_from<A: Amplitude>(
         data.as_mut_slice()[basis.reference] = A::narrow(C64::new(1., 0.));
     }
     if trotter {
+        // A large one-row product ansatz rotates by gathering into a second row and swapping the
+        // two, one parallel region per operator and no copy back; the same bits as the in-place
+        // pair update the other path runs.
+        let mut gathered: Option<Buffer<A>> = None;
         for (k, (g, t)) in ops.iter().zip(theta).enumerate() {
+            if rows == 1 && g.lockstep(basis) {
+                if let Some((x, linear, quadratic)) = pair_rotation(g, *t)? {
+                    let other = match gathered.as_mut() {
+                        Some(other) => other,
+                        None => gathered.insert(ctx.allocate::<A>(d)?),
+                    };
+                    g.rotate_gather(basis, x, linear, quadratic, data.as_slice(), other.as_mut_slice());
+                    std::mem::swap(&mut data, other);
+                    continue;
+                }
+            }
             let directions: Vec<_> = (0..rows - 1)
                 .map(|j| if j == k { Some(0) } else { None })
                 .collect();
@@ -331,10 +374,32 @@ pub fn evaluate_from<A: Amplitude>(
             *out = A::narrow(h - energy.re * p.widen());
         }
         let mut gradient = vec![0.; theta.len()];
+        // The adjoint step of a large excitation is one fused pass into a second pair of rows
+        // (the two swap), not an overlap and two rotations; the same bits as they give.
+        let mut gathered: Option<Buffer<A>> = None;
         for k in (0..theta.len()).rev() {
-            ops[k].apply_into(basis, &work.as_slice()[..d], wide.as_mut_slice());
-            gradient[k] =
-                2. * inner_wide(&work.as_slice()[d..], wide.as_slice()).re / normalization;
+            if k > 0 && ops[k].lockstep(basis) {
+                if let Some((x, linear, quadratic)) = pair_rotation(ops[k], -theta[k])? {
+                    let other = match gathered.as_mut() {
+                        Some(other) => other,
+                        None => gathered.insert(stack::<A>(ctx, 2, d)?),
+                    };
+                    let (psi_out, lambda_out) = other.as_mut_slice().split_at_mut(d);
+                    let (psi_now, lambda_now) = work.as_slice().split_at(d);
+                    let overlap = ops[k].adjoint_step(basis, x, linear, quadratic, psi_now, lambda_now, psi_out, lambda_out);
+                    std::mem::swap(&mut work, other);
+                    gradient[k] = 2. * overlap.re / normalization;
+                    continue;
+                }
+            }
+            let overlap = match ops[k].single_mask() {
+                Some(x) => ops[k].overlap_single(basis, x, &work.as_slice()[d..], &work.as_slice()[..d]),
+                None => {
+                    ops[k].apply_into(basis, &work.as_slice()[..d], wide.as_mut_slice());
+                    inner_wide(&work.as_slice()[d..], wide.as_slice())
+                }
+            };
+            gradient[k] = 2. * overlap.re / normalization;
             if k > 0 {
                 exponential(
                     ctx,

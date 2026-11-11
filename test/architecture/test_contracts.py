@@ -55,8 +55,6 @@ def test_vdw_transforms_functional():
     assert ts_upper.vdw == "ts"
     with pytest.raises(ValueError, match="cannot combine vdw='ts' with an rvv10 functional"):
         Mandacaru(method="dft", xc="pbe+rvv10", vdw="ts")
-    with pytest.raises(NotImplementedError, match="D4"):
-        Mandacaru(method="dft", xc="r2scan", vdw="d4")
 
 
 @pytest.mark.parametrize("functional", _native.FUNCTIONALS)

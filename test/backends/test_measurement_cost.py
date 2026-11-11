@@ -20,9 +20,11 @@ Each class here pins one of the fixes, and the arithmetic behind it:
 * a budget refuses an oversized job *before* it is queued;
 * observables are chunked into jobs of bounded size, and completed chunks are
   kept when a later one fails;
-* the run-wide budget stops a paid run before it crosses its ceiling;
-* double factorization needs ``O(M)`` measurement bases where qubit-wise
-  commuting grouping needs ``O(M^3)``.
+* the run-wide budget stops a paid run before it crosses its ceiling.
+
+The double factorization that needs ``O(M)`` bases where qubit-wise commuting
+grouping needs ``O(M^3)`` is tested natively in
+``test/migration/test_native_factorization.py``.
 """
 
 import numpy as np
@@ -30,16 +32,13 @@ import pytest
 from ase import Atoms
 
 from mandacaru import Mandacaru
-from mandacaru.backends.factorization import (double_factorization,
-                                              spatial_double_factorization)
 from mandacaru.backends.measurement import (DEFAULT_MEASUREMENT_BUDGET,
                                             chunk_labels_by_basis,
                                             qubit_wise_commuting_groups,
                                             qwc_partition,
                                             resilience_multipliers,
                                             resolve_measurement_budget)
-from mandacaru.backends.providers import (QiskitProvider, build_provider,
-                                          qpu_usage)
+from mandacaru.backends.providers import QiskitProvider, qpu_usage
 from mandacaru.core.mapping import PauliSum
 
 qiskit = pytest.importorskip("qiskit")
@@ -164,10 +163,9 @@ class TestThePlanIsMadeBeforeTheJobIsQueued:
         from mandacaru.backends.measurement import RunBudgetExceeded
 
         provider = QiskitProvider(shots=100, run_budget={"jobs": 1})
-        h = PauliSum({"Z": 1.0}, num_qubits=1)
-        provider.energy(1, [], [], [], h)
+        provider.expectation_values(1, [], [], [], ["Z"])
         with pytest.raises(RunBudgetExceeded) as refused:
-            provider.energy(1, [], [], [], h)
+            provider.expectation_values(1, [], [], [], ["Z"])
         assert 'backend_options={"run_budget": {\'jobs\': 2}}' in str(refused.value)
 
     def test_budget_false_checks_nothing(self):
@@ -190,13 +188,12 @@ class TestTheIdentityIsCountedOnce:
 
     @pytest.mark.parametrize("drop", [True, False])
     def test_either_way(self, drop):
-        from mandacaru.backends.measurement import energy_from_group_counts
-
         h = PauliSum({"I": 2.0, "Z": 1.0}, num_qubits=1)
         groups, constant = qubit_wise_commuting_groups(h, drop_identity=drop)
-        counts = [{"0": 10} for _ in groups]
-        assert energy_from_group_counts(groups, constant, counts) == \
-            pytest.approx(3.0)
+        measured = sum(complex(c).real for _basis, payload in groups
+                       for label, c in payload if set(label) == {"I"})
+        assert constant + measured == pytest.approx(2.0)
+        assert (measured == 0.0) is drop
 
 
 # --------------------------------------------------------------------------- #
@@ -249,121 +246,6 @@ class TestChunkingByMeasurementBasis:
 
 
 # --------------------------------------------------------------------------- #
-# 5. Double factorization: O(M) measurement bases.
-# --------------------------------------------------------------------------- #
-
-class TestDoubleFactorization:
-    """``H`` as a one-body term plus squares of one-body terms.
-
-    Motta *et al.*, npj Quantum Inf. **7**, 83 (2021); Huggins *et al.*, npj
-    Quantum Inf. **7**, 23 (2021).  Each leaf is diagonal in an orbital basis
-    of its own, so one measurement circuit per leaf yields every occupation
-    correlator it needs -- ``L + 1`` bases instead of ``O(M^3)``.
-    """
-
-
-
-
-
-
-
-
-    def test_a_mismatched_tensor_is_refused(self):
-        with pytest.raises(ValueError, match="does not match"):
-            double_factorization(np.zeros((4, 4)), np.zeros((3, 3, 3, 3)))
-        with pytest.raises(ValueError, match="does not match"):
-            spatial_double_factorization(np.zeros((4, 4)),
-                                         np.zeros((3, 3, 3, 3)))
-        with pytest.raises(ValueError, match="do not match"):
-            spatial_double_factorization(np.zeros((4, 4)),
-                                         factors=np.zeros((2, 3, 3)))
-
-
-class TestTheSpatialFactorization:
-    """The factorization of spatial integrals (no ``(2M)^4`` tensor) is the
-    spin-orbital one: the same operator, weights, one-norm and count."""
-
-
-
-    def test_pair_factors_give_the_tensor_factorization(self):
-        """From ``k < M^2`` factors and a coupling (Cholesky factors plus an
-        augmentation's channels) the leaves come from a ``k x k`` problem,
-        with the tensor's result."""
-        rng = np.random.default_rng(4)
-        m, k = 4, 6
-        F = rng.normal(size=(k, m, m))
-        F = F + F.transpose(0, 2, 1)
-        K = np.diag([1.0, 1.0, 1.0, 1.0, 0.0, 0.0])
-        K[4, 5] = K[5, 4] = 1.0
-        K[4, 4] = 0.3
-        chemist = np.einsum("ij,ipr,jqs->prqs", K, F, F)
-        eri = chemist.transpose(0, 2, 1, 3)               # <pq|rs> = (pr|qs)
-        h = rng.normal(size=(m, m))
-        h = h + h.T
-        dense = spatial_double_factorization(h, eri)
-        factored = spatial_double_factorization(h, factors=F, coupling=K)
-        assert factored.measurement_bases == dense.measurement_bases
-        assert np.allclose(sorted(l.weight for l in factored.leaves),
-                           sorted(l.weight for l in dense.leaves), atol=1e-10)
-        assert np.allclose(factored.one_body, dense.one_body, atol=1e-12)
-        difference = (dense.to_fermion().map_to_qubits()
-                      + (-1.0) * factored.to_fermion().map_to_qubits()
-                      ).simplify()
-        assert max((abs(complex(c)) for c in difference.terms.values()),
-                   default=0.0) < 1e-10
-
-
-# --------------------------------------------------------------------------- #
-# 5b. The Givens networks that make the factorized measurement runnable.
-# --------------------------------------------------------------------------- #
-
-class TestGivensRotations:
-    """Any real orthogonal ``U`` is a product of nearest-neighbor rotations.
-
-    Clements *et al.*, Optica **3**, 1460 (2016); Kivlichan *et al.*, Phys.
-    Rev. Lett. **120**, 110501 (2018).  Under Jordan-Wigner each one is a
-    two-qubit gate on adjacent wires, so the basis change a factorized
-    measurement needs is a circuit an ordinary processor can run.
-    """
-
-    @staticmethod
-    def orthogonal(m, seed=0):
-        q, _r = np.linalg.qr(np.random.default_rng(seed).normal(size=(m, m)))
-        return q
-
-    @pytest.mark.parametrize("m", [2, 3, 4, 6])
-    def test_the_decomposition_reproduces_the_matrix(self, m):
-        from scipy.linalg import expm
-
-        from mandacaru.backends.factorization import givens_decomposition
-
-        unitary = self.orthogonal(m, seed=m)
-        rotations, signs = givens_decomposition(unitary)
-        assert len(rotations) <= m * (m - 1) // 2
-        assert all(abs(abs(s) - 1.0) < 1e-12 for s in signs)
-
-        rebuilt = np.eye(m)
-        for p, theta in rotations:
-            block = np.zeros((m, m))
-            block[p, p + 1], block[p + 1, p] = -theta, theta
-            rebuilt = rebuilt @ expm(block)
-        assert np.abs(rebuilt @ np.diag(signs) - unitary).max() < 1e-12
-
-    @pytest.mark.parametrize("m", [2, 3, 4])
-    def test_every_rotation_is_on_adjacent_modes(self, m):
-        from mandacaru.backends.factorization import givens_decomposition
-
-        rotations, _signs = givens_decomposition(self.orthogonal(m, seed=m))
-        assert all(0 <= p < m - 1 for p, _theta in rotations)
-
-    def test_a_non_orthogonal_matrix_is_refused(self):
-        from mandacaru.backends.factorization import givens_decomposition
-
-        with pytest.raises(ValueError, match="real orthogonal"):
-            givens_decomposition(np.array([[1.0, 2.0], [3.0, 4.0]]))
-
-
-# --------------------------------------------------------------------------- #
 # Paid-job controls: reconfiguring a retry, chunked energies, resumed chunks,
 # the run-wide budget and one grouping for plan and execution.
 # --------------------------------------------------------------------------- #
@@ -386,52 +268,6 @@ class TestARetryRunsOnTheOptionsItAsksFor:
     def test_an_unknown_option_is_refused(self):
         with pytest.raises(ValueError, match="unknown option"):
             QiskitProvider().with_options(devise="ibm_new")
-
-class TestEnergiesAreChunkedToo:
-    """Only ``expectation_values`` honored ``max_bases_per_job``: an energy
-    went as one PUB whatever the limit, while the plan reported a split."""
-
-    H = PauliSum({"X": 1.0, "Z": 0.5, "I": 2.0}, num_qubits=1)
-
-    def test_the_limit_splits_the_submission(self, monkeypatch):
-        provider = QiskitProvider(max_bases_per_job=1)
-        calls = []
-        original = provider._run_pubs
-
-        def spy(pubs, bases=None):
-            calls.append(len(pubs))
-            return original(pubs, bases=bases)
-
-        monkeypatch.setattr(provider, "_run_pubs", spy)
-        energy = provider.energies([(1, [], [], [], self.H)])[0]
-        assert calls == [1, 1]                   # two bases, two jobs
-        assert energy == pytest.approx(2.5)      # 2 + 0.5 <0|Z|0>, <0|X|0> = 0
-        assert provider.jobs_per_energy(self.H) == 2
-
-    def test_chunked_equals_unchunked(self):
-        state = (2, [0], [PauliSum({"XY": 0.5j, "YX": -0.5j}, num_qubits=2)],
-                 [0.4])
-        h = PauliSum({"ZI": 1.0, "IZ": -0.4, "XX": 0.3, "YY": 0.3,
-                      "II": 0.1}, num_qubits=2)
-        whole = build_provider("qiskit").energies([(*state, h)])[0]
-        split = build_provider("qiskit", max_bases_per_job=1).energies(
-            [(*state, h)])[0]
-        assert split == pytest.approx(whole, abs=1e-12)
-
-    def test_a_basis_limit_splits_an_energy_into_several_jobs(self):
-        atoms = lih()
-        atoms.calc = Mandacaru(method="adapt-vqe", basis="HAO",
-                               grid_spacing=0.30, pool="qeb", max_iterations=3,
-                               trace=False)
-        atoms.get_potential_energy()
-        problem = atoms.calc.problem
-        hamiltonian = PauliSum({label: complex(re, im) for label, re, im
-                                in problem.hamiltonian_terms},
-                               num_qubits=problem.num_qubits)
-        provider = build_provider("qiskit", device="statevector",
-                                  max_bases_per_job=2)
-        assert provider.jobs_per_energy(hamiltonian) > 1
-
 
 class TestCompletedChunksAreKept:
     """A failure in chunk two used to discard chunk one's values."""
@@ -536,11 +372,10 @@ class TestTheRunBudget:
         from mandacaru.backends.measurement import RunBudgetExceeded
 
         provider = QiskitProvider(shots=100, run_budget={"jobs": 2})
-        h = PauliSum({"Z": 1.0}, num_qubits=1)
-        provider.energy(1, [], [], [], h)
-        provider.energy(1, [], [], [], h)
+        provider.expectation_values(1, [], [], [], ["Z"])
+        provider.expectation_values(1, [], [], [], ["Z"])
         with pytest.raises(RunBudgetExceeded, match="jobs 3 > 2"):
-            provider.energy(1, [], [], [], h)
+            provider.expectation_values(1, [], [], [], ["Z"])
         assert provider.run_usage()["jobs"] == 2
 
     def test_it_is_on_by_default_for_hardware_only(self):
@@ -558,7 +393,7 @@ class TestTheRunBudget:
 
     def test_the_ledger_survives_a_rebuild(self):
         provider = QiskitProvider(shots=100)
-        provider.energy(1, [], [], [], PauliSum({"Z": 1.0}, num_qubits=1))
+        provider.expectation_values(1, [], [], [], ["Z"])
         assert provider.with_options(shots=200).run_usage()["jobs"] == 1
 
     def test_the_shot_ceiling_is_checked_up_front_too(self):

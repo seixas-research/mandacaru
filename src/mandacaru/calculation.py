@@ -23,15 +23,17 @@ from .specifications import (
     basis_specification,
 )
 from .structure import geometry_value
-from .units import ANGSTROM_TO_BOHR
+from .units import convert_energy, to_bohr
 
 DEFAULT_METHOD = "adapt-vqe"
 #: The ADAPT operator pools the native solver builds (``_native.pool_kind``).
 OPERATOR_POOLS = ("fermionic", "qubit", "qeb", "ceo", "ceo-ovp", "spin-orbit")
 #: The circuit templates of ``method="vqe"`` (``ansatz=``).
 ANSATZ_NAMES = ("uccsd", "hva")
-#: The ``two_body=`` representations (``None`` keeps the dense tensor).
+#: The ``two_body=`` factorization methods (the integrals are always Cholesky factors).
 TWO_BODY_METHODS = ("cholesky",)
+#: The default stopping threshold of the Cholesky factorization, in eV (owner, 2026-11-10).
+DEFAULT_TWO_BODY_TOLERANCE_EV = 1e-8
 #: Methods that difference the energy at tiny steps: refused on a measured energy.
 NOISE_INTOLERANT = ("SLSQP", "BFGS", "L-BFGS", "CG")
 STABLE_METHODS = tuple(METHODS)
@@ -73,6 +75,9 @@ _METHOD_SCOPED_OPTIONS = {
     ),
     "taper": ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe"),
     "measurement_scheme": ("vqe", "adapt-vqe"),
+    "quenching": ("vqe", "adapt-vqe"),
+    "checkpoint_every": ("vqe", "adapt-vqe"),
+    **dict.fromkeys(("tetris", "prune"), ("adapt-vqe",)),
     "kpts": ("dft", "vqe", "adapt-vqe", "vasqa", "valsqa"),
     "crystal_orbitals": ("vqe", "adapt-vqe", "vasqa", "valsqa"),
     **dict.fromkeys(("spin", "unrestricted"), ("dft", "uhf")),
@@ -180,10 +185,10 @@ def _check_float32_floors(method, tolerance, convergence, *, adapt):
     if not adapt:
         return
     energy = convergence.get("energy")
-    if energy is not None and energy / _native.HARTREE_TO_EV < energy_floor:
+    if energy is not None and _native.energy_to_hartree(float(energy), "eV") < energy_floor:
         raise ValueError(
             f"convergence['energy'] {energy:g} eV is below the float32 energy floor "
-            f"{energy_floor:g} Ha ({energy_floor * _native.HARTREE_TO_EV:g} eV) of the "
+            f"{energy_floor:g} Ha ({_native.energy_from_hartree(float(energy_floor), 'eV'):g} eV) of the "
             "complex64 state; raise it or use precision='float64'"
         )
     gradient = convergence.get("gradient")
@@ -249,7 +254,7 @@ class Mandacaru(ASEProperties, Calculator):
     ``grid``, ``kinetic``, ``precision``, ``resources``); basis and
     pseudopotentials (``basis``, ``paw_dataset``); the electronic problem
     (``xc``, ``spin``, ``unrestricted``, ``charge``, ``n_electrons``,
-    ``scf_options``, ``cholesky_tolerance``, ``two_body``); the qubit problem
+    ``scf_options``, ``two_body``); the qubit problem
     (``mapping``, ``active_space``, ``sector``, ``sparse``, ``taper``); the ansatz
     (``pool``, ``ansatz``, ``trotter``, ``include_singles``); the optimization
     (``optimizer``, ``convergence``, ``max_iterations``, ``gradient``); several
@@ -285,7 +290,9 @@ class Mandacaru(ASEProperties, Calculator):
         the available methods. ``"ghf"`` has no forces. ``"subspace-*"`` have
         no forces. Forces exist for the other methods on a molecule, with
         ``kinetic="spectral"``, no circuit execution, no ``taper=True`` and no
-        periodic cell. ``"dft"`` is the only method that accepts a periodic geometry. The
+        periodic cell. A periodic geometry runs ``"dft"``, and ``"vqe"``,
+        ``"adapt-vqe"``, ``"vasqa"`` and ``"valsqa"`` on its Born-von Karman
+        supercell (see below); the other methods refuse it. The
         classical methods refuse ``shots``, ``execute_circuits=True``,
         ``backend_provider``, ``device``, ``backend_options`` and
         ``measurement_budget`` (``ValueError``, since they have no quantum
@@ -302,7 +309,11 @@ class Mandacaru(ASEProperties, Calculator):
         direction is periodic the periodic route is taken (see ``kpts``). The
         sum of the ASE initial magnetic moments sets the number of unpaired
         electrons (rounded to an integer); with zero moments an odd electron
-        count gives one unpaired electron.
+        count gives one unpaired electron. Moments given as one 3-vector per
+        atom (``(N, 3)``, a noncollinear start) run spinor Kohn-Sham
+        (``method="dft"``; another method raises ``NotImplementedError``,
+        and so does a crystal): the collinear state with the moments' lengths
+        is turned per atom to its moment's direction.
     hamiltonian : Fermion, PauliSum or native PauliOperator, optional
         A Hamiltonian to minimize instead of one built from a geometry, for
         the quantum methods, run without a geometry. It needs
@@ -435,8 +446,8 @@ class Mandacaru(ASEProperties, Calculator):
         unpolarized, spin-polarized and with spin-orbit coupling. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
     vdw : str or bool, optional
-        Van der Waals dispersion correction, one of ``"rvv10"``, ``"ts"``
-        (Tkatchenko-Scheffler method), or ``"d4"``. For ``"rvv10"``, it is
+        Van der Waals dispersion correction, ``"rvv10"`` or ``"ts"``
+        (Tkatchenko-Scheffler method). For ``"rvv10"``, it is
         appended to the exchange-correlation functional for supported
         functionals (e.g. ``xc="r2scan", vdw="rvv10"`` becomes
         ``"r2scan+rvv10"``). Used by ``method="dft"`` only.
@@ -501,17 +512,17 @@ class Mandacaru(ASEProperties, Calculator):
     active_space : dict, optional
         Reduce the molecular Hamiltonian to an active space before mapping.
         A dict with the keys: ``method`` (``"energy"``, the default, orders
-        the orbitals by SCF energy; ``"mp2"`` and ``"dlpno-mp2"`` rank by MP2
-        natural-orbital occupation and need a closed-shell Hartree-Fock
-        reference), ``orbitals`` (a count of spatial orbitals, a list of
+        the orbitals by SCF energy; ``"mp2"`` ranks by MP2 natural-orbital
+        occupation on a Hartree-Fock reference, closed or open shell;
+        ``"dlpno-mp2"`` does the same, closed shell only), ``orbitals`` (a count of spatial orbitals, a list of
         orbital indices, or ``{"occupied": n, "virtual": n}``), ``frozen`` (a
         count, a list of doubly occupied orbital indices, or ``"auto"`` for the
         element-based frozen core, which is zero for a PAW-LCAO basis),
         ``threshold`` (an occupation threshold in (0, 2), or ``True`` for 1e-3;
         MP2 ranking only), and ``symmetry`` (``True`` keeps degenerate orbital
-        sets whole; closed shell only). ``correlating_pairs`` is accepted only
-        as ``False`` or ``None``: anything else raises, because that expansion
-        is not implemented. A bad key or value raises ``ValueError`` at
+        sets whole; closed shell only) and ``correlating_pairs`` (``True``
+        keeps the correlating partner of every active doubly occupied orbital
+        active; not together with ``symmetry``). A bad key or value raises ``ValueError`` at
         ``run()``. ``None`` keeps every orbital. A crystal refuses it, and
         the classical methods ignore it. Occupied orbitals must be frozen or
         active; the active space must be nonempty.
@@ -536,13 +547,23 @@ class Mandacaru(ASEProperties, Calculator):
     checkpoint : path, optional
         Write the final wavefunction checkpoint (ansatz indices, parameters,
         energy and termination status) to this path at the end of a quantum
-        run. It is written once, not every few steps. ``"subspace-vqe"`` and
-        ``"subspace-adapt-vqe"`` raise ``NotImplementedError`` at ``run()``.
-        The classical methods ignore it.
+        run, and during it with ``checkpoint_every``. A ``"subspace-*"``
+        checkpoint also stores the state weights and energies. The classical
+        methods ignore it.
+    checkpoint_every : int, optional
+        Also write ``checkpoint`` during the run (``vqe`` and ``adapt-vqe``).
+        ``adapt-vqe`` writes it after every ``checkpoint_every`` accepted growth
+        steps. ``vqe`` writes the best point so far after every
+        ``checkpoint_every`` cost evaluations. A mid-run checkpoint's status
+        says ``"complete": false``, and ``resume=`` continues from it.
+        Each write is atomic, so an interrupted run leaves the last whole
+        checkpoint. It needs ``checkpoint=`` and a positive integer
+        (``ValueError``); ``None`` (default) writes only the final checkpoint.
     resume : path, optional
         Continue a fixed-ansatz or ADAPT run from a checkpoint file written
-        by ``checkpoint``. ``"subspace-*"`` methods and the architecture
-        searches raise ``NotImplementedError`` at ``run()``; ``transfer=True``
+        by ``checkpoint``; a ``"subspace-*"`` run needs a checkpoint of the
+        same method and weights (``ValueError``). The architecture searches
+        raise ``NotImplementedError`` at ``run()``; ``transfer=True``
         together with ``resume`` raises ``ValueError``.
     transfer : bool, default False
         Carry the optimized ansatz from the previous geometry of this
@@ -576,8 +597,9 @@ class Mandacaru(ASEProperties, Calculator):
         generalized over every spin-orbital quadruple, so its size grows as the
         fourth power of the register: at 50 qubits (one electron) it has 588,300 generators
         and a shot-based gradient step needs about 7.8 million Pauli
-        observables (``measurement_budget`` refuses that by default, after
-        several minutes of planning), where ``pool="fermionic"`` or
+        observables (``measurement_budget`` refuses that by default, in
+        seconds: the planning stops as soon as the distinct strings pass the
+        ceiling), where ``pool="fermionic"`` or
         ``"qeb"`` stays within a budget sized for the run. For ``"vqe"``
         the pool supplies the generators of the fixed ansatz.
         ``ansatz="hva"`` requires ``"fermionic"``, which ``"vqe"`` already
@@ -643,6 +665,31 @@ class Mandacaru(ASEProperties, Calculator):
         operator, or two for a coupled exchange step of the ``"ceo"`` pool, so
         ``num_operators`` can exceed it. This is the growth limit, not the
         optimizer's ``maxiter``.
+    quenching : bool, default True
+        Whether every parameter is re-optimized after each change (``vqe`` and
+        ``adapt-vqe``; another method given ``False`` raises ``ValueError``).
+        ``True`` is standard ADAPT-VQE and VQE: each growth step optimizes all
+        parameters jointly, warm-started with the new angles at zero.
+        ``False`` optimizes only what changed. ADAPT varies the newly appended
+        parameters with every earlier one frozen at its optimum. VQE sweeps
+        its parameters once, one at a time in order. Each step is cheaper, and
+        the energy is an upper bound to the joint optimization's. Not a
+        boolean: ``TypeError``.
+    tetris : bool, default False
+        TETRIS-ADAPT-VQE (``adapt-vqe`` only). Each growth step appends the
+        operator of largest gradient, then every further one, in descending
+        gradient order, whose qubit support is disjoint from those already
+        taken. The step stays one circuit layer, and the ansatz grows in fewer
+        steps. ``max_iterations`` still counts growth steps.
+    prune : bool, default False
+        Pruned-ADAPT-VQE (``adapt-vqe`` only). After each growth step's
+        optimization, one operator is removed: the one ranked first by
+        ``exp(-10 x) / theta**2`` (``x`` its relative position, the newest
+        never), when ``|theta|`` is below a tenth of the mean amplitude of the
+        last four. The remaining parameters are not re-optimized.
+        ``result.pruned_operators`` lists ``(step, label)`` of each removal.
+        Neither option applies to a resumed or transferred ansatz
+        (``ValueError``); neither is a boolean: ``TypeError``.
     weights : sequence of float, optional
         Weights of the states in the subspace methods, one per state, positive
         and finite (``ValueError`` at construction) and strictly decreasing
@@ -832,14 +879,28 @@ class Mandacaru(ASEProperties, Calculator):
         (``get_forces`` raises) and crystals (``ValueError``). The two
         discretizations give different energies at a given spacing; do not mix
         them in a comparison.
-    cholesky_tolerance : float, default 1e-10
-        Truncation tolerance of the Cholesky factorization of the two-electron
-        integrals.
     two_body : str or dict, optional
-        Representation of the two-electron integrals. Only Cholesky factors
-        exist: ``"cholesky"`` or ``{"method": "cholesky", "tolerance": t}``,
-        where ``t`` replaces ``cholesky_tolerance``. Any other method or key
-        raises ``ValueError``. A crystal builds no two-body tensor.
+        Representation of the two-electron integrals. They are always Cholesky
+        factors: ``"cholesky"`` or ``{"method": "cholesky", "tolerance": t,
+        "representation": r, "truncation": tau}``. ``t`` (eV, default
+        ``1e-8``) stops the pivoted Cholesky factorization once the largest
+        remaining diagonal integral is at or below it: it bounds each integral,
+        not the energy. ``r`` is how the Hamiltonian of the active space holds
+        its two-electron tensor: ``"dense"`` (the default, the ``n^4`` tensor)
+        or ``"double-factorized"`` (the Cholesky vectors rotated into the active
+        orbitals and the eigen decomposition of each, about ``L n^2`` numbers;
+        the qubit Hamiltonian is built from them one vector at a time).
+        ``tau`` (eV) is required with ``"double-factorized"`` and refused with
+        ``"dense"``: eigenpairs are dropped, smallest first, while a bound on
+        the change of the two-body operator stays at or below ``tau``, so no
+        energy of the model moves by more than ``tau``, plus the roundoff of
+        the Pauli coefficients at or below ``1e-12`` Ha that the operator
+        drops, as the dense route does (``0`` drops only roundoff). It changes energies; the run log states it. A
+        double-factorized model has no dense tensor: analytic forces, MP2
+        natural orbitals, ``measurement_scheme="double-factorized"`` and the
+        model's ``two_body`` raise ``NotImplementedError``. Any other method,
+        representation or key raises ``ValueError``. A crystal builds no
+        two-body tensor.
     paw_dataset : str, optional
         Name of the PAW-LCAO or UPAW-LCAO dataset folder in the pseudopotential
         library, for example ``"pbe-sr"``. Without it the folder follows the
@@ -881,7 +942,12 @@ class Mandacaru(ASEProperties, Calculator):
         eV. A dict defaults to Fermi-Dirac at 0.1 eV; any other dict key
         raises ``ValueError`` and an unknown method raises at ``run()``. When
         given it overrides the smearing in ``periodic_scf_options``; when not,
-        the default is Fermi-Dirac at 0.1 eV. Ignored for molecules.
+        the default is Fermi-Dirac at 0.1 eV. A molecular Kohn-Sham run takes
+        Fermi-Dirac only (another method raises ``NotImplementedError``), one
+        Fermi level per spin, default width 1e-4 Ha (2.7 meV): a gapped molecule
+        is exactly aufbau, and a degenerate frontier shell is shared. A spinor
+        Kohn-Sham molecule (spin-orbit dataset) given ``smearing`` raises
+        ``NotImplementedError``; a method other than ``dft`` refuses it.
     periodic_scf_options : dict, optional
         Options of the periodic SCF: ``max_iterations`` (default 300),
         ``tolerance`` (default 1e-7), ``density_tolerance`` (default 1e-5),
@@ -897,35 +963,45 @@ class Mandacaru(ASEProperties, Calculator):
     symmetry : bool, default True
         Reduce the k-mesh with the space-group operations of the cell (time
         reversal is always used). Spinor (spin-orbit) calculations never use
-        the space-group reduction, and nonzero initial magnetic moments keep
-        the full mesh. A hybrid functional (``xc="hse06"``) always keeps the
+        the space-group reduction. A collinear moment pattern keeps the
+        operations that map every atom onto an atom of the same element and
+        the same initial moment (an operation that would send a moment to its
+        opposite is not kept); with ``symmetry=False`` nonzero initial
+        magnetic moments keep the full mesh. A hybrid functional (``xc="hse06"``) always keeps the
         whole mesh, neither reduced by the space group nor halved by time
         reversal, because its exact exchange sums over the listed k-points.
         A non-boolean raises ``TypeError``. Ignored for molecules.
     hubbard_u : dict, optional
-        The on-site DFT+U correction (simplified rotationally invariant form of
-        Dudarev et al., fully localized double counting) of a periodic
+        The on-site DFT+U correction (fully localized double counting) of a
         ``method="dft"`` calculation: ``{"Ni": {"l": "d", "U": 6.0, "J": 0.0}}``
         names, per element, the correlated shell (``"d"`` or ``"f"``) and its
         ``U`` and ``J`` in eV (``J`` defaults to 0; ``U_eff = U - J``) and, optionally, the
-        functional ``"form"`` (``"dudarev-fll"``, the only one and the default). The
+        functional ``"form"``: ``"dudarev-fll"`` (the default, simplified rotationally
+        invariant form of Dudarev et al.) or ``"liechtenstein-fll"`` (separate ``U`` and
+        ``J`` through Slater integrals). The
         occupation matrix of the shell is the PAW partial-wave projection, so a
         filled shell has an occupation below 1 (Ni 3d 0.95). Refused with
         ``ValueError``: a malformed mapping, an unknown element, a shell other
         than ``d`` or ``f``, a negative or non-finite energy, ``J`` above
-        ``U``, ``precision="float32"``, a molecule (no periodic direction), a
-        basis that is not PAW-LCAO or UPAW-LCAO (the shell is a projection on a
-        PAW partial wave), an element missing from the geometry, a dataset
+        ``U``, ``precision="float32"``, a molecule with a method other than
+        ``"dft"``, a basis that is not PAW-LCAO or UPAW-LCAO (the shell is a projection on a
+        PAW partial wave), an element missing from the geometry, and a dataset
         without the shell or whose reference atom holds no electron in it
-        (Ba ``d``, Au ``f`` in ``lda-sr``), and a crystal whose k-mesh is
-        reduced by symmetry (use ``symmetry=False`` for a nonmagnetic crystal;
-        nonzero initial magnetic moments already keep the full mesh).
+        (Ba ``d``, Au ``f`` in ``lda-sr``). A k mesh reduced by symmetry is
+        supported: the occupation matrices are completed over the kept
+        operations and time reversal, so the reduced mesh gives the whole
+        mesh's (a magnetic crystal keeps the operations that preserve its
+        moment pattern, as without ``hubbard_u``); ``hubbard_response`` on such a mesh needs every
+        ``hubbard_u`` atom fixed by every kept operation and raises
+        ``ValueError`` naming ``symmetry=False`` otherwise.
         ``NotImplementedError``: a screened hybrid functional and a spin-orbit
         dataset. Other methods raise ``ValueError``. The refusals that need
         the geometry (element, dataset, spin-orbit) are raised by the
         constructor when ``atoms`` is given and at the first calculation
-        otherwise, always before any SCF; the symmetry refusal needs the
-        assembled crystal and is raised at the first calculation. With
+        otherwise, always before any SCF (a molecule's are always raised at the first
+        calculation, ``ValueError`` for an element or shell it lacks and
+        ``NotImplementedError`` for a spin-orbit dataset; its analytic forces include
+        the +U term). With
         ``load_crystal`` the file owns the correction: leave the option out, or
         give the file's own values (a different mapping raises ``ValueError``
         at the first calculation, when the file is read). The result carries
@@ -963,8 +1039,8 @@ class Mandacaru(ASEProperties, Calculator):
 
     Notes
     -----
-    A crystal calculation (any periodic direction, or ``load_crystal``) runs
-    only with ``method="dft"`` and a PAW-LCAO or UPAW-LCAO basis. It refuses
+    A ``method="dft"`` crystal calculation (any periodic direction, or
+    ``load_crystal``) needs a PAW-LCAO or UPAW-LCAO basis. It refuses
     ``active_space``, ``save_hamiltonian``, ``scf_options``, ``n_electrons``,
     ``mapping`` and ``kinetic="fd"`` with ``ValueError``.
     """
@@ -997,6 +1073,7 @@ class Mandacaru(ASEProperties, Calculator):
         save_hamiltonian=None,
         native_model=None,
         checkpoint=None,
+        checkpoint_every=None,
         resume=None,
         transfer=False,
         transfer_threshold=0.9,
@@ -1011,6 +1088,9 @@ class Mandacaru(ASEProperties, Calculator):
         taper=False,
         convergence=None,
         max_iterations=50,
+        quenching=True,
+        tetris=False,
+        prune=False,
         weights=None,
         num_states=2,
         atomic_units=False,
@@ -1040,7 +1120,6 @@ class Mandacaru(ASEProperties, Calculator):
         record=None,
         seed=None,
         kinetic="spectral",
-        cholesky_tolerance=1e-10,
         two_body=None,
         paw_dataset=None,
         project_translation="auto",
@@ -1057,6 +1136,11 @@ class Mandacaru(ASEProperties, Calculator):
         gygi_baldereschi=None,
     ):
         super().__init__()
+        # Every constructor option: the finite-difference forces of a crystal rebuild the same
+        # calculation at displaced geometries (integrations/bloch.py::finite_difference_forces).
+        self._constructor_options = {
+            name: value for name, value in locals().items() if name not in ("self", "__class__")
+        }
         self._method, self._capabilities = resolve_method(method)
         _refuse_inapplicable(method, locals())
         if precision not in ("float32", "float64"):
@@ -1064,6 +1148,12 @@ class Mandacaru(ASEProperties, Calculator):
         self._precision = precision
         if gradient != "analytic":
             raise ValueError("the native state-vector solver uses analytic gradients")
+        for name, flag in (("quenching", quenching), ("tetris", tetris), ("prune", prune)):
+            if type(flag) is not bool:
+                raise TypeError(f"{name} must be True or False")
+        self._quenching = quenching
+        self._tetris = tetris
+        self._prune = prune
         if profile is not None and type(profile) is not bool:
             raise TypeError("profile must be True, False or None")
         if execute_circuits is not None and type(execute_circuits) is not bool:
@@ -1135,7 +1225,7 @@ class Mandacaru(ASEProperties, Calculator):
                 vdw_norm = vdw.strip().lower()
 
             if vdw_norm is not None:
-                if vdw_norm in ("rvv10", "ts", "d4"):
+                if vdw_norm in ("rvv10", "ts"):
                     if vdw_norm == "rvv10":
                         base_xc = "pbe" if xc is None else xc.strip().lower()
                         if not base_xc.endswith("+rvv10"):
@@ -1149,12 +1239,8 @@ class Mandacaru(ASEProperties, Calculator):
                         base_xc = "lda" if xc is None else xc.strip().lower()
                         if base_xc.endswith("+rvv10"):
                             raise ValueError("cannot combine vdw='ts' with an rvv10 functional")
-                    elif vdw_norm == "d4":
-                        raise NotImplementedError(
-                            "the D4 dispersion correction is not yet implemented; use vdw='rvv10' or xc='r2scan+rvv10'"
-                        )
                 else:
-                    raise ValueError(f"unknown vdw choice {vdw!r}; supported vdw options are 'rvv10', 'ts', 'd4'")
+                    raise ValueError(f"unknown vdw choice {vdw!r}; supported vdw options are 'rvv10' and 'ts'")
         elif xc is not None and xc.strip().lower().endswith("+rvv10"):
             vdw_norm = "rvv10"
 
@@ -1275,19 +1361,41 @@ class Mandacaru(ASEProperties, Calculator):
         self._grid_spacing = float(grid_spacing)
         self._explicit_grid = grid
         self._kinetic = kinetic
+        tolerance_ev = DEFAULT_TWO_BODY_TOLERANCE_EV
+        self._two_body_representation = "dense"
+        self._two_body_truncation_ev = self._two_body_truncation_ha = None
+        self._loaded_two_body = None
         if two_body is not None:
             representation = (
                 {"method": two_body} if isinstance(two_body, str) else dict(two_body)
             )
             if (
-                set(representation) - {"method", "tolerance"}
+                set(representation) - {"method", "tolerance", "representation", "truncation"}
                 or representation.get("method", "cholesky") not in TWO_BODY_METHODS
             ):
                 raise ValueError(
-                    "two_body currently accepts Cholesky factors and their tolerance"
+                    "two_body accepts Cholesky factors with their tolerance, and a "
+                    "representation ('dense' or 'double-factorized') with its truncation"
                 )
-            cholesky_tolerance = representation.get("tolerance", cholesky_tolerance)
-        self._cholesky_tolerance = cholesky_tolerance
+            truncation_ev = representation.get("truncation")
+            if truncation_ev is not None and (
+                    isinstance(truncation_ev, bool)
+                    or not isinstance(truncation_ev, (int, float))):
+                raise ValueError("two_body truncation must be an energy in eV")
+            truncation_ha = (None if truncation_ev is None
+                             else _native.energy_to_hartree(float(truncation_ev), "eV"))
+            self._two_body_representation = _native.two_body_representation(
+                representation.get("representation", "dense"), truncation_ha)
+            self._two_body_truncation_ev = (
+                None if truncation_ev is None else float(truncation_ev))
+            self._two_body_truncation_ha = truncation_ha
+            tolerance_ev = representation.get("tolerance", tolerance_ev)
+            if (isinstance(tolerance_ev, bool) or not isinstance(tolerance_ev, (int, float))
+                    or not np.isfinite(tolerance_ev) or tolerance_ev <= 0):
+                raise ValueError("two_body tolerance must be a finite positive energy in eV")
+        # The Cholesky stopping threshold: given in eV, held in Hartree for the engine.
+        self._two_body_tolerance_ev = float(tolerance_ev)
+        self._cholesky_tolerance = _native.energy_to_hartree(float(tolerance_ev), "eV")
         self._two_body_requested = two_body is not None
         self._load_hamiltonian = load_hamiltonian
         self._save_hamiltonian = save_hamiltonian
@@ -1319,6 +1427,13 @@ class Mandacaru(ASEProperties, Calculator):
                     "a supplied Hamiltonian needs n_spatial_orbitals and num_particles"
                 )
         self._checkpoint_path = checkpoint
+        if checkpoint_every is not None and (
+            type(checkpoint_every) is not int or checkpoint_every < 1 or checkpoint is None
+        ):
+            raise ValueError(
+                "checkpoint_every must be a positive integer, together with checkpoint="
+            )
+        self._checkpoint_every = checkpoint_every
         self._resume_path = resume
         self._trotter = trotter or self._hva is not None or self._execute_circuits or method in ("vasqa", "valsqa")
         self._include_singles = include_singles
@@ -1485,6 +1600,8 @@ class Mandacaru(ASEProperties, Calculator):
             )
         self._crystal_orbitals = crystal_orbitals
         self._periodic_options = dict(periodic_scf_options or {})
+        # The occupations of a molecular Kohn-Sham run (``smearing=``); empty: Rust's default.
+        self._molecular_smearing = {}
         if eigensolver is not None:
             eigen_norm = str(eigensolver).strip().lower().replace("_", "-")
             if eigen_norm not in ("direct", "davidson", "rmm-diis", "mixed"):
@@ -1511,10 +1628,18 @@ class Mandacaru(ASEProperties, Calculator):
             hubbard.check_atoms(self._hubbard_u, self.context, atoms, paw, self._xc)
             if self._method == "dft" and any(atoms.pbc):
                 moments = atoms.get_initial_magnetic_moments()
+                if moments is not None and np.ndim(moments) != 1:
+                    raise NotImplementedError(
+                        "noncollinear initial moments (one vector per atom) start a molecule's "
+                        "spinor Kohn-Sham; a crystal takes collinear moments (with a spin-orbit "
+                        "dataset they start its noncollinear magnetization)"
+                    )
                 if moments is not None and any(moments):
                     self._unrestricted = True
         self._periodic_basis = basis
-        self._periodic_two_body_requested = False
+        # Periodic DFT holds no two-body tensor to represent: a representation other than
+        # the dense default is refused there (`integrations.paw.configure`).
+        self._periodic_two_body_requested = self._two_body_representation != "dense"
         self._requested_mapping = mapping
         self._save_hamiltonian = save_hamiltonian
         self.options = {
@@ -1523,7 +1648,6 @@ class Mandacaru(ASEProperties, Calculator):
         }
         if smearing is not None:
             from numbers import Real
-            from .units import HARTREE_TO_EV
 
             if isinstance(smearing, dict):
                 if set(smearing) - {"method", "width"}:
@@ -1538,9 +1662,9 @@ class Mandacaru(ASEProperties, Calculator):
                     if isinstance(smearing, Real)
                     else smearing
                 )
-            self._periodic_options.update(
-                smearing=method, width_ha=float(width) / HARTREE_TO_EV
-            )
+            width_ha = _native.energy_to_hartree(float(width), "eV")
+            self._periodic_options.update(smearing=method, width_ha=width_ha)
+            self._molecular_smearing = {"smearing": method, "width": width_ha}
 
         if atoms is not None:
             atoms.calc = self
@@ -1601,9 +1725,10 @@ class Mandacaru(ASEProperties, Calculator):
             values.append("stress")
         if self.method == "dft":
             values.append("magmom")
+        # A circuit device's force is the device force (`integrations/device_forces.py`); a periodic
+        # one is refused by `bloch.check_derivatives`.
         if (
             self.capabilities.forces
-            and not self._execute_circuits
             and not self._taper
             and self._kinetic == "spectral"
         ):
@@ -1679,7 +1804,7 @@ class Mandacaru(ASEProperties, Calculator):
             if self._geometry is None:
                 raise ValueError("field resampling requires the molecular geometry")
             grid = _native.SpatialGrid.from_geometry(
-                self._geometry.native(), [grid_spacing * ANGSTROM_TO_BOHR] * 3
+                self._geometry.native(), [to_bohr(float(grid_spacing))] * 3
             )
         return self.result.volumetric_field(
             quantity, index, state=state, component=component, grid=grid
@@ -1778,8 +1903,8 @@ class Mandacaru(ASEProperties, Calculator):
         D, Gamma = spatial_rdms(gamma, gamma2, len(integrals.basis))
 
         n_cells = getattr(self, "n_supercells", 1)
-        volume = abs(float(np.linalg.det(integrals.cell)))
-        energy_per_cell = (self.results.get("energy", 0.0) / _native.HARTREE_TO_EV)
+        volume = _native.grid_cell(np.asarray(integrals.cell, dtype=float).tolist(), [1, 1, 1])[2]
+        energy_per_cell = _native.energy_to_hartree(float(self.results.get("energy", 0.0)), "eV")
 
         if scheme == "mpc":
             from .core.mpc import (
@@ -1845,13 +1970,33 @@ class Mandacaru(ASEProperties, Calculator):
         particles = self.integrals.particles(
             charge=self._charge,
             n_electrons=self._n_electrons,
-            magnetic_moment=float(np.sum(geometry.magnetic_moments)),
+            magnetic_moments=[float(m) for m in geometry.magnetic_moments],
         )
         self.context.release_freed_memory()
         # The native integrals are lazy: the two-body integrals are built by the
         # first call that needs them, which is this one.
         with self._stage("mean-field SCF (builds the two-body integrals)"):
-            if self.method == "dft" and self._has_spin_orbit_dataset(geometry):
+            if geometry.moment_vectors is not None and self.method != "dft":
+                raise NotImplementedError(
+                    "noncollinear initial moments (one vector per atom) start spinor Kohn-Sham: "
+                    f"they need method='dft', not {self.method!r}"
+                )
+            if self._molecular_smearing and (
+                self._has_spin_orbit_dataset(geometry) or geometry.moment_vectors is not None
+            ):
+                raise NotImplementedError(
+                    "smearing sets the occupations of molecular Kohn-Sham on a "
+                    "scalar-relativistic dataset and of a crystal; a spinor Kohn-Sham "
+                    "molecule (spin-orbit dataset) has integer occupations"
+                )
+            if self.method == "dft" and geometry.moment_vectors is not None:
+                # A noncollinear start: collinear Kohn-Sham with the moments' lengths, turned per
+                # atom, then spinor Kohn-Sham (with the spin-orbit term of a spin-orbit dataset).
+                self.native_reference = self.integrals.spinor_kohn_sham_noncollinear(
+                    self.xc, geometry.moment_vectors.tolist(), charge=self._charge,
+                    n_electrons=self._n_electrons, **self._scf_options
+                )
+            elif self.method == "dft" and self._has_spin_orbit_dataset(geometry):
                 # Spinor Kohn-Sham: one set of 2m spinors with the spin-orbit term.
                 self.native_reference = self.integrals.spinor_kohn_sham(
                     self.xc, int(sum(particles)), **self._scf_options
@@ -1862,6 +2007,7 @@ class Mandacaru(ASEProperties, Calculator):
                     particles,
                     unrestricted=self._unrestricted or particles[0] != particles[1],
                     **self._scf_options,
+                    **self._molecular_smearing,
                 )
             else:
                 kind = (
@@ -1884,6 +2030,7 @@ class Mandacaru(ASEProperties, Calculator):
             integrals=self.integrals,
             mapping=self._mapping,
             active_space=self._active_spec,
+            two_body=(self._two_body_representation, self._two_body_truncation_ha),
             atomic_units=self._atomic_units,
             dispersion=dispersion,
         )
@@ -1906,7 +2053,7 @@ class Mandacaru(ASEProperties, Calculator):
         return self.context.molecular_integrals(
             geometry.native(),
             basis_spec=json.dumps(self._basis_spec),
-            spacing_bohr=self._grid_spacing * ANGSTROM_TO_BOHR,
+            spacing_bohr=to_bohr(float(self._grid_spacing)),
             grid=self._grid(geometry),
             kinetic=self._kinetic,
             cholesky_tolerance=self._cholesky_tolerance,
@@ -1984,6 +2131,8 @@ class Mandacaru(ASEProperties, Calculator):
             snapshot = self.context.read_snapshot(
                 str(self._load_hamiltonian), "mandacaru-qubit-hamiltonian"
             )
+            # A double-factorized Hamiltonian records its truncation; the run log states it.
+            self._loaded_two_body = _native.snapshot_two_body(snapshot)
             self.problem = snapshot.problem(
                 sector=self._sector,
                 sparse=self._sparse,
@@ -2049,6 +2198,9 @@ class Mandacaru(ASEProperties, Calculator):
         opts = dict(
             adapt=self.method.endswith("adapt-vqe"),
             trotter=self._trotter,
+            quenching=self._quenching,
+            tetris=self._tetris,
+            prune=self._prune,
             optimizer=self._optimizer["method"],
             max_iterations=self._optimizer.get("maxiter", 300),
             max_evaluations=self._optimizer.get("maxfev", 5000),
@@ -2057,7 +2209,7 @@ class Mandacaru(ASEProperties, Calculator):
             max_growth=self._max_growth,
             gradient_tolerance=self._convergence.get("gradient"),
             energy_tolerance=(None if self._convergence.get("energy") is None else
-                              self._convergence["energy"] / _native.HARTREE_TO_EV),
+                              _native.energy_to_hartree(float(self._convergence["energy"]), "eV")),
             initial_parameters=initial_parameters,
         )
         from .integrations.transfer import prepare as prepare_transfer
@@ -2067,17 +2219,31 @@ class Mandacaru(ASEProperties, Calculator):
             if initial_parameters is not None:
                 raise ValueError("choose transferred or explicit initial parameters")
             opts.update(initial_parameters=carried["parameters"], initial_indices=carried["indices"])
+            if carried.get("hessian") is not None and opts["optimizer"] in ("SLSQP", "BFGS"):
+                opts["initial_hessian"] = carried["hessian"]
+        executor = None
         if self.method.startswith("subspace-"):
             if self._execute_circuits:
                 raise NotImplementedError("subspace SDK execution requires a multi-reference executor")
-            if self._resume_path is not None or self._checkpoint_path is not None:
-                raise NotImplementedError(
-                    "subspace checkpoint restart is not implemented"
-                )
+            weights = [2.0, 1.0] if self._weights is None else list(self._weights)
+            resumed = (None if self._resume_path is None else self.context.read_snapshot(
+                str(self._resume_path), "mandacaru-wavefunction-checkpoint"))
             with self._stage("parameter optimization"):
-                raw = self.problem.solve_subspace(
-                    [2.0, 1.0] if self._weights is None else self._weights, **opts
-                )
+                # Always quenched, one operator per step: these options apply to vqe/adapt-vqe.
+                subspace = {k: v for k, v in opts.items()
+                            if k not in ("quenching", "tetris", "prune")}
+                raw = self.problem.solve_subspace(weights, resume=resumed, **subspace)
+            for note in raw.get("notes", ()):
+                warnings.warn(note, RuntimeWarning, stacklevel=2)
+            if self._checkpoint_path is not None:
+                self.problem.subspace_checkpoint(
+                    raw["indices"], raw["parameters"].tolist(), adapt=opts["adapt"],
+                    product_form=opts["adapt"] or self._trotter, weights=weights,
+                    energies_ha=raw["energies_ha"], hessian=raw.get("hessian"),
+                    hessian_optimizer=self._optimizer["method"],
+                    status_json=json.dumps({"complete": True, "converged": raw["success"],
+                                            "termination": raw["message"]}),
+                ).save(str(self._checkpoint_path))
         else:
             resumed = (
                 None
@@ -2092,9 +2258,8 @@ class Mandacaru(ASEProperties, Calculator):
 
                 def observe(info):
                     info = dict(info)
-                    info["energy"] = info["energy_ha"] * (
-                        1.0 if self._atomic_units else _native.HARTREE_TO_EV
-                    )
+                    info["energy"] = _native.to_user_units(
+                        float(info["energy_ha"]), "energy", atomic_units=self._atomic_units)
                     info["ansatz"] = AnsatzView(self.problem, info["indices"], True)
                     callback(info)
 
@@ -2122,8 +2287,11 @@ class Mandacaru(ASEProperties, Calculator):
                 )
                 try:
                     with self._stage("parameter optimization"):
-                        raw = self.problem.solve(resume=resumed, callback=observer,
-                                                 executor=executor, **opts)
+                        raw = self.problem.solve(
+                            resume=resumed, callback=observer, executor=executor,
+                            checkpoint_path=(None if self._checkpoint_every is None
+                                             else str(self._checkpoint_path)),
+                            checkpoint_every=self._checkpoint_every or 0, **opts)
                 except RuntimeError as exc:
                     if executor is not None and executor.stopped is not None:
                         # The budget ended the run before any energy existed.
@@ -2131,6 +2299,8 @@ class Mandacaru(ASEProperties, Calculator):
 
                         raise RunBudgetExceeded(executor.stopped) from exc
                     raise
+                for note in raw.get("notes", ()):
+                    warnings.warn(note, RuntimeWarning, stacklevel=2)
                 if raw.get("budget_stopped"):
                     self.run_budget_exhausted = raw["message"]
                     warnings.warn(
@@ -2152,6 +2322,7 @@ class Mandacaru(ASEProperties, Calculator):
                 product_form=opts["adapt"] or self._trotter,
                 energy_ha=raw["energy_ha"],
                 method="adapt-vqe" if self.method.endswith("adapt-vqe") else ("vqe" if self.method.endswith("vqe") else self.method),
+                hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"],
                 status_json=json.dumps(
                     {
                         "complete": True,
@@ -2182,11 +2353,17 @@ class Mandacaru(ASEProperties, Calculator):
             reference=None if reference is None else reference.scf,
             integrals=None if reference is None else self.integrals,
             active_space=self._active_spec,
+            two_body=(self._two_body_representation, self._two_body_truncation_ha),
             model=None if reference is None else reference.hamiltonian,
             raw=raw,
             mapping=self._mapping,
             atomic_units=self._atomic_units,
         )
+        if executor is not None:
+            import weakref
+
+            # The device force measures again on this calculator's provider and budgets.
+            result._device = weakref.ref(self)
         if result.optimizer_failures:
             warnings.warn(
                 f"the inner optimizer did not converge in "
@@ -2261,8 +2438,6 @@ class Mandacaru(ASEProperties, Calculator):
         from .integrations.bloch import check_geometry
 
         size = check_geometry(self, geometry)
-        self.n_supercells = int(np.prod(size))
-
         from .structure import geometry_value
         from .integrations.ase import atoms_from_geometry
 
@@ -2276,15 +2451,16 @@ class Mandacaru(ASEProperties, Calculator):
                 geometry.native(),
                 list(size),
                 basis_spec=json.dumps(self._basis_spec),
-                spacing_bohr=self._grid_spacing * ANGSTROM_TO_BOHR,
+                spacing_bohr=_native.length_to_bohr(float(self._grid_spacing), "angstrom"),
                 cholesky_tolerance=self._cholesky_tolerance,
                 precision=self._precision,
             )
+        self.n_supercells = int(_native.bloch_supercell(self.integrals)["n_cells"])
 
         particles = self.integrals.particles(
             charge=self._charge,
             n_electrons=self._n_electrons,
-            magnetic_moment=float(np.sum(supercell_geom.magnetic_moments)),
+            magnetic_moments=[float(m) for m in supercell_geom.magnetic_moments],
         )
 
         with self._stage("mean-field SCF (builds the two-body integrals)"):
@@ -2300,6 +2476,7 @@ class Mandacaru(ASEProperties, Calculator):
             integrals=self.integrals,
             mapping=self._mapping,
             active_space=self._active_spec,
+            two_body=(self._two_body_representation, self._two_body_truncation_ha),
             atomic_units=self._atomic_units,
         )
 
@@ -2423,10 +2600,11 @@ class Mandacaru(ASEProperties, Calculator):
             self.result = result
             n_cells = getattr(self, "n_supercells", 1)
             is_periodic_quantum = self.capabilities.quantum and (value is not None and any(value.pbc))
-            factor = 1.0 / n_cells if is_periodic_quantum else 1.0
+            cells = n_cells if is_periodic_quantum else 1
             self.results = {
-                "energy": result.in_units("eV") * factor,
-                "free_energy": result.free_energy_ev * factor,
+                "energy": _native.to_user_units(float(result.energy_hartree), "energy", cells=cells),
+                "free_energy": _native.to_user_units(
+                    float(result.free_energy_hartree), "energy", cells=cells),
             }
             if self.method == "dft":
                 if result.periodic is not None:
@@ -2447,7 +2625,6 @@ class Mandacaru(ASEProperties, Calculator):
         if self.result is None:
             self.run()
         from .analysis.excitations import EnergyLevels
-        from .units import HARTREE_TO_EV
 
         raw = self.problem.energy_levels(
             num_states=num_states,
@@ -2460,11 +2637,12 @@ class Mandacaru(ASEProperties, Calculator):
             max_evaluations=self._optimizer.get("maxfev", 5000),
             tolerance=self._optimizer.get("tol", 1e-9),
         )
-        factor = 1.0 if self._atomic_units else HARTREE_TO_EV
         return EnergyLevels(
-            energies=raw["energies_ha"] * factor,
+            energies=_native.to_user_units(np.ascontiguousarray(raw["energies_ha"], dtype=float),
+                                           "energy", atomic_units=self._atomic_units),
             states=self.problem.expand_state(raw["states"]),
-            reference_energy=raw["reference_ha"] * factor,
+            reference_energy=_native.to_user_units(float(raw["reference_ha"]), "energy",
+                                                   atomic_units=self._atomic_units),
             num_evaluations=raw["num_evaluations"],
             success=tuple(raw["success"]),
             messages=tuple(raw["messages"]),
@@ -2502,14 +2680,10 @@ class Mandacaru(ASEProperties, Calculator):
                     "stress is only available for periodic structures"
                 )
             periodic_geometry = geometry is not None and any(geometry.pbc)
-            if (
-                ("forces" in properties or "stress" in properties)
-                and periodic_geometry
-                and self.capabilities.quantum
-            ):
-                from .integrations.bloch import refuse_derivatives
+            if periodic_geometry and self.capabilities.quantum:
+                from .integrations.bloch import check_derivatives
 
-                refuse_derivatives()
+                check_derivatives(self, properties)
             if (
                 ("forces" in properties or "stress" in properties)
                 and self._precision == "float32"
@@ -2559,7 +2733,7 @@ class Mandacaru(ASEProperties, Calculator):
                     if reusable and self.integrals is not None
                     else self._grid(geometry)
                 ) or _native.SpatialGrid.from_geometry(
-                    geometry.native(), [self._grid_spacing * ANGSTROM_TO_BOHR] * 3
+                    geometry.native(), [to_bohr(float(self._grid_spacing))] * 3
                 )
             result = self.result if reusable else self.run(geometry)
             if "forces" in properties:
@@ -2568,6 +2742,11 @@ class Mandacaru(ASEProperties, Calculator):
                         self.results["forces"] = result.forces()
                     from .integrations.reporting import write_forces
                     write_forces(self, result, geometry, internal=False, translated=False)
+                elif periodic_geometry and self.capabilities.quantum:
+                    from .integrations.bloch import finite_difference_forces
+
+                    with self._stage("nuclear gradient (forces)"):
+                        self.results["forces"] = finite_difference_forces(self, geometry, result)
                 else:
                     project = self._project_translation is not False and len(geometry.numbers) > 1
                     internal = project and self.capabilities.quantum and self._basis_spec is None
@@ -2658,6 +2837,23 @@ class Mandacaru(ASEProperties, Calculator):
     def get_potential_energy(self, atoms=None, force_consistent=False):
         return self.get_property("free_energy" if force_consistent else "energy", atoms)
 
+    def measured_rdms(self):
+        """The spin-summed spatial 1- and 2-RDMs of the optimized circuit, measured on the
+        circuit device of a ``shots > 0`` or ``execute_circuits=True`` run.
+
+        Returns a dict: ``one`` ``(m, m)`` with ``one[p, q] = sum_s <a+_ps a_qs>`` and ``two``
+        ``(m, m, m, m)`` with ``two[p, q, r, s] = sum_st <a+_ps a+_qt a_st a_rs>`` over the
+        ``m`` active spatial orbitals (real parts; dimensionless), ``one_error`` and
+        ``two_error`` (standard errors from the device's, strings treated as independent, or
+        ``None``), and the ``observables`` and ``bases`` measured. One job, inside
+        ``measurement_budget`` and the run budget; no state vector is formed. A state-vector
+        run raises ``ValueError`` (its RDMs come from the state); a tapered problem and the
+        methods other than ``vqe`` and ``adapt-vqe`` raise ``NotImplementedError``.
+        """
+        from .integrations.circuits import measure_rdms
+
+        return measure_rdms(self)
+
     def get_forces(self, atoms=None):
         return self.get_property("forces", atoms)
 
@@ -2693,25 +2889,26 @@ class Mandacaru(ASEProperties, Calculator):
             if self.result.periodic is None:
                 raise ValueError("hubbard_response is only supported for periodic crystal calculations")
 
-            from .units import EV_TO_HARTREE, HARTREE_TO_EV
-            scale_in = 1.0 if self._atomic_units else EV_TO_HARTREE
-            alphas_ha = [float(a) * scale_in for a in alphas]
+            atomic = self._atomic_units
+            unit = "Ha" if atomic else "eV"
+            alphas_ha = [convert_energy(float(a), unit, "Ha") for a in alphas]
 
             raw = self.result.periodic.hubbard_response(alphas=alphas_ha)
 
-            scale_energy = 1.0 if self._atomic_units else HARTREE_TO_EV
-            scale_chi = 1.0 if self._atomic_units else 1.0 / HARTREE_TO_EV
-            scale_alpha = 1.0 if self._atomic_units else HARTREE_TO_EV
+            def user(values, quantity="energy"):
+                if isinstance(values, (int, float, np.floating)):
+                    return _native.to_user_units(float(values), quantity, atomic)
+                return _native.to_user_units(np.ascontiguousarray(values, dtype=float), quantity, atomic)
 
             res = {
-                "u_matrix": raw["u_matrix"] * scale_energy,
-                "u_charge": raw["u_charge"] * scale_energy,
-                "chi0": raw["chi0"] * scale_chi,
-                "chi": raw["chi"] * scale_chi,
-                "alphas": [a * scale_alpha for a in raw["alphas"]],
+                "u_matrix": user(raw["u_matrix"]),
+                "u_charge": user(raw["u_charge"]),
+                "chi0": user(raw["chi0"], "inverse_energy"),
+                "chi": user(raw["chi"], "inverse_energy"),
+                "alphas": [user(a) for a in raw["alphas"]],
             }
             if "j_response" in raw and raw["j_response"] is not None:
-                res["j_response"] = [j * scale_energy for j in raw["j_response"]]
+                res["j_response"] = [user(j) for j in raw["j_response"]]
             return res
 
     def reset(self):

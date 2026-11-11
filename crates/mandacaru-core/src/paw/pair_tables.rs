@@ -23,6 +23,11 @@ pub struct ChannelView<'a> {
 /// The radial tables of a species the one-center screened terms are built from.
 pub struct SpeciesView<'a> {
     pub knots: &'a [f64],
+    /// The smooth core the grid's exchange-correlation sees (the dataset's nonlinear core
+    /// correction; zeros when the dataset was not unscreened with one), on `knots`. The
+    /// screened hybrid's semilocal short-range exchange is evaluated on the smooth valence
+    /// density plus this core on the grid, so the spheres take it off the smooth side.
+    pub smooth_core: &'a [f64],
     pub compensation_radius: f64,
     pub channels: Vec<ChannelView<'a>>,
 }
@@ -288,6 +293,11 @@ pub fn pair_tensor(
 
 /// A species' channels need distinct angular momenta and as many projectors as waves.
 pub fn check(species: &SpeciesView<'_>) -> Result<()> {
+    if species.smooth_core.len() != species.knots.len() {
+        return Err(invalid(
+            "a PAW species' smooth core and radial knots disagree in size",
+        ));
+    }
     if species
         .channels
         .iter()

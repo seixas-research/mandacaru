@@ -6,16 +6,23 @@
 //!
 //! - **Coulomb kernel.** The grid is the supercell, one period exactly, and the electron-electron
 //!   kernel is `4 pi / G^2` with `G = 0` dropped (`Poisson::periodic`).
-//! - **External potential and ion-ion energy.** The zero-mean Ewald potential of the whole ion
-//!   lattice and the jellium-convention Ewald energy (`periodic::ewald`). Each of the three
-//!   electrostatic terms drops its own `G = 0` against a uniform background; for a neutral cell
-//!   the backgrounds cancel. A charged cell is refused (`MolecularIntegrals::particles`).
+//! - **External potential and ion-ion energy.** The potential of the ion lattice is the grid's
+//!   own Fourier series, `-4 pi / (Omega G^2)` times the structure factor with `G = 0` dropped
+//!   (the zero-mean Ewald potential truncated at the grid, with no real-space sum and no
+//!   softening); the ion-ion energy is the jellium-convention Ewald energy (`periodic::ewald`).
+//!   Each of the three electrostatic terms drops its own `G = 0` against a uniform background;
+//!   for a neutral cell the backgrounds cancel. A charged cell is refused
+//!   (`MolecularIntegrals::particles`).
 //! - **Madelung term.** Dropping `G = 0` also removes every point electron's interaction with its
 //!   own periodic images and the background, which nothing cancels: `1/2 N_e v_M`, with `v_M`
 //!   twice the Ewald energy of one unit charge in the supercell. It is a constant in a fixed
 //!   particle-number sector and is carried in `MolecularIntegrals::nuclear`.
-//! - **Basis.** Every orbital is summed over the lattice translations of the supercell that
-//!   reach the grid above `IMAGE_TOLERANCE`, so a function near a face continues through it.
+//! - **Basis.** Every orbital is replaced by its Fourier series over the supercell, truncated at
+//!   `|G| < pi / (2 max h_i)` (`sample_images`): the series sums every periodic image, and the
+//!   truncation keeps every product of two orbitals inside the grid's frequency box. The
+//!   matrix elements are then exact grid quadratures of band-limited functions, and a rigid
+//!   translation of the crystal by any vector, not only by whole grid steps, changes nothing but
+//!   phases: the energy no longer depends on where the atoms sit on the grid.
 //!
 //! The grid holds `n_i` times a whole number of nodes per primitive vector, so a primitive
 //! translation is a whole number of grid steps and the Hamiltonian keeps the translation
@@ -42,23 +49,16 @@ use nalgebra::{DMatrix, Matrix3, Vector3};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-/// An orbital image is summed while the orbital exceeds this value anywhere on its support.
-pub const IMAGE_TOLERANCE: f64 = 1e-10;
+/// The radial quadrature of an orbital's Fourier transform stops where `|R(r)|` stays below this.
+pub const RADIAL_TOLERANCE: f64 = 1e-12;
 /// Accuracy of the Ewald sums (absolute, per unit charge squared).
 pub const EWALD_ACCURACY: f64 = 1e-12;
-/// Radial scan step and limit (Bohr) for an orbital's support radius.
+/// Radial scan step and limit (Bohr) for an orbital's support, and the quadrature step.
 const RADIUS_STEP: f64 = 0.05;
 const RADIUS_LIMIT: f64 = 150.;
-/// Generic directions on which no real spherical harmonic of the bases used here vanishes.
-const DIRECTIONS: [[f64; 3]; 7] = [
-    [0.267, 0.534, 0.802],
-    [-0.802, 0.267, 0.534],
-    [0.534, -0.802, 0.267],
-    [0.577, 0.577, -0.577],
-    [0.913, -0.183, 0.365],
-    [-0.236, -0.707, 0.667],
-    [0.123, 0.987, -0.104],
-];
+const QUADRATURE_STEP: f64 = 0.004;
+/// Knots of the tabulated radial transform `F_l(k)` on `[0, k_c]`.
+const TRANSFORM_KNOTS: usize = 1025;
 
 /// The supercell of a Gamma-centered mesh and the map from its atoms to the primitive cell.
 #[derive(Clone, Debug)]
@@ -458,83 +458,184 @@ impl Supercell {
     }
 }
 
-/// The largest distance from its center at which `orbital` exceeds `IMAGE_TOLERANCE`.
+/// The largest radius at which the radial factor of `orbital` exceeds `RADIAL_TOLERANCE`.
 fn support_radius(orbital: &Orbital) -> Result<f64> {
     let steps = (RADIUS_LIMIT / RADIUS_STEP) as usize;
     let mut radius = RADIUS_STEP;
     for step in 1..=steps {
         let r = step as f64 * RADIUS_STEP;
-        let value = DIRECTIONS
-            .iter()
-            .map(|u| {
-                orbital
-                    .evaluate([
-                        orbital.center[0] + r * u[0],
-                        orbital.center[1] + r * u[1],
-                        orbital.center[2] + r * u[2],
-                    ])
-                    .abs()
-            })
-            .fold(0f64, f64::max);
-        if value > IMAGE_TOLERANCE {
+        if orbital.radial_value(r).abs() > RADIAL_TOLERANCE {
             radius = r + RADIUS_STEP;
         }
     }
     if radius >= RADIUS_LIMIT {
         return Err(invalid(format!(
-            "an orbital still exceeds {IMAGE_TOLERANCE:e} at {RADIUS_LIMIT} Bohr from its center; its periodic images cannot be summed"
+            "an orbital still exceeds {RADIAL_TOLERANCE:e} at {RADIUS_LIMIT} Bohr from its center"
         )));
     }
     Ok(radius)
 }
 
-/// Orbitals summed over the translations of the cell spanned by `grid`, sampled on it (float64).
-pub fn sample_images(ctx: &Context, basis: &Basis, grid: &SpatialGrid) -> Result<RealSamples> {
-    if !grid.periodic {
-        return Err(invalid("image sums need a periodic grid"));
-    }
+/// The band limit of a periodic grid: half the radius `pi / max(h_i)` of the sphere inscribed in
+/// its frequency box, so that a product of two band-limited orbitals stays inside the box.
+pub fn band_limit(grid: &SpatialGrid) -> f64 {
+    PI / (2. * grid.spacings().into_iter().fold(0f64, f64::max))
+}
+
+/// The grid's reciprocal-lattice vectors: `(flat index, G)` for every node of the FFT grid.
+fn wavevectors(grid: &SpatialGrid) -> Result<Vec<(usize, Vector3<f64>)>> {
     let shape = grid.index.shape();
-    let a = grid.step
+    let cell = grid.step
         * Matrix3::from_diagonal(&Vector3::new(
             shape[0] as f64,
             shape[1] as f64,
             shape[2] as f64,
         ));
-    let inverse = a
+    let reciprocal = cell
         .try_inverse()
-        .ok_or_else(|| invalid("the periodic cell is singular"))?;
+        .ok_or_else(|| invalid("the periodic cell is singular"))?
+        .transpose()
+        * (2. * PI);
+    let mut out = Vec::with_capacity(grid.index.points());
+    for i in 0..shape[0] {
+        for j in 0..shape[1] {
+            for k in 0..shape[2] {
+                let m = Vector3::new(
+                    crate::math::fft::frequency(i, shape[0]),
+                    crate::math::fft::frequency(j, shape[1]),
+                    crate::math::fft::frequency(k, shape[2]),
+                );
+                out.push(((i * shape[1] + j) * shape[2] + k, reciprocal * m));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `sum_G c(G) exp(i G . r_n)` on the grid nodes `r_n = origin + step n` (real part).
+fn synthesize(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    coefficients: &mut [C64],
+    out: &mut [f64],
+) -> Result<()> {
+    let n = coefficients.len() as f64;
+    crate::math::fft::Fft3::new(ctx, grid.index.shape())?.transform(coefficients, true)?;
+    for (value, c) in out.iter_mut().zip(coefficients.iter()) {
+        *value = c.re * n;
+    }
+    Ok(())
+}
+
+/// The Fourier transform of a radial factor, `F_l(k) = int R(r) j_l(k r) r^2 dr`, tabulated on
+/// `[0, k_c]` (Simpson in `r`, a cubic spline in `k`).
+fn radial_transform(
+    ctx: &Context,
+    orbital: &Orbital,
+    cutoff: f64,
+) -> Result<crate::math::spline::Cubic> {
+    let radius = support_radius(orbital)?;
+    let intervals = 2 * (radius / QUADRATURE_STEP / 2.).ceil() as usize;
+    let dr = radius / intervals as f64;
+    let weighted: Vec<f64> = (0..=intervals)
+        .map(|j| {
+            let r = j as f64 * dr;
+            let simpson = if j == 0 || j == intervals {
+                1.
+            } else if j % 2 == 1 {
+                4.
+            } else {
+                2.
+            };
+            simpson * dr / 3. * orbital.radial_value(r) * r * r
+        })
+        .collect();
+    let mut knots = ctx.allocate::<f64>(TRANSFORM_KNOTS)?;
+    let mut values = ctx.allocate::<f64>(TRANSFORM_KNOTS)?;
+    for i in 0..TRANSFORM_KNOTS {
+        let k = cutoff * i as f64 / (TRANSFORM_KNOTS - 1) as f64;
+        knots.as_mut_slice()[i] = k;
+        values.as_mut_slice()[i] = weighted
+            .iter()
+            .enumerate()
+            .map(|(j, w)| {
+                w * mandacaru_kernels::two_center::spherical_bessel(
+                    orbital.l as i32,
+                    k * j as f64 * dr,
+                )
+            })
+            .sum();
+    }
+    crate::math::spline::Cubic::new(ctx, knots, values)
+}
+
+/// Band-limited, image-summed orbitals sampled on the periodic `grid` (float64).
+///
+/// Each orbital `R(r) Y_lm` is replaced by its Fourier series over the supercell truncated at
+/// `|G| < k_c` (`band_limit`): `c(G) = 4 pi (-i)^l Y_lm(G^) F_l(|G|) exp(-i G . R) / Omega`.
+/// The series sums every periodic image exactly, and sampling it is exact: a sub-grid shift of
+/// an atom only changes the phases, so the matrix elements are invariant under any rigid
+/// translation of the crystal, not only under whole grid steps. Point sampling of the
+/// unfiltered orbital aliases its cusp and made the energy depend on where the atoms sat on the
+/// grid (by up to 0.65 eV per cell on an H2 chain at grid_spacing 0.2 A). `primitive[a]` names
+/// the primitive orbital of orbital `a`, whose copies share one radial transform.
+pub fn sample_images(
+    ctx: &Context,
+    basis: &Basis,
+    grid: &SpatialGrid,
+    primitive: &[usize],
+) -> Result<RealSamples> {
+    if !grid.periodic {
+        return Err(invalid("image sums need a periodic grid"));
+    }
+    if primitive.len() != basis.orbitals.len() {
+        return Err(invalid("one primitive label per orbital"));
+    }
     let g = grid.index.points();
     let m = basis.orbitals.len();
+    let cutoff = band_limit(grid);
+    let volume = grid.index.dv() * g as f64;
+    let inside: Vec<(usize, Vector3<f64>)> = wavevectors(grid)?
+        .into_iter()
+        .filter(|(_, q)| q.norm() < cutoff)
+        .collect();
+    let origin = Vector3::from(grid.origin);
+    let _memory = ctx.reserve(product(&[inside.len(), 16, 2])?)?;
+    // The angular and radial factor of each primitive orbital on the inside wavevectors.
+    let mut shapes: Vec<Option<Vec<C64>>> = vec![None; primitive.iter().max().map_or(0, |p| p + 1)];
     let mut out = RealSamples::zeros(ctx, Precision::Float64, product(&[m, g])?)?;
+    let mut coefficients = ctx.allocate::<C64>(g)?;
     let mut row = ctx.allocate::<f64>(g)?;
     for (index, orbital) in basis.orbitals.iter().enumerate() {
-        let radius = support_radius(orbital)?;
-        // Translations within `radius` of a point inside the wrapped cell.
-        let limits: [i64; 3] =
-            std::array::from_fn(|axis| (radius * inverse.row(axis).norm()).ceil() as i64 + 1);
-        if limits.iter().any(|&n| n > 64) {
-            return Err(invalid(
-                "the cell is far smaller than an orbital's support; the image sum would not end",
-            ));
+        let slot = &mut shapes[primitive[index]];
+        if slot.is_none() {
+            let transform = radial_transform(ctx, orbital, cutoff)?;
+            let phase = C64::new(0., -1.).powu(orbital.l as u32) * (4. * PI / volume);
+            *slot = Some(
+                inside
+                    .iter()
+                    .map(|(_, q)| {
+                        let k = q.norm();
+                        let direction = if k > 0. {
+                            [q[0] / k, q[1] / k, q[2] / k]
+                        } else {
+                            [0., 0., 1.]
+                        };
+                        phase
+                            * crate::math::angular::normalized(orbital.l, orbital.m, direction)
+                            * transform.value_slope(k).0
+                    })
+                    .collect(),
+            );
         }
+        let shape = slot.as_ref().expect("filled above");
         let center = Vector3::from(orbital.center);
-        for (k, value) in row.as_mut_slice().iter_mut().enumerate() {
-            let d = Vector3::from(grid.point(k)) - center;
-            let f = (inverse * d).map(|v| v - v.round());
-            let d = a * f;
-            let mut sum = 0.;
-            for i in -limits[0]..=limits[0] {
-                for j in -limits[1]..=limits[1] {
-                    for l in -limits[2]..=limits[2] {
-                        let shifted = d + a * Vector3::new(i as f64, j as f64, l as f64);
-                        if shifted.norm() < radius {
-                            sum += orbital.evaluate((center + shifted).into());
-                        }
-                    }
-                }
-            }
-            *value = sum;
+        coefficients.as_mut_slice().fill(C64::default());
+        for ((at, q), value) in inside.iter().zip(shape) {
+            coefficients.as_mut_slice()[*at] =
+                value * C64::from_polar(1., q.dot(&(origin - center)));
         }
+        synthesize(ctx, grid, coefficients.as_mut_slice(), row.as_mut_slice())?;
         out.fill_row(index, g, row.as_slice())?;
     }
     Ok(out)
@@ -568,21 +669,33 @@ fn electrostatics(
     )?
     .evaluate(ctx)?
     .energy;
-    let negative: Vec<f64> = charges.iter().map(|z| -z).collect();
+    // The potential of the ion lattice as the grid's own Fourier series, G = 0 dropped (the
+    // uniform background): exact for the band-limited orbitals, with no real-space sum and no
+    // softening, so it moves with the ions by phases only.
     let g = grid.index.points();
-    let _points = ctx.reserve(product(&[g, 24])?)?;
-    let points: Vec<[f64; 3]> = (0..g).map(|k| grid.point(k)).collect();
-    // The same softening as the molecular -Z/r: half the smallest grid step.
-    let softening = 0.5 * grid.spacings().into_iter().fold(f64::INFINITY, f64::min);
-    let external = Ewald::new(
+    let volume = grid.index.dv() * g as f64;
+    let origin = Vector3::from(grid.origin);
+    let mut coefficients = ctx.allocate::<C64>(g)?;
+    for (at, q) in wavevectors(grid)? {
+        let q2 = q.norm_squared();
+        if q2 <= 0. {
+            continue;
+        }
+        let structure: C64 = geometry
+            .positions()
+            .iter()
+            .zip(&charges)
+            .map(|(r, z)| C64::from_polar(*z, q.dot(&(origin - Vector3::from(*r)))))
+            .sum();
+        coefficients.as_mut_slice()[at] = structure * (-4. * PI / (volume * q2));
+    }
+    let mut external = ctx.allocate::<f64>(g)?;
+    synthesize(
         ctx,
-        geometry.positions(),
-        &negative,
-        flat,
-        EWALD_ACCURACY,
-        None,
-    )?
-    .potential(ctx, &points, softening)?;
+        grid,
+        coefficients.as_mut_slice(),
+        external.as_mut_slice(),
+    )?;
     let electrons: f64 = charges.iter().sum();
     Ok(PeriodicElectrostatics {
         external,
@@ -621,7 +734,8 @@ pub(super) fn build(
             ));
         }
     }
-    let samples = sample_images(ctx, &basis, &grid)?;
+    let cells = supercell.orbital_cells(&basis)?;
+    let samples = sample_images(ctx, &basis, &grid, &cells.orbital)?;
     let terms = electrostatics(ctx, &geometry, &grid, supercell)?;
     MolecularIntegrals::assemble(
         ctx,

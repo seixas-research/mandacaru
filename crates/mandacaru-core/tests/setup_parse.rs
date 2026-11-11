@@ -74,7 +74,7 @@ fn native_hubbard_refuses_spin_orbit_before_building_the_setup() {
 }
 
 #[test]
-fn native_hubbard_refuses_symmetry_averaging_before_scf() {
+fn native_hubbard_on_a_symmetry_reduced_mesh_carries_the_operations_that_complete_it() {
     let ctx = Context::new(Some(1), 1 << 30).unwrap();
     let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
     let path = PathBuf::from(root).join("lda-sr/Fe.parquet");
@@ -84,11 +84,10 @@ fn native_hubbard_refuses_symmetry_averaging_before_scf() {
     raw["symmetry"] = json!(true);
     raw["hubbard_u"] = json!({"Fe": {"l": "d", "U": 4.}});
     let setup = create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]).unwrap();
-    let error = match setup.build(&ctx) {
-        Ok(_) => panic!("symmetry-averaged DFT+U was accepted"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("symmetrized"));
+    let crystal = setup.build(&ctx).expect("DFT+U on a reduced mesh is built (HU-4)");
+    assert!(!crystal.permutations.is_empty(), "the cubic group is kept");
+    let group = crystal.description.as_ref().and_then(|d| d.point_group.as_ref());
+    assert_eq!(group.map(|g| g.len()), Some(crystal.permutations.len()));
 }
 
 #[test]
@@ -163,16 +162,20 @@ fn unsupported_calculation_options_are_not_silently_ignored() {
         assert!(error.to_string().contains(name), "{error}");
     }
     let mut input = request();
+    // A charged cell is a supported request (neutralizing background): the charge is carried.
     input["charge"] = json!(1.);
-    assert!(parse_input_json(&input).is_err());
+    assert_eq!(parse_input_json(&input).unwrap().charge, Some(1.));
     input["charge"] = json!(0.);
     assert!(parse_input_json(&input).is_ok());
+    // A screened hybrid is a supported functional of the periodic setup (it keeps the whole mesh,
+    // see `setup/parse.rs`), so the request parses; the setup still refuses an atom whose dataset
+    // is not supplied, before any dataset is read.
     input["functional"] = json!("hse06");
+    let parsed = parse_input_json(&input).expect("an hse06 request parses");
+    assert_eq!(parsed.functional, "hse06");
     let ctx = Context::new(Some(1), 64 << 20).unwrap();
-    let error = create_setup(&ctx, parse_input_json(&input).unwrap(), vec![])
-        .err()
-        .unwrap();
-    assert!(error.to_string().contains("hybrid"), "{error}");
+    let error = create_setup(&ctx, parsed, vec![]).err().unwrap();
+    assert!(error.to_string().contains("dataset index"), "{error}");
 }
 
 #[test]
@@ -196,7 +199,7 @@ fn unsupported_spinor_and_invalid_dataset_indices_are_refused() {
 }
 
 #[test]
-fn collinear_moments_select_two_spins_and_disable_symmetry() {
+fn collinear_moments_select_two_spins_and_keep_the_moment_preserving_symmetry() {
     let ctx = Context::new(Some(1), 1 << 30).unwrap();
     let mut input = request();
     input["atoms"][0]["moment"] = json!(0.7);
@@ -208,7 +211,7 @@ fn collinear_moments_select_two_spins_and_disable_symmetry() {
     .unwrap();
     assert_eq!(setup.spins, 2);
     assert_eq!(setup.moments, [0.7]);
-    assert!(setup.symmetry.is_none());
+    assert!(setup.symmetry.is_some(), "a collinear moment keeps the operations that preserve it");
     let strained = setup.with_cell(&ctx, &(setup.lattice * 1.01)).unwrap();
     assert_eq!(strained.spins, 2);
     assert_eq!(strained.moments, [0.7]);

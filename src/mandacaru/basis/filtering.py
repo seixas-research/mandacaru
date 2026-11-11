@@ -147,7 +147,6 @@ from dataclasses import replace
 import numpy as np
 
 from .. import _native
-from ..units import EV_TO_HARTREE
 
 #: ``filter_cutoff="auto"`` / ``True`` puts the cutoff at this fraction of the grid's
 #: Nyquist wave-vector :math:`\pi/h` -- i.e. **exactly at** it.  The principle
@@ -260,8 +259,8 @@ def resolve_filter_cutoff(spec, spacing_bohr=None) -> float | None:
         spacing = float(spacing_bohr)
         if spacing <= 0.0:
             raise ValueError(f"the grid spacing must be positive, got {spacing!r}")
-        return FILTER_NYQUIST_FRACTION * np.pi / spacing
-    return float(np.sqrt(2.0 * float(spec) * EV_TO_HARTREE))
+        return _native.nyquist_wavevector(FILTER_NYQUIST_FRACTION, spacing)
+    return _native.free_wavevector(float(spec))
 
 
 def filter_label(spec) -> str:
@@ -276,7 +275,7 @@ def filter_label(spec) -> str:
 
 def cutoff_energy_ev(k_c: float) -> float:
     """The kinetic-energy cutoff in eV a wave-vector corresponds to."""
-    return float(0.5 * k_c * k_c / EV_TO_HARTREE)
+    return _native.free_energy_ev(float(k_c))
 
 
 # --------------------------------------------------------------------------- #

@@ -20,7 +20,14 @@ optimization. The default `measurement_budget` below is sized to refuse that job
    $M^3$ in the number of orbitals $M$, and each basis needs enough shots for
    the coefficient 1-norm. The standard error of a measured energy is bounded
    by $\left(\sum_{P\neq I}|c_P|\right)/\sqrt{\text{shots}}$ per basis, so
-   chemical accuracy (1.6 mHa) can need millions of shots.
+   chemical accuracy (1.6 mHa) can need millions of shots. A run with `shots > 0`
+   reports the measured one, `result.energy_error` (in the energy unit), from the
+   counts with the covariances of the strings each basis reads on the same shots. Each
+   basis is measured rotated to `Z` together with the distinct products of its strings,
+   read on the same shots: they cost no shot or basis, and no `measurement_budget`
+   ceiling counts them. A basis needing more than 20,000 products (a classical limit)
+   leaves the run without an error: `result.energy_error` is `None` and
+   `result.energy_error_reason` says why.
 3. **Fidelity.** Hardware noise, not shot noise, limits the useful circuit: a
    circuit of hundreds of two-qubit gates retains almost no signal, and no
    number of shots recovers it.
@@ -86,6 +93,25 @@ Pass `measurement_budget={"bases": 13_056, "observables": 500_000}` (the numbers
 reports, with room for the observables) and bound the job size with `max_bases_per_job`. The
 run budget refuses the same way, naming `backend_options={"run_budget": {...}}` with the
 jobs or shots this run needs.
+
+**An oversized pool is refused before it is planned.** The default `"ceo"` pool is generalized
+over every spin-orbital quadruple, so its size grows as the fourth power of the register: at 50
+qubits it has 588,300 generators and one gradient step needs about 7.8 million Pauli
+observables, against the default ceiling of 50,000. The native planner forms the pool's
+commutators in bounded batches and stops at the first batch that carries the distinct Pauli
+strings past the `observables` ceiling, so the refusal comes in seconds with bounded memory
+(measured 2026-11-10 on the 50-qubit one-electron run: 360 s and 1.9 GB before, 2.1 s and
+0.29 GB after; the figures are in `dev_plan/PAW_MIGRATION_LOG.md`) and no job or gradient plan is built:
+
+```text
+the 'ceo' pool has 588,300 generators and measuring its gradients needs more than 50,000 Pauli
+observables (the first N commutators already hold M distinct strings): ... choose a smaller
+pool, pool="fermionic" or "qeb", or pass measurement_budget={"observables": N} sized for this run
+```
+
+The count in the message is a lower bound (the walk stopped when the ceiling was crossed), never
+an estimate: a pool that fits the ceiling is never refused. Name `pool="fermionic"` or `"qeb"`
+for a register this wide, or raise `observables` above what the full pool needs.
 
 (run-budget)=
 ## The run budget

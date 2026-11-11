@@ -7,7 +7,7 @@
 //! This is the construction of the molecular adapter (`paw::molecular::data`) for
 //! the part the one-center exchange needs, taken from the typed record instead of
 //! from adapter arrays, and without the molecular restrictions on the frozen core
-//! (the one-center exchange is valence only). The smooth wave inside the channel
+//! (the one-center exchange is valence only, its smooth side carrying the grid's smooth core). The smooth wave inside the channel
 //! radius is the dataset's Bessel expansion, outside it the all-electron wave.
 use super::{
     invalid,
@@ -30,6 +30,8 @@ struct ChannelTables {
 /// The tables of one species, owned. [`SpeciesTables::view`] borrows them.
 pub struct SpeciesTables {
     knots: Vec<f64>,
+    /// The smooth core of the nonlinear core correction on `knots` (zeros without one).
+    smooth_core: Vec<f64>,
     compensation_radius: f64,
     channels: Vec<ChannelTables>,
 }
@@ -41,7 +43,7 @@ impl SpeciesTables {
         let r = dataset.r.as_slice();
         let n = r.len();
         let waves: usize = dataset.channels.values().map(|c| c.ae_waves.len()).sum();
-        let _memory = ctx.reserve(product(&[n, waves.max(1), 8, 4])?)?;
+        let _memory = ctx.reserve(product(&[n, waves.max(1) + 1, 8, 4])?)?;
         let mut channels = Vec::new();
         for (&l, channel) in &dataset.channels {
             let l = l as usize;
@@ -123,8 +125,24 @@ impl SpeciesTables {
                 "a PAW species needs channels and a positive compensation radius",
             ));
         }
+        // The grid places the smooth core only when the dataset was unscreened with it; the
+        // spheres must take off the smooth side exactly what the grid put there.
+        let smooth_core = if dataset.nlcc.applied {
+            if dataset.nlcc.source.as_deref() != Some("smooth_core") {
+                return Err(invalid(
+                    "the dataset was unscreened with a core re-pseudized at an unstored radius",
+                ));
+            }
+            if dataset.smooth_core_density.as_slice().len() != n {
+                return Err(invalid("the smooth core does not match the radial grid"));
+            }
+            dataset.smooth_core_density.as_slice().to_vec()
+        } else {
+            vec![0.; n]
+        };
         Ok(Self {
             knots: r.to_vec(),
+            smooth_core,
             compensation_radius: dataset.compensation_radius,
             channels,
         })
@@ -134,6 +152,7 @@ impl SpeciesTables {
     pub fn view(&self) -> SpeciesView<'_> {
         SpeciesView {
             knots: &self.knots,
+            smooth_core: &self.smooth_core,
             compensation_radius: self.compensation_radius,
             channels: self
                 .channels

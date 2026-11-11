@@ -19,6 +19,11 @@ pub struct SubspaceResult {
     pub message: String,
     pub final_gradient: f64,
     pub elapsed_seconds: f64,
+    /// The Hessian approximation (row-major, `n x n`) of the final ansatz of `n` parameters,
+    /// for SLSQP growth (see `SolveResult::hessian`); `None` otherwise.
+    pub hessian: Option<Vec<f64>>,
+    /// What the caller should know about how the run started (see `SolveResult::notes`).
+    pub notes: Vec<String>,
     _memory: Reservation,
 }
 impl CachedProblem {
@@ -63,9 +68,21 @@ impl CachedProblem {
         weights: &[f64],
         initial: Option<&[f64]>,
     ) -> Result<SubspaceResult> {
+        self.solve_subspace_sequence(options, weights, initial, None)
+    }
+    /// As [`Self::solve_subspace`], an ADAPT run continuing from `sequence` (a resumed
+    /// checkpoint): the stored ansatz is relaxed first, its growth steps count toward
+    /// `max_growth`, and growth continues from it.
+    pub fn solve_subspace_sequence(
+        &self,
+        options: &SolveOptions,
+        weights: &[f64],
+        initial: Option<&[f64]>,
+        sequence: Option<&[usize]>,
+    ) -> Result<SubspaceResult> {
         by_precision!(
             self.precision,
-            A => self.solve_subspace_as::<A>(options, weights, initial)
+            A => self.solve_subspace_as::<A>(options, weights, initial, sequence)
         )
     }
     fn solve_subspace_as<A: Amplitude>(
@@ -73,6 +90,7 @@ impl CachedProblem {
         options: &SolveOptions,
         weights: &[f64],
         initial: Option<&[f64]>,
+        sequence: Option<&[usize]>,
     ) -> Result<SubspaceResult> {
         self.context.run(|| {
             options.validate(self.precision)?;
@@ -112,7 +130,40 @@ impl CachedProblem {
                     .checked_add(product(&[runs, 128])?)
                     .ok_or(Error::Overflow)?,
             )?;
-            let mut indices: Vec<usize> = if options.adapt {
+            if options.continuation && options.hessian.is_none() {
+                return Err(Error::Invalid(
+                    "a continued growth needs the Hessian it stopped with".into(),
+                ));
+            }
+            if let Some(hessian) = &options.hessian {
+                let n = sequence.map_or(0, <[usize]>::len);
+                if !options.optimizer.method.carries_curvature()
+                    || !options.adapt
+                    || sequence.is_none()
+                    || hessian.len() != n * n
+                {
+                    return Err(Error::Invalid(
+                        "a carried Hessian needs a carried SLSQP or BFGS ADAPT sequence of as many \
+                         parameters"
+                            .into(),
+                    ));
+                }
+            }
+            if sequence.is_some_and(|s| {
+                !options.adapt
+                    || self.growth_steps(s).is_err()
+                    || self.growth_steps(s).is_ok_and(|n| n > options.max_growth)
+                    || initial.is_none_or(|p| p.len() != s.len())
+            }) {
+                return Err(Error::Invalid(
+                    "a resumed subspace ADAPT sequence must fit the pool, its parameters and the \
+                     growth budget"
+                        .into(),
+                ));
+            }
+            let mut indices: Vec<usize> = if let Some(sequence) = sequence {
+                sequence.to_vec()
+            } else if options.adapt {
                 vec![]
             } else {
                 (0..self.pool.len())
@@ -153,6 +204,11 @@ impl CachedProblem {
             let mut message = "growth budget exhausted".to_owned();
             let mut delta = None;
             let mut final_gradient = 0.;
+            // The SLSQP Hessian or BFGS inverse Hessian approximation travels from one growth
+            // step to the next, extended by the identity for the appended parameters (as in
+            // `solve`).
+            let carries_curvature = options.adapt && options.optimizer.method.carries_curvature();
+            let mut curvature: Option<Vec<f64>> = None;
             if !options.adapt {
                 let out = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
                     objective(&indices, t)
@@ -166,7 +222,27 @@ impl CachedProblem {
                     .iter()
                     .fold(0f64, |a, g| a.max(g.abs()));
             } else {
-                for growth in 0..=options.max_growth {
+                if options.continuation {
+                    // The stored end of an earlier growth step of this very problem: growth
+                    // continues from it without a relaxation, as the uninterrupted run did.
+                    curvature = options.hessian.clone();
+                } else if !indices.is_empty() {
+                    // A resumed ansatz is relaxed before it grows.
+                    let mut out = optimizer::minimize_from(
+                        ctx,
+                        &parameters,
+                        &options.optimizer,
+                        options.hessian.as_deref(),
+                        |t| objective(&indices, t),
+                    )?;
+                    parameters = std::mem::take(&mut out.parameters);
+                    history.append(&mut out.history);
+                    curvature = out.hessian.take().filter(|_| carries_curvature);
+                    if !out.success {
+                        optimizer_failures.push((0, out.message));
+                    }
+                }
+                for growth in self.growth_steps(&indices)?..=options.max_growth {
                     let mut gradients = ctx.allocate::<f64>(self.pool.len())?;
                     let mut lowest = f64::INFINITY;
                     for (j, w) in weights.iter().enumerate() {
@@ -223,16 +299,25 @@ impl CachedProblem {
                     } else {
                         vec![selected]
                     };
+                    let accepted = indices.len();
                     for index in grown {
                         indices.push(index);
                         parameters.push(0.);
                     }
-
-                    let out = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
-                        objective(&indices, t)
-                    })?;
-                    parameters = out.parameters;
-                    history.extend(out.history);
+                    let start_curvature = curvature
+                        .as_deref()
+                        .filter(|h| carries_curvature && h.len() == accepted * accepted)
+                        .map(|h| super::solver::extend_hessian(h, accepted, parameters.len()));
+                    let mut out = optimizer::minimize_from(
+                        ctx,
+                        &parameters,
+                        &options.optimizer,
+                        start_curvature.as_deref(),
+                        |t| objective(&indices, t),
+                    )?;
+                    parameters = std::mem::take(&mut out.parameters);
+                    history.append(&mut out.history);
+                    curvature = out.hessian.take().filter(|_| carries_curvature);
                     let mut next_lowest = f64::INFINITY;
                     for j in 0..k {
                         next_lowest = next_lowest.min(
@@ -295,6 +380,7 @@ impl CachedProblem {
                     .copy_from_slice(&states.as_slice()[source * d..(source + 1) * d]);
             }
             let sorted_energies = order.iter().map(|&i| energies[i]).collect();
+            let indices_len = indices.len();
             Ok(SubspaceResult {
                 energies: sorted_energies,
                 parameters,
@@ -308,6 +394,8 @@ impl CachedProblem {
                 message,
                 final_gradient,
                 elapsed_seconds: start.elapsed().as_secs_f64(),
+                hessian: curvature.filter(|h| h.len() == indices_len * indices_len),
+                notes: Vec::new(),
                 _memory: memory,
             })
         })

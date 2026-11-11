@@ -44,7 +44,7 @@ def native_setup(driver, atoms, family, options, moments, spinor, time_reversal,
         refuse_crystal(options.get("diffuse"))
     import json
     from time import perf_counter
-    from ..units import ANGSTROM_TO_BOHR
+    from ..units import to_bohr
     from ..integrals import Grid
     from ..models.setup import monkhorst_pack_kpts
     from ..pseudopotentials.paw import get_paw, get_upaw
@@ -81,7 +81,7 @@ def native_setup(driver, atoms, family, options, moments, spinor, time_reversal,
     dataset_paths = [ds.source for ds in datasets]
     # The Rust setup holds the lattice vectors as COLUMNS (``periodic::setup::parse``); ASE's cell
     # holds them as rows, so the request carries the transpose. A symmetric cell hides the swap.
-    lattice_bohr = [float(x) * ANGSTROM_TO_BOHR for column in zip(*cell) for x in column]
+    lattice_bohr = to_bohr([float(x) for column in zip(*cell) for x in column]).tolist()
     # Each element's size travels in its recipe; the global name only has to be a valid one.
     named = options.get("size", "SZ")
     basis_size = named.upper() if isinstance(named, str) else "SZ"

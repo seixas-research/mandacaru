@@ -396,11 +396,10 @@ impl Crystal {
     pub(crate) fn from_components(ctx: &Context, c: CrystalComponents) -> Result<Self> {
         let labels = c.description.as_ref()
             .ok_or_else(|| invalid("native crystal needs channel labels"))?.channels.clone();
-        // Components must satisfy the same DFT+U capability and table checks as
-        // a loaded snapshot, including the refusal of symmetry-reduced meshes.
+        // Components must satisfy the same DFT+U capability and table checks as a loaded snapshot.
         let hubbard = super::hubbard::Spec::parse(
             &c.hubbard.as_ref().map_or(Value::Null, |h| h.to_json()),
-            c.p, c.spins, c.spinor, c.precision, c.permutations.len(),
+            c.p, c.spins, c.spinor, c.precision,
         )?;
         let step: Vec<f64> = (0..3).flat_map(|i| (0..3).map(move |j| c.grid.step[(i, j)])).collect();
         let points: Vec<Value> = c.points.iter().map(|p| serde_json::json!({
@@ -435,7 +434,7 @@ impl Crystal {
         let metadata = metadata.to_string();
         let source = Source::keep(ctx, &metadata)?;
         let memory = ctx.reserve(4096usize.checked_add(source.resident_bytes()).ok_or(crate::Error::Overflow)?)?;
-        Ok(Self {
+        let crystal = Self {
             context: ctx.clone(),
             grid: c.grid,
             m: c.m,
@@ -476,7 +475,9 @@ impl Crystal {
             description_unavailable: c.description_unavailable,
             source,
             _memory: memory,
-        })
+        };
+        crystal.check_hubbard_symmetry()?;
+        Ok(crystal)
     }
 
     pub fn from_json(ctx: &Context, source: &str) -> Result<Self> {
@@ -721,7 +722,6 @@ impl Crystal {
             spins,
             spinor,
             precision,
-            permutations.len(),
         )?;
         let functional = definition.name.to_string();
         let hybrid = match definition.screened_exchange {
@@ -855,7 +855,16 @@ impl Crystal {
                 "time-reversal spinor SCF requires zero initial magnetization",
             ));
         }
+        result.check_hubbard_symmetry()?;
         Ok(result)
+    }
+    /// Refuses, before any SCF, a DFT+U table the crystal's symmetry operations cannot complete
+    /// (see `hubbard_symmetry`).
+    fn check_hubbard_symmetry(&self) -> Result<()> {
+        if let Some(spec) = &self.hubbard {
+            super::hubbard_symmetry::Averager::for_crystal(spec, self)?;
+        }
+        Ok(())
     }
     pub fn load(ctx: &Context, path: &str) -> Result<Self> {
         let n = std::fs::metadata(path)

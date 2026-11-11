@@ -38,7 +38,7 @@ pub struct SetupInput {
     pub kpoints_frac: Vec<[f64; 3]>,
     pub weights: Vec<f64>,
     /// A Monkhorst-Pack mesh `(size, gamma)` the setup reduces itself (by the operations that keep
-    /// it, then time reversal; whole for a magnetic crystal, a non-time-reversal spinor crystal and
+    /// it, then time reversal; whole for a magnetic crystal with `symmetry` off, a non-time-reversal spinor crystal and
     /// a hybrid, whose exact exchange sums over the listed k-points). When
     /// set, `kpoints_frac` and `weights` are its output and must be empty on input.
     pub mesh: Option<([usize; 3], bool)>,
@@ -335,11 +335,25 @@ pub fn create_setup(
 
     // Symmetry operations
     let magnetic = input.atoms.iter().any(|a| a.moment != 0.);
-    let symmetry = if input.symmetry && !input.spinor && !magnetic && !hybrid {
+    // A collinear moment pattern keeps the operations that map every atom onto an atom of the SAME
+    // element and the SAME signed moment (the density of each spin channel is then symmetrized
+    // channel by channel). An operation that would send a moment to its opposite needs a spin flip
+    // of the channels: it is not kept (the moment-preserving subgroup of the magnetic group).
+    let symmetry = if input.symmetry && !input.spinor && !hybrid {
+        let mut keys: Vec<(u32, i64)> = Vec::new();
         let labels: Vec<u32> = atomic_numbers
             .iter()
             .zip(&moments)
-            .map(|(&z, &m)| z ^ ((m.abs() * 1e4) as u32))
+            .map(|(&z, &m)| {
+                let key = (z, (m * 1e4).round() as i64);
+                match keys.iter().position(|k| *k == key) {
+                    Some(i) => i as u32,
+                    None => {
+                        keys.push(key);
+                        (keys.len() - 1) as u32
+                    }
+                }
+            })
             .collect();
         let geom = Geometry {
             lattice: input.lattice,

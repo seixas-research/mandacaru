@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import numpy as np
-from ..units import HARTREE_TO_EV
+from .. import _native
 
 
 @dataclass
@@ -25,20 +25,19 @@ class EnergyLevels:
 
     @property
     def excitation_energies(self):
-        return self.energies - self.energies[0]
+        return _native.relative_to_first([float(e) for e in self.energies])
 
     @property
     def gaps(self):
-        return np.diff(self.energies)
+        return _native.gaps([float(e) for e in self.energies])
 
     def in_units(self, units="eV"):
         if units not in ("Ha", "eV"):
             raise ValueError("energy units must be Ha or eV")
-        factor = (1.0 if self.energy_unit == "Ha" else 1.0 / HARTREE_TO_EV) * (
-            1.0 if units == "Ha" else HARTREE_TO_EV
-        )
-        return self.energies.copy() * factor
+        if units == self.energy_unit:
+            return self.energies.copy()
+        return _native.convert_energy(
+            np.ascontiguousarray(self.energies, dtype=float), self.energy_unit, units)
 
     def excitation_energies_in_units(self, units="eV"):
-        values = self.in_units(units)
-        return values - values[0]
+        return _native.relative_to_first([float(e) for e in self.in_units(units)])

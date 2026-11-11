@@ -12,10 +12,15 @@ mod basis_table;
 mod basis_zetas;
 mod bloch;
 mod context;
+mod derived;
+mod dipole;
 mod factorization;
 mod finite_size;
 mod geometry;
 mod hubbard;
+mod kpath;
+mod measurement;
+mod term_lists;
 mod models;
 mod molecular;
 mod orbitals;
@@ -35,6 +40,7 @@ mod run_log;
 mod symmetry;
 mod sparse;
 mod viewer;
+mod downfold;
 mod wannier;
 mod xc_grid;
 use arrays::{array, complex, complex_array, copy, error, layout, Array};
@@ -47,6 +53,8 @@ use geometry::{PyGeometry, PyGrid, PySpatialGrid, Workspace};
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BOHR_TO_ANGSTROM", mandacaru_core::units::BOHR_TO_ANGSTROM)?;
     m.add("HARTREE_TO_EV", mandacaru_core::units::HARTREE_TO_EV)?;
+    m.add("ANGSTROM_TO_BOHR", mandacaru_core::units::ANGSTROM_TO_BOHR)?;
+    m.add("EV_TO_HARTREE", mandacaru_core::units::EV_TO_HARTREE)?;
     m.add(
         "FUNCTIONALS",
         mandacaru_core::models::FUNCTIONALS
@@ -72,8 +80,55 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         mandacaru_core::quantum::amplitude::FLOAT32_FLOORS.gradient,
     )?;
     m.add_function(wrap_pyfunction!(context::num_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(molecular::two_body_representation, m)?)?;
     m.add_function(wrap_pyfunction!(context::grid_blas_threads, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::optimizer_evaluation_bound, m)?)?;
+    m.add_function(wrap_pyfunction!(measurement::shot_noise, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::to_user_units, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::free_wavevector, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::free_energy_ev, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::energy_shift_radius, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::nyquist_wavevector, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::force_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::iteration_values, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::cell_parameters, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::relative_to_first, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::difference_to_user, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::electron_counts, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::energy_from_hartree, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::energy_to_hartree, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::convert_energy, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::length_to_bohr, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::energy_unit_factor, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::total, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::vector_norm, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::distance, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::gaps, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::uniform_weights, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::highest_occupied, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::energy_axis, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::column_groups, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::displaced, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::ratio, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::grid_cell, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::grid_coordinates, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::decimal_digits, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::rounded, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::pauli_term_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::pauli_term_scale, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::pauli_term_drop, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::pauli_term_hermitian, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::fermion_term_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::fermion_term_scale, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::fermion_term_product, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::fermion_term_dagger, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::fermion_term_modes, m)?)?;
+    m.add_function(wrap_pyfunction!(dipole::electric_field_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(dipole::dipole_one_body, m)?)?;
+    m.add_function(wrap_pyfunction!(measurement::twirled_instances, m)?)?;
+    m.add_function(wrap_pyfunction!(measurement::budget_check, m)?)?;
+    m.add_function(wrap_pyfunction!(measurement::estimator_precision, m)?)?;
+    m.add_function(wrap_pyfunction!(measurement::mps_job_gigabytes, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::state_norm_squared, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::state_inner, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::require_normalized_state, m)?)?;
@@ -82,10 +137,12 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bloch::bloch_supercell, m)?)?;
     m.add_function(wrap_pyfunction!(bloch::bloch_bands, m)?)?;
     m.add_function(wrap_pyfunction!(bloch::bloch_spectral_function, m)?)?;
+    m.add_function(wrap_pyfunction!(bloch::bloch_path_spectral_function, m)?)?;
     m.add_function(wrap_pyfunction!(bloch::tetrahedron_dos, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_fd, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_analytic, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_analytic, m)?)?;
+    kpath::register(m)?;
     paw_basis::register(m)?;
     paw_diagnose::register(m)?;
     paw_generate::register(m)?;
@@ -127,6 +184,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(factorization::pair_spectrum, m)?)?;
     m.add_function(wrap_pyfunction!(factorization::factorized_energy_rdm, m)?)?;
     m.add_class::<quantum::PyProblem>()?;
+    m.add_class::<quantum::PyRdmMeasurement>()?;
     m.add_class::<PySpatialGrid>()?;
     m.add_class::<molecular::PyIntegrals>()?;
     m.add_class::<molecular::PyMeanField>()?;
@@ -137,5 +195,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<periodic::PyPeriodicResult>()?;
     m.add_class::<wannier::PyWannierSetup>()?;
     m.add_class::<wannier::PyWannierResult>()?;
+    m.add_class::<downfold::PyDownfolded>()?;
     Ok(())
 }

@@ -68,7 +68,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from .. import _native
-from ..units import HARTREE_TO_EV
 from .native_context import context as _context
 
 #: Amplitude ``A`` (Hartree) of the confining potential.
@@ -368,7 +367,7 @@ class ConfinedOrbital:
     def achieved_shift(self) -> float:
         """The realized shift (eV); equals :attr:`energy_shift` to the root
         search's tolerance."""
-        return (self.energy - self.free_energy) * HARTREE_TO_EV
+        return _native.difference_to_user(float(self.energy), float(self.free_energy), "energy")
 
 
 def confined_orbital(pp, l: int, energy_shift: float,

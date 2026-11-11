@@ -151,7 +151,8 @@ pub fn screened(
 }
 /// `(X0 - V . D0, [V_channel])` of the reference atom in the projector basis of each
 /// channel: the short-range semilocal exchange of the all-electron valence density
-/// minus the smooth one, linearized at the reference occupations.
+/// minus the smooth valence density plus the smooth core the grid carries, linearized at the
+/// reference occupations.
 ///
 /// The reference density matrix of a channel need not be diagonal in the projector
 /// basis, so its waves are rotated to the eigenvectors of that matrix, where it is
@@ -223,8 +224,14 @@ fn frozen_exchange(
             projector_radius: ch.radius,
         })
         .collect();
-    let (constant, blocks) =
-        frozen_exchange_terms(ctx, grid, &occupied, omega, ProjectorBasis::Dual)?;
+    let (constant, blocks) = frozen_exchange_terms(
+        ctx,
+        grid,
+        species.smooth_core,
+        &occupied,
+        omega,
+        ProjectorBasis::Dual,
+    )?;
     let matrices = species
         .channels
         .iter()

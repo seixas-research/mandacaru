@@ -50,6 +50,21 @@ to the precision of the SCF (`result.hubbard_energy` is then 0.0 eV).
 `hubbard_u` requires `method="dft"`: any other method raises `ValueError`
 ([the methods reference](#methods-table)).
 
+(dft-u-molecules)=
+### Molecules
+
+A molecule (no periodic axis) takes the same option with `method="dft"` and a PAW-LCAO
+basis: the Hubbard shell is built from the same PAW partial-wave projection, and the
+energy and the Fock matrix of the molecular Kohn–Sham iteration carry the correction.
+The analytic force of a molecule carries the +U term: the derivative of the +U energy through
+the shell projections of the moving atom, with the response of the orbitals in the usual overlap
+(Pulay) and stationarity terms. It follows a central difference of the +U energy on a frozen
+grid for both forms and for a spin-polarized state (`result.force_details` lists the term as
+`hubbard/projection`). A request the molecule cannot carry raises when the calculation starts:
+an element the molecule does not contain, or a shell the dataset lacks, is an error and never
+runs as plain DFT. A molecule on a fully relativistic dataset (`lda-fr`, `pbe-fr`) runs spinor
+Kohn–Sham, which has no +U: `hubbard_u` raises `NotImplementedError`.
+
 ## Subspace projection: what `n` is
 
 All DFT+U variants map the Kohn–Sham single-particle density onto an on-site shell
@@ -302,32 +317,86 @@ Calculations run with `txt=` record DFT+U details in the `[SCF SUMMARY]` block:
 When linear response is run, response matrices and condition diagnostics are reported in
 `[HUBBARD RESPONSE]`.
 
-## Status of forces and stresses
+(dft-u-symmetry)=
+## Symmetry-reduced $k$ meshes
 
-Plain-DFT crystal forces and stresses for LDA, PBE, and HSE06 are analytic in native Rust
-([Forces](forces_relaxation.md)).
-
-For a DFT+U crystal calculation (`hubbard_u`), requesting crystal forces or stress currently
-raises:
-
-```text
-NotImplementedError: crystal forces and stress are not available for a DFT+U crystal (hubbard_u):
-the +U terms of the analytic force and stress are not implemented; the DFT+U energy is available (with symmetry=False)
-```
-
-This refusal is checked before any SCF cycle begins. Mandacaru deliberately refuses numerical
-finite-difference fallbacks through ASE, ensuring that all forces and stresses remain exact,
-analytic, and computationally bounded.
-
-The analytic force contribution from DFT+U requires differentiating the basis-projector
-overlap matrices $C(X) = \langle \chi_\mu | p_p \rangle$:
+With `symmetry=True` the Monkhorst–Pack mesh of a nonmagnetic crystal is reduced to the irreducible
+wedge by the space-group operations that keep the crystal and the mesh, and by time reversal.
+The wedge visits one $\mathbf{k}$-point of every star, so the sum
+$R = \sum_\mathbf{k} w_\mathbf{k}\, C^\dagger D_\mathbf{k} C$ is only a part of the full-mesh one, and the density
+and the channel moments are completed over the operations by the SCF. The occupation matrices are completed the
+same way, so that $n$ is symmetric exactly when the density is. For an operation $g$ with the rotation $R_g$ that
+sends atom $a$ to atom $g(a)$,
 
 $$
-F_X^{(U)} = -\sum_{s, \mathbf{k}} w_{\mathbf{k}} 2 \mathrm{Re}\mathrm{Tr}\left[ D_{s\mathbf{k}} \, dC^X \, O_s \, C_{\mathbf{k}}^\dagger \right],
+n^{a} \leftarrow \frac{1}{|G|} \sum_{g} T_g \, n^{g(a)} \, T_g^\dagger,
+\qquad Y_{lm}(R_g \mathbf{u}) = \sum_{m'} Y_{lm'}(\mathbf{u})\, T_g[m', m],
 $$
 
-where $O_s = W V_s W^T$. The implementation of these analytic $+U$ gradient terms is scheduled
-in the development plan (`dev_plan/DFTU_PLAN.md`).
+per spin channel, in the complex-harmonic basis of the projectors. The rotation tables, the atom maps and the
+operations are those of the space-group search; nothing is recomputed for $U$. On a mesh that is not closed
+under $\mathbf{k} \to -\mathbf{k}$ (an odd mesh, or any mesh reduced by operations) time reversal is applied too,
+$n_{mm'} \leftarrow \tfrac12 [\, n_{mm'} + (-1)^{m+m'} n^*_{-m,-m'}]$. The completion is applied at one place, so the SCF,
+the reported occupations, the energy, the operators of the forces and the stress, and the response all see it.
+
+Time reversal matters for crystals without an inversion center. With inversion every $n_\mathbf{k}$ is already
+time-reversal invariant; a halved mesh of a crystal without it gives wrong occupations when the completion is
+left out (three Ni atoms around a threefold axis, a $3\times3\times3$ mesh halved to 14 of 27 points: $|\Delta n| = 9\times10^{-3}$,
+$|\Delta E| = 1.8$ meV, against $10^{-12}$ with it).
+
+The reference of every check is the same crystal on the whole mesh, listed point by point with
+no operation and no completion:
+
+| Crystal (basis SZ, LDA, $U = 4$ to $6$ eV) | $k$-points, wedge and whole | $\max\lvert\Delta n\rvert$ | $\lvert\Delta E\rvert$ |
+| --- | --- | --- | --- |
+| three Ni around a threefold axis (a cyclic permutation of the Hubbard atoms), $2\times2\times2$ | 4 and 8 | $1.9\times10^{-12}$ | $5\times10^{-11}$ eV |
+| the same, $3\times3\times3$ halved by time reversal only | 14 and 27 | $1.1\times10^{-12}$ | $4\times10^{-11}$ eV |
+| hcp Ni (the screw axis swaps the two Hubbard atoms), $3\times3\times2$ | 6 and 18 | $2.4\times10^{-11}$ | $4\times10^{-11}$ eV |
+| a cell with no symmetry, $2\times2\times2$ | 8 and 8 | $1.5\times10^{-13}$ | $3\times10^{-11}$ eV |
+| fcc Ni, $3\times3\times3$ (Dudarev; spin-polarized; Liechtenstein) | 4 and 27 | $3.4\times10^{-8}$, $1.2\times10^{-8}$, $1.7\times10^{-8}$ | $5.7\times10^{-7}$ eV |
+| rocksalt NiO, $3\times3\times3$ | 4 and 27 | $8.0\times10^{-7}$ | $5.4\times10^{-6}$ eV |
+
+The cubic rows sit above $10^{-10}$ because of the discretization, not of the completion: the product quadratures of the
+projector spheres and of the short-range local spheres are exactly invariant under rotations about $z$ and under mirrors
+(the hexagonal and trigonal rows) but not under the cubic operations that mix the axes, so the two builds differ already
+without $U$ ($5.95\times10^{-7}$ eV for fcc Ni on the same mesh). The floor is larger in the derivatives: in the
+four-atom NiO cell ($2\times2\times2$) the forces differ by $8.4\times10^{-4}$ eV/Å (largest force 0.59 eV/Å) and the
+stress by $1.2\times10^{-3}$ eV/Å³, with or without moments or $U$. The reduced-mesh result is the exactly symmetric
+one: the threefold average of the whole-mesh force equals it to $1.3\times10^{-5}$ eV/Å.
+
+**Magnetic crystals.** A collinear moment pattern (`set_initial_magnetic_moments`) keeps the operations that map every atom
+onto an atom of the same element and the same initial moment, so the density of each spin channel is completed channel by
+channel with the same operations; an operation that would send a moment to its opposite (the swap of the two Ni atoms of a
+type-II antiferromagnet) would also flip the spin channels and is not kept. In the four-atom NiO cell the moments reduce the
+group from 24 to 12 operations (6 once an oxygen atom is moved along [111]); the 2x2x2 mesh goes from 8 to 4 points. With `symmetry=False` a magnetic crystal keeps the whole mesh.
+The same holds without `hubbard_u`. Measured against the whole mesh: three Ni with parallel moments, plain DFT, energy
+$2\times10^{-10}$ eV and magnetization $3\times10^{-10}\,\mu_B$; with one moment flipped (12 operations become 4), $+U$,
+$|\Delta n| = 2\times10^{-12}$; ferromagnetic fcc Ni, $+U$, $5\times10^{-7}$ eV (the cubic floor); NiO type II,
+$+U$, $3\times10^{-5}$ eV and the shell moments to $8\times10^{-8}$.
+
+**Linear response.** The response shifts the potential of one shell. The shift of an atom that every kept operation
+fixes is symmetric, so the wedge gives the response of the whole mesh (rocksalt NiO, $2\times2\times2$, 3 of 8 points: $U = 10.746474$ eV
+on both). The shift of an atom an operation moves breaks the symmetry, and `hubbard_response` raises, naming
+`symmetry=False`, rather than smear the shift over the star.
+
+(dft-u-forces)=
+## Forces and stresses
+
+Crystal forces and stress are analytic for a collinear semilocal DFT+U crystal (`get_forces()`, `get_stress()`),
+on the whole mesh and on a [symmetry-reduced mesh](#dft-u-symmetry). The +U energy depends on the state only
+through the shell occupations, so with $O_s = W V_s W^T$ (the complete $V = V_\mathrm{Hub} - V_\mathrm{dc}$ of the
+converged output density) the orbital-stationarity argument leaves one new term, the explicit dependence of the
+basis–projector overlap $C(X) = \langle \chi_\mu | p_p \rangle$ at fixed density matrix:
+
+$$
+F_X^{(U)} = -\sum_{s, \mathbf{k}} w_{\mathbf{k}}\, 2 \mathrm{Re}\mathrm{Tr}\left[ D_{s\mathbf{k}} \, dC^X \, O_s \, C_{\mathbf{k}}^\dagger \right],
+$$
+
+and the strain derivative is the same contraction with $dC/d\varepsilon_{ab} = \sum_R e^{-i\mathbf{k}\cdot\mathbf{R}}\, G^a_R\, d_R^b$.
+The term enters the projection terms of the engines, which the group average of a reduced mesh already symmetrizes. On three Ni atoms
+around a threefold axis ($U = 3$ eV, 14 eV/Å radial forces) the reduced mesh agrees with the whole mesh to
+$1.4\times10^{-10}$ eV/Å in the forces and $5\times10^{-11}$ eV/Å$^3$ in the stress. A DFT+U hybrid or spinor crystal raises
+`NotImplementedError` before any SCF; there is no finite-difference fallback.
 
 ## Supported features and refusal matrix
 
@@ -336,15 +405,16 @@ Every unsupported combination raises an explicit error; none silently runs a dif
 | Configuration / Request | Status / Behavior |
 | --- | --- |
 | Periodic crystal, collinear spin, semilocal functional (`lda`, `pbe`), float64 | **Supported** (native Rust SCF, energies, band structures, DOS/PDOS, Wannier) |
-| Periodic crystal with `symmetry=True` on a reduced $k$-mesh | Raises `ValueError` ("DFT+U needs the shell occupations symmetrized with the density... use symmetry=False"). Nonzero magnetic moments preserve the full mesh automatically. |
+| Periodic crystal with `symmetry=True` on a reduced $k$-mesh | **Supported** ([Symmetry-reduced $k$ meshes](#dft-u-symmetry)): the occupation matrices are completed over the kept operations and time reversal. A table the operations cannot complete (an atom's image carries no shell, or a different $U$, $J$ or weight), or an explicit seed that breaks the symmetry, raises `ValueError` naming `symmetry=False`. A collinear magnetic crystal keeps the operations that preserve its moment pattern ([below](#dft-u-symmetry)). |
+| `hubbard_response` on a reduced $k$-mesh | Runs when every `hubbard_u` atom is fixed by every kept operation; raises `ValueError` ("... fixed by every kept operation ... use symmetry=False") when an operation moves one. |
 | Periodic crystal with `xc="hse06"` (screened hybrid) | Raises `NotImplementedError` ("DFT+U is implemented for semilocal functionals only"). |
 | Single precision (`precision="float32"`) | Raises `ValueError` ("precision='float64'"). |
 | Periodic crystal on a fully relativistic / spin-orbit dataset (`lda-fr`, `pbe-fr`) | Raises `NotImplementedError` ("scalar-relativistic datasets only"). A molecule on such a dataset runs spinor Kohn–Sham without DFT+U; spinor molecular DFT+U is not implemented. |
-| Isolated molecule (`pbc=False`) | Raises `ValueError` ("needs a periodic cell: DFT+U is implemented for crystals only"). |
+| Isolated molecule (`pbc=False`) | **Supported** for `method="dft"` on a PAW-LCAO basis ([Molecules](#dft-u-molecules)); its analytic forces include the +U term. |
 | Basis without PAW datasets (`HAO`, Gaussian STO-3G) | Raises `ValueError` ("hubbard_u needs a PAW-LCAO or UPAW-LCAO basis"). |
 | Element not in system, or channel absent from dataset | Raises `ValueError` naming element and shell. |
 | Shell with no occupied reference wave (e.g. Ba 5d, Au 5f in `lda-sr`) | Raises `ValueError` naming the element and channel. |
-| Crystal forces or stress with `hubbard_u` | Raises `NotImplementedError` ("crystal forces and stress are not available for a DFT+U crystal"). |
+| Crystal forces or stress with `hubbard_u` | **Supported** for a collinear semilocal crystal ([Forces and stresses](#dft-u-forces)). A DFT+U hybrid or spinor crystal raises `NotImplementedError` ("crystal forces are not available for a DFT+U hybrid crystal"). |
 
 ## Example: NiO type-II antiferromagnet
 

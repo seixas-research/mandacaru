@@ -2,8 +2,8 @@
 
 import numpy as np
 from .. import _native
-from ..units import HARTREE_TO_EV
 from . import bloch as _bloch
+from . import kspace as _kspace
 
 
 class ASEProperties:
@@ -39,7 +39,7 @@ class ASEProperties:
             # The supercell mean field unfolded onto the mesh points, per primitive cell.
             points = _bloch.supercell(calculation)["kpoints"]
             levels, _ = _bloch.bands_at(calculation, points)
-            return levels, np.full(len(points), 1.0 / len(points))
+            return levels, _native.uniform_weights(len(points))
         if calculation.result.periodic is not None:
             state = self._periodic_snapshot()
             return np.asarray(state["eigenvalues"]), np.asarray(state["weights"])
@@ -53,21 +53,17 @@ class ASEProperties:
     def get_fermi_level(self):
         calculation = self._calculation_owner()
         if calculation.result is not None and calculation.result.periodic is not None:
-            return self._periodic_snapshot()["fermi_level"] * HARTREE_TO_EV
+            return _native.to_user_units(float(self._periodic_snapshot()["fermi_level"]), "energy")
         if _bloch.is_supercell(calculation):
             # The highest occupied level of the supercell mean field.
             levels = np.asarray(calculation.native_reference.snapshot()["energies"])[:, None, :]
         else:
             levels, _ = self._spectrum()
         particles, _ = self._molecular_occupations(levels)
-        occupied = [
-            levels[spin, 0, particles[spin] - 1]
-            for spin in range(levels.shape[0])
-            if particles[spin]
-        ]
-        if not occupied:
-            raise ValueError("an empty molecule has no occupied Fermi level")
-        return max(occupied) * HARTREE_TO_EV
+        highest = _native.highest_occupied(
+            np.ascontiguousarray(np.asarray(levels)[:, 0, :], dtype=float),
+            [int(p) for p in particles])
+        return _native.to_user_units(highest, "energy")
 
     def _molecular_occupations(self, levels):
         calculation = self._calculation_owner()
@@ -88,7 +84,8 @@ class ASEProperties:
         return self._spectrum()[0].shape[-1]
 
     def get_eigenvalues(self, kpt=0, spin=0):
-        return self._spectrum()[0][spin, kpt].copy() * HARTREE_TO_EV
+        return _native.to_user_units(
+            np.ascontiguousarray(self._spectrum()[0][spin, kpt], dtype=float), "energy")
 
     def get_occupation_numbers(self, kpt=0, spin=0):
         calculation = self._calculation_owner()
@@ -99,11 +96,9 @@ class ASEProperties:
             )
         if calculation.result is not None and calculation.result.periodic is not None:
             return self._periodic_snapshot()["occupations"][spin, kpt].copy()
-        levels, _ = self._spectrum()
-        particles, degeneracy = self._molecular_occupations(levels)
-        occupations = np.zeros_like(levels[spin, kpt])
-        occupations[: particles[spin]] = degeneracy
-        return occupations
+        self._spectrum()  # a cached quantum Hamiltonian has no orbital spectrum: raises
+        # Rust's occupations: aufbau, or the ensemble of a degenerate frontier shell.
+        return np.array(calculation.native_reference.snapshot()["occupation_numbers"][spin])
 
     def get_ibz_k_points(self):
         calculation = self._calculation_owner()
@@ -121,7 +116,8 @@ class ASEProperties:
         """The mesh points a supercell calculation resolves (fractional, ``(nk, 3)``)."""
         return np.asarray(_bloch.supercell(self._calculation_owner())["kpoints"])
 
-    def get_spectral_function(self, energies=None, eta=0.1, kpoints=None, krylov=200):
+    def get_spectral_function(self, energies=None, eta=0.1, kpoints=None, krylov=200, *,
+                              path=None, irreducible=False):
         """The Lehmann spectral function ``A(k, omega)`` of the correlated state.
 
         Available after a quantum method on a crystal (``vqe``, ``adapt-vqe``, ``vasqa``,
@@ -129,11 +125,44 @@ class ASEProperties:
         2001 points spanning the poles), ``eta`` the Lorentzian half-width in eV, ``kpoints``
         a subset of the mesh points (fractional; the default is all of them) and ``krylov`` the
         Lanczos vectors per part. See :class:`~mandacaru.analysis.bloch.SpectralFunction`.
+
+        ``path`` resolves it along a band path instead: a string of the lattice's high-symmetry
+        labels (``"GXMG"``; a comma jumps; see :meth:`band_path`), a sequence of fractional
+        points, or ``None`` with ``kpoints`` for the mesh. The result holds the mesh points on
+        the path in path order and ``.kpath``. ``irreducible=True`` resolves only the
+        irreducible representative of every star of the path's points and audits the symmetry
+        of the state against one more point (``.audit``), warning when it is broken.
         """
         return _bloch.spectral_function(
             self._calculation_owner(), energies=energies, eta=eta, kpoints=kpoints,
-            krylov=krylov,
+            krylov=krylov, path=path, irreducible=irreducible,
         )
+
+    def symmetry(self, symprec=1e-5):
+        """The space group of the structure (:class:`~mandacaru.analysis.kspace.CrystalSymmetry`).
+
+        A cell with a non-periodic axis is read as the crystal that repeats along it.
+        """
+        return _kspace.symmetry(self._calculation_owner(), symprec)
+
+    def irreducible_zone(self, symprec=1e-5):
+        """The ``kpts`` mesh reduced by the crystal's point group and time reversal.
+
+        See :class:`~mandacaru.analysis.kspace.IrreducibleZone`: the irreducible points, their
+        weights (adding up to 1) and the star of every mesh point. The group is the subgroup of
+        the space group's rotations that map the mesh onto itself.
+        """
+        return _kspace.irreducible_zone(self._calculation_owner(), symprec)
+
+    def band_path(self, path=None):
+        """The mesh points of ``kpts`` on a band path (:class:`~mandacaru.analysis.kspace.KPath`).
+
+        ``path`` is a string of high-symmetry labels, a sequence of fractional points (each
+        optionally a ``(label, point)`` pair) or ``None`` for the default path of the lattice.
+        The points of the named lattices are listed in ``periodic::kpath::convention``; a lattice
+        without named points raises and asks for explicit points.
+        """
+        return _kspace.band_path(self._calculation_owner(), path)
 
     def bands(self, spin=0, **options):
         """``(nk, n_orbitals)``: the strongest pole of each orbital channel of ``A(k, omega)`` (eV)."""
@@ -184,7 +213,8 @@ class ASEProperties:
         bandpath = atoms.cell.bandpath(path=path, npoints=npoints, pbc=atoms.pbc)
         return BandStructure(
             bandpath,
-            energies=self._bands_at(bandpath.kpts) * HARTREE_TO_EV,
+            energies=_native.to_user_units(
+                np.ascontiguousarray(self._bands_at(bandpath.kpts), dtype=float), "energy"),
             reference=self.get_fermi_level(),
         )
 
@@ -212,24 +242,25 @@ class ASEProperties:
             )
             fractional = mesh["full"]
             levels = self._bands_at(fractional)
-            weights = np.full(len(fractional), 1.0 / len(fractional))
-        axis = self._energy_axis(levels, npoints, energies, 8 * width)
+            weights = _native.uniform_weights(len(fractional))
+        axis = self._energy_axis(levels, npoints, energies, width, 8.0)
         degeneracy = self._degeneracy(levels)
         values = calculation.context.density_of_states(
             np.ascontiguousarray(levels, dtype=np.float64),
             np.ascontiguousarray(weights, dtype=np.float64),
-            np.ascontiguousarray(axis / HARTREE_TO_EV),
-            width_ha=width / HARTREE_TO_EV,
+            _native.energy_to_hartree(np.ascontiguousarray(axis, dtype=float), "eV"),
+            width_ha=_native.energy_to_hartree(float(width), "eV"),
             degeneracy=degeneracy,
         )
-        return axis, values / HARTREE_TO_EV
+        # States per Hartree to states per eV: the same division by the factor.
+        return axis, _native.energy_to_hartree(np.ascontiguousarray(values, dtype=float), "eV")
 
     @staticmethod
-    def _energy_axis(levels, npoints, energies, margin):
+    def _energy_axis(levels, npoints, energies, margin, scale=1.0):
         if energies is not None:
             return np.asarray(energies, dtype=float)
-        low, high = levels.min() * HARTREE_TO_EV, levels.max() * HARTREE_TO_EV
-        return np.linspace(low - margin, high + margin, npoints)
+        return _native.energy_axis(np.ascontiguousarray(levels, dtype=float), int(npoints),
+                                   float(margin), scale=float(scale))
 
     def _degeneracy(self, levels):
         calculation = self._calculation_owner()
@@ -272,12 +303,13 @@ class ASEProperties:
             reciprocal,
             [list(map(float, k)) for k in fractional],
             np.ascontiguousarray(levels, dtype=np.float64),
-            np.ascontiguousarray(axis / HARTREE_TO_EV),
+            _native.energy_to_hartree(np.ascontiguousarray(axis, dtype=float), "eV"),
             projections=np.ascontiguousarray(weights, dtype=np.float64) if projected else None,
             degeneracy=self._degeneracy(levels),
         )
-        values = np.asarray(raw["dos"]) / HARTREE_TO_EV
-        projection = np.asarray(raw["projected"]) / HARTREE_TO_EV if projected else None
+        per_ev = lambda a: _native.energy_to_hartree(np.ascontiguousarray(a, dtype=float), "eV")  # noqa: E731
+        values = per_ev(raw["dos"])
+        projection = per_ev(raw["projected"]) if projected else None
         return axis, values, projection
 
     def pdos(self, width=0.1, npoints=2001, energies=None, integration="gaussian", kpts=None):
@@ -309,18 +341,17 @@ class ASEProperties:
                 raise ValueError("a Gaussian PDOS uses the calculation's own mesh: omit kpts")
             axis, _ = self.dos(width, npoints, energies)
             values = (
-                calculation.result.periodic.dos(
-                    np.ascontiguousarray(axis / HARTREE_TO_EV),
-                    width_ha=width / HARTREE_TO_EV,
+                _native.energy_to_hartree(np.ascontiguousarray(calculation.result.periodic.dos(
+                    _native.energy_to_hartree(np.ascontiguousarray(axis, dtype=float), "eV"),
+                    width_ha=_native.energy_to_hartree(float(width), "eV"),
                     projected=True,
-                )
-                / HARTREE_TO_EV
+                ), dtype=float), "eV")
             )
         if values.shape[1] != len(labels):
             raise NotImplementedError(
                 "the projection channels do not match the atom-to-orbital labels of this basis"
             )
-        groups = {}
-        for column, shell in enumerate(labels):
-            groups[shell] = groups.get(shell, 0.0) + values[:, column]
-        return axis, groups
+        names = {repr(shell): shell for shell in labels}
+        keys, sums = _native.column_groups(
+            np.ascontiguousarray(values, dtype=float), [repr(shell) for shell in labels])
+        return axis, {names[key]: total for key, total in zip(keys, sums)}

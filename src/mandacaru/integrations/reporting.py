@@ -8,6 +8,7 @@ from .basis_report import basis_report
 
 def write_forces(driver, result, geometry, *, internal, translated):
     import numpy as np
+    from .. import _native
     from ase.data import chemical_symbols
     from ..utils.logging import append_forces
     from .history import DiskOptimizationHistory
@@ -18,9 +19,9 @@ def write_forces(driver, result, geometry, *, internal, translated):
         scratch = getattr(getattr(driver, "resources", None), "scratch_dir", None)
         history = DiskOptimizationHistory(scratch_dir=scratch)
         driver._optimization_history = history
+    summary = _native.force_summary(np.ascontiguousarray(forces, dtype=float))
     entry = dict(energy=float(driver.results["energy"]),
-                 max_force=float(np.linalg.norm(forces, axis=1).max()),
-                 net_force=float(np.abs(forces.sum(axis=0)).max()))
+                 max_force=summary["max"], net_force=summary["net"])
     if history and geometry.same_as(driver._last_force_geometry):
         history.replace_last(entry)
     else:
@@ -39,7 +40,8 @@ def write_forces(driver, result, geometry, *, internal, translated):
         append_forces(
             target, [chemical_symbols[z] for z in geometry.numbers],
             driver.results["forces"], convention=convention,
-            extra={key: value for key, value in details.items() if key != "gradient"},
+            extra={key: value for key, value in details.items()
+                   if key != "gradient"},
         )
 
 
@@ -166,7 +168,6 @@ def _write_variational(log, driver, result, log_expressivity):
         result.reference_energy,
         result.energy_unit,
         convergence=driver._convergence if grows else None,
-        energy_scale=run_log_fields.energy_factor(driver),
         max_iterations=driver._max_growth if driver._search is None else driver._search["max_steps"],
         start_energy=start_energy,
         extra=run_log_fields.optimizer_setup(driver, result),
@@ -186,6 +187,7 @@ def _write_variational(log, driver, result, log_expressivity):
             energy_unit=result.energy_unit,
             metrics=row.metrics,
             optimizer_steps=row.optimizer_steps,
+            energy_error=row.energy_error,
         )
     for row in result.steps:
         log.write_chain_step(
@@ -199,13 +201,16 @@ def _write_variational(log, driver, result, log_expressivity):
         result.optimal_energy,
         num_operators=result.num_operators,
         energy_unit=result.energy_unit,
+        energy_error=result.energy_error,
+        energy_error_reason=result.energy_error_reason,
         correlation_energy=result.correlation_energy,
         num_parameters=result.num_parameters,
         final_max_gradient=result.final_max_gradient,
         num_evaluations=result.num_evaluations,
         optimizer_steps=result.optimizer_steps,
         optimizer=driver._optimizer["method"],
-        extra={"termination": result.timings["termination"]},
+        extra={"termination": result.timings["termination"],
+               **({"pruned_operators": len(result.pruned_operators)} if driver._prune else {})},
     )
 
 
@@ -225,12 +230,17 @@ def write_calculation(driver, result, geometry, *, log_expressivity=False):
                 units=geometry.units,
                 cell=geometry.cell,
                 pbc=geometry.pbc,
-                magmoms=geometry.magnetic_moments,
+                magmoms=(geometry.magnetic_moments if geometry.moment_vectors is None
+                         else geometry.moment_vectors),
             )
         log.write_basis(*basis_report(driver, geometry))
         log.write_electrons(run_log_fields.electrons(driver, result, geometry))
         if geometry is not None and driver.native_reference is not None:
             _write_scf(log, driver, result)
+        elif getattr(result, "_crystal", None) is not None:
+            log.write_block("SCF SETUP", run_log_fields.crystal_scf_setup(driver, result))
+            log.write_scf_iterations(run_log_fields.crystal_scf_rows(driver, result),
+                                     result.energy_unit, energy_name="free_energy")
         if driver._active_spec is not None and result._reference is not None:
             _write_active_space(log, driver, result)
         if quantum:
@@ -240,6 +250,8 @@ def write_calculation(driver, result, geometry, *, log_expressivity=False):
                 "SCF SUMMARY",
                 {
                     "converged": result.success,
+                    **({"occupation": driver.native_reference.occupation}
+                       if hasattr(driver.native_reference, "occupation") else {}),
                     f"energy_{result.energy_unit}": result.optimal_energy,
                     **run_log_fields.hubbard(result),
                 },

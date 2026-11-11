@@ -82,13 +82,12 @@ def basis_specification(value):
         split, tails = resolve_split_scheme(spec.get("zeta_split"))
         radius = spec.get("r_c")
         if radius is None:
-            from math import pi, sqrt
-            from .units import EV_TO_HARTREE
+            from . import _native
 
             shift = float(spec.get("energy_shift", 0.03))
             if not shift > 0:
                 raise ValueError("energy_shift must be positive")
-            radius = pi / sqrt(2 * shift * EV_TO_HARTREE)
+            radius = _native.energy_shift_radius(shift)
         return dict(
             name=name,
             r_c=radius,

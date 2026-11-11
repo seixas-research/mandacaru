@@ -1,4 +1,4 @@
-use super::{amplitude::Amplitude, C64};
+use super::{amplitude::Amplitude, parallel::parallel_rows, C64};
 use crate::{product, Buffer, Context, Error, Reservation, Result};
 use std::collections::BTreeMap;
 
@@ -54,6 +54,10 @@ impl Term {
             }
     }
 }
+
+/// The rows of one partial sum of a large threaded overlap: fixed, so the sum's bits do not
+/// depend on the thread count.
+const OVERLAP_BLOCK: usize = 4096;
 
 /// A canonical, deterministic Pauli sum with calculation-owned storage.
 #[derive(Debug)]
@@ -348,9 +352,272 @@ impl Operator {
     ) {
         Self::apply_terms(self.centered_terms(), basis, input, scale, output)
     }
-    /// The single scatter kernel: adds `scale * (terms input)` into a float64
+    /// The single action kernel: adds `scale * (terms input)` into a float64
     /// row. Float64 rows are the stored rows; float32 callers narrow once.
+    ///
+    /// A small action, or one on a sparse input (fewer than one row in eight
+    /// nonzero, as near the reference determinant), scatters each nonzero
+    /// column on the calling thread. A large action on a dense input gathers
+    /// across the context's workers ([`Self::gather_terms`]). The choice
+    /// depends on the data, never on the thread count. (A cost rule that
+    /// gathered whenever eight workers would beat the scatter measured slower,
+    /// 2026-11-10: a 30-iteration H2O ADAPT growth took 125.8 s on 8 threads
+    /// and 329.3 s on 1, against 115.1 s and 162.0 s with this rule.)
     fn apply_terms<A: Amplitude>(
+        terms: &[Term],
+        basis: &Basis,
+        input: &[A],
+        scale: C64,
+        output: &mut [C64],
+    ) {
+        let rows = output.len();
+        let work = rows.saturating_mul(terms.len());
+        if work >= super::parallel::PARALLEL_WORK {
+            let nonzero = input.iter().filter(|a| **a != A::default()).count();
+            if nonzero.saturating_mul(8) >= rows {
+                return Self::gather_terms(terms, basis, input, scale, output);
+            }
+        }
+        Self::scatter_terms(terms, basis, input, scale, output)
+    }
+    /// The common flip mask of every string, when there is one (an excitation generator: its
+    /// strings all flip the same modes).
+    pub(super) fn single_mask(&self) -> Option<u64> {
+        let first = self.terms.first()?.x;
+        (first != 0 && self.terms.iter().all(|t| t.x == first)).then_some(first)
+    }
+    /// Each string's `(z, coefficient * i^|x & z|)`: `Term::amplitude(ket)` is that value times
+    /// the parity sign of `ket & z`, so a sum over strings formed from these is bit-identical to
+    /// one formed from `amplitude`, without recomputing the phase for every row.
+    fn phased(&self) -> Vec<(u64, C64)> {
+        self.terms
+            .iter()
+            .map(|t| (t.z, t.coefficient * phase((t.x & t.z).count_ones() as i32)))
+            .collect()
+    }
+    /// `sum_t amplitude_t(ket)` from [`Self::phased`].
+    fn summed(phased: &[(u64, C64)], ket: u64) -> C64 {
+        phased
+            .iter()
+            .map(|&(z, c)| c * if (ket & z).count_ones() % 2 == 0 { 1. } else { -1. })
+            .sum()
+    }
+    /// The basis state of row `i`.
+    fn ket(basis: &Basis, i: usize) -> u64 {
+        if basis.full_register {
+            i as u64
+        } else {
+            basis.indices.as_slice()[i]
+        }
+    }
+    /// The new value of row `r` (basis state `ket_r`) after the rotation of [`Self::rotate_pairs`],
+    /// from the old values at `r` and at its partner `ket_r ^ x`: the one formula every rotation
+    /// kernel (in place, gathered, fused with the adjoint overlap) shares, so all of them give the
+    /// same bits. `to_r` and `to_c` are [`Self::summed`] at the partner's and at this row's state.
+    #[inline]
+    fn rotated<A: Amplitude>(
+        to_r: C64,
+        to_c: C64,
+        linear: f64,
+        quadratic: f64,
+        old_r: A,
+        old_c: A,
+    ) -> A {
+        let one = C64::new(1., 0.);
+        let zero = C64::default();
+        let first = |coefficient: C64, source: A| {
+            if source == A::default() {
+                A::default()
+            } else {
+                A::narrow(zero + coefficient * (one * source.widen()))
+            }
+        };
+        let second = |coefficient: C64, source: A| {
+            if source == A::default() {
+                zero
+            } else {
+                zero + coefficient * (one * source.widen())
+            }
+        };
+        // G sends column c to row r with its strings at ket_c, and r to c at ket_r.
+        let (first_r, first_c) = (first(to_r, old_c), first(to_c, old_r));
+        A::narrow(old_r.widen() + (linear * first_r.widen() + quadratic * second(to_r, first_c)))
+    }
+    /// `row += linear G row + quadratic G (G row)` for a generator whose strings share the flip
+    /// mask `x` ([`Self::single_mask`]): `G` maps each basis state to at most one partner, so the
+    /// new value of a row depends on the old values of that row and its partner `c = r ^ x` alone.
+    /// Every value is formed as the two separate actions and the update form it (the same
+    /// products, zero skips and roundings into the stored precision), so the row is bit-identical
+    /// to them. A large row is gathered into `scratch` in row blocks across the context's threads
+    /// and copied back; a small one is updated pair by pair in place. Both give the same bits.
+    pub(super) fn rotate_pairs<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        x: u64,
+        linear: f64,
+        quadratic: f64,
+        row: &mut [A],
+        scratch: &mut [A],
+    ) {
+        let phased = self.phased();
+        // The new value at `r` from the old values at `r` and its partner `c`.
+        let updated = |ket_r: u64, old_r: A, old_c: A| {
+            let (to_r, to_c) = (Self::summed(&phased, ket_r ^ x), Self::summed(&phased, ket_r));
+            Self::rotated(to_r, to_c, linear, quadratic, old_r, old_c)
+        };
+        let rows = row.len();
+        let work = rows.saturating_mul(self.terms.len()).saturating_mul(2);
+        let threads = super::parallel::threads_for(&basis.context, work, rows);
+        if threads > 1 && scratch.len() >= rows {
+            self.rotate_gather(basis, x, linear, quadratic, row, &mut scratch[..rows]);
+            row.copy_from_slice(&scratch[..rows]);
+            return;
+        }
+        for r in 0..rows {
+            let ket_r = Self::ket(basis, r);
+            let Some(c) = basis.index(ket_r ^ x) else {
+                continue;
+            };
+            if c < r {
+                continue;
+            }
+            let (old_r, old_c) = (row[r], row[c]);
+            row[r] = updated(ket_r, old_r, old_c);
+            row[c] = updated(ket_r ^ x, old_c, old_r);
+        }
+    }
+    /// Whether the lockstep kernels ([`Self::rotate_gather`], [`Self::adjoint_step`]) run on this
+    /// problem: a large action (the same threshold as the threaded overlap, whose block sums
+    /// they reproduce) with more than one worker. Otherwise the in-place kernels run; the two
+    /// families give the same bits.
+    pub(super) fn lockstep(&self, basis: &Basis) -> bool {
+        let rows = basis.len();
+        let work = rows.saturating_mul(self.terms.len());
+        work >= super::parallel::PARALLEL_WORK
+            && super::parallel::threads_for(&basis.context, work, rows.div_ceil(OVERLAP_BLOCK)) > 1
+    }
+    /// The rotation of [`Self::rotate_pairs`] gathered from `source` into `out` in row blocks
+    /// across the context's threads: the caller swaps the two buffers instead of copying back.
+    pub(super) fn rotate_gather<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        x: u64,
+        linear: f64,
+        quadratic: f64,
+        source: &[A],
+        out: &mut [A],
+    ) {
+        let phased = self.phased();
+        let rows = source.len();
+        let work = rows.saturating_mul(self.terms.len()).saturating_mul(2);
+        parallel_rows(&basis.context, rows, work, &mut out[..rows], |start, block| {
+            for (offset, value) in block.iter_mut().enumerate() {
+                let r = start + offset;
+                let ket_r = Self::ket(basis, r);
+                *value = match basis.index(ket_r ^ x) {
+                    Some(c) => {
+                        let (to_r, to_c) = (Self::summed(&phased, ket_r ^ x), Self::summed(&phased, ket_r));
+                        Self::rotated(to_r, to_c, linear, quadratic, source[r], source[c])
+                    }
+                    None => source[r],
+                };
+            }
+        });
+    }
+    /// One step of the adjoint sweep in one pass over the rows: `sum_r conj(lambda_r) (G psi)_r`
+    /// ([`Self::overlap_single`], the same fixed blocks) and both rows rotated by
+    /// [`Self::rotate_pairs`]' rule into `psi_out` and `lambda_out`. Each row's values come from
+    /// the old rows alone, and each partner pair's strings are summed once for the three results.
+    /// One parallel region replaces the overlap's and the two rotations'.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn adjoint_step<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        x: u64,
+        linear: f64,
+        quadratic: f64,
+        psi: &[A],
+        lambda: &[A],
+        psi_out: &mut [A],
+        lambda_out: &mut [A],
+    ) -> C64 {
+        let one = C64::new(1., 0.);
+        let phased = self.phased();
+        let rows = psi.len();
+        let mut partial = vec![C64::default(); rows.div_ceil(OVERLAP_BLOCK)];
+        super::parallel::parallel_row_pairs(
+            &basis.context,
+            OVERLAP_BLOCK,
+            &mut psi_out[..rows],
+            &mut lambda_out[..rows],
+            &mut partial,
+            |first, psi_block, lambda_block, sum| {
+                for (offset, (p, l)) in psi_block.iter_mut().zip(lambda_block.iter_mut()).enumerate() {
+                    let r = first + offset;
+                    let ket_r = Self::ket(basis, r);
+                    let Some(c) = basis.index(ket_r ^ x) else {
+                        (*p, *l) = (psi[r], lambda[r]);
+                        continue;
+                    };
+                    let (to_r, to_c) = (Self::summed(&phased, ket_r ^ x), Self::summed(&phased, ket_r));
+                    if psi[c] != A::default() {
+                        *sum += lambda[r].widen().conj() * (C64::default() + to_r * (one * psi[c].widen()));
+                    }
+                    *p = Self::rotated(to_r, to_c, linear, quadratic, psi[r], psi[c]);
+                    *l = Self::rotated(to_r, to_c, linear, quadratic, lambda[r], lambda[c]);
+                }
+            },
+        );
+        partial.into_iter().fold(C64::default(), |sum, block| sum + block)
+    }
+    /// `sum_r conj(bra_r) (G ket)_r` for a single-mask generator: the action and the overlap in
+    /// one pass, without the action's row. A small one folds in row order, equal to forming the
+    /// row and folding the overlap; a large one sums fixed blocks of [`OVERLAP_BLOCK`] rows across
+    /// the context's threads and adds the block sums in order, so its bits do not depend on the
+    /// thread count either.
+    pub(super) fn overlap_single<A: Amplitude>(&self, basis: &Basis, x: u64, bra: &[A], ket: &[A]) -> C64 {
+        let one = C64::new(1., 0.);
+        let phased = self.phased();
+        let term = |r: usize, b: &A| {
+            let ket_r = Self::ket(basis, r);
+            let c = basis.index(ket_r ^ x)?;
+            let source = ket[c];
+            if source == A::default() {
+                return None;
+            }
+            let to_r = Self::summed(&phased, ket_r ^ x);
+            Some(b.widen().conj() * (C64::default() + to_r * (one * source.widen())))
+        };
+        let rows = bra.len();
+        let work = rows.saturating_mul(self.terms.len());
+        if work < super::parallel::PARALLEL_WORK {
+            let mut sum = C64::default();
+            for (r, b) in bra.iter().enumerate() {
+                if let Some(value) = term(r, b) {
+                    sum += value;
+                }
+            }
+            return sum;
+        }
+        let blocks = rows.div_ceil(OVERLAP_BLOCK);
+        let mut partial = vec![C64::default(); blocks];
+        let threads = super::parallel::threads_for(&basis.context, work, blocks);
+        let mut lanes = vec![(); threads];
+        super::parallel::parallel_tasks(&basis.context, &mut partial, &mut lanes, |first, sums, _| {
+            for (k, sum) in sums.iter_mut().enumerate() {
+                let start = (first + k) * OVERLAP_BLOCK;
+                let end = (start + OVERLAP_BLOCK).min(rows);
+                for r in start..end {
+                    if let Some(value) = term(r, &bra[r]) {
+                        *sum += value;
+                    }
+                }
+            }
+        });
+        partial.into_iter().fold(C64::default(), |sum, block| sum + block)
+    }
+    /// Scatter every nonzero column through the strings, on one thread.
+    fn scatter_terms<A: Amplitude>(
         terms: &[Term],
         basis: &Basis,
         input: &[A],
@@ -399,6 +666,83 @@ impl Operator {
                 }
             }
         }
+    }
+    /// Gather: each output row reads, for every flip mask `x`, the one source
+    /// amplitude at `ket ^ x`, with the exact sum of that mask's Pauli
+    /// coefficients (forbidden occupations cancel without roundoff leakage).
+    /// The terms are stored in `(x, z)` order, so a mask's strings are
+    /// contiguous. Rows are independent, so the rows split into contiguous
+    /// blocks across the context's threads, and every row's arithmetic is the
+    /// same whatever the thread count.
+    fn gather_terms<A: Amplitude>(
+        terms: &[Term],
+        basis: &Basis,
+        input: &[A],
+        scale: C64,
+        output: &mut [C64],
+    ) {
+        // Each mask's strings as `(z, coefficient * i^|x & z|)`, formed once per action.
+        let groups: Vec<(u64, Vec<(u64, C64)>)> = terms
+            .chunk_by(|a, b| a.x == b.x)
+            .map(|group| {
+                let phased = group
+                    .iter()
+                    .map(|t| (t.z, t.coefficient * phase((t.x & t.z).count_ones() as i32)))
+                    .collect();
+                (group[0].x, phased)
+            })
+            .collect();
+        let rows = output.len();
+        let block = |start: usize, out: &mut [C64]| {
+            for (offset, value) in out.iter_mut().enumerate() {
+                let ket = if basis.full_register {
+                    (start + offset) as u64
+                } else {
+                    basis.indices.as_slice()[start + offset]
+                };
+                let mut sum = C64::default();
+                for (x, phased) in &groups {
+                    let source = ket ^ x;
+                    let Some(column) = basis.index(source) else {
+                        continue;
+                    };
+                    let amplitude = input[column];
+                    if amplitude == A::default() {
+                        continue;
+                    }
+                    sum += Self::summed(phased, source) * amplitude.widen();
+                }
+                *value += scale * sum;
+            }
+        };
+        parallel_rows(&basis.context, rows, rows.saturating_mul(terms.len()), output, block);
+    }
+    /// `finish(k, H inputs[k])` for every input (`centered`: without the identity term), in
+    /// order. The applications are independent, so they spread over the context's workers, each
+    /// application running serially on one worker into that worker's row, which `finish` may
+    /// modify. Every result is the one [`Self::apply_into`] gives on its own, on any thread count:
+    /// this is the route for many Hamiltonian actions on sparse states, whose single action is a
+    /// serial scatter that no row split can reproduce bit for bit.
+    pub fn apply_each<A: Amplitude, T: Send>(
+        &self,
+        basis: &Basis,
+        inputs: &[&[A]],
+        centered: bool,
+        finish: impl Fn(usize, &mut [C64]) -> T + Sync,
+    ) -> Result<Vec<T>> {
+        if self.n != basis.n || inputs.iter().any(|input| input.len() != basis.len()) {
+            return Err(invalid("states must match the operator basis"));
+        }
+        let rows = basis.len();
+        let work = inputs.len().saturating_mul(rows).saturating_mul(self.terms.len());
+        super::parallel::parallel_each(&basis.context, inputs.len(), rows, work, |k, out| {
+            if centered {
+                self.apply_centered_into(basis, inputs[k], out);
+            } else {
+                self.apply_into(basis, inputs[k], out);
+            }
+            finish(k, out)
+        })
     }
     pub fn apply(&self, ctx: &Context, basis: &Basis, input: &[C64]) -> Result<Buffer<C64>> {
         if self.n != basis.n

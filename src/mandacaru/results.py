@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import numpy as np
 from functools import cached_property
-from .units import HARTREE_TO_EV, BOHR_TO_ANGSTROM
+from . import _native
 
 
 class CalculationResult:
@@ -21,6 +21,7 @@ class CalculationResult:
         crystal=None,
         mapping="jordan_wigner",
         active_space=None,
+        two_body=("dense", None),
         atomic_units=False,
         solver=None,
         model=None,
@@ -40,6 +41,8 @@ class CalculationResult:
         self._profile = profile
         self._mapping = mapping
         self._active_space = active_space
+        # (representation, truncation in Hartree) of the active-space Hamiltonian's two-body part.
+        self._two_body = two_body
         self.energy_unit = "Ha" if atomic_units else "eV"
         self._dispersion = dispersion
 
@@ -60,34 +63,42 @@ class CalculationResult:
     def converged(self):
         return self.success
 
+    def _in_unit(self, value_ha):
+        """``value_ha`` (Hartree, a float or an array) in the result's energy unit, in Rust."""
+        return _native.to_user_units(value_ha, "energy", atomic_units=self.energy_unit == "Ha")
+
+    @staticmethod
+    def _total(*addends_ha):
+        """The sum of Hartree energies, added in order in Rust."""
+        return _native.to_user_units(
+            np.array(addends_ha, dtype=float), "energy", atomic_units=True, total=True)
+
     @property
     def energy_hartree(self):
         if self._reference is not None and self._problem is None:
-            base = self._raw["electronic_energy"] + self._raw["nuclear_repulsion"]
+            parts = [self._raw["electronic_energy"], self._raw["nuclear_repulsion"]]
         elif "energies_ha" in self._raw:
-            base = float(self._raw["energies_ha"][0])
+            parts = [float(self._raw["energies_ha"][0])]
         else:
-            base = self._raw.get(
+            parts = [self._raw.get(
                 "energy_ha", self._raw.get("extrapolated_energy", self._raw.get("energy"))
-            )
+            )]
         if self._dispersion is not None:
-            base += self._dispersion.get("energy_ha", 0.0)
-        return base
+            parts.append(self._dispersion.get("energy_ha", 0.0))
+        return self._total(*parts) if len(parts) > 1 else parts[0]
 
     def in_units(self, units):
         if units == "Ha":
             return self.energy_hartree
         if units == "eV":
-            return self.energy_hartree * HARTREE_TO_EV
+            return _native.to_user_units(self.energy_hartree, "energy")
         raise ValueError("energy units must be Ha or eV")
 
     @property
     def hubbard_energy(self):
         """The on-site DFT+U energy in the result's energy unit; ``None`` without DFT+U."""
         value = self._raw.get("hubbard_energy")
-        if value is None or self.energy_unit == "Ha":
-            return value
-        return value * HARTREE_TO_EV
+        return value if value is None else self._in_unit(value)
 
     #: The energies of a DFT+U shell: the key of the result view and of the native view.
     _HUBBARD_ENERGIES = (("U", "u"), ("J", "j"), ("U_eff", "u_eff"), ("energy", "energy"))
@@ -105,13 +116,12 @@ class CalculationResult:
         shells = self._raw.get("hubbard")
         if shells is None:
             return None
-        scale = 1.0 if self.energy_unit == "Ha" else HARTREE_TO_EV
         return [
             dict(
                 atom=s["atom"],
                 symbol=s["symbol"],
                 l=s["shell"],
-                **{name: s[f"{key}_ha"] * scale for name, key in self._HUBBARD_ENERGIES},
+                **{name: self._in_unit(s[f"{key}_ha"]) for name, key in self._HUBBARD_ENERGIES},
                 trace=np.array(s["trace"]),
                 n=s["n"].copy(),
             )
@@ -119,39 +129,61 @@ class CalculationResult:
         ]
 
     @property
-    def free_energy_ev(self):
-        base = self._raw.get("free_energy", self.energy_hartree)
+    def free_energy_hartree(self):
+        parts = [self._raw.get("free_energy", self.energy_hartree)]
         if self._dispersion is not None and "free_energy" in self._raw:
-            base += self._dispersion.get("energy_ha", 0.0)
-        return base * HARTREE_TO_EV
+            parts.append(self._dispersion.get("energy_ha", 0.0))
+        return self._total(*parts) if len(parts) > 1 else parts[0]
+
+    @property
+    def free_energy_ev(self):
+        return _native.to_user_units(float(self.free_energy_hartree), "energy")
 
     @property
     def optimal_energy(self):
         return self.in_units(self.energy_unit)
 
     @property
+    def energy_error(self):
+        """The shot-noise standard error of the energy, in the energy unit (Rust, from the counts
+        with the in-basis covariances); ``None`` without shots: a state-vector energy has none."""
+        error = self._raw.get("energy_error_ha")
+        return None if error is None else self._in_unit(error)
+
+    @property
+    def energy_error_reason(self):
+        """Why a shot run reports no ``energy_error`` (a basis past the classical limit of the
+        covariance products); ``None`` when it reports one or measured no shots."""
+        return self._raw.get("energy_error_reason")
+
+    @property
     def energies(self):
         values = np.asarray(
             self._raw.get("energies_ha", [self.energy_hartree]), dtype=float
         )
-        return values.copy() if self.energy_unit == "Ha" else values * HARTREE_TO_EV
+        return self._in_unit(values)
 
     @property
     def states(self):
         return self.state()
 
     @property
-    def reference_energy(self):
-        value = (
+    def _reference_hartree(self):
+        return (
             self.energy_hartree
             if self._reference is not None and self._problem is None
             else self._raw.get("reference_ha", self.energy_hartree)
         )
-        return value if self.energy_unit == "Ha" else value * HARTREE_TO_EV
+
+    @property
+    def reference_energy(self):
+        return self._in_unit(self._reference_hartree)
 
     @property
     def correlation_energy(self):
-        return self.optimal_energy - self.reference_energy
+        return _native.difference_to_user(
+            self.energy_hartree, self._reference_hartree, "energy",
+            atomic_units=self.energy_unit == "Ha")
 
     @property
     def scf(self):
@@ -188,18 +220,15 @@ class CalculationResult:
 
     @property
     def optimal_cost(self):
-        return self._raw.get("optimal_cost_ha", self.energy_hartree) * (
-            1. if self.energy_unit == "Ha" else HARTREE_TO_EV)
+        return self._in_unit(self._raw.get("optimal_cost_ha", self.energy_hartree))
 
     @property
     def best_energy(self):
-        return self._raw.get("best_energy_ha", self.energy_hartree) * (
-            1. if self.energy_unit == "Ha" else HARTREE_TO_EV)
+        return self._in_unit(self._raw.get("best_energy_ha", self.energy_hartree))
 
     @property
     def final_energy(self):
-        return self._raw.get("final_energy_ha", self.energy_hartree) * (
-            1. if self.energy_unit == "Ha" else HARTREE_TO_EV)
+        return self._in_unit(self._raw.get("final_energy_ha", self.energy_hartree))
 
     @property
     def best_energy_operators(self):
@@ -253,13 +282,12 @@ class CalculationResult:
     def steps(self):
         from types import SimpleNamespace
 
-        factor = 1. if self.energy_unit == "Ha" else HARTREE_TO_EV
         rows = []
         for source in self._raw.get("chain_steps", ()):
             row = dict(source)
             for field in ("source_energy", "energy", "source_cost", "cost",
                           "delta_energy", "delta_cost", "temperature"):
-                row[field] *= factor
+                row[field] = self._in_unit(row[field])
             row["current"] = row["proposed"] if row["accepted"] else row["source"]
             row["current_energy"] = row["energy"] if row["accepted"] else row["source_energy"]
             rows.append(SimpleNamespace(**row))
@@ -291,8 +319,10 @@ class CalculationResult:
 
         labels = self._problem.pool_labels if self._problem is not None else []
         output = []
-        for row in self._raw.get("iterations", ()):
+        errors = self._raw.get("iteration_energy_errors_ha") or ()
+        for position, row in enumerate(self._raw.get("iterations", ())):
             index, energy, gradient, steps, evaluations, success, message, count = row
+            error = errors[position] if position < len(errors) else None
             metrics = None
             if self._profile is True or (
                 self._profile is None and self._problem.num_qubits <= 12
@@ -306,8 +336,8 @@ class CalculationResult:
                     operator_label=label,
                     operator_kind=label.split("(")[0],
                     max_gradient=gradient,
-                    energy=energy
-                    * (1.0 if self.energy_unit == "Ha" else HARTREE_TO_EV),
+                    energy=self._in_unit(energy),
+                    energy_error=None if error is None else self._in_unit(error),
                     num_parameters=count,
                     cnot_count=None if metrics is None else metrics.cnot_count,
                     depth=None if metrics is None else metrics.depth,
@@ -325,6 +355,11 @@ class CalculationResult:
         return len(self._raw.get("indices", []))
 
     @property
+    def pruned_operators(self):
+        """``(growth step, label)`` of every operator ``prune=True`` removed; empty otherwise."""
+        return [(int(step), str(label)) for step, label in self._raw.get("pruned", [])]
+
+    @property
     def metrics(self):
         if self.solver is None:
             raise ValueError("circuit metrics require a quantum result")
@@ -332,18 +367,14 @@ class CalculationResult:
 
     @property
     def excitation_energies(self):
-        energies = self.energies
-        return energies - energies[0]
+        return _native.relative_to_first([float(e) for e in self.energies])
 
     @property
     def num_particles(self):
         if self._crystal is not None:
-            occupations = self._raw["occupations"]
-            counts = np.sum(
-                occupations * np.asarray(self._raw["weights"])[None, :, None],
-                axis=(1, 2),
-            )
-            return tuple(counts) if len(counts) == 2 else (counts[0] / 2, counts[0] / 2)
+            return _native.electron_counts(
+                np.ascontiguousarray(self._raw["occupations"], dtype=float),
+                [float(w) for w in self._raw["weights"]])
         return (
             tuple(self._raw["num_particles"])
             if self._problem is None
@@ -377,12 +408,17 @@ class CalculationResult:
         if self._reference is None:
             raise ValueError("a molecular reference is required for integral export")
         if self._model is None:
-            if self._active_space is None:
+            representation, truncation = self._two_body
+            if self._active_space is None and representation == "dense":
                 model = self._reference.model
             else:
                 import json
 
-                model = self._reference.active_model(json.dumps(self._active_space))
+                # The double-factorized representation of the whole space is the active
+                # space of every orbital, frozen none.
+                model = self._reference.active_model(
+                    json.dumps(self._active_space or {}),
+                    representation=representation, truncation=truncation)
             self._model = model
         return self._model
 
@@ -527,38 +563,50 @@ class CalculationResult:
     def reference_state(self, mapping=None):
         return self.scf_state(mapping)
 
-    def forces(self, *, internal=False, project_translation=False, step=1e-4, extrapolate=False):
-        """Forces in eV/Angstrom; variational steps are specified in Bohr.
+    def forces(self, *, internal=False, project_translation=False):
+        """Forces in eV/Angstrom, analytic.
 
-        Richardson extrapolation is available for force convergence checks.
-        A variational state is differentiated with the Lagrangian (Z-vector) correction of its
-        residual parameter gradient; ``force_details`` reports ``stationarity``,
-        ``parameter_gradient_norm``, ``z_vector_norm``, ``correction_norm_ha_per_bohr`` and the
-        ``uncorrected_gradient`` the correction was added to.
-        A stationary mean-field state ignores ``step`` and ``extrapolate``: its
-        gradient, all-electron or PAW-LCAO, is analytic, and ``force_details``
-        names the scheme and the stationarity of the state it differentiated.
+        A variational state (PAW-LCAO only) is differentiated with the response of its
+        orbitals (canonical Hartree-Fock, MP2 natural orbitals, one CPHF solve) and the
+        Lagrangian (Z-vector) correction of its residual parameter gradient;
+        ``force_details`` reports ``stationarity``, ``parameter_gradient_norm``,
+        ``z_vector_norm`` and the Hessian solve. A stationary mean-field state's gradient, all-electron
+        or PAW-LCAO, is analytic, and ``force_details`` names the scheme and the stationarity
+        of the state it differentiated.
         """
-        if type(extrapolate) is not bool:
-            raise TypeError("extrapolate must be a boolean")
         if hasattr(self, "_periodic_forces"):
             return self._periodic_forces
         if self._problem is not None:
+            if "states" in self._raw:
+                raise ValueError(
+                    "variational forces are refused for the states of a subspace method: an ensemble has no "
+                    "single parameter gradient, and its state-averaged Lagrangian correction is not implemented")
+            if "execution" in self._raw:
+                driver = getattr(self, "_device", lambda: None)()
+                if self._reference is None or self._model is None or driver is None:
+                    raise ValueError("device forces need the molecular reference and the calculator that ran the circuit")
+                from .integrations.device_forces import device_force
+
+                if not hasattr(self, "_device_forces"):
+                    self._device_forces = {}
+                if bool(internal) not in self._device_forces:
+                    self._device_forces[bool(internal)] = device_force(self, driver, internal)
+                gradient, details = self._device_forces[bool(internal)]
+                self.force_details = dict(details)
+                if project_translation and not internal:
+                    gradient = self.context.remove_force_translation(np.ascontiguousarray(gradient))
+                return _native.to_user_units(np.ascontiguousarray(gradient, dtype=float), "gradient_to_force",
+                                             plus=self._dispersion_forces())
             if self._reference is None or self._model is None or "state" not in self._raw:
                 raise ValueError("variational forces need a single molecular state and its retained reference")
-            if "execution" in self._raw:
-                raise ValueError("variational forces currently require the local native state")
-            import json
-
             if not hasattr(self, "_gradient_cache"):
                 self._gradient_cache = {}
-            cache_key = (internal, float(step), bool(extrapolate))
+            cache_key = bool(internal)
             if cache_key not in self._gradient_cache:
                 self._gradient_cache[cache_key] = self._reference.quantum_gradient(
                     self._problem, self._model,
                     np.ascontiguousarray(self._raw["state"]),
-                    active_spec=None if self._active_space is None else json.dumps(self._active_space),
-                    internal=internal, step=step, extrapolate=extrapolate,
+                    internal=internal,
                     indices=[int(i) for i in self._raw["indices"]],
                     parameters=np.ascontiguousarray(self._raw["parameters"], dtype=float),
                     product_form=self.solver.ansatz.product_form)
@@ -571,10 +619,9 @@ class CalculationResult:
             # The analytic crystal force of the Rust engine (Hartree/Bohr), converted once here.
             if not hasattr(self, "_crystal_forces"):
                 self._crystal_forces = self.periodic.forces()
-            forces = self._crystal_forces * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)
-            if self._dispersion is not None and "forces_ev_angstrom" in self._dispersion:
-                forces = forces + self._dispersion["forces_ev_angstrom"]
-            return forces
+            return _native.to_user_units(
+                np.ascontiguousarray(self._crystal_forces, dtype=float), "force",
+                plus=self._dispersion_forces())
         elif self._reference is None:
             raise ValueError("stationary forces require a native mean-field state")
         else:
@@ -586,10 +633,15 @@ class CalculationResult:
             }
         if project_translation and not internal:
             gradient = self.context.remove_force_translation(np.ascontiguousarray(gradient))
-        forces = -gradient * (HARTREE_TO_EV / BOHR_TO_ANGSTROM)
+        return _native.to_user_units(
+            np.ascontiguousarray(gradient, dtype=float), "gradient_to_force",
+            plus=self._dispersion_forces())
+
+    def _dispersion_forces(self):
+        """The dispersion forces (eV/Angstrom) a result adds to its own, or ``None``."""
         if self._dispersion is not None and "forces_ev_angstrom" in self._dispersion:
-            forces = forces + self._dispersion["forces_ev_angstrom"]
-        return forces
+            return np.ascontiguousarray(self._dispersion["forces_ev_angstrom"], dtype=float)
+        return None
 
     def stress(self, voigt=True):
         """Stress tensor in eV/Angstrom^3 (ASE Voigt order ``[xx, yy, zz, yz, xz, xy]`` by default, or 3x3).
@@ -601,10 +653,12 @@ class CalculationResult:
             s = self._crystal_stress
             if s.shape == (6,):
                 from ase.stress import voigt_6_to_full_3x3_stress
-                full = voigt_6_to_full_3x3_stress(s) * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3)
-                return s * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3) if voigt else full
+                full = _native.to_user_units(
+                    np.ascontiguousarray(voigt_6_to_full_3x3_stress(s), dtype=float), "stress")
+                return _native.to_user_units(np.ascontiguousarray(s, dtype=float), "stress") \
+                    if voigt else full
             else:
-                full = s * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3)
+                full = _native.to_user_units(np.ascontiguousarray(s, dtype=float), "stress")
                 if not voigt:
                     return np.array(full, copy=True)
                 return np.array([full[0, 0], full[1, 1], full[2, 2], full[1, 2], full[0, 2], full[0, 1]])
@@ -617,7 +671,8 @@ class CalculationResult:
             )
         if not hasattr(self, "_crystal_stress"):
             self._crystal_stress = self.periodic.stress()["sigma"]
-        full = self._crystal_stress * (HARTREE_TO_EV / BOHR_TO_ANGSTROM**3)
+        full = _native.to_user_units(
+            np.ascontiguousarray(self._crystal_stress, dtype=float), "stress")
         if not voigt:
             return np.array(full, copy=True)
         return np.array([full[0, 0], full[1, 1], full[2, 2], full[1, 2], full[0, 2], full[0, 1]])

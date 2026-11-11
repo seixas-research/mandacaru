@@ -1,6 +1,6 @@
 //! Restricted and collinear unrestricted Kohn–Sham with native XC and Poisson.
 use super::{
-    invalid,
+    invalid, occupation,
     scf::{self, Candidate, Diis, Iteration},
     MeanField, MolecularIntegrals, ScfOptions,
 };
@@ -78,6 +78,26 @@ pub(super) fn grid_densities(integrals: &MolecularIntegrals, d: &[Matrix]) -> Re
         }
     }
     Ok(rho)
+}
+/// What one start of [`MolecularIntegrals::iterate_start`] reached.
+pub(crate) struct StartRun {
+    pub coefficients: Vec<Matrix>,
+    pub densities: Vec<Matrix>,
+    pub history: Vec<Iteration>,
+    pub converged: bool,
+    /// Occupations (0 to 1) of each channel's columns at the last iteration.
+    pub occupations: Vec<Vec<f64>>,
+    /// `-width S` of the occupations that built `densities` (0 without a [`Filling`]): the
+    /// Mermin free energy is the Kohn-Sham energy plus this.
+    pub entropy: f64,
+}
+/// Fermi-Dirac filling of one start of [`MolecularIntegrals::iterate_start`]: the levels of the
+/// start's orbitals per channel, the width (Hartree), and the electrons per orbital a channel
+/// stands for in the entropy (2 for a spin-restricted channel, 1 otherwise).
+pub(crate) struct Filling<'a> {
+    pub levels: &'a [Vec<f64>],
+    pub width: f64,
+    pub degeneracy: f64,
 }
 struct Evaluation {
     f: Vec<Matrix>,
@@ -189,11 +209,34 @@ fn column_major(ctx: &crate::Context, d: &[Matrix], m: usize) -> Result<Buffer<f
 }
 /// `out(i, b) = sum_a left(i, a) matrix(a, b)` for the `width` points of a tile: `left` holds
 /// `m` sample rows of stride `w`, `matrix` is column-major and `out` has the leading stride `tile`.
-fn tile_product(left: &[f64], w: usize, width: usize, m: usize, matrix: &[f64], tile: usize, out: &mut [f64]) -> Result<()> {
+fn tile_product(
+    left: &[f64],
+    w: usize,
+    width: usize,
+    m: usize,
+    matrix: &[f64],
+    tile: usize,
+    out: &mut [f64],
+) -> Result<()> {
     gemm::multiply(
-        MatrixRef { values: left, rows: width, columns: m, leading: w },
-        MatrixRef { values: matrix, rows: m, columns: m, leading: m },
-        MatrixMut { values: out, rows: width, columns: m, leading: tile },
+        MatrixRef {
+            values: left,
+            rows: width,
+            columns: m,
+            leading: w,
+        },
+        MatrixRef {
+            values: matrix,
+            rows: m,
+            columns: m,
+            leading: m,
+        },
+        MatrixMut {
+            values: out,
+            rows: width,
+            columns: m,
+            leading: tile,
+        },
         1.,
         0.,
     )
@@ -235,14 +278,18 @@ pub(super) fn kinetic_channels(
             let matrix = &matrices.as_slice()[c * m * m..(c + 1) * m * m];
             for offset in (0..count).step_by(tile) {
                 let width = tile.min(count - offset);
-                let out = &mut tau.as_mut_slice()[c * n + start + offset..c * n + start + offset + width];
+                let out =
+                    &mut tau.as_mut_slice()[c * n + start + offset..c * n + start + offset + width];
                 out.fill(0.);
                 for axis in 0..3 {
                     let slope = &gradients[axis * m * w + offset..];
                     // `(G D)(i, b)` for the tile, then `1/2 sum_b G(i, b) (G D)(i, b)`.
                     tile_product(slope, w, width, m, matrix, tile, contracted.as_mut_slice())?;
                     for (i, out) in out.iter_mut().enumerate() {
-                        *out += 0.5 * (0..m).map(|b| slope[b * w + i] * contracted.as_slice()[b * tile + i]).sum::<f64>();
+                        *out += 0.5
+                            * (0..m)
+                                .map(|b| slope[b * w + i] * contracted.as_slice()[b * tile + i])
+                                .sum::<f64>();
                     }
                 }
             }
@@ -283,12 +330,23 @@ pub(super) fn grid_density_gradients(
                 let c = if d.len() == 1 { 0 } else { spin };
                 let matrix = &matrices.as_slice()[c * m * m..(c + 1) * m * m];
                 // `(phi D)(i, b)` for the tile, then `2 sum_b (phi D)(i, b) grad phi_b(i)`.
-                tile_product(&phi[offset..], w, width, m, matrix, tile, contracted.as_mut_slice())?;
+                tile_product(
+                    &phi[offset..],
+                    w,
+                    width,
+                    m,
+                    matrix,
+                    tile,
+                    contracted.as_mut_slice(),
+                )?;
                 for axis in 0..3 {
                     let slope = &gradients[axis * m * w + offset..];
                     let at = (spin * 3 + axis) * n + start + offset;
                     for (i, out) in field.as_mut_slice()[at..at + width].iter_mut().enumerate() {
-                        *out = 2. * (0..m).map(|b| slope[b * w + i] * contracted.as_slice()[b * tile + i]).sum::<f64>();
+                        *out = 2.
+                            * (0..m)
+                                .map(|b| slope[b * w + i] * contracted.as_slice()[b * tile + i])
+                                .sum::<f64>();
                     }
                 }
             }
@@ -522,8 +580,10 @@ fn evaluate_with(
                                     (0..3)
                                         .map(|axis| {
                                             flux.as_slice()[(s * 3 + axis) * n + k]
-                                                * (phi[a * w + i] * gradient[(axis * m + b) * w + i]
-                                                    + gradient[(axis * m + a) * w + i] * phi[b * w + i])
+                                                * (phi[a * w + i]
+                                                    * gradient[(axis * m + b) * w + i]
+                                                    + gradient[(axis * m + a) * w + i]
+                                                        * phi[b * w + i])
                                         })
                                         .sum::<f64>()
                                 } else {
@@ -594,14 +654,15 @@ fn evaluate_with(
     if let Some(e_u) = hubbard_energy {
         energy += e_u;
     }
-    let (hartree_energy, xc_energy) = (
-        eh,
-        terms.energy + exact_energy,
-    );
+    let (hartree_energy, xc_energy) = (eh, terms.energy + exact_energy);
     let fields = match valence {
         Some(valence) => {
             let mut potential = ctx.allocate::<f64>(n)?;
-            for (to, &from) in potential.as_mut_slice().iter_mut().zip(hartree_slice.iter()) {
+            for (to, &from) in potential
+                .as_mut_slice()
+                .iter_mut()
+                .zip(hartree_slice.iter())
+            {
                 *to = from.re;
             }
             Some(Fields {
@@ -730,60 +791,113 @@ impl MolecularIntegrals {
         .energy)
     }
     /// One start of a Kohn-Sham SCF, for any state shape: `start` are the coefficient matrices (one
-    /// per spin channel, or one 2m x 2m for a spinor) with `occupations`, and `step` evaluates a
-    /// density list to its Fock list and energy. Plain DIIS first; a start that does not converge
-    /// is retried with a level shift switched on by the first energy rise (a degenerate open shell
-    /// can flip its occupied orbital between iterations). Returns `(c, d, history, converged)`.
+    /// per spin channel, or one 2m x 2m for a spinor) holding `electrons` per channel, and `step`
+    /// evaluates a density list to its Fock list and energy. Plain DIIS first; a start that does
+    /// not converge is retried with a level shift switched on by the first rise of the energy
+    /// (a degenerate open shell can flip its occupied orbital between iterations).
+    ///
+    /// With a [`Filling`] every channel holds Fermi-Dirac occupations of the levels of the matrix
+    /// just diagonalized; without one, every iteration fills by aufbau. Under a level shift
+    /// those levels are the shifted ones, which keeps the occupied set from flipping (the
+    /// purpose of the shift; filling from the unshifted levels instead was measured to undo
+    /// it, all-electron OH at a 0.5 Angstrom grid oscillating for 300 iterations). The shift
+    /// moves a fractional level by `s (1 - f)`, so a shifted state is checked against the
+    /// unshifted Fock afterwards (the aufbau test of `kohn_sham_smeared`).
     pub(crate) fn iterate_start(
         &self,
         start: &[Matrix],
-        occupations: &[usize],
+        electrons: &[usize],
+        filling: Option<Filling<'_>>,
         options: &ScfOptions,
         mut step: impl FnMut(&[Matrix]) -> Result<(Vec<Matrix>, f64)>,
-    ) -> Result<(Vec<Matrix>, Vec<Matrix>, Vec<Iteration>, bool)> {
-        let density = |c: &[Matrix]| -> Vec<Matrix> {
-            c.iter().zip(occupations).map(|(c, &n)| scf::density(c, n)).collect()
+    ) -> Result<StartRun> {
+        let fill = |levels: Option<&[Vec<f64>]>, c: &[Matrix]| -> Result<Vec<Vec<f64>>> {
+            c.iter()
+                .zip(electrons)
+                .enumerate()
+                .map(|(k, (c, &n))| match (&filling, levels) {
+                    (Some(filling), Some(levels)) => {
+                        occupation::fermi_dirac(&levels[k], n, filling.width)
+                    }
+                    _ => Ok(occupation::aufbau(c.ncols(), n)),
+                })
+                .collect()
         };
+        // `-width S`, both spins of a restricted channel included.
+        let entropy_term = |filled: &[Vec<f64>]| -> f64 {
+            filling.as_ref().map_or(0., |filling| {
+                -filling.width
+                    * filling.degeneracy
+                    * filled.iter().map(|f| occupation::entropy(f)).sum::<f64>()
+            })
+        };
+        let density = |c: &[Matrix], f: &[Vec<f64>]| -> Vec<Matrix> {
+            c.iter()
+                .zip(f)
+                .map(|(c, f)| occupation::density(c, f))
+                .collect()
+        };
+        let start_levels = filling.as_ref().map(|f| f.levels);
         let mut c = start.to_vec();
-        let mut d = density(&c);
+        let mut filled = fill(start_levels, &c)?;
+        let mut d = density(&c, &filled);
         let mut history = vec![];
         let mut converged = false;
         for retry in [false, true] {
             if retry {
                 c = start.to_vec();
-                d = density(&c);
+                filled = fill(start_levels, &c)?;
+                d = density(&c, &filled);
                 history = vec![];
             }
             let mut previous: Option<f64> = None;
+            let mut previous_free: Option<f64> = None;
             let mut mixer = Diis::new();
             let mut shift = 0.;
             for iteration in 1..=options.max_iterations {
                 let (f, energy) = step(&d)?;
+                let free = energy + entropy_term(&filled);
                 let gradient = scf::stationarity(&f, &d);
-                if retry && previous.is_some_and(|p| energy > p + 1e-10) && shift == 0. {
+                if retry && previous_free.is_some_and(|p| free > p + 1e-10) && shift == 0. {
                     shift = 0.5;
                 }
-                let mut effective = if options.diis { mixer.extrapolate(&f, &d) } else { f };
+                let mut effective = if options.diis {
+                    mixer.extrapolate(&f, &d)
+                } else {
+                    f
+                };
                 if shift > 0. {
                     for (f, d) in effective.iter_mut().zip(&d) {
                         *f += (Matrix::identity(f.nrows(), f.nrows()) - d) * C64::new(shift, 0.);
                     }
                 }
-                c = effective
+                let solved = effective
                     .into_iter()
-                    .map(|f| crate::math::linalg::eigen(f).map(|(_, c)| c))
-                    .collect::<Result<_>>()?;
-                let next = density(&c);
+                    .map(crate::math::linalg::eigen)
+                    .collect::<Result<Vec<_>>>()?;
+                let levels: Vec<Vec<f64>> = solved.iter().map(|(e, _)| e.clone()).collect();
+                c = solved.into_iter().map(|(_, c)| c).collect();
+                let levels = filling.as_ref().map(|_| levels);
+                filled = fill(levels.as_deref(), &c)?;
+                let next = density(&c, &filled);
                 let residual = d
                     .iter()
                     .zip(&next)
                     .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).norm()))
                     .fold(0f64, f64::max);
                 let delta = previous.map(|p| energy - p);
-                history.push(Iteration { iteration, energy, delta, residual });
+                let delta_free = previous_free.map(|p| free - p);
+                history.push(Iteration {
+                    iteration,
+                    energy,
+                    delta,
+                    residual,
+                });
                 d = next;
                 previous = Some(energy);
+                previous_free = Some(free);
                 if delta.is_some_and(|de: f64| de.abs() < options.tolerance)
+                    && delta_free.is_some_and(|df: f64| df.abs() < options.tolerance)
                     && residual < options.tolerance
                     && gradient < options.tolerance
                 {
@@ -795,9 +909,19 @@ impl MolecularIntegrals {
                 break;
             }
         }
-        Ok((c, d, history, converged))
+        let entropy = entropy_term(&filled);
+        Ok(StartRun {
+            coefficients: c,
+            densities: d,
+            history,
+            converged,
+            occupations: filled,
+            entropy,
+        })
     }
 
+    /// Restricted or collinear unrestricted Kohn-Sham with Fermi-Dirac occupations at
+    /// [`occupation::DEFAULT_WIDTH`] ([`Self::kohn_sham_at_width`]).
     pub fn kohn_sham(
         &self,
         functional: &str,
@@ -805,16 +929,61 @@ impl MolecularIntegrals {
         unrestricted: bool,
         options: &ScfOptions,
     ) -> Result<MeanField> {
-        if self.corrections.as_ref().is_some_and(|c| c.dft.is_none()) {
-            return Err(invalid(
-                "native molecular PAW Kohn-Sham augmentation is not yet implemented",
-            ));
-        }
+        self.kohn_sham_smeared(
+            functional,
+            particles,
+            unrestricted,
+            options,
+            "fermi-dirac",
+            occupation::DEFAULT_WIDTH,
+        )
+    }
+    /// Restricted or collinear unrestricted Kohn-Sham whose channels hold `smearing` occupations
+    /// at `width` Hartree, one Fermi level per spin ([`occupation`]). A molecule takes
+    /// Fermi-Dirac only: its zero-width limit is the ensemble of a degenerate shell, while the
+    /// Gaussian and Methfessel-Paxton schemes are built for a continuous density of states.
+    pub fn kohn_sham_smeared(
+        &self,
+        functional: &str,
+        particles: [usize; 2],
+        unrestricted: bool,
+        options: &ScfOptions,
+        smearing: &str,
+        width: f64,
+    ) -> Result<MeanField> {
         if self.paw_setup.as_ref().is_some_and(|s| s.has_spin_orbit()) {
             return Err(crate::Error::Unsupported(
                 "a molecule with spin-orbit datasets needs spinor Kohn-Sham (spinor_kohn_sham); \
                  restricted and unrestricted Kohn-Sham cannot carry the spin-orbit term"
                     .into(),
+            ));
+        }
+        self.collinear_kohn_sham(functional, particles, unrestricted, options, smearing, width)
+    }
+    /// Collinear Kohn-Sham without the spin-orbit refusal: the scalar-relativistic part of a
+    /// spin-orbit dataset, for the collinear stage of a noncollinear start.
+    pub(crate) fn collinear_kohn_sham(
+        &self,
+        functional: &str,
+        particles: [usize; 2],
+        unrestricted: bool,
+        options: &ScfOptions,
+        smearing: &str,
+        width: f64,
+    ) -> Result<MeanField> {
+        let scheme = crate::periodic::spectrum::Smearing::parse(smearing)?;
+        if scheme != crate::periodic::spectrum::Smearing::FermiDirac {
+            return Err(crate::Error::Unsupported(format!(
+                "a molecule takes Fermi-Dirac occupations only, not {} smearing",
+                scheme.name()
+            )));
+        }
+        if !width.is_finite() || width <= 0. {
+            return Err(invalid("the Fermi-Dirac width must be positive and finite"));
+        }
+        if self.corrections.as_ref().is_some_and(|c| c.dft.is_none()) {
+            return Err(invalid(
+                "native molecular PAW Kohn-Sham augmentation is not yet implemented",
             ));
         }
         let definition = crate::models::functional(functional)?;
@@ -844,12 +1013,14 @@ impl MolecularIntegrals {
                     .ok_or(crate::Error::Overflow)?,
             )?;
             let h = self.kohn_sham_core();
-            let (_, core) = crate::math::linalg::eigen(h.clone())?;
-            let mut starts = vec![if unrestricted {
-                vec![core.clone(), core.clone()]
-            } else {
-                vec![core.clone()]
-            }];
+            let (core_levels, core) = crate::math::linalg::eigen(h.clone())?;
+            let channels = if unrestricted { 2 } else { 1 };
+            // Each start with the levels of its orbitals, from which its first occupations are
+            // filled.
+            let mut starts: Vec<(Vec<Matrix>, Vec<Vec<f64>>)> = vec![(
+                vec![core.clone(); channels],
+                vec![core_levels.clone(); channels],
+            )];
             let occupations = if unrestricted {
                 particles.to_vec()
             } else {
@@ -858,10 +1029,17 @@ impl MolecularIntegrals {
             let mut poisson = Poisson::isolated(ctx, &self.grid)?;
             if options.guesses >= 2 {
                 let d = starts[0]
+                    .0
                     .iter()
                     .zip(&occupations)
-                    .map(|(c, &n)| scf::density(c, n))
-                    .collect::<Vec<_>>();
+                    .zip(&starts[0].1)
+                    .map(|((c, &n), levels)| {
+                        Ok(occupation::density(
+                            c,
+                            &occupation::fermi_dirac(levels, n, width)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 let f = evaluate(
                     self,
                     &h,
@@ -872,13 +1050,12 @@ impl MolecularIntegrals {
                     screened.as_ref(),
                 )?
                 .f;
-                starts.push(
-                    f.into_iter()
-                        .map(|f| {
-                            crate::math::linalg::eigen((&h + f) * C64::new(0.5, 0.)).map(|(_, c)| c)
-                        })
-                        .collect::<Result<_>>()?,
-                );
+                let solved = f
+                    .into_iter()
+                    .map(|f| crate::math::linalg::eigen((&h + f) * C64::new(0.5, 0.)))
+                    .collect::<Result<Vec<_>>>()?;
+                let levels = solved.iter().map(|(e, _)| e.clone()).collect();
+                starts.push((solved.into_iter().map(|(_, c)| c).collect(), levels));
             }
             if unrestricted
                 && options.guesses >= 3
@@ -896,76 +1073,161 @@ impl MolecularIntegrals {
                         c[(k, a)] = -core[(k, i)] * theta.sin() + core[(k, a)] * theta.cos();
                     }
                 }
-                starts.push(pair);
+                // The deliberately broken-symmetry start: its levels are those of the core
+                // Hamiltonian in the rotated orbitals.
+                let levels = pair
+                    .iter()
+                    .map(|c| {
+                        (0..m)
+                            .map(|j| (c.column(j).adjoint() * &h * c.column(j))[(0, 0)].re)
+                            .collect()
+                    })
+                    .collect();
+                starts.push((pair, levels));
             }
-            let mut best: Option<(
+            type Best = (
                 Candidate,
                 f64,
                 f64,
                 Option<(f64, Vec<crate::molecular::hubbard::MolecularHubbardReport>)>,
-            )> = None;
-            for start in starts {
-                let n_pts = self.grid.index.points();
-                let mut total_scratch = ctx.allocate::<C64>(n_pts)?;
-                let mut hartree_scratch = ctx.allocate::<C64>(n_pts)?;
-                let (c, d, history, converged) = self.iterate_start(
-                    &start,
-                    &occupations,
-                    options,
-                    |d: &[Matrix]| {
-                        let value = evaluate_scratch(
-                            self,
-                            &h,
-                            d,
-                            functional,
-                            &mut poisson,
-                            orbital_gradients.as_ref(),
-                            screened.as_ref(),
-                            Some((total_scratch.as_mut_slice(), hartree_scratch.as_mut_slice())),
-                        )?;
-                        Ok((value.f, value.energy))
-                    },
-                )?;
-                let value = evaluate(
-                    self,
-                    &h,
-                    &d,
-                    functional,
-                    &mut poisson,
-                    orbital_gradients.as_ref(),
-                    screened.as_ref(),
-                )?;
-                let energies = value
-                    .f
-                    .into_iter()
-                    .map(|f| crate::math::linalg::eigen(f).map(|(e, _)| e))
-                    .collect::<Result<_>>()?;
-                let candidate = Candidate {
-                    energy: value.energy,
-                    converged,
-                    history,
-                    coefficients: c,
-                    densities: d,
-                    energies,
-                    unstable_pair: None,
-                };
-                let hubbard_data = match (value.hubbard_energy, value.hubbard_report) {
-                    (Some(e), Some(r)) => Some((e, r)),
-                    _ => None,
-                };
-                if best.as_ref().is_none_or(|(b, _, _, _)| {
-                    (candidate.converged && !b.converged)
-                        || (candidate.converged == b.converged
-                            && candidate.energy < b.energy - 1e-12)
-                }) {
-                    best = Some((candidate, value.hartree, value.xc, hubbard_data));
+                Vec<Vec<f64>>,
+            );
+            // Converged and aufbau, then converged, then the lower free energy (what the SCF
+            // minimizes).
+            let healthy = |c: &Candidate| c.converged && c.aufbau_inversion.is_none();
+            let better = |c: &Candidate, b: &Candidate| {
+                let rank = |c: &Candidate| (c.converged, healthy(c));
+                rank(c) > rank(b)
+                    || (rank(c) == rank(b) && c.energy + c.entropy < b.energy + b.entropy - 1e-12)
+            };
+            // Every start at one width; the best candidate, with the levels of its columns.
+            let solve = |starts: Vec<(Vec<Matrix>, Vec<Vec<f64>>)>,
+                         width: f64,
+                         poisson: &mut Poisson|
+             -> Result<Best> {
+                let mut best: Option<Best> = None;
+                for (start, levels) in starts {
+                    let n_pts = self.grid.index.points();
+                    let mut total_scratch = ctx.allocate::<C64>(n_pts)?;
+                    let mut hartree_scratch = ctx.allocate::<C64>(n_pts)?;
+                    let run = self.iterate_start(
+                        &start,
+                        &occupations,
+                        Some(Filling {
+                            levels: &levels,
+                            width,
+                            degeneracy: if unrestricted { 1. } else { 2. },
+                        }),
+                        options,
+                        |d: &[Matrix]| {
+                            let value = evaluate_scratch(
+                                self,
+                                &h,
+                                d,
+                                functional,
+                                poisson,
+                                orbital_gradients.as_ref(),
+                                screened.as_ref(),
+                                Some((
+                                    total_scratch.as_mut_slice(),
+                                    hartree_scratch.as_mut_slice(),
+                                )),
+                            )?;
+                            Ok((value.f, value.energy))
+                        },
+                    )?;
+                    let value = evaluate(
+                        self,
+                        &h,
+                        &run.densities,
+                        functional,
+                        poisson,
+                        orbital_gradients.as_ref(),
+                        screened.as_ref(),
+                    )?;
+                    // The aufbau test: a level holding more than a lower one (unshifted Fock), which
+                    // Fermi-Dirac occupations never do; a level shift can hold such a state. It is
+                    // kept, labeled, and a candidate that passes is preferred.
+                    let mut inversion: Option<f64> = None;
+                    let mut column_levels = Vec::with_capacity(run.occupations.len());
+                    // Occupations in the order of the levels, which is the order of `energies`.
+                    let mut ordered = Vec::with_capacity(run.occupations.len());
+                    for ((f, c), filled) in
+                        value.f.iter().zip(&run.coefficients).zip(&run.occupations)
+                    {
+                        let levels: Vec<f64> = (0..c.ncols())
+                            .map(|j| (c.column(j).adjoint() * f * c.column(j))[(0, 0)].re)
+                            .collect();
+                        if let Some((i, a)) =
+                            occupation::non_aufbau(&levels, filled, scf::AUFBAU_TOLERANCE)
+                        {
+                            inversion = Some(inversion.unwrap_or(0f64).max(levels[i] - levels[a]));
+                        }
+                        let mut order: Vec<usize> = (0..levels.len()).collect();
+                        order.sort_by(|&a, &b| levels[a].total_cmp(&levels[b]));
+                        ordered.push(order.into_iter().map(|j| filled[j]).collect::<Vec<f64>>());
+                        column_levels.push(levels);
+                    }
+                    let fractional = !ordered.iter().all(|f| occupation::is_integer(f));
+                    let energies = value
+                        .f
+                        .into_iter()
+                        .map(|f| crate::math::linalg::eigen(f).map(|(e, _)| e))
+                        .collect::<Result<_>>()?;
+                    let candidate = Candidate {
+                        energy: value.energy,
+                        converged: run.converged,
+                        history: run.history,
+                        coefficients: run.coefficients,
+                        densities: run.densities,
+                        energies,
+                        unstable_pair: None,
+                        occupations: fractional.then_some(ordered),
+                        aufbau_inversion: inversion,
+                        entropy: run.entropy,
+                    };
+                    let hubbard_data = match (value.hubbard_energy, value.hubbard_report) {
+                        (Some(e), Some(r)) => Some((e, r)),
+                        _ => None,
+                    };
+                    let candidate = (
+                        candidate,
+                        value.hartree,
+                        value.xc,
+                        hubbard_data,
+                        column_levels,
+                    );
+                    if best.as_ref().is_none_or(|b| better(&candidate.0, &b.0)) {
+                        best = Some(candidate);
+                    }
+                    if best.as_ref().is_some_and(|b| healthy(&b.0)) && !unrestricted {
+                        break;
+                    }
                 }
-                if best.as_ref().is_some_and(|(b, _, _, _)| b.converged) && !unrestricted {
-                    break;
+                Ok(best.expect("at least one start"))
+            };
+            // The occupations at the target width, from every start. A stiff frontier (a
+            // degenerate or nearly degenerate shell: the occupations respond to its splitting
+            // as 1 / width) can defeat DIIS there and end unconverged or held by the level shift
+            // on a state that is not aufbau. Then the occupations are annealed (Rabuck and
+            // Scuseria, J. Chem. Phys. 110, 695 (1999)): converged at a wide, stable width, then
+            // narrowed in steps of three, each step started from the last. The better of the two
+            // states is kept.
+            let mut best = solve(starts.clone(), width, &mut poisson)?;
+            if !healthy(&best.0) && width < occupation::ANNEALING_START {
+                let mut stage = occupation::ANNEALING_START;
+                let mut current = solve(starts, stage, &mut poisson)?;
+                while current.0.converged && stage > width {
+                    stage = (stage / 3.).max(width);
+                    let start = (current.0.coefficients.clone(), current.4.clone());
+                    current = solve(vec![start], stage, &mut poisson)?;
+                }
+                if stage == width && better(&current.0, &best.0) {
+                    best = current;
                 }
             }
-            let (candidate, eh, exc, hubbard_data) = best.unwrap();
-            self.finish(
+            let (candidate, eh, exc, hubbard_data, _) = best;
+            let mut state = self.finish(
                 if unrestricted { "uhf" } else { "rhf" },
                 particles,
                 options,
@@ -973,7 +1235,9 @@ impl MolecularIntegrals {
                 workspace,
                 Some((functional, eh, exc)),
                 hubbard_data,
-            )
+            )?;
+            state.smearing_width = Some(width);
+            Ok(state)
         })
     }
 }

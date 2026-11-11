@@ -6,6 +6,7 @@ pub(super) fn minimize(
     ctx: &Context,
     initial: &[f64],
     options: &Options,
+    start: Option<&[f64]>,
     mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
 ) -> Result<Outcome> {
     let n = initial.len();
@@ -19,7 +20,17 @@ pub(super) fn minimize(
     let (mut energy, mut gradient) = objective(&x)?;
     validate(energy, &gradient, n)?;
     let mut history = vec![energy];
-    let mut hessian = DMatrix::<f64>::identity(n, n);
+    let mut hessian = match start {
+        None => DMatrix::<f64>::identity(n, n),
+        Some(values) => {
+            if values.len() != n * n || values.iter().any(|v| !v.is_finite()) {
+                return Err(Error::Invalid(
+                    "the carried Hessian must be finite and n x n for the n parameters".into(),
+                ));
+            }
+            DMatrix::from_row_slice(n, n, values)
+        }
+    };
     let mut steps = 0;
     let mut success = false;
     let mut message = "iteration budget exhausted".to_owned();
@@ -111,6 +122,12 @@ pub(super) fn minimize(
         steps,
         success,
         message,
+        hessian: Some(
+            (0..n)
+                .flat_map(|i| (0..n).map(move |j| (i, j)))
+                .map(|index| hessian[index])
+                .collect(),
+        ),
         interrupted: None,
     })
 }

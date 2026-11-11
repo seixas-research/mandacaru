@@ -30,7 +30,9 @@ impl MolecularIntegrals {
             if state.functional.is_some() && self.corrections.is_some() {
                 return self.spinor_gradient(state);
             }
-            return Err(invalid("native spinor Hartree-Fock gradients are not implemented"));
+            return Err(invalid(
+                "native spinor Hartree-Fock gradients are not implemented",
+            ));
         }
         if self.corrections.is_some() {
             return self.paw_gradient(state);
@@ -40,6 +42,8 @@ impl MolecularIntegrals {
                 "native stationary gradients currently require spectral kinetic energy",
             ));
         }
+        // The all-electron gradient sums the first `particles` canonical orbitals.
+        state.require_determinant("the all-electron analytic force")?;
         let m = self.m();
         let channels = if state.method == "rhf" { 1 } else { 2 };
         if state.densities.len() != channels

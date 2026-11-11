@@ -1,7 +1,7 @@
 """Silicon diamond unit cell relaxation with ADAPT-VQE and PAW-LCAO.
 
 Relaxes the periodic unit cell (minimizing Voigt stress and forces) using
-ADAPT-VQE on the supercell, PAW-LCAO with active space (10 qubits <= 18 qubits),
+ADAPT-VQE on the supercell, PAW-LCAO in the full valence space (16 qubits <= 18 qubits),
 matrix-free Cholesky decomposition, and ASE's ExpCellFilter with BFGS.
 """
 from ase.build import bulk

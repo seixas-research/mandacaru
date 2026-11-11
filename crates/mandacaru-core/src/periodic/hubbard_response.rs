@@ -96,6 +96,9 @@ impl<'a> PeriodicProbe<'a> {
                 "PeriodicProbe requires a converged ground-state result",
             ));
         }
+        if let Some(spec) = &crystal.hubbard {
+            super::hubbard_symmetry::require_fixed_atoms(spec, crystal)?;
+        }
         Ok(Self {
             crystal,
             ground_state,

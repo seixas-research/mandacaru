@@ -112,6 +112,14 @@ fn sphere_reach_finds_a_neighbor_nucleus_inside_a_wide_sphere() {
     eprintln!("O at 2.0 Bohr: widest sphere {reach:.3} Bohr against O-H {o_h:.3} Bohr");
     let o = read(&ctx, &dataset_path("lda-sr", "O"));
     assert!(sphere_reach(&o, o_h).is_none());
+    // The per-element gate: oxygen's own bond to hydrogen is 0.97 Angstrom (Cordero radii 0.66 +
+    // 0.31), inside the 2.0 Bohr sphere and outside the shipped 1.45 Bohr one.
+    use mandacaru_core::paw::diagnose::quality::{shortest_bond, sphere_against_bond};
+    let bond = shortest_bond(8).unwrap();
+    assert!((bond - 0.97 * BOHR_PER_ANGSTROM).abs() < 1e-9, "{bond}");
+    let (widest, against) = sphere_against_bond(&wide).expect("the O-H nucleus is inside");
+    assert!((widest - 2.0).abs() < 1e-3 && against == bond, "{widest} {against}");
+    assert!(sphere_against_bond(&o).is_none());
 }
 
 #[test]
@@ -236,7 +244,7 @@ fn grid_residual_calibration() {
 #[ignore = "candidate report; run: PAW_CANDIDATE_DIR=... cargo test --profile release-test -p mandacaru-core --test paw_diagnose_quality -- --ignored candidate_report --nocapture"]
 fn candidate_report() {
     use mandacaru_core::paw::diagnose::quality::{
-        grid_residual, hardness, partition_mismatch, residual_kinetic, sphere_reach,
+        grid_residual, hardness, partition_mismatch, residual_kinetic, sphere_against_bond,
         working_spacing,
     };
     let root =
@@ -269,14 +277,14 @@ fn candidate_report() {
                 .flatten();
             let total = |h: f64| grid_residual(&ctx, &ds, h).unwrap().values().sum::<f64>();
             println!(
-                "{set} {element}: Zv {} defects {:?} | residual {:?} hard {:?} | grid 0.2/0.15/0.12/0.1 = {:.2e}/{:.2e}/{:.2e}/{:.2e} working {:?} | sphere vs 4.44 Bohr {:?} | partition vs {twin_set}: {}",
+                "{set} {element}: Zv {} defects {:?} | residual {:?} hard {:?} | grid 0.2/0.15/0.12/0.1 = {:.2e}/{:.2e}/{:.2e}/{:.2e} working {:?} | sphere vs own X-H bond {:?} | partition vs {twin_set}: {}",
                 ds.valence_charge,
                 ds.defects,
                 residual_kinetic(&ds).iter().map(|(l, v)| (*l, (v * 1e3).round() / 1e3)).collect::<Vec<_>>(),
                 hardness(&ds).keys().collect::<Vec<_>>(),
                 total(0.2), total(0.15), total(0.12), total(0.1),
                 working_spacing(&ctx, &ds).unwrap(),
-                sphere_reach(&ds, 2.35 / 0.529177210903),
+                sphere_against_bond(&ds),
                 partition.unwrap_or_else(|| "same".into()),
             );
         }

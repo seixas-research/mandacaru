@@ -1,9 +1,10 @@
 //! Owned Wannier setup/result bindings. Numerical work detaches from Python.
-use super::{array, copy, error, periodic::input_arrays, Array};
+use super::{array, copy, downfold::PyDownfolded, error, periodic::input_arrays, Array};
 use mandacaru_core::{
     periodic::{
         input::kpoint_arrays,
         wannier::{
+            downfold::{CoulombBox, Request, Screening},
             setup::{Setup, Wannier},
             Options,
         },
@@ -117,9 +118,13 @@ impl PyWannierSetup {
         tolerance: f64,
         step: f64,
     ) -> PyResult<PyWannierResult> {
-        let setup = self.inner.take().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Wannier setup has already been consumed")
-        })?;
+        let setup = self
+            .inner
+            .take()
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("Wannier setup has already been consumed")
+            })?
+            .with_provider(self.setup.clone());
         let inner = py
             .detach(|| {
                 setup.finish(&Options {
@@ -256,6 +261,35 @@ impl PyWannierResult {
         out.set_item("bands", owner.bands.clone())?;
         out.set_item("size", owner.size)?;
         Ok(out)
+    }
+    /// The many-body problem of a fragment of the functions (bare interaction, in Hartree).
+    #[pyo3(signature=(functions=None,num_particles=None,*,screening=None,screening_cutoff=None,screening_bands=None,coulomb="supercell"))]
+    fn downfold(
+        &self,
+        py: Python<'_>,
+        functions: Option<Vec<(usize, [i64; 3])>>,
+        num_particles: Option<[usize; 2]>,
+        screening: Option<&str>,
+        screening_cutoff: Option<f64>,
+        screening_bands: Option<usize>,
+        coulomb: &str,
+    ) -> PyResult<PyDownfolded> {
+        let request = Request {
+            functions,
+            num_particles,
+            screening: screening.map(Screening::parse).transpose().map_err(error)?,
+            cutoff: screening_cutoff,
+            bands: screening_bands,
+            coulomb: CoulombBox::parse(coulomb).map_err(error)?,
+            workers: None,
+        };
+        let owner = self.inner.clone();
+        let inner = py.detach(|| owner.downfold(&request)).map_err(error)?;
+        Ok(PyDownfolded {
+            inner,
+            screening: screening.map(str::to_owned),
+            coulomb: coulomb.to_owned(),
+        })
     }
     #[pyo3(signature=(fractional_kpoints,*,spin=0))]
     fn interpolate<'py>(

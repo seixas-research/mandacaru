@@ -232,6 +232,18 @@ impl PyCrystal {
     fn n_orbitals(&self) -> usize {
         self.inner.m
     }
+    /// The real-space grid of the cell (periodic).
+    #[getter]
+    fn grid(&self) -> super::geometry::PySpatialGrid {
+        super::geometry::PySpatialGrid {
+            inner: self.inner.grid.clone(),
+        }
+    }
+    /// Valence electrons per cell, the charge of the cell included.
+    #[getter]
+    fn electrons(&self) -> f64 {
+        self.inner.electrons
+    }
     #[getter]
     fn orbital_groups(&self) -> PyResult<Vec<(usize, usize)>> {
         if let Some(desc) = &self.inner.description {

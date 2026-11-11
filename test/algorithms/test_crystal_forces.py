@@ -233,16 +233,6 @@ def test_float32_forces_and_stress_are_refused_before_the_scf(monkeypatch):
     assert ran == [] and atoms.calc.result is None
 
 
-def test_dft_plus_u_symmetry_reduced_mesh_raises():
-    """With ``symmetry=True`` DFT+U refuses before any SCF because occupations are not symmetrized."""
-    atoms = Atoms("CuH", positions=[[0, 0, 0], [0, 0, 1.46]], cell=[7.0] * 3, pbc=True)
-    atoms.center()
-    atoms.calc = calculator(grid_spacing=0.3, hubbard_u={"Cu": {"l": "d", "U": 4.0}}, symmetry=True,
-                            periodic_scf_options={"max_iterations": 1})
-    with pytest.raises(ValueError, match="DFT\\+U needs the shell occupations symmetrized"):
-        atoms.get_forces()
-
-
 def test_dft_plus_u_hybrid_raises():
     """Hybrid DFT+U raises NotImplementedError naming the functional."""
     with pytest.raises(NotImplementedError, match="hybrid functional"):

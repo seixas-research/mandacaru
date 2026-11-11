@@ -1,5 +1,9 @@
 //! Static independent-particle response and the symmetric RPA Dyson equation.
 //! Transition densities include the caller's complete PAW augmentation.
+pub mod bloch;
+pub mod medium;
+pub mod transitions;
+
 use super::{invalid, spectrum::Smearing};
 use crate::{
     math::{
@@ -11,7 +15,11 @@ use crate::{
     Buffer, Context, Reservation, Result,
 };
 use nalgebra::{DMatrix, DVector};
+use rayon::prelude::*;
 use std::f64::consts::PI;
+
+/// Columns of the polarizability one product computes.
+const COLUMN_BLOCK: usize = 24;
 
 pub struct Options {
     pub cell_volume: f64,
@@ -75,10 +83,12 @@ impl Polarizability {
             _packing: ctx.reserve(product(&[batch, vectors, 16])?)?,
         })
     }
-    /// Both directions of the band-pair sum must be supplied. Degenerate
-    /// transitions take the analytic smearing derivative, including intraband
-    /// response; constrained RPA removes the product of target weights.
-    pub fn add(&mut self, first: State, second: State, density: &[C64]) -> Result<()> {
+    /// The static weight of the transition `first -> second` before the mesh and cell
+    /// normalization: `degeneracy (f_1 - f_2) / (e_1 - e_2)` (the slope of the smearing for a
+    /// degenerate pair, which includes the intraband response), times `1 - p_1 p_2` for
+    /// constrained RPA. Zero (or below `1e-12`) means the transition does not screen and its
+    /// density need not be computed.
+    pub fn transition_weight(&self, first: State, second: State) -> Result<f64> {
         for state in [first, second] {
             if !state.energy.is_finite()
                 || !state.target.is_finite()
@@ -89,15 +99,6 @@ impl Polarizability {
                     "invalid static response energy or target-space weight",
                 ));
             }
-        }
-        if density.len() != self.vectors
-            || density
-                .iter()
-                .any(|v| !v.re.is_finite() || !v.im.is_finite())
-        {
-            return Err(invalid(
-                "transition density must match the response reciprocal space",
-            ));
         }
         let options = &self.options;
         let delta = first.energy - second.energy;
@@ -123,6 +124,23 @@ impl Polarizability {
         if !weight.is_finite() {
             return Err(invalid("nonfinite static response transition weight"));
         }
+        Ok(weight)
+    }
+    /// Both directions of the band-pair sum must be supplied. Degenerate
+    /// transitions take the analytic smearing derivative, including intraband
+    /// response; constrained RPA removes the product of target weights.
+    pub fn add(&mut self, first: State, second: State, density: &[C64]) -> Result<()> {
+        let weight = self.transition_weight(first, second)?;
+        if density.len() != self.vectors
+            || density
+                .iter()
+                .any(|v| !v.re.is_finite() || !v.im.is_finite())
+        {
+            return Err(invalid(
+                "transition density must match the response reciprocal space",
+            ));
+        }
+        let options = &self.options;
         if weight.abs() <= 1e-12 {
             return Ok(());
         }
@@ -161,28 +179,50 @@ impl Polarizability {
             } else {
                 &mut self.real
             };
-            gemm::multiply(
-                MatrixRef {
-                    values: self.left.as_slice(),
-                    rows: n,
-                    columns: self.count,
-                    leading: n,
-                },
-                MatrixRef {
-                    values: self.right.as_slice(),
-                    rows: self.count,
-                    columns: n,
-                    leading: batch,
-                },
-                MatrixMut {
-                    values: target.as_mut_slice(),
-                    rows: n,
-                    columns: n,
-                    leading: n,
-                },
-                sign,
-                1.,
-            )?;
+            // The result splits into fixed blocks of columns, whatever the thread count: each
+            // block is one product on one worker, so the bits do not depend on how many workers
+            // share them.
+            let (left, right, count) = (self.left.as_slice(), self.right.as_slice(), self.count);
+            let block = |first: usize, out: &mut [f64]| -> Result<()> {
+                let columns = out.len() / n;
+                gemm::multiply(
+                    MatrixRef {
+                        values: left,
+                        rows: n,
+                        columns: count,
+                        leading: n,
+                    },
+                    MatrixRef {
+                        values: &right[first * batch..],
+                        rows: count,
+                        columns,
+                        leading: batch,
+                    },
+                    MatrixMut {
+                        values: out,
+                        rows: n,
+                        columns,
+                        leading: n,
+                    },
+                    sign,
+                    1.,
+                )
+            };
+            let width = COLUMN_BLOCK * n;
+            match self.context.pool() {
+                Some(pool) if n > COLUMN_BLOCK => pool.install(|| {
+                    target
+                        .as_mut_slice()
+                        .par_chunks_mut(width)
+                        .enumerate()
+                        .try_for_each(|(k, out)| block(k * COLUMN_BLOCK, out))
+                })?,
+                _ => {
+                    for (k, out) in target.as_mut_slice().chunks_mut(width).enumerate() {
+                        block(k * COLUMN_BLOCK, out)?;
+                    }
+                }
+            }
         }
         self.count = 0;
         Ok(())

@@ -56,7 +56,7 @@ def test_native_solver_uses_sdk_measurements_instead_of_replacing_them():
         # A deliberately different device state distinguishes SDK and native objectives.
         return {"expectations": [[1. if set(label) <= {"I", "Z"} else 0.
                                   for label in observables]
-                                 for _labels, _angles, observables in requests]}
+                                 for _labels, _angles, observables, _priced in requests]}
 
     raw = problem.solve(trotter=True, optimizer="COBYLA", max_iterations=0,
                         initial_parameters=[.21], executor=measured)
@@ -102,7 +102,7 @@ def test_measured_adapt_pool_screening_matches_independent_commutator_expectatio
 
     def oracle(batch):
         answers = []
-        for labels, angles, observables in batch:
+        for labels, angles, observables, _priced in batch:
             requests.append(tuple(observables))
             state = np.zeros(16, complex)
             state[8] = 1.

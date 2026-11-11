@@ -30,7 +30,7 @@ refused.
 | `"threshold"` | keep the virtual natural orbitals whose occupation is at least this value; `True` means `1e-3` |
 | `"frozen"` | the frozen core: `"auto"`, a list of orbital indices, or a count |
 | `"symmetry"` | keep degenerate orbital sets whole (closed shell only) |
-| `"correlating_pairs"` | not implemented; anything but `False` or `None` raises |
+| `"correlating_pairs"` | `True` keeps the correlating partner of every active doubly occupied orbital active (not with `"symmetry"`) |
 
 Omitting `active_space` keeps every orbital.
 
@@ -83,8 +83,16 @@ The ranking methods differ in what they cost and what they ask:
 `"mp2"`
 : The frozen natural orbitals: the eigenvectors of the second-order density's
   virtual block, which rotate the virtual space so a few orbitals gather the
-  correlation that canonical ordering spreads thinly. It needs a closed-shell
-  Hartree-Fock reference and real orbitals; an open shell is refused.
+  correlation that canonical ordering spreads thinly. It needs a Hartree-Fock
+  reference and real orbitals. An open shell (`uhf`) takes open-shell MP2:
+  - **Reference:** the determinant the open-shell model is built for, which
+    places the alpha and beta electrons in the lowest UHF natural orbitals.
+  - **Partition:** each spin has its own Fock operator, made semicanonical in
+    its occupied and virtual spaces. Singles survive as well as doubles
+    (Knowles, Andrews, Amos, Handy and Pople, Chem. Phys. Lett. 186, 130
+    (1991)).
+  - **What is ranked:** only the orbitals empty in both spins; the singly
+    occupied ones are never deleted.
 
 `"dlpno-mp2"`
 : The same natural orbitals from local MP2 (Boys localization, projected
@@ -96,8 +104,28 @@ method only decides the virtual space (and rotates the active doubly occupied
 orbitals among themselves, which leaves the reference determinant and its
 energy unchanged).
 
-The remaining open items are listed in [what is not yet available](#not-yet-available):
-open-shell MP2 selection and correlating-pair constraints.
+(correlating-pairs)=
+## Correlating pairs
+
+`"correlating_pairs": True` keeps each active doubly occupied orbital together
+with the virtual orbital that correlates it. The pairs are the one-to-one
+assignment of maximum total weight `|⟨ii|aa⟩| / (F_aa − F_ii)`. This weight is
+the first-order amplitude of the pair excitation `i² → a²`: an exchange integral
+that is large when the two orbitals share a region with a node between them,
+divided by the energy the excitation costs. The behavior depends on how the
+orbitals are chosen:
+
+- **A count, or `{"occupied": n, "virtual": m}`:** the partners of the active
+  occupied orbitals enter first, then the other virtuals in rank order. The
+  partner of an occupied orbital that the count froze stays out. A count too
+  small for the required partners raises `ValueError`.
+- **An explicit list:** checked, never changed. A list that leaves out a
+  partner raises `ValueError`.
+- **A threshold alone:** the partners enter with every virtual above the
+  threshold.
+
+The requested frozen core is never paired. `"correlating_pairs"` together with
+`"symmetry"` raises `NotImplementedError`.
 
 ## Reading the selection back
 

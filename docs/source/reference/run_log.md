@@ -50,8 +50,7 @@ print(blocks["summary"]["optimal_energy_eV"])
 ```
 
 A periodic calculation (a crystal) writes `[SYSTEM]` (from a geometry), `[BASIS]`,
-`[ELECTRONS]` and a framed `[SCF SUMMARY]`; it has no `[SCF SETUP]` or
-`[SCF ITERATIONS]` yet.
+`[ELECTRONS]`, `[SCF SETUP]`, `[SCF ITERATIONS]` and a framed `[SCF SUMMARY]`.
 
 ## Which blocks a run writes
 
@@ -61,7 +60,7 @@ A periodic calculation (a crystal) writes `[SYSTEM]` (from a geometry), `[BASIS]
 | `[SYSTEM]` | runs from a geometry | Always for them; a run from a Hamiltonian has no geometry and writes none |
 | `[BASIS]` | every run | Always (a run from a Hamiltonian states only the precision) |
 | `[ELECTRONS]` | every run | Always |
-| `[SCF SETUP]`, `[SCF ITERATIONS]` | molecular runs from a geometry | After `[ELECTRONS]`: the mean-field reference of every method; a crystal writes neither |
+| `[SCF SETUP]`, `[SCF ITERATIONS]` | runs from a geometry | After `[ELECTRONS]`: the mean-field reference of every molecular method, and a crystal's SCF |
 | `[ACTIVE SPACE]` | quantum methods | Only when `active_space=` reduced the register |
 | `[ENERGY MEASUREMENT]` | quantum methods | Only for a shot-based run (`shots > 0`) |
 | `[GRADIENT MEASUREMENT]` | quantum methods | Only for a measured-gradient run (`shots > 0` with `adapt-vqe`) |
@@ -234,14 +233,47 @@ symmetry-changing`); a Hamiltonian with no symmetry to remove says `none found`.
 `grid points` is what the cell turned the requested spacing into. `Hamiltonian` is the
 number of Pauli terms the native problem holds. A line
 `two-body integrals: Cholesky factors, tolerance ..., rank ..., largest residual
-diagonal ...` (it also states the rank against the number of basis functions) follows
+diagonal ...` (it also states the rank against the number of basis functions; the
+tolerance and the residual are energies in the log's unit, eV, or Ha with
+`atomic_units=True`) follows
 `kinetic operator` when you passed `two_body=`; a run that did
-not ask for a factorization says nothing about it. A classical run (`rhf`, `uhf`,
+not ask for a factorization says nothing about it. With
+`"representation": "double-factorized"` the same line goes on: `; double-factorized
+active-space tensor, truncation ..., K of E eigenpairs in L of C leaves (N numbers), energy
+change bound ...`. It states the truncation you gave, the eigenpairs and leaves the model
+kept out of those the factorization produced, the numbers it stores, and the bound reached
+on the change of any energy, all energies in the log's unit. A run whose Hamiltonian was
+not built says `not built` after the truncation
+([the double-factorized representation](#double-factorized-representation)). A run from a
+Hamiltonian file saved by such a model has no grid, yet still writes
+`two-body integrals: double-factorized active-space tensor (recorded in the loaded
+Hamiltonian), truncation ..., energy change bound ...`, read from the file's
+`metadata.two_body` (`representation`, `truncation_ev`, `error_bound_ev`, in eV in the file
+whatever the log's unit). A classical run (`rhf`, `uhf`,
 `ghf`, `dft`) writes no `reference state`, `Z2 tapering`, `mapping`, `Hamiltonian` or
 `qubits`: a line `Jordan-Wigner` would describe a calculation that did not happen. A
 calculation from a Hamiltonian has no grid, kinetic operator, k-points or charge.
 Above 20 qubits a line `operator_details: omitted (...)` follows and the operator
 column of the iteration table reads `(omitted)`.
+
+A crystal writes the cell instead:
+
+```text
+[ELECTRONS]
+    grid spacing: 0.3 Angstrom (requested)
+    grid points: 9 x 9 x 9 (non-orthogonal step vectors)
+    k-points: 2x2x2 Monkhorst-Pack, 3 in the calculation
+    charge: 0
+    spin-polarized: False
+    spin-orbit (spinor): False
+    basis functions per cell: 2
+    electrons per cell: 2
+```
+
+`k-points` gives the mesh and the number of points left after symmetry. A crystal's
+`[ELECTRONS]` has no per-spin particle counts and no multiplicity. Its occupations
+are smeared, and its moment need not be an integer. The moment is a result of the
+SCF, so it is the last column of the iteration table.
 
 ## `[SCF SETUP]` and `[SCF ITERATIONS]`
 
@@ -262,8 +294,28 @@ The mean-field calculation every method starts from, in the unit of the log:
         2            -45.0904756509         +0.0000000000       1.665e-16
 ```
 
+A crystal states its own SCF: the method, the free-energy and density-residual
+tolerances, the mixing, the smearing and the eigensolver. Its table holds the free
+energy per cell, and for a spin-polarized crystal a `moment (muB)` column:
+
+```text
+[SCF SETUP]
+    scf_method: periodic Kohn-Sham DFT (lda), Bloch states
+    scf_max_iterations: 300
+    scf_convergence_Hartree: 1e-07 (free-energy change), density residual 1e-05
+    scf_mixing: diis, mixing 0.25, history 7
+    scf_smearing: fermi-dirac, width 0.00367493 Ha
+    scf_eigensolver: davidson
+
+[SCF ITERATIONS]
+     iter        free_energy (eV)               dE (eV)        residual
+    -------------------------------------------------------------------
+        1          -21.8242240292                     -       9.540e-01
+        2          -21.8474413321         -0.0232173029       7.824e-01
+```
+
 The setup values are the ones the native method declares, overridden by
-`scf_options`. `electronic_energy` leaves out the nuclear repulsion. The table is the
+`scf_options` (`periodic_scf_options` and `smearing` for a crystal). `electronic_energy` leaves out the nuclear repulsion. The table is the
 saved history of the start that won, and it has no `time` column: the native SCF
 records no clock, and the log does not invent one. The `scf_` prefix keeps these keys
 apart from the keys of `[OPTIMIZATION SETUP]` when a reader parses both.
@@ -372,8 +424,13 @@ coupled-operator labels are too long for a row, so its `operator` column reads `
   `*`, and so does `final_max_gradient` in the summary.
 - `pool` and `pool_size` name the operator pool and its size; `pool_class` is what the
   native engine says that pool generates.
-- `reoptimize_all_parameters` is always `True`: the native solver re-optimizes every
-  parameter after each growth step. `state_vector_backend` says how the state is held.
+- `growth` is `single (largest gradient)`, or `tetris (disjoint-support operators per step)`
+  with `tetris=True`. `pruning` is `on` with `prune=True`, and the summary of such a run
+  then counts its `pruned_operators`.
+- `reoptimize_all_parameters` is the `quenching` option: `True` (the default)
+  re-optimizes every parameter after each growth step. `False` optimizes only the
+  newly appended ones (ADAPT-VQE), or sweeps a fixed ansatz once, one parameter at a
+  time (VQE). `state_vector_backend` says how the state is held.
 - `device`, `backend_provider`, `circuit_execution` and `shots` say where the energies
   came from (`backend_provider` is `none` without a provider). `shots` reads
   `0 (exact expectation values)` or `N (sampled expectation values)`.
@@ -404,6 +461,7 @@ One row per accepted ADAPT-VQE operator (LiH, active space of two orbitals):
 | `iter` | Growth step. |
 | `time` | The clock when the row was written (see above). |
 | `energy` | Energy after the whole ansatz was re-optimized. |
+| `sigma` | Its shot-noise standard error, in the energy unit (see the summary's `energy_standard_error`). Only on a run with `shots > 0`; a state-vector run has no such column. |
 | `expr` | Expressivity of the ansatz (KL divergence from the Haar distribution). Absent unless you call `run(log_expressivity=True)` (`adapt-vqe` without shots): it samples state fidelities at every row. |
 | `dE` | Change from the previous row (the first row: from the reference energy, or from the restored energy of a resumed run). |
 | `\|grad\|` | Screening gradient of the operator that was chosen, converted to eV. The setup block states the same quantity in Ha/rad. |
@@ -463,6 +521,18 @@ threshold. `termination` is the reason the optimizer or the growth loop stopped
 reports it. `cost_evaluations` counts optimizer objective calls, and
 `optimizer_steps` the parameter updates summed over the run.
 
+A run with `shots > 0` adds `energy_standard_error_<unit>` right after `optimal_energy`, the
+one line that states it (`result.energy_error`). It is computed in Rust from the device's
+counts: each qubit-wise commuting basis is measured after its rotation to `Z`, together with
+the products of its strings, so that the variance of the basis's energy,
+`(<H_b^2> - <H_b>^2) / shots`, includes the covariances of the strings read on the same shots,
+and the bases add as independent. The products cost no shot and no basis, so no
+`measurement_budget` ceiling counts them: a run admitted before the error existed is admitted
+now. A basis whose strings need more than 20,000 distinct product strings (a classical limit)
+leaves the run without an error estimate: it runs as before, `result.energy_error` is `None`,
+and the same line reads `energy_standard_error_<unit>: not reported: ...` with the reason
+(`result.energy_error_reason`). A state-vector run writes no such line.
+
 ## `[SCF SUMMARY]`
 
 The block that closes a classical run, after `[SCF SETUP]` and `[SCF ITERATIONS]`:
@@ -471,12 +541,24 @@ The block that closes a classical run, after `[SCF SETUP]` and `[SCF ITERATIONS]
 ========================================================================
 [SCF SUMMARY]
     converged: True
+    occupation: aufbau
     energy_eV: -25.87060596308835
 ========================================================================
 ```
 
 Whether the SCF converged is the `converged` line; the iterations are in
-`[SCF ITERATIONS]` above it.
+`[SCF ITERATIONS]` above it. A molecule's `occupation` says how the state fills its
+orbitals. There are three values:
+
+- `aufbau`: every occupation is 0 or 1.
+- `fractional (Fermi-Dirac, width W Ha, -TS X Ha)`: a Kohn–Sham state whose degenerate
+  or nearly degenerate frontier shell holds Fermi-Dirac occupations at width `W`, with
+  `X` the entropy term separating `energy_eV` from the free energy
+  ([the DFT guide](#dft-degenerate-shell)).
+- `not aufbau (inversion X Ha)`: a level holds more electrons than a level `X` below
+  it, a state that a level shift can hold.
+
+A crystal writes no `occupation` line.
 
 A periodic run with `hubbard_u=` adds the on-site DFT+U correction to this block, and
 states it nowhere else: `hubbard_energy_eV` (the correction `E_U`, already inside
@@ -556,7 +638,7 @@ Other schemes add their own lines after `scheme`:
 | --- | --- | --- |
 | `Analytic-Hellmann-Feynman-Pulay` | all-electron HF and Kohn-Sham | none |
 | `Richardson-fixed-density-PAW` | PAW-LCAO RHF, UHF and semilocal Kohn-Sham | `step_bohr`, `step_error_estimate` |
-| `Central-reduced-Hamiltonian` | quantum methods | `energy_ha`, `directions`, `step_bohr`, `step_error_estimate` (`None` for two-point differences), `orbital_response` |
+| `analytic` (variational) | quantum methods, PAW-LCAO | `energy_ha`, `directions`, `orbital_response` (`CPHF-and-natural-orbital-Lagrangian`), `reference_stationarity`, `cphf_residual`, `coulomb_forms`, `stationarity`, `parameter_gradient_norm` (a variational state) and, for a corrected one, `z_vector_norm` and the Hessian solve (`hessian_parameters`, `hessian_exact`, `hessian_hamiltonian_actions`, `hessian_noise`, `hessian_cutoff`, the curvature extremes, `z_vector_dropped` and what it left out; see [the Z-vector correction](#forces-lagrangian)) |
 
 `net_force` is the sum of the force vectors, which a free molecule should not feel:
 it measures the discretization error. For one atom it is left out. The `convention`
@@ -649,16 +731,16 @@ in `[ELECTRONS]`, and the fate of each orbital in `[ACTIVE SPACE]`.
 The older manual described blocks and lines that the calculator does not write. Do
 not look for them in a log, and do not parse for them:
 
-- The tetris, pruning and screening lines of `[OPTIMIZATION SETUP]`: the native solver
-  has no such options.
+- The screening lines of `[OPTIMIZATION SETUP]`: the native solver has no such options.
+  (The `growth` and `pruning` lines are written, as the `[OPTIMIZATION SETUP]` section says.)
+- A crystal's `[BASIS]` states only the precision: the resolved recipe, the datasets
+  and the orbitals are written for a molecule.
 - The `time` column of `[SCF ITERATIONS]`: the native SCF records no clock. Likewise
   `[PERFORMANCE]` times the native solve as one stage (`parameter optimization`), and
   the log is written when the run ends, not while the SCF iterates.
 - `[MEASUREMENT]` and the quantum-echo and nested-OTOC helper blocks. The helper
   functions `append_block`, `append_quantum_echoes` and `append_nested_otoc` are still
   exported from `mandacaru.utils`, but no calculation calls them.
-- `[SCF SETUP]` and `[SCF ITERATIONS]` of a periodic (crystal) calculation: its log holds
-  `[SYSTEM]`, `[BASIS]`, `[ELECTRONS]` and `[SCF SUMMARY]` only.
 
 (references-bib)=
 ### `references.bib`

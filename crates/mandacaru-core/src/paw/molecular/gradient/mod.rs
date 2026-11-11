@@ -9,12 +9,15 @@
 //! pieces that move on the grid (basis functions, potentials centered on an
 //! atom) are contracted by the caller or here, term by term.
 mod compensation;
+mod densities;
+mod hubbard;
 mod projections;
 mod radial;
 mod screened;
 mod spheres;
 mod spinor_screened;
 
+pub use densities::{DensityTerms, Forms};
 pub use screened::HybridResponse;
 pub use spinor_screened::{pseudo_index, SpinorExchange};
 pub use radial::{core_slope, local_slope, long_range_slope, multipole_gradient, potential_slope};
@@ -62,6 +65,7 @@ pub struct Response<'a> {
     occupied: &'a [Occupied],
     grid: GridState<'a>,
     hf: bool,
+    unrestricted: bool,
     channels: Vec<Channel<'a>>,
     projected: Vec<Vec<DVector<f64>>>,
     moments: Moments,
@@ -69,14 +73,22 @@ pub struct Response<'a> {
 impl Setup {
     /// `hf` selects the Hartree-Fock model (frozen-core exchange and one-center
     /// tensor in the model, exact exchange in the pairs); otherwise the
-    /// Kohn-Sham model.
+    /// Kohn-Sham model. `unrestricted` is whether the state carries two spin channels.
     pub fn response<'a>(
         &'a self,
         integrals: &'a MolecularIntegrals,
         occupied: &'a [Occupied],
         grid: GridState<'a>,
         hf: bool,
+        unrestricted: bool,
     ) -> Result<Response<'a>> {
+        if hf && integrals.corrections.as_ref().is_some_and(|c| c.hubbard.is_some()) {
+            // The Hartree-Fock energy has no +U term: a +U force would not be its derivative.
+            return Err(crate::Error::Unsupported(
+                "DFT+U is a Kohn-Sham correction: the Hartree-Fock gradient of a molecule with hubbard_u is not defined"
+                    .into(),
+            ));
+        }
         let n = integrals.grid.index.points();
         let m = integrals.m();
         if grid.rho.len() != n
@@ -102,6 +114,7 @@ impl Setup {
             occupied,
             grid,
             hf,
+            unrestricted,
             channels,
             projected,
             moments,
@@ -213,6 +226,14 @@ impl Response<'_> {
             name: "pairs_coulomb/projection",
             gradient: contract(&pi.coulomb),
         });
+        if let Some(pi) =
+            hubbard::derivatives(setup, integrals, self.occupied, &self.projected, self.unrestricted)?
+        {
+            out.push(Contribution {
+                name: "hubbard/projection",
+                gradient: contract(&pi),
+            });
+        }
         out.push(Contribution {
             name: "projector_potential/local_sphere",
             gradient: spheres::local_force(setup, integrals, self.occupied)?,

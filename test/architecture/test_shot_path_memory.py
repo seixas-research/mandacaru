@@ -23,6 +23,7 @@ simulator): a few generators at a small bond dimension, with no stub.
 """
 import resource
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -100,8 +101,8 @@ def test_a_fifty_qubit_shot_run_builds_no_exponential_object(
         method, taper, particles, no_exponential_numpy):
     resident_before = rss_bytes()
     # The fermionic pool keeps this a test of the register-free memory architecture: the
-    # default ``ceo`` pool of ``adapt-vqe`` has 588,300 generators at 50 qubits and plans its
-    # gradient bases in 273 s (measured 2026-11-09), over the 180 s per-test budget.
+    # default ``ceo`` pool of ``adapt-vqe`` has 588,300 generators at 50 qubits and is refused
+    # by the budget before it is planned (``test_the_default_ceo_pool_of_fifty_qubits_...``).
     calc = Mandacaru(
         method=method, pool="fermionic", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
         num_particles=particles, taper=taper, shots=64, backend_provider="qiskit",
@@ -126,6 +127,64 @@ def test_a_fifty_qubit_shot_run_builds_no_exponential_object(
     assert calc.context.memory_peak_bytes < NATIVE_PEAK, calc.context.memory_peak_bytes
     assert rss_bytes() - resident_before < PROCESS_GROWTH, rss_bytes() - resident_before
     assert (problem.taper is not None) == taper
+
+
+def test_the_rdms_of_a_fifty_qubit_shot_run_are_refused_by_the_budget_without_a_state(
+        no_exponential_numpy):
+    """``measured_rdms()`` at 50 qubits needs about a million Pauli strings (the plan alone is
+    polynomial: ``crates/mandacaru-core/tests/rdm_measurement.rs`` builds it at 59 MB). The
+    default observables ceiling refuses it while the plan is being built, before any grouping or
+    job, and nothing on the way forms a state or a ``2^n`` object."""
+    resident_before = rss_bytes()
+    calc = Mandacaru(
+        method="vqe", pool="fermionic", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
+        num_particles=(1, 1), shots=64, backend_provider="qiskit", atomic_units=True,
+        trace=False, optimizer={"method": "COBYLA", "maxiter": 2, "maxfev": 4},
+        measurement_budget=MEASUREMENT_BUDGET, resources={"threads": 1})
+    landscape = Landscape()
+    calc.provider.expectation_batch = landscape
+
+    def statevector(*args, **kwargs):
+        raise AssertionError("measured RDMs asked the SDK for a state vector")
+
+    calc.provider.statevector = statevector
+    calc.run()
+    calls = landscape.calls
+    with pytest.raises(ValueError, match="observables budget"):
+        calc.measured_rdms()
+    assert landscape.calls == calls
+    assert calc.context.memory_peak_bytes < NATIVE_PEAK, calc.context.memory_peak_bytes
+    assert rss_bytes() - resident_before < PROCESS_GROWTH, rss_bytes() - resident_before
+
+
+@pytest.mark.parametrize("particles", [(1, 0), (1, 1)])
+def test_the_default_ceo_pool_of_fifty_qubits_is_refused_before_it_is_planned(particles):
+    """The refusal costs nothing: the default ``ceo`` pool has 588,300 generators at 50 qubits
+    and its gradient step needs 7.8 million Pauli observables against the default ceiling of
+    50,000. The native walk stops as soon as the distinct strings pass the ceiling, so the run
+    is refused in seconds and a fraction of a GB, not after minutes and 1.9 GB of planning, and
+    the device is never asked for anything. The message names the pool, its size, the budget and
+    the three ways out."""
+    resident_before = rss_bytes()
+    started = time.perf_counter()
+    calc = Mandacaru(
+        method="adapt-vqe", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
+        num_particles=particles, shots=64, backend_provider="qiskit", atomic_units=True,
+        trace=False, max_iterations=1, optimizer={"method": "COBYLA", "maxiter": 2, "maxfev": 4},
+        resources={"threads": 1})
+    landscape = Landscape()
+    calc.provider.expectation_batch = landscape
+    with pytest.raises(ValueError) as refused:
+        calc.run()
+    elapsed = time.perf_counter() - started
+    message = str(refused.value)
+    assert "'ceo' pool has 588,300 generators" in message
+    assert "more than 50,000 Pauli observables" in message
+    assert 'pool="fermionic"' in message and '"qeb"' in message
+    assert 'measurement_budget={"observables": N}' in message
+    assert landscape.calls == 0
+    assert elapsed < 30, elapsed       # measured 2.1 s; the unrefused plan took 360 s
+    assert rss_bytes() - resident_before < 10 ** 9, rss_bytes() - resident_before
 
 
 def test_every_state_vector_method_of_a_shot_problem_refuses_by_name():

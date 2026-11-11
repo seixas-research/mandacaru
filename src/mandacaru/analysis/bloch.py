@@ -25,7 +25,8 @@ class SpectralFunction:
     :math:`E_n` the exact eigenvalues of the same Hamiltonian in the ``N +- 1`` sectors (a
     Lanczos recursion per part, exact once it spans the sector). ``values`` is the trace over
     orbitals and spins broadened by a Lorentzian of half-width ``eta``, in states per eV per
-    cell. Energies are excitation energies in eV relative to :math:`E_0`: removal poles sit at
+    cell. Along a band path (``kpath`` is set) every row of ``values`` is a point of the path.
+    Energies are excitation energies in eV relative to :math:`E_0`: removal poles sit at
     :math:`E_0 - E_n^{N-1}`, addition poles at :math:`E_n^{N+1} - E_0`, so the gap of the state
     is ``addition_edge - removal_edge``.
     """
@@ -44,6 +45,10 @@ class SpectralFunction:
     addition_edge: float = 0.0
     ground_energy: float = 0.0
     mesh: tuple = (1, 1, 1)
+    #: The band path ``kpoints`` and ``values`` are along (``kpoints`` then are its points).
+    kpath: object = None
+    #: With a reduction to the irreducible zone: the symmetry audit of the state (a dict).
+    audit: dict | None = field(default=None, repr=False)
 
     @property
     def chemical_potential(self):

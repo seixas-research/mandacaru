@@ -20,7 +20,7 @@ Supported names
 ---------------
 ``"AER_simulator"``
     The default: an ideal (noiseless) simulator -- the exact state-vector
-    backend, or the local ``StatevectorEstimator`` with ``shots > 0``.
+    backend, or noiseless Aer sampling the shots locally with ``shots > 0``.
 ``"AER_mps"``
     Aer's **matrix-product-state** simulator, run locally: an opt-in simulator for circuits
     too wide for any state vector (a few-parameter ansatz on 50 qubits). Sampled, so it

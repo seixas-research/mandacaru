@@ -456,8 +456,15 @@ fn identical_smooth_and_all_electron_waves_freeze_nothing() {
     let s = Synthetic::new(|r| (-r).exp());
     let occupations = [1.];
     let channels = [occupied(&s, &occupations)];
-    let (constant, blocks) =
-        frozen_exchange_terms(&ctx, &s.r, &channels, 0.11, Basis::Raw).unwrap();
+    let (constant, blocks) = frozen_exchange_terms(
+        &ctx,
+        &s.r,
+        &vec![0.; s.r.len()],
+        &channels,
+        0.11,
+        Basis::Raw,
+    )
+    .unwrap();
     assert!(constant.abs() < 1e-12);
     assert!(blocks[0].matrix.iter().all(|v| v.abs() < 1e-12));
 

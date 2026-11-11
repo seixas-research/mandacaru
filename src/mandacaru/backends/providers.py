@@ -58,7 +58,8 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from ..core.mapping import PauliSum
+from .. import _native
+
 
 #: Provider names accepted by :func:`build_provider` / the driver
 #: ``backend_provider`` argument.
@@ -183,10 +184,10 @@ class CircuitProvider(ABC):
     supports_shots: bool = False
     #: What this provider can do beyond preparing a state; checked before an
     #: optimization spends anything (:func:`require_capability`).
-    #: ``"energy"`` a (shot-based) ``<H>``; ``"expectation_values"`` many
-    #: ``<P>`` of one state, what RDMs and forces need; ``"batch"`` several
-    #: problems in one submission (``energies``).
-    capabilities: tuple = ("energy",)
+    #: ``"expectation_values"`` many ``<P>`` of one state (the energy's strings,
+    #: what RDMs and forces need); ``"expectation_batch"`` those of several
+    #: states in one submission; ``"batch"`` several problems per job.
+    capabilities: tuple = ()
 
     # -- run ledger and budget ------------------------------------------- #
 
@@ -229,36 +230,26 @@ class CircuitProvider(ABC):
         """
         from .measurement import RunBudgetExceeded, resolve_run_budget
 
+        from .._native import budget_check
+
         ledger = self._ledger()
-        budget = resolve_run_budget(self.run_budget, self.is_hardware)
-        after = {"jobs": ledger["jobs"] + int(jobs),
-                 "total_shots": ledger["shots"] + int(shots)}
-        if budget is not None:
-            over = [(key, after[key], budget[key]) for key in after
-                    if budget.get(key) is not None
-                    and after[key] > budget[key]]
-            if over:
-                detail = "; ".join(f"{key} {value:,} > {limit:,}"
-                                   for key, value, limit in over)
-                sized = {key: after[key] for key, _value, _limit in over}
-                raise RunBudgetExceeded(
-                    f"{self!r}: this submission would exceed the run budget "
-                    f"({detail}) after {ledger['jobs']:,} jobs and "
-                    f"{ledger['shots']:,} shots.  Pass "
-                    f"backend_options={{\"run_budget\": {sized!r}}} sized for "
-                    f"this run if you mean it, or rehearse on a fake backend "
-                    f"first.")
-        ledger["jobs"] = after["jobs"]
-        ledger["shots"] = after["total_shots"]
-
-    def jobs_per_energy(self, hamiltonian) -> int:
-        """Submissions one :meth:`energy` of ``hamiltonian`` costs."""
-        return 1
-
-    def shots_per_energy(self, hamiltonian) -> int:
-        """Shots one :meth:`energy` of ``hamiltonian`` costs (the ledger's
-        arithmetic), so a budget can be checked before the first job."""
-        return 0
+        budget = resolve_run_budget(self.run_budget, self.is_hardware) or {}
+        (jobs_after, shots_after), over = budget_check(
+            (ledger["jobs"], ledger["shots"]), (int(jobs), int(shots)),
+            job_limit=budget.get("jobs"), shot_limit=budget.get("total_shots"))
+        if over:
+            detail = "; ".join(f"{key} {value:,} > {limit:,}"
+                               for key, value, limit in over)
+            sized = {key: value for key, value, _limit in over}
+            raise RunBudgetExceeded(
+                f"{self!r}: this submission would exceed the run budget "
+                f"({detail}) after {ledger['jobs']:,} jobs and "
+                f"{ledger['shots']:,} shots.  Pass "
+                f"backend_options={{\"run_budget\": {sized!r}}} sized for "
+                f"this run if you mean it, or rehearse on a fake backend "
+                f"first.")
+        ledger["jobs"] = jobs_after
+        ledger["shots"] = shots_after
 
     def _record_job(self, job) -> None:
         if job is not None:
@@ -292,18 +283,6 @@ class CircuitProvider(ABC):
             fresh._native_context = self._native_context
         return fresh
 
-    def energy(self, n_qubits: int, occupied, generators, thetas,
-               hamiltonian) -> float:
-        r"""Estimate ``<psi(thetas)| H |psi(thetas)>`` on this backend.
-
-        The default implementation goes through :meth:`statevector`, which is
-        exact but **simulator-only**.  Providers that can measure shots override
-        this with the hardware-compatible path (see
-        :mod:`mandacaru.backends.measurement`).
-        """
-        psi = self.statevector(n_qubits, occupied, generators, thetas)
-        return float(np.real(np.vdot(psi, hamiltonian.to_matrix() @ psi)))
-
     @staticmethod
     def _measurement_rotation(basis: str):
         """Gate stream rotating each qubit into the ``basis`` eigenbasis.
@@ -329,8 +308,9 @@ class QiskitProvider(CircuitProvider):
     """Qiskit circuits: exact state vectors, or energies from the ``Estimator``.
 
     With ``shots > 0`` the energy is the expectation value returned by the
-    Estimator primitive -- ``qiskit.primitives.StatevectorEstimator`` locally,
-    ``BackendEstimatorV2`` on a Qiskit Runtime *fake backend*, and the Qiskit
+    Estimator primitive -- ``BackendEstimatorV2`` on noiseless Aer (state-vector method)
+    locally, which samples the shots and reports their standard errors, the same primitive
+    on a Qiskit Runtime *fake backend*, and the Qiskit
     Runtime ``Estimator`` on **IBM Quantum hardware** -- for the Hamiltonian as
     a ``SparsePauliOp`` observable, transpiled to the target (``transpile(qc,
     backend=backend)`` + ``observable.apply_layout``), exactly as an IBM
@@ -445,10 +425,8 @@ class QiskitProvider(CircuitProvider):
         #: Every job of the current (last) submission, oldest first;
         #: :attr:`run_jobs` is every job of the run.
         self.jobs: list = []
-        #: The ``PrimitiveResult`` of the last ``energies`` call.
+        #: The ``PrimitiveResult`` of the last Estimator submission.
         self.last_result = None
-        #: Standard errors of the last ``energies`` call, one per problem.
-        self.last_stds: list[float] = []
         #: Chunks of an ``expectation_values`` submission that completed,
         #: keyed by what was submitted, so a retry resumes only the rest.
         self._completed_chunks: dict = {}
@@ -480,7 +458,7 @@ class QiskitProvider(CircuitProvider):
                 raise ValueError(
                     f"{name} describes a processor; the 'AER_mps' simulator has none")
 
-    capabilities = ("energy", "expectation_values", "expectation_batch", "batch")
+    capabilities = ("expectation_values", "expectation_batch", "batch")
 
     def _constructor_options(self) -> dict:
         return {"device": self.device_spec, "shots": self.shots,
@@ -521,7 +499,8 @@ class QiskitProvider(CircuitProvider):
     @property
     def precision(self) -> float:
         """Estimator target precision: ``1/sqrt(shots)`` (``0`` = exact)."""
-        return 0.0 if self.shots <= 0 else 1.0 / np.sqrt(self.shots)
+        from .._native import estimator_precision
+        return estimator_precision(max(int(self.shots), 0))
 
     def _service(self):
         from qiskit_ibm_runtime import QiskitRuntimeService
@@ -589,10 +568,20 @@ class QiskitProvider(CircuitProvider):
     def estimator(self):
         """The Estimator primitive for :attr:`device_spec` (cached)."""
         if self._estimator is None:
-            if self.is_local:
+            if self.is_local and self.precision > 0:
+                # Shots are sampled: noiseless Aer (state-vector method, as the exact local
+                # estimator also holds the state), each basis measured `shots` times, the
+                # standard errors from the counts.
+                from qiskit.primitives import BackendEstimatorV2
+                from qiskit_aer import AerSimulator
+
+                self._estimator = BackendEstimatorV2(
+                    backend=AerSimulator(method="statevector"),
+                    options={"default_precision": self.precision,
+                             "seed_simulator": self.seed})
+            elif self.is_local:
                 from qiskit.primitives import StatevectorEstimator
-                self._estimator = StatevectorEstimator(
-                    default_precision=self.precision, seed=self.seed)
+                self._estimator = StatevectorEstimator(seed=self.seed)
             elif self.is_fake_device or self.is_mps_device:
                 from qiskit.primitives import BackendEstimatorV2
                 from qiskit_aer import AerSimulator
@@ -635,7 +624,8 @@ class QiskitProvider(CircuitProvider):
         if self.shots or not self.is_local:
             raise ValueError(
                 f"{self!r} cannot return a state vector (a processor never "
-                "exposes amplitudes); use provider.energy(...) instead")
+                "exposes amplitudes); measure Pauli strings with "
+                "provider.expectation_values(...) instead")
         qc = self.build(n_qubits, occupied, generators, thetas)
         return np.asarray(Statevector(qc).data, dtype=complex)
 
@@ -799,9 +789,10 @@ class QiskitProvider(CircuitProvider):
         if not self.is_local and self.shots <= 0:
             raise ValueError(f"{self!r}: a processor needs shots > 0")
         factors, twirls, per_twirl = resilience_multipliers(self)
-        per_instance = twirls * per_twirl if twirls > 1 else self.shots
-        self._charge(max(int(bases or len(pubs)), 1) * factors
-                     * max(per_instance, 0))
+        self._charge(self._context().measurement_cost(
+            max(int(bases or len(pubs)), 1), shots=max(int(self.shots), 0),
+            noise_factors=factors, randomizations=twirls,
+            shots_per_randomization=per_twirl)[1])
         estimator = self.estimator()
         if self.is_ibm_device:
             self.last_job = estimator.run(pubs, precision=self.precision)
@@ -811,93 +802,6 @@ class QiskitProvider(CircuitProvider):
             result = run_local_estimator(estimator, pubs, self.precision)
         self.last_result = result
         return result
-
-    def _energy_pieces(self, hamiltonian, limit):
-        """``hamiltonian`` split into weighted observables of at most
-        ``limit`` measurement bases each (the identity rides with the first),
-        with the base count of each piece."""
-        from .measurement import chunk_labels_by_basis, qwc_partition
-
-        terms = hamiltonian.simplify().terms
-        identity = "I" * hamiltonian.num_qubits
-        labels = [label for label in terms if label != identity]
-        weights = [abs(complex(terms[label])) for label in labels]
-        chunks = chunk_labels_by_basis(labels, limit, weights, **self._core_options()) or [[]]
-        pieces = []
-        for k, chunk in enumerate(chunks):
-            piece = {label: terms[label] for label in chunk}
-            if k == 0 and identity in terms:
-                piece[identity] = terms[identity]
-            if not piece:
-                piece = {identity: 0.0}
-            op = PauliSum(piece, num_qubits=hamiltonian.num_qubits)
-            n_bases = len(qwc_partition(
-                chunk, [abs(complex(terms[l])) for l in chunk], **self._core_options())) if chunk else 1
-            pieces.append((op, n_bases))
-        return pieces
-
-    def jobs_per_energy(self, hamiltonian) -> int:
-        if not self.max_bases_per_job:
-            return 1
-        return len(self._energy_pieces(hamiltonian, self.max_bases_per_job))
-
-    def shots_per_energy(self, hamiltonian) -> int:
-        from .measurement import resilience_multipliers
-
-        factors, twirls, per_twirl = resilience_multipliers(self)
-        bases = sum(n for _op, n in self._energy_pieces(
-            hamiltonian, self.max_bases_per_job))
-        return self._context().measurement_cost(
-            bases, shots=max(int(self.shots), 0), noise_factors=factors,
-            randomizations=twirls, shots_per_randomization=per_twirl)[1]
-
-    def energies(self, problems) -> list[float]:
-        """Expectation values of several ``(n_qubits, occupied, generators,
-        thetas, hamiltonian)`` problems.
-
-        One Estimator job carries every problem, as one weighted observable
-        each -- unless :attr:`max_bases_per_job` is set, in which case each
-        Hamiltonian is split into weighted observables of at most that many
-        qubit-wise-commuting bases (the identity counted once) and job ``k``
-        carries piece ``k`` of every problem.  The energy is the sum of the
-        pieces, its standard error the root sum of squares (:attr:`last_stds`).
-        Each circuit is transpiled once and shared by its pieces.
-        """
-        problems = list(problems)
-        limit = self.max_bases_per_job
-        prepared = []
-        for n_qubits, occupied, generators, thetas, hamiltonian in problems:
-            isa, layout, params = self.compiled(n_qubits, occupied,
-                                                generators)
-            prepared.append(((isa, params, thetas), layout,
-                             self._energy_pieces(hamiltonian, limit)))
-        energies = [0.0] * len(problems)
-        variances = [0.0] * len(problems)
-        self.jobs = []
-        rounds = max(len(pieces) for _qc, _l, pieces in prepared)
-        for k in range(rounds):
-            owners, pubs, bases = [], [], 0
-            for i, (qc, layout, pieces) in enumerate(prepared):
-                if k >= len(pieces):
-                    continue
-                op, n_bases = pieces[k]
-                observable = self.observable(op)
-                if layout is not None:
-                    observable = observable.apply_layout(layout)
-                owners.append(i)
-                pubs.append(self._bound_pub(qc[0], qc[1], observable, qc[2]))
-                bases += n_bases
-            result = self._run_pubs(pubs, bases=bases)
-            if self.last_job is not None and self.is_ibm_device:
-                self.jobs.append(self.last_job)
-            for j, i in enumerate(owners):
-                energies[i] += float(np.asarray(result[j].data.evs)
-                                     .reshape(-1)[0])
-                std = getattr(result[j].data, "stds", None)
-                if std is not None:
-                    variances[i] += float(np.asarray(std).reshape(-1)[0]) ** 2
-        self.last_stds = [float(np.sqrt(v)) for v in variances]
-        return energies
 
     def expectation_values(self, n_qubits: int, occupied, generators, thetas,
                            labels, max_bases_per_job: int | None = None):
@@ -1013,23 +917,13 @@ class QiskitProvider(CircuitProvider):
         import hashlib
 
         parts = [str(int(n_qubits)), repr(sorted(int(q) for q in occupied)),
-                 repr(np.round(np.asarray(thetas, dtype=float), 12).tolist()),
+                 repr(_native.rounded(np.asarray(thetas, dtype=float).ravel().tolist(), 12)),
                  repr([sorted((str(l), complex(c)) for l, c in
                               getattr(g, "terms", {}).items())
                        for g in generators]),
                  repr(labels), repr(limit), self.device_spec, str(self.shots),
                  repr(self.estimator_options), repr(self.physical_qubits)]
         return hashlib.sha256("|".join(parts).encode()).hexdigest()
-
-    def energy(self, n_qubits: int, occupied, generators, thetas,
-               hamiltonian) -> float:
-        """``<psi(thetas)| H |psi(thetas)>`` from the Estimator (see the class)."""
-        if not self.shots and self.is_local:
-            return super().energy(n_qubits, occupied, generators, thetas,
-                                  hamiltonian)
-        return self.energies([(n_qubits, occupied, generators, thetas,
-                               hamiltonian)])[0]
-
 
 # --------------------------------------------------------------------------- #
 # Amazon Braket.
@@ -1091,9 +985,6 @@ class BraketProvider(CircuitProvider):
         #: device; see :func:`~mandacaru.backends.measurement.resolve_run_budget`).
         self.run_budget = run_budget
         self._device = None
-        #: QWC groups per Hamiltonian, so an optimization partitions its
-        #: unchanged Hamiltonian once rather than at every evaluation.
-        self._groups: dict = {}
 
     def __repr__(self) -> str:
         return (f"BraketProvider(device={self.device_spec!r}, "
@@ -1135,20 +1026,6 @@ class BraketProvider(CircuitProvider):
     def _run(self, circuit, shots: int):
         """Submit ``circuit`` and return its Braket result."""
         return self._submit(circuit, shots).result()
-
-    def jobs_per_energy(self, hamiltonian) -> int:
-        if not self.shots:
-            return 1
-        from .measurement import qubit_wise_commuting_groups
-        key = tuple(sorted((label, complex(c)) for label, c
-                           in hamiltonian.terms.items()))
-        if key not in self._groups:
-            self._groups[key] = qubit_wise_commuting_groups(hamiltonian, **self._core_options())
-        return max(len(self._groups[key][0]), 1)
-
-    def shots_per_energy(self, hamiltonian) -> int:
-        return self._context().measurement_cost(
-            self.jobs_per_energy(hamiltonian), job_per_basis=True, shots=max(int(self.shots), 0))[1]
 
     def _submit(self, circuit, shots: int):
         """Queue ``circuit`` (after the run-budget check) and return its task."""
@@ -1203,7 +1080,7 @@ class BraketProvider(CircuitProvider):
                 f"{self!r} is configured for shot-based execution, which cannot "
                 "return a state vector (Braket rejects the StateVector result "
                 "type whenever shots > 0, and every QPU requires shots > 0). "
-                "Use provider.energy(...) for the shot-based expectation value, "
+                "Use provider.expectation_values(...) for shot-based expectation values, "
                 "or set shots=0 for an exact simulator run.")
         circuit = self.build(n_qubits, occupied, generators, thetas)
         circuit.state_vector()
@@ -1224,37 +1101,7 @@ class BraketProvider(CircuitProvider):
 
     # -- shot-based energy (QPU compatible) -------------------------------- #
 
-    def energy(self, n_qubits: int, occupied, generators, thetas,
-               hamiltonian) -> float:
-        r"""Estimate ``<H>``, from shots when ``shots > 0``.
-
-        With ``shots = 0`` this defers to the exact state-vector path.  With
-        ``shots > 0`` it runs the QPU-compatible protocol: partition ``H`` into
-        qubit-wise-commuting groups, submit one measurement circuit per group,
-        and combine the bit-string counts.  The number of submitted tasks is the
-        number of groups, not the number of Pauli terms.
-        """
-        if not self.shots:
-            return super().energy(n_qubits, occupied, generators, thetas,
-                                  hamiltonian)
-        from .measurement import (energy_from_group_counts,
-                                  qubit_wise_commuting_groups)
-
-        key = tuple(sorted((label, complex(c)) for label, c
-                           in hamiltonian.terms.items()))
-        if key not in self._groups:
-            self._groups[key] = qubit_wise_commuting_groups(hamiltonian, **self._core_options())
-        groups, identity = self._groups[key]
-        # Every group is queued before any is awaited: the waits overlap
-        # instead of adding up, one per group.
-        tasks = [self._submit(self.build(n_qubits, occupied, generators,
-                                         thetas, measure_basis=basis),
-                              self.shots)
-                 for basis, _payload in groups]
-        counts_per_group = [self._counts(task.result()) for task in tasks]
-        return energy_from_group_counts(groups, identity, counts_per_group, **self._core_options())
-
-    capabilities = ("energy", "expectation_values", "expectation_batch")
+    capabilities = ("expectation_values", "expectation_batch")
 
     def expectation_values(self, n_qubits: int, occupied, generators, thetas,
                            labels, max_bases_per_job: int | None = None):
@@ -1309,24 +1156,20 @@ class BraketProvider(CircuitProvider):
             outputs.append((values, stds))
         return outputs
 
-    @staticmethod
-    def _exact_expectations(psi, labels):
+    def _exact_expectations(self, psi, labels):
         """The state-vector ``({label: value}, {label: 0})`` of a simulator run."""
-        values = {label: float(np.real(np.vdot(
-            psi, PauliSum({label: 1.0}).to_sparse_matrix() @ psi)))
-            for label in labels}
-        return values, dict.fromkeys(labels, 0.0)
+        exact = self._context().state_expectations(
+            list(labels), np.ascontiguousarray(psi, dtype=complex))
+        return dict(zip(labels, exact)), dict.fromkeys(labels, 0.0)
 
     def _read_basis(self, labels, members, counts, values, stds):
-        """Read the strings ``members`` of ``labels`` off one basis's counts."""
-        from .measurement import pauli_expectation_from_counts
-
-        for i in members:
-            value = pauli_expectation_from_counts(
-                labels[i], counts, **self._core_options())
-            values[labels[i]] = value
-            stds[labels[i]] = float(np.sqrt(max(1.0 - value ** 2, 0.0)
-                                            / self.shots))
+        """Read the strings ``members`` of ``labels`` off one basis's counts: their means and
+        standard errors over the counted shots (``Context.count_statistics``)."""
+        names = [labels[i] for i in members]
+        means, errors = self._context().count_statistics(
+            names, [(str(k), float(v)) for k, v in counts.items()])
+        values.update(zip(names, means))
+        stds.update(zip(names, errors))
 
     @staticmethod
     def _counts(result) -> dict:
@@ -1337,16 +1180,6 @@ class BraketProvider(CircuitProvider):
         """
         return {str(bits): int(n)
                 for bits, n in result.measurement_counts.items()}
-
-    def measurement_groups(self, hamiltonian):
-        """QWC measurement groups for ``hamiltonian`` (one circuit each).
-
-        Exposed for planning a hardware run: ``len(...)`` is the number of
-        quantum tasks a single energy evaluation costs on a QPU.
-        """
-        from .measurement import qubit_wise_commuting_groups
-        return qubit_wise_commuting_groups(hamiltonian, **self._core_options())[0]
-
 
 # --------------------------------------------------------------------------- #
 # Google Cirq.

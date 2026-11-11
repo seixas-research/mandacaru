@@ -716,7 +716,17 @@ impl Orbital {
         if !r.is_finite() || r > 1e100 {
             return 0.;
         }
-        let radial = match &self.radial {
+        self.radial_value(r)
+            * crate::math::angular::normalized(self.l, self.m, [x / r, y / r, z / r])
+    }
+    /// The radial factor `R(r)` of `R(r) Y_lm`: the orbital is `radial_value(|r - c|)` times the
+    /// real spherical harmonic `math::angular::normalized` of the direction.
+    pub fn radial_value(&self, r: f64) -> f64 {
+        let r = r.max(1e-15);
+        if !r.is_finite() || r > 1e100 {
+            return 0.;
+        }
+        match &self.radial {
             Radial::Tabulated(table) => tabulated(table, self.l, r).0,
             Radial::Numerical(table) => table.value_slope(r).0,
             Radial::Gaussian {
@@ -745,8 +755,7 @@ impl Orbital {
                 }
                 norm * (-rho / 2.).exp() * rho.powi(self.l as i32) * value
             }
-        };
-        radial * crate::math::angular::normalized(self.l, self.m, [x / r, y / r, z / r])
+        }
     }
 }
 fn tabulated(table: &crate::math::spline::Cubic, l: usize, r: f64) -> (f64, f64) {

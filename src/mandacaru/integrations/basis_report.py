@@ -17,7 +17,7 @@ reported from the specification the native engine received.
 import os
 from collections import Counter
 
-from ..units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
+from ..units import from_hartree, to_angstrom
 
 #: The ``source`` of a dataset generated in the session rather than read.
 IN_MEMORY = "generated-in-memory"
@@ -133,12 +133,12 @@ def _orbital_rows(symbol, pp, options, confined):
         polarization = (n_polarization if outer is not None
                         and (l, index) == (outer.l, outer.index) else 0)
         if orbital is None:
-            free = free_energy(pp, l, index) * HARTREE_TO_EV
+            free = from_hartree(float(free_energy(pp, l, index)), "eV")
             cells = ("unconfined", "unconfined", f"{free:.6f}", f"{free:.6f}", "0.000000")
         else:
-            cells = (f"{orbital.r_c:.4f}", f"{orbital.r_c * BOHR_TO_ANGSTROM:.4f}",
-                     f"{orbital.free_energy * HARTREE_TO_EV:.6f}",
-                     f"{orbital.energy * HARTREE_TO_EV:.6f}",
+            cells = (f"{orbital.r_c:.4f}", f"{to_angstrom(orbital.r_c):.4f}",
+                     f"{from_hartree(float(orbital.free_energy), 'eV'):.6f}",
+                     f"{from_hartree(float(orbital.energy), 'eV'):.6f}",
                      f"{orbital.achieved_shift:.6f}")
         table.append((symbol, n, l, 1 if semicore else n_zeta, polarization) + cells)
     return table

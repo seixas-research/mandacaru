@@ -12,8 +12,7 @@ from mandacaru import Mandacaru, _native
 from mandacaru.core.checkpoint import WavefunctionCheckpoint, prepare_state
 from mandacaru.core.mapping import PauliSum
 from mandacaru.core.serialization import load_hamiltonian, save_hamiltonian
-from mandacaru.backends.measurement import (qwc_partition, qubit_wise_commuting_groups,
-                                          energy_from_group_counts)
+from mandacaru.backends.measurement import qwc_partition, qubit_wise_commuting_groups
 from mandacaru.backends.providers import build_provider
 from mandacaru.utils.cube import write_volumetric
 from mandacaru.utils.bxsf import write_bxsf, read_bxsf
@@ -77,7 +76,7 @@ def test_old_checkpoint_version_and_native_qpe_preparation(tmp_path, monkeypatch
     assert result.probabilities.sum() == pytest.approx(1.)
 
 
-@pytest.mark.parametrize("field,value", [("version", 3), ("energy_unit", "eV"),
+@pytest.mark.parametrize("field,value", [("version", 4), ("energy_unit", "eV"),
                                         ("n_qubits", 51), ("reference_qubits", [2]),
                                         ("preparation", "unknown"), ("metadata", [])])
 def test_schema_rejections_preserve_previous_snapshot(tmp_path, field, value):
@@ -186,10 +185,13 @@ def test_native_qwc_matches_greedy_policy_at_arbitrary_width(width):
 def test_counts_and_sdk_gate_streams_use_native_core(monkeypatch):
     h = PauliSum({"IX": .3, "ZX": -.4, "II": -.7, "YI": .2}, num_qubits=2)
     groups, identity = qubit_wise_commuting_groups(h)
-    counts = [{"00": 27, "01": 13, "10": 7, "11": 3} for _ in groups]
-    expected = energy_from_group_counts(groups, identity, counts)
-    actual = energy_from_group_counts(groups, identity, counts)
-    assert actual == pytest.approx(expected, abs=1e-14)
+    # Every non-identity string is grouped once, with its coefficient, under a basis it
+    # commutes with qubit-wise; the identity is the constant.
+    grouped = {label: c for _basis, payload in groups for label, c in payload}
+    assert grouped == {label: c for label, c in h.terms.items() if label != "II"}
+    assert all(all(a == "I" or a == b for a, b in zip(label, basis))
+               for basis, payload in groups for label, _c in payload)
+    assert identity == pytest.approx(-0.7)
     generators = [PauliSum({"XY": .5j, "YX": -.5j}, num_qubits=2)]
     expected = list(build_provider("qiskit")._emit(2, [0], generators, [.37]))
     # The gate stream has one compiler, the native one (the Python fallback is deleted).

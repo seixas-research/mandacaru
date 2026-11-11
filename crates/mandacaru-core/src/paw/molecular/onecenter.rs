@@ -9,6 +9,7 @@ use crate::{
 pub(super) fn view(species: &Species) -> SpeciesView<'_> {
     SpeciesView {
         knots: species.ionic.knots.as_slice(),
+        smooth_core: species.xc_core.values.as_slice(),
         compensation_radius: species.compensation_radius,
         channels: species
             .channels

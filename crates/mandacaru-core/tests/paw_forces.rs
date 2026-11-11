@@ -31,7 +31,7 @@ fn energy_derivative(
 ) -> f64 {
     let energy = |delta: f64| {
         let moved = displaced(base, atom, axis, delta);
-        solve(&moved, method, particles).electronic_energy + moved.nuclear
+        solve(&moved, method, particles).free_energy() + moved.nuclear
     };
     let h = 1e-3;
     let coarse = (energy(h) - energy(-h)) / (2. * h);
@@ -208,7 +208,7 @@ fn the_net_force_is_the_egg_box_ripple_the_fixed_grid_energy_has_under_a_rigid_t
             )
             .unwrap();
             let x = bent.at_geometry(geometry).unwrap();
-            solve(&x, Method::Ks("pbe"), [2, 1]).electronic_energy + x.nuclear
+            solve(&x, Method::Ks("pbe"), [2, 1]).free_energy() + x.nuclear
         };
         let h = 1e-3;
         let coarse = (shifted(h) - shifted(-h)) / (2. * h);

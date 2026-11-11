@@ -493,7 +493,12 @@ pub fn build(
     let allow_spin_orbit = metadata.get("spin_orbit").and_then(|v| v.as_bool()).unwrap_or(false);
     let hubbard = match metadata.get("hubbard") {
         Some(serde_json::Value::String(s)) => Some(crate::models::hubbard_request::Request::parse(s)?),
-        _ => None,
+        None | Some(serde_json::Value::Null) => None,
+        Some(other) => {
+            return Err(invalid(format!(
+                "the 'hubbard' metadata must be the JSON text of the hubbard_u mapping, got {other}"
+            )))
+        }
     };
     let species = metadata["species"]
         .as_array()
@@ -735,125 +740,79 @@ impl Setup {
                 });
             });
         }
-        let values = if atoms.len() <= 1 || ctx.threads() <= 1 {
+        // One accumulator per atom, the partial matrices added in atom order: the serial and the
+        // threaded route form and add the same partials, so the matrix does not depend on the
+        // thread count (a single accumulator over all atoms rounded differently).
+        let local_of = |a: usize| -> Result<crate::Buffer<f64>> {
+            let sp = &species[atoms[a]];
+            let pos = geometry.positions()[a];
             let mut phi = vec![0.; m];
             let mut weighted = vec![0.; m];
             let mut local = PointAccumulator::new(ctx, m, m)?;
-            for (a, &s) in atoms.iter().enumerate() {
-                let sp = &species[s];
-                let radius = local_sphere_radius(sp, sigma);
-                let active_orbitals: Vec<(usize, f64)> = basis
-                    .orbitals
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, orbital)| {
-                        let r_cut = match &orbital.radial {
-                            crate::basis::Radial::Tabulated(table) => {
-                                *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
-                            }
-                            _ => f64::INFINITY,
-                        };
-                        let d = distance(geometry.positions()[a], orbital.center);
-                        if d <= radius + r_cut {
-                            Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
-                        } else {
-                            None
+            let radius = local_sphere_radius(sp, sigma);
+            let active_orbitals: Vec<(usize, f64)> = basis
+                .orbitals
+                .iter()
+                .enumerate()
+                .filter_map(|(i, orbital)| {
+                    let r_cut = match &orbital.radial {
+                        crate::basis::Radial::Tabulated(table) => {
+                            *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
                         }
-                    })
-                    .collect();
-                sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
-                    let g_r = sp.local(r) - long_range(sp.charge, sigma, r);
-                    if g_r.abs() < 1e-15 {
-                        return Ok(());
+                        _ => f64::INFINITY,
+                    };
+                    let d = distance(pos, orbital.center);
+                    if d <= radius + r_cut {
+                        Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                    } else {
+                        None
                     }
-                    let weight = weight * g_r;
-                    let point = std::array::from_fn(|i| geometry.positions()[a][i] + offset[i]);
-                    phi.fill(0.);
-                    for &(i, support2) in &active_orbitals {
-                        let orbital = &basis.orbitals[i];
-                        let r2 = (point[0] - orbital.center[0]).powi(2)
-                            + (point[1] - orbital.center[1]).powi(2)
-                            + (point[2] - orbital.center[2]).powi(2);
-                        if r2 <= support2 {
-                            phi[i] = orbital.evaluate(point);
-                        }
+                })
+                .collect();
+            sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
+                let g_r = sp.local(r) - long_range(sp.charge, sigma, r);
+                if g_r.abs() < 1e-15 {
+                    return Ok(());
+                }
+                let weight = weight * g_r;
+                let point = std::array::from_fn(|i| pos[i] + offset[i]);
+                phi.fill(0.);
+                for &(i, support2) in &active_orbitals {
+                    let orbital = &basis.orbitals[i];
+                    let r2 = (point[0] - orbital.center[0]).powi(2)
+                        + (point[1] - orbital.center[1]).powi(2)
+                        + (point[2] - orbital.center[2]).powi(2);
+                    if r2 <= support2 {
+                        phi[i] = orbital.evaluate(point);
                     }
-                    for &(i, _) in &active_orbitals {
-                        weighted[i] = weight * phi[i];
-                    }
-                    local.push(&phi, &weighted)
-                })?;
-            }
-            local.finish()?
+                }
+                for &(i, _) in &active_orbitals {
+                    weighted[i] = weight * phi[i];
+                }
+                local.push(&phi, &weighted)
+            })?;
+            local.finish()
+        };
+        let partials: Vec<Result<crate::Buffer<f64>>> = if atoms.len() <= 1 || ctx.threads() <= 1 {
+            (0..atoms.len()).map(&local_of).collect()
         } else {
-            let basis_ref = &basis;
-            let geom_ref = &geometry;
+            let local_of = &local_of;
             ctx.run(|| {
                 std::thread::scope(|scope| {
-                    let mut handles = Vec::with_capacity(atoms.len());
-                    for (a, &s) in atoms.iter().enumerate() {
-                        let sp = &species[s];
-                        let pos = geom_ref.positions()[a];
-                        handles.push(mandacaru_kernels::runtime::spawn(scope, move || {
-                            let mut phi = vec![0.; m];
-                            let mut weighted = vec![0.; m];
-                            let mut local = PointAccumulator::new(ctx, m, m)?;
-                            let radius = local_sphere_radius(sp, sigma);
-                            let active_orbitals: Vec<(usize, f64)> = basis_ref
-                                .orbitals
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, orbital)| {
-                                    let r_cut = match &orbital.radial {
-                                        crate::basis::Radial::Tabulated(table) => {
-                                            *table.knots.as_slice().last().unwrap_or(&f64::INFINITY)
-                                        }
-                                        _ => f64::INFINITY,
-                                    };
-                                    let d = distance(pos, orbital.center);
-                                    if d <= radius + r_cut {
-                                        Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
-                                let g_r = sp.local(r) - long_range(sp.charge, sigma, r);
-                                if g_r.abs() < 1e-15 {
-                                    return Ok(());
-                                }
-                                let weight = weight * g_r;
-                                let point = std::array::from_fn(|i| pos[i] + offset[i]);
-                                phi.fill(0.);
-                                for &(i, support2) in &active_orbitals {
-                                    let orbital = &basis_ref.orbitals[i];
-                                    let r2 = (point[0] - orbital.center[0]).powi(2)
-                                        + (point[1] - orbital.center[1]).powi(2)
-                                        + (point[2] - orbital.center[2]).powi(2);
-                                    if r2 <= support2 {
-                                        phi[i] = orbital.evaluate(point);
-                                    }
-                                }
-                                for &(i, _) in &active_orbitals {
-                                    weighted[i] = weight * phi[i];
-                                }
-                                local.push(&phi, &weighted)
-                            })?;
-                            local.finish()
-                        }));
-                    }
-                    let mut sum_buf = ctx.allocate::<f64>(m * m)?;
-                    for h in handles {
-                        let partial = h.join().unwrap()?;
-                        for (tot, val) in sum_buf.as_mut_slice().iter_mut().zip(partial.as_slice()) {
-                            *tot += val;
-                        }
-                    }
-                    Ok(sum_buf)
+                    let handles: Vec<_> = (0..atoms.len())
+                        .map(|a| mandacaru_kernels::runtime::spawn(scope, move || local_of(a)))
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).collect()
                 })
-            })?
+            })
         };
+        let mut values = ctx.allocate::<f64>(m * m)?;
+        for partial in partials {
+            let partial = partial?;
+            for (tot, val) in values.as_mut_slice().iter_mut().zip(partial.as_slice()) {
+                *tot += val;
+            }
+        }
         v += DMatrix::from_column_slice(m, m, values.as_slice());
         drop(values);
         // The stack is built once, in the calculation's precision, and handed
@@ -924,149 +883,86 @@ impl Setup {
             }
         });
         let mut total_ionic = vec![0.; nch];
-        let (u, ionic) = if atoms.len() <= 1 || ctx.threads() <= 1 {
+        // As for the local matrix: one accumulator per atom, the partials added in atom order.
+        let electrostatic_of = |b: usize| -> Result<(crate::Buffer<f64>, Vec<f64>)> {
+            let sp = &species[atoms[b]];
+            let pos = geometry.positions()[b];
             let mut electrostatic = PointAccumulator::new(ctx, nch, nch)?;
             let mut potentials = vec![0.; nch];
             let mut densities = vec![0.; nch];
             let mut ionic = vec![0.; nch];
-            for (b, &s) in atoms.iter().enumerate() {
-                let sp = &species[s];
-                sphere(
-                    sp.compensation_radius,
-                    0.,
-                    ELECTROSTATIC[0],
-                    ELECTROSTATIC[1],
-                    ELECTROSTATIC[2],
-                    |offset, r, weight| {
-                        let point: [f64; 3] =
-                            std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
-                        for (i, ci) in multipoles.iter().enumerate() {
-                            let delta =
-                                std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
-                            potentials[i] = potential(
-                                distance(delta, [0.; 3]),
-                                species[atoms[ci.atom]].compensation_radius,
-                                ci.l,
-                            ) * harmonic(ci.l, ci.m, delta);
-                        }
-                        densities.fill(0.);
-                        for (j, cj) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                            densities[j] = shape(r, sp.compensation_radius, cj.l)
-                                * harmonic(cj.l, cj.m, offset)
-                                * weight;
-                        }
-                        electrostatic.push(&potentials, &densities)
-                    },
-                )?;
-                sphere(
-                    sp.compensation_radius,
-                    0.,
-                    IONIC[0],
-                    IONIC[1],
-                    IONIC[2],
-                    |offset, r, weight| {
-                        let point = std::array::from_fn(|i| geometry.positions()[b][i] + offset[i]);
-                        let value: f64 = atoms
-                            .iter()
-                            .enumerate()
-                            .filter(|(a, _)| *a != b)
-                            .map(|(a, &s)| species[s].local(distance(point, geometry.positions()[a])))
-                            .sum();
-                        for (i, ch) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                            ionic[i] += weight
-                                * value
-                                * shape(r, sp.compensation_radius, ch.l)
-                                * harmonic(ch.l, ch.m, offset);
-                        }
-                        Ok(())
-                    },
-                )?;
-            }
-            let values = electrostatic.finish()?;
-            let u = DMatrix::from_column_slice(nch, nch, values.as_slice());
-            (u, ionic)
+            sphere(
+                sp.compensation_radius,
+                0.,
+                ELECTROSTATIC[0],
+                ELECTROSTATIC[1],
+                ELECTROSTATIC[2],
+                |offset, r, weight| {
+                    let point: [f64; 3] = std::array::from_fn(|i| pos[i] + offset[i]);
+                    for (i, ci) in multipoles.iter().enumerate() {
+                        let delta = std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
+                        potentials[i] = potential(
+                            distance(delta, [0.; 3]),
+                            species[atoms[ci.atom]].compensation_radius,
+                            ci.l,
+                        ) * harmonic(ci.l, ci.m, delta);
+                    }
+                    densities.fill(0.);
+                    for (j, cj) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
+                        densities[j] = shape(r, sp.compensation_radius, cj.l)
+                            * harmonic(cj.l, cj.m, offset)
+                            * weight;
+                    }
+                    electrostatic.push(&potentials, &densities)
+                },
+            )?;
+            sphere(
+                sp.compensation_radius,
+                0.,
+                IONIC[0],
+                IONIC[1],
+                IONIC[2],
+                |offset, r, weight| {
+                    let point = std::array::from_fn(|i| pos[i] + offset[i]);
+                    let value: f64 = atoms
+                        .iter()
+                        .enumerate()
+                        .filter(|(a, _)| *a != b)
+                        .map(|(a, &s)| species[s].local(distance(point, geometry.positions()[a])))
+                        .sum();
+                    for (i, ch) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
+                        ionic[i] += weight
+                            * value
+                            * shape(r, sp.compensation_radius, ch.l)
+                            * harmonic(ch.l, ch.m, offset);
+                    }
+                    Ok(())
+                },
+            )?;
+            Ok((electrostatic.finish()?, ionic))
+        };
+        let partials: Vec<Result<(crate::Buffer<f64>, Vec<f64>)>> = if atoms.len() <= 1 || ctx.threads() <= 1 {
+            (0..atoms.len()).map(&electrostatic_of).collect()
         } else {
-            let geom_ref = &geometry;
-            let multipoles_ref = &multipoles;
+            let electrostatic_of = &electrostatic_of;
             ctx.run(|| {
                 std::thread::scope(|scope| {
-                    let mut handles = Vec::with_capacity(atoms.len());
-                    for (b, &s) in atoms.iter().enumerate() {
-                        let sp = &species[s];
-                        let pos = geom_ref.positions()[b];
-                        handles.push(mandacaru_kernels::runtime::spawn(scope, move || {
-                            let mut electrostatic = PointAccumulator::new(ctx, nch, nch)?;
-                            let mut potentials = vec![0.; nch];
-                            let mut densities = vec![0.; nch];
-                            let mut ionic = vec![0.; nch];
-                            sphere(
-                                sp.compensation_radius,
-                                0.,
-                                ELECTROSTATIC[0],
-                                ELECTROSTATIC[1],
-                                ELECTROSTATIC[2],
-                                |offset, r, weight| {
-                                    let point: [f64; 3] =
-                                        std::array::from_fn(|i| pos[i] + offset[i]);
-                                    for (i, ci) in multipoles_ref.iter().enumerate() {
-                                        let delta =
-                                            std::array::from_fn(|k| point[k] - geom_ref.positions()[ci.atom][k]);
-                                        potentials[i] = potential(
-                                            distance(delta, [0.; 3]),
-                                            species[atoms[ci.atom]].compensation_radius,
-                                            ci.l,
-                                        ) * harmonic(ci.l, ci.m, delta);
-                                    }
-                                    densities.fill(0.);
-                                    for (j, cj) in multipoles_ref.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                                        densities[j] = shape(r, sp.compensation_radius, cj.l)
-                                            * harmonic(cj.l, cj.m, offset)
-                                            * weight;
-                                    }
-                                    electrostatic.push(&potentials, &densities)
-                                },
-                            )?;
-                            sphere(
-                                sp.compensation_radius,
-                                0.,
-                                IONIC[0],
-                                IONIC[1],
-                                IONIC[2],
-                                |offset, r, weight| {
-                                    let point = std::array::from_fn(|i| pos[i] + offset[i]);
-                                    let value: f64 = atoms
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(a, _)| *a != b)
-                                        .map(|(a, &s)| species[s].local(distance(point, geom_ref.positions()[a])))
-                                        .sum();
-                                    for (i, ch) in multipoles_ref.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                                        ionic[i] += weight
-                                            * value
-                                            * shape(r, sp.compensation_radius, ch.l)
-                                            * harmonic(ch.l, ch.m, offset);
-                                    }
-                                    Ok(())
-                                },
-                            )?;
-                            let values = electrostatic.finish()?;
-                            Ok((values, ionic))
-                        }));
-                    }
-                    let mut u_mat = DMatrix::zeros(nch, nch);
-                    let mut tot_ionic = vec![0.; nch];
-                    for h in handles {
-                        let (values, ion) = h.join().unwrap()?;
-                        let partial = DMatrix::from_column_slice(nch, nch, values.as_slice());
-                        u_mat += partial;
-                        for (tot, val) in tot_ionic.iter_mut().zip(&ion) {
-                            *tot += val;
-                        }
-                    }
-                    Ok((u_mat, tot_ionic))
+                    let handles: Vec<_> = (0..atoms.len())
+                        .map(|b| mandacaru_kernels::runtime::spawn(scope, move || electrostatic_of(b)))
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).collect()
                 })
-            })?
+            })
         };
+        let mut u = DMatrix::zeros(nch, nch);
+        let mut ionic = vec![0.; nch];
+        for partial in partials {
+            let (values, ion) = partial?;
+            u += DMatrix::from_column_slice(nch, nch, values.as_slice());
+            for (tot, val) in ionic.iter_mut().zip(&ion) {
+                *tot += val;
+            }
+        }
         for (i, (ch, &value)) in multipoles.iter().zip(&ionic).enumerate() {
             v += &ch.q * value;
             total_ionic[i] += value;
@@ -1100,6 +996,12 @@ impl Setup {
         if count.fract().abs() > 1e-8 || count > usize::MAX as f64 {
             return Err(invalid("PAW valence electron count must be integral"));
         }
+        // A request the molecule cannot carry raises here, by name; it never runs as plain DFT.
+        let hubbard = self
+            .hubbard
+            .as_ref()
+            .map(|request| hubbard::build(request, &species, &species_terms, &atoms, &geometry, &c, m))
+            .transpose()?;
         let corrections = MolecularCorrections {
             dft: Some(PawKohnSham {
                 one: ks_difference,
@@ -1239,9 +1141,7 @@ impl Setup {
             charges,
             electrons: count.round() as usize,
             core_supported: species.iter().all(|s| s.core_supported),
-            hubbard: self.hubbard.as_ref().and_then(|req| {
-                hubbard::build(req, &species, &species_terms, &atoms, &geometry, &c, m).ok().flatten()
-            }),
+            hubbard,
             projections: Some(c),
             electrostatic: Some(u),
             ionic: Some(total_ionic),

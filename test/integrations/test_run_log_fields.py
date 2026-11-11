@@ -25,9 +25,10 @@ def grid(shape, step):
 
 def driver(**options):
     values = dict(
-        _two_body_requested=False, _cholesky_tolerance=1e-10, _grid_spacing=0.35,
+        _two_body_requested=False, _two_body_tolerance_ev=1e-8, _two_body_representation="dense",
+        _two_body_truncation_ev=None, _loaded_two_body=None, _grid_spacing=0.35,
         _kinetic="spectral", _charge=0, _kpts_spec={"size": (1, 1, 1), "gamma": True},
-        _mapping="jordan_wigner", _atomic_units=False, _scf_options={},
+        _mapping="jordan_wigner", _atomic_units=False, _scf_options={}, _quenching=True, _tetris=False, _prune=False,
         _resume_lineage=None, _resume_path=None, _shots=0, _sparse=False, _sector=True, _taper=False,
         n_qubits=4, integrals=SimpleNamespace(grid=grid((18, 18, 18), np.eye(3) * 0.6614)))
     values.update(options)
@@ -67,15 +68,42 @@ class TestTheTwoBodyLine:
     def test_a_requested_factorization_states_tolerance_rank_and_residual(self, monkeypatch):
         monkeypatch.setattr(fields._native, "integrals_report", lambda _integrals: dict(
             cholesky_rank=3, cholesky_residual=2.5e-7, n_orbitals=2))
-        text = fields.two_body_text(driver(_two_body_requested=True, _cholesky_tolerance=1e-6))
-        assert text == ("Cholesky factors, tolerance 1.000e-06 Ha, rank 3 (basis functions 2), "
-                        "largest residual diagonal 2.500e-07 Ha")
+        text = fields.two_body_text(driver(_two_body_requested=True, _two_body_tolerance_ev=1e-6))
+        residual_ev = 2.5e-7 * HARTREE_TO_EV
+        assert text == ("Cholesky factors, tolerance 1.000e-06 eV, rank 3 (basis functions 2), "
+                        f"largest residual diagonal {residual_ev:.3e} eV")
+        atomic = fields.two_body_text(driver(_two_body_requested=True, _two_body_tolerance_ev=1e-6,
+                                             _atomic_units=True))
+        assert atomic.startswith(f"Cholesky factors, tolerance {1e-6 / HARTREE_TO_EV:.3e} Ha, ")
+        assert atomic.endswith("largest residual diagonal 2.500e-07 Ha")
 
     def test_integrals_that_were_never_factored_say_so(self, monkeypatch):
         monkeypatch.setattr(fields._native, "integrals_report", lambda _integrals: dict(
             cholesky_rank=None, cholesky_residual=None, n_orbitals=2))
         text = fields.two_body_text(driver(_two_body_requested=True))
         assert text.endswith("not built") and "rank" not in text
+
+
+    def test_the_double_factorized_representation_states_its_truncation_and_size(
+            self, monkeypatch):
+        monkeypatch.setattr(fields._native, "integrals_report", lambda _integrals: dict(
+            cholesky_rank=3, cholesky_residual=2.5e-7, n_orbitals=2))
+        factorized = driver(_two_body_requested=True, _two_body_tolerance_ev=1e-6,
+                            _two_body_representation="double-factorized",
+                            _two_body_truncation_ev=0.01)
+        assert fields.two_body_text(factorized).endswith(
+            "; double-factorized active-space tensor, truncation 1.000e-02 eV, not built")
+        model = SimpleNamespace(two_body_report=dict(
+            representation="double-factorized", kept=5, eigenpairs=12, leaves=2, candidates=3,
+            stored_numbers=25, error_bound_ha=1e-4))
+        text = fields.two_body_text(factorized, SimpleNamespace(_model=model))
+        assert text.endswith(
+            "truncation 1.000e-02 eV, 5 of 12 eigenpairs in 2 of 3 leaves (25 numbers), "
+            f"energy change bound {1e-4 * HARTREE_TO_EV:.3e} eV")
+        atomic = fields.two_body_text(
+            driver(**{**vars(factorized), "_atomic_units": True}), SimpleNamespace(_model=model))
+        assert f"truncation {0.01 / HARTREE_TO_EV:.3e} Ha" in atomic
+        assert atomic.endswith("energy change bound 1.000e-04 Ha")
 
 
 class TestTheElectronsBlock:
@@ -94,7 +122,7 @@ class TestTheElectronsBlock:
 
     def test_the_two_body_line_follows_the_kinetic_operator(self, monkeypatch):
         monkeypatch.setattr(fields._native, "problem_term_count", lambda _problem: 15)
-        monkeypatch.setattr(fields, "two_body_text", lambda _driver: "Cholesky factors")
+        monkeypatch.setattr(fields, "two_body_text", lambda _driver, _result: "Cholesky factors")
         keys = list(fields.electrons(driver(), result(), GEOMETRY))
         assert keys[keys.index("kinetic operator") + 1] == "two-body integrals"
 
@@ -174,6 +202,52 @@ class TestTheSCFBlocks:
         assert all("clock_time" not in row for row in rows)
         hartree = fields.scf_rows(self.scf_driver(_atomic_units=True), {"history": history})
         assert hartree[1]["energy"] == -1.5
+
+
+class TestTheCrystalBlocks:
+    """A crystal states its grid, mesh and electrons per cell, and its SCF the options it ran
+    with and its free-energy history; it writes no per-spin particle counts."""
+
+    @staticmethod
+    def crystal_result(spins=1):
+        solve = lambda *, max_iterations=300, tolerance=1e-7, density_tolerance=1e-5, \
+            smearing="fermi-dirac", width_ha=0.0036, mixing=0.25, history=7, \
+            exxdiv_treatment="none", algorithm="diis", spin_mixing=None, eigensolver="davidson", \
+            switch_tolerance=1e-2: None
+        crystal = SimpleNamespace(grid=grid((9, 9, 9), np.eye(3) * 0.5), n_orbitals=2,
+                                  electrons=2.0, solve=solve)
+        raw = {"weights": [0.25, 0.5, 0.25], "n_spins": spins, "spinor": False,
+               "functional": "lda", "smearing": ("fermi-dirac", 0.0036),
+               "history": [(1, -0.8, None, 0.9, 0.0, 2.1), (2, -0.9, -0.1, 1e-6, 0.0, 2.2)]}
+        return SimpleNamespace(_problem=None, _crystal=crystal, _raw=raw,
+                               num_particles=(1.0, 1.0), n_spatial_orbitals=2)
+
+    def test_the_electrons_block_states_the_cell_not_a_multiplicity(self):
+        block = fields.electrons(driver(_kpts_spec={"size": (2, 2, 2), "gamma": True}),
+                                 self.crystal_result(), GEOMETRY)
+        assert block["grid points"].startswith("9 x 9 x 9")
+        assert block["k-points"] == "2x2x2 Monkhorst-Pack, 3 in the calculation"
+        assert block["electrons per cell"] == "2"
+        assert block["spin-polarized"] == "False"
+        assert block["basis functions per cell"] == "2"
+        assert not any("multiplicity" in str(v) or "alpha" in k for k, v in block.items())
+
+    def test_the_setup_is_the_declared_solve_overridden_by_the_options(self):
+        calc = driver(_periodic_options={"max_iterations": 60, "mixing": 0.1})
+        block = fields.crystal_scf_setup(calc, self.crystal_result())
+        assert block["scf_method"] == "periodic Kohn-Sham DFT (lda), Bloch states"
+        assert block["scf_max_iterations"] == 60
+        assert block["scf_convergence_Hartree"] == "1e-07 (free-energy change), density residual 1e-05"
+        assert block["scf_mixing"] == "diis, mixing 0.1, history 7"
+        assert block["scf_smearing"] == "fermi-dirac, width 0.0036 Ha"
+        assert block["scf_eigensolver"] == "davidson"
+
+    def test_the_history_is_the_free_energy_and_a_magnetic_crystal_adds_its_moment(self):
+        rows = fields.crystal_scf_rows(driver(), self.crystal_result())
+        assert rows[1]["energy"] == pytest.approx(-0.9 * HARTREE_TO_EV)
+        assert rows[0]["dE"] is None and "moment" not in rows[0]
+        magnetic = fields.crystal_scf_rows(driver(), self.crystal_result(spins=2))
+        assert [row["moment"] for row in magnetic] == [2.1, 2.2]
 
 
 class TestTheLineage:

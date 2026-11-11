@@ -1,18 +1,20 @@
-//! Geometry derivatives of the same reduced Hamiltonian used by a state.
-//! SCF and orbital selection are rebuilt in Rust, retaining their response.
-use super::{invalid, transform::Model, MeanField, MolecularIntegrals, ScfOptions};
+//! The analytic nuclear gradient of a variational state (MG-ZA): the state's density matrices,
+//! with the Lagrangian (Z-vector) correction of its residual parameter gradient folded in, are
+//! relaxed for the response of the orbitals the Hamiltonian was built in (canonical
+//! Hartree-Fock, MP2 natural orbitals, frozen orbitals; `molecular::variational_gradient`) and
+//! contracted once with the derivative integrals of the PAW-LCAO model. No displaced SCF and no
+//! finite difference: the route it replaced is a test oracle (`tests/variational_forces_support`).
+use super::{invalid, transform::Model, variational_gradient, MeanField, MolecularIntegrals};
 use crate::{
     math::{assignment, rigid},
     product,
     quantum::{
         lagrangian::{self, Ansatz, Residual},
-        properties::{self, SpatialRdms},
-        CachedProblem, C64,
+        properties, CachedProblem, C64,
     },
-    Buffer, Geometry, LengthUnit, Result,
+    Buffer, Result,
 };
 use nalgebra::DMatrix;
-use std::sync::Arc;
 type Matrix = DMatrix<C64>;
 
 /// What the response knows about the parameter stationarity of the state it differentiated.
@@ -22,49 +24,41 @@ pub enum Stationarity {
     Assumed,
     /// The parameter gradient `|g|` is under the floor; no correction was applied.
     Stationary { gradient_norm: f64 },
-    /// `gradient` is the geometry derivative of `E - z . g`: `uncorrected` plus the correction.
+    /// `gradient` is the geometry derivative of `E - z . g`, with `H z = g` held fixed.
     Lagrangian {
         gradient_norm: f64,
         z_norm: f64,
-        /// The norm of `gradient - uncorrected`, in Ha/Bohr.
-        correction_norm: f64,
-        iterations: usize,
-        gradient_evaluations: usize,
-        residual: f64,
-        truncated: bool,
-        lowest_curvature: f64,
+        solve: lagrangian::Solve,
     },
 }
 pub struct Gradient {
-    /// The derivative of the optimized surface: `uncorrected` plus the Lagrangian correction.
+    /// The derivative of the optimized surface, the Lagrangian correction included.
     pub gradient: Buffer<f64>,
-    /// The derivative of `<psi|H(R)|psi>` with the state's RDMs held fixed.
-    pub uncorrected: Buffer<f64>,
     pub stationarity: Stationarity,
     pub energy: f64,
+    /// The directions the gradient is given in: `3 N` Cartesian ones, or the internal ones.
     pub directions: usize,
-    pub step: f64,
-    pub estimate: Option<f64>,
     pub scheme: &'static str,
+    /// The largest occupied-virtual Fock element of the reference (its own stationarity) and the
+    /// residual of the CPHF solve.
+    pub reference_stationarity: f64,
+    pub cphf_residual: f64,
+    /// The Coulomb forms of the relaxed two-body density.
+    pub forms: usize,
 }
 pub struct Options<'a> {
     /// The optimized ansatz of the state; `None` takes the state as exactly stationary.
     pub ansatz: Option<Ansatz<'a>>,
     pub lagrangian: lagrangian::Options,
-    pub active_spec: Option<&'a str>,
-    pub step: f64,
+    /// Project onto the internal (non-rigid) molecular directions.
     pub internal: bool,
-    pub extrapolate: bool,
 }
 impl Default for Options<'_> {
     fn default() -> Self {
         Self {
             ansatz: None,
             lagrangian: lagrangian::Options::default(),
-            active_spec: None,
-            step: 1e-3,
             internal: false,
-            extrapolate: true,
         }
     }
 }
@@ -136,171 +130,18 @@ pub fn match_orbitals(
 /// are one exactly degenerate cluster, inside which the SCF fixes no frame.
 pub const DEGENERACY_TOLERANCE: f64 = 1e-8;
 
-/// How the displaced frame is aligned to the reference one: aligned orbital `p` is
-/// `sum_a new_a W[a, p]`, stored by column as its nonzero `(a, W[a, p])`. Outside degenerate
-/// clusters a column holds one entry (the matched orbital and its phase).
-pub struct Alignment {
-    pub columns: Vec<Vec<(usize, C64)>>,
-}
-impl Alignment {
-    pub fn from_matches(indices: &[usize], phases: &[C64]) -> Self {
-        Self { columns: indices.iter().zip(phases).map(|(&i, &w)| vec![(i, w)]).collect() }
+fn real(values: &[C64], what: &str) -> Result<Vec<f64>> {
+    let scale = values.iter().fold(1f64, |a, v| a.max(v.norm()));
+    if values.iter().any(|v| v.im.abs() > 1e-10 * scale) {
+        return Err(invalid(format!(
+            "the analytic variational force needs real {what}"
+        )));
     }
+    Ok(values.iter().map(|v| v.re).collect())
 }
 
-/// The label of each model orbital that makes "exactly degenerate" well defined: the orbital
-/// energy of a canonical RHF frame, the natural occupation of a UHF frame or of a selector
-/// rotation. `None` when no such label belongs to the frame.
-pub fn degeneracy_labels(reference: &MeanField, model: &Model) -> Option<Vec<f64>> {
-    let source: &[f64] = if let Some(rotation) = &model.orbital_rotation {
-        &rotation.occupations
-    } else if reference.method == "uhf" {
-        &reference.natural_occupations
-    } else if reference.method == "rhf" {
-        reference.energies.first()?
-    } else {
-        return None;
-    };
-    model.orbital_indices.iter().map(|&i| source.get(i).copied()).collect()
-}
-
-/// [`match_orbitals`], then, inside every cluster of exactly degenerate orbitals (labels within
-/// [`DEGENERACY_TOLERANCE`] in both frames), the unitary that best maps the displaced cluster onto
-/// the reference one (the polar factor of their overlap) instead of a permutation and phases. A
-/// degenerate cluster's SCF orbitals are any rotation of one another, so following them by
-/// assignment alone picks an arbitrary frame at each displacement; a state that is not symmetric
-/// in the cluster then sees an energy that jumps between displacements. A split pair keeps its
-/// physical, continuous rotation.
-#[allow(clippy::too_many_arguments)]
-pub fn align_orbitals(
-    context: &crate::Context,
-    old: &Matrix,
-    new: &Matrix,
-    particles: [usize; 2],
-    threshold: f64,
-    old_labels: Option<&[f64]>,
-    new_labels: Option<&[f64]>,
-) -> Result<Alignment> {
-    let (indices, phases) = match_orbitals(context, old, new, particles, threshold)?;
-    let mut alignment = Alignment::from_matches(&indices, &phases);
-    let (Some(old_labels), Some(new_labels)) = (old_labels, new_labels) else {
-        return Ok(alignment);
-    };
-    let n = old.ncols();
-    if old_labels.len() != n || new_labels.len() != n {
-        return Err(invalid("orbital labels must have one entry per orbital"));
-    }
-    let mut visited = vec![false; n];
-    for start in 0..n {
-        if visited[start] {
-            continue;
-        }
-        // A cluster: the orbitals degenerate with `start` in the reference frame and in its
-        // occupation domain (mixing an occupied orbital with an empty one changes the state, not
-        // the frame).
-        let domain = |i: usize| {
-            usize::from(i >= particles[0].min(particles[1])) + usize::from(i >= particles[0].max(particles[1]))
-        };
-        let cluster: Vec<usize> = (start..n)
-            .filter(|&p| {
-                !visited[p]
-                    && domain(p) == domain(start)
-                    && (old_labels[p] - old_labels[start]).abs() < DEGENERACY_TOLERANCE
-            })
-            .collect();
-        for &p in &cluster {
-            visited[p] = true;
-        }
-        let matched: Vec<usize> = cluster.iter().map(|&p| indices[p]).collect();
-        let degenerate_after = matched
-            .iter()
-            .all(|&a| (new_labels[a] - new_labels[matched[0]]).abs() < DEGENERACY_TOLERANCE);
-        if cluster.len() < 2 || !degenerate_after {
-            continue;
-        }
-        let k = cluster.len();
-        let overlap = Matrix::from_fn(k, k, |i, j| {
-            (old.column(cluster[i]).adjoint() * new.column(matched[j]))[(0, 0)]
-        });
-        let svd = overlap.svd(true, true);
-        let (u, v_t) = (svd.u.expect("requested"), svd.v_t.expect("requested"));
-        if svd.singular_values.iter().any(|&s| s < threshold) {
-            return Err(invalid("a geometry displacement cannot follow a degenerate orbital cluster; reduce the step"));
-        }
-        // Maximize Re tr(O W) over unitary W: W = V U^H for O = U S V^H.
-        let w = v_t.adjoint() * u.adjoint();
-        for (j, &p) in cluster.iter().enumerate() {
-            alignment.columns[p] = (0..k).map(|i| (matched[i], w[(i, j)])).collect();
-        }
-    }
-    Ok(alignment)
-}
-
-pub fn contracted(
-    model: &Model,
-    rdm: &SpatialRdms,
-    indices: &[usize],
-    phases: &[C64],
-) -> Result<f64> {
-    if indices.len() != rdm.m || phases.len() != rdm.m {
-        return Err(invalid(
-            "reduced Hamiltonian and spatial RDM dimensions disagree",
-        ));
-    }
-    contracted_aligned(model, rdm, &Alignment::from_matches(indices, phases))
-}
-
-/// `<rdm, H>` with the Hamiltonian taken in the aligned frame:
-/// `h'_pq = sum conj(W_ap) W_bq h_ab`, `g'_pqrs = sum conj(W_ap) conj(W_bq) W_cr W_ds g_abcd`.
-pub fn contracted_aligned(model: &Model, rdm: &SpatialRdms, alignment: &Alignment) -> Result<f64> {
-    let m = rdm.m;
-    let w = &alignment.columns;
-    if model.m != m || w.len() != m || w.iter().flatten().any(|(a, _)| *a >= m) {
-        return Err(invalid(
-            "reduced Hamiltonian and spatial RDM dimensions disagree",
-        ));
-    }
-    let one = model.one.as_slice();
-    let two = model.two.as_slice();
-    let mut energy = C64::new(model.constant, 0.);
-    for p in 0..m {
-        for q in 0..m {
-            let mut h = C64::default();
-            for &(a, wa) in &w[p] {
-                for &(b, wb) in &w[q] {
-                    h += wa.conj() * wb * one[a * m + b];
-                }
-            }
-            energy += rdm.one.as_slice()[p * m + q] * h;
-            for r in 0..m {
-                for s in 0..m {
-                    let density = rdm.two.as_slice()[((p * m + q) * m + r) * m + s];
-                    if density == C64::default() {
-                        continue;
-                    }
-                    let mut g = C64::default();
-                    for &(a, wa) in &w[p] {
-                        for &(b, wb) in &w[q] {
-                            let left = wa.conj() * wb.conj();
-                            for &(c, wc) in &w[r] {
-                                for &(d, wd) in &w[s] {
-                                    g += left * wc * wd * two[((a * m + b) * m + c) * m + d];
-                                }
-                            }
-                        }
-                    }
-                    energy += 0.5 * density * g;
-                }
-            }
-        }
-    }
-    if !energy.re.is_finite() || energy.im.abs() > 1e-8 * energy.re.abs().max(1.) {
-        return Err(invalid(
-            "RDM contraction produced a nonfinite or complex energy",
-        ));
-    }
-    Ok(energy.re)
-}
+/// The analytic gradient (Hartree per Bohr) of the state `state` of `problem`, built on
+/// `model` of `reference`. PAW-LCAO only: the all-electron basis raises by name.
 pub fn gradient(
     integrals: &MolecularIntegrals,
     reference: &MeanField,
@@ -309,17 +150,12 @@ pub fn gradient(
     state: &[C64],
     options: &Options<'_>,
 ) -> Result<Gradient> {
-    let Options {
-        ansatz,
-        lagrangian: lagrangian_options,
-        active_spec,
-        step,
-        internal,
-        extrapolate,
-    } = *options;
-    if integrals.samples.precision() != crate::math::storage::Precision::Float64 {
-        return Err(invalid(
-            "variational forces difference the energy over a finite step and require float64 orbital samples",
+    model.require_dense("an analytic variational force")?;
+    if integrals.paw_setup.is_none() || integrals.corrections.is_none() {
+        return Err(crate::Error::Unsupported(
+            "variational forces are analytic and PAW-LCAO only; the all-electron (HAO) basis has none: \
+             use basis=\"PAW-LCAO\""
+                .into(),
         ));
     }
     if problem.taper.is_some() {
@@ -327,185 +163,344 @@ pub fn gradient(
             "variational forces are not implemented on a Z2-tapered register: its state is read through the untapered density matrices",
         ));
     }
-    if !step.is_finite()
-        || step <= 0.
-        || reference.functional.is_some()
-        || reference.method == "ghf"
-        || !reference.converged
-        || model.m * 2 != problem.encoding.modes
-        || model.particles != problem.encoding.particles
-    {
-        return Err(invalid("variational geometry response needs a converged collinear HF reference, matching molecular state, and positive displacement step"));
+    if model.m * 2 != problem.encoding.modes || model.particles != problem.encoding.particles {
+        return Err(invalid(
+            "the variational state, its model and its reference disagree",
+        ));
     }
     let basis = problem.register("variational geometry response")?;
     integrals.context.run(|| {
         let ctx = &integrals.context;
-        let rdm = properties::spatial_rdms(ctx, &problem.encoding, basis, state)?;
-        let old = orbitals(reference, model)?;
-        let old_labels = degeneracy_labels(reference, model);
-        let identity: Vec<_> = (0..model.m).collect();
-        let unit = vec![C64::new(1., 0.); model.m];
-        let energy = contracted(model, &rdm, &identity, &unit)?;
-        let action=problem.hamiltonian.apply(ctx,basis,state)?;
-        let expected=crate::quantum::evolution::inner(state,action.as_slice()).re;
-        if (energy-expected).abs()>1e-7 {
-            return Err(invalid("the force RDMs and molecular orbitals do not reconstruct the variational Hamiltonian energy"));
-        }
-        drop(action);
         let norm = state.iter().map(|v| v.norm_sqr()).sum::<f64>();
         if (norm - 1.).abs() > 1e-9 {
             return Err(invalid("variational forces require a normalized state"));
         }
-        let residual = ansatz
-            .map(|ansatz| problem.lagrangian(&ansatz, state, &lagrangian_options))
+        let action = problem.hamiltonian.apply(ctx, basis, state)?;
+        let energy = crate::quantum::evolution::inner(state, action.as_slice()).re;
+        drop(action);
+        let residual = options
+            .ansatz
+            .map(|ansatz| problem.lagrangian(&ansatz, state, &options.lagrangian))
             .transpose()?;
-        // The RDMs of phi+ and phi-, whose contraction with H(R) gives z . g(R).
-        let shifted = match &residual {
+        // E - z . g in one pass: with psi' the exact tangent along z (psi± = psi ± s psi'), the
+        // densities of E - z . g are the symmetrized transition densities <psi| . |psi - 2 psi'>.
+        let (chi, expected) = match &residual {
             Some(Residual::Corrected { z, .. }) => {
-                let plus = properties::spatial_rdms(ctx, &problem.encoding, basis, z.plus.complex128()?)?;
-                let minus = properties::spatial_rdms(ctx, &problem.encoding, basis, z.minus.complex128()?)?;
-                let at_reference = (contracted(model, &plus, &identity, &unit)?
-                    - contracted(model, &minus, &identity, &unit)?)
-                    / (2. * z.scale);
-                if (at_reference - z.z_dot_g).abs() > 1e-3 * z.z_dot_g.abs() + 1e-9 {
-                    return Err(invalid("the shifted-state RDMs do not reproduce z . g: the parameter gradient and the state disagree"));
+                let (plus, minus) = (z.plus.complex128()?, z.minus.complex128()?);
+                let mut chi = ctx.allocate::<C64>(state.len())?;
+                for (((c, s), p), m) in chi.as_mut_slice().iter_mut().zip(state).zip(plus).zip(minus) {
+                    *c = s - (p - m) / z.scale;
                 }
-                Some((plus, minus, z.scale))
+                (Some(chi), energy - z.z_dot_g)
             }
-            _ => None,
+            _ => (None, energy),
         };
-        let geometry = &integrals.geometry;
-        let size = geometry.numbers().len() * 3;
+        let ket = chi.as_ref().map_or(state, |c| c.as_slice());
+        let rdm = properties::spatial_transition_rdms(ctx, &problem.encoding, basis, state, ket)?;
+        drop(chi);
+        let m = rdm.m;
+        let (t1, t2) = (rdm.one.as_slice(), rdm.two.as_slice());
+        let one = real(
+            &(0..m * m).map(|k| 0.5 * (t1[k] + t1[(k % m) * m + k / m].conj())).collect::<Vec<_>>(),
+            "one-body density matrices",
+        )?;
+        let two = real(
+            &(0..m.pow(4))
+                .map(|k| {
+                    let (p, q, r, s) = (k / (m * m * m), (k / (m * m)) % m, (k / m) % m, k % m);
+                    0.5 * (t2[k] + t2[((r * m + s) * m + p) * m + q].conj())
+                })
+                .collect::<Vec<_>>(),
+            "two-body density matrices",
+        )?;
+        drop(rdm);
+        let relaxed = variational_gradient::relaxed_densities(integrals, reference, model, &one, &two)?;
+        if (relaxed.energy - expected).abs() > 1e-7 {
+            return Err(invalid("the force RDMs and molecular orbitals do not reconstruct the variational Hamiltonian energy"));
+        }
+        let analytic = integrals.fixed_density_gradient(&relaxed.densities)?;
+        let size = 3 * integrals.geometry.numbers().len();
         let _workspace = ctx.reserve(product(&[size, size + 8, 16])?)?;
-        let internal_basis = if internal {
-            Some(rigid::internal(ctx, geometry.positions())?)
+        let projector = if options.internal {
+            let q = rigid::internal(ctx, integrals.geometry.positions())?.matrix;
+            Some((&q * q.transpose(), q.ncols()))
         } else {
             None
         };
-        let directions = internal_basis.as_ref().map_or_else(
-            || DMatrix::identity(size, size),
-            |basis| basis.matrix.clone(),
-        );
-        let mut gradient = ctx.allocate::<f64>(size)?;
-        let mut uncorrected = ctx.allocate::<f64>(size)?;
-        let mut estimate = 0f64;
-        for direction in 0..directions.ncols() {
-            let mut values = [0.; 4];
-            let mut plain = [0.; 4];
-            let displacements = if extrapolate { &[-1., 1., -0.5, 0.5][..] } else { &[-1., 1.][..] };
-            for (at, &sign) in displacements.iter().enumerate() {
-                let positions = geometry
-                    .positions()
-                    .iter()
-                    .enumerate()
-                    .map(|(a, r)| {
-                        std::array::from_fn(|i| {
-                            r[i] + sign * step * directions[(3 * a + i, direction)]
-                        })
-                    })
-                    .collect();
-                let displaced = Geometry::new(
-                    geometry.numbers().to_vec(),
-                    positions,
-                    *geometry.cell(),
-                    geometry.pbc(),
-                    LengthUnit::Bohr,
-                )?;
-                let rebuilt = integrals.at_geometry_with_fixed_pivots(displaced)?;
-                let scf = rebuilt.continue_mean_field(
-                    reference,
-                    &ScfOptions {
-                        tolerance: 1e-11,
-                        guesses: 1,
-                        max_iterations: 500,
-                        diis: true,
-                    },
-                )?;
-                if !scf.converged {
-                    return Err(invalid(
-                        "displaced SCF failed while differentiating the variational Hamiltonian",
-                    ));
+        let output = |values: &[f64]| -> Result<Buffer<f64>> {
+            let mut out = ctx.allocate::<f64>(size)?;
+            match &projector {
+                Some((p, _)) => {
+                    let projected = p * nalgebra::DVector::from_column_slice(values);
+                    out.as_mut_slice().copy_from_slice(projected.as_slice());
                 }
-                let reduced = if let Some(spec) = active_spec {
-                    Arc::new(scf.active_model(&rebuilt, spec)?)
-                } else {
-                    scf.model(&rebuilt)?
-                };
-                if reduced.particles != model.particles
-                    || reduced.frozen_indices.len() != model.frozen_indices.len()
-                {
-                    return Err(invalid(
-                        "a geometry displacement changes the active particle or frozen-core count",
-                    ));
-                }
-                let frame = orbitals(&scf, &reduced)?;
-                let alignment = align_orbitals(
-                    ctx,
-                    &old,
-                    &frame,
-                    model.particles,
-                    0.5,
-                    old_labels.as_deref(),
-                    degeneracy_labels(&scf, &reduced).as_deref(),
-                )?;
-                plain[at] = contracted_aligned(&reduced, &rdm, &alignment)?;
-                values[at] = plain[at];
-                if let Some((plus, minus, scale)) = &shifted {
-                    // E - z . g at this geometry.
-                    values[at] -= (contracted_aligned(&reduced, plus, &alignment)?
-                        - contracted_aligned(&reduced, minus, &alignment)?)
-                        / (2. * scale);
-                }
+                None => out.as_mut_slice().copy_from_slice(values),
             }
-            let richardson = |values: &[f64; 4]| {
-                let coarse = (values[1] - values[0]) / (2. * step);
-                if extrapolate {
-                    let fine = (values[3] - values[2]) / step;
-                    ((4. * fine - coarse) / 3., (fine - coarse).abs() / 3.)
-                } else {
-                    (coarse, 0.)
-                }
-            };
-            let (derivative, error) = richardson(&values);
-            estimate = estimate.max(error);
-            let (plain_derivative, _) = richardson(&plain);
-            for row in 0..size {
-                let direction_row = directions[(row, direction)];
-                gradient.as_mut_slice()[row] += direction_row * derivative;
-                uncorrected.as_mut_slice()[row] += direction_row * plain_derivative;
-            }
-        }
+            Ok(out)
+        };
+        let total = output(analytic.total.as_slice())?;
         let stationarity = match &residual {
             None => Stationarity::Assumed,
-            Some(Residual::Stationary { gradient_norm }) => {
-                Stationarity::Stationary { gradient_norm: *gradient_norm }
-            }
+            Some(Residual::Stationary { gradient_norm }) => Stationarity::Stationary { gradient_norm: *gradient_norm },
             Some(Residual::Corrected { gradient_norm, z }) => Stationarity::Lagrangian {
                 gradient_norm: *gradient_norm,
                 z_norm: z.z_norm,
-                correction_norm: gradient
-                    .as_slice()
-                    .iter()
-                    .zip(uncorrected.as_slice())
-                    .map(|(c, u)| (c - u) * (c - u))
-                    .sum::<f64>()
-                    .sqrt(),
-                iterations: z.iterations,
-                gradient_evaluations: z.gradient_evaluations,
-                residual: z.residual,
-                truncated: z.truncated,
-                lowest_curvature: z.lowest_curvature,
+                solve: z.solve.clone(),
             },
         };
         Ok(Gradient {
-            gradient,
-            uncorrected,
+            gradient: total,
             stationarity,
             energy,
-            directions: directions.ncols(),
-            step,
-            estimate: extrapolate.then_some(estimate),
-            scheme: if extrapolate { "Richardson-reduced-Hamiltonian" } else { "Central-reduced-Hamiltonian" },
+            directions: projector.as_ref().map_or(size, |(_, k)| *k),
+            scheme: "analytic",
+            reference_stationarity: relaxed.stationarity,
+            cphf_residual: relaxed.cphf_residual,
+            forms: relaxed.densities.two.len(),
+        })
+    })
+}
+
+/// Spin-summed spatial density matrices measured on a device, with the standard error of every
+/// element (`None` when the device reports none: an exact circuit device).
+pub struct MeasuredDensities<'a> {
+    pub one: &'a [f64],
+    pub two: &'a [f64],
+    pub one_error: Option<&'a [f64]>,
+    pub two_error: Option<&'a [f64]>,
+}
+
+/// The Z-vector correction of a device force: `z` (solved from the measured gradient and
+/// Hessian), its covariance from the measured energies' errors (row-major `n x n`; `None` on an
+/// exact device), and the shifted circuits' densities, each with its parameter `k` and
+/// coefficient `c` (its weight is `z_k c`; `quantum::execution::shifted_circuits`).
+pub struct DeviceCorrection<'a> {
+    pub z: &'a [f64],
+    pub z_covariance: Option<&'a [f64]>,
+    pub shifted: Vec<(usize, f64, MeasuredDensities<'a>)>,
+}
+
+/// The analytic force of measured density matrices and its statistical error.
+pub struct DeviceGradient {
+    pub gradient: Buffer<f64>,
+    /// The standard error of every component: the RDM part `diag(J Sigma J^T)` and the Z-vector
+    /// part `diag(G Cov(z) G^T)` added (independent jobs).
+    pub error: Buffer<f64>,
+    /// The Z-vector part of the error alone (zero without a covariance).
+    pub z_vector_error: Buffer<f64>,
+    /// The unique measured elements whose errors were propagated.
+    pub elements: usize,
+    pub directions: usize,
+    pub reference_stationarity: f64,
+    pub cphf_residual: f64,
+}
+
+/// The largest number of unique measured elements whose errors [`device_gradient`] propagates.
+pub const DEVICE_ERROR_ELEMENTS: usize = 256;
+
+/// The force of a device state from its measured density matrices: `base` the state's and the
+/// `correction`'s shifted circuits, whose energies give `z . g` (`None` when no correction is
+/// applied), so that the densities of `E - z . g` are `base - sum_a z_k c_a shifted_a`.
+/// The force is affine in the densities, so its error is exact: one force per unique element
+/// (an orbit of the real-RDM symmetries) gives the Jacobian `J`, and
+/// `Var F = J Sigma J^T` with `Sigma` the elements' variances (`base` plus `weight^2` times each
+/// shifted circuit's, the circuits being independent jobs of independent shots). Elements of one
+/// circuit are taken as uncorrelated with each other; each element's own error carries the
+/// in-basis covariances of its strings. More than [`DEVICE_ERROR_ELEMENTS`] elements with an
+/// error raise by name. The error of `z` (from the Hessian job, independent of the RDM job) adds
+/// `G Cov(z) G^T`, with `G_k = dF/dz_k = -J sum_{a in k} c_a shifted_a`, one force per parameter.
+/// Both parts are first order: the product of the two noises is left out.
+pub fn device_gradient(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    model: &Model,
+    base: &MeasuredDensities<'_>,
+    correction: Option<&DeviceCorrection<'_>>,
+    internal: bool,
+) -> Result<DeviceGradient> {
+    model.require_dense("an analytic variational force")?;
+    if integrals.paw_setup.is_none() || integrals.corrections.is_none() {
+        return Err(crate::Error::Unsupported(
+            "variational forces are analytic and PAW-LCAO only; the all-electron (HAO) basis has none: \
+             use basis=\"PAW-LCAO\""
+                .into(),
+        ));
+    }
+    let m = model.m;
+    let (m2, m4) = (m * m, m.pow(4));
+    let sized = |d: &MeasuredDensities<'_>| {
+        d.one.len() == m2
+            && d.two.len() == m4
+            && d.one_error.is_none_or(|e| e.len() == m2)
+            && d.two_error.is_none_or(|e| e.len() == m4)
+            && d.one.iter().chain(d.two).all(|v| v.is_finite())
+    };
+    let no_shift = Vec::new();
+    let (z, shifted_circuits) = match correction {
+        Some(c) => (c.z, &c.shifted),
+        None => (&[][..], &no_shift),
+    };
+    let parameters = z.len();
+    if !sized(base) || shifted_circuits.iter().any(|(_, c, d)| !c.is_finite() || !sized(d)) {
+        return Err(invalid("measured density matrices must be finite, m^2 and m^4, over the model's active orbitals"));
+    }
+    if z.iter().any(|v| !v.is_finite())
+        || shifted_circuits.iter().any(|(k, _, _)| *k >= parameters)
+        || correction
+            .and_then(|c| c.z_covariance)
+            .is_some_and(|cov| cov.len() != parameters * parameters || cov.iter().any(|v| !v.is_finite()))
+    {
+        return Err(invalid(
+            "the Z vector, its covariance (n x n) and the shifted circuits' parameters must be finite and agree",
+        ));
+    }
+    let shifted: Vec<(f64, &MeasuredDensities<'_>)> =
+        shifted_circuits.iter().map(|(k, c, d)| (z[*k] * c, d)).collect();
+    integrals.context.run(|| {
+        let ctx = &integrals.context;
+        let mut one = base.one.to_vec();
+        let mut two = base.two.to_vec();
+        let square = |e: Option<&[f64]>, k: usize| e.map_or(0., |e| e[k] * e[k]);
+        let mut var_one: Vec<f64> = (0..m2).map(|k| square(base.one_error, k)).collect();
+        let mut var_two: Vec<f64> = (0..m4).map(|k| square(base.two_error, k)).collect();
+        for &(weight, d) in &shifted {
+            for k in 0..m2 {
+                one[k] -= weight * d.one[k];
+                var_one[k] += weight * weight * square(d.one_error, k);
+            }
+            for k in 0..m4 {
+                two[k] -= weight * d.two[k];
+                var_two[k] += weight * weight * square(d.two_error, k);
+            }
+        }
+        let size = 3 * integrals.geometry.numbers().len();
+        let projector = if internal {
+            let q = rigid::internal(ctx, integrals.geometry.positions())?.matrix;
+            Some((&q * q.transpose(), q.ncols()))
+        } else {
+            None
+        };
+        let project = |values: &[f64]| -> Vec<f64> {
+            match &projector {
+                Some((p, _)) => (p * nalgebra::DVector::from_column_slice(values)).iter().copied().collect(),
+                None => values.to_vec(),
+            }
+        };
+        let force = |one: &[f64], two: &[f64]| -> Result<(Vec<f64>, variational_gradient::VariationalDensities)> {
+            let relaxed = variational_gradient::relaxed_densities(integrals, reference, model, one, two)?;
+            let g = integrals.fixed_density_gradient(&relaxed.densities)?;
+            Ok((project(g.total.as_slice()), relaxed))
+        };
+        let (total, relaxed) = force(&one, &two)?;
+        // The orbits of the real-RDM symmetries with a nonzero variance.
+        let mut orbits: Vec<(bool, Vec<usize>, f64)> = Vec::new();
+        for p in 0..m {
+            for q in p..m {
+                let variance = var_one[p * m + q];
+                if variance > 0. {
+                    let mut members = vec![p * m + q, q * m + p];
+                    members.dedup();
+                    orbits.push((false, members, variance));
+                }
+            }
+        }
+        let at = |p: usize, q: usize, r: usize, s: usize| ((p * m + q) * m + r) * m + s;
+        let mut seen = vec![false; m4];
+        for p in 0..m {
+            for q in 0..m {
+                for r in 0..m {
+                    for s in 0..m {
+                        let k = at(p, q, r, s);
+                        if seen[k] {
+                            continue;
+                        }
+                        let mut members = vec![k, at(q, p, s, r), at(r, s, p, q), at(s, r, q, p)];
+                        members.sort_unstable();
+                        members.dedup();
+                        for &member in &members {
+                            seen[member] = true;
+                        }
+                        let variance = members.iter().map(|&i| var_two[i]).fold(0f64, f64::max);
+                        if variance > 0. {
+                            orbits.push((true, members, variance));
+                        }
+                    }
+                }
+            }
+        }
+        let z_covariance = correction.and_then(|c| c.z_covariance).filter(|cov| cov.iter().any(|v| *v != 0.));
+        if orbits.len() > DEVICE_ERROR_ELEMENTS {
+            return Err(crate::Error::Unsupported(format!(
+                "the statistical error of a device force is propagated exactly up to {DEVICE_ERROR_ELEMENTS} unique \
+                 measured RDM elements; this state has {} with an error",
+                orbits.len()
+            )));
+        }
+        let mut variance = vec![0.; total.len()];
+        let zero = if !orbits.is_empty() || z_covariance.is_some() {
+            Some(force(&vec![0.; m2], &vec![0.; m4])?.0)
+        } else {
+            None
+        };
+        if let Some(zero) = &zero {
+            for (is_two, members, orbit_variance) in &orbits {
+                let (mut unit_one, mut unit_two) = (vec![0.; m2], vec![0.; m4]);
+                for &k in members {
+                    if *is_two { unit_two[k] = 1. } else { unit_one[k] = 1. }
+                }
+                let (column, _) = force(&unit_one, &unit_two)?;
+                for c in 0..total.len() {
+                    let j = column[c] - zero[c];
+                    variance[c] += j * j * orbit_variance;
+                }
+            }
+        }
+        let mut z_variance = vec![0.; total.len()];
+        if let (Some(cov), Some(zero)) = (z_covariance, &zero) {
+            // G_k = dF/dz_k = -(F(sum_{a in k} c_a D_a) - F(0)).
+            let mut sensitivity = vec![vec![0.; total.len()]; parameters];
+            for (k, row) in sensitivity.iter_mut().enumerate() {
+                if (0..parameters).all(|l| cov[k * parameters + l] == 0.) {
+                    continue;
+                }
+                let (mut d_one, mut d_two) = (vec![0.; m2], vec![0.; m4]);
+                for (_, c, d) in shifted_circuits.iter().filter(|(j, _, _)| *j == k) {
+                    d_one.iter_mut().zip(d.one).for_each(|(x, v)| *x += c * v);
+                    d_two.iter_mut().zip(d.two).for_each(|(x, v)| *x += c * v);
+                }
+                let (column, _) = force(&d_one, &d_two)?;
+                for (g, (f, f0)) in row.iter_mut().zip(column.iter().zip(zero)) {
+                    *g = -(f - f0);
+                }
+            }
+            for (c, v) in z_variance.iter_mut().enumerate() {
+                let mut sum = 0.;
+                for k in 0..parameters {
+                    for l in 0..parameters {
+                        sum += sensitivity[k][c] * cov[k * parameters + l] * sensitivity[l][c];
+                    }
+                }
+                *v = sum.max(0.);
+            }
+        }
+        let mut gradient = ctx.allocate::<f64>(size)?;
+        gradient.as_mut_slice().copy_from_slice(&total);
+        let mut error = ctx.allocate::<f64>(size)?;
+        for (e, (v, vz)) in error.as_mut_slice().iter_mut().zip(variance.iter().zip(&z_variance)) {
+            *e = (v + vz).sqrt();
+        }
+        let mut z_vector_error = ctx.allocate::<f64>(size)?;
+        for (e, v) in z_vector_error.as_mut_slice().iter_mut().zip(&z_variance) {
+            *e = v.sqrt();
+        }
+        Ok(DeviceGradient {
+            gradient,
+            error,
+            z_vector_error,
+            elements: orbits.len(),
+            directions: projector.as_ref().map_or(size, |(_, k)| *k),
+            reference_stationarity: relaxed.stationarity,
+            cphf_residual: relaxed.cphf_residual,
         })
     })
 }

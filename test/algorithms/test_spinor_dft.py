@@ -7,9 +7,8 @@
 """Two-component (spinor) Kohn-Sham behind ``Mandacaru(method="dft")`` with a
 spin-orbit dataset (``paw_dataset="lda-fr"`` / ``"pbe-fr"``), for crystals.
 
-Molecular spin-orbit datasets, noncollinear moment vectors and the spinor
-meta-GGA/hybrid crystal are not reachable through ``Mandacaru`` yet
-(``docs/source/development/native_cutover.md``, "Remaining cutover work")."""
+Noncollinear moment vectors start a molecule's spinor Kohn-Sham
+(``TestMomentVectors``)."""
 
 import numpy as np
 import pytest
@@ -28,26 +27,73 @@ def _oh():
     return atoms
 
 
-class TestMomentVectors:
-    """A moment is one number per atom: a noncollinear (N, 3) start is
-    refused for every method instead of being collapsed to a collinear one."""
+def _spin_moment(calc):
+    """``(M_x, M_y, M_z)`` of the converged spinor density (orthonormal basis)."""
+    d = np.asarray(calc.native_reference.snapshot()["densities"][0])
+    m = d.shape[0] // 2
+    up_down = np.trace(d[:m, m:])
+    return np.array([2 * up_down.real, -2 * up_down.imag,
+                     np.trace(d[:m, :m]).real - np.trace(d[m:, m:]).real])
 
-    @pytest.mark.parametrize("method", ["uhf", "dft"])
-    def test_every_method_refuses_moment_vectors(self, method):
+
+def _h2_cation(moments):
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 1.06]], cell=[6, 6, 7])
+    atoms.center()
+    atoms.set_initial_magnetic_moments(moments)
+    return atoms
+
+
+class TestMomentVectors:
+    """One moment vector per atom starts spinor Kohn-Sham from the collinear state
+    with the moments' lengths, turned per atom. Without a spin-orbit term the
+    energy is that of the collinear state whatever the common direction, and the
+    spin moment follows it (``crates/mandacaru-core/tests/molecular_spinor_dft.rs``
+    pins the same limits). H2+ has a gapped frontier: spinor Kohn-Sham fills
+    integer occupations, so a nearly degenerate shell (OH off its axis), which
+    collinear Kohn-Sham shares fractionally, is not the same state."""
+
+    @pytest.fixture(scope="class")
+    def collinear(self):
+        atoms = _h2_cation([0.5, 0.5])
+        atoms.calc = Mandacaru(method="dft", grid_spacing=0.4, basis=SZ, charge=1, trace=False)
+        return atoms.get_potential_energy()
+
+    @pytest.mark.parametrize("direction", [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+    def test_a_common_direction_keeps_the_collinear_energy(self, collinear, direction):
+        half = [0.5 * x for x in direction]
+        atoms = _h2_cation([half, half])
+        atoms.calc = Mandacaru(method="dft", grid_spacing=0.4, basis=SZ, charge=1, trace=False)
+        assert atoms.get_potential_energy() == pytest.approx(collinear, abs=1e-6)
+        assert atoms.calc.native_reference.snapshot()["method"] == "ghf"
+        assert np.allclose(_spin_moment(atoms.calc), direction, atol=1e-6)
+
+    def test_other_methods_and_crystals_refuse_moment_vectors(self):
         atoms = _oh()
         atoms.set_initial_magnetic_moments([[1.0, 0.0, 0.0], [0.0] * 3])
-        atoms.calc = Mandacaru(method=method, grid_spacing=0.4, basis=SZ,
-                               trace=False)
-        with pytest.raises(ValueError, match="one finite value per atom"):
+        atoms.calc = Mandacaru(method="uhf", grid_spacing=0.4, basis=SZ, trace=False)
+        with pytest.raises(NotImplementedError, match="need method='dft'"):
             atoms.get_potential_energy()
+        crystal = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[4, 4, 4], pbc=True)
+        crystal.set_initial_magnetic_moments([[0.0, 0.0, 1.0], [0.0] * 3])
+        with pytest.raises(NotImplementedError, match="a crystal takes collinear moments"):
+            Mandacaru(method="dft", atoms=crystal, basis=SZ, grid_spacing=0.4)
 
-    def test_forces_are_refused(self):
-        atoms = _oh()
-        atoms.set_initial_magnetic_moments([[0.0, 0.0, 1.0], [0.0] * 3])
-        atoms.calc = Mandacaru(method="dft", grid_spacing=0.3, basis=SZ,
-                               trace=False)
-        with pytest.raises(ValueError, match="one finite value per atom"):
-            atoms.get_forces()
+    def test_the_spinor_force_is_the_derivative_of_its_energy(self):
+        moments = [[0.0, 0.5, 0.0], [0.0, 0.5, 0.0]]
+        atoms = _h2_cation(moments)
+        atoms.calc = Mandacaru(method="dft", grid_spacing=0.4, basis=SZ, charge=1, trace=False,
+                               project_translation=False)
+        force = atoms.get_forces()[1, 2]
+
+        def energy(step):
+            moved = atoms.copy()
+            moved.positions[1, 2] += step
+            moved.set_initial_magnetic_moments(moments)
+            moved.calc = atoms.calc
+            return moved.get_potential_energy()
+
+        coarse, fine = (-(energy(h) - energy(-h)) / (2 * h) for h in (0.004, 0.002))
+        assert force == pytest.approx(fine + (fine - coarse) / 3.0, abs=1e-4)
 
 
 # --------------------------------------------------------------------------- #

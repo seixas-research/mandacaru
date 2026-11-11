@@ -7,7 +7,7 @@ use super::{
     Options,
 };
 use crate::{
-    periodic::{Crystal, KPoint, PeriodicResult},
+    periodic::{setup::PeriodicSetup, Crystal, KPoint, PeriodicResult},
     product,
     quantum::C64,
     Reservation, Result,
@@ -23,6 +23,9 @@ pub struct Setup {
     pub trials: Vec<Trial>,
     pub augmentation: Augmentation,
     pub windows: Option<Windows>,
+    /// The periodic setup the crystal was built from, which makes states at any k-point (the
+    /// long-wavelength limit of the screening); `None` for a crystal loaded from a snapshot.
+    pub provider: Option<Arc<PeriodicSetup>>,
     frames: Vec<Vec<Frame>>,
     _memory: Reservation,
 }
@@ -34,6 +37,8 @@ pub struct Wannier {
     pub trials: Vec<Trial>,
     pub augmentation: Augmentation,
     pub channels: Vec<Channel>,
+    /// See [`Setup::provider`].
+    pub provider: Option<Arc<PeriodicSetup>>,
     _memory: Reservation,
 }
 fn real(value: &Value) -> Result<f64> {
@@ -374,9 +379,15 @@ impl Setup {
             trials,
             augmentation,
             windows,
+            provider: None,
             frames,
             _memory: memory,
         })
+    }
+    /// The same setup with the periodic setup its crystal was built from attached.
+    pub fn with_provider(mut self, provider: Option<Arc<PeriodicSetup>>) -> Self {
+        self.provider = provider;
+        self
     }
     pub fn next_point(&self) -> Result<[f64; 3]> {
         sampling::mesh_point(self.size, self.frames[0].len())
@@ -440,6 +451,7 @@ impl Setup {
             trials: self.trials,
             augmentation: self.augmentation,
             channels,
+            provider: self.provider,
             _memory: self._memory,
         })
     }

@@ -59,7 +59,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .. import _native
-from ..units import BOHR_TO_ANGSTROM
+from ..units import to_angstrom
 
 #: The drawing modes :class:`Viewer3D` knows.
 MODES = ("scatter", "isosurface")
@@ -322,15 +322,14 @@ class Viewer3D:
 
     def _nodes(self) -> np.ndarray:
         grid = self.field.grid
-        return np.stack([np.asarray(grid.X, dtype=float).ravel(),
-                         np.asarray(grid.Y, dtype=float).ravel(),
-                         np.asarray(grid.Z, dtype=float).ravel()],
-                        axis=1) * BOHR_TO_ANGSTROM
+        return to_angstrom(np.stack([np.asarray(grid.X, dtype=float).ravel(),
+                                     np.asarray(grid.Y, dtype=float).ravel(),
+                                     np.asarray(grid.Z, dtype=float).ravel()], axis=1))
 
     @property
     def nuclei(self) -> np.ndarray:
         """Nuclear positions in Angstrom."""
-        return np.asarray(self.field.positions, dtype=float) * BOHR_TO_ANGSTROM
+        return to_angstrom(self.field.positions)
 
     # -- what is drawn ------------------------------------------------------ #
 
@@ -339,7 +338,7 @@ class Viewer3D:
         and the field's value at each point."""
         if self._cloud is None:
             seed = secrets.randbits(64) if self.seed is None else self.seed
-            step = np.ascontiguousarray(self.field.grid.step, dtype=float) * BOHR_TO_ANGSTROM
+            step = to_angstrom(self.field.grid.step)
             picked, positions = _native.weighted_cloud(
                 np.ascontiguousarray(self._weights(), dtype=float).ravel(),
                 np.ascontiguousarray(self._nodes()), step, int(self.points), seed)
@@ -354,8 +353,7 @@ class Viewer3D:
         if self._surface is None:
             grid = self.field.grid
             data = np.asarray(self.field.data, dtype=float)
-            X, Y, Z = (np.asarray(a, dtype=float) * BOHR_TO_ANGSTROM
-                       for a in (grid.X, grid.Y, grid.Z))
+            X, Y, Z = (to_angstrom(a) for a in (grid.X, grid.Y, grid.Z))
             level = self.isovalue
             lobes = [marching_tetrahedra(data, X, Y, Z, level)]
             if self.signed:

@@ -315,8 +315,10 @@ def test_nonconserving_hamiltonian_and_unsupported_options_fail_explicitly(tmp_p
     with pytest.raises(ValueError, match="HVA"):
         Mandacaru(method="vqe",  load_hamiltonian=FIXTURE, ansatz="hva", trace=False).run()
     Mandacaru(method="dft",  xc="r2scan")
-    with pytest.raises(TypeError, match="tetris"):
-        Mandacaru(method="adapt-vqe",  load_hamiltonian=FIXTURE, tetris=True)
+    # TETRIS growth is implemented for adapt-vqe; on a fixed ansatz it does nothing, so
+    # it is refused by name rather than ignored.
+    with pytest.raises(ValueError, match="tetris"):
+        Mandacaru(method="vqe",  load_hamiltonian=FIXTURE, tetris=True)
 
 
 @pytest.mark.parametrize("mapping", MAPPINGS)

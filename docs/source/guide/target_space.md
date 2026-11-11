@@ -3,12 +3,10 @@
 A target space is the set of states a downstream calculation works in: the
 Bloch states a Wannier function is built from, or the orbitals an active space
 keeps. This page used to describe choosing a crystal target space by atomic
-projectability and by RPA natural orbitals. **None of that is available now.**
-The calculator has no Wannier, projectability or RPA natural-orbital
-interface, and the [native coverage table](../development/native_cutover.md)
-lists Wannier construction, constrained RPA and downfolding among the work that
-remains. The entry in [what is not yet available](#not-yet-available) will move
-when it returns.
+projectability and by RPA natural orbitals. **Choosing by projectability or by RPA natural
+orbitals is not available now.** Wannier functions are: `calc.wannier(...)` localizes the Bloch
+states and `wannier.downfold(...)` builds the many-body problem of a fragment of them, bare or
+screened by the constrained RPA ([Wannier downfolding](wannier_downfolding.md)).
 
 ## What exists
 

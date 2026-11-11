@@ -196,6 +196,126 @@ class TestAdaptResume:
         final = load_checkpoint(path)
         assert final.num_parameters == 6 and final.status["complete"]
 
+    def test_the_hessian_is_stored_and_an_older_file_resumes_cold_with_a_warning(
+            self, tmp_path, straight_run):
+        """SLSQP's Hessian approximation of the angles goes into the file (schema version 3) and a
+        resumed run starts from it; a version-2 file records none: it resumes from the identity,
+        says so, and still reaches the uninterrupted run's operators and energy."""
+        import json
+        import warnings
+
+        driver, energy = straight_run
+        path = str(tmp_path / "adapt.json")
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=2, checkpoint=path)
+        atoms.get_total_energy()
+        hessian = np.asarray(atoms.calc.result._raw["hessian"])
+        assert hessian.shape == (2, 2) and np.allclose(hessian, hessian.T)
+        stored = load_checkpoint(path)
+        assert np.array_equal(stored.status["hessian"]["values"], hessian.ravel())
+
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=6, resume=path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
+        # Continued, not relaxed: the stored point is the uninterrupted run's, so the growth after
+        # it is too, bit for bit.
+        assert "seed_relaxation" not in atoms.calc.result._raw
+        assert atoms.calc.result.operators == driver.result.operators
+        assert atoms.get_total_energy() == energy
+
+        payload = json.load(open(path))
+        payload["version"] = 2
+        del payload["status"]["hessian"]
+        older = str(tmp_path / "older.json")
+        json.dump(payload, open(older, "w"))
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=6, resume=older)
+        with pytest.warns(RuntimeWarning, match="Hessian"):
+            assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
+        assert atoms.calc.result._raw["seed_relaxation"]["warm_hessian"] is False
+        # From the identity the growth may take operators of equal gradient in the other order.
+        assert sorted(atoms.calc.result.operators) == sorted(driver.result.operators)
+
+        # L-BFGS keeps no dense estimate: nothing is stored and nothing is warned about.
+        other = str(tmp_path / "lbfgs.json")
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=2, checkpoint=other, optimizer={"method": "L-BFGS"})
+        atoms.get_total_energy()
+        assert atoms.calc.result._raw["hessian"] is None
+        assert "hessian" not in load_checkpoint(other).status
+
+    def test_bfgs_stores_its_inverse_hessian_and_resumes_bit_identically(self, tmp_path):
+        """BFGS carries its inverse Hessian approximation like SLSQP its Hessian, the file names
+        the optimizer that kept it, and the other optimizer does not use it (nor convert it):
+        it starts from the identity and warns, naming both."""
+        import warnings
+
+        bfgs = {"method": "BFGS"}
+        path = str(tmp_path / "bfgs.json")
+        straight = lih()
+        straight.calc = adapt(max_iterations=6, optimizer=bfgs)
+        energy = straight.get_total_energy()
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=2, checkpoint=path, optimizer=bfgs)
+        atoms.get_total_energy()
+        stored = load_checkpoint(path).status["hessian"]
+        assert stored["optimizer"] == "BFGS" and stored["dimension"] == 2
+
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=6, resume=path, optimizer=bfgs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert atoms.get_total_energy() == energy
+        assert atoms.calc.result.operators == straight.calc.result.operators
+        assert "seed_relaxation" not in atoms.calc.result._raw
+
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=6, resume=path)          # SLSQP, the default
+        with pytest.warns(RuntimeWarning, match="BFGS.*SLSQP|SLSQP.*BFGS"):
+            atoms.get_total_energy()
+        assert atoms.calc.result._raw["seed_relaxation"]["warm_hessian"] is False
+
+    def test_a_mid_run_checkpoint_resumes_to_the_uninterrupted_run(self, tmp_path,
+                                                                    straight_run):
+        """``checkpoint_every=2`` writes after the second growth step what that
+        step reached, marked incomplete; a run resumed from that file grows the
+        same six operators to the same energy as the uninterrupted one."""
+        import shutil
+
+        driver, energy = straight_run
+        path, copy = str(tmp_path / "adapt.json"), str(tmp_path / "step2.json")
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=6, checkpoint=path, checkpoint_every=2)
+
+        def keep_step_two(info):
+            # The file is written before the callback sees the step.
+            if info["num_operators"] == 2:       # one operator per qeb step
+                shutil.copy(path, copy)
+
+        atoms.calc.run(atoms, callback=keep_step_two)
+        mid = load_checkpoint(copy)
+        assert mid.num_parameters == 2
+        # SLSQP growth stores its Hessian approximation of the two angles (schema version 3).
+        hessian = mid.status.pop("hessian")
+        assert mid.status == {"complete": False, "converged": False, "iteration": 2}
+        assert hessian["dimension"] == 2 and len(hessian["values"]) == 4
+        assert hessian["values"][1] == hessian["values"][2]
+        assert load_checkpoint(path).status["complete"] is True
+
+        atoms = lih()
+        atoms.calc = adapt(max_iterations=6, resume=copy)
+        assert atoms.get_total_energy() == pytest.approx(energy, abs=1e-8)
+        assert atoms.calc.result.operators == driver.result.operators
+
+    def test_the_cadence_needs_a_path_and_a_positive_integer(self, tmp_path):
+        for every, checkpoint in ((0, "c.json"), (1.5, "c.json"), (2, None)):
+            with pytest.raises(ValueError, match="checkpoint_every"):
+                Mandacaru(method="adapt-vqe", checkpoint=checkpoint, checkpoint_every=every)
+        with pytest.raises(ValueError, match="checkpoint_every"):
+            Mandacaru(method="vasqa", checkpoint="c.json", checkpoint_every=2)
+
     def test_a_pool_generator_is_adopted_and_a_foreign_one_refused(self,
                                                                   tmp_path):
         """Resuming matches generators to the pool by content, not by name.
@@ -254,6 +374,67 @@ class TestAdaptResume:
 # --------------------------------------------------------------------------- #
 # VQE.
 # --------------------------------------------------------------------------- #
+
+class TestSubspaceResume:
+    """A ``subspace-*`` checkpoint stores the shared ansatz with the state weights
+    and energies; a resumed subspace-ADAPT run grows on as if never stopped."""
+
+    @staticmethod
+    def subspace(**options):
+        return Mandacaru(method="subspace-adapt-vqe", pool="qeb", basis="HAO",
+                         grid_spacing=0.4, trace=False, profile=False,
+                         convergence={"gradient": 1e-6}, **options)
+
+    def test_resume_equals_an_uninterrupted_run(self, tmp_path):
+        import json as _json
+        path = str(tmp_path / "subspace.json")
+        straight = lih()
+        straight.calc = self.subspace(max_iterations=5)
+        straight.get_total_energy()
+        stopped = lih()
+        stopped.calc = self.subspace(max_iterations=2, checkpoint=path)
+        stopped.get_total_energy()
+        stored = _json.loads(open(path, encoding="utf-8").read())
+        assert stored["method"] == "subspace-adapt-vqe"
+        assert stored["subspace"]["weights"] == [2.0, 1.0]
+        assert len(stored["operators"]) == 2
+        resumed = lih()
+        resumed.calc = self.subspace(max_iterations=5, resume=path)
+        resumed.get_total_energy()
+        assert np.allclose(resumed.calc.result.energies, straight.calc.result.energies,
+                           atol=1e-8)
+        assert resumed.calc.result.num_operators == straight.calc.result.num_operators
+        # The file stores the SLSQP Hessian approximation, and the resumed growth is the
+        # uninterrupted run's, bit for bit.
+        assert stored["status"]["hessian"]["dimension"] == 2
+        assert np.array_equal(resumed.calc.result.energies, straight.calc.result.energies)
+        assert resumed.calc.result.operators == straight.calc.result.operators
+
+    def test_a_version_2_file_resumes_from_the_identity_with_a_warning(self, tmp_path):
+        import json as _json
+        path = str(tmp_path / "subspace.json")
+        stopped = lih()
+        stopped.calc = self.subspace(max_iterations=2, checkpoint=path)
+        stopped.get_total_energy()
+        stored = _json.load(open(path, encoding="utf-8"))
+        stored["version"] = 2
+        del stored["status"]["hessian"]
+        _json.dump(stored, open(path, "w", encoding="utf-8"))
+        resumed = lih()
+        resumed.calc = self.subspace(max_iterations=5, resume=path)
+        with pytest.warns(RuntimeWarning, match="Hessian"):
+            resumed.get_total_energy()
+
+    def test_other_weights_are_refused(self, tmp_path):
+        path = str(tmp_path / "subspace.json")
+        atoms = lih()
+        atoms.calc = self.subspace(max_iterations=1, checkpoint=path)
+        atoms.get_total_energy()
+        atoms = lih()
+        atoms.calc = self.subspace(max_iterations=2, resume=path, weights=[3.0, 1.0])
+        with pytest.raises(ValueError, match="weights"):
+            atoms.get_total_energy()
+
 
 class TestVQEResume:
     def test_checkpoint_and_warm_start(self, tmp_path):

@@ -44,6 +44,7 @@ active_space
 mean_field_hva
 target_space
 bloch
+wannier_downfolding
 hamiltonian_cache
 checkpoints_qpe
 quantum_echoes

@@ -481,26 +481,27 @@
    "energy_ev": -465.88419871083937,
    "forces_ev_angstrom": [
     [
-     1.7507588741053928e-07,
-     1.6320117504704182e-08,
-     -1.136983776125843
+     -2.968393319136808e-12,
+     -2.456787321630705e-13,
+     -1.1369649506071546
     ],
     [
-     0.6404682348845303,
-     -1.9151779683692036e-07,
-     0.5119210494611365
+     0.6404575683220577,
+     1.3085416845558345e-13,
+     0.5119115926175545
     ],
     [
-     -0.6404681446671643,
-     6.363627907617862e-08,
-     0.5119211292652932
+     -0.6404575683192946,
+     -1.0225906470617044e-13,
+     0.5119115926146885
     ]
    ],
    "retired_details": {
     "scheme": "Richardson-fixed-density-PAW",
     "step_bohr": 0.001,
     "step_error_estimate": 1.6130681975331149e-07
-   }
+   },
+   "repinned_2026_11_10": "the frozen short-range semilocal exchange of the spheres now carries the dataset's smooth core on its smooth side (HSE06 smooth-core offset fix); the retired-route forces moved by up to 1.9e-5 eV/A (oxygen z, 1.136984 -> 1.136965); these are the live analytic forces, checked against a Richardson central difference of the corrected free energy (frozen grid): 2.0e-7 (H z) and 1.6e-7 (O z) eV/A"
   }
  },
  "stamp": {

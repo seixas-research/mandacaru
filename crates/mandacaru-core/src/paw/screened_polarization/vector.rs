@@ -43,7 +43,7 @@ pub struct VectorTerms {
     /// `P`: zero for a density without magnetization.
     pub energy: f64,
     /// `F[max(n_0, 0)]`, the unpolarized short-range exchange of the sphere's total density
-    /// (all-electron minus smooth).
+    /// (all-electron minus smooth plus the smooth core).
     pub unpolarized: f64,
     /// `O^0, O^1, O^2, O^3 = dP / dQ^a` (real, symmetric) in the projector layout.
     pub operators: [DMatrix<f64>; 4],
@@ -83,7 +83,13 @@ impl Polarization {
     }
 
     fn local(&self, sums: &[Vec<f64>; 4], smooth: bool) -> Local {
-        let n0 = self.field(&sums[0], smooth);
+        let mut n0 = self.field(&sums[0], smooth);
+        if smooth {
+            // The grid's smooth core is part of the charge, never of the magnetization.
+            for (slot, core) in n0.iter_mut().zip(&self.smooth_core) {
+                *slot += core;
+            }
+        }
         let m: [Vec<f64>; 3] = std::array::from_fn(|a| self.field(&sums[a + 1], smooth));
         let nodes = n0.len();
         let mut magnitude = vec![0.; nodes];

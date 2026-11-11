@@ -24,6 +24,7 @@ use crate::paw::molecular::gradient::{GridState, Occupied};
 use crate::{product, quantum::C64, Buffer, Result};
 use nalgebra::DMatrix;
 
+mod densities;
 mod frame;
 mod grid;
 
@@ -214,6 +215,7 @@ impl MolecularIntegrals {
                 rho: rho.as_slice(),
             },
             hf,
+            frozen_unrestricted,
         )?;
         let corrections = self
             .corrections

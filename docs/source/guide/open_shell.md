@@ -29,6 +29,42 @@ For a triplet, set the total to two, for example
 `o2.set_initial_magnetic_moments([1, 1])`; `examples/adapt_vqe/03_adapt_vqe_o2_triplet.py`
 runs the O₂ triplet with ADAPT-VQE.
 
+(noncollinear-moments)=
+## Noncollinear initial moments
+
+Moments given as one 3-vector per atom (Bohr magneton) start a noncollinear
+calculation of a molecule with `method="dft"`. The steps are:
+
+1. Collinear Kohn–Sham runs first, with the vectors' lengths as the moments.
+2. Each atom's share of its magnetization is turned to that atom's vector.
+3. Spinor (two-component) Kohn–Sham starts from that density. It includes the
+   spin-orbit term of a spin-orbit dataset if there is one.
+
+```python
+from ase import Atoms
+from mandacaru import Mandacaru
+
+h2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 1.06]], cell=[6, 6, 7])
+h2.center()
+h2.set_initial_magnetic_moments([[0.5, 0, 0], [0.5, 0, 0]])     # along x
+h2.calc = Mandacaru(method="dft", charge=1, grid_spacing=0.4,
+                    basis={"name": "PAW-LCAO", "size": "SZ"})
+h2.get_potential_energy()
+```
+
+Without a spin-orbit term the collinear state is a stable fixed point of the
+spinor SCF, so a noncollinear state is reached only from such a start. A common
+direction gives the collinear energy, with the spin moment along it (H2+: the
+same energy to 1e-12 Ha along z, x and a tilted direction). The analytic force
+is the derivative of the spinor energy.
+
+Spinor Kohn–Sham fills integer occupations. A nearly degenerate frontier,
+which collinear Kohn–Sham shares fractionally
+([Occupations](#dft-degenerate-shell)), is therefore not the same state.
+Other methods raise `NotImplementedError` for moment vectors, and so does a
+crystal. A spin-orbit crystal takes collinear moments as the start of its
+noncollinear magnetization.
+
 ## Which method
 
 - **`method="uhf"`** solves the unrestricted problem with separate spatial

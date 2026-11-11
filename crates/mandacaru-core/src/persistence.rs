@@ -96,6 +96,16 @@ pub struct Lineage {
     pub parameters: usize,
     pub status: Option<String>,
 }
+/// What a Hamiltonian file records about a double-factorized two-body representation:
+/// `metadata.two_body = {"representation", "truncation_ev", "error_bound_ev"}`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TwoBodyRecord {
+    pub representation: String,
+    /// The truncation the model was built with, eV.
+    pub truncation_ev: f64,
+    /// The bound the truncation reached on the change of any energy, eV.
+    pub error_bound_ev: f64,
+}
 pub struct Document {
     pub(crate) payload: Value,
     _memory: Reservation,
@@ -239,7 +249,7 @@ impl Document {
             return Err(invalid(format!("expected a {kind} snapshot")));
         }
         let version = integer(&p["version"], "schema version")?;
-        if version == 0 || version > if kind == CHECKPOINT { 2 } else { 1 } {
+        if version == 0 || version > if kind == CHECKPOINT { 3 } else { 1 } {
             return Err(invalid("unsupported snapshot schema version"));
         }
         let n = integer(
@@ -347,6 +357,33 @@ impl Document {
     }
     pub fn text(&self) -> Result<String> {
         serde_json::to_string(&self.payload).map_err(|e| invalid(e.to_string()))
+    }
+    /// The two-body record of a Hamiltonian file (`None` for a dense one, which writes none);
+    /// a malformed record raises.
+    pub fn two_body(&self) -> Result<Option<TwoBodyRecord>> {
+        let p = &self.payload;
+        if p["format"] != HAMILTONIAN {
+            return Err(invalid("a two-body record belongs to a qubit-Hamiltonian file"));
+        }
+        let record = &p["metadata"]["two_body"];
+        if record.is_null() {
+            return Ok(None);
+        }
+        let energy = |key: &str| {
+            record[key]
+                .as_f64()
+                .filter(|v| v.is_finite() && *v >= 0.)
+                .ok_or_else(|| invalid(format!("the two-body record needs a nonnegative {key}")))
+        };
+        let representation = record["representation"]
+            .as_str()
+            .filter(|r| *r == "double-factorized")
+            .ok_or_else(|| invalid("the two-body record names an unknown representation"))?;
+        Ok(Some(TwoBodyRecord {
+            representation: representation.into(),
+            truncation_ev: energy("truncation_ev")?,
+            error_bound_ev: energy("error_bound_ev")?,
+        }))
     }
     /// What a checkpoint records about the run that wrote it, for a log to say
     /// what a resumed run was restored from. A Hamiltonian snapshot has no
@@ -496,15 +533,9 @@ impl Document {
             Ok(value.re)
         })
     }
-    pub fn resume(&self, problem: &CachedProblem, options: &SolveOptions) -> Result<SolveResult> {
-        self.resume_observed(problem, options, None)
-    }
-    pub fn resume_observed(
-        &self,
-        problem: &CachedProblem,
-        options: &SolveOptions,
-        observer: Option<&mut crate::quantum::solver::GrowthObserver<'_>>,
-    ) -> Result<SolveResult> {
+    /// The checks every resume makes: the register (mapping, width, tapering), the Hamiltonian,
+    /// the reference determinant and the particle and orbital counts are the problem's.
+    fn check_register(&self, problem: &CachedProblem) -> Result<()> {
         let p = &self.payload;
         if p["format"] != CHECKPOINT
             || p["mapping"] != problem.encoding.mapping
@@ -514,11 +545,7 @@ impl Document {
             return Err(invalid("checkpoint mapping/register differs from problem"));
         }
         let n = problem.n_qubits();
-        let ctx = &problem.context;
-        if p["method"] != if options.adapt { "adapt-vqe" } else { "vqe" } {
-            return Err(invalid("checkpoint method differs from solver"));
-        }
-        let h = Self::embedded(ctx, &p["hamiltonian"], n)?;
+        let h = Self::embedded(&problem.context, &p["hamiltonian"], n)?;
         if !same_operator(&h, &problem.hamiltonian) {
             return Err(invalid("checkpoint Hamiltonian differs from problem"));
         }
@@ -538,6 +565,139 @@ impl Document {
             return Err(invalid(
                 "checkpoint particle/orbital counts differ from problem",
             ));
+        }
+        Ok(())
+    }
+    /// The stored generators as pool indices, with their parameters.
+    fn sequence(&self, problem: &CachedProblem) -> Result<(Vec<usize>, Vec<f64>)> {
+        let ctx = &problem.context;
+        let n = problem.n_qubits();
+        let operators = self.payload["operators"].as_array().unwrap();
+        let _memory = ctx.reserve(product(&[operators.len(), 32])?)?;
+        let mut indices = Vec::new();
+        let mut parameters = Vec::new();
+        for op in operators {
+            let g = Self::embedded(ctx, &op["generator"], n)?;
+            indices.push(
+                problem
+                    .pool
+                    .iter()
+                    .position(|p| same_operator(&g, &p.operator))
+                    .ok_or_else(|| invalid("checkpoint generator is absent from native pool"))?,
+            );
+            parameters.push(number(&op["parameter"], "parameter")?);
+        }
+        Ok((indices, parameters))
+    }
+    /// `options` for resuming the `count` stored operators: with the curvature estimate the
+    /// writer's SLSQP or BFGS growth carried, so the resumed run grows from it as the
+    /// uninterrupted one would (the growth continues, see `SolveOptions::continuation`).
+    ///
+    /// The estimate belongs to the optimizer that kept it (a Hessian for SLSQP, an inverse
+    /// Hessian for BFGS). A run with the OTHER one does not use it and says so in the returned
+    /// notes, as it does for a file of an older version that recorded none: it starts from the
+    /// identity and relaxes the stored sequence. It is not converted: the inverse of one
+    /// optimizer's estimate is not what the other would have carried, so a conversion would
+    /// promise a continuation it cannot give, and refusing outright would make the file
+    /// unusable after a deliberate change of optimizer for what is only a starting guess. A
+    /// version-3 file without an entry was written by another optimizer or a fixed ansatz and
+    /// starts from the identity silently.
+    fn with_stored_hessian(&self, options: &SolveOptions, count: usize) -> Result<(SolveOptions, Vec<String>)> {
+        let p = &self.payload;
+        let mut options = options.clone();
+        let mut notes = Vec::new();
+        if options.adapt
+            && options.quenching
+            && options.optimizer.method.carries_curvature()
+            && count > 0
+        {
+            let method = options.optimizer.method.name();
+            match p["status"].get("hessian") {
+                None if integer(&p["version"], "schema version")? >= 3 => {}
+                None => notes.push(
+                    "the checkpoint records no Hessian approximation (it predates schema version 3): \
+                     the resumed growth starts from the identity, so it need not reproduce the run \
+                     that was never stopped"
+                        .to_owned(),
+                ),
+                // Version-3 entries written before BFGS carried one are SLSQP's.
+                Some(entry) if entry["optimizer"].as_str().unwrap_or("SLSQP") != method => notes.push(format!(
+                    "the checkpoint's curvature estimate was kept by {}, not {method} (a Hessian and \
+                     an inverse Hessian are not interchangeable): the resumed growth starts from \
+                     the identity, so it need not reproduce the run that was never stopped",
+                    entry["optimizer"].as_str().unwrap_or("SLSQP")
+                )),
+                Some(entry) => {
+                    let values: Vec<f64> = serde_json::from_value(entry["values"].clone())
+                        .map_err(|_| invalid("checkpoint Hessian lacks its values"))?;
+                    if integer(&entry["dimension"], "Hessian dimension")? != count
+                        || values.len() != count * count
+                        || values.iter().any(|v| !v.is_finite())
+                    {
+                        return Err(invalid("checkpoint Hessian differs from its operator count"));
+                    }
+                    options.hessian = Some(values);
+                    options.continuation = true;
+                }
+            }
+        }
+        Ok((options, notes))
+    }
+    /// Continue a subspace calculation from its checkpoint ([`subspace_checkpoint`]): the same
+    /// register, method and state weights; `subspace-vqe` restarts its optimization from the
+    /// stored parameters, `subspace-adapt-vqe` keeps growing from the stored sequence (continuing from its
+    /// stored Hessian, or relaxing it first when the file has none).
+    pub fn resume_subspace(
+        &self,
+        problem: &CachedProblem,
+        options: &SolveOptions,
+        weights: &[f64],
+    ) -> Result<crate::quantum::subspace::SubspaceResult> {
+        let p = &self.payload;
+        self.check_register(problem)?;
+        let method = if options.adapt { "subspace-adapt-vqe" } else { "subspace-vqe" };
+        if p["method"] != method {
+            return Err(invalid("checkpoint method differs from solver"));
+        }
+        let stored: Vec<f64> = serde_json::from_value(p["subspace"]["weights"].clone())
+            .map_err(|_| invalid("a subspace checkpoint needs its state weights"))?;
+        if stored != weights {
+            return Err(invalid("checkpoint subspace weights differ from the run's"));
+        }
+        let (indices, parameters) = self.sequence(problem)?;
+        if indices.len() > 1 && (p["preparation"] == "sum") == (options.adapt || options.trotter) {
+            return Err(invalid("checkpoint preparation differs from ansatz evolution"));
+        }
+        if !options.adapt && indices != (0..problem.pool.len()).collect::<Vec<_>>() {
+            return Err(invalid(
+                "checkpoint generator sequence differs from fixed UCCSD ansatz",
+            ));
+        }
+        let (options, notes) = self.with_stored_hessian(options, indices.len())?;
+        let mut result = problem.solve_subspace_sequence(
+            &options,
+            weights,
+            Some(&parameters),
+            options.adapt.then_some(indices.as_slice()),
+        )?;
+        result.notes.extend(notes);
+        Ok(result)
+    }
+    pub fn resume(&self, problem: &CachedProblem, options: &SolveOptions) -> Result<SolveResult> {
+        self.resume_observed(problem, options, None)
+    }
+    pub fn resume_observed(
+        &self,
+        problem: &CachedProblem,
+        options: &SolveOptions,
+        observer: Option<&mut crate::quantum::solver::GrowthObserver<'_>>,
+    ) -> Result<SolveResult> {
+        let p = &self.payload;
+        self.check_register(problem)?;
+        let n = problem.n_qubits();
+        let ctx = &problem.context;
+        if p["method"] != if options.adapt { "adapt-vqe" } else { "vqe" } {
+            return Err(invalid("checkpoint method differs from solver"));
         }
         let operators = p["operators"].as_array().unwrap();
         if let Some(hva) = &problem.hva {
@@ -581,38 +741,30 @@ impl Document {
                 "checkpoint preparation differs from ansatz evolution",
             ));
         }
-        let _memory = ctx.reserve(product(&[operators.len(), 32])?)?;
-        let mut indices = Vec::new();
-        let mut parameters = Vec::new();
-        for op in operators {
-            let g = Self::embedded(ctx, &op["generator"], n)?;
-            indices.push(
-                problem
-                    .pool
-                    .iter()
-                    .position(|p| same_operator(&g, &p.operator))
-                    .ok_or_else(|| invalid("checkpoint generator is absent from native pool"))?,
-            );
-            parameters.push(number(&op["parameter"], "parameter")?);
-        }
+        let (indices, parameters) = self.sequence(problem)?;
         if !options.adapt && indices != (0..problem.pool.len()).collect::<Vec<_>>() {
             return Err(invalid(
                 "checkpoint generator sequence differs from fixed UCCSD ansatz",
             ));
         }
-        if let Some(observer) = observer {
-            return problem.solve_observed(
+        let (options, notes) = self.with_stored_hessian(options, indices.len())?;
+        let options = &options;
+        let mut result = if let Some(observer) = observer {
+            problem.solve_observed(
                 options,
                 Some(&parameters),
                 if options.adapt { Some(&indices) } else { None },
                 observer,
-            );
-        }
-        problem.solve_sequence(
-            options,
-            Some(&parameters),
-            if options.adapt { Some(&indices) } else { None },
-        )
+            )?
+        } else {
+            problem.solve_sequence(
+                options,
+                Some(&parameters),
+                if options.adapt { Some(&indices) } else { None },
+            )?
+        };
+        result.notes.extend(notes);
+        Ok(result)
     }
 }
 /// The Z2 tapering a checkpoint was written on (`null` for an untapered register): its anchors,
@@ -630,6 +782,27 @@ fn same_operator(a: &Operator, b: &Operator) -> bool {
             a.x == b.x && a.z == b.z && (a.coefficient - b.coefficient).norm() <= 1e-10
         })
 }
+/// `status` with the curvature estimate of the ansatz parameters (`hessian`, row-major `n x n`)
+/// the writer's growth carried at this point: `{"optimizer", "dimension", "values"}`, where
+/// `optimizer` names who kept it (`"SLSQP"`: a Hessian approximation; `"BFGS"`: an INVERSE
+/// Hessian approximation: the two are not interchangeable). A writer that carried none
+/// (another optimizer, a fixed ansatz) adds nothing. Checkpoint schema version 3 introduced
+/// the key (a file of an older version that lacks it recorded none because it could not); a
+/// version-3 entry without `optimizer` was written when only SLSQP carried one.
+pub fn status_with_hessian(mut status: Value, optimizer: &str, hessian: Option<&[f64]>) -> Result<Value> {
+    let Some(values) = hessian else {
+        return Ok(status);
+    };
+    let n = (0..=values.len()).find(|n| n * n >= values.len()).unwrap_or(0);
+    if n * n != values.len() || values.iter().any(|v| !v.is_finite()) {
+        return Err(invalid("a checkpoint Hessian must be a finite n x n matrix"));
+    }
+    status
+        .as_object_mut()
+        .ok_or_else(|| invalid("a checkpoint status must be a JSON object"))?
+        .insert("hessian".into(), json!({"optimizer": optimizer, "dimension": n, "values": values}));
+    Ok(status)
+}
 #[allow(clippy::too_many_arguments)]
 pub fn checkpoint(
     ctx: &Context,
@@ -645,8 +818,9 @@ pub fn checkpoint(
         || indices.iter().any(|&i| i >= problem.pool.len())
         || parameters.iter().any(|x| !x.is_finite())
         || !energy.is_finite()
-        || !["vqe", "adapt-vqe", "vasqa", "valsqa"].contains(&method)
-        || (method != "vqe" && !product_form)
+        || !["vqe", "adapt-vqe", "vasqa", "valsqa", "subspace-vqe", "subspace-adapt-vqe"]
+            .contains(&method)
+        || (!["vqe", "subspace-vqe"].contains(&method) && !product_form)
     {
         return Err(invalid("invalid checkpoint ansatz parameters or energy"));
     }
@@ -678,8 +852,36 @@ pub fn checkpoint(
     if problem.taper.is_some() {
         metadata["taper"] = taper_record(problem);
     }
-    let payload = json!({"format":CHECKPOINT,"version":2,"energy_unit":"Ha","n_qubits":n,"mapping":problem.encoding.mapping,"num_particles":problem.encoding.particles,"n_spatial_orbitals":problem.encoding.modes/2,"reference_qubits":(0..n).filter(|q| reference & (1<<(n-1-q))!=0).collect::<Vec<_>>(),"preparation":if problem.hva.is_some() || product_form {"product"} else {"sum"},"method":method,"energy":energy,"operators":operators,"hamiltonian":pauli_payload(&problem.hamiltonian),"status":status,"metadata":metadata});
+    let payload = json!({"format":CHECKPOINT,"version":3,"energy_unit":"Ha","n_qubits":n,"mapping":problem.encoding.mapping,"num_particles":problem.encoding.particles,"n_spatial_orbitals":problem.encoding.modes/2,"reference_qubits":(0..n).filter(|q| reference & (1<<(n-1-q))!=0).collect::<Vec<_>>(),"preparation":if problem.hva.is_some() || product_form {"product"} else {"sum"},"method":method,"energy":energy,"operators":operators,"hamiltonian":pauli_payload(&problem.hamiltonian),"status":status,"metadata":metadata});
     Document::parse(ctx, &payload.to_string(), CHECKPOINT)
+}
+/// A checkpoint of a subspace calculation: the shared ansatz, plus the state weights and the
+/// sorted state energies (`subspace`). `energy` is the lowest state's.
+#[allow(clippy::too_many_arguments)]
+pub fn subspace_checkpoint(
+    ctx: &Context,
+    problem: &CachedProblem,
+    indices: &[usize],
+    parameters: &[f64],
+    adapt: bool,
+    product_form: bool,
+    weights: &[f64],
+    energies: &[f64],
+    status: Value,
+) -> Result<Document> {
+    if weights.is_empty()
+        || weights.len() != energies.len()
+        || energies.iter().chain(weights).any(|v| !v.is_finite())
+        || problem.hva.is_some()
+    {
+        return Err(invalid(
+            "a subspace checkpoint needs one finite weight and energy per state and no HVA ansatz",
+        ));
+    }
+    let method = if adapt { "subspace-adapt-vqe" } else { "subspace-vqe" };
+    let mut doc = checkpoint(ctx, problem, indices, parameters, product_form, method, status, energies[0])?;
+    doc.payload["subspace"] = json!({"weights": weights, "energies": energies});
+    Ok(doc)
 }
 /// Same-directory create-new staging, flush/sync before atomic replacement.
 pub fn atomic_write(path: &Path, write: impl FnOnce(&mut dyn Write) -> Result<()>) -> Result<()> {

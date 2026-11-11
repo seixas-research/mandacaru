@@ -157,3 +157,63 @@ pub fn from_spatial(
     }
     Ok(out)
 }
+
+/// `strength * direction` for a Cartesian unit `direction` (norm one to 1e-8; a non-unit one,
+/// the zero vector included, is refused rather than rescaled) and a finite, nonnegative
+/// `strength` in atomic units.
+pub fn field_vector(direction: [f64; 3], strength: f64) -> Result<[f64; 3]> {
+    if direction.iter().any(|v| !v.is_finite()) {
+        return Err(invalid("field_direction must be a finite real Cartesian unit vector"));
+    }
+    let norm = direction.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if (norm - 1.).abs() > 1e-8 {
+        return Err(invalid("field_direction must have unit norm"));
+    }
+    if !strength.is_finite() || strength < 0. {
+        return Err(invalid("field_strength must be finite and nonnegative"));
+    }
+    Ok(direction.map(|v| strength * v))
+}
+
+/// The one-body matrix and constant of the length-gauge dipole coupling `V = -E . mu`, with
+/// `mu = mu_nuc - sum_pq <p|r|q> a+_p a_q` in atomic units: `h_pq = E . <p|r|q>` (the electronic
+/// potential has a positive sign) and the constant `-E . mu_nuc`. `positions` are the three
+/// `(m, m)` Hermitian matrices `<p|r_a|q>` (Bohr), row-major one after another. With `spatial`
+/// the matrix is copied into the alpha and beta blocks of the `2m` spin orbitals (alpha first,
+/// Mandacaru's order); otherwise the matrices already act on spin orbitals. Returns
+/// `(h, modes, constant)`, `h` row-major `modes x modes`.
+pub fn dipole_one_body(
+    positions: &[C64],
+    m: usize,
+    field: [f64; 3],
+    nuclear: [f64; 3],
+    spatial: bool,
+) -> Result<(Vec<C64>, usize, f64)> {
+    if m == 0 || positions.len() != product(&[3, m, m])? {
+        return Err(invalid("position_integrals must have shape (3, m, m), m > 0"));
+    }
+    let hermitian = positions.iter().all(|v| v.re.is_finite() && v.im.is_finite())
+        && (0..3).all(|a| {
+            let block = &positions[a * m * m..(a + 1) * m * m];
+            (0..m).all(|p| (0..m).all(|q| (block[p * m + q] - block[q * m + p].conj()).norm() <= 1e-12))
+        });
+    if !hermitian {
+        return Err(invalid("position_integrals must be finite and Hermitian"));
+    }
+    if field.iter().chain(&nuclear).any(|v| !v.is_finite()) {
+        return Err(invalid("field and nuclear_dipole must be finite real Cartesian vectors"));
+    }
+    let modes = if spatial { 2 * m } else { m };
+    let mut h = vec![C64::default(); modes * modes];
+    for p in 0..m {
+        for q in 0..m {
+            let value: C64 = (0..3).map(|a| positions[(a * m + p) * m + q] * field[a]).sum();
+            h[p * modes + q] = value;
+            if spatial {
+                h[(p + m) * modes + (q + m)] = value;
+            }
+        }
+    }
+    let constant = -(0..3).map(|a| field[a] * nuclear[a]).sum::<f64>();
+    Ok((h, modes, constant))
+}

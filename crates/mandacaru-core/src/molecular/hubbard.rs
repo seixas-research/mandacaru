@@ -86,6 +86,43 @@ pub fn unitary_real_to_complex(l: usize) -> DMatrix<C64> {
 }
 
 impl MolecularHubbard {
+    /// The energy of one shell and its per-spin potential `V^s = dE / dn^s` (real, `(2l+1)^2`)
+    /// at the real occupation matrices `n` of its spins (one for a restricted state, two for an
+    /// unrestricted one): the single evaluation the Fock matrix and the nuclear gradient share.
+    pub fn shell_response(
+        &self,
+        ctx: &Context,
+        shell: &MolecularHubbardShell,
+        n: &[DMatrix<f64>],
+    ) -> Result<(f64, Vec<DMatrix<f64>>)> {
+        let p = shell.size();
+        let spin = if n.len() == 1 {
+            Spin::Restricted
+        } else {
+            Spin::Unrestricted
+        };
+        let parameters = Hubbard {
+            form: self.form,
+            ..Hubbard::new(shell.u, shell.j)?
+        };
+        let channels: Vec<Vec<C64>> = n
+            .iter()
+            .map(|nr| {
+                (0..p * p)
+                    .map(|idx| C64::new(nr[(idx / p, idx % p)], 0.0))
+                    .collect()
+            })
+            .collect();
+        let refs: Vec<&[C64]> = channels.iter().map(|v| v.as_slice()).collect();
+        let eval = model::evaluate(ctx, &parameters, shell.l, spin, &refs)?;
+        let potentials = eval
+            .potentials
+            .iter()
+            .map(|pot| DMatrix::from_fn(p, p, |a, b| pot.as_slice()[a * p + b].re))
+            .collect();
+        Ok((eval.energy, potentials))
+    }
+
     /// Evaluates the Hubbard energy `E_U`, per-spin Fock additions `Delta F_s = Q V^s Q^T`,
     /// and per-shell report data at the orthonormal Loewdin densities `d`.
     pub fn evaluate(
@@ -99,57 +136,24 @@ impl MolecularHubbard {
         let mut delta_focks = vec![DMatrix::<f64>::zeros(m, m); spins];
         let mut reports = Vec::with_capacity(self.shells.len());
 
-        let spin = if spins == 1 {
-            Spin::Restricted
-        } else {
-            Spin::Unrestricted
-        };
-
         for shell in &self.shells {
             let p = shell.size();
-            let mut shell_n_real = Vec::with_capacity(spins);
-            for s in 0..spins {
-                let ds_real = d[s].map(|v| v.re);
-                let n_real = shell.q.transpose() * &ds_real * &shell.q;
-                shell_n_real.push(n_real);
-            }
-
-            let h_model = Hubbard {
-                form: self.form,
-                ..Hubbard::new(shell.u, shell.j)?
-            };
-
-            let n_channels: Vec<Vec<C64>> = shell_n_real
+            let shell_n_real: Vec<DMatrix<f64>> = d
                 .iter()
-                .map(|nr| {
-                    (0..p * p)
-                        .map(|idx| C64::new(nr[(idx / p, idx % p)], 0.0))
-                        .collect()
-                })
+                .map(|ds| shell.q.transpose() * ds.map(|v| v.re) * &shell.q)
                 .collect();
-            let channel_refs: Vec<&[C64]> = n_channels.iter().map(|v| v.as_slice()).collect();
-
-            let eval = model::evaluate(ctx, &h_model, shell.l, spin, &channel_refs)?;
-            total_energy += eval.energy;
-
-            for s in 0..spins {
-                let mut v_real = DMatrix::<f64>::zeros(p, p);
-                let pot = eval.potentials[s].as_slice();
-                for a in 0..p {
-                    for b in 0..p {
-                        v_real[(a, b)] = pot[a * p + b].re;
-                    }
-                }
-                delta_focks[s] += &shell.q * v_real * shell.q.transpose();
+            let (energy, potentials) = self.shell_response(ctx, shell, &shell_n_real)?;
+            total_energy += energy;
+            for (delta, v) in delta_focks.iter_mut().zip(&potentials) {
+                *delta += &shell.q * v * shell.q.transpose();
             }
 
             // Report in complex spherical harmonics
             let u_mat = unitary_real_to_complex(shell.l);
             let mut complex_n = Vec::with_capacity(spins);
             let mut traces = Vec::with_capacity(spins);
-            for s in 0..spins {
-                let n_cplx_real = shell_n_real[s].map(|v| C64::new(v, 0.0));
-                let nc = &u_mat * n_cplx_real * u_mat.adjoint();
+            for n_real in &shell_n_real {
+                let nc = &u_mat * n_real.map(|v| C64::new(v, 0.0)) * u_mat.adjoint();
                 traces.push((0..p).map(|i| nc[(i, i)].re).sum());
                 complex_n.push(nc);
             }
@@ -161,7 +165,7 @@ impl MolecularHubbard {
                 u_ha: shell.u,
                 j_ha: shell.j,
                 u_eff_ha: shell.u_eff(),
-                energy_ha: eval.energy,
+                energy_ha: energy,
                 trace: traces,
                 n: complex_n,
             });

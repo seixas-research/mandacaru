@@ -43,7 +43,7 @@ listed in the [methods table](#methods-table).
 (forces-paw-lcao)=
 ## PAW-LCAO forces for Hartree–Fock and Kohn–Sham states
 
-For `method="rhf"`, `"uhf"` or `"dft"` (LDA, PBE, r²SCAN, HSE06) on a PAW-LCAO basis
+For `method="rhf"`, `"uhf"` or `"dft"` (LDA, PBE, r²SCAN, HSE06 and the rVV10 pairings) on a PAW-LCAO basis
 the force comes from the converged state without a displaced SCF:
 
 ```python
@@ -89,21 +89,75 @@ reference](#run-log-reference)).
 (forces-variational)=
 ## Forces of a VQE or ADAPT-VQE state
 
-For `vqe`, `adapt-vqe`, `vasqa` and `valsqa` the force contracts the reduced
-density matrices of the converged state with the displaced Hamiltonian. The
-mean-field reference is continued to each displaced geometry and the active-space
-selection followed; the ansatz is not re-optimized. The ASE default is a
-two-point difference with a `1e-4` Bohr step; its error estimate is reported
-as unmeasured. For a convergence check call the result directly:
+For `vqe`, `adapt-vqe`, `vasqa` and `valsqa` the force is analytic, on a
+PAW-LCAO basis only (an all-electron basis raises `NotImplementedError`). With
+the state's reduced density matrices held fixed, the energy depends on the
+geometry through the integrals and through the orbitals the Hamiltonian was
+built in. Their response is solved, not displaced: the natural-orbital rotation
+of an MP2 active space by its eigenvector adjoint (zero inside an exactly
+degenerate pair), the MP2 amplitudes by their Lagrangian, the canonical
+occupied-occupied and virtual-virtual rotations from the canonical condition,
+and the occupied-virtual ones by one CPHF solve. On an unrestricted reference the
+model orbitals are the natural orbitals of the total density; their eigenvector
+response and one CPHF solve over both spins take that place. An unrestricted MP2
+active space adds the response of its open-shell MP2 natural orbitals (the
+virtual ones and the active doubly occupied ones, each by its eigenvector
+adjoint): the open-shell MP2 is a function of the integrals in those total-density
+natural orbitals alone, so its amplitude Lagrangian (singles, same-spin and
+opposite-spin pairs, the per-spin Fock blocks) becomes a pair of effective
+densities there. Everything folds into relaxed
+one- and two-body densities and an energy-weighted density, contracted once with
+the derivative integrals of the PAW-LCAO model; the two-body density enters as
+Coulomb forms (the eigenpairs of its pair matrix). The ansatz is not
+re-optimized and no SCF is repeated. `force_details` reports `scheme`
+(`"analytic"`), `orbital_response`, `cphf_residual`,
+`reference_stationarity` (the largest occupied-virtual Fock element of the
+reference) and `coulomb_forms`:
 
 ```python
 atoms.get_potential_energy()
 result = atoms.calc.result
-force = result.forces(step=1e-3, extrapolate=True)   # eV / angstrom, Richardson
-result.force_details["step_error_estimate"]
+force = result.forces()            # eV / angstrom
+result.force_details["cphf_residual"]
 ```
 
-The variational forces require a local state (no shots, no device).
+The analytic force reproduces the finite-difference route it replaced (displaced
+SCF, selection and Hamiltonian, Richardson steps), which is kept as a test
+oracle, to below `1e-7` eV/angstrom on every component.
+On a circuit device (`shots > 0` or `execute_circuits=True`, `vqe` and
+`adapt-vqe`) the force is the same analytic one on the density matrices measured
+on the device (`measured_rdms()`). The parameter gradient and Hessian are
+measured with the shift rule of the circuit's Pauli rotations (`+-pi/4`, exact):
+`1 + 2 R^2` energy evaluations for `R` rotations, in one batch. `H z = g` is
+solved by the same truncated solve, a negative curvature beyond its cutoff
+raises by name, and the Z-vector correction is applied in full through the
+measured RDMs of the `2 R` shifted circuits (one more batch, with the state's
+own). Every circuit is counted before the first job and checked against
+`measurement_budget["circuit_instances"]` and the run budget; a refusal names the
+count. The statistical error is propagated exactly from the measured RDM errors
+(`Var F = J Sigma J^T`, one force per unique measured element, at most 256)
+and, on a shot run, from the standard errors of the Hessian job's energies:
+every element of `g` and `H` is linear in those independent energies, so
+`Cov(z)` follows to first order, and the force adds `G Cov(z) G^T` with
+`G = dF/dz` from the shifted circuits' densities (the two jobs are
+independent). When the Hessian energies have standard errors, a Hessian
+eigenvalue within five of its own standard errors of zero raises by name with
+both numbers: the correction along it would be set by shot noise (at five sigma
+the propagation's neglected bias is under 4 percent). Left out, and stated in
+`error_excludes`: the covariance between different RDM elements of one circuit,
+and the second-order terms. When a measurement basis needs more covariance
+products than the classical limit (see `energy_error`), the energies have no
+standard error: the force is still measured and returned,
+`gradient_error_ha_per_bohr` is `None` with `gradient_error_reason`, and the
+run log states once (`hessian_curvature_check`) that the five-sigma check was
+skipped (written only when a Z vector was solved). `force_details` reports
+`gradient_error_ha_per_bohr`, `hessian_rule`, `hessian_rotations`,
+`hessian_energy_evaluations`, `hessian_circuits`, `rdm_circuits` and
+`device_circuits`, and, when the errors are available, `z_vector_error_ha_per_bohr`
+(the Z-vector part alone), `error_elements` and `error_excludes`, with
+`hessian_lowest_curvature_error` and `hessian_curvature_significance` (the
+smallest `|lambda| / sigma(lambda)`) when a Z vector was solved on a shot run.
+No state vector is formed on a shot run.
 `examples/relaxation/02_lih_relaxation.py` relaxes LiH with ADAPT-VQE forces.
 
 (forces-lagrangian)=
@@ -115,32 +169,76 @@ force of the optimized energy surface only when the parameter gradient
 residual `g`, and the bare contraction then misses the force by a term first
 order in `|g|`. The force is therefore the geometry derivative of the
 Lagrangian `E - z . g`, where `z` solves `H z = g` with `H` the parameter
-Hessian at fixed geometry. This needs no displaced re-optimization: `z` is found
-once by conjugate gradients on Hessian-vector products (central differences of
-the analytic parameter gradients, a minimum-norm solve), the two states
-`psi(theta +- e z)` give `z . g` at every displaced geometry through the same
-density-matrix contraction, and the cost is two extra contractions per
-displacement. The corrected force of a loose run differs from a tightly
-converged run's by a term of order `|g|^2`; the bare one by `|g|`.
+Hessian at fixed geometry. This needs no displaced re-optimization. For a
+product-form ansatz (every ADAPT-VQE, VASQA, VALSQA and Trotterized state) `H`
+is exact: one forward sweep keeps every partial state, one reverse sweep every
+adjoint, each derivative state is carried once to the end collecting the second
+derivatives, and one Hamiltonian action per generator gives the rest. The
+summed UCC exponential of `vqe` builds `H` column by column from central
+differences of its analytic gradients (`2 n` gradient evaluations for `n`
+parameters). More than 1500 parameters raise. The error of `H` is measured, not
+assumed: for the exact Hessian `H - H^T = 0`, so the norm of the antisymmetric
+part is the size of the truncation and roundoff error (roundoff alone when `H`
+is exact). The exact tangent `psi' = sum_k z_k d psi / d theta_k` then gives
+`z . g = 2 Re <psi'| H |psi>` exactly (the states `psi +- s psi'`, a quadratic
+form), so the correction is a change of the density matrices,
+`gamma - (gamma_+ - gamma_-) / (2 s)`, relaxed and contracted with the state's
+own in one analytic contraction. The
+corrected force of a loose run differs from a tightly converged run's by a term
+of order `|g|^2`; the bare one by `|g|`.
+
+(forces-lagrangian-rule)=
+**The rule for flat directions.** The `ceo` and fermionic pools give Hessians
+whose smallest eigenvalues are many orders below the largest (a spread of
+`1e5` to `1e7` in water with 6 to 10 active orbitals), and a redundant parameter gives an exact zero. The
+solve is the pseudo-inverse of the symmetrized `H`: every eigen-direction with
+`|lambda| <= cutoff` is dropped, where `cutoff` is the larger of ten times the
+measured noise and `1e-10` of the largest eigenvalue. A dropped direction
+carries no correction; this is the minimum-norm `z`. An eigenvalue below
+`-cutoff` is a real negative curvature (the state is not near a minimum of its
+parameters) and raises, as does a Hessian with every direction under the cutoff.
+What the truncation left out is reported: the number of dropped directions, the
+norm of `g` along them and `z_vector_neglected_scale` (that norm over the
+cutoff, a floor on the `|z|` they would add).
 
 The correction is always applied to `vqe`, `adapt-vqe`, `vasqa` and `valsqa`
 and is skipped when `|g|` is below `1e-10`. `result.force_details` reports it:
 
 | key | meaning |
 | --- | --- |
-| `stationarity` | `"lagrangian"` (corrected), `"stationary"` (`|g|` under the floor, nothing added) or `"assumed"` (a state with no ansatz, an exact eigenvector) |
-| `parameter_gradient_norm` | `|g|`, Ha per parameter unit |
-| `z_vector_norm` | `|z|`, the Newton step to the optimum |
-| `correction_norm_ha_per_bohr` | the norm of the correction added to the gradient |
-| `uncorrected_gradient` | the gradient without the correction, Ha per Bohr |
-| `z_vector_iterations`, `z_vector_gradient_evaluations`, `z_vector_residual`, `z_vector_truncated`, `hessian_lowest_curvature` | the solve |
+| `stationarity` | `"lagrangian"` (corrected), `"stationary"` (the norm of `g` under the floor, nothing added) or `"assumed"` (a state with no ansatz, an exact eigenvector) |
+| `parameter_gradient_norm` | the norm of `g`, Ha per parameter unit |
+| `z_vector_norm` | the norm of `z`, the Newton step to the optimum |
+| `hessian_parameters`, `z_vector_gradient_evaluations` | the size of `H` and the gradient evaluations that built it (none when exact) |
+| `hessian_exact`, `hessian_hamiltonian_actions` | whether `H` is exact (a product-form ansatz) or differenced (the summed exponential), and the Hamiltonian actions it cost |
+| `hessian_noise`, `hessian_cutoff` | the measured error of `H` and the curvature below which a direction is dropped |
+| `hessian_lowest_curvature`, `hessian_highest_curvature`, `hessian_smallest_kept_curvature` | the spectrum of `H` |
+| `z_vector_dropped`, `z_vector_dropped_gradient_norm`, `z_vector_neglected_scale` | what the truncation dropped and left out |
 
-The correction needs `H` positive. A negative curvature (a state that is not near
-a minimum of its parameters) raises, and a gradient component along a null
-direction of `H` raises; a null direction that carries no gradient (a redundant
-parameter) is left out of `z` (`z_vector_truncated`). The states of the subspace
+A negative curvature beyond the cutoff raises, and so does a Hessian with no
+direction above it ([the rule](#forces-lagrangian-rule)); a redundant or flat
+direction does not. The states of the subspace
 methods (`"subspace-vqe"`, `"subspace-adapt-vqe"`) are an ensemble: they have no
 single parameter gradient and their forces are refused, as before.
+
+The correction is the z-vector of Handy and Schaefer, in the Lagrangian form of
+Helgaker and Jørgensen, applied to the parameters of a variational quantum
+state as in the derivative theory of Mitarai, Nakagawa and Mizukami.
+Mandacaru's own choices are to apply it to an optimization that stopped short of
+stationarity, to form `z . g` from the exact tangent of the state, and to build
+the Hessian of a product-form state exactly from its adjoint sweeps:
+
+- Handy, N. C. and Schaefer III, H. F.,
+  *On the evaluation of analytic energy derivatives for correlated wave functions*,
+  *J. Chem. Phys.* **81**, 5031–5033 (1984),
+  [doi:10.1063/1.447489](https://doi.org/10.1063/1.447489).
+- Helgaker, T. and Jørgensen, P.,
+  *Configuration-interaction energy derivatives in a fully variational formulation*,
+  *Theor. Chim. Acta* **75**, 111–127 (1989).
+- Mitarai, K., Nakagawa, Y. O., and Mizukami, W.,
+  *Theory of analytical energy derivatives for the variational quantum eigensolver*,
+  *Phys. Rev. Research* **2**, 013129 (2020),
+  [doi:10.1103/PhysRevResearch.2.013129](https://doi.org/10.1103/PhysRevResearch.2.013129).
 
 (forces-translation)=
 ## `project_translation`
@@ -176,12 +274,12 @@ PAW-LCAO mean-field forces raise for:
 - generalized Hartree–Fock (`ghf`) states, and anything that is not real and
   collinear (the spinor Kohn–Sham state of a spin-orbit dataset has its own
   gradient, above);
-- nonlocal correlation (`"pbe+rvv10"`, `"r2scan+rvv10"`) on a PAW-LCAO basis;
 - `precision="float32"`, because the difference needs `float64` samples;
 - a state that does not reproduce its own energy on the rebuilt integrals;
 - a variational state whose parameters and operator sequence do not prepare the
-  state they accompany, and a parameter Hessian that is indefinite or singular
-  along the gradient ([the Z-vector correction](#forces-lagrangian)).
+  state they accompany, a parameter Hessian with a negative curvature beyond its
+  noise (or with none above it), and more than 1500 parameters
+  ([the Z-vector correction](#forces-lagrangian)).
 
 The force contraction accepts a frozen core of several shells. The limit of
 Hartree–Fock frozen-core exchange to an empty core or a single closed 1s shell

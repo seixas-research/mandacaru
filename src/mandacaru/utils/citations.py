@@ -62,19 +62,115 @@ _METHOD_KEYS = {
     # Grimsley2019 for the pool gradient the default proposal draws from.
     "vasqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
               "Hastings1970", "Kirkpatrick1983"),
-    # VALSQA is the same chain; its learned proposal is a message-passing
-    # network over the Hamiltonian with a Gaussian-process head, mixed with
-    # the gradient softmax.
+    # VALSQA is the same chain; its learned proposal is either a pairwise
+    # Bradley-Terry ranker on the insertion descriptors or a message-passing
+    # network over the Hamiltonian (the Gaussian-process proposal was retired,
+    # so it is not cited).
     "valsqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
-              "Hastings1970", "Kirkpatrick1983", "Gilmer2017",
-              "Rasmussen2006"),
+               "Hastings1970", "Kirkpatrick1983", "Gilmer2017",
+               "BradleyTerry1952"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
 }
 
 #: A quantum method on a crystal also cites the machinery that makes it one: the
-#: Born-von Karman supercell its mesh realizes, the Monkhorst-Pack sampling and
-#: the Ewald sum of its electrostatics (``citation_keys(periodic=True)``).
-_PERIODIC_KEYS = ("BornKarman1912", "MonkhorstPack1976", "Ewald1921")
+#: Born-von Karman supercell its mesh realizes, the Monkhorst-Pack sampling, the
+#: Ewald sum of its electrostatics and the localized-orbital Bloch sum that
+#: unfolds the supercell mean field onto the primitive cell
+#: (``citation_keys(periodic=True)``).
+_PERIODIC_KEYS = ("BornKarman1912", "MonkhorstPack1976", "Ewald1921",
+                  "SlaterKoster1954")
+
+#: The methods whose energy a circuit can measure (``shots`` or
+#: ``execute_circuits``); their gradients are then parameter-shift differences.
+_CIRCUIT_METHODS = ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe",
+                    "vasqa", "valsqa")
+_PARAMETER_SHIFT_KEYS = ("Mitarai2018", "Schuld2019")
+
+#: ``trotter=True`` applies the ansatz as an ordered product of exponentials.
+_TROTTER_KEYS = ("Trotter1959",)
+
+#: Exchange-correlation functional (``Mandacaru(xc=...)``, with ``vdw="rvv10"``
+#: already folded in as ``"pbe+rvv10"`` / ``"r2scan+rvv10"``) -> the papers its
+#: energy expression is built from.  HSE06 is PBE with the short-range exchange
+#: hole screened and partly replaced by exact exchange, which a PAW sphere
+#: corrects at its one-center terms.
+_XC_KEYS = {
+    "lda": ("PerdewZunger1981",),
+    "pbe": ("PBE1996", "PerdewWang1992"),
+    "r2scan": ("Furness2020",),
+    "hse06": ("PBE1996", "PerdewWang1992", "Heyd2003", "Krukau2006",
+              "Paier2005"),
+    "pbe+rvv10": ("PBE1996", "PerdewWang1992", "Vydrov2010", "Sabatini2013",
+                  "RomanPerez2009"),
+    "r2scan+rvv10": ("Furness2020", "Ning2022", "Vydrov2010", "Sabatini2013",
+                     "RomanPerez2009"),
+}
+
+#: ``vdw=`` correction that is not a functional of its own (``"rvv10"`` is the
+#: ``+rvv10`` of ``xc``).
+_VDW_KEYS = {
+    "ts": ("Tkatchenko2009", "ChuDalgarno2004", "Ruiz2012", "Grimme2006",
+           "Hirshfeld1977"),
+}
+
+#: Occupation smearing of a crystal (``smearing=``).  Every method is a free
+#: energy at a finite electronic temperature (Mermin); the other two add their
+#: own broadening function.
+_SMEARING_KEYS = {
+    "fermi-dirac": ("Mermin1965",),
+    "gaussian": ("Mermin1965", "FuHo1983"),
+    "methfessel-paxton": ("Mermin1965", "MethfesselPaxton1989"),
+}
+
+#: Hubbard correction (``hubbard_u=``): its ``form`` and the linear-response
+#: determination of U (``hubbard_response``).
+_HUBBARD_KEYS = {
+    "dudarev-fll": ("Dudarev1998",),
+    "liechtenstein-fll": ("Liechtenstein1995",),
+    "linear-response": ("Cococcioni2005",),
+}
+
+#: Crystal eigensolver (``eigensolver=``); ``"direct"`` is a dense
+#: diagonalization and cites nothing.
+_EIGENSOLVER_KEYS = {
+    "direct": (),
+    "davidson": ("Davidson1975",),
+    "rmm-diis": ("WoodZunger1985", "Pulay1980"),
+    "mixed": ("Davidson1975", "WoodZunger1985", "Pulay1980"),
+}
+
+#: Divergence treatment of the periodic exact exchange (``exxdiv_treatment=``).
+_EXXDIV_KEYS = {
+    "none": (),
+    "gygi-baldereschi": ("GygiBaldereschi1986",),
+}
+
+#: Simulated devices with a method of their own (``device=``, canonical name).
+_DEVICE_KEYS = {
+    "AER_mps": ("Vidal2003", "Schollwoeck2011"),
+}
+
+#: Analyses and workflows a script calls after the run (``analysis=``).
+_TIME_EVOLUTION_KEYS = ("Trotter1959", "Strang1968", "Suzuki1991")
+_ANALYSIS_KEYS = {
+    "tetrahedron-dos": ("JepsenAndersen1971", "LehmannTaut1972",
+                        "BloechlJepsenAndersen1994"),
+    "spectral-function": ("Lehmann1954", "Lanczos1950",
+                          "GaglianoBalseiro1987"),
+    "band-path": ("SetyawanCurtarolo2010",),
+    "irreducible-zone": ("MonkhorstPack1976",),
+    "time-evolution": _TIME_EVOLUTION_KEYS,
+    "quantum-echoes": _TIME_EVOLUTION_KEYS + ("GoogleQuantumAI2025",),
+    "nested-otoc": _TIME_EVOLUTION_KEYS + ("GoogleQuantumAI2025",),
+    "wannier": ("Marzari1997", "Marzari2012"),
+    # The downfolded many-body problem of Wannier functions: the truncated Coulomb interaction of
+    # the fragment, and, with a screening, the constrained random-phase approximation in its
+    # projector-weighted form.
+    "downfold": ("Spencer2008",),
+    "downfold-screening": ("Aryasetiawan2004", "Sasioglu2011", "Spencer2008"),
+    "polarization": ("KingSmith1993", "Resta1994"),
+    "isosurface": ("Kuhn1960", "Doi1991"),
+}
 
 #: Circuit template of ``method="vqe"`` (``ansatz=``) -> the papers that
 #: define it.
@@ -98,13 +194,25 @@ _OPTIMIZER_KEYS = {
 #: Pseudopotential family -> the papers its datasets are generated from.
 _FAMILY_KEYS = {
     "paw-lcao": ("Bloechl1994", "Hamann2013"),
-    "upaw-lcao": ("Bloechl1994", "Hamann2013", "Ivanov2024"),
+    "upaw-lcao": ("Bloechl1994", "Hamann2013", "Ivanov2025"),
 }
 
 
 #: What an ``active_space`` method cites.  The energy ordering is the canonical
 #: orbital order the mean field already produced, so it adds nothing of its
 #: own; the others are constructions with papers behind them.
+#: The theory behind a kind of force (``citation_keys(forces=...)``).
+_FORCE_KEYS = {
+    # The z-vector and the Lagrangian correction of a parameter residual; the
+    # coupled-perturbed Hartree-Fock orbital response; the assignment that follows
+    # orbitals between geometries when an ansatz is transferred.
+    "variational": ("HandySchaefer1984", "Helgaker1989", "Mitarai2020",
+                    "GerrattMills1968", "Pople1979", "Kuhn1955", "Munkres1957"),
+    # The analytic gradient of a mean-field energy: the Hellmann-Feynman term
+    # and the basis-function (Pulay) term.
+    "analytic": ("Feynman1939", "Pulay1969"),
+}
+
 _ACTIVE_METHOD_KEYS = {
     "energy": (),
     "mp2": ("Moller1934", "Sosa1989", "TaubeBartlett2005"),
@@ -198,6 +306,14 @@ _TWO_BODY_KEYS = {
 }
 
 
+#: What a ``two_body`` representation of the active-space tensor cites (the dense
+#: default is the tensor itself).
+_TWO_BODY_REPRESENTATION_KEYS = {
+    "dense": (),
+    "double-factorized": ("Peng2017", "Motta2021", "vonBurg2021"),
+}
+
+
 #: What a ``measurement_scheme`` cites (the commuting groups are the Pauli terms themselves).
 _MEASUREMENT_SCHEME_KEYS = {
     "qwc": (),
@@ -212,7 +328,11 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
                   profile=False, tetris=False, prune=False,
                   has_geometry=True, built_basis=True, extras=(),
                   datasets=(), active_method=None, two_body=None,
-                  taper=False, measurement_scheme=None, periodic=False) -> list:
+                  two_body_representation=None,
+                  taper=False, measurement_scheme=None, periodic=False,
+                  forces=None, xc=None, vdw=None, smearing=None, hubbard=(),
+                  eigensolver=None, exxdiv_treatment=None, device=None,
+                  trotter=False, analysis=()) -> list:
     """The bibliography keys a run with this configuration should cite.
 
     Every argument is optional: what is not known is not cited.  ``family`` and
@@ -221,6 +341,25 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     spelled as; pass them when the run got that far.  ``extras`` adds keys for
     anything the caller knows about that this signature does not cover, such
     as an expressibility analysis. ``periodic`` marks a run on a crystal.
+    ``forces="variational"`` marks a run that differentiates a variational quantum
+    state: the z-vector and the Lagrangian formulation of its residual-gradient
+    correction, and the derivative theory of variational quantum states;
+    ``forces="analytic"`` one that differentiates a mean-field energy.
+    ``xc`` and ``vdw`` name the functional and the dispersion correction (``xc``
+    as the calculator resolves it, ``"pbe+rvv10"`` included), ``smearing`` the
+    occupation broadening of a crystal, ``hubbard`` the Hubbard form or forms
+    (``"dudarev-fll"``, ``"liechtenstein-fll"``) and ``"linear-response"`` when
+    U was determined, ``eigensolver`` and ``exxdiv_treatment`` the crystal
+    eigensolver and the exact-exchange divergence treatment, ``device`` the
+    simulated device (``"AER_mps"`` is a matrix-product-state simulation) and
+    ``trotter`` the product-of-exponentials form of the ansatz.  ``analysis``
+    names what a script computed afterwards: ``"tetrahedron-dos"``,
+    ``"spectral-function"``, ``"band-path"``, ``"irreducible-zone"``, ``"time-evolution"``, ``"quantum-echoes"``,
+    ``"nested-otoc"``, ``"wannier"``, ``"downfold"`` (a Wannier fragment's many-body
+    problem), ``"downfold-screening"`` (the same with ``screening=``), ``"polarization"`` or
+    ``"isosurface"``.
+    Circuit-measured energies (``shots`` or ``execute_circuits`` on a quantum
+    method) also cite the parameter-shift gradient.
 
     The returned list is in the bibliography's own order, so the same run
     always produces the same file.
@@ -244,7 +383,23 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     keys += list(_OPTIMIZER_KEYS.get(_key(optimizer), ()))
     keys += list(_ACTIVE_METHOD_KEYS.get(_key(active_method), ()))
     keys += list(_TWO_BODY_KEYS.get(_key(two_body), ()))
+    keys += list(_TWO_BODY_REPRESENTATION_KEYS.get(_key(two_body_representation), ()))
     keys += list(_MEASUREMENT_SCHEME_KEYS.get(_key(measurement_scheme), ()))
+    keys += list(_FORCE_KEYS.get(_key(forces), ()))
+    keys += list(_XC_KEYS.get(_key(xc), ()))
+    keys += list(_VDW_KEYS.get(_key(vdw), ()))
+    keys += list(_SMEARING_KEYS.get(_dashed(smearing), ()))
+    for name in _names(hubbard):
+        keys += list(_HUBBARD_KEYS.get(_dashed(name), ()))
+    keys += list(_EIGENSOLVER_KEYS.get(_dashed(eigensolver), ()))
+    keys += list(_EXXDIV_KEYS.get(_dashed(exxdiv_treatment), ()))
+    keys += list(_DEVICE_KEYS.get(_device(device), ()))
+    if trotter:
+        keys += list(_TROTTER_KEYS)
+    if (shots or execute_circuits) and _dashed(method) in _CIRCUIT_METHODS:
+        keys += list(_PARAMETER_SHIFT_KEYS)
+    for name in _names(analysis):
+        keys += list(_ANALYSIS_KEYS.get(_dashed(name), ()))
 
     options = dict(basis_options or {})
     if family:
@@ -255,8 +410,9 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
 
     if built_basis:
         # Every molecular Hamiltonian is built in the symmetrically
-        # orthonormalized basis, from orbitals a DIIS-accelerated SCF produced.
-        keys += ["Loewdin1950", "Pulay1980"]
+        # orthonormalized basis, from orbitals a DIIS-accelerated SCF produced,
+        # whose level shift is armed against an energy that turns uphill.
+        keys += ["Loewdin1950", "Pulay1980", "SaundersHillier1973"]
 
     if _key(backend_provider) == "qiskit" and (shots or execute_circuits
                                                or profile):
@@ -284,3 +440,24 @@ def _dashed(value):
     """
     key = _key(value)
     return None if key is None else key.replace("_", "-")
+
+
+def _names(value) -> tuple:
+    """``value`` as a tuple of names: a string is one name, ``None`` none."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(value)
+
+
+def _device(value):
+    """The canonical device name of ``value``, or ``None`` for one this build
+    does not know (an unknown device cites nothing; the calculator refuses it)."""
+    if value is None:
+        return None
+    from ..backends.hardware import normalize_device
+    try:
+        return normalize_device(value)
+    except ValueError:
+        return None

@@ -1,6 +1,19 @@
 //! Quantum chemistry tensor factorizations: double factorization into squared one-body operators.
 
-use nalgebra::{DMatrix, DVector, SymmetricEigen};
+use nalgebra::{DMatrix, DVector};
+
+/// The checked symmetric eigen decomposition (`math::linalg::checked_symmetric`): the bare QR
+/// iteration can return orthonormal vectors with a wrong spectrum (a PAW leaf of H2O was off by
+/// 1.1e-4), which would measure a different Hamiltonian.
+struct Spectrum {
+    eigenvalues: DVector<f64>,
+    eigenvectors: DMatrix<f64>,
+}
+fn checked(matrix: DMatrix<f64>) -> Result<Spectrum, String> {
+    let (eigenvalues, eigenvectors) =
+        crate::math::linalg::checked_symmetric(matrix).map_err(|e| e.to_string())?;
+    Ok(Spectrum { eigenvalues, eigenvectors })
+}
 use num_complex::Complex64;
 
 #[derive(Debug, Clone)]
@@ -52,7 +65,7 @@ pub fn pair_spectrum(
         if k >= m * m {
             let w = &vectors * &k_mat * vectors.transpose();
             let w_sym = 0.5 * (&w + w.transpose());
-            let eig = SymmetricEigen::new(w_sym);
+            let eig = checked(w_sym)?;
             Ok((eig.eigenvalues, eig.eigenvectors))
         } else {
             let qr = vectors.qr();
@@ -60,7 +73,7 @@ pub fn pair_spectrum(
             let r = qr.r();
             let small = &r * &k_mat * r.transpose();
             let small_sym = 0.5 * (&small + small.transpose());
-            let eig = SymmetricEigen::new(small_sym);
+            let eig = checked(small_sym)?;
             let v = eig.eigenvectors;
             let q_v = &q * &v;
             Ok((eig.eigenvalues, q_v))
@@ -93,7 +106,7 @@ pub fn pair_spectrum(
             }
         }
         let w_sym = 0.5 * (&w + w.transpose());
-        let eig = SymmetricEigen::new(w_sym);
+        let eig = checked(w_sym)?;
         let weights = eig.eigenvalues;
         let y = eig.eigenvectors;
 
@@ -125,7 +138,7 @@ pub fn pair_spectrum(
                 }
             }
         }
-        let eig = SymmetricEigen::new(w);
+        let eig = checked(w)?;
         Ok((eig.eigenvalues, eig.eigenvectors))
     } else {
         Err("either dense eri, packed eri, or factors must be provided".to_string())
@@ -179,7 +192,7 @@ pub fn double_factorization(
         }
     }
 
-    let eig = SymmetricEigen::new(w);
+    let eig = checked(w)?;
     let weights = eig.eigenvalues;
     let vectors = eig.eigenvectors;
 
@@ -222,7 +235,7 @@ pub fn double_factorization(
                 matrix[(p, r)] = 0.5 * (v1 + v2);
             }
         }
-        let leaf_eig = SymmetricEigen::new(matrix);
+        let leaf_eig = checked(matrix)?;
         let mut values = leaf_eig.eigenvalues;
         let mut any_nonzero = false;
         for k in 0..m {
@@ -248,7 +261,7 @@ pub fn double_factorization(
             ob_sym[(p, s)] = 0.5 * (one_body[(p, s)].re + one_body[(s, p)].re);
         }
     }
-    let ob_eig = SymmetricEigen::new(ob_sym);
+    let ob_eig = checked(ob_sym)?;
     let one_body_energies = ob_eig.eigenvalues;
     let one_body_orbitals = ob_eig.eigenvectors;
 
@@ -417,7 +430,7 @@ pub fn spatial_double_factorization(
                 matrix[(p, r)] = 0.5 * (v1 + v2);
             }
         }
-        let leaf_eig = SymmetricEigen::new(matrix);
+        let leaf_eig = checked(matrix)?;
         let values_spatial = leaf_eig.eigenvalues;
         let orbitals_spatial = leaf_eig.eigenvectors;
 
@@ -454,7 +467,7 @@ pub fn spatial_double_factorization(
     }
 
     let spatial_sym = 0.5 * (&spatial_one + spatial_one.transpose());
-    let ob_eig = SymmetricEigen::new(spatial_sym);
+    let ob_eig = checked(spatial_sym)?;
     let energies_spatial = ob_eig.eigenvalues;
     let rotation_spatial = ob_eig.eigenvectors;
 

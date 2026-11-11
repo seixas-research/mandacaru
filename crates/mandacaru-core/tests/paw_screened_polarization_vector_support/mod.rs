@@ -26,6 +26,8 @@ pub struct Waves {
     pub ae: Vec<Vec<Vec<f64>>>,
     pub ps: Vec<Vec<Vec<f64>>>,
     pub reference: Vec<DMatrix<f64>>,
+    /// The smooth core of the nonlinear core correction (zeros: none).
+    pub core: Vec<f64>,
 }
 
 /// The smooth waves are the all-electron ones outside the sphere and a softened copy inside it.
@@ -64,17 +66,20 @@ pub fn waves() -> Waves {
         DMatrix::from_row_slice(2, 2, &[0.8, 0.1, 0.1, 0.15]),
         DMatrix::from_row_slice(2, 2, &[0.5, 0.1, 0.1, 0.2]) / 3.,
     ];
+    let core = vec![0.; knots.len()];
     Waves {
         knots,
         ae,
         ps,
         reference,
+        core,
     }
 }
 
 pub fn view(w: &Waves) -> SpeciesView<'_> {
     SpeciesView {
         knots: &w.knots,
+        smooth_core: &w.core,
         compensation_radius: RADIUS,
         channels: (0..2)
             .map(|l| ChannelView {
@@ -99,7 +104,27 @@ pub struct Toy {
     pub polarization: Polarization,
 }
 pub fn toy() -> Toy {
-    let waves = waves();
+    toy_with(waves())
+}
+/// The toy species with a smooth core on the smooth side of the sphere, as a nonlinear core
+/// correction places it: a bump of peak density `peak` that vanishes beyond 0.9 Bohr, so that the
+/// whole-grid oracle and the sphere's own integration extent see the same difference.
+pub fn toy_with_core(peak: f64) -> Toy {
+    let mut waves = waves();
+    waves.core = waves
+        .knots
+        .iter()
+        .map(|r| {
+            if *r < 0.9 {
+                peak * (1. - (r / 0.9).powi(2)).powi(3)
+            } else {
+                0.
+            }
+        })
+        .collect();
+    toy_with(waves)
+}
+fn toy_with(waves: Waves) -> Toy {
     let projectors = layout(&view(&waves));
     let polarization = Polarization::new(&view(&waves), &projectors, OMEGA).unwrap();
     Toy {
@@ -204,7 +229,13 @@ pub fn oracle(ctx: &Context, toy: &Toy, q: &Pauli, total: Total) -> Seen {
                 })
                 .collect()
         };
-        let (n0, mx, my, mz) = (field(0), field(1), field(2), field(3));
+        let (mut n0, mx, my, mz) = (field(0), field(1), field(2), field(3));
+        if sign < 0. {
+            // The grid's smooth core is charge, never magnetization.
+            for (n, core) in n0.iter_mut().zip(&w.core) {
+                *n += core;
+            }
+        }
         let nodes = n0.len();
         let mag: Vec<f64> = (0..nodes)
             .map(|k| (mx[k] * mx[k] + my[k] * my[k] + mz[k] * mz[k]).sqrt())

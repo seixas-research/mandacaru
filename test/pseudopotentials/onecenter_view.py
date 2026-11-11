@@ -128,11 +128,13 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
     r"""``(X0 - V.D0, {l: V_l})`` -- the reference atom's one-center
     short-range semilocal exchange, linearized.
 
-    :math:`X^0 = E_x^{\rm SR}[n^1_0] - E_x^{\rm SR}[\tilde n^1_0]` and
+    :math:`X^0 = E_x^{\rm SR}[n^1_0] - E_x^{\rm SR}[\tilde n^1_0 + \tilde n_c]` and
     :math:`V_{ij} = \int v_x^{\rm SR}[n^1_0]\phi_i\phi_j -
-    \int v_x^{\rm SR}[\tilde n^1_0]\tilde\phi_i\tilde\phi_j` per channel, in
-    the hole model of the Rust short-range exchange
-    (unpolarized, valence densities of the reference atom).  The first entry
+    \int v_x^{\rm SR}[\tilde n^1_0 + \tilde n_c]\tilde\phi_i\tilde\phi_j` per
+    channel, in the hole model of the Rust short-range exchange (unpolarized,
+    valence densities of the reference atom; :math:`\tilde n_c` is the smooth
+    core of the nonlinear core correction the grid adds to its density, zero
+    without one).  The first entry
     is the constant of the linearization, :math:`X^0 - \sum V D^0`; the blocks
     are in the projector ``basis`` (the same for every ``m`` of a channel).
     A hybrid with fraction :math:`a` adds :math:`-a` times both
@@ -142,8 +144,12 @@ def frozen_exchange_terms(dataset, omega: float, basis: str = "raw"):
     cache = dataset.__dict__.setdefault("_frozen_exchange_cache", {})
     key = (omega, str(basis))
     if key not in cache:
+        applied = bool((dataset.nlcc or {}).get("applied"))
+        core = (dataset.smooth_core_density if applied
+                else np.zeros(len(dataset.r)))
         constant, blocks = _native.paw_frozen_exchange(
             context(), np.ascontiguousarray(dataset.r, dtype=float),
+            np.ascontiguousarray(core, dtype=float),
             **_channel_arrays(dataset, occupied=True), omega=omega,
             basis_name=str(basis))
         cache[key] = (constant, dict(blocks))

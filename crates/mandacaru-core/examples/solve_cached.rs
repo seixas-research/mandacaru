@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = problem.solve(&options, None)?;
     println!(
         "{}",
-        serde_json::json!({"energy_ha":result.energy,"reference_ha":result.reference,"success":result.success,"message":result.message,"parameters":result.parameters,"operators":result.labels,"optimizer_steps":result.optimizer_steps,"num_evaluations":result.history.len(),"dimension":problem.basis.len(),"memory_peak_bytes":context.memory_peak(),"elapsed_seconds":result.elapsed_seconds})
+        serde_json::json!({"energy_ha":result.energy,"reference_ha":result.reference,"success":result.success,"message":result.message,"parameters":result.parameters,"operators":result.labels,"optimizer_steps":result.optimizer_steps,"num_evaluations":result.history.len(),"dimension":problem.register("the example").unwrap().len(),"memory_peak_bytes":context.memory_peak(),"elapsed_seconds":result.elapsed_seconds})
     );
     if !result.success {
         std::process::exit(1);

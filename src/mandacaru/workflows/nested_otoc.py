@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 
 from .. import _native
 from ..core.mapping import PauliSum
-from ..units import HARTREE_TO_EV
+from ..units import from_hartree
 from .time_evolution import (PreparedState, SuzukiTrotter, _finite_real,
                              _positive_integer, _state_vector)
 
@@ -66,7 +66,7 @@ class OTOCSpectrum:
     @property
     def frequencies_ev(self) -> NDArray[np.float64]:
         """Energy equivalents of the signed angular frequencies, in eV."""
-        return self.frequencies * HARTREE_TO_EV
+        return from_hartree(self.frequencies, "eV")
 
     @property
     def intensities(self) -> NDArray[np.float64]:

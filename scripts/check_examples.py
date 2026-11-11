@@ -22,6 +22,11 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: Examples written ahead of the feature they need (owner decision 2026-11-10, "Implement
+#: both"): each still runs; a failure is reported as ``pending`` and does not fail the check,
+#: and a pass is flagged so the entry is removed. The value names the plan that delivers it.
+PENDING: dict[str, str] = {}
 CHILD = r"""
 import functools, ipaddress, json, os, pathlib, runpy, socket, sys, time, weakref
 for name in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'):
@@ -164,6 +169,13 @@ def main():
         plot_cache = workspace / "matplotlib"
         for source in sources:
             result = run_example(source, options.timeout, plot_cache=plot_cache, workspace=workspace)
+            pending = PENDING.get(source.resolve().relative_to(ROOT).as_posix())
+            if pending is not None:
+                result["pending"] = pending
+                if result["status"] == "passed":
+                    print(f"note: {result['example']} passes; remove it from PENDING", flush=True)
+                else:
+                    result["status"] = "pending"
             results.append(result)
             print(
                 f"{result['status']:10s} {result['seconds']:7.2f}s {result['example']}",
@@ -172,8 +184,9 @@ def main():
             options.report.parent.mkdir(parents=True, exist_ok=True)
             options.report.write_text(json.dumps(dict(workspace=str(workspace), results=results), indent=2))
     passed = sum(row["status"] == "passed" for row in results)
-    print(f"{passed}/{len(results)} passed; report: {options.report}")
-    return 0 if passed == len(results) else 1
+    waiting = sum(row["status"] == "pending" for row in results)
+    print(f"{passed}/{len(results)} passed, {waiting} pending their feature; report: {options.report}")
+    return 0 if passed + waiting == len(results) else 1
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@
 //! (16 bytes each) plus one batch, whatever the pool's size.
 use super::{algebra::Term, CachedProblem, Operator, C64};
 use crate::{Context, Reservation, Result};
+use std::ops::ControlFlow;
 
 /// Accounted bytes of one commutator batch, unless the context's memory limit is smaller.
 const BATCH_BYTES: usize = 8 << 20;
@@ -104,6 +105,16 @@ pub struct PoolPaulis {
     pub measured: usize,
 }
 
+/// What walking the pool under a ceiling on the distinct strings learns.
+pub enum PoolWalk {
+    /// The whole pool was walked and its strings fit the ceiling (or there was none).
+    Planned(PoolPaulis),
+    /// The strings of the first `generators` commutators already number `distinct`, more than
+    /// the ceiling: the whole pool needs at least that many, so the walk stopped there. A
+    /// lower bound, never an estimate: a run that fits is never reported over.
+    Over { distinct: usize, generators: usize },
+}
+
 impl CachedProblem {
     /// Form each `[H, A_k]` in pool order and hand them to `visit` in batches whose accounted
     /// size is about `bound` bytes (a batch holds at least one commutator). A batch is dropped
@@ -113,6 +124,19 @@ impl CachedProblem {
         bound: usize,
         mut visit: impl FnMut(&[Operator]) -> Result<()>,
     ) -> Result<()> {
+        self.walk_pool_commutator_batches(bound, |batch| {
+            visit(batch)?;
+            Ok(ControlFlow::Continue(()))
+        })
+        .map(|_| ())
+    }
+    /// [`CachedProblem::for_each_pool_commutator_batch`] with an exit: `visit` answering
+    /// `Break` ends the walk before the next batch is formed. Returns whether it ended early.
+    fn walk_pool_commutator_batches(
+        &self,
+        bound: usize,
+        mut visit: impl FnMut(&[Operator]) -> Result<ControlFlow<()>>,
+    ) -> Result<bool> {
         let mut batch: Vec<Operator> = Vec::new();
         let mut held = 0;
         for generator in &self.pool {
@@ -122,24 +146,49 @@ impl CachedProblem {
             held += operator.terms.len().max(1) * TERM_BYTES;
             batch.push(operator);
             if held >= bound {
-                visit(&batch)?;
+                if visit(&batch)?.is_break() {
+                    return Ok(true);
+                }
                 batch.clear();
                 held = 0;
             }
         }
-        if !batch.is_empty() {
-            visit(&batch)?;
+        if !batch.is_empty() && visit(&batch)?.is_break() {
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
     /// The distinct Pauli strings of every pool commutator, in batches of about `bound` bytes.
     pub fn pool_paulis(&self, bound: usize) -> Result<PoolPaulis> {
+        match self.pool_paulis_within(bound, None)? {
+            PoolWalk::Planned(paulis) => Ok(paulis),
+            PoolWalk::Over { .. } => unreachable!("no ceiling was given"),
+        }
+    }
+    /// [`CachedProblem::pool_paulis`] under a ceiling on the distinct strings: the walk stops
+    /// after the first batch that carries the count over `limit`, so a pool too large for the
+    /// budget is refused after one batch of commutators, not after all of them. The set never
+    /// holds more than the ceiling plus one batch.
+    pub fn pool_paulis_within(&self, bound: usize, limit: Option<usize>) -> Result<PoolWalk> {
         let mut set = PauliSet::new(&self.context, self.hamiltonian.n)?;
         let mut measured = 0;
-        self.for_each_pool_commutator_batch(bound, |batch| {
+        let mut generators = 0;
+        let stopped = self.walk_pool_commutator_batches(bound, |batch| {
+            generators += batch.len();
             measured += batch.iter().filter(|o| !o.terms.is_empty()).count();
-            set.insert(&self.context, batch)
+            set.insert(&self.context, batch)?;
+            Ok(match limit {
+                Some(limit) if set.len() > limit => ControlFlow::Break(()),
+                _ => ControlFlow::Continue(()),
+            })
         })?;
-        Ok(PoolPaulis { set, measured })
+        Ok(if stopped {
+            PoolWalk::Over {
+                distinct: set.len(),
+                generators,
+            }
+        } else {
+            PoolWalk::Planned(PoolPaulis { set, measured })
+        })
     }
 }

@@ -21,7 +21,7 @@ print(f"Energy per cell: {lattice.get_potential_energy():.6f} eV")
 
 spectral = lattice.calc.get_spectral_function(energies=np.linspace(-20.0, 20.0, 700),
                                               eta=0.3, path="GXMG")
-plt.pcolormesh(spectral.kpath.distances, spectral.energies, spectral.weights.T,
+plt.pcolormesh(spectral.kpath.distances, spectral.energies, spectral.values.T,
                cmap="Blues", shading="nearest")
 plt.axhline(spectral.chemical_potential, color="tab:red", ls="--")
 plt.xticks(spectral.kpath.label_distances,

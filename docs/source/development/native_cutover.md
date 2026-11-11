@@ -38,14 +38,16 @@ replaces which numerical Python; it does not infer parity from a module name.
 
 | Area | Current native coverage | Work before removing numerical Python |
 | --- | --- | --- |
-| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, PAW Kohn–Sham (including HSE06 screened exchange, one-center terms and, for open shells, the spin-scaling remainder of the spheres' short-range semilocal exchange), stationary all-electron forces, stationary PAW-LCAO RHF/UHF/KS forces (including HSE06), variational molecular PAW forces and real/radial bases | Multi-shell core exchange; PAW forces for nonlocal correlation |
-| Periodic calculations | LDA/PBE/meta-GGA/HSE06 iterations (a hybrid crystal carries the compensation charges and the one-center screened terms of its PAW spheres, read from the dataset files recorded with their SHA-256 in the snapshot's `sites` block; the exchange operator is part of the mixed state), two-component LDA/PBE/HSE06 spinor SCF and bands, spectra, Ewald primitives, DFT+U (Dudarev, fully localized limit, scalar-relativistic collinear crystals on a full k mesh) and native finite-size corrections (KZK, MPC, CCMH) | Geometry assembly, electronic response, and a density symmetrizer for DFT+U. A hybrid (HSE06) runs on the whole k mesh: its exact exchange sums over the listed points, so the setup never reduces a hybrid crystal's mesh by symmetry or time reversal. Periodic forces and stress are ASE central finite differences of the energy (an interim Python route, to be replaced by native derivatives), not analytic; for a hybrid they include the one-center terms, and the analytic gradient and stress have no compensation or one-center hybrid term. Crystal HSE06 energies and gaps are not validated against an all-electron reference; a magnetic spinor hybrid and a hybrid snapshot without its `sites` block raise; `resources` threads do not yet bound the Bloch kernels reached from the Python setup |
-| Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, VASQA/VALSQA, ranker and graph proposals and SDK execution | GHF-to-quantum handoff and optional GP/ranker proposal models |
-| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods and their forces (multi-shell frozen cores included in the force contraction); empty/closed-1s cores, HSE06 screened exchange; spinor Kohn–Sham with the PAW spin-orbit projector term on a spin-orbit dataset (LDA, PBE, PBE+rVV10, r²SCAN, HSE06) and its analytic forces | Basis recipe preparation, multi-shell core exchange and spinor DFT+U |
-| Radial PAW spectrum | Generalized separable eigenpairs, overlap normalization, confined and free channel spectra | Remaining dataset construction and basis recipes |
-| Correlation | Closed-shell MP2/FNO, local pair domains and PNOs, coupled local MP2 amplitudes, symmetry-preserving active spaces | Open-shell correlation and correlating-pair constraints |
+| Molecular mean field | RHF/UHF/GHF, all six all-electron molecular XC choices, PAW Kohn–Sham (including HSE06 screened exchange, one-center terms and, for open shells, the spin-scaling remainder of the spheres' short-range semilocal exchange), stationary all-electron forces, stationary PAW-LCAO RHF/UHF/KS forces (including HSE06), variational molecular PAW forces, Fermi–Dirac occupations of a degenerate frontier shell and real/radial bases | Multi-shell core exchange for Hartree–Fock |
+| Periodic calculations | LDA/PBE/meta-GGA/HSE06 iterations (a hybrid crystal carries the compensation charges and the one-center screened terms of its PAW spheres, read from the dataset files recorded with their SHA-256 in the snapshot's `sites` block; the exchange operator is part of the mixed state), two-component LDA/PBE/r²SCAN/rVV10/HSE06 spinor SCF and bands, spectra, Ewald primitives, the crystal build itself (the setup reduces the k mesh by the space group, builds the basis and the PAW spheres, and writes the `setup` and `sites` blocks of a saved crystal, all in Rust), analytic forces and stress, DFT+U (Dudarev and Liechtenstein forms, linear-response U, a symmetry-reduced k mesh whose occupation matrices are completed over the kept operations, and a collinear magnetic crystal that keeps the operations preserving its moments; [DFT+U](../guide/dft_u.md)) and native finite-size corrections (KZK, MPC, CCMH) | Electronic response and spinor DFT+U. A hybrid (HSE06) runs on the whole k mesh: its exact exchange sums over the listed points, so the setup never reduces a hybrid crystal's mesh by symmetry or time reversal. Periodic forces and stress are analytic (Rust) for LDA, PBE, r²SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling ([Forces](../guide/forces_relaxation.md)). The analytic gradient and stress have no compensation or one-center hybrid term. The forces and stress of a hybrid or spinor DFT+U crystal, the stress of a Tkatchenko–Scheffler crystal and `float32` forces, stress and DFT+U raise. Crystal HSE06 energies and gaps are not validated against an all-electron reference; a magnetic spinor hybrid and a hybrid snapshot without its `sites` block raise; `resources` threads do not yet bound the Bloch kernels |
+| Variational quantum methods | UCCSD/HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspaces, sequential deflation, VASQA/VALSQA, ranker and graph proposals, Z2 tapering, the dense or double-factorized two-body representation (`two_body=`, with its truncation in eV and a run log that states the bound; [Scalability](../guide/scalability.md)), analytic variational forces and SDK execution | GHF-to-quantum handoff; on a double-factorized model the analytic forces, MP2 natural orbitals and the factorized measurement raise |
+| Molecular PAW | Native quadratures, overlap/compensation augmentation, signed one-center factors, HF/semilocal KS/variational methods and their forces (multi-shell frozen cores included in the force contraction); molecular DFT+U (Dudarev and Liechtenstein, restricted and spin-polarized) with its energy and analytic forces; empty/closed-1s cores, HSE06 screened exchange; spinor Kohn–Sham with the PAW spin-orbit projector term on a spin-orbit dataset (LDA, PBE, PBE+rVV10, r²SCAN, HSE06) and its analytic forces | Multi-shell core exchange for Hartree–Fock and spinor DFT+U |
+| Radial PAW spectrum | Generalized separable eigenpairs, overlap normalization, confined and free channel spectra, and the basis recipe that molecules and crystals share | Remaining dataset construction ([not yet available](../reference/not_yet_available.md)) and the regeneration of the shipped library, which needs the owner's approval |
+| Correlation | Closed-shell MP2/FNO, local pair domains and PNOs, coupled local MP2 amplitudes, symmetry-preserving active spaces, open-shell MP2 ranking on a UHF reference and correlating-pair constraints | Open-shell local (`dlpno-mp2`) correlation; correlating pairs together with symmetry-preserving selection |
 | Molecular result fields | Native natural orbitals, charge/reference/difference densities, orbital sampling and cube/XSF output; PAW augmentation charge accounting | Periodic field views |
-| Dynamics | Propagation, checkpoint preparation and QPE | Echo and response orchestration |
+| Dynamics | Propagation, checkpoint preparation, QPE, the echo correlation loop, the nested OTOC and the spectrum of an echo series (Python keeps the validation, the result views and the circuit builders) | Response orchestration |
+| Wannier functions and cRPA | `calc.wannier(...).downfold(functions, screening=None/"rpa"/"crpa", coulomb="supercell"/"isolated")`: the bare or statically screened Coulomb integrals of a fragment with the PAW compensation and one-center terms, the long-wavelength head, the double counting, and a natural-orbital hand-off to `adapt-vqe` ([Wannier downfolding](../guide/wannier_downfolding.md)) | The transition loop of the screening is not threaded; a spinor crystal raises |
+| Periodic quantum methods | `vqe`, `adapt-vqe`, `vasqa` and `valsqa` solve a crystal's Born–von Karman supercell, with the Lehmann spectral function at the mesh points and along a band path, the unfolded mean-field bands, the tetrahedron density of states, the symmetry and irreducible zone of the mesh and band paths in the conventions of the guide ([crystals with the quantum methods](../guide/bloch.md)) | The per-k register, a PAW-LCAO supercell, analytic forces and stress; see the remaining work below |
 | Persistence and providers | JSON and Parquet snapshots (Parquet container, v1 and v2 data pages, dictionary pages, UNCOMPRESSED, Snappy and ZSTD decoding, ZSTD encoding in `mandacaru-core`; no Python Parquet package), pseudopotential Parquet datasets, circuit streams, grouping and field writers | Dataset codecs other than Parquet and job lifecycle integration; the shipped pseudopotential library was not regenerated with the native writer ([Parquet in Rust](#cutover-parquet)) |
 
 ## Functional implementation contract
@@ -63,10 +65,8 @@ potential. A screened hybrid also needs its
 short-range exact-exchange operator.
 
 Nonlocal correlation must use the same discrete kernel in its energy and
-potential. Dispersion needs charge conservation, the complete coordination and
-charge response, consistent pair/three-body damping and converged periodic
-image handling. Approximate replacements must not be labeled as the requested
-functional or dispersion model.
+potential. Approximate replacements must not be labeled as the requested
+functional.
 
 Numerical implementations are written independently from scientific equations.
 Scientific references and any notices required for reused material remain
@@ -116,18 +116,22 @@ and correlating-pair constraints remain unported.
 
 ## Molecular geometry response
 
-Molecular variational forces execute in Rust. Spin-summed reduced density
-matrices contract displaced reduced Hamiltonians, with SCF continuation,
-active-space selection response, and orbital-domain/phase matching. Coulomb
-factorizations retain the reference pivots during differentiation; fresh
-calculations still select pivots at their own geometry. The ASE-facing default
-uses two displaced energies per direction at a
-`1e-4` Bohr step. Richardson extrapolation remains available through
-`result.forces(step=1e-3, extrapolate=True)` and supplies a step error estimate.
-The two-point path reports that estimate as unmeasured. Tests compare these
-forces with independently reoptimized
-total energies, and fixed-pivot factors with independently computed Coulomb
-columns. A retained PAW setup rebuilds its geometry without reloading datasets.
+Molecular variational forces execute in Rust and are analytic (PAW-LCAO only):
+the state's spin-summed reduced density matrices, relaxed for the response of the
+canonical Hartree-Fock orbitals (CPHF), the MP2 natural orbitals and the MP2
+amplitudes, are contracted once with the derivative integrals. The
+finite-difference route they replaced (displaced SCF, selection and fixed-pivot
+Hamiltonian) survives only as a test oracle, which the analytic force matches on
+every component. The references covered are closed-shell and unrestricted
+Hartree–Fock, the latter with its open-shell MP2 natural orbitals; a Kohn–Sham,
+spinor or fractional-occupation reference, a `dlpno-mp2` active space and a tapered
+register raise. On a circuit device the force contracts the density matrices measured
+on the device, measures the parameter Hessian for the residual-gradient (Z-vector)
+correction, and reports a first-order statistical error that includes the noise of
+the Hessian's energies; a curvature within five of its standard errors of zero raises
+by name, and the measurement budget refuses the extra circuits before any job
+([the forces guide](../guide/forces_relaxation.md)). A retained PAW setup rebuilds its
+geometry without reloading datasets.
 
 Stationary PAW-LCAO forces (RHF, UHF and semilocal Kohn–Sham, LDA/PBE/r²SCAN)
 use that rebuild without a displaced SCF. Every matrix of the engine lives in
@@ -145,9 +149,14 @@ compensation charges and core densities on the fixed grid, the one-center
 Coulomb and exchange–correlation terms, closed-1s core exchange, the local
 potential and the kinetic energy at once, so GGA and open-shell states need no
 separate term. It includes the screened exact exchange of HSE06 (the energy is differenced with the
-hybrid operator rebuilt at each displaced geometry). It raises for GHF, nonlocal
-correlation, `float32` samples, unconverged states and a state that does not
+hybrid operator rebuilt at each displaced geometry). It raises for GHF,
+`float32` samples, unconverged states and a state that does not
 reproduce its energy on these integrals.
+
+The force of a molecule with `hubbard_u` carries the DFT+U term, the derivative of the
++U energy through the shell projections of the moving atom (`hubbard/projection`), and
+matches a central difference of the +U energy for the Dudarev and Liechtenstein forms,
+restricted and spin-polarized; a Hartree-Fock gradient of such a molecule raises.
 
 The ASE adapter supports free-molecule internal-direction projection and
 records its force convention in the text output. Unprojected Cartesian
@@ -181,10 +190,14 @@ also support compact `complex64` storage;
 Bloch matrices and SCF accumulation stay in `float64`. Input snapshots
 retain the selected storage precision.
 
-The periodic r²SCAN code has the same stencil pattern that the molecular code had
-before the 2026-10-29 repair (the density gradient taken from a finite-difference
-stencil while the kinetic density comes from the orbitals). It has not been examined,
-so periodic r²SCAN energies are provisional until that check is made.
+The periodic r²SCAN code takes its density gradient as the spectral derivative of
+the sampled density, while the molecular code builds it from the orbitals by the
+product rule (the 2026-10 repair). It was checked on 2026-11-10. The spectral
+gradient keeps a one-orbital density iso-orbital to 1e-5 of τ (H₂ in a box, 8e-6
+Ha of r²SCAN energy at a 0.4 Bohr grid), so the molecular defect is absent. On
+water the two gradients differ by 3e-4 Ha at the default grid, a discretization
+difference that neither side wins against a finer grid
+([the DFT guide](../guide/dft.md)).
 
 Periodic meta-GGA SCF computes kinetic densities from the occupied complex
 Bloch orbitals and includes the matching kinetic-potential matrix. Both density
@@ -221,13 +234,18 @@ and resident SCF energies and densities, verify projected-DOS state counts,
 and check allocation failures and file cleanup. Ordinary ASE energy requests
 transfer scalar results, spectra and fields; dense coefficient and density
 matrices are copied only when explicitly requested from the native snapshot.
-The Python setup adapter releases its mesh samples after native transfer.
-Compensation form factors also use this storage and are read by channel,
-keeping their cache out of the Bloch projection workspace.
-The adapter's dense compensation and ion coupling sum runs in Rust over
-bounded reciprocal-vector blocks. It reuses the adapter's cached radial tables,
-and does not materialize the full reciprocal lattice or channel-by-vector
-intermediates in Python. The rest of the geometry setup still uses the adapter.
+The crystal is built entirely by the Rust setup: Python sends one request (the
+lattice, the species and the options), and the setup reduces the k mesh by the space
+group, builds the basis and the PAW spheres, and writes the `setup` block that a
+saved crystal carries. An option it cannot build raises by name; no other route
+builds the crystal. Compensation form factors use the scratch storage and are read by
+channel, keeping their cache out of the Bloch projection workspace. The dense
+compensation and ion coupling sum runs over bounded reciprocal-vector blocks and
+never materializes the full reciprocal lattice or channel-by-vector intermediates.
+The request once sent ASE's cell rows where Rust reads columns, so the lattice
+arrived transposed and every non-symmetric cell was wrong (LiH by
+10.8 meV, with forces off their own energy derivative); it now sends the
+transpose.
 
 Molecular PAW spherical contractions use bounded matrix batches with the same
 quadrature nodes and weights. Shared angular mathematics evaluates Cartesian
@@ -303,17 +321,18 @@ cached result.
 
 ## Open findings
 
-Recorded on 2026-10-29 in the maintainers' session log.
+Recorded in the maintainers' session logs.
 
-- **Degenerate frontier shells.** The restricted SCF has no ensemble occupation. A
-  closed-shell O₂ on the exact axis converges in a few iterations to a state far above
-  the triplet (reproduced for this page: PAW-LCAO SZ, LDA, `grid_spacing=0.3`,
-  -819.798 eV against -860.362 eV for the triplet); a small tilt reaches the physical
-  state. The Python engine used a half-and-half ensemble. A strict expected-failure
-  test pins the gap. The remedy (occupations per spin after each eigensolve, stored
-  in the candidate and history, with fractional weights in the force orbital sum)
-  also has to make natural occupations and the quantum handover refuse a fractional
-  state.
+- **Degenerate frontier shells: fixed on 2026-11-10.** Restricted closed-shell O₂
+  on its exact axis used to converge to an integer state far above the triplet. A
+  molecular Kohn–Sham run now fills each spin channel with Fermi–Dirac occupations,
+  one Fermi level per spin, at 1e-4 Ha (`smearing=` sets the width; Fermi–Dirac
+  only), annealed from 3e-3 Ha when the direct solve stalls, and levels within 1e-6
+  Ha share one occupation. Restricted O₂ is 0.778 eV above the triplet, the number
+  the crystal path gives. `energy` is the energy, `free_energy` the Mermin free
+  energy, and the PAW forces are the derivative of the latter. Hartree–Fock keeps
+  its integer occupations. The all-electron analytic force and an active space raise
+  on a fractional state, so the quantum handover never receives one.
 - **`frozen=[...]` that splits a degenerate block.** Which of the equal-occupation
   orbitals are frozen is decided by round-off, so the active-space Hamiltonian is
   not reproducible. Proposed: order orbitals within equal-occupation blocks by Fock
@@ -324,15 +343,16 @@ Recorded on 2026-10-29 in the maintainers' session log.
   moments again, each value read from a native result and formatted in Python. What
   the code still does not write is listed in
   [the run log reference](../reference/run_log.md): the `[MEASUREMENT]` and echo
-  helper blocks, the tetris, pruning and screening lines, a `time` column for the SCF
+  helper blocks, the screening lines, a `time` column for the SCF
   iterations and per-stage native clocks (the native solve is one lumped stage,
-  `parameter optimization`), and the logs of a crystal calculation, which cannot be
-  logged. The log is written when the run ends, not while it runs.
+  `parameter optimization`), and a crystal's `[BASIS]`, which states only the
+  precision (a crystal does write `[ELECTRONS]`, `[SCF SETUP]` and `[SCF ITERATIONS]`).
+  The log is written when the run ends, not while it runs.
   `ansatz="hva"` on a cached Hamiltonian is rejected only at `.run()`. (The last item
   was not rerun for this page.)
 - **Tests.** The collection errors of the older suite were reduced from 109 to 2 by
   deleting test files whose subject modules no longer exist; two remaining modules
-  have dangling imports and no native counterpart. A full run on that date recorded
+  have dangling imports and no native counterpart. A full run on 2026-10-29 recorded
   3,174 passed, 291 failed, 62 errors, with the failures concentrated in
   untriaged files that probably still test the pre-cutover interface. These counts
   are the session log's and were not remeasured here.
@@ -344,14 +364,11 @@ or disconnected from their native replacements:
 
 | Public functionality | Remaining gap |
 | --- | --- |
-| Active spaces | Correlating-pair constraints and open-shell MP2 |
-| Variational methods | Subspace checkpoint continuation (the pairwise-ranker proposal is native; the Gaussian-process proposal was refuted and is not planned) |
-| Molecular PAW | Nonlinear one-center XC, multi-shell frozen-core exchange, spinor DFT+U and forces for nonlocal correlation on a scalar-relativistic dataset |
-| Dispersion and advanced periodic DFT | Complete D4 and a hybrid or spin-orbit SCF on a symmetry-reduced k mesh (both run on the whole mesh) |
-| Periodic quantum calculations | The supercell Hamiltonian, the Lehmann spectral function at the mesh points, the unfolded mean-field bands and the tetrahedron DOS are native ([the crystal guide](../guide/bloch.md)); missing are the per-k register (`crystal_orbitals="k-space"`), a PAW-LCAO supercell, the irreducible zone and band paths on the mesh, and crystal forces and stress for the quantum methods (refused: the supercell energy depends on the atoms' placement on the grid), hence quantum unit-cell relaxation |
-| Electronic response | Wannier construction, constrained RPA and downfolding |
+| Molecular PAW | Nonlinear one-center XC, multi-shell frozen-core exchange for Hartree–Fock, spinor DFT+U; the r²SCAN spin-orbit force gate on the Au-Be dimer is open because the local-frame meta-GGA is sharp near magnetization nodes |
+| Advanced periodic DFT | Spinor DFT+U in the periodic SCF, DFT+U with a hybrid, and a hybrid or spin-orbit SCF on a symmetry-reduced k mesh (both run on the whole mesh) |
+| Periodic quantum calculations | The supercell Hamiltonian, the Lehmann spectral function at the mesh points and along a band path, the crystal symmetry and irreducible zone of the mesh, the unfolded mean-field bands and the tetrahedron DOS are native ([the crystal guide](../guide/bloch.md)); missing are the per-k register (`crystal_orbitals="k-space"`), a PAW-LCAO supercell, analytic crystal forces for the quantum methods (they are finite differences) and their stress (refused), hence quantum unit-cell relaxation |
 | Circuit execution | Multi-reference SDK execution and continuation of device runs |
-| Geometry workflows | Remaining ethanol relaxation verification and periodic force/stress response |
+| Geometry workflows | Remaining ethanol relaxation verification |
 | Monitoring and analysis | Live SCF logging while the run proceeds (the iteration history is logged when the run ends, without a clock) and migration of older standalone analysis interfaces |
 
 Some helper modules and native primitives for these features remain in the
@@ -366,15 +383,15 @@ Hamiltonian/checkpoint persistence, QPE and quantum echoes have recovery checks.
 The spin-orbit ADAPT pool now includes both `T - T†` and `i(T + T†)` for
 spin-changing singles and doubles. It conserves total particle number and
 uses an untapered register. Tests cover complex spin mixing, three fermion
-encodings and checkpoint continuation. PAW spin-orbit terms and the GHF
-model-to-quantum handoff remain separate unfinished paths.
+encodings and checkpoint continuation. The GHF model-to-quantum handoff remains
+a separate unfinished path.
 
 Molecular PAW HF and variational paths cover empty cores and single closed
 1s cores. Molecular semilocal PAW Kohn–Sham uses the frozen atomic one-center
 model, compensation Hartree terms, smooth-core XC and the atomic energy offset.
 Its signed compensation Fock contribution and LDA/PBE/r²SCAN potentials pass
-energy-derivative checks. Multi-shell core exchange, spin-orbit projectors
-and advanced periodic methods remain incomplete. All
+energy-derivative checks. Multi-shell core exchange for Hartree–Fock remains
+incomplete. All
 examples are retained; `scripts/check_examples.py` reports failures instead of
 filtering them out. The full scientific test suite does not yet pass in full (see
 the open findings above). Passing focused recovery tests does not establish
@@ -429,29 +446,12 @@ devices and supplies their noise models. The state retained from a shot run
 is identified as the ideal circuit state, rather than a measured device state.
 
 This change does not complete the repository-wide Rust-only cutover. In
-particular, radial LDA/PBE helpers, PAW/noncollinear grid composition,
-PAW construction, advanced ansatz families,
-response and legacy standalone numerical modules still exist. Their numerical
+particular, the Python modules that still hold numerical work are the rows of
+the numerics budget described in the coverage audit above. Their numerical
 work must move before deletion. The public calculator has one Rust execution
 route and no execution selector. JAX is no longer a package dependency.
 
-Native D4 needs a complete, provenance-checked reference dataset and all model
-responses; it is not enabled. No external implementation source or parameter
-table has been copied into the new XC kernels. A complete independent catalog
+No external implementation source or parameter table has been copied into
+the new XC kernels. A complete independent catalog
 of nonlocal density functionals also needs its own kernel definitions and
 scientific validation; rVV10 coverage must not be described as that catalog.
-
-## Dispersion foundations
-
-The independent Rust dispersion module now provides damped pair energies with
-coefficient and radial response, neutral-reference three-body energies with
-all nine partials, and constrained Gaussian charge equilibration with analytic
-coordinate response. An optional electronegativity gradient carries the
-coordination/environment response through the constrained solve. The solver
-requires positive curvature on the charge-conserving subspace.
-
-These primitives are tested against coefficient/coordinate finite differences,
-charge conservation, translation invariance and long-range/sign limits. They
-are not a complete parameterized D4 calculator and are not substituted for one.
-Reference data, coordination interpolation, dynamic-polarizability integration,
-model-specific charge scaling and periodic sums remain to implement and verify.

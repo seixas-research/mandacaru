@@ -7,9 +7,10 @@ calculator already validated, and is formatted here: nothing is computed.
 
 import inspect
 
+import numpy as np
+
 from .. import _native
 from . import tapering
-from ..units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
 #: How a fermion-to-qubit mapping is spelled in the ``[ELECTRONS]`` block: the
 #: transformations' own names, not the identifiers the code uses.
@@ -22,33 +23,59 @@ SCF_LABELS = {"rhf": "restricted Hartree-Fock (closed shell)",
               "ghf": "generalized (spinor) Hartree-Fock"}
 
 
-def energy_factor(driver):
-    """Hartree into the unit the log's energies are written in."""
-    return 1.0 if driver._atomic_units else HARTREE_TO_EV
-
-
 def grid_text(grid):
     """The realized grid: points and, for an orthogonal grid, the spacing per axis."""
     step = grid.step_bohr
     points = " x ".join(str(n) for n in grid.shape)
     if any(step[i][j] != 0 for i in range(3) for j in range(3) if i != j):
         return f"{points} (non-orthogonal step vectors)"
-    spacing = " x ".join(f"{step[i][i] * BOHR_TO_ANGSTROM:.4f}" for i in range(3))
+    diagonal = _native.to_user_units(
+        np.ascontiguousarray([float(step[i][i]) for i in range(3)]), "length")
+    spacing = " x ".join(f"{value:.4f}" for value in diagonal)
     return f"{points} (spacing {spacing} Angstrom)"
 
 
-def two_body_text(driver):
-    """The Cholesky line of a run that asked for ``two_body=``, else ``None``."""
+def two_body_text(driver, result=None):
+    """The Cholesky line of a run that asked for ``two_body=``, else ``None``; with the
+    double-factorized representation, also its truncation and what the model kept."""
     if not driver._two_body_requested:
         return None
     report = _native.integrals_report(driver.integrals)
-    head = f"Cholesky factors, tolerance {driver._cholesky_tolerance:.3e} Ha"
+    unit = "Ha" if driver._atomic_units else "eV"
+    tolerance = _native.convert_energy(float(driver._two_body_tolerance_ev), "eV", unit)
+    head = f"Cholesky factors, tolerance {tolerance:.3e} {unit}"
     if report["cholesky_rank"] is None:
-        return f"{head}, not built"
-    residual = report["cholesky_residual"]
-    return (f"{head}, rank {report['cholesky_rank']} "
-            f"(basis functions {report['n_orbitals']}), largest residual diagonal "
-            + ("not computed" if residual is None else f"{residual:.3e} Ha"))
+        text = f"{head}, not built"
+    else:
+        residual = report["cholesky_residual"]
+        text = (f"{head}, rank {report['cholesky_rank']} "
+                f"(basis functions {report['n_orbitals']}), largest residual diagonal "
+                + ("not computed" if residual is None
+                   else f"{_native.energy_from_hartree(float(residual), unit):.3e} {unit}"))
+    if driver._two_body_representation == "dense":
+        return text
+    truncation = _native.convert_energy(float(driver._two_body_truncation_ev), "eV", unit)
+    text += f"; double-factorized active-space tensor, truncation {truncation:.3e} {unit}"
+    model = None if result is None else getattr(result, "_model", None)
+    if model is None:
+        return f"{text}, not built"
+    kept = model.two_body_report
+    bound = _native.energy_from_hartree(float(kept["error_bound_ha"]), unit)
+    return (f"{text}, {kept['kept']} of {kept['eigenpairs']} eigenpairs in {kept['leaves']} "
+            f"of {kept['candidates']} leaves ({kept['stored_numbers']} numbers), "
+            f"energy change bound {bound:.3e} {unit}")
+
+
+def loaded_two_body_text(driver):
+    """The two-body line of a run from a Hamiltonian file that records a double-factorized
+    representation: the truncation it was built with and the bound it reached."""
+    record = driver._loaded_two_body
+    unit = "Ha" if driver._atomic_units else "eV"
+    truncation = _native.convert_energy(float(record["truncation_ev"]), "eV", unit)
+    bound = _native.convert_energy(float(record["error_bound_ev"]), "eV", unit)
+    return (f"{record['representation']} active-space tensor (recorded in the loaded "
+            f"Hamiltonian), truncation {truncation:.3e} {unit}, energy change bound "
+            f"{bound:.3e} {unit}")
 
 
 def kpoints_text(driver):
@@ -66,14 +93,19 @@ def electrons(driver, result, geometry):
     would describe a calculation that did not happen.
     """
     quantum = result._problem is not None
+    crystal = getattr(result, "_crystal", None)
+    if crystal is not None:
+        return crystal_electrons(driver, result, crystal)
     fields = {}
     if geometry is not None and driver.integrals is not None:
         fields["grid spacing"] = f"{driver._grid_spacing:g} Angstrom (requested)"
         fields["grid points"] = grid_text(driver.integrals.grid)
         fields["kinetic operator"] = driver._kinetic
-        fields["two-body integrals"] = two_body_text(driver)
+        fields["two-body integrals"] = two_body_text(driver, result)
         fields["k-points"] = kpoints_text(driver)
         fields["charge"] = str(driver._charge)
+    elif driver._loaded_two_body is not None:
+        fields["two-body integrals"] = loaded_two_body_text(driver)
     alpha, beta = result.num_particles
     fields["spin-polarized"] = f"{alpha != beta} (multiplicity {abs(alpha - beta) + 1})"
     if quantum:
@@ -86,6 +118,64 @@ def electrons(driver, result, geometry):
     if quantum:
         fields["qubits"] = str(driver.n_qubits)
     return fields
+
+
+def crystal_electrons(driver, result, crystal):
+    """The ``[ELECTRONS]`` block of a crystal: its grid, k mesh and electrons per cell.
+
+    Particle counts per spin are not written: a crystal's occupations are smeared, its
+    moment need not be an integer, and the moment is the SCF's result, not the posing.
+    """
+    points = len(result._raw["weights"])
+    return {
+        "grid spacing": f"{driver._grid_spacing:g} Angstrom (requested)",
+        "grid points": grid_text(crystal.grid),
+        "k-points": f"{kpoints_text(driver)}, {points} in the calculation",
+        "charge": str(driver._charge),
+        "spin-polarized": str(result._raw["n_spins"] == 2),
+        "spin-orbit (spinor)": str(result._raw["spinor"]),
+        "basis functions per cell": str(crystal.n_orbitals),
+        "electrons per cell": f"{crystal.electrons:g}",
+    }
+
+
+def crystal_scf_setup(driver, result):
+    """The ``[SCF SETUP]`` block of a crystal: the options its SCF ran with.
+
+    The defaults are those the native solve declares, read from its signature (as for a
+    molecule); the smearing is the one the result reports.
+    """
+    options = {name: parameter.default
+               for name, parameter in inspect.signature(result._crystal.solve).parameters.items()
+               if parameter.default is not inspect.Parameter.empty}
+    options.update(driver._periodic_options)
+    method, width = result._raw["smearing"]
+    return {
+        "scf_method": f"periodic Kohn-Sham DFT ({result._raw['functional']}), Bloch states",
+        "scf_max_iterations": options["max_iterations"],
+        "scf_convergence_Hartree": (f"{options['tolerance']:g} (free-energy change), density "
+                                    f"residual {options['density_tolerance']:g}"),
+        "scf_mixing": (f"{options['algorithm']}, mixing {options['mixing']:g}, "
+                       f"history {options['history']}"),
+        "scf_smearing": f"{method}, width {width:.6g} Ha",
+        "scf_eigensolver": options["eigensolver"],
+    }
+
+
+def crystal_scf_rows(driver, result):
+    """A crystal's SCF history as table rows: the free energy per cell, its change, the
+    density residual and, spin-polarized, the magnetization per cell."""
+    unit = "Ha" if driver._atomic_units else "eV"
+    spin = result._raw["n_spins"] == 2
+    rows = []
+    for iteration, free, delta, residual, _moment_residual, magnetization in result._raw["history"]:
+        row = {"iter": iteration, "energy": _native.energy_from_hartree(float(free), unit),
+               "dE": None if delta is None else _native.energy_from_hartree(float(delta), unit),
+               "residual": residual}
+        if spin:
+            row["moment"] = magnetization
+        rows.append(row)
+    return rows
 
 
 def scf_setup(driver, snapshot):
@@ -134,9 +224,10 @@ def hubbard(result):
 
 def scf_rows(driver, snapshot):
     """The saved SCF history as table rows, in the log's energy unit."""
-    factor = energy_factor(driver)
-    return [{"iter": iteration, "energy": energy * factor,
-             "dE": None if delta is None else delta * factor, "residual": residual}
+    unit = "Ha" if driver._atomic_units else "eV"
+    return [{"iter": iteration, "energy": _native.energy_from_hartree(float(energy), unit),
+             "dE": None if delta is None else _native.energy_from_hartree(float(delta), unit),
+             "residual": residual}
             for iteration, energy, delta, residual in snapshot["history"]]
 
 
@@ -145,9 +236,8 @@ def lineage(driver):
     resumed = driver._resume_lineage
     if resumed is None:
         return {}, None
-    factor = energy_factor(driver)
     unit = "Ha" if driver._atomic_units else "eV"
-    energy = resumed["energy_ha"] * factor
+    energy = _native.energy_from_hartree(float(resumed["energy_ha"]), unit)
     return ({"resumed_from": str(driver._resume_path),
              "restored_operators": resumed["num_operators"],
              "restored_parameters": resumed["num_parameters"],
@@ -177,7 +267,11 @@ def optimizer_setup(driver, result):
     if (driver._precision == "float32" and driver._optimizer.get("tol") is not None
             and not driver._execute_circuits):
         extra["optimizer_tolerance"] = f"{driver._optimizer['tol']:g} Ha"
-    extra["reoptimize_all_parameters"] = True
+    # `quenching=False` is accepted by vqe and adapt-vqe only; every other method re-optimizes all.
+    extra["reoptimize_all_parameters"] = driver._quenching
+    extra["growth"] = ("tetris (disjoint-support operators per step)" if driver._tetris
+                       else "single (largest gradient)")
+    extra["pruning"] = "on" if driver._prune else "off"
     extra["state_vector_backend"] = backend_text(driver, problem)
     extra["device"] = driver._device
     extra["backend_provider"] = "none" if driver.provider is None else driver.provider.name

@@ -21,7 +21,8 @@ pub const RADIUS: f64 = 1.;
 pub fn bessel(l: usize, x: f64) -> f64 {
     match l {
         0 => x.sin() / x,
-        _ => x.sin() / (x * x) - x.cos() / x,
+        1 => x.sin() / (x * x) - x.cos() / x,
+        _ => (3. / (x * x) - 1.) * x.sin() / x - 3. * x.cos() / (x * x),
     }
 }
 pub fn smooth_cutoff(r: f64, edge: f64) -> f64 {
@@ -38,10 +39,16 @@ pub fn table(ctx: &Context, arrays: &mut Arrays, values: &[f64]) -> Value {
 }
 /// A hydrogen-like species with s and p channels, two partial waves each.
 pub fn species(ctx: &Context, arrays: &mut Arrays, functional: &str) -> Value {
+    species_to(ctx, arrays, functional, 1)
+}
+/// The same species with channels up to `lmax`. A `d` channel (`lmax = 2`) carries a bound
+/// reference wave (0.4 electrons) so that a DFT+U shell can be built on it: a test species, not
+/// hydrogen.
+pub fn species_to(ctx: &Context, arrays: &mut Arrays, functional: &str, lmax: usize) -> Value {
     let r: Vec<f64> = (1..=700).map(|k| 0.02 * k as f64).collect();
     let n = r.len();
     let mut channels = Vec::new();
-    for l in 0..2usize {
+    for l in 0..=lmax {
         let power = |r: f64| r.powi(l as i32);
         let ae: Vec<Vec<f64>> = vec![
             r.iter().map(|&r| 1.5 * power(r) * (-r).exp()).collect(),
@@ -85,7 +92,7 @@ pub fn species(ctx: &Context, arrays: &mut Arrays, functional: &str) -> Value {
             "l": l,
             "principal_n": l + 1,
             "radius": RADIUS,
-            "occupations": if l == 0 { vec![1., 0.] } else { vec![0., 0.] },
+            "occupations": match l { 0 => vec![1., 0.], 2 => vec![0.4, 0.], _ => vec![0., 0.] },
             "ae": table(ctx, arrays, &flat(&ae)),
             "projectors": table(ctx, arrays, &flat(&projectors)),
             "coupling": table(ctx, arrays, &[-0.08, -0.15, -0.15, -0.30]),
@@ -125,6 +132,48 @@ pub fn integrals_in(
     functional: &str,
     precision: Precision,
 ) -> MolecularIntegrals {
+    integrals_with(ctx, positions, functional, precision, 1, None)
+}
+/// The integrals of the species with channels and basis functions up to `lmax`, and the
+/// `hubbard_u` request (its JSON text) the setup carries, if any.
+pub fn integrals_with(
+    ctx: &Context,
+    positions: &[[f64; 3]],
+    functional: &str,
+    precision: Precision,
+    lmax: usize,
+    hubbard: Option<&str>,
+) -> MolecularIntegrals {
+    try_integrals_with(ctx, positions, functional, precision, lmax, hubbard).unwrap()
+}
+/// [`integrals_with`] returning the build's error.
+pub fn try_integrals_with(
+    ctx: &Context,
+    positions: &[[f64; 3]],
+    functional: &str,
+    precision: Precision,
+    lmax: usize,
+    hubbard: Option<&str>,
+) -> mandacaru_core::Result<MolecularIntegrals> {
+    try_integrals_with_metadata(
+        ctx,
+        positions,
+        functional,
+        precision,
+        lmax,
+        hubbard.map(|request| Value::String(request.to_string())),
+    )
+}
+/// [`try_integrals_with`] with the `hubbard` metadata value given as it is (a test may give a
+/// value that is not a string).
+pub fn try_integrals_with_metadata(
+    ctx: &Context,
+    positions: &[[f64; 3]],
+    functional: &str,
+    precision: Precision,
+    lmax: usize,
+    hubbard: Option<Value>,
+) -> mandacaru_core::Result<MolecularIntegrals> {
     let geometry = Geometry::new(
         vec![1; positions.len()],
         positions.to_vec(),
@@ -135,15 +184,19 @@ pub fn integrals_in(
     .unwrap();
     let grid = SpatialGrid::from_geometry(&geometry, [SPACING; 3], false, false).unwrap();
     let mut arrays = Arrays::new();
-    let species = species(ctx, &mut arrays, functional);
+    let species = species_to(ctx, &mut arrays, functional, lmax);
     let mut basis = Vec::new();
     let radii: Vec<f64> = (0..=350).map(|k| 0.02 * k as f64).collect();
-    let tables: Vec<(usize, Value, Value)> = [0usize, 1]
-        .into_iter()
+    let tables: Vec<(usize, Value, Value)> = (0..=lmax)
         .map(|l| {
             let values: Vec<f64> = radii
                 .iter()
-                .map(|&r| r.powi(l as i32) * (-1.1 * r).exp() * smooth_cutoff(r, 7.))
+                // A d function lives inside the projector sphere, where its shell occupation is felt.
+                .map(|&r| {
+                    r.powi(l as i32)
+                        * (-(if l == 2 { 2.5 } else { 1.1 }) * r).exp()
+                        * smooth_cutoff(r, 7.)
+                })
                 .collect();
             (
                 l,
@@ -162,7 +215,7 @@ pub fn integrals_in(
         }
     }
     // Radial keys are consumed on first use; later atoms hit the value cache.
-    let metadata = json!({
+    let mut metadata = json!({
         "format": "molecular-paw-input",
         "version": 1,
         "length_unit": "bohr",
@@ -172,6 +225,9 @@ pub fn integrals_in(
         "species": [species],
         "basis": basis,
     });
+    if let Some(value) = hubbard {
+        metadata["hubbard"] = value;
+    }
     build(
         ctx,
         geometry,
@@ -182,7 +238,6 @@ pub fn integrals_in(
         1e-12,
         precision,
     )
-    .unwrap()
 }
 pub fn options() -> ScfOptions {
     ScfOptions {
@@ -235,7 +290,7 @@ pub fn energy_derivative(
 ) -> f64 {
     let energy = |delta: f64| {
         let moved = displaced(base, atom, axis, delta);
-        solve(&moved, method, particles).electronic_energy + moved.nuclear
+        solve(&moved, method, particles).free_energy() + moved.nuclear
     };
     let h = 1e-3;
     let coarse = (energy(h) - energy(-h)) / (2. * h);

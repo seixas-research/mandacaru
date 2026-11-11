@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from .. import _native
-from ..units import ANGSTROM_TO_BOHR
+from ..units import to_bohr
 
 
 def _per_element(spec, symbol):
@@ -35,7 +35,7 @@ def _diffuse(recipe):
                 count=int(recipe.count), ratio=float(recipe.ratio),
                 cutoff_norm=float(recipe.cutoff_norm), rms_ratio=float(recipe.rms_ratio),
                 rms_radius=(None if recipe.rms_radius is None
-                            else float(recipe.rms_radius) * ANGSTROM_TO_BOHR))
+                            else to_bohr(float(recipe.rms_radius))))
 
 
 def element_recipe(family, options, symbol, cutoff):

@@ -28,6 +28,8 @@ struct Waves {
     ae: Vec<Vec<Vec<f64>>>,
     ps: Vec<Vec<Vec<f64>>>,
     reference: Vec<DMatrix<f64>>,
+    /// The smooth core of the nonlinear core correction (zeros: none).
+    core: Vec<f64>,
 }
 fn waves() -> Waves {
     let knots: Vec<f64> = (1..=700).map(|k| 0.02 * k as f64).collect();
@@ -65,16 +67,19 @@ fn waves() -> Waves {
         DMatrix::from_row_slice(2, 2, &[0.8, 0.1, 0.1, 0.15]),
         DMatrix::from_row_slice(2, 2, &[0.5, 0.1, 0.1, 0.2]) / 3.,
     ];
+    let core = vec![0.; knots.len()];
     Waves {
         knots,
         ae,
         ps,
         reference,
+        core,
     }
 }
 fn view(w: &Waves) -> SpeciesView<'_> {
     SpeciesView {
         knots: &w.knots,
+        smooth_core: &w.core,
         compensation_radius: RADIUS,
         channels: (0..2)
             .map(|l| ChannelView {
@@ -163,6 +168,120 @@ fn the_unpolarized_exchange_of_the_reference_density_is_the_frozen_one() {
         "{} vs {x0}",
         terms.unpolarized
     );
+}
+
+/// The waves of `waves()` with a smooth core: a bump of peak density `peak` that vanishes beyond
+/// 0.9 Bohr, inside the sphere, as the sphere's integrals (like the pair tables) end there.
+fn with_core(peak: f64) -> Waves {
+    let mut w = waves();
+    w.core = w
+        .knots
+        .iter()
+        .map(|r| {
+            if *r < 0.9 {
+                peak * (1. - (r / 0.9).powi(2)).powi(3)
+            } else {
+                0.
+            }
+        })
+        .collect();
+    w
+}
+
+#[test]
+fn the_smooth_core_is_taken_off_the_smooth_side_of_the_frozen_term_and_the_polarization() {
+    // The grid evaluates the functional on the smooth valence density PLUS the smooth core, and
+    // the exact exchange it replaces is the valence electrons'. The frozen term is therefore
+    // F[n_v] - F[n~_v + n~_c] (all-electron valence minus the whole smooth side), recomputed
+    // here from the waves; the polarization module must agree at the reference density, carry
+    // half the core per spin, and keep its potentials the derivative of its energy.
+    let ctx = context();
+    let (bare, cored) = (waves(), with_core(0.4));
+    let (view_bare, view_core) = (view(&bare), view(&cored));
+    let projectors = layout(&view_core);
+    let atom = screened(&ctx, &view_core, &projectors, OMEGA).unwrap();
+    let atom_bare = screened(&ctx, &view_bare, &projectors, OMEGA).unwrap();
+    let d0 = reference_layout(&cored, &projectors);
+    let x0 = atom.constant + (&atom.v * &d0).trace();
+    let x0_bare = atom_bare.constant + (&atom_bare.v * &d0).trace();
+    let direct = |waves: &Vec<Vec<Vec<f64>>>, core: &[f64]| -> f64 {
+        let n: Vec<f64> = (0..cored.knots.len())
+            .map(|k| {
+                let mut density = core[k];
+                for (l, channel) in waves.iter().enumerate() {
+                    for i in 0..2 {
+                        for j in 0..2 {
+                            density += (2 * l + 1) as f64
+                                * cored.reference[l][(i, j)]
+                                * channel[i][k]
+                                * channel[j][k]
+                                / (4. * std::f64::consts::PI);
+                        }
+                    }
+                }
+                density
+            })
+            .collect();
+        let slope = gradient_first_edge(&cored.knots, &n).unwrap();
+        let values: Vec<f64> = n
+            .iter()
+            .zip(&slope)
+            .flat_map(|(n, s)| [*n, s * s])
+            .collect();
+        let hole = exchange_hole_batch(&ctx, &values, OMEGA).unwrap();
+        let integrand: Vec<f64> = (0..n.len())
+            .map(|k| {
+                hole.as_slice()[3 * k] * 4. * std::f64::consts::PI * cored.knots[k] * cored.knots[k]
+            })
+            .collect();
+        trapezoid(&cored.knots, &integrand)
+    };
+    let zero = vec![0.; cored.knots.len()];
+    let expected = direct(&cored.ae, &zero) - direct(&cored.ps, &cored.core);
+    println!("X0 with core {x0:.12e}, independent {expected:.12e}, without core {x0_bare:.12e}");
+    assert!(
+        (x0 - expected).abs() < 1e-9 * (1. + expected.abs()),
+        "{x0} vs {expected}"
+    );
+    assert!(
+        (x0 - x0_bare).abs() > 1e-3,
+        "the core must matter: {x0} vs {x0_bare}"
+    );
+    let half = &d0 * 0.5;
+    let terms = atom.polarization.evaluate(&ctx, &half, &half).unwrap();
+    assert!(
+        (terms.unpolarized - x0).abs() < 1e-9 * (1. + x0.abs()),
+        "{} vs {x0}",
+        terms.unpolarized
+    );
+    // The potentials are the derivative of the energy with the core present.
+    let p = projectors.len();
+    let g = DMatrix::from_fn(p, p, |a, b| {
+        let (i, j) = (a.min(b) as f64, a.max(b) as f64);
+        d0[(a, b)] * (0.5 + (0.37 * (3. * i + 7. * j + 1.)).sin())
+    });
+    let (up, down) = (&d0 * 0.8, &d0 * 0.3);
+    let at = |e: f64| {
+        atom.polarization
+            .evaluate(&ctx, &(&up + &g * e), &(&down + &g * e))
+            .unwrap()
+            .energy
+    };
+    let e = 1e-5;
+    let numeric = (at(e) - at(-e)) / (2. * e);
+    let terms = atom.polarization.evaluate(&ctx, &up, &down).unwrap();
+    let analytic = terms.up.component_mul(&g).sum() + terms.down.component_mul(&g).sum();
+    assert!(analytic.abs() > 1e-6);
+    assert!(
+        (numeric - analytic).abs() < 1e-7 * analytic.abs(),
+        "{numeric:e} vs {analytic:e}"
+    );
+    // A smooth core of the wrong length is refused.
+    let short = SpeciesView {
+        smooth_core: &cored.core[..10],
+        ..view(&cored)
+    };
+    assert!(screened(&ctx, &short, &projectors, OMEGA).is_err());
 }
 
 #[test]

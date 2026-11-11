@@ -39,15 +39,17 @@ def _gap(scf):
 
 
 def _numerical_force(atoms, atom, k):
-    """Richardson-extrapolated central difference of the energy (eV/Angstrom).
+    """Richardson-extrapolated central difference of the free energy (eV/Angstrom).
 
     The displaced geometries are run by the same calculator, which keeps the
-    integration grid of the first force request (a frozen grid)."""
+    integration grid of the first force request (a frozen grid). The free
+    energy is the energy of an integer-occupation state and the Mermin
+    ``E - width S`` of a Fermi-Dirac one, whose derivative the forces are."""
     def energy(step):
         moved = atoms.copy()
         moved.positions[atom, k] += step
         moved.calc = atoms.calc
-        return moved.get_potential_energy()
+        return moved.get_potential_energy(force_consistent=True)
 
     coarse, fine = (-(energy(s) - energy(-s)) / (2 * s)
                     for s in (0.004, 0.002))
@@ -391,7 +393,7 @@ class TestTheFunctionalNames:
 
     def test_the_retired_dispersion_option_is_refused(self):
         with pytest.raises((TypeError, ValueError)):
-            Mandacaru(method="dft", xc="pbe", dispersion="d4",
+            Mandacaru(method="dft", xc="pbe", dispersion="ts",
                       basis=self.SZ)
 
     @pytest.mark.parametrize("xc", ["pbe+rvv10", "r2scan+rvv10"])
@@ -659,27 +661,32 @@ def oxygen_triplet():
 class TestUnrestricted:
     """Spin-unrestricted Kohn-Sham, selected by n_alpha != n_beta."""
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "needs the half-and-half ensemble occupation of a degenerate shell, "
-        "which the native engine does not have; on the exact axis the "
-        "integer-occupation restricted SCF lands on a stationary point 36 eV "
-        "high (HISTORY.md, 'Closed-shell O2 on the axis')"))
     def test_triplet_oxygen_is_below_the_spin_restricted_ensemble(
             self, oxygen_triplet):
-        """Spin-restricted O2 puts one electron in each of the two
-        degenerate pi* orbitals (an ensemble).  Filling one of them
-        breaks the symmetry, and the SCF then landed, depending on its
-        path, 0.53 eV or 24 eV above the ensemble.  Hund's triplet lies
-        0.78 eV below it (SZ, LDA), and the crystal path finds the same
-        0.778 eV between its unpolarized and triplet O2 (Gamma, 1 mHa
-        smearing)."""
+        """Spin-restricted O2 holds one electron of each spin in each of its two
+        degenerate pi* orbitals: Fermi-Dirac occupations of an exactly
+        degenerate shell, whatever the width, so the energy is the
+        zero-temperature ensemble's. Hund's triplet lies 0.778 eV below it (SZ,
+        LDA), the 0.778 eV the crystal path finds between its unpolarized and
+        triplet O2 independently (Gamma, 1 mHa smearing). Filling one member
+        instead gave a symmetry-broken determinant 0.52 eV higher, or a
+        stationary point tens of eV higher, reported as converged."""
         singlet = _oxygen([0.0, 0.0])
         e_singlet = _run(singlet, xc="lda", grid_spacing=0.3,
                          basis={"name": "PAW-LCAO", "size": "SZ"})
         e_triplet = oxygen_triplet.get_potential_energy()
-        assert -0.85 < e_triplet - e_singlet < -0.7
+        assert e_triplet - e_singlet == pytest.approx(-0.778, abs=0.01)
+        assert e_singlet == pytest.approx(-860.0362, abs=1e-3)
+        # The Mermin free energy is lower by the width times the entropy of
+        # four half-filled spin orbitals, 4 ln 2.
+        width = 1e-4 * 27.211386245988
+        assert singlet.get_potential_energy(force_consistent=True) == pytest.approx(
+            e_singlet - width * 4 * np.log(2), abs=1e-6)
         assert singlet.calc.get_number_of_spins() == 1
         scf = singlet.calc.result.scf
+        reference = singlet.calc.native_reference
+        assert reference.snapshot()["ensemble"]
+        assert reference.occupation.startswith("fractional (Fermi-Dirac")
         assert np.allclose(singlet.calc.get_occupation_numbers(),
                            [2, 2, 2, 2, 2, 1, 1, 0])
         assert scf.mo_energies[6] - scf.mo_energies[5] < 1e-6
@@ -690,11 +697,14 @@ class TestUnrestricted:
         assert np.allclose(occupations, np.sort([0, 0.5, 0.5, 1, 1, 1, 1, 1] * 2),
                            atol=1e-8)
 
-    def test_hunds_triplet_oxygen_is_below_the_closed_shell_state(self):
-        """With the bond tilted by 0.02 Angstrom the degeneracy of the pi*
-        pair is lifted and the integer-occupation restricted SCF finds the
-        physical closed-shell state; the triplet lies 1.31 eV below it
-        (SZ, LDA)."""
+    def test_a_tilted_oxygen_takes_fractional_occupations(self):
+        """With the bond tilted by 0.02 Angstrom the pi* pair is no longer
+        exactly degenerate. The integer restricted state there is not aufbau
+        (its doubly occupied member lay 0.039 Ha above the empty one, 0.52 eV
+        above the axis ensemble); the Fermi-Dirac occupations meet the two
+        levels instead, near one electron each. Their Kohn-Sham energy is the
+        zero-temperature one: the same to 1e-6 eV at widths of 3e-3 and 1e-3 Ha
+        as at the default 1e-4 Ha. The triplet lies 0.776 eV below it."""
         energies = {}
         for label, moments in (("closed", [0.0, 0.0]), ("triplet", [1.0, 1.0])):
             atoms = _oxygen(moments)
@@ -702,7 +712,73 @@ class TestUnrestricted:
             energies[label] = _run(atoms, xc="lda", grid_spacing=0.3,
                                    basis={"name": "PAW-LCAO", "size": "SZ"})
             assert atoms.calc.result.scf.converged
-        assert -1.4 < energies["triplet"] - energies["closed"] < -1.2
+            snapshot = atoms.calc.native_reference.snapshot()
+            assert snapshot["aufbau_inversion"] is None
+            assert snapshot["ensemble"] == (label == "closed")
+        assert energies["closed"] == pytest.approx(-860.038117, abs=1e-4)
+        assert energies["triplet"] - energies["closed"] == pytest.approx(-0.776, abs=0.01)
+
+    def test_the_ensemble_force_is_the_derivative_of_its_energy(self):
+        """OH on its axis: the beta electron of the pi pair is shared by its two
+        exactly degenerate members. The analytic force of that state (fixed
+        occupations, each orbital weighted by its occupation) against the
+        central difference along the axis, which keeps the symmetry and so the
+        ensemble; a perpendicular move would lift the degeneracy."""
+        atoms = Atoms("OH", positions=[[0, 0, 0], [0, 0, 1.02]], cell=[6, 6, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
+                               project_translation=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        forces = atoms.get_forces()
+        snapshot = atoms.calc.native_reference.snapshot()
+        assert snapshot["ensemble"] and snapshot["aufbau_inversion"] is None
+        assert np.allclose(atoms.calc.get_occupation_numbers(spin=1)[:4], [1, 1, 0.5, 0.5])
+        assert forces[1, 2] == pytest.approx(_numerical_force(atoms, 1, 2), abs=1e-4)
+
+    def test_a_fractional_hybrid_force_is_the_derivative_of_its_free_energy(self):
+        """The screened exchange of fractional orbitals pairs them with
+        ``f_i f_j``: OH (HSE06) on its axis, whose beta pi electron is shared by
+        the two members, against the central difference of the Mermin free
+        energy along the axis. (Off the axis by 0.08 Angstrom the exact
+        exchange opens the pi gap and the HSE06 state is integer and aufbau.)"""
+        atoms = Atoms("OH", positions=[[0, 0, 0], [0, 0, 1.02]], cell=[6, 6, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc="hse06", grid_spacing=0.3, trace=False,
+                               project_translation=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        forces = atoms.get_forces()
+        assert atoms.calc.native_reference.snapshot()["ensemble"]
+        assert np.allclose(atoms.calc.get_occupation_numbers(spin=1)[:4], [1, 1, 0.5, 0.5])
+        assert forces[1, 2] == pytest.approx(_numerical_force(atoms, 1, 2), abs=1e-4)
+
+    def test_an_ensemble_refuses_an_active_space(self):
+        """An active space is chosen from a determinant: it raises on a state
+        with fractional occupations, by name."""
+        atoms = Atoms("OH", positions=[[0, 0, 0], [0, 0, 1.02]], cell=[6, 6, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        atoms.get_potential_energy()
+        with pytest.raises(NotImplementedError, match="integer-occupation reference"):
+            atoms.calc.native_reference.active_model('{"method": "energy", "orbitals": 3}')
+
+    def test_a_molecule_takes_fermi_dirac_occupations_only(self):
+        """``smearing=`` sets the width of a molecular Kohn-Sham run; a scheme
+        built for a continuous density of states raises, and a Hartree-Fock
+        calculation refuses the option."""
+        def run(method, smearing):
+            atoms = _oxygen([0.0, 0.0])
+            atoms.calc = Mandacaru(method=method, xc="lda", grid_spacing=0.3, trace=False,
+                                   smearing=smearing,
+                                   basis={"name": "PAW-LCAO", "size": "SZ"})
+            return atoms
+        wide = run("dft", {"method": "fermi-dirac", "width": 1e-3 * 27.211386245988})
+        assert wide.get_potential_energy() == pytest.approx(-860.0362, abs=1e-3)
+        assert "width 1.0e-3 Ha" in wide.calc.native_reference.occupation
+        with pytest.raises(NotImplementedError, match="Fermi-Dirac occupations only"):
+            run("dft", ("gaussian", 0.01)).get_potential_energy()
+        with pytest.raises(ValueError, match="does not use: xc .*smearing"):
+            run("rhf", 0.01)
 
     def test_the_moment_and_the_spin_channels(self, oxygen_triplet):
         calc = oxygen_triplet.calc
@@ -743,9 +819,9 @@ class TestUnrestricted:
         Richardson-extrapolated central differences on the frozen grid.
 
         Its one beta pi electron has no integer aufbau solution (whichever
-        member holds it rises above the empty one): the SCF was run to the
-        ensemble with half an electron in each, and the forces are that
-        state's."""
+        member holds it rises above the empty one): its Fermi-Dirac occupations
+        meet the two levels (0.53/0.47 at the default width), and the forces
+        are the derivative of that state's Mermin free energy."""
         atoms = Atoms("OH", positions=[[0, 0, 0], [0.08, 0, 1.02]],
                       cell=[6, 6, 7])
         atoms.center()
@@ -771,12 +847,15 @@ class TestUnrestricted:
         atoms.get_potential_energy()
         scf = atoms.calc.result.scf
         assert scf.converged and scf.n_iterations < 100
-        # The pin was -446.046312 eV, the Python engine's half-and-half pi
-        # ensemble. The integer-occupation state this loop now reaches is
-        # 3.77 meV lower; an all-electron LDA cross-check (PySCF, QZVP) puts the
-        # integer state 36 meV below the ensemble, so the lower number is the
-        # Kohn-Sham minimum and the old one was not.
-        assert atoms.get_potential_energy() == pytest.approx(-446.050078,
+        # Re-pinned 2026-11-10 (Fermi-Dirac occupations at the default 1e-4 Ha,
+        # owner decision "Fractional occupation (MP-8)"). The beta pi pair is
+        # split by 7.3e-4 Ha, seven widths, so it holds 0.69/0.31 of the
+        # electron at this width. Narrowing the width moves the Kohn-Sham energy
+        # monotonically toward the integer aufbau state, the pin before
+        # (-446.050078 eV): -446.046855, -446.047457, -446.048202 and -446.048597
+        # eV at 3e-3, 1e-3, 3e-4 and 1e-4 Ha.
+        assert atoms.calc.native_reference.snapshot()["ensemble"]
+        assert atoms.get_potential_energy() == pytest.approx(-446.048597,
                                                              abs=1e-4)
 
 

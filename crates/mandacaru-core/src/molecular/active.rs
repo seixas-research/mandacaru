@@ -1,4 +1,5 @@
 //! Integral-direct orbital selection and frozen-natural-orbital Hamiltonians.
+use super::double_factorized::{DoubleFactorized, Representation};
 use super::{correlation, invalid, scf, transform, MeanField, MolecularIntegrals};
 use crate::{math::linalg::real_eigen, product, quantum::C64, Result};
 use nalgebra::DMatrix;
@@ -40,6 +41,18 @@ impl MeanField {
         integrals: &MolecularIntegrals,
         specification: &str,
     ) -> Result<transform::Model> {
+        self.active_model_with(integrals, specification, Representation::Dense)
+    }
+    /// [`Self::active_model`] with its two-body part in `representation`; the double-factorized
+    /// one rotates the two-electron factors into the active orbitals and never forms the
+    /// tensor.
+    pub fn active_model_with(
+        &self,
+        integrals: &MolecularIntegrals,
+        specification: &str,
+        representation: Representation,
+    ) -> Result<transform::Model> {
+        self.require_determinant("an active-space selection")?;
         let spec: Value =
             serde_json::from_str(specification).map_err(|e| invalid(e.to_string()))?;
         let object = spec
@@ -58,14 +71,19 @@ impl MeanField {
         }) {
             return Err(invalid("unknown active_space option"));
         }
-        for key in ["correlating_pairs"] {
-            if !spec[key].is_null() && spec[key] != false {
-                return Err(invalid(format!(
-                    "native active-space {key} expansion is not yet implemented"
-                )));
-            }
-        }
+        let pairs = match &spec["correlating_pairs"] {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            _ => return Err(invalid("active-space correlating_pairs must be a boolean")),
+        };
         let symmetry = spec["symmetry"].as_bool().unwrap_or(false);
+        if pairs && symmetry {
+            return Err(crate::Error::Unsupported(
+                "active-space correlating_pairs together with symmetry is not implemented; use one \
+                 of them"
+                    .into(),
+            ));
+        }
         if !spec["symmetry"].is_null() && spec["symmetry"].as_bool().is_none() {
             return Err(invalid("active-space symmetry must be a boolean"));
         }
@@ -94,9 +112,16 @@ impl MeanField {
                 "active spaces require a converged mean-field state",
             ));
         }
-        if method != "energy" && (self.method != "rhf" || self.functional.is_some()) {
+        let open_shell = self.method == "uhf";
+        if method != "energy" && (!["rhf", "uhf"].contains(&self.method.as_str()) || self.functional.is_some()) {
             return Err(invalid(
-                "native MP2 orbital selection requires a closed-shell Hartree-Fock reference",
+                "native MP2 orbital selection requires a Hartree-Fock reference (rhf or uhf)",
+            ));
+        }
+        if open_shell && method == "dlpno-mp2" {
+            return Err(invalid(
+                "the dlpno-mp2 active-space method is closed-shell only; an open-shell reference \
+                 takes method 'mp2'",
             ));
         }
         let m = integrals.m();
@@ -130,6 +155,9 @@ impl MeanField {
         if frozen.iter().any(|&i| i >= doubly) {
             return Err(invalid("frozen orbitals must be doubly occupied"));
         }
+        // The requested core: never paired (it is not a bonding orbital), unlike an occupied
+        // orbital a count or a threshold freezes below.
+        let core = frozen.clone();
         let threshold = match &spec["threshold"] {
             Value::Null | Value::Bool(false) => None,
             Value::Bool(true) => Some(1e-3),
@@ -162,7 +190,14 @@ impl MeanField {
             if c.iter().any(|v| v.im.abs() > 1e-10) {
                 return Err(invalid("MP2 selection requires real reference orbitals"));
             }
-            let mp2 = if method == "dlpno-mp2" {
+            let mp2 = if open_shell {
+                correlation::open_shell_natural_orbitals(
+                    integrals,
+                    c,
+                    self.particles[0],
+                    self.particles[1],
+                )?
+            } else if method == "dlpno-mp2" {
                 super::local_correlation::calculate(integrals, self, &frozen, &Default::default())?
                     .mp2
             } else {
@@ -248,6 +283,70 @@ impl MeanField {
         if let Some(t) = threshold.filter(|_| !symmetry) {
             active.retain(|&i| i < occupied || occupations[i] >= t);
         }
+        if pairs {
+            let paired: Vec<usize> = (0..doubly).filter(|i| !core.contains(i)).collect();
+            let partners = correlating_partners(
+                integrals,
+                &(&self.model_orbitals * &rotation),
+                &self.particles,
+                &paired,
+                &(occupied..m).collect::<Vec<_>>(),
+            )?;
+            let required: Vec<usize> = partners
+                .iter()
+                .filter(|(i, _)| !frozen.contains(i))
+                .map(|&(_, a)| a)
+                .collect();
+            if spec["orbitals"].is_array() {
+                // An explicit list is the user's choice: checked, not changed.
+                let missing: Vec<_> = partners
+                    .iter()
+                    .filter(|(i, a)| !frozen.contains(i) && !active.contains(a))
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(invalid(format!(
+                        "the active_space 'orbitals' list leaves out the correlating partner of \
+                         an active occupied orbital (occupied, virtual): {missing:?}; add those \
+                         virtual orbitals or drop 'correlating_pairs'"
+                    )));
+                }
+            } else if !spec["orbitals"].is_null() || threshold.is_some() {
+                let barred: Vec<usize> = partners
+                    .iter()
+                    .filter(|(i, _)| frozen.contains(i))
+                    .map(|&(_, a)| a)
+                    .collect();
+                // The register keeps the virtual count it asked for (no cap for a threshold
+                // alone): the required partners first, then the rest in rank order.
+                let current: Vec<usize> = active.iter().copied().filter(|&i| i >= occupied).collect();
+                let cap = (!spec["orbitals"].is_null()).then_some(current.len());
+                if cap.is_some_and(|c| required.len() > c) {
+                    return Err(invalid(format!(
+                        "the active space asks for {} virtual orbitals and its active occupied \
+                         orbitals need {} correlating partners; enlarge it or drop \
+                         'correlating_pairs'",
+                        current.len(),
+                        required.len()
+                    )));
+                }
+                let mut chosen = required.clone();
+                for a in occupied..m {
+                    if cap.is_some_and(|c| chosen.len() >= c) {
+                        break;
+                    }
+                    if chosen.contains(&a)
+                        || barred.contains(&a)
+                        || threshold.is_some_and(|t| occupations[a] < t)
+                    {
+                        continue;
+                    }
+                    chosen.push(a);
+                }
+                active.retain(|&i| i < occupied);
+                active.extend(chosen);
+                active.sort_unstable();
+            }
+        }
         if active.is_empty()
             || active.iter().any(|i| frozen.contains(i))
             || (0..occupied).any(|i| !frozen.contains(&i) && !active.contains(&i))
@@ -259,8 +358,11 @@ impl MeanField {
         if let Some(density) = occupied_density {
             let keep: Vec<_> = (0..doubly).filter(|i| !frozen.contains(i)).collect();
             if !keep.is_empty() {
+                // The occupied block of the MP2 density, `occupied` rows (equal to `doubly` for
+                // a closed shell); only the active doubly occupied orbitals mix, which keeps
+                // the reference determinant.
                 let d = DMatrix::from_fn(keep.len(), keep.len(), |i, j| {
-                    density.as_slice()[keep[i] * doubly + keep[j]]
+                    density.as_slice()[keep[i] * occupied + keep[j]]
                 });
                 let (values, vectors) = real_eigen(d)?;
                 for (j, &target) in keep.iter().enumerate() {
@@ -309,19 +411,20 @@ impl MeanField {
                 one.as_mut_slice()[i * n + j] = h[(i, j)];
             }
         }
-        let two = transform::four(ctx, &eri, [&c; 4])?;
-        let mut model = transform::Model::new(
-            ctx,
-            n,
-            [
-                self.particles[0] - frozen.len(),
-                self.particles[1] - frozen.len(),
-            ],
-            one,
-            two,
-            constant,
-            false,
-        )?;
+        let particles = [
+            self.particles[0] - frozen.len(),
+            self.particles[1] - frozen.len(),
+        ];
+        let mut model = match representation {
+            Representation::Dense => {
+                let two = transform::four(ctx, &eri, [&c; 4])?;
+                transform::Model::new(ctx, n, particles, one, two, constant, false)?
+            }
+            Representation::DoubleFactorized { truncation } => {
+                let factorized = DoubleFactorized::from_eri(ctx, &eri, &c, truncation)?;
+                transform::Model::double_factorized(ctx, particles, one, factorized, constant)?
+            }
+        };
         model.orbital_indices = active;
         model.frozen_indices = frozen;
         model.orbital_symmetry_sets = symmetry_sets;
@@ -339,4 +442,56 @@ impl MeanField {
         }
         Ok(model)
     }
+}
+
+/// The correlating partner of each occupied orbital in `occupied`: the one-to-one assignment
+/// of maximum total weight `|<ii|aa>| / (F_aa - F_ii)` over the `virtuals` (an exchange-type
+/// integral, large when `i` and `a` share a region of space with a node between them, over the
+/// energy the pair excitation `i^2 -> a^2` costs). `orbitals` are the selection's orbitals
+/// (columns over the orthonormal basis); `F` is the Fock operator of the reference occupations
+/// (2, 1 or 0 per orbital, the open shell's singly occupied orbitals 1).
+pub fn correlating_partners(
+    integrals: &MolecularIntegrals,
+    orbitals: &DMatrix<C64>,
+    particles: &[usize; 2],
+    occupied: &[usize],
+    virtuals: &[usize],
+) -> Result<Vec<(usize, usize)>> {
+    if occupied.is_empty() || virtuals.is_empty() {
+        return Ok(vec![]);
+    }
+    let ctx = &integrals.context;
+    let m = integrals.m();
+    let eri = integrals.eri()?;
+    let (high, low) = (particles[0].max(particles[1]), particles[0].min(particles[1]));
+    let mut density = DMatrix::<C64>::zeros(m, m);
+    for p in 0..high {
+        let weight = if p < low { 2. } else { 1. };
+        let c = orbitals.column(p);
+        density += c * c.adjoint() * C64::new(weight, 0.);
+    }
+    let (j, k) = scf::jk(&eri, m, &density);
+    let h = DMatrix::from_fn(m, m, |i, j| C64::new(integrals.one.as_slice()[i * m + j], 0.));
+    let fock = h + j - k * C64::new(0.5, 0.);
+    let diagonal = |p: usize| (orbitals.column(p).adjoint() * &fock * orbitals.column(p))[(0, 0)].re;
+    let co = DMatrix::from_fn(m, occupied.len(), |r, c| orbitals[(r, occupied[c])]);
+    let cv = DMatrix::from_fn(m, virtuals.len(), |r, c| orbitals[(r, virtuals[c])]);
+    let (no, nv) = (occupied.len(), virtuals.len());
+    let block = transform::four(ctx, &eri, [&co, &co, &cv, &cv])?;
+    let size = no.max(nv);
+    let mut cost = DMatrix::<f64>::zeros(size, size);
+    for (r, &i) in occupied.iter().enumerate() {
+        for (c, &a) in virtuals.iter().enumerate() {
+            let exchange = block.as_slice()[((r * no + r) * nv + c) * nv + c].norm();
+            let gap = (diagonal(a) - diagonal(i)).max(1e-6);
+            cost[(r, c)] = -exchange / gap;
+        }
+    }
+    let assigned = crate::math::assignment::minimum(ctx, &cost)?;
+    let mut pairs: Vec<(usize, usize)> = (0..no)
+        .filter(|&r| assigned[r] < nv)
+        .map(|r| (occupied[r], virtuals[assigned[r]]))
+        .collect();
+    pairs.sort_unstable();
+    Ok(pairs)
 }

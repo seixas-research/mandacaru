@@ -233,6 +233,40 @@ pub fn working_spacing(ctx: &Context, dataset: &PawDataset) -> Result<Option<f64
     Ok(None)
 }
 
+/// Covalent radii (Angstrom) of Z = 1-96 from B. Cordero et al., "Covalent radii revisited",
+/// Dalton Trans. 2008, 2832-2838 (Table 2, derived from 228,000 bond lengths of the Cambridge
+/// Structural Database; the low-spin values for Mn, Fe and Co, as tabulated in ASE's
+/// `ase.data.covalent_radii`, from which these numbers are copied).
+const COVALENT_RADII: [f64; 96] = [
+    0.31, 0.28, 1.28, 0.96, 0.84, 0.76, 0.71, 0.66, 0.57, 0.58, 1.66, 1.41, 1.21, 1.11, 1.07, 1.05,
+    1.02, 1.06, 2.03, 1.76, 1.70, 1.60, 1.53, 1.39, 1.39, 1.32, 1.26, 1.24, 1.32, 1.22, 1.22, 1.20,
+    1.19, 1.20, 1.20, 1.16, 2.20, 1.95, 1.90, 1.75, 1.64, 1.54, 1.47, 1.46, 1.42, 1.39, 1.45, 1.44,
+    1.42, 1.39, 1.39, 1.38, 1.39, 1.40, 2.44, 2.15, 2.07, 2.04, 2.03, 2.01, 1.99, 1.98, 1.98, 1.96,
+    1.94, 1.92, 1.92, 1.89, 1.90, 1.87, 1.87, 1.75, 1.70, 1.62, 1.51, 1.44, 1.41, 1.36, 1.36, 1.32,
+    1.45, 1.46, 1.48, 1.40, 1.50, 1.50, 2.60, 2.21, 2.15, 2.06, 2.00, 1.96, 1.90, 1.87, 1.80, 1.69,
+];
+
+/// Bohr per Angstrom.
+const BOHR: f64 = 1. / 0.529_177_210_903;
+
+/// The shortest bond an element makes in a molecule or solid (Bohr), taken as its bond to
+/// hydrogen, the sum of the two covalent radii of [`COVALENT_RADII`] (hydrogen 0.31 Angstrom):
+/// hydride bonds are the shortest single bonds an element forms, shorter than its oxide and
+/// halide bonds. `None` past Z = 96.
+pub fn shortest_bond(atomic_number: u32) -> Option<f64> {
+    let index = usize::try_from(atomic_number).ok()?.checked_sub(1)?;
+    COVALENT_RADII
+        .get(index)
+        .map(|r| (r + COVALENT_RADII[0]) * BOHR)
+}
+
+/// The widest sphere against the element's own [`shortest_bond`]: `Some((widest, bond))` (Bohr)
+/// when a bonded neighbor's nucleus lies inside the sphere.
+pub fn sphere_against_bond(dataset: &PawDataset) -> Option<(f64, f64)> {
+    let bond = shortest_bond(dataset.atomic_number)?;
+    sphere_reach(dataset, bond).map(|widest| (widest, bond))
+}
+
 /// The widest augmentation sphere (Bohr) against a bond of `bond` Bohr: `Some(r_cut_max)` when
 /// the neighbor's nucleus lies inside it. The overlap of two spheres is allowed by the method; a
 /// nucleus inside a sphere is not, because the one-center expansion then holds the neighbor's

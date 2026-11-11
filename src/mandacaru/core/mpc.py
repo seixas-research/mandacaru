@@ -70,14 +70,11 @@ class PeriodicPoissonSolver:
             if self.step.shape != (3, 3):
                 raise ValueError(f"step must be a 3x3 matrix, got {self.step.shape}")
         elif spacing is not None:
-            self.step = np.diag([float(spacing)] * 3)
+            value = float(spacing)
+            self.step = np.array([[value, 0.0, 0.0], [0.0, value, 0.0], [0.0, 0.0, value]])
         else:
             raise ValueError("give step or spacing")
-        self.dV = abs(float(np.linalg.det(self.step)))
-        if self.dV <= 0.0:
-            raise ValueError("the voxel has zero volume (degenerate step)")
-        self.cell = self.step @ np.diag(self.shape)
-        self.volume = abs(float(np.linalg.det(self.cell)))
+        self.dV, self.cell, self.volume = _native.grid_cell(self.step.tolist(), list(self.shape))
         self.L = self.shape
         self.workers = workers
         self._kernel = _native.periodic_poisson_kernel(self.shape, self.step, self.dV)
@@ -121,11 +118,7 @@ class TruncatedCoulombSolver:
         self.step = np.ascontiguousarray(step, dtype=float)
         if self.step.shape != (3, 3):
             raise ValueError(f"step must be a 3x3 matrix, got {self.step.shape}")
-        self.dV = abs(float(np.linalg.det(self.step)))
-        if self.dV <= 0.0:
-            raise ValueError("the voxel has zero volume (degenerate step)")
-        self.cell = self.step @ np.diag(self.shape)
-        self.volume = abs(float(np.linalg.det(self.cell)))
+        self.dV, self.cell, self.volume = _native.grid_cell(self.step.tolist(), list(self.shape))
         self.L = self.shape
         self.workers = workers
         self.real_kernel = wigner_seitz_kernel(self.shape, self.step, shells)
@@ -175,19 +168,19 @@ class FiniteSizeCorrection:
     @property
     def correction_per_cell(self) -> float:
         """The correction to add to a per-primitive-cell energy, in Hartree."""
-        return self.correction / self.n_cells
+        return _native.ratio(float(self.correction), float(self.n_cells))
 
     @property
     def mpc_energy_per_cell(self) -> float | None:
         """The MPC energy per primitive cell, in Hartree."""
         if self.energy_per_cell is None:
             return None
-        return self.energy_per_cell + self.correction_per_cell
+        return _native.total([float(self.energy_per_cell), float(self.correction_per_cell)])
 
     @property
     def per_electron(self) -> float:
         """The correction per electron, in Hartree -- the comparable figure."""
-        return self.correction / self.n_electrons if self.n_electrons else 0.0
+        return _native.ratio(float(self.correction), float(self.n_electrons)) if self.n_electrons else 0.0
 
     def in_units(self, units: str = "eV") -> "FiniteSizeCorrection":
         """The same record with every energy converted out of Hartree."""
@@ -237,7 +230,7 @@ def exchange_correlation_hole_energy(eri_periodic, eri_truncated, D, Gamma,
             f"{eri_p.shape}")
 
     periodic, truncated, n_electrons = _native.mpc_hole_energies(eri_p, eri_t, d, g)
-    correction = truncated - periodic
+    correction = _native.difference_to_user(float(truncated), float(periodic), "energy", atomic_units=True)
     return FiniteSizeCorrection(
         hole_energy_periodic=float(periodic),
         hole_energy_truncated=float(truncated),
@@ -261,7 +254,6 @@ class PeriodicIntegralsAdapter:
 
     def __init__(self, integrals, reference, geometry, context=None):
         from types import SimpleNamespace
-        from ..units import ANGSTROM_TO_BOHR
 
         self._integrals = integrals
         self._reference = reference
@@ -286,7 +278,7 @@ class PeriodicIntegralsAdapter:
                 self.dV = float(g.dv_bohr3)
 
         self.grid = GridAdapter(native_grid)
-        self.cell = np.asarray(geometry.cell, dtype=float) * ANGSTROM_TO_BOHR
+        self.cell = _native.length_to_bohr(np.ascontiguousarray(geometry.cell, dtype=float), "angstrom")
         self._engine = SimpleNamespace(_psi=self._psi)
         self._cached_periodic = None
 

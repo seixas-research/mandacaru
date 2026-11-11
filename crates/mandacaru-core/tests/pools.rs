@@ -237,17 +237,19 @@ fn coupled_exchange_growth_expands_live_members_with_independent_parameters() {
     }
     let mut problem = CachedProblem::new(&ctx, encoding, h, true, false, true).unwrap();
     problem.use_pool("ceo", true).unwrap();
-    let result = problem
-        .solve(
-            &SolveOptions {
-                adapt: true,
-                max_growth: 12,
-                gradient_tolerance: Some(1e-8),
-                ..Default::default()
-            },
-            None,
-        )
-        .unwrap();
+    // The inner optimizer stops at 1e-6, not at roundoff: on this symmetric dimer the member
+    // gradients of the coupled step are zero up to the roundoff left in the parameters of the
+    // earlier steps, and the live-member threshold (1e-12) must not decide which operators are
+    // taken. (At the default tolerance the carried curvature of BFGS leaves them below it and the
+    // combined operator is taken whole, with the same energy.)
+    let mut options = SolveOptions {
+        adapt: true,
+        max_growth: 12,
+        gradient_tolerance: Some(1e-8),
+        ..Default::default()
+    };
+    options.optimizer.tolerance = Some(1e-6);
+    let result = problem.solve(&options, None).unwrap();
     assert!(result.success, "{}", result.message);
     assert!((result.energy - (3. - (9. + 16. * 0.8_f64.powi(2)).sqrt()) / 2.).abs() < 1e-9);
     assert!(result.indices.iter().any(|&i| !problem.pool_screenable[i]));

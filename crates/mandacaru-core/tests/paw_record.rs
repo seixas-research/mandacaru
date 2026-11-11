@@ -256,47 +256,31 @@ fn check_scalars(ds: &PawDataset, frozen: &Value, label: &str) {
     assert!(compared >= 15, "{label}: only {compared} scalars compared");
 }
 
+/// A file's radial step is read from the file (`r[0]`), never derived from the generation grid:
+/// the library once held a pbe-fr Pb written at stride 2 (A0 finding 7). That file was replaced on
+/// 2026-11-09 by one written at stride 4, so the case is now made here: the shipped pbe-fr Pb is
+/// written at stride 2 of its own table into a scratch file and read back, and the step, the row
+/// count and every column follow the stride.
 #[test]
-fn pb_pbe_fr_is_read_first_and_matches_its_frozen_digests() {
+fn a_file_written_at_another_stride_is_read_with_its_own_step() {
+    use mandacaru_core::parquet::Codec;
+    use mandacaru_core::paw::record::WriteSpec;
     let ctx = context();
-    let path = library().join("pbe-fr/Pb.parquet");
-    let pb = reference("pb_parquet.json");
-    let facts = &pb["pbe-fr/Pb"];
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().len(),
-        facts["bytes"].as_u64().unwrap()
-    );
-    let ds = PawDataset::read(&ctx, &path).unwrap();
-    // A0 finding 7: this file was written at stride 2 (r[0] = 2 h_gen).
-    let h = ds.step();
-    assert_eq!(h, facts["r_first"].as_f64().unwrap());
-    // lda-fr/Pb is stride 4 (r[0] = 4 h_gen); this file is stride 2, so its
-    // step is half of that one's, and neither is points(Z)/4.
-    let h4 = reference("lib_lda-fr_Pb.json")["grid"]["first"]
-        .as_f64()
-        .unwrap();
-    assert!(
-        (2.0 * h - h4).abs() < 1e-12,
-        "stride 2 against stride 4: {h:e} vs {h4:e}"
-    );
-    assert_eq!(
-        ds.r.as_slice().len() as u64,
-        facts["rows"][0].as_u64().unwrap()
-    );
-    assert_eq!(
-        ds.tables().len() as u64,
-        facts["n_columns"].as_u64().unwrap()
-    );
-    assert_eq!(ds.relativity, facts["relativity"].as_str().unwrap());
-    assert_eq!(ds.xc, facts["xc"].as_str().unwrap());
-    let compared = check_against_frozen(&ds, "pbe-fr", "Pb");
-    println!("pbe-fr/Pb: {compared} arrays equal their frozen sha256, h = r[0] = {h:e}");
-    drop(ds);
-    assert_eq!(
-        ctx.memory_used(),
-        0,
-        "dropping the record releases the budget"
-    );
+    let ds = PawDataset::read(&ctx, &library().join("pbe-fr/Pb.parquet")).unwrap();
+    let dir = TempDir::new("stride");
+    let out = dir.file("Pb.parquet");
+    ds.write(&ctx, &out, &WriteSpec { stride: 2, codec: Codec::Zstd }).unwrap();
+    let half = PawDataset::read(&ctx, &out).unwrap();
+    let (h, h2) = (ds.step(), half.step());
+    println!("pbe-fr/Pb: step {h:e}, written at stride 2: {h2:e}");
+    // The writer keeps ten significant digits (`digits::round_digits`), and `decimate` keeps every
+    // second point from the second on.
+    assert!((h2 - 2.0 * h).abs() < 1e-9 * h, "{h2:e} against 2 x {h:e}");
+    assert_eq!(half.points(), ds.points() / 2);
+    assert_eq!(half.tables().len(), ds.tables().len());
+    assert_eq!(half.relativity, ds.relativity);
+    drop((ds, half));
+    assert_eq!(ctx.memory_used(), 0, "dropping the records releases the budget");
 }
 
 #[test]
@@ -317,9 +301,11 @@ fn the_a0_sample_matches_its_frozen_digests() {
         assert_eq!(ctx.memory_used(), 0);
     }
     println!("A0 sample: {files} files, {arrays} arrays, every sha256, shape and max equal");
+    // 17 since 2026-11-09: the cases of the seven files replaced in the library (lda-fr Au, Ce,
+    // Fe, Pb; lda-sr Ce; pbe-fr Pb; pbe-sr Ce) were retired with their Python freeze.
     assert!(
-        files >= 19,
-        "the A0 sample has at least 19 library files, found {files}"
+        files >= 17,
+        "the A0 sample has at least 17 library files, found {files}"
     );
 }
 
@@ -425,8 +411,12 @@ fn every_shipped_file_is_read_and_the_defaults_are_the_two_the_census_found() {
         "the UPAW-LCAO library has 63 files"
     );
     assert_eq!(c.files, files.len());
-    // The census of the Python side found exactly these two absences.
-    assert_eq!(c.semicore_defaults, 11);
-    assert_eq!(c.occupation_defaults, 21);
-    assert_eq!(c.spin_orbit_entries, 273);
+    // The keys older files lack. The census of the Python side found 11 and 21, and 273
+    // spin-orbit entries; the files regenerated on 2026-11-09 and 10 by the Rust generator carry
+    // the full schema and the fr ones the spin-orbit entries of today's partition, so the counts
+    // measured on the library since are these (363 after the 106 files of 2026-11-09, 366 after
+    // Cr, Zn and lda-fr Cu on 2026-11-10).
+    assert_eq!(c.semicore_defaults, 6);
+    assert_eq!(c.occupation_defaults, 11);
+    assert_eq!(c.spin_orbit_entries, 366);
 }

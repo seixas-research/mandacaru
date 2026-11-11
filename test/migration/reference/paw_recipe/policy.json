@@ -781,8 +781,8 @@
   "Cr/lda": {
    "core_radius": null,
    "cutoff_table": {
-    "0": 3.376,
-    "2": 1.062
+    "0": 2.9,
+    "2": 2.0
    },
    "energy_offset": 1.0,
    "frozen_subshells": [],
@@ -797,8 +797,8 @@
   "Cr/pbe": {
    "core_radius": null,
    "cutoff_table": {
-    "0": 3.409,
-    "2": 1.068
+    "0": 2.9,
+    "2": 2.0
    },
    "energy_offset": 1.0,
    "frozen_subshells": [],

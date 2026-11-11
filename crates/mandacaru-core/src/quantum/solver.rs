@@ -322,7 +322,7 @@ impl CachedProblem {
         self.hva = None;
         Ok(())
     }
-    fn growth_steps(&self, indices: &[usize]) -> Result<usize> {
+    pub(super) fn growth_steps(&self, indices: &[usize]) -> Result<usize> {
         let mut count = 0;
         let mut i = 0;
         while i < indices.len() {
@@ -468,12 +468,17 @@ impl CachedProblem {
                 }
             });
         }
-        let mut action = ctx.allocate::<C64>(d)?;
-        let mut out = Vec::with_capacity(self.pool.len());
-        for g in &self.pool {
-            g.operator.apply_into(basis, state, action.as_mut_slice());
-            out.push(2. * inner_wide(hpsi.as_slice(), action.as_slice()).re);
-        }
+        // Every generator is independent: the pool splits across threads, each with its own row.
+        let threads = super::parallel::threads_for(ctx, self.pool.len().saturating_mul(d), self.pool.len());
+        let mut actions = (0..threads).map(|_| ctx.allocate::<C64>(d)).collect::<Result<Vec<_>>>()?;
+        let mut out = vec![0.; self.pool.len()];
+        let hpsi = hpsi.as_slice();
+        super::parallel::parallel_tasks(ctx, &mut out, &mut actions, |first, values, action| {
+            for (k, value) in values.iter_mut().enumerate() {
+                self.pool[first + k].operator.apply_into(basis, state, action.as_mut_slice());
+                *value = 2. * inner_wide(hpsi, action.as_slice()).re;
+            }
+        });
         Ok(out)
     }
     pub fn sequence<'a>(
@@ -554,6 +559,21 @@ impl CachedProblem {
         if options.adapt && self.hva.is_some() {
             return Err(invalid("HVA is a fixed ansatz"));
         }
+        if options
+            .checkpoint
+            .as_ref()
+            .is_some_and(|c| c.every == 0 || !["vqe", "adapt-vqe"].contains(&c.method.as_str()))
+        {
+            return Err(invalid(
+                "a mid-run checkpoint needs a positive cadence and the vqe or adapt-vqe method",
+            ));
+        }
+        if (options.tetris || options.prune) && (!options.adapt || sequence.is_some()) {
+            return Err(invalid(
+                "tetris and prune shape the growth of a fresh ADAPT run; a fixed ansatz, a resumed \
+                 or a transferred sequence has none",
+            ));
+        }
         if sequence.is_some_and(|s| {
             !options.adapt
                 || self.growth_steps(s).is_err()
@@ -565,8 +585,29 @@ impl CachedProblem {
                 "resumed ADAPT sequence must fit the pool, parameters and total growth budget",
             ));
         }
+        if options.continuation && options.hessian.is_none() {
+            return Err(invalid("a continued growth needs the Hessian it stopped with"));
+        }
+        if let Some(hessian) = &options.hessian {
+            let n = sequence.map_or(0, <[usize]>::len);
+            if !options.optimizer.method.carries_curvature()
+                || sequence.is_none()
+                || hessian.len() != n * n
+            {
+                return Err(invalid(
+                    "a carried Hessian needs a carried SLSQP or BFGS ADAPT sequence of as many parameters",
+                ));
+            }
+        }
         let start = Instant::now();
         let ctx = &self.context;
+        // SLSQP keeps a Hessian approximation of the parameters, BFGS an inverse Hessian
+        // approximation; a growth step that re-optimizes all of them starts from the previous
+        // step's, extended by the identity for the appended ones (the identity is the cold start
+        // of either), instead of relearning the curvature from the identity.
+        let carries_curvature =
+            options.adapt && options.quenching && options.optimizer.method.carries_curvature();
+        let mut curvature: Option<Vec<f64>> = None;
         let max_parameters = if options.adapt {
             product(&[
                 options.max_growth,
@@ -634,6 +675,7 @@ impl CachedProblem {
         // point to keep and the interruption propagates.
         let mut stopped: Option<String> = None;
         let mut measured: Option<f64> = None;
+        let mut pruned: Vec<(usize, String)> = Vec::new();
         if !options.adapt {
             indices = (0..self.pool.len())
                 .filter(|&i| self.pool_screenable[i])
@@ -646,11 +688,29 @@ impl CachedProblem {
                     "initial parameter count differs from the UCCSD pool",
                 ));
             }
-            let outcome =
-                optimizer::minimize_interruptible(ctx, &parameters, &options.optimizer, |t| {
-                    let v = evaluate(&indices, t, options.trotter, derivatives)?;
-                    Ok((v.energy, v.gradient))
-                })?;
+            // The best point seen, written every `every` evaluations when checkpointing: the
+            // optimizer's own iterate may be a trial step, the best is not.
+            let mut best: Option<(Vec<f64>, f64)> = None;
+            let mut evaluations = 0usize;
+            let mut objective = |t: &[f64]| -> Result<(f64, Vec<f64>)> {
+                let v = evaluate(&indices, t, options.trotter, derivatives)?;
+                if let Some(plan) = &options.checkpoint {
+                    evaluations += 1;
+                    if best.as_ref().is_none_or(|(_, e)| v.energy < *e) {
+                        best = Some((t.to_vec(), v.energy));
+                    }
+                    if evaluations % plan.every == 0 {
+                        let (x, e) = best.as_ref().expect("an evaluation was made");
+                        write_checkpoint(self, plan, &indices, x, options.trotter, *e, false, evaluations, options.optimizer.method.name(), None)?;
+                    }
+                }
+                Ok((v.energy, v.gradient))
+            };
+            let outcome = if options.quenching {
+                optimizer::minimize_interruptible(ctx, &parameters, &options.optimizer, &mut objective)?
+            } else {
+                sweep(ctx, &parameters, &options.optimizer, &mut objective)?
+            };
             parameters = outcome.parameters;
             history = outcome.history;
             steps = outcome.steps;
@@ -679,12 +739,24 @@ impl CachedProblem {
             if let Some(sequence) = sequence {
                 indices = sequence.to_vec();
                 parameters = initial.unwrap().to_vec();
-                if !indices.is_empty() {
-                    let outcome = optimizer::minimize(ctx, &parameters, &options.optimizer, |t| {
-                        let value = evaluate(&indices, t, true, derivatives)?;
-                        Ok((value.energy, value.gradient))
-                    })?;
+                if options.continuation {
+                    curvature = options.hessian.clone().filter(|_| carries_curvature);
+                } else if !indices.is_empty() {
+                    let warm = options.hessian.is_some();
+                    let mut outcome = optimizer::minimize_from(
+                        ctx,
+                        &parameters,
+                        &options.optimizer,
+                        options.hessian.as_deref(),
+                        |t| {
+                            let value = evaluate(&indices, t, true, derivatives)?;
+                            Ok((value.energy, value.gradient))
+                        },
+                    )?;
                     let kept = outcome.energy < reference;
+                    if kept && carries_curvature {
+                        curvature = outcome.hessian.take();
+                    }
                     seed = Some(SeedRelaxation {
                         kept,
                         energy: outcome.energy,
@@ -692,6 +764,7 @@ impl CachedProblem {
                         message: outcome.message.clone(),
                         evaluations: outcome.history.len(),
                         steps: outcome.steps,
+                        warm,
                     });
                     steps += outcome.steps;
                     history.extend(outcome.history);
@@ -778,34 +851,49 @@ impl CachedProblem {
                 if growth == options.max_growth {
                     break;
                 }
-                let members: Vec<_> = self.growth_members[selected]
-                    .iter()
-                    .copied()
-                    .filter(|&i| gradients[i] > 1e-12)
-                    .collect();
-                let grown = if members.len() >= 2 {
-                    members
+                let picks = if options.tetris {
+                    disjoint_selection(&self.pool, &self.pool_screenable, &gradients, self.n_qubits())
                 } else {
                     vec![selected]
                 };
                 let accepted = indices.len();
-                for index in grown {
-                    indices.push(index);
-                    parameters.push(0.);
+                for pick in picks {
+                    let members: Vec<_> = self.growth_members[pick]
+                        .iter()
+                        .copied()
+                        .filter(|&i| gradients[i] > 1e-12)
+                        .collect();
+                    let grown = if members.len() >= 2 { members } else { vec![pick] };
+                    for index in grown {
+                        indices.push(index);
+                        parameters.push(0.);
+                    }
                 }
 
-                let outcome = match optimizer::minimize_interruptible(
-                    ctx,
-                    &parameters,
-                    &options.optimizer,
-                    |t| {
-                        let v = match execution.as_mut() {
-                            Some(device) => device.evaluate(self, &indices, t, derivatives)?,
-                            None => self.evaluate(&indices, t, true)?,
-                        };
-                        Ok((v.energy, v.gradient))
-                    },
-                ) {
+                let objective = |t: &[f64]| {
+                    let v = match execution.as_mut() {
+                        Some(device) => device.evaluate(self, &indices, t, derivatives)?,
+                        None => self.evaluate(&indices, t, true)?,
+                    };
+                    Ok((v.energy, v.gradient))
+                };
+                let start_curvature = curvature
+                    .as_deref()
+                    .filter(|h| carries_curvature && h.len() == accepted * accepted)
+                    .map(|h| extend_hessian(h, accepted, parameters.len()));
+                let optimized = if options.quenching {
+                    optimizer::minimize_interruptible_from(
+                        ctx,
+                        &parameters,
+                        &options.optimizer,
+                        start_curvature.as_deref(),
+                        objective,
+                    )
+                } else {
+                    // Only the parameters this step appended; the earlier ones stay at their optimum.
+                    minimize_block(ctx, &parameters, accepted..parameters.len(), &options.optimizer, objective)
+                };
+                let mut outcome = match optimized {
                     // Stopped before the grown ansatz was measured once:
                     // growth ends at the last accepted ansatz.
                     Err(Error::Interrupted(m)) if measured.is_some() => {
@@ -816,13 +904,46 @@ impl CachedProblem {
                     }
                     other => other?,
                 };
-                delta = Some(outcome.energy - energy);
-                measured = Some(outcome.energy);
-                parameters = outcome.parameters;
+                let mut step_energy = outcome.energy;
+                parameters = std::mem::take(&mut outcome.parameters);
+                curvature = if carries_curvature { outcome.hessian.take() } else { None };
+                if options.prune && outcome.interrupted.is_none() {
+                    if let Some(at) = prune_candidate(&parameters) {
+                        let (mut shorter, mut angles) = (indices.clone(), parameters.clone());
+                        shorter.remove(at);
+                        angles.remove(at);
+                        curvature = curvature.map(|h| {
+                            if options.optimizer.method == optimizer::Method::Bfgs {
+                                drop_parameter_of_inverse(&h, parameters.len(), at)
+                            } else {
+                                drop_parameter(&h, parameters.len(), at)
+                            }
+                        });
+                        // The energy of the shorter ansatz at the same angles: not re-optimized.
+                        // A stop before it is measured keeps the unpruned ansatz and its energy.
+                        let evaluated = match execution.as_mut() {
+                            Some(device) => device.evaluate(self, &shorter, &angles, false),
+                            None => self.evaluate(&shorter, &angles, true),
+                        };
+                        match evaluated {
+                            Err(Error::Interrupted(m)) => {
+                                measured = Some(step_energy);
+                                stopped = Some(m);
+                                break;
+                            }
+                            other => step_energy = other?.energy,
+                        }
+                        pruned.push((iterations.len() + 1, self.pool[indices[at]].label.clone()));
+                        indices = shorter;
+                        parameters = angles;
+                    }
+                }
+                delta = Some(step_energy - energy);
+                measured = Some(step_energy);
                 steps += outcome.steps;
                 iterations.push(Iteration {
                     pool_index: selected,
-                    energy: outcome.energy,
+                    energy: step_energy,
                     max_gradient: final_gradient,
                     optimizer_steps: outcome.steps,
                     num_evaluations: outcome.history.len(),
@@ -831,8 +952,13 @@ impl CachedProblem {
                     num_parameters: parameters.len(),
                 });
                 history.extend(outcome.history);
+                if let Some(plan) = &options.checkpoint {
+                    if iterations.len() % plan.every == 0 {
+                        write_checkpoint(self, plan, &indices, &parameters, true, step_energy, true, iterations.len(), options.optimizer.method.name(), curvature.as_deref())?;
+                    }
+                }
                 if let Some(observer) = observer.as_deref_mut() {
-                    observer(&indices, &parameters, outcome.energy)?;
+                    observer(&indices, &parameters, step_energy)?;
                 }
                 if outcome.interrupted.is_some() {
                     // The partly optimized ansatz at its best point is kept.
@@ -881,6 +1007,7 @@ impl CachedProblem {
             .iter()
             .map(|&i| self.pool[i].label.clone())
             .collect();
+        let indices_len = indices.len();
         Ok(SolveResult {
             seed,
             energy,
@@ -897,28 +1024,300 @@ impl CachedProblem {
             final_gradient,
             budget_stopped: stopped.is_some(),
             elapsed_seconds: start.elapsed().as_secs_f64(),
+            pruned,
+            hessian: curvature.filter(|h| h.len() == indices_len * indices_len),
+            notes: Vec::new(),
             _memory,
         })
     }
 }
+/// One mid-run checkpoint: the ansatz and parameters so far, marked incomplete. `growth` says
+/// whether `count` counts growth steps (ADAPT) or cost evaluations (a fixed ansatz).
+#[allow(clippy::too_many_arguments)]
+/// The `n x n` Hessian of `m` parameters (row-major) as the start for `n >= m`: the old block,
+/// the identity for each appended parameter, no coupling between old and new.
+pub(super) fn extend_hessian(old: &[f64], m: usize, n: usize) -> Vec<f64> {
+    let mut grown = vec![0.; n * n];
+    for i in 0..n {
+        if i < m {
+            grown[i * n..i * n + m].copy_from_slice(&old[i * m..(i + 1) * m]);
+        } else {
+            grown[i * n + i] = 1.;
+        }
+    }
+    grown
+}
+/// The INVERSE Hessian of `n` parameters without the one at `at`: the inverse of the reduced
+/// Hessian, `H_ij - H_ia H_aj / H_aa` (a Schur complement, not the sub-block).
+fn drop_parameter_of_inverse(old: &[f64], n: usize, at: usize) -> Vec<f64> {
+    let keep: Vec<usize> = (0..n).filter(|&i| i != at).collect();
+    let pivot = old[at * n + at];
+    keep.iter()
+        .flat_map(|&i| keep.iter().map(move |&j| (i, j)))
+        .map(|(i, j)| {
+            if pivot.abs() > f64::MIN_POSITIVE {
+                old[i * n + j] - old[i * n + at] * old[at * n + j] / pivot
+            } else {
+                old[i * n + j]
+            }
+        })
+        .collect()
+}
+/// The Hessian of `n` parameters without the one at `at`.
+fn drop_parameter(old: &[f64], n: usize, at: usize) -> Vec<f64> {
+    let keep: Vec<usize> = (0..n).filter(|&i| i != at).collect();
+    keep.iter()
+        .flat_map(|&i| keep.iter().map(move |&j| (i, j)))
+        .map(|(i, j)| old[i * n + j])
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_checkpoint(
+    problem: &CachedProblem,
+    plan: &Checkpointing,
+    indices: &[usize],
+    parameters: &[f64],
+    product_form: bool,
+    energy: f64,
+    growth: bool,
+    count: usize,
+    optimizer: &str,
+    hessian: Option<&[f64]>,
+) -> Result<()> {
+    let status = crate::persistence::status_with_hessian(
+        serde_json::json!({
+            "complete": false,
+            "converged": false,
+            (if growth { "iteration" } else { "num_evaluations" }): count,
+        }),
+        optimizer,
+        hessian,
+    )?;
+    crate::persistence::checkpoint(
+        &problem.context,
+        problem,
+        indices,
+        parameters,
+        product_form,
+        &plan.method,
+        status,
+        energy,
+    )?
+    .save(&plan.path)
+}
+
+/// Pruning's position weight `alpha` in `exp(-alpha x)`.
+pub const PRUNE_ALPHA: f64 = 10.;
+/// Fraction of the recent mean amplitude below which the top-ranked operator is removed.
+pub const PRUNE_FRACTION: f64 = 0.1;
+/// How many of the most recently added operators define that mean.
+pub const PRUNE_RECENT: usize = 4;
+/// No pruning at or below this many parameters: the ranking needs a position scale.
+pub const PRUNE_MIN_OPERATORS: usize = 2;
+
+/// The qubits a generator acts on, as a bit mask over its Pauli terms.
+fn support(operator: &crate::quantum::Operator) -> u64 {
+    operator
+        .terms
+        .iter()
+        .filter(|t| t.coefficient.norm() > 0.)
+        .fold(0, |mask, t| mask | t.x | t.z)
+}
+
+/// TETRIS selection: the screenable pool indices of one growth step, the largest gradient
+/// first, then each next largest whose support touches no qubit taken so far, until the
+/// register is covered or nothing disjoint with a gradient above 1e-12 is left.
+fn disjoint_selection(
+    pool: &[crate::quantum::algebra::Generator],
+    screenable: &[bool],
+    gradients: &[f64],
+    n_qubits: usize,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..pool.len()).filter(|&i| screenable[i]).collect();
+    order.sort_by(|&a, &b| gradients[b].total_cmp(&gradients[a]));
+    let full = if n_qubits >= 64 { u64::MAX } else { (1u64 << n_qubits) - 1 };
+    let (mut chosen, mut covered) = (Vec::new(), 0u64);
+    for i in order {
+        if gradients[i] <= 1e-12 {
+            break;
+        }
+        let mask = support(&pool[i].operator);
+        if !chosen.is_empty() && mask & covered != 0 {
+            continue;
+        }
+        chosen.push(i);
+        covered |= mask;
+        if covered & full == full {
+            break;
+        }
+    }
+    chosen
+}
+
+/// Pruning's candidate among optimized `parameters` (ansatz order): the position of the one to
+/// remove, or `None`.
+pub fn prune_candidate(parameters: &[f64]) -> Option<usize> {
+    let n = parameters.len();
+    if n <= PRUNE_MIN_OPERATORS {
+        return None;
+    }
+    let recent = PRUNE_RECENT.min(n);
+    let threshold = PRUNE_FRACTION * parameters[n - recent..].iter().map(|t| t.abs()).sum::<f64>()
+        / recent as f64;
+    // The newest operator is never a candidate: it was just selected on the largest gradient.
+    let (candidate, _) = parameters[..n - 1]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let x = (i + 1) as f64 / n as f64;
+            (i, (-PRUNE_ALPHA * x).exp() / (t * t))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    (parameters[candidate].abs() < threshold).then_some(candidate)
+}
+
+/// Minimize `objective` over the coordinates `free` of `full`, the others held: the objective and
+/// the outcome see the full vector, the optimizer only the free block (and its gradient slice).
+fn minimize_block(
+    ctx: &crate::Context,
+    full: &[f64],
+    free: std::ops::Range<usize>,
+    options: &optimizer::Options,
+    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> Result<optimizer::Outcome> {
+    let mut point = full.to_vec();
+    let start = full[free.clone()].to_vec();
+    let mut outcome = optimizer::minimize_interruptible(ctx, &start, options, |block| {
+        point[free.clone()].copy_from_slice(block);
+        let (energy, gradient) = objective(&point)?;
+        let gradient = if gradient.len() == point.len() {
+            gradient[free.clone()].to_vec()
+        } else {
+            gradient
+        };
+        Ok((energy, gradient))
+    })?;
+    let mut parameters = full.to_vec();
+    parameters[free].copy_from_slice(&outcome.parameters);
+    outcome.parameters = parameters;
+    Ok(outcome)
+}
+
+/// One sequential sweep (`quenching = false` on a fixed ansatz): parameter `k` alone, `0..k` at
+/// their optimized values and `k+1..` at their starting values. The outcome's steps and history
+/// are the sums over the one-parameter searches; a stop ends the sweep at the best point.
+fn sweep(
+    ctx: &crate::Context,
+    initial: &[f64],
+    options: &optimizer::Options,
+    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> Result<optimizer::Outcome> {
+    if initial.len() <= 1 {
+        return optimizer::minimize_interruptible(ctx, initial, options, objective);
+    }
+    let mut parameters = initial.to_vec();
+    let (mut history, mut steps, mut success) = (Vec::new(), 0, true);
+    let mut energy = f64::NAN;
+    for k in 0..parameters.len() {
+        let step = minimize_block(ctx, &parameters, k..k + 1, options, &mut objective)?;
+        parameters = step.parameters;
+        energy = step.energy;
+        history.extend(step.history);
+        steps += step.steps;
+        success &= step.success;
+        if step.interrupted.is_some() {
+            return Ok(optimizer::Outcome {
+                parameters,
+                energy,
+                history,
+                steps,
+                success: false,
+                message: step.message,
+                hessian: None,
+                interrupted: step.interrupted,
+            });
+        }
+    }
+    Ok(optimizer::Outcome {
+        parameters,
+        energy,
+        history,
+        steps,
+        success,
+        message: "sequential sweep (quenching=False)".into(),
+        hessian: None,
+        interrupted: None,
+    })
+}
+
+/// Where and how often a solve writes its mid-run checkpoint (`SolveOptions::checkpoint`).
+#[derive(Clone, Debug)]
+pub struct Checkpointing {
+    pub path: std::path::PathBuf,
+    /// Accepted growth steps (ADAPT) or cost evaluations (fixed ansatz) between two writes.
+    pub every: usize,
+    /// The checkpoint's method name (`vqe` or `adapt-vqe`).
+    pub method: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct SolveOptions {
     pub adapt: bool,
     pub trotter: bool,
+    /// Re-optimize every parameter after each change (`true`, standard ADAPT-VQE and VQE).
+    /// `false` optimizes only what changed: ADAPT varies the newly appended parameters with every
+    /// earlier one frozen at its optimum, and a fixed ansatz is swept once, one parameter at a
+    /// time in order, each with the earlier ones at their optimized values and the later ones at
+    /// their starting values. Cheaper per step; the energy is an upper bound to the joint one.
+    pub quenching: bool,
+    /// TETRIS-ADAPT-VQE (Anastasiou et al., Phys. Rev. Research 6, 013254, 2024): a growth step
+    /// appends, after the largest gradient, every further operator in descending gradient order
+    /// whose qubit support is disjoint from those already taken this step. One growth step, one
+    /// circuit layer; never worse than the single operator.
+    pub tetris: bool,
+    /// Pruned-ADAPT-VQE (J. Chem. Theory Comput. 21, 8720, 2025): after each growth step's
+    /// optimization, the operator ranked first by `exp(-alpha x) / theta^2` (`x` its relative
+    /// position, the newest never) is removed when `|theta|` is under a fraction of the mean
+    /// amplitude of the most recent ones ([`PRUNE_ALPHA`], [`PRUNE_FRACTION`], [`PRUNE_RECENT`],
+    /// [`PRUNE_MIN_OPERATORS`]); the parameters are not re-optimized.
+    pub prune: bool,
+    /// Mid-run checkpoints: ADAPT writes one after every `every` accepted growth steps, a fixed
+    /// ansatz the best point so far after every `every` cost evaluations. The caller writes the
+    /// final, complete checkpoint.
+    pub checkpoint: Option<Checkpointing>,
     pub max_growth: usize,
     pub gradient_tolerance: Option<f64>,
     pub energy_tolerance: Option<f64>,
     pub optimizer: optimizer::Options,
+    /// The curvature estimate (row-major, `n x n`) of a carried ADAPT sequence of `n`
+    /// parameters, from the run that produced it (a checkpoint, or the previous geometry's
+    /// handover): the relaxation of the sequence starts from it instead of the identity. It is
+    /// the Hessian approximation of SLSQP or the inverse Hessian approximation of BFGS, and
+    /// belongs to the method that produced it: the caller hands a method its own. Any other
+    /// method, or no carried sequence, refuses it.
+    pub hessian: Option<Vec<f64>>,
+    /// The carried sequence and its `hessian` are the stored end of an earlier growth step of
+    /// this very problem (a checkpoint of the same Hamiltonian): the run continues growing from
+    /// that point as the uninterrupted run did, without relaxing the sequence first (a relaxation
+    /// would move it by roundoff and could reorder operators of equal gradient). Needs `hessian`.
+    pub continuation: bool,
 }
 impl Default for SolveOptions {
     fn default() -> Self {
         Self {
             adapt: false,
             trotter: false,
+            quenching: true,
+            tetris: false,
+            prune: false,
+            checkpoint: None,
             max_growth: 50,
             gradient_tolerance: Some(1e-7),
             energy_tolerance: None,
             optimizer: optimizer::Options::default(),
+            hessian: None,
+            continuation: false,
         }
     }
 }
@@ -1003,6 +1402,17 @@ pub struct SolveResult {
     /// and the result is the best point reached, `success == false`.
     pub budget_stopped: bool,
     pub elapsed_seconds: f64,
+    /// `(growth step, label)` of every operator pruning removed (`SolveOptions::prune`).
+    pub pruned: Vec<(usize, String)>,
+    /// The curvature estimate (row-major, `n x n`) of the final ADAPT ansatz of `n` parameters,
+    /// for a SLSQP (Hessian) or BFGS (inverse Hessian) run that re-optimized every parameter
+    /// after each growth step (`quenching`): the next growth step, a resume or a handover to
+    /// another geometry starts from it. `None` otherwise (the optimizer that produced it is
+    /// `SolveOptions::optimizer.method`).
+    pub hessian: Option<Vec<f64>>,
+    /// What the caller should know about how the run started (a checkpoint that recorded no
+    /// Hessian resumes from the identity).
+    pub notes: Vec<String>,
     pub(super) _memory: Reservation,
 }
 pub struct SeedRelaxation {
@@ -1012,4 +1422,40 @@ pub struct SeedRelaxation {
     pub message: String,
     pub evaluations: usize,
     pub steps: usize,
+    /// Whether the relaxation started from a carried Hessian (`SolveOptions::hessian`) rather
+    /// than the identity.
+    pub warm: bool,
+}
+
+#[cfg(test)]
+mod hessian_tests {
+    use super::{drop_parameter, drop_parameter_of_inverse, extend_hessian};
+    #[test]
+    fn dropping_a_parameter_from_an_inverse_gives_the_inverse_of_the_reduced_hessian() {
+        // B = [[4, 1, 0.5], [1, 3, -0.4], [0.5, -0.4, 2]]; its inverse, then the inverse of B
+        // without parameter 1, from the Schur complement.
+        let b = nalgebra::DMatrix::from_row_slice(3, 3, &[4., 1., 0.5, 1., 3., -0.4, 0.5, -0.4, 2.]);
+        let inverse = b.clone().try_inverse().unwrap();
+        let row_major: Vec<f64> = (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).map(|ij| inverse[ij]).collect();
+        let reduced = nalgebra::DMatrix::from_row_slice(2, 2, &[4., 0.5, 0.5, 2.]).try_inverse().unwrap();
+        let dropped = drop_parameter_of_inverse(&row_major, 3, 1);
+        for (k, value) in dropped.iter().enumerate() {
+            assert!((value - reduced[(k / 2, k % 2)]).abs() < 1e-12);
+        }
+    }
+    #[test]
+    fn a_grown_hessian_keeps_the_old_block_and_adds_the_identity() {
+        let old = [2., 0.5, 0.5, 3.];
+        assert_eq!(
+            extend_hessian(&old, 2, 4),
+            [2., 0.5, 0., 0., 0.5, 3., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.]
+        );
+        assert_eq!(extend_hessian(&old, 2, 2), old);
+    }
+    #[test]
+    fn dropping_a_parameter_removes_its_row_and_column() {
+        let h = [1., 2., 3., 2., 4., 5., 3., 5., 6.];
+        assert_eq!(drop_parameter(&h, 3, 1), [1., 3., 3., 6.]);
+        assert_eq!(drop_parameter(&h, 3, 0), [4., 5., 5., 6.]);
+    }
 }

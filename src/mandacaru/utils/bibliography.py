@@ -19,13 +19,19 @@ checked against the literature line by line.
 print them: ``Nat. Commun.``, ``Phys. Rev. B``, ``J. Chem. Phys.``), which is
 what most quantum-chemistry and physics styles expect.
 
-**Provenance.** Every entry whose PDF sits in the owner's library was taken
-from that file's own metadata and title page, not from memory: the ADAPT-VQE
+**Provenance.** An entry is ``verified`` in one of two ways.  The ADAPT-VQE
 family (Grimsley 2019, Tang 2021, Yordanov 2021, Ramoa 2025, Anastasiou 2024,
 Vaquero-Sabater 2025, Van Dyke 2024, Shkolnikov 2021, Seki 2020, Singh 2025,
-Li 2025) came from ``~/Dropbox/2.Library/.../ADAPT-VQE/``.  The rest are
-standard citations; **check one before relying on it in a manuscript** — a
-`` % unverified`` comment marks those that were not read from a local source.
+Li 2025) was taken from the PDF's own metadata and title page, in the owner's
+``~/Dropbox/2.Library/.../ADAPT-VQE/``.  Every other entry that carries a DOI was
+compared, field by field (authors, title, journal, volume, first page, year),
+with the Crossref record of that DOI on 2026-11-10; the preprints without a
+journal record (Bravyi 2017, Kitaev 1995) with their arXiv listing.
+What is still ``verified=False`` (see ``UNVERIFIED``) has no DOI to compare (a
+book, a proceedings volume, a paper of 1912), carries a truncated author list,
+or sits under a registry record that misspells an author; **check one before
+relying on it in a manuscript**.  The comment above its entry in a
+``references.bib`` says ``[unverified record]``.
 """
 
 from __future__ import annotations
@@ -70,7 +76,7 @@ _ALGORITHMS = [
   pages   = {69--89},
   year    = {1951},
   doi     = {10.1103/RevModPhys.23.69}
-}""", "restricted Hartree-Fock molecular orbitals", verified=False,
+}""", "restricted Hartree-Fock molecular orbitals", verified=True,
          topics=("rhf", "scf")),
     _ref("PopleNesbet1954", """
 @article{PopleNesbet1954,
@@ -81,7 +87,7 @@ _ALGORITHMS = [
   pages   = {571--572},
   year    = {1954},
   doi     = {10.1063/1.1740120}
-}""", "unrestricted Hartree-Fock for open shells", verified=False,
+}""", "unrestricted Hartree-Fock for open shells", verified=True,
          topics=("uhf", "scf")),
     _ref("JimenezHoyos2011", """
 @article{JimenezHoyos2011,
@@ -104,7 +110,7 @@ _ALGORITHMS = [
   pages   = {B864--B871},
   year    = {1964},
   doi     = {10.1103/PhysRev.136.B864}
-}""", "density functional theory", verified=False,
+}""", "density functional theory", verified=True,
          topics=("dft", "scf")),
     _ref("KohnSham1965", """
 @article{KohnSham1965,
@@ -116,7 +122,7 @@ _ALGORITHMS = [
   pages   = {A1133--A1138},
   year    = {1965},
   doi     = {10.1103/PhysRev.140.A1133}
-}""", "the Kohn-Sham self-consistent equations", verified=False,
+}""", "the Kohn-Sham self-consistent equations", verified=True,
          topics=("dft", "scf")),
     _ref("vonBarthHedin1972", """
 @article{vonBarthHedin1972,
@@ -129,7 +135,7 @@ _ALGORITHMS = [
   year    = {1972},
   doi     = {10.1088/0022-3719/5/13/012}
 }""", "the spin interpolation of the local spin-density correlation",
-         verified=False, topics=("xc", "spin")),
+         verified=True, topics=("xc", "spin")),
     _ref("Kubler1988", """
 @article{Kubler1988,
   author  = {K{\\"u}bler, J. and H{\\"o}ck, K.-H. and Sticht, J. and
@@ -141,7 +147,7 @@ _ALGORITHMS = [
   year    = {1988},
   doi     = {10.1088/0305-4608/18/3/018}
 }""", "noncollinear spin density functional theory: the local spin axis of "
-         "two-component (spinor) Kohn-Sham", verified=False,
+         "two-component (spinor) Kohn-Sham", verified=True,
          topics=("xc", "spin", "dft")),
     _ref("Hobbs2000", """
 @article{Hobbs2000,
@@ -155,7 +161,7 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevB.62.11556}
 }""", "the gradient-corrected (PBE) noncollinear functional in the local "
          "spin axis: the gradient of the magnetization projected on that axis",
-         verified=False, topics=("xc", "spin", "dft")),
+         verified=True, topics=("xc", "spin", "dft")),
     _ref("Vurgaftman2001", """
 @article{Vurgaftman2001,
   author  = {Vurgaftman, I. and Meyer, J. R. and Ram-Mohan, L. R.},
@@ -168,7 +174,7 @@ _ALGORITHMS = [
   doi     = {10.1063/1.1368156}
 }""", "the measured split-off gaps of III-V semiconductors (GaAs 0.341, "
          "AlAs 0.28, AlSb 0.676 eV) a two-component crystal's spin-orbit "
-         "splitting at Gamma is compared with", verified=False,
+         "splitting at Gamma is compared with", verified=True,
          topics=("spin", "dft", "reference data")),
     _ref("PerdewZunger1981", """
 @article{PerdewZunger1981,
@@ -180,7 +186,7 @@ _ALGORITHMS = [
   pages   = {5048--5079},
   year    = {1981},
   doi     = {10.1103/PhysRevB.23.5048}
-}""", "the LDA correlation (xc='lda')", verified=False,
+}""", "the LDA correlation (xc='lda')", verified=True,
          topics=("xc", "lda")),
     _ref("Furness2020", """
 @article{Furness2020,
@@ -193,7 +199,7 @@ _ALGORITHMS = [
   pages   = {8208--8215},
   year    = {2020},
   doi     = {10.1021/acs.jpclett.0c02405}
-}""", "the r2SCAN meta-GGA (xc='r2scan')", verified=False,
+}""", "the r2SCAN meta-GGA (xc='r2scan')", verified=True,
          topics=("xc", "meta-gga")),
     _ref("Vydrov2010", """
 @article{Vydrov2010,
@@ -205,7 +211,7 @@ _ALGORITHMS = [
   pages   = {244103},
   year    = {2010},
   doi     = {10.1063/1.3521275}
-}""", "VV10 nonlocal correlation (xc='pbe+rvv10' / 'r2scan+rvv10')", verified=False,
+}""", "VV10 nonlocal correlation (xc='pbe+rvv10' / 'r2scan+rvv10')", verified=True,
          topics=("xc", "dispersion")),
     _ref("Sabatini2013", """
 @article{Sabatini2013,
@@ -218,7 +224,7 @@ _ALGORITHMS = [
   pages   = {041108},
   year    = {2013},
   doi     = {10.1103/PhysRevB.87.041108}
-}""", "the rVV10 kernel (xc='pbe+rvv10' / 'r2scan+rvv10')", verified=False,
+}""", "the rVV10 kernel (xc='pbe+rvv10' / 'r2scan+rvv10')", verified=True,
          topics=("xc", "dispersion")),
     _ref("RomanPerez2009", """
 @article{RomanPerez2009,
@@ -231,7 +237,7 @@ _ALGORITHMS = [
   year    = {2009},
   doi     = {10.1103/PhysRevLett.103.096102}
 }""", "the q interpolation of the nonlocal kernel (xc='pbe+rvv10' / 'r2scan+rvv10')",
-         verified=False, topics=("xc", "dispersion")),
+         verified=True, topics=("xc", "dispersion")),
     _ref("KingSmith1993", """
 @article{KingSmith1993,
   author  = {King-Smith, R. D. and Vanderbilt, David},
@@ -242,7 +248,7 @@ _ALGORITHMS = [
   year    = {1993},
   doi     = {10.1103/PhysRevB.47.1651}
 }""", "the Berry-phase polarization (get_polarization)",
-         verified=False, topics=("polarization", "berry phase")),
+         verified=True, topics=("polarization", "berry phase")),
     _ref("Resta1994", """
 @article{Resta1994,
   author  = {Resta, Raffaele},
@@ -254,7 +260,7 @@ _ALGORITHMS = [
   year    = {1994},
   doi     = {10.1103/RevModPhys.66.899}
 }""", "the polarization as a geometric phase (get_polarization)",
-         verified=False, topics=("polarization", "berry phase")),
+         verified=True, topics=("polarization", "berry phase")),
     _ref("Vanderbilt2000", """
 @article{Vanderbilt2000,
   author  = {Vanderbilt, David},
@@ -265,7 +271,7 @@ _ALGORITHMS = [
   year    = {2000},
   doi     = {10.1016/S0022-3697(99)00273-5}
 }""", "the proper piezoelectric tensor (piezoelectric_tensor)",
-         verified=False, topics=("polarization", "piezoelectric")),
+         verified=True, topics=("polarization", "piezoelectric")),
     _ref("Souza2002", """
 @article{Souza2002,
   author  = {Souza, Ivo and {\\'I}{\\~n}iguez, Jorge and Vanderbilt, David},
@@ -277,7 +283,7 @@ _ALGORITHMS = [
   year    = {2002},
   doi     = {10.1103/PhysRevLett.89.117602}
 }""", "the Berry-phase finite electric field (electric_field on a crystal)",
-         verified=False, topics=("polarization", "electric field")),
+         verified=True, topics=("polarization", "electric field")),
     _ref("Umari2002", """
 @article{Umari2002,
   author  = {Umari, Paolo and Pasquarello, Alfredo},
@@ -289,7 +295,7 @@ _ALGORITHMS = [
   year    = {2002},
   doi     = {10.1103/PhysRevLett.89.157602}
 }""", "the Berry-phase finite electric field (electric_field on a crystal)",
-         verified=False, topics=("polarization", "electric field")),
+         verified=True, topics=("polarization", "electric field")),
     _ref("Marzari1997", """
 @article{Marzari1997,
   author  = {Marzari, Nicola and Vanderbilt, David},
@@ -301,7 +307,7 @@ _ALGORITHMS = [
   year    = {1997},
   doi     = {10.1103/PhysRevB.56.12847}
 }""", "maximally localized Wannier functions (wannier)",
-         verified=False, topics=("wannier",)),
+         verified=True, topics=("wannier",)),
     _ref("Marzari2012", """
 @article{Marzari2012,
   author  = {Marzari, Nicola and Mostofi, Arash A. and Yates, Jonathan R. and
@@ -314,7 +320,7 @@ _ALGORITHMS = [
   year    = {2012},
   doi     = {10.1103/RevModPhys.84.1419}
 }""", "the review of maximally localized Wannier functions (wannier)",
-         verified=False, topics=("wannier",)),
+         verified=True, topics=("wannier",)),
     _ref("Souza2001", """
 @article{Souza2001,
   author  = {Souza, Ivo and Marzari, Nicola and Vanderbilt, David},
@@ -326,7 +332,7 @@ _ALGORITHMS = [
   year    = {2001},
   doi     = {10.1103/PhysRevB.65.035109}
 }""", "the disentanglement of entangled bands (wannier with windows)",
-         verified=False, topics=("wannier",)),
+         verified=True, topics=("wannier",)),
     _ref("Sakuma2013", """
 @article{Sakuma2013,
   author  = {Sakuma, Rei},
@@ -338,7 +344,7 @@ _ALGORITHMS = [
   year    = {2013},
   doi     = {10.1103/PhysRevB.87.235109}
 }""", "the symmetry-adapted disentanglement (wannier with windows, "
-         "symmetrize=True)", verified=False, topics=("wannier",)),
+         "symmetrize=True)", verified=True, topics=("wannier",)),
     _ref("Aryasetiawan2004", """
 @article{Aryasetiawan2004,
   author  = {Aryasetiawan, F. and Imada, M. and Georges, A. and Kotliar, G.
@@ -351,7 +357,7 @@ _ALGORITHMS = [
   year    = {2004},
   doi     = {10.1103/PhysRevB.70.195104}
 }""", "the constrained random-phase approximation (downfold screening)",
-         verified=False, topics=("wannier", "screening")),
+         verified=True, topics=("wannier", "screening")),
     _ref("Sasioglu2011", """
 @article{Sasioglu2011,
   author  = {{\\c{S}}a{\\c{s}}{\\i}o{\\u{g}}lu, E. and Friedrich, C. and
@@ -365,7 +371,7 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevB.83.121101}
 }""", "the projector-weighted constrained RPA for entangled bands "
          "(downfold screening)",
-         verified=False, topics=("wannier", "screening")),
+         verified=True, topics=("wannier", "screening")),
     _ref("Spencer2008", """
 @article{Spencer2008,
   author  = {Spencer, James and Alavi, Ali},
@@ -377,7 +383,7 @@ _ALGORITHMS = [
   year    = {2008},
   doi     = {10.1103/PhysRevB.77.193110}
 }""", "the truncated Coulomb interaction of the downfolded fragment",
-         verified=False, topics=("wannier",)),
+         verified=True, topics=("wannier",)),
     _ref("Sayfutyarova2017", """
 @article{Sayfutyarova2017,
   author  = {Sayfutyarova, Elvira R. and Sun, Qiming and Chan, Garnet
@@ -391,7 +397,7 @@ _ALGORITHMS = [
   doi     = {10.1021/acs.jctc.7b00128}
 }""", "the projection onto target atomic orbitals (projectability "
          "windows, wannier windows='auto')",
-         verified=False, topics=("wannier", "selection")),
+         verified=True, topics=("wannier", "selection")),
     _ref("Qiao2023", """
 @article{Qiao2023,
   author  = {Qiao, Junfeng and Pizzi, Giovanni and Marzari, Nicola},
@@ -404,7 +410,7 @@ _ALGORITHMS = [
   doi     = {10.1038/s41524-023-01146-w}
 }""", "states chosen by projectability for the disentanglement "
          "(wannier windows='auto' or 'rpa')",
-         verified=False, topics=("wannier", "selection")),
+         verified=True, topics=("wannier", "selection")),
     _ref("Damle2017", """
 @article{Damle2017,
   author  = {Damle, Anil and Lin, Lin and Ying, Lexing},
@@ -417,7 +423,7 @@ _ALGORITHMS = [
   doi     = {10.1016/j.jcp.2016.12.053}
 }""", "selected columns of the density matrix for crystals "
          "(wannier windows='scdm')",
-         verified=False, topics=("wannier", "selection")),
+         verified=True, topics=("wannier", "selection")),
     _ref("Damle2018", """
 @article{Damle2018,
   author  = {Damle, Anil and Lin, Lin},
@@ -427,10 +433,10 @@ _ALGORITHMS = [
   volume  = {16},
   pages   = {1392--1410},
   year    = {2018},
-  doi     = {10.1137/18M1167164}
+  doi     = {10.1137/17M1129696}
 }""", "the erfc-weighted quasi-density matrix for entangled bands "
          "(wannier windows='scdm')",
-         verified=False, topics=("wannier", "selection")),
+         verified=True, topics=("wannier", "selection")),
     _ref("Vitale2020", """
 @article{Vitale2020,
   author  = {Vitale, Valerio and Pizzi, Giovanni and Marrazzo, Antimo and
@@ -443,7 +449,7 @@ _ALGORITHMS = [
   doi     = {10.1038/s41524-020-0312-y}
 }""", "the SCDM erfc parameters fitted to the projectability "
          "(wannier windows='scdm' without mu and sigma)",
-         verified=False, topics=("wannier", "selection")),
+         verified=True, topics=("wannier", "selection")),
     _ref("Scuseria2008", """
 @article{Scuseria2008,
   author  = {Scuseria, Gustavo E. and Henderson, Thomas M. and Sorensen,
@@ -457,7 +463,7 @@ _ALGORITHMS = [
   doi     = {10.1063/1.3043729}
 }""", "direct RPA as ring coupled-cluster doubles (the amplitudes of "
          "natural_orbitals(method='rpa'))",
-         verified=False, topics=("rpa", "selection")),
+         verified=True, topics=("rpa", "selection")),
     _ref("Furche2008", """
 @article{Furche2008,
   author  = {Furche, Filipp},
@@ -470,7 +476,7 @@ _ALGORITHMS = [
   doi     = {10.1063/1.2977789}
 }""", "the RPA correlation energy from the excitation energies and the "
          "imaginary-frequency polarizability (natural_orbitals checks)",
-         verified=False, topics=("rpa",)),
+         verified=True, topics=("rpa",)),
     _ref("Ning2022", """
 @article{Ning2022,
   author  = {Ning, Jinliang and Kothakonda, Manish and Furness, James W. and
@@ -483,7 +489,7 @@ _ALGORITHMS = [
   pages   = {075422},
   year    = {2022},
   doi     = {10.1103/PhysRevB.106.075422}
-}""", "r2SCAN+rVV10, b = 11.95 (xc='r2scan+rvv10')", verified=False,
+}""", "r2SCAN+rVV10, b = 11.95 (xc='r2scan+rvv10')", verified=True,
          topics=("xc", "dispersion")),
     _ref("Heyd2003", """
 @article{Heyd2003,
@@ -496,7 +502,7 @@ _ALGORITHMS = [
   note    = {Erratum: J. Chem. Phys. 124, 219906 (2006)},
   doi     = {10.1063/1.1564060}
 }""", "the screened hybrid and its short-range exchange hole (xc='hse06')",
-         verified=False, topics=("xc", "hybrid")),
+         verified=True, topics=("xc", "hybrid")),
     _ref("Krukau2006", """
 @article{Krukau2006,
   author  = {Krukau, Aliaksandr V. and Vydrov, Oleg A. and Izmaylov, Artur F.
@@ -509,7 +515,7 @@ _ALGORITHMS = [
   year    = {2006},
   doi     = {10.1063/1.2404663}
 }""", "the HSE06 screening parameter omega = 0.11 (xc='hse06')",
-         verified=False, topics=("xc", "hybrid")),
+         verified=True, topics=("xc", "hybrid")),
     _ref("Paier2005", """
 @article{Paier2005,
   author  = {Paier, Joachim and Hirschl, Robin and Marsman, Martijn
@@ -523,7 +529,7 @@ _ALGORITHMS = [
   doi     = {10.1063/1.1926272}
 }""", "exact exchange in the projector augmented-wave method: the "
          "one-center correction of a PAW-LCAO hybrid",
-         verified=False, topics=("xc", "hybrid", "paw")),
+         verified=True, topics=("xc", "hybrid", "paw")),
     _ref("Tkatchenko2009", """
 @article{Tkatchenko2009,
   author  = {Tkatchenko, Alexandre and Scheffler, Matthias},
@@ -536,20 +542,6 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevLett.102.073005}
 }""", "the Tkatchenko-Scheffler dispersion method (vdw='ts')", verified=True,
          topics=("dispersion",)),
-    _ref("Caldeweyher2019", """
-@article{Caldeweyher2019,
-  author  = {Caldeweyher, Eike and Ehlert, Sebastian and Hansen, Andreas and
-             Neugebauer, Hagen and Spicher, Sebastian and Bannwarth, Christoph
-             and Grimme, Stefan},
-  title   = {A generally applicable atomic-charge dependent London dispersion
-             correction},
-  journal = {J. Chem. Phys.},
-  volume  = {150},
-  pages   = {154122},
-  year    = {2019},
-  doi     = {10.1063/1.5090222}
-}""", "the D4 dispersion correction (vdw='d4')", verified=False,
-         topics=("dispersion",)),
     _ref("Mermin1965", """
 @article{Mermin1965,
   author  = {Mermin, N. David},
@@ -559,7 +551,7 @@ _ALGORITHMS = [
   pages   = {A1441--A1443},
   year    = {1965},
   doi     = {10.1103/PhysRev.137.A1441}
-}""", "finite-temperature (smeared) Kohn-Sham occupations", verified=False,
+}""", "finite-temperature (smeared) Kohn-Sham occupations", verified=True,
          topics=("dft", "smearing")),
     _ref("MethfesselPaxton1989", """
 @article{MethfesselPaxton1989,
@@ -572,7 +564,7 @@ _ALGORITHMS = [
   year    = {1989},
   doi     = {10.1103/PhysRevB.40.3616}
 }""", "Methfessel-Paxton smearing (smearing='methfessel-paxton')",
-         verified=False, topics=("dft", "smearing")),
+         verified=True, topics=("dft", "smearing")),
     _ref("Kerker1981", """
 @article{Kerker1981,
   author  = {Kerker, G. P.},
@@ -584,7 +576,7 @@ _ALGORITHMS = [
   year    = {1981},
   doi     = {10.1103/PhysRevB.23.3082}
 }""", "the Kerker preconditioner of the periodic density mixing",
-         verified=False, topics=("dft", "mixing")),
+         verified=True, topics=("dft", "mixing")),
     _ref("Wecker2015", """
 @article{Wecker2015,
   author  = {Wecker, Dave and Hastings, Matthew B. and Troyer, Matthias},
@@ -594,7 +586,7 @@ _ALGORITHMS = [
   pages   = {042303},
   year    = {2015},
   doi     = {10.1103/PhysRevA.92.042303}
-}""", "Hamiltonian variational ansatz", verified=False,
+}""", "Hamiltonian variational ansatz", verified=True,
          topics=("hva", "vqe")),
     _ref("Grimsley2019", """
 @article{Grimsley2019,
@@ -619,7 +611,7 @@ _ALGORITHMS = [
   pages   = {4213},
   year    = {2014},
   doi     = {10.1038/ncomms5213}
-}""", "the variational quantum eigensolver", verified=False, topics=("vqe",)),
+}""", "the variational quantum eigensolver", verified=True, topics=("vqe",)),
     _ref("Romero2019", """
 @article{Romero2019,
   author  = {Romero, Jonathan and Babbush, Ryan and McClean, Jarrod R. and
@@ -631,7 +623,7 @@ _ALGORITHMS = [
   pages   = {014008},
   year    = {2019},
   doi     = {10.1088/2058-9565/aad3e4}
-}""", "the UCCSD ansatz", verified=False, topics=("uccsd",)),
+}""", "the UCCSD ansatz", verified=True, topics=("uccsd",)),
     _ref("Higgott2019", """
 @article{Higgott2019,
   author  = {Higgott, Oscar and Wang, Daochen and Brierley, Stephen},
@@ -642,7 +634,7 @@ _ALGORITHMS = [
   year    = {2019},
   doi     = {10.22331/q-2019-07-01-156}
 }""", "excited states by variational quantum deflation (energy_levels)",
-         verified=False, topics=("deflation",)),
+         verified=True, topics=("deflation",)),
     _ref("Nakanishi2019", """
 @article{Nakanishi2019,
   author  = {Nakanishi, Ken M. and Mitarai, Kosuke and Fujii, Keisuke},
@@ -652,7 +644,7 @@ _ALGORITHMS = [
   pages   = {033062},
   year    = {2019},
   doi     = {10.1103/PhysRevResearch.1.033062}
-}""", "the subspace-search solvers", verified=False, topics=("subspace",)),
+}""", "the subspace-search solvers", verified=True, topics=("subspace",)),
     _ref("Metropolis1953", """
 @article{Metropolis1953,
   author  = {Metropolis, Nicholas and Rosenbluth, Arianna W. and
@@ -664,7 +656,7 @@ _ALGORITHMS = [
   year    = {1953},
   doi     = {10.1063/1.1699114}
 }""", "the Metropolis acceptance of the VASQA architecture chain",
-         verified=False, topics=("vasqa",)),
+         verified=True, topics=("vasqa",)),
     _ref("Hastings1970", """
 @article{Hastings1970,
   author  = {Hastings, W. K.},
@@ -676,7 +668,7 @@ _ALGORITHMS = [
   year    = {1970},
   doi     = {10.1093/biomet/57.1.97}
 }""", "the proposal-ratio correction of the VASQA architecture chain",
-         verified=False, topics=("vasqa",)),
+         verified=True, topics=("vasqa",)),
     _ref("Kirkpatrick1983", """
 @article{Kirkpatrick1983,
   author  = {Kirkpatrick, S. and Gelatt, C. D. and Vecchi, M. P.},
@@ -686,7 +678,7 @@ _ALGORITHMS = [
   pages   = {671},
   year    = {1983},
   doi     = {10.1126/science.220.4598.671}
-}""", "the annealed architecture temperature of VASQA", verified=False,
+}""", "the annealed architecture temperature of VASQA", verified=True,
          topics=("vasqa",)),
     _ref("Gilmer2017", """
 @inproceedings{Gilmer2017,
@@ -701,14 +693,6 @@ _ALGORITHMS = [
   year      = {2017}
 }""", "the Hamiltonian message-passing network of VALSQA's proposal",
          verified=False, topics=("vasqa",)),
-    _ref("Rasmussen2006", """
-@book{Rasmussen2006,
-  author    = {Rasmussen, Carl Edward and Williams, Christopher K. I.},
-  title     = {Gaussian Processes for Machine Learning},
-  publisher = {MIT Press},
-  year      = {2006}
-}""", "the Gaussian-process head of VALSQA's proposal", verified=False,
-         topics=("vasqa",)),
     _ref("Kitaev1995", """
 @misc{Kitaev1995,
   author        = {Kitaev, A. Yu.},
@@ -717,7 +701,7 @@ _ALGORITHMS = [
   eprint        = {quant-ph/9511026},
   archivePrefix = {arXiv},
   doi           = {10.48550/arXiv.quant-ph/9511026}
-}""", "quantum phase estimation", verified=False, topics=("qpe",)),
+}""", "quantum phase estimation", verified=True, topics=("qpe",)),
     _ref("AspuruGuzik2005", """
 @article{AspuruGuzik2005,
   author  = {Aspuru-Guzik, Al{\\'a}n and Dutoi, Anthony D. and Love, Peter J.
@@ -728,7 +712,7 @@ _ALGORITHMS = [
   pages   = {1704--1707},
   year    = {2005},
   doi     = {10.1126/science.1113479}
-}""", "phase estimation applied to molecular energies", verified=False,
+}""", "phase estimation applied to molecular energies", verified=True,
          topics=("qpe",)),
     _ref("Sim2019", """
 @article{Sim2019,
@@ -740,7 +724,7 @@ _ALGORITHMS = [
   pages   = {1900070},
   year    = {2019},
   doi     = {10.1002/qute.201900070}
-}""", "the expressibility diagnostic", verified=False,
+}""", "the expressibility diagnostic", verified=True,
          topics=("expressivity",)),
     _ref("BeebeLinderberg1977", """
 @article{BeebeLinderberg1977,
@@ -753,7 +737,7 @@ _ALGORITHMS = [
   year    = {1977},
   doi     = {10.1002/qua.560120408}
 }""", "Cholesky-factored two-electron integrals (two_body cholesky)",
-         verified=False, topics=("cholesky", "integrals")),
+         verified=True, topics=("cholesky", "integrals")),
     _ref("Koch2003", """
 @article{Koch2003,
   author  = {Koch, Henrik and S{\\'a}nchez de Mer{\\'a}s, Alfredo and
@@ -766,7 +750,7 @@ _ALGORITHMS = [
   year    = {2003},
   doi     = {10.1063/1.1578621}
 }""", "Cholesky-factored two-electron integrals (two_body cholesky)",
-         verified=False, topics=("cholesky", "integrals")),
+         verified=True, topics=("cholesky", "integrals")),
     _ref("Folkestad2019", """
 @article{Folkestad2019,
   author  = {Folkestad, Sarai D. and Kj{\\o}nstad, Eirik F. and Koch, Henrik},
@@ -778,7 +762,7 @@ _ALGORITHMS = [
   year    = {2019},
   doi     = {10.1063/1.5083802}
 }""", "the batched two-step pivots of the Cholesky integrals (two_body "
-         "cholesky)", verified=False, topics=("cholesky", "integrals")),
+         "cholesky)", verified=True, topics=("cholesky", "integrals")),
     _ref("Aquilante2008", """
 @article{Aquilante2008,
   author  = {Aquilante, Francesco and Lindh, Roland and Pedersen, Thomas
@@ -791,7 +775,7 @@ _ALGORITHMS = [
   year    = {2008},
   doi     = {10.1063/1.2955755}
 }""", "fixed Cholesky pivots as a Coulomb-metric fitting basis, smooth in "
-         "the nuclear positions (two_body cholesky forces)", verified=False,
+         "the nuclear positions (two_body cholesky forces)", verified=True,
          topics=("cholesky", "integrals", "forces")),
     _ref("HandySchaefer1984", """
 @article{HandySchaefer1984,
@@ -803,9 +787,64 @@ _ALGORITHMS = [
   pages   = {5031--5033},
   year    = {1984},
   doi     = {10.1063/1.447489}
-}""", "the z-vector: one coupled-perturbed Hartree-Fock solve for the orbital "
-         "response of every nuclear coordinate (active-space forces)",
+}""", "the z-vector: one linear solve replaces a response equation per nuclear "
+         "coordinate (the orbital response of active-space forces, and the "
+         "parameter z-vector of the variational force's Lagrangian correction)",
          topics=("forces",)),
+    _ref("Helgaker1989", """
+@article{Helgaker1989,
+  author  = {Helgaker, Trygve and J{\\o}rgensen, Poul},
+  title   = {Configuration-interaction energy derivatives in a fully
+             variational formulation},
+  journal = {Theor. Chim. Acta},
+  volume  = {75},
+  pages   = {111--127},
+  year    = {1989},
+  doi     = {10.1007/BF00527713}
+}""", "the Lagrangian formulation of energy derivatives: the stationarity "
+         "conditions added with multipliers make the energy variational in every "
+         "parameter (the residual-gradient correction of variational forces)",
+         verified=True, topics=("forces",)),
+    _ref("Mitarai2020", """
+@article{Mitarai2020,
+  author  = {Mitarai, Kosuke and Nakagawa, Yuya O. and Mizukami, Wataru},
+  title   = {Theory of analytical energy derivatives for the variational
+             quantum eigensolver},
+  journal = {Phys. Rev. Res.},
+  volume  = {2},
+  pages   = {013129},
+  year    = {2020},
+  doi     = {10.1103/PhysRevResearch.2.013129}
+}""", "analytic energy derivatives of a variational quantum state, with the "
+         "response of its parameters and orbitals (variational forces)",
+         verified=True, topics=("forces",)),
+    _ref("Pople1979", """
+@article{Pople1979,
+  author  = {Pople, J. A. and Krishnan, R. and Schlegel, H. B. and Binkley, J. S.},
+  title   = {Derivative studies in Hartree-Fock and M{\\o}ller-Plesset theories},
+  journal = {Int. J. Quantum Chem.},
+  volume  = {16},
+  number  = {S13},
+  pages   = {225--241},
+  year    = {1979},
+  doi     = {10.1002/qua.560160825}
+}""", "the coupled-perturbed Hartree-Fock response and the MP2 gradient theory of the "
+         "orbital response in the analytic variational forces",
+         verified=True, topics=("forces",)),
+    _ref("GerrattMills1968", """
+@article{GerrattMills1968,
+  author  = {Gerratt, J. and Mills, I. M.},
+  title   = {Force constants and dipole-moment derivatives of molecules from
+             perturbed {Hartree}-{Fock} calculations. {I}},
+  journal = {J. Chem. Phys.},
+  volume  = {49},
+  number  = {4},
+  pages   = {1719--1729},
+  year    = {1968},
+  doi     = {10.1063/1.1670299}
+}""", "the coupled-perturbed Hartree-Fock equations of the orbital response in the "
+         "analytic variational forces",
+         verified=True, topics=("forces",)),
     _ref("Pulay1969", """
 @article{Pulay1969,
   author  = {Pulay, P.},
@@ -830,7 +869,7 @@ _ALGORITHMS = [
   year    = {1998},
   doi     = {10.1103/PhysRevB.57.1505}
 }""", "the on-site Hubbard correction (hubbard_u) of a Kohn-Sham calculation",
-         verified=False, topics=("dft", "hubbard")),
+         verified=True, topics=("dft", "hubbard")),
     _ref("Liechtenstein1995", """
 @article{Liechtenstein1995,
   author  = {Liechtenstein, A. I. and Anisimov, V. I. and Zaanen, J.},
@@ -841,7 +880,7 @@ _ALGORITHMS = [
   year    = {1995},
   doi     = {10.1103/PhysRevB.52.R5467}
 }""", "the rotationally invariant DFT+U method with Slater integrals (Liechtenstein form)",
-         verified=False, topics=("dft", "hubbard")),
+         verified=True, topics=("dft", "hubbard")),
     _ref("Cococcioni2005", """
 @article{Cococcioni2005,
   author  = {Cococcioni, M. and de Gironcoli, S.},
@@ -852,7 +891,7 @@ _ALGORITHMS = [
   year    = {2005},
   doi     = {10.1103/PhysRevB.71.035105}
 }""", "the linear response determination of Hubbard parameters",
-         verified=False, topics=("dft", "hubbard", "response")),
+         verified=True, topics=("dft", "hubbard", "response")),
     _ref("Motta2021", """
 @article{Motta2021,
   author  = {Motta, Mario and Ye, Erika and McClean, Jarrod R. and Li, Zhendong
@@ -865,8 +904,34 @@ _ALGORITHMS = [
   year    = {2021},
   doi     = {10.1038/s41534-021-00416-z}
 }""", "the double factorization of the two-body operator behind "
-         "measurement_scheme='double-factorized'", verified=False,
+         "measurement_scheme='double-factorized'", verified=True,
          topics=("measurement", "double_factorization")),
+    _ref("Peng2017", """
+@article{Peng2017,
+  author  = {Peng, Bo and Kowalski, Karol},
+  title   = {Highly efficient and scalable compound decomposition of two-electron
+             integral tensor and its application in coupled cluster calculations},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {13},
+  pages   = {4179--4192},
+  year    = {2017},
+  doi     = {10.1021/acs.jctc.7b00605}
+}""", "the second (eigen) factorization of each Cholesky vector behind "
+         "two_body representation 'double-factorized'", verified=False,
+         topics=("double_factorization",)),
+    _ref("vonBurg2021", """
+@article{vonBurg2021,
+  author  = {von Burg, Vera and Low, Guang Hao and H{\"a}ner, Thomas and
+             Steiger, Damian S. and Reiher, Markus and Roetteler, Martin and
+             Troyer, Matthias},
+  title   = {Quantum computing enhanced computational catalysis},
+  journal = {Phys. Rev. Res.},
+  volume  = {3},
+  pages   = {033055},
+  year    = {2021},
+  doi     = {10.1103/PhysRevResearch.3.033055}
+}""", "the truncated double-factorized Hamiltonian behind two_body representation "
+         "'double-factorized'", verified=False, topics=("double_factorization",)),
     _ref("Huggins2021", """
 @article{Huggins2021,
   author  = {Huggins, William J. and McClean, Jarrod R. and Rubin, Nicholas C.
@@ -880,7 +945,7 @@ _ALGORITHMS = [
   year    = {2021},
   doi     = {10.1038/s41534-020-00341-7}
 }""", "measuring an energy in the bases of a factorized Hamiltonian "
-         "(measurement_scheme='double-factorized')", verified=False,
+         "(measurement_scheme='double-factorized')", verified=True,
          topics=("measurement", "double_factorization")),
     _ref("Kivlichan2018", """
 @article{Kivlichan2018,
@@ -895,8 +960,317 @@ _ALGORITHMS = [
   year    = {2018},
   doi     = {10.1103/PhysRevLett.120.110501}
 }""", "the Givens rotations on neighboring modes that change the measurement "
-         "basis of measurement_scheme='double-factorized'", verified=False,
+         "basis of measurement_scheme='double-factorized'", verified=True,
          topics=("measurement", "double_factorization", "givens")),
+    # ---- numerical methods the engine rests on (added by the 2026-11 audit) ---- #
+    _ref("Lanczos1950", """
+@article{Lanczos1950,
+  author  = {Lanczos, Cornelius},
+  title   = {An iteration method for the solution of the eigenvalue problem of
+             linear differential and integral operators},
+  journal = {J. Res. Natl. Bur. Stand.},
+  volume  = {45},
+  pages   = {255--282},
+  year    = {1950},
+  doi     = {10.6028/jres.045.026}
+}""", "the Lanczos tridiagonalization whose Ritz values and weights are the "
+         "poles of the spectral function (quantum::spectral)",
+         verified=True, topics=("spectral", "krylov")),
+    _ref("BradleyTerry1952", """
+@article{BradleyTerry1952,
+  author  = {Bradley, Ralph Allan and Terry, Milton E.},
+  title   = {Rank analysis of incomplete block designs: {I}. {T}he method of
+             paired comparisons},
+  journal = {Biometrika},
+  volume  = {39},
+  pages   = {324--345},
+  year    = {1952},
+  doi     = {10.2307/2334029}
+}""", "the pairwise Bradley-Terry ranker of VALSQA's proposal "
+         "(quantum::search::learning::ranker)", verified=True,
+         topics=("vasqa", "ranker")),
+    _ref("Kuhn1955", """
+@article{Kuhn1955,
+  author  = {Kuhn, Harold W.},
+  title   = {The {H}ungarian method for the assignment problem},
+  journal = {Naval Res. Logist. Q.},
+  volume  = {2},
+  pages   = {83--97},
+  year    = {1955},
+  doi     = {10.1002/nav.3800020109}
+}""", "the minimum-cost assignment (dual potentials, augmenting paths) that "
+         "follows orbitals between displaced geometries (math::assignment)",
+         verified=True, topics=("assignment", "forces")),
+    _ref("Munkres1957", """
+@article{Munkres1957,
+  author  = {Munkres, James},
+  title   = {Algorithms for the assignment and transportation problems},
+  journal = {J. Soc. Ind. Appl. Math.},
+  volume  = {5},
+  pages   = {32--38},
+  year    = {1957},
+  doi     = {10.1137/0105003}
+}""", "the O(n^3) form of the Hungarian assignment algorithm "
+         "(math::assignment)", verified=True, topics=("assignment", "forces")),
+    _ref("Schoenemann1966", """
+@article{Schoenemann1966,
+  author  = {Sch{\\"o}nemann, Peter H.},
+  title   = {A generalized solution of the orthogonal {P}rocrustes problem},
+  journal = {Psychometrika},
+  volume  = {31},
+  pages   = {1--10},
+  year    = {1966},
+  doi     = {10.1007/BF02289451}
+}""", "the Procrustes (polar-factor) rotation that aligns degenerate orbitals "
+         "between displaced geometries and orients the spin of a spinor "
+         "crystal", verified=True, topics=("forces", "spin-orbit")),
+    _ref("Richardson1911", """
+@article{Richardson1911,
+  author  = {Richardson, Lewis Fry},
+  title   = {The approximate arithmetical solution by finite differences of
+             physical problems involving differential equations, with an
+             application to the stresses in a masonry dam},
+  journal = {Philos. Trans. R. Soc. London, Ser. A},
+  volume  = {210},
+  pages   = {307--357},
+  year    = {1911},
+  doi     = {10.1098/rsta.1911.0009}
+}""", "the Richardson extrapolation of the finite-difference force response "
+         "(molecular::response), of the Hubbard response and of the confined "
+         "orbitals", verified=True, topics=("forces", "extrapolation")),
+    _ref("SaundersHillier1973", """
+@article{SaundersHillier1973,
+  author  = {Saunders, V. R. and Hillier, I. H.},
+  title   = {A ``level-shifting'' method for converging closed shell
+             {H}artree--{F}ock wave functions},
+  journal = {Int. J. Quantum Chem.},
+  volume  = {7},
+  pages   = {699--705},
+  year    = {1973},
+  doi     = {10.1002/qua.560070407}
+}""", "the level shift that holds a Hartree-Fock or Kohn-Sham SCF that "
+         "turned uphill on the aufbau side (molecular::scf, molecular::dft)",
+         verified=True, topics=("scf",)),
+    _ref("Davidson1975", """
+@article{Davidson1975,
+  author  = {Davidson, Ernest R.},
+  title   = {The iterative calculation of a few of the lowest eigenvalues and
+             corresponding eigenvectors of large real-symmetric matrices},
+  journal = {J. Comput. Phys.},
+  volume  = {17},
+  pages   = {87--94},
+  year    = {1975},
+  doi     = {10.1016/0021-9991(75)90065-0}
+}""", "the block Davidson eigensolver of the crystal SCF "
+         "(eigensolver='davidson')", verified=True, topics=("periodic", "scf")),
+    _ref("WoodZunger1985", """
+@article{WoodZunger1985,
+  author  = {Wood, D. M. and Zunger, A.},
+  title   = {A new method for diagonalising large matrices},
+  journal = {J. Phys. A: Math. Gen.},
+  volume  = {18},
+  pages   = {1343--1359},
+  year    = {1985},
+  doi     = {10.1088/0305-4470/18/9/018}
+}""", "the residual-minimization (RMM-DIIS) eigensolver of the crystal SCF "
+         "(eigensolver='rmm-diis' and 'mixed')", verified=True,
+         topics=("periodic", "scf")),
+    _ref("FuHo1983", """
+@article{FuHo1983,
+  author  = {Fu, C.-L. and Ho, K.-M.},
+  title   = {First-principles calculation of the equilibrium ground-state
+             properties of transition metals: {A}pplications to {N}b and {M}o},
+  journal = {Phys. Rev. B},
+  volume  = {28},
+  pages   = {5480--5486},
+  year    = {1983},
+  doi     = {10.1103/PhysRevB.28.5480}
+}""", "Gaussian smearing of the occupations (smearing='gaussian')",
+         verified=True, topics=("dft", "smearing")),
+    _ref("Trotter1959", """
+@article{Trotter1959,
+  author  = {Trotter, H. F.},
+  title   = {On the product of semi-groups of operators},
+  journal = {Proc. Am. Math. Soc.},
+  volume  = {10},
+  pages   = {545--551},
+  year    = {1959},
+  doi     = {10.1090/S0002-9939-1959-0108732-6}
+}""", "the product of exponentials that is a Trotterized ansatz "
+         "(trotter=True) and the first-order product formula of "
+         "time_evolution", verified=True, topics=("trotter", "dynamics")),
+    _ref("Strang1968", """
+@article{Strang1968,
+  author  = {Strang, Gilbert},
+  title   = {On the construction and comparison of difference schemes},
+  journal = {SIAM J. Numer. Anal.},
+  volume  = {5},
+  pages   = {506--517},
+  year    = {1968},
+  doi     = {10.1137/0705041}
+}""", "the symmetric second-order splitting that is the default order of "
+         "workflows.time_evolution", verified=True,
+         topics=("trotter", "dynamics")),
+    _ref("Suzuki1991", """
+@article{Suzuki1991,
+  author  = {Suzuki, Masuo},
+  title   = {General theory of fractal path integrals with applications to
+             many-body theories and statistical physics},
+  journal = {J. Math. Phys.},
+  volume  = {32},
+  pages   = {400--407},
+  year    = {1991},
+  doi     = {10.1063/1.529425}
+}""", "the recursive higher-order product formulas of "
+         "workflows.time_evolution (order 4 and above)", verified=True,
+         topics=("trotter", "dynamics")),
+    _ref("GoogleQuantumAI2025", """
+@article{GoogleQuantumAI2025,
+  author  = {{Google Quantum AI and Collaborators}},
+  title   = {Observation of constructive interference at the edge of quantum
+             ergodicity},
+  journal = {Nature},
+  volume  = {646},
+  pages   = {825--830},
+  year    = {2025},
+  doi     = {10.1038/s41586-025-09526-6}
+}""", "the nested Pauli echoes (workflows.nested_otoc) and the dipole-kicked "
+         "echo (workflows.quantum_echoes)", verified=True,
+         topics=("dynamics", "echoes")),
+    _ref("Mitarai2018", """
+@article{Mitarai2018,
+  author  = {Mitarai, K. and Negoro, M. and Kitagawa, M. and Fujii, K.},
+  title   = {Quantum circuit learning},
+  journal = {Phys. Rev. A},
+  volume  = {98},
+  pages   = {032309},
+  year    = {2018},
+  doi     = {10.1103/PhysRevA.98.032309}
+}""", "the parameter-shift gradient of a circuit-executed energy "
+         "(quantum::execution)", verified=True, topics=("gradient", "circuits")),
+    _ref("Schuld2019", """
+@article{Schuld2019,
+  author  = {Schuld, Maria and Bergholm, Ville and Gogolin, Christian and
+             Izaac, Josh and Killoran, Nathan},
+  title   = {Evaluating analytic gradients on quantum hardware},
+  journal = {Phys. Rev. A},
+  volume  = {99},
+  pages   = {032331},
+  year    = {2019},
+  doi     = {10.1103/PhysRevA.99.032331}
+}""", "the parameter-shift rule for generators with two eigenvalues "
+         "(quantum::execution)", verified=True, topics=("gradient", "circuits")),
+    _ref("Feynman1939", """
+@article{Feynman1939,
+  author  = {Feynman, R. P.},
+  title   = {Forces in molecules},
+  journal = {Phys. Rev.},
+  volume  = {56},
+  pages   = {340--343},
+  year    = {1939},
+  doi     = {10.1103/PhysRev.56.340}
+}""", "the Hellmann-Feynman term of the analytic forces and stresses",
+         verified=True, topics=("forces",)),
+    _ref("ChuDalgarno2004", """
+@article{ChuDalgarno2004,
+  author  = {Chu, Xi and Dalgarno, A.},
+  title   = {Linear response time-dependent density functional theory for van
+             der {W}aals coefficients},
+  journal = {J. Chem. Phys.},
+  volume  = {121},
+  pages   = {4083--4088},
+  year    = {2004},
+  doi     = {10.1063/1.1779576}
+}""", "the free-atom polarizabilities and C6 coefficients of the "
+         "Tkatchenko-Scheffler correction (vdw='ts')", verified=True,
+         topics=("dispersion",)),
+    _ref("Ruiz2012", """
+@article{Ruiz2012,
+  author  = {Ruiz, Victor G. and Liu, Wei and Zojer, Egbert and Scheffler,
+             Matthias and Tkatchenko, Alexandre},
+  title   = {Density-functional theory with screened van der {W}aals
+             interactions for the modeling of hybrid inorganic-organic
+             systems},
+  journal = {Phys. Rev. Lett.},
+  volume  = {108},
+  pages   = {146103},
+  year    = {2012},
+  doi     = {10.1103/PhysRevLett.108.146103}
+}""", "the free-atom reference data of the Tkatchenko-Scheffler correction "
+         "(vdw='ts')", verified=True, topics=("dispersion",)),
+    _ref("Grimme2006", """
+@article{Grimme2006,
+  author  = {Grimme, Stefan},
+  title   = {Semiempirical {GGA}-type density functional constructed with a
+             long-range dispersion correction},
+  journal = {J. Comput. Chem.},
+  volume  = {27},
+  pages   = {1787--1799},
+  year    = {2006},
+  doi     = {10.1002/jcc.20495}
+}""", "the van der Waals radii of the Tkatchenko-Scheffler correction "
+         "(vdw='ts')", verified=True, topics=("dispersion",)),
+    _ref("Hirshfeld1977", """
+@article{Hirshfeld1977,
+  author  = {Hirshfeld, F. L.},
+  title   = {Bonded-atom fragments for describing molecular charge densities},
+  journal = {Theor. Chim. Acta},
+  volume  = {44},
+  pages   = {129--138},
+  year    = {1977},
+  doi     = {10.1007/BF00549096}
+}""", "the Hirshfeld partition of the density behind the effective atomic "
+         "volumes of the Tkatchenko-Scheffler correction (vdw='ts')",
+         verified=True, topics=("dispersion",)),
+    _ref("Cordero2008", """
+@article{Cordero2008,
+  author  = {Cordero, Beatriz and G{\\'o}mez, Ver{\\'o}nica and
+             Platero-Prats, Ana E. and Rev{\\'e}s, Marc and
+             Echeverr{\\'i}a, Jorge and Cremades, Eduard and
+             Barrag{\\'a}n, Flavia and Alvarez, Santiago},
+  title   = {Covalent radii revisited},
+  journal = {Dalton Trans.},
+  pages   = {2832--2838},
+  year    = {2008},
+  doi     = {10.1039/b801115j}
+}""", "the covalent radii of the PAW dataset quality diagnostics "
+         "(paw::diagnose::quality)", verified=True,
+         topics=("paw", "diagnostics")),
+    _ref("SlaterKoster1954", """
+@article{SlaterKoster1954,
+  author  = {Slater, J. C. and Koster, G. F.},
+  title   = {Simplified {LCAO} method for the periodic potential problem},
+  journal = {Phys. Rev.},
+  volume  = {94},
+  pages   = {1498--1524},
+  year    = {1954},
+  doi     = {10.1103/PhysRev.94.1498}
+}""", "the Bloch sum of a localized-orbital Hamiltonian, H(k) = sum_R "
+         "exp(ik.R) H_R, that unfolds the supercell mean field onto the "
+         "primitive cell and interpolates its bands (molecular::periodic)",
+         verified=True, topics=("periodic", "bands")),
+    _ref("Kuhn1960", """
+@article{Kuhn1960,
+  author  = {Kuhn, Harold W.},
+  title   = {Some combinatorial lemmas in topology},
+  journal = {IBM J. Res. Dev.},
+  volume  = {4},
+  pages   = {518--524},
+  year    = {1960},
+  doi     = {10.1147/rd.45.0518}
+}""", "the split of a grid cell into six tetrahedra along its main diagonal "
+         "(math::isosurface, Viewer3D)", verified=True,
+         topics=("isosurface", "viewer")),
+    _ref("Doi1991", """
+@article{Doi1991,
+  author  = {Doi, Akio and Koide, Akio},
+  title   = {An efficient method of triangulating equi-valued surfaces by
+             using tetrahedral cells},
+  journal = {IEICE Trans. Inf. Syst.},
+  volume  = {E74},
+  year    = {1991}
+}""", "marching tetrahedra, the isosurface extraction of Viewer3D "
+         "(math::isosurface)", verified=False, topics=("isosurface", "viewer")),
 ]
 
 # --------------------------------------------------------------------------- #
@@ -980,7 +1354,7 @@ _MAPPINGS = [
   pages   = {631--651},
   year    = {1928},
   doi     = {10.1007/BF01331938}
-}""", "the Jordan-Wigner transformation", verified=False,
+}""", "the Jordan-Wigner transformation", verified=True,
          topics=("mapping", "jordan_wigner")),
     _ref("BravyiKitaev2002", """
 @article{BravyiKitaev2002,
@@ -991,7 +1365,7 @@ _MAPPINGS = [
   pages   = {210--226},
   year    = {2002},
   doi     = {10.1006/aphy.2002.6254}
-}""", "the Bravyi-Kitaev transformation", verified=False,
+}""", "the Bravyi-Kitaev transformation", verified=True,
          topics=("mapping", "bravyi_kitaev")),
     _ref("Seeley2012", """
 @article{Seeley2012,
@@ -1004,7 +1378,7 @@ _MAPPINGS = [
   year    = {2012},
   doi     = {10.1063/1.4768229}
 }""", "the parity and Bravyi-Kitaev encodings of electronic structure",
-         verified=False, topics=("mapping", "parity", "bravyi_kitaev")),
+         verified=True, topics=("mapping", "parity", "bravyi_kitaev")),
     _ref("Bravyi2017", """
 @misc{Bravyi2017,
   author        = {Bravyi, Sergey and Gambetta, Jay M. and
@@ -1017,7 +1391,7 @@ _MAPPINGS = [
   doi           = {10.48550/arXiv.1701.08213}
 }""", "the two-qubit reduction of the parity mapping (parity_reduced) and "
          "Z2 symmetry tapering (the taper option)",
-         verified=False, topics=("mapping", "parity_reduced", "tapering",
+         verified=True, topics=("mapping", "parity_reduced", "tapering",
                                  "symmetry")),
 ]
 
@@ -1035,20 +1409,22 @@ _BASES = [
   pages   = {17953--17979},
   year    = {1994},
   doi     = {10.1103/PhysRevB.50.17953}
-}""", "the PAW-LCAO / UPAW-LCAO basis", verified=False, topics=("paw-lcao", "upaw-lcao")),
-    _ref("Ivanov2024", """
-@misc{Ivanov2024,
-  author        = {Ivanov, Aleksei V. and S{\"u}nderhauf, Christoph and
-                   Holzmann, Nicole and Ellaby, Tom and Kerber, Rachel N. and
-                   Jones, Glenn and Camps, Joan},
-  title         = {Quantum computation for periodic solids in second
-                   quantization},
-  year          = {2024},
-  eprint        = {2408.03159},
-  archivePrefix = {arXiv},
-  primaryClass  = {quant-ph},
-  doi           = {10.48550/arXiv.2408.03159}
-}""", "unitary PAW-LCAO (basis='UPAW-LCAO')", verified=False, topics=("upaw-lcao",)),
+}""", "the PAW-LCAO / UPAW-LCAO basis", verified=True, topics=("paw-lcao", "upaw-lcao")),
+    _ref("Ivanov2025", """
+@article{Ivanov2025,
+  author  = {Ivanov, Aleksei V. and Patterson, Andrew and Bothe, Marius and
+             S{\\"u}nderhauf, Christoph and Berntson, Bjorn K. and
+             Mortensen, Jens J{\\o}rgen and Kuisma, Mikael and
+             Campbell, Earl and Izs{\\'a}k, R{\\'o}bert},
+  title   = {Quantum computation of electronic structure with projector
+             augmented-wave method and plane wave basis set},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {21},
+  pages   = {7360--7377},
+  year    = {2025},
+  doi     = {10.1021/acs.jctc.5c00551}
+}""", "unitary PAW-LCAO (basis='UPAW-LCAO')", verified=True,
+         topics=("upaw-lcao",)),
     _ref("Hamann2013", """
 @article{Hamann2013,
   author  = {Hamann, D. R.},
@@ -1059,7 +1435,7 @@ _BASES = [
   year    = {2013},
   doi     = {10.1103/PhysRevB.88.085117}
 }""", "the optimized smooth partial waves of PAW-LCAO and UPAW-LCAO",
-         verified=False, topics=("paw-lcao", "upaw-lcao")),
+         verified=True, topics=("paw-lcao", "upaw-lcao")),
     _ref("Sankey1989", """
 @article{Sankey1989,
   author  = {Sankey, Otto F. and Niklewski, David J.},
@@ -1070,7 +1446,7 @@ _BASES = [
   pages   = {3979--3995},
   year    = {1989},
   doi     = {10.1103/PhysRevB.40.3979}
-}""", "confined numerical atomic orbitals", verified=False,
+}""", "confined numerical atomic orbitals", verified=True,
          topics=("nao", "energy_shift")),
     _ref("Larsen2009", """
 @article{Larsen2009,
@@ -1084,7 +1460,7 @@ _BASES = [
   year    = {2009},
   doi     = {10.1103/PhysRevB.80.195112}
 }""", "analytic two-center integrals of atom-centered radial functions",
-         verified=False,
+         verified=True,
          topics=("two_center", "paw-lcao")),
     _ref("Junquera2001", """
 @article{Junquera2001,
@@ -1096,7 +1472,7 @@ _BASES = [
   pages   = {235111},
   year    = {2001},
   doi     = {10.1103/PhysRevB.64.235111}
-}""", "the smooth confining potential behind energy_shift", verified=False,
+}""", "the smooth confining potential behind energy_shift", verified=True,
          topics=("nao", "energy_shift")),
     _ref("Artacho1999", """
 @article{Artacho1999,
@@ -1109,7 +1485,7 @@ _BASES = [
   pages   = {809--817},
   year    = {1999},
   doi     = {10.1002/(SICI)1521-3951(199909)215:1<809::AID-PSSB809>3.0.CO;2-0}
-}""", "the split-valence multiple-zeta construction", verified=False,
+}""", "the split-valence multiple-zeta construction", verified=True,
          topics=("multizeta", "zeta_split")),
     _ref("Kendall1992", """
 @article{Kendall1992,
@@ -1122,7 +1498,7 @@ _BASES = [
   pages   = {6796--6806},
   year    = {1992},
   doi     = {10.1063/1.462569}
-}""", "diffuse augmentation of the basis (diffuse=)", verified=False,
+}""", "diffuse augmentation of the basis (diffuse=)", verified=True,
          topics=("diffuse",)),
     _ref("Anglada2006", """
 @article{Anglada2006,
@@ -1134,7 +1510,7 @@ _BASES = [
   pages   = {115122},
   year    = {2006},
   doi     = {10.1103/PhysRevB.73.115122}
-}""", "Fourier filtering of the radial basis (filter_cutoff=)", verified=False,
+}""", "Fourier filtering of the radial basis (filter_cutoff=)", verified=True,
          topics=("filter",)),
     _ref("Slater1930", """
 @article{Slater1930,
@@ -1146,7 +1522,7 @@ _BASES = [
   year    = {1930},
   doi     = {10.1103/PhysRev.36.57}
 }""", "Slater-type orbitals and the shielding rules behind their exponents",
-         verified=False, topics=("slater",)),
+         verified=True, topics=("slater",)),
     _ref("Hehre1969", """
 @article{Hehre1969,
   author  = {Hehre, W. J. and Stewart, R. F. and Pople, J. A.},
@@ -1157,7 +1533,7 @@ _BASES = [
   pages   = {2657--2664},
   year    = {1969},
   doi     = {10.1063/1.1672392}
-}""", "the STO-nG contraction scheme", verified=False, topics=("gto",)),
+}""", "the STO-nG contraction scheme", verified=True, topics=("gto",)),
     _ref("Hehre1972", """
 @article{Hehre1972,
   author  = {Hehre, W. J. and Ditchfield, R. and Pople, J. A.},
@@ -1168,7 +1544,7 @@ _BASES = [
   pages   = {2257--2261},
   year    = {1972},
   doi     = {10.1063/1.1677527}
-}""", "the Pople split-valence scheme (6-31G)", verified=False,
+}""", "the Pople split-valence scheme (6-31G)", verified=True,
          topics=("pople",)),
     _ref("Dunning1989", """
 @article{Dunning1989,
@@ -1180,7 +1556,7 @@ _BASES = [
   pages   = {1007--1023},
   year    = {1989},
   doi     = {10.1063/1.456153}
-}""", "the correlation-consistent (cc-pVXZ) shell structure", verified=False,
+}""", "the correlation-consistent (cc-pVXZ) shell structure", verified=True,
          topics=("dunning",)),
     _ref("Weigend2005", """
 @article{Weigend2005,
@@ -1192,7 +1568,7 @@ _BASES = [
   pages   = {3297--3305},
   year    = {2005},
   doi     = {10.1039/B508541A}
-}""", "the def2 shell structure", verified=False, topics=("def2",)),
+}""", "the def2 shell structure", verified=True, topics=("def2",)),
     _ref("PBE1996", """
 @article{PBE1996,
   author  = {Perdew, John P. and Burke, Kieron and Ernzerhof, Matthias},
@@ -1202,7 +1578,7 @@ _BASES = [
   pages   = {3865--3868},
   year    = {1996},
   doi     = {10.1103/PhysRevLett.77.3865}
-}""", "the GGA reference atom (xc='pbe')", verified=False,
+}""", "the GGA reference atom (xc='pbe')", verified=True,
          topics=("xc", "gga", "pseudopotential")),
     _ref("PerdewWang1992", """
 @article{PerdewWang1992,
@@ -1214,7 +1590,7 @@ _BASES = [
   pages   = {13244--13249},
   year    = {1992},
   doi     = {10.1103/PhysRevB.45.13244}
-}""", "the uniform-gas correlation PBE is built on", verified=False,
+}""", "the uniform-gas correlation PBE is built on", verified=True,
          topics=("xc", "gga")),
     _ref("KoellingHarmon1977", """
 @article{KoellingHarmon1977,
@@ -1226,7 +1602,7 @@ _BASES = [
   year    = {1977},
   doi     = {10.1088/0022-3719/10/16/019}
 }""", "the scalar-relativistic radial equation (relativity='scalar')",
-         verified=False, topics=("relativity", "pseudopotential")),
+         verified=True, topics=("relativity", "pseudopotential")),
     _ref("MacDonaldVosko1979", """
 @article{MacDonaldVosko1979,
   author  = {MacDonald, A. H. and Vosko, S. H.},
@@ -1250,7 +1626,7 @@ _BASES = [
   year    = {1982},
   doi     = {10.1103/PhysRevB.26.1738}
 }""", "the nonlinear core correction and its partial core density",
-         verified=False, topics=("pseudopotential", "nlcc")),
+         verified=True, topics=("pseudopotential", "nlcc")),
     _ref("Kleinman1980", """
 @article{Kleinman1980,
   author  = {Kleinman, Leonard},
@@ -1261,7 +1637,7 @@ _BASES = [
   year    = {1980},
   doi     = {10.1103/PhysRevB.21.2630}
 }""", "splitting a j-resolved pseudopotential into an average and an L.S term",
-         verified=False, topics=("relativity", "spin-orbit")),
+         verified=True, topics=("relativity", "spin-orbit")),
     _ref("Kwee2008", """
 @article{Kwee2008,
   author  = {Kwee, Hendra and Zhang, Shiwei and Krakauer, Henry},
@@ -1286,7 +1662,7 @@ _BASES = [
   pages   = {1814--1832},
   year    = {1996},
   doi     = {10.1103/PhysRevB.53.1814}
-}""", "the model periodic Coulomb interaction", verified=False,
+}""", "the model periodic Coulomb interaction", verified=True,
          topics=("periodic", "finite-size")),
     _ref("Williamson1997", """
 @article{Williamson1997,
@@ -1301,7 +1677,7 @@ _BASES = [
   year    = {1997},
   doi     = {10.1103/PhysRevB.55.R4851}
 }""", "the MPC separation of Hartree and exchange-correlation kernels",
-         verified=False, topics=("periodic", "finite-size")),
+         verified=True, topics=("periodic", "finite-size")),
     _ref("Chiesa2006", """
 @article{Chiesa2006,
   author  = {Chiesa, Simone and Ceperley, David M. and Martin, Richard M. and
@@ -1313,7 +1689,7 @@ _BASES = [
   pages   = {076404},
   year    = {2006},
   doi     = {10.1103/PhysRevLett.97.076404}
-}""", "the structure-factor finite-size correction", verified=False,
+}""", "the structure-factor finite-size correction", verified=True,
          topics=("periodic", "finite-size")),
     _ref("BornKarman1912", """
 @article{BornKarman1912,
@@ -1334,7 +1710,7 @@ _BASES = [
   pages   = {5188--5192},
   year    = {1976},
   doi     = {10.1103/PhysRevB.13.5188}
-}""", "the Brillouin-zone sampling `kpts` resolves", verified=False,
+}""", "the Brillouin-zone sampling `kpts` resolves", verified=True,
          topics=("periodic",)),
     _ref("SetyawanCurtarolo2010", """
 @article{SetyawanCurtarolo2010,
@@ -1346,8 +1722,9 @@ _BASES = [
   pages   = {299--312},
   year    = {2010},
   doi     = {10.1016/j.commatsci.2010.05.010}
-}""", "the default high-symmetry band path of each Bravais lattice",
-         verified=False, topics=("periodic",)),
+}""", "the high-symmetry points and default band paths of the cubic, fcc, "
+         "bcc, tetragonal, orthorhombic and hexagonal lattices (`band_path`)",
+         verified=True, topics=("periodic",)),
     _ref("JepsenAndersen1971", """
 @article{JepsenAndersen1971,
   author  = {Jepsen, O. and Andersen, O. K.},
@@ -1371,7 +1748,7 @@ _BASES = [
   year    = {1972},
   doi     = {10.1002/pssb.2220540211}
 }""", "the closed forms of the linear tetrahedron density of states",
-         verified=False, topics=("periodic",)),
+         verified=True, topics=("periodic",)),
     _ref("BloechlJepsenAndersen1994", """
 @article{BloechlJepsenAndersen1994,
   author  = {Bl{\\"o}chl, Peter E. and Jepsen, O. and Andersen, O. K.},
@@ -1383,7 +1760,7 @@ _BASES = [
   doi     = {10.1103/PhysRevB.49.16223}
 }""", "the tetrahedron decomposition along the shortest diagonal, the "
          "corner integration weights and their curvature correction",
-         verified=False, topics=("periodic",)),
+         verified=True, topics=("periodic",)),
     _ref("Lehmann1954", """
 @article{Lehmann1954,
   author  = {Lehmann, Harry},
@@ -1395,7 +1772,7 @@ _BASES = [
   year    = {1954},
   doi     = {10.1007/BF02783624}
 }""", "the spectral representation `get_spectral_function` evaluates",
-         verified=False, topics=("periodic", "spectral")),
+         verified=True, topics=("periodic", "spectral")),
     _ref("GaglianoBalseiro1987", """
 @article{GaglianoBalseiro1987,
   author  = {Gagliano, E. R. and Balseiro, C. A.},
@@ -1407,7 +1784,7 @@ _BASES = [
   year    = {1987},
   doi     = {10.1103/PhysRevLett.59.2999}
 }""", "the Lanczos recursion that resolves each part of the Lehmann sum of "
-         "`get_spectral_function`", verified=False, topics=("periodic", "spectral")),
+         "`get_spectral_function`", verified=True, topics=("periodic", "spectral")),
     _ref("Ewald1921", """
 @article{Ewald1921,
   author  = {Ewald, P. P.},
@@ -1417,8 +1794,21 @@ _BASES = [
   pages   = {253--287},
   year    = {1921},
   doi     = {10.1002/andp.19213690304}
-}""", "the Ewald sum for periodic ion-ion energies", verified=False,
+}""", "the Ewald sum for periodic ion-ion energies", verified=True,
          topics=("periodic",)),
+    _ref("GygiBaldereschi1986", """
+@article{GygiBaldereschi1986,
+  author  = {Gygi, Fran{\\c{c}}ois and Baldereschi, Alfonso},
+  title   = {Self-consistent {H}artree-{F}ock and screened-exchange
+             calculations in solids: {A}pplication to silicon},
+  journal = {Phys. Rev. B},
+  volume  = {34},
+  pages   = {4405--4408},
+  year    = {1986},
+  doi     = {10.1103/PhysRevB.34.4405}
+}""", "the treatment of the divergence of the exact-exchange kernel at q = 0 "
+         "(exxdiv_treatment='gygi-baldereschi')", verified=True,
+         topics=("periodic", "hybrid")),
     _ref("Moller1934", """
 @article{Moller1934,
   author  = {M{\\o}ller, Chr. and Plesset, Milton S.},
@@ -1429,7 +1819,7 @@ _BASES = [
   year    = {1934},
   doi     = {10.1103/PhysRev.46.618}
 }""", "second-order perturbation theory (the MP2 active-space selector)",
-         verified=False, topics=("mp2", "active-space")),
+         verified=True, topics=("mp2", "active-space")),
     _ref("Loewdin1955", """
 @article{Loewdin1955,
   author  = {L{\\"o}wdin, Per-Olov},
@@ -1442,7 +1832,7 @@ _BASES = [
   pages   = {1474--1489},
   year    = {1955},
   doi     = {10.1103/PhysRev.97.1474}
-}""", "natural orbitals and their occupation numbers", verified=False,
+}""", "natural orbitals and their occupation numbers", verified=True,
          topics=("natural-orbitals", "active-space")),
     _ref("Sosa1989", """
 @article{Sosa1989,
@@ -1457,7 +1847,7 @@ _BASES = [
   year    = {1989},
   doi     = {10.1016/0009-2614(89)87399-3}
 }""", "the frozen natural orbital truncation of the virtual space",
-         verified=False, topics=("fno", "active-space", "mp2")),
+         verified=True, topics=("fno", "active-space", "mp2")),
     _ref("TaubeBartlett2005", """
 @article{TaubeBartlett2005,
   author  = {Taube, Andrew G. and Bartlett, Rodney J.},
@@ -1469,7 +1859,7 @@ _BASES = [
   year    = {2005},
   doi     = {10.1135/cccc20050837}
 }""", "frozen natural orbitals as a systematic basis truncation",
-         verified=False, topics=("fno", "active-space")),
+         verified=True, topics=("fno", "active-space")),
     _ref("Pinski2015", """
 @article{Pinski2015,
   author  = {Pinski, Peter and Riplinger, Christoph and Valeev, Edward F. and
@@ -1484,7 +1874,7 @@ _BASES = [
   year    = {2015},
   doi     = {10.1063/1.4926879}
 }""", "DLPNO-MP2, the local pair natural orbital MP2 active-space selector",
-         verified=False, topics=("mp2", "active-space", "local-correlation")),
+         verified=True, topics=("mp2", "active-space", "local-correlation")),
     _ref("FosterBoys1960", """
 @article{FosterBoys1960,
   author  = {Foster, J. M. and Boys, S. F.},
@@ -1495,7 +1885,7 @@ _BASES = [
   year    = {1960},
   doi     = {10.1103/RevModPhys.32.300}
 }""", "Foster-Boys localized orbitals (DLPNO-MP2's occupied space)",
-         verified=False, topics=("localization", "local-correlation")),
+         verified=True, topics=("localization", "local-correlation")),
     _ref("Pulay1983", """
 @article{Pulay1983,
   author  = {Pulay, Peter},
@@ -1506,7 +1896,7 @@ _BASES = [
   year    = {1983},
   doi     = {10.1016/0009-2614(83)80703-9}
 }""", "projected atomic orbitals and local correlation domains",
-         verified=False, topics=("local-correlation",)),
+         verified=True, topics=("local-correlation",)),
     _ref("Rozzi2006", """
 @article{Rozzi2006,
   author  = {Rozzi, Carlo A. and Varsano, Daniele and Marini, Andrea and
@@ -1518,7 +1908,7 @@ _BASES = [
   year    = {2006},
   doi     = {10.1103/PhysRevB.73.205119}
 }""", "the two-dimensionally truncated Coulomb kernel for slabs",
-         verified=False, topics=("slab", "periodic", "coulomb-cutoff")),
+         verified=True, topics=("slab", "periodic", "coulomb-cutoff")),
     _ref("Loewdin1950", """
 @article{Loewdin1950,
   author  = {L{\\"o}wdin, Per-Olov},
@@ -1529,7 +1919,7 @@ _BASES = [
   pages   = {365--375},
   year    = {1950},
   doi     = {10.1063/1.1747632}
-}""", "symmetric orthonormalization of the basis", verified=False,
+}""", "symmetric orthonormalization of the basis", verified=True,
          topics=("lowdin",)),
     _ref("Pulay1980", """
 @article{Pulay1980,
@@ -1541,7 +1931,7 @@ _BASES = [
   pages   = {393--398},
   year    = {1980},
   doi     = {10.1016/0009-2614(80)80396-4}
-}""", "DIIS convergence acceleration in the SCF", verified=False,
+}""", "DIIS convergence acceleration in the SCF", verified=True,
          topics=("scf",)),
 ]
 
@@ -1560,7 +1950,7 @@ _OPTIMIZERS = [
   pages   = {332--341},
   year    = {1992},
   doi     = {10.1109/9.119632}
-}""", "the SPSA optimizer", verified=False, topics=("optimizer", "spsa")),
+}""", "the SPSA optimizer", verified=True, topics=("optimizer", "spsa")),
     _ref("Powell1994", """
 @incollection{Powell1994,
   author    = {Powell, M. J. D.},
@@ -1571,7 +1961,7 @@ _OPTIMIZERS = [
   publisher = {Springer},
   year      = {1994},
   doi       = {10.1007/978-94-015-8330-5_4}
-}""", "the COBYLA optimizer", verified=False,
+}""", "the COBYLA optimizer", verified=True,
          topics=("optimizer", "cobyla")),
     _ref("Nelder1965", """
 @article{Nelder1965,
@@ -1582,7 +1972,7 @@ _OPTIMIZERS = [
   pages   = {308--313},
   year    = {1965},
   doi     = {10.1093/comjnl/7.4.308}
-}""", "the Nelder-Mead optimizer", verified=False,
+}""", "the Nelder-Mead optimizer", verified=True,
          topics=("optimizer", "nelder-mead")),
     _ref("Byrd1995", """
 @article{Byrd1995,
@@ -1595,7 +1985,7 @@ _OPTIMIZERS = [
   year    = {1995},
   doi     = {10.1137/0916069}
 }""", "the limited-memory BFGS implementation behind L-BFGS",
-         verified=False, topics=("optimizer", "l-bfgs")),
+         verified=True, topics=("optimizer", "l-bfgs")),
     _ref("Kraft1988", """
 @techreport{Kraft1988,
   author      = {Kraft, Dieter},
@@ -1615,7 +2005,7 @@ _OPTIMIZERS = [
   pages   = {317--322},
   year    = {1970},
   doi     = {10.1093/comjnl/13.3.317}
-}""", "the BFGS optimizer", verified=False, topics=("optimizer", "bfgs")),
+}""", "the BFGS optimizer", verified=True, topics=("optimizer", "bfgs")),
     _ref("Liu1989", """
 @article{Liu1989,
   author  = {Liu, Dong C. and Nocedal, Jorge},
@@ -1625,7 +2015,7 @@ _OPTIMIZERS = [
   pages   = {503--528},
   year    = {1989},
   doi     = {10.1007/BF01589116}
-}""", "the L-BFGS optimizer", verified=False,
+}""", "the L-BFGS optimizer", verified=True,
          topics=("optimizer", "l-bfgs")),
     _ref("Polak1969", """
 @article{Polak1969,
@@ -1637,7 +2027,7 @@ _OPTIMIZERS = [
   pages   = {35--43},
   year    = {1969},
   doi     = {10.1051/m2an/196903R100351}
-}""", "the Polak-Ribiere nonlinear conjugate gradient", verified=False,
+}""", "the Polak-Ribiere nonlinear conjugate gradient", verified=True,
          topics=("optimizer", "cg")),
 ]
 
@@ -1700,6 +2090,32 @@ _CODES = [
   doi           = {10.48550/arXiv.2405.08810}
 }""", "circuit construction, transpilation and the Estimator primitive",
          verified=False, topics=("code", "qiskit")),
+    _ref("Vidal2003", """
+@article{Vidal2003,
+  author  = {Vidal, Guifr{\\'e}},
+  title   = {Efficient classical simulation of slightly entangled quantum
+             computations},
+  journal = {Phys. Rev. Lett.},
+  volume  = {91},
+  pages   = {147902},
+  year    = {2003},
+  doi     = {10.1103/PhysRevLett.91.147902}
+}""", "the matrix-product-state simulation of a circuit on the 'AER_mps' "
+         "device (bond dimension truncation)", verified=True,
+         topics=("code", "mps")),
+    _ref("Schollwoeck2011", """
+@article{Schollwoeck2011,
+  author  = {Schollw{\\"o}ck, Ulrich},
+  title   = {The density-matrix renormalization group in the age of matrix
+             product states},
+  journal = {Ann. Phys.},
+  volume  = {326},
+  pages   = {96--192},
+  year    = {2011},
+  doi     = {10.1016/j.aop.2010.09.012}
+}""", "the matrix-product-state representation and its truncation on the "
+         "'AER_mps' device (max_bond_dimension)", verified=True,
+         topics=("code", "mps")),
 ]
 
 #: Every reference, keyed by its BibTeX key.

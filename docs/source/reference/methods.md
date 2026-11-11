@@ -14,7 +14,7 @@ do not carry.
 | `rhf` | Restricted Hartree-Fock on the real-space grid | no | yes | no | Needs equal alpha and beta populations; an open-shell system raises `ValueError`. |
 | `uhf` | Unrestricted Hartree-Fock | no | yes | no | Spin populations come from the electron count and the initial magnetic moments. |
 | `ghf` | Generalized (complex spinor) Hartree-Fock | no | no | no | `get_forces()` raises `PropertyNotImplementedError`. |
-| `dft` | Kohn-Sham density functional theory | no | yes | yes | Functionals are `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10` and `r2scan+rvv10`. A geometry with a periodic axis runs the crystal solver (see below); `spin=True` or `unrestricted=True` separates the spin channels at equal populations. `hubbard_u=` adds the on-site DFT+U correction to a crystal ([DFT+U](../guide/dft_u.md)). |
+| `dft` | Kohn-Sham density functional theory | no | yes | yes | Functionals are `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10` and `r2scan+rvv10`. A geometry with a periodic axis runs the crystal solver (see below); `spin=True` or `unrestricted=True` separates the spin channels at equal populations. `hubbard_u=` adds the on-site DFT+U correction to a crystal or to a molecule on a PAW-LCAO basis, energy and analytic forces ([DFT+U](../guide/dft_u.md); [molecules](#dft-u-molecules)). |
 | `vqe` | Variational quantum eigensolver with a fixed ansatz | yes | yes | yes | UCCSD by default, or `ansatz={"name": "hva", ...}`. The only method with `energy_levels()`. On a crystal, see "Periodic" below. |
 | `adapt-vqe` | ADAPT-VQE: the ansatz grows from an operator pool | yes | yes | yes | The default method. Pools are `fermionic`, `qubit`, `qeb`, `ceo` (the default), `ceo-ovp` and `spin-orbit`. |
 | `subspace-vqe` | Shared-unitary VQE for the lowest `num_states` states | yes | no | no | Levels are bare expectations, not Ritz values of the final subspace. |
@@ -53,16 +53,18 @@ or `execute_circuits=True`). Otherwise it raises `PropertyNotImplementedError` o
 of the Gamma-centered `kpts` mesh (the Gamma point alone when `kpts` is left out) with
 lattice-summed electrostatics and image-summed HAO or Gaussian orbitals, and reports the
 energy per primitive cell; it needs `crystal_orbitals="real-space"` (the default
-`"k-space"` raises `NotImplementedError` until the per-k register exists), and its
-`get_forces()` and `get_stress()` raise `NotImplementedError` (see
+`"k-space"` raises `NotImplementedError` until the per-k register exists). Its
+`get_forces()` is a central finite difference of the energy per cell (`vasqa` and `valsqa`
+need `seed=`), and its `get_stress()` raises `NotImplementedError` (see
 [the crystal guide](../guide/bloch.md)). `subspace-vqe`, `subspace-adapt-vqe`, `rhf`,
 `uhf` and `ghf` raise on a crystal. `dft` forces and stress on a crystal are supported
 through `atoms.get_forces()` and `atoms.get_stress()`. A hybrid (`xc="hse06"`) crystal needs the whole k
 mesh: on a mesh reduced by symmetry or halved by time reversal it raises
 `NotImplementedError` (see `symmetry` in the `Mandacaru` docstring).
-`hubbard_u` is accepted for a crystal only: a molecule raises `ValueError`, and a
-screened hybrid or a spin-orbit dataset raises `NotImplementedError`
-(the full list is in [DFT+U](../guide/dft_u.md)).
+`hubbard_u` is accepted for a crystal and for a molecule with `method="dft"` on a PAW-LCAO
+basis, with energy and analytic forces ([molecules](#dft-u-molecules)); a
+molecule with another method raises `ValueError`, and a screened hybrid or a spin-orbit dataset
+raises `NotImplementedError` (the full list is in [DFT+U](../guide/dft_u.md)).
 
 **Quantum options on classical methods.** `rhf`, `uhf`, `ghf` and `dft` refuse
 `shots`, `execute_circuits`, `backend_provider`, `device`, `backend_options` and

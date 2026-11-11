@@ -6,6 +6,14 @@
 //!
 //! The oracle is `+dF/d eps_ab` of the Rust SCF's free energy (Hartree, one entry at a time,
 //! unsymmetrized), Richardson over the three steps of the manifest.
+//!
+//! The strained crystals of the oracle hold the pins of the analytic stress (`setup::Pins`: the
+//! ion width, the filter wave-vector, the node counts). The ion width is `1.4 x` the coarsest
+//! grid step by default, so a strain difference that lets it follow the strained grid is not the
+//! derivative the stress is: it missed the zz stress of the skew LiH cell by 3.6e-6 eV/A^3 (PBE
+//! and HSE06 alike), in proportion to the strain derivative of the third lattice vector's length.
+//! Every oracle pins sigma (`PeriodicSetup::with_cell`; the Python route's `ion_width` hook);
+//! `periodic_freeze_hybrid.rs` re-freezes the hybrid cases that way.
 #![allow(dead_code)]
 
 use crate::periodic_gradient_crystals_support::{paw_root, Data};

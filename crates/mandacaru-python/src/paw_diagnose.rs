@@ -279,7 +279,8 @@ fn paw_reconstruct<'py>(
 
 /// The verification gates of `diagnose::quality` that need no all-electron atom: the residual
 /// kinetic energy of each channel above `q_cut` and the hard channels, the grid residual at each
-/// gate spacing and the working spacing, the widest sphere against `bond` (Bohr), and the
+/// gate spacing and the working spacing, the widest sphere against `bond` (Bohr; by default the
+/// element's own bond to hydrogen, `quality::shortest_bond`), and the
 /// partition against a `twin` record of the same element (its `(payload, tables)`).
 #[pyfunction]
 #[pyo3(signature = (context, payload, tables, *, bond = None, twin = None))]
@@ -320,7 +321,11 @@ fn paw_quality<'py>(
     }
     out.set_item("grid_residual", grid)?;
     out.set_item("working_spacing", working)?;
-    out.set_item("sphere", bond.and_then(|b| quality::sphere_reach(&dataset, b)))?;
+    let sphere = match bond {
+        Some(b) => quality::sphere_reach(&dataset, b),
+        None => quality::sphere_against_bond(&dataset).map(|(widest, _)| widest),
+    };
+    out.set_item("sphere", sphere)?;
     out.set_item(
         "partition",
         other.as_ref().and_then(|o| quality::partition_mismatch(&dataset, o)),

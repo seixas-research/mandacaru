@@ -12,15 +12,13 @@
   variational loop runs on);
 * :mod:`~mandacaru.backends.providers` -- the *circuit provider* registry (which
   SDK builds and executes the ansatz circuits: Qiskit, Amazon Braket or Cirq);
-* :mod:`~mandacaru.backends.measurement` -- shot-based energies, qubit-wise
-  commuting groups and the measurement budget that refuses an oversized job;
-* :mod:`~mandacaru.backends.factorization` -- the double-factorized Hamiltonian
-  and the Givens decomposition of its orbital rotations.
+* :mod:`~mandacaru.backends.measurement` -- qubit-wise commuting groups and
+  the measurement budget that refuses an oversized job.
+
+The double-factorized measurement of the energy is a calculator option,
+``Mandacaru(measurement_scheme="double-factorized")``, built in Rust.
 """
 
-from .factorization import (DoubleFactorization, double_factorization,
-                            factorized_measurement_bases,
-                            spatial_double_factorization)
 from .hardware import (available_devices, is_simulator, normalize_device,
                        require_runnable)
 from .measurement import (DEFAULT_MEASUREMENT_BUDGET, chunk_labels_by_basis,
@@ -36,10 +34,6 @@ __all__ = [
     "resolve_measurement_budget",
     "qubit_wise_commuting_groups",
     "shot_noise_estimate",
-    "DoubleFactorization",
-    "double_factorization",
-    "spatial_double_factorization",
-    "factorized_measurement_bases",
     "available_devices",
     "normalize_device",
     "is_simulator",

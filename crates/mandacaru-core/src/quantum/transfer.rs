@@ -23,7 +23,23 @@ pub struct Handover {
     mapping: String,
     labels: Vec<String>,
     parameters: Vec<f64>,
+    /// The previous run's Hessian approximation of `parameters` (row-major), when it kept one.
+    hessian: Option<Vec<f64>>,
     _memory: Reservation,
+}
+impl Handover {
+    /// The previous run's Hessian approximation of the captured parameters (row-major), which
+    /// [`carry`] hands on under the operator renaming.
+    pub fn with_hessian(mut self, hessian: Vec<f64>) -> Result<Self> {
+        let n = self.parameters.len();
+        if hessian.len() != n * n || hessian.iter().any(|v| !v.is_finite()) {
+            return Err(Error::Invalid(
+                "ansatz handover needs a finite Hessian with one row per parameter".into(),
+            ));
+        }
+        self.hessian = Some(hessian);
+        Ok(self)
+    }
 }
 pub fn capture(previous: Frame<'_>, indices: &[usize], parameters: &[f64]) -> Result<Handover> {
     if indices.len() != parameters.len()
@@ -81,6 +97,7 @@ pub fn capture(previous: Frame<'_>, indices: &[usize], parameters: &[f64]) -> Re
                 .map(|&i| previous.problem.pool[i].label.clone())
                 .collect(),
             parameters: parameters.to_vec(),
+            hessian: None,
             _memory: memory,
         })
     })
@@ -91,6 +108,9 @@ pub struct Seed {
     pub confidence: f64,
     pub accepted: bool,
     pub reason: String,
+    /// The previous Hessian approximation under the same operator renaming (`S H S` for the
+    /// sign `S` of each carried angle), when the previous run kept one.
+    pub hessian: Option<Vec<f64>>,
 }
 fn refused(reason: impl Into<String>, confidence: f64) -> Seed {
     Seed {
@@ -99,6 +119,7 @@ fn refused(reason: impl Into<String>, confidence: f64) -> Seed {
         confidence,
         accepted: false,
         reason: reason.into(),
+        hessian: None,
     }
 }
 fn normalized_overlap(previous: &Handover, current: &Frame<'_>) -> Result<DMatrix<C64>> {
@@ -166,7 +187,32 @@ fn normalized_overlap(previous: &Handover, current: &Frame<'_>) -> Result<DMatri
     }
     Ok(overlap)
 }
+/// A coupled exchange operator (`CEO[o..]{...}`) in the new frame. Only orbital signs are
+/// followed: a sign flip of a mode is a `Z` on its qubit, and every member of a CEO operator uses
+/// each mode of its bracket exactly once, so the operator keeps its label and gains the product of
+/// those modes' signs. A reordering of fermionic modes adds parity phases that a relabeled qubit
+/// excitation does not have, so it is refused.
+fn rename_ceo(label: &str, permutation: &[usize], signs: &[f64]) -> Option<(String, f64)> {
+    let m = permutation.len();
+    if permutation.iter().enumerate().any(|(i, &j)| i != j) {
+        return None;
+    }
+    let modes = label.strip_prefix("CEO[")?.split_once(']')?.0;
+    let mut sign = 1.;
+    for mode in modes.split(',') {
+        let i: usize = mode.strip_prefix('o')?.parse().ok()?;
+        if i >= 2 * m {
+            return None;
+        }
+        sign *= signs[i % m];
+    }
+    Some((label.to_string(), sign))
+}
+
 fn rename(label: &str, permutation: &[usize], signs: &[f64]) -> Option<(String, f64)> {
+    if label.starts_with("CEO[") {
+        return rename_ceo(label, permutation, signs);
+    }
     let (prefix, body) = label.split_once('(')?;
     if !["S", "D", "QS", "QD"].contains(&prefix) {
         return None;
@@ -274,6 +320,7 @@ pub fn carry(previous: &Handover, current: Frame<'_>, threshold: f64) -> Result<
         .collect();
     let mut moved = Vec::with_capacity(previous.labels.len());
     let mut angles = Vec::with_capacity(previous.labels.len());
+    let mut flips = Vec::with_capacity(previous.labels.len());
     for (label, &angle) in previous.labels.iter().zip(&previous.parameters) {
         let renamed = if unchanged {
             Some((label.clone(), 1.))
@@ -294,8 +341,15 @@ pub fn carry(previous: &Handover, current: Frame<'_>, threshold: f64) -> Result<
         };
         moved.push(index);
         angles.push(angle * sign);
+        flips.push(sign);
     }
-    Ok(Seed {indices:moved,parameters:angles,confidence,accepted:true,
+    let n = flips.len();
+    let hessian = previous.hessian.as_ref().map(|h| {
+        (0..n * n)
+            .map(|k| h[k] * flips[k / n] * flips[k % n])
+            .collect::<Vec<_>>()
+    });
+    Ok(Seed {indices:moved,parameters:angles,hessian,confidence,accepted:true,
         reason:format!("previous geometry's ansatz matched in occupied and virtual domains; minimum normalized pseudo-orbital overlap {confidence:.3}")})
 }
 

@@ -7,12 +7,46 @@ use mandacaru_core::{
     },
     Context, Reservation,
 };
-use numpy::{Complex32, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use numpy::{Complex32, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
     types::PyDict,
 };
+
+/// One executor call: hand `requests` to the Python executor and copy its answer (states,
+/// expectations or a stop) into Rust. The executor holds the GIL only for the call.
+fn call_executor(
+    context: &Context,
+    executor: &Py<PyAny>,
+    requests: &[mandacaru_core::quantum::execution::Request],
+) -> PyResult<mandacaru_core::quantum::execution::Response> {
+    use mandacaru_core::quantum::execution::Response;
+    Python::attach(|py| {
+        let batch: Vec<_> = requests
+            .iter()
+            .map(|r| (r.labels.clone(), r.angles.clone(), r.observables.clone(), r.priced))
+            .collect();
+        let response = executor.bind(py).call1((batch,))?;
+        if let Ok(stop) = response.get_item("stop") {
+            return Ok(Response::Stop(stop.extract()?));
+        }
+        if let Ok(states) = response.get_item("states") {
+            let states: Vec<PyReadonlyArray1<'_, C64>> = states.extract()?;
+            let mut owned = Vec::with_capacity(states.len());
+            for state in &states {
+                let mut copy = context.allocate(state.len()).map_err(error)?;
+                for (out, value) in copy.as_mut_slice().iter_mut().zip(state.as_array()) {
+                    *out = *value;
+                }
+                owned.push(copy);
+            }
+            Ok(Response::States(owned))
+        } else {
+            Ok(Response::Expectations(response.get_item("expectations")?.extract()?))
+        }
+    })
+}
 
 /// A validated state copied in from NumPy, in the dtype of its precision.
 /// The reservation keeps the copy charged to the budget while it is alive.
@@ -678,7 +712,8 @@ impl PyProblem {
         let length = out.len();
         state_array(py, &[length], out)
     }
-    #[pyo3(signature=(indices,parameters,*,product_form=true,energy_ha,status_json="{}",method="adapt-vqe"))]
+    #[pyo3(signature=(indices,parameters,*,product_form=true,energy_ha,status_json="{}",method="adapt-vqe",hessian=None,hessian_optimizer=None))]
+    #[allow(clippy::too_many_arguments)]
     fn checkpoint(
         &self,
         py: Python<'_>,
@@ -688,7 +723,15 @@ impl PyProblem {
         energy_ha: f64,
         status_json: &str,
         method: &str,
+        hessian: Option<PyReadonlyArray2<'_, f64>>,
+        hessian_optimizer: Option<&str>,
     ) -> PyResult<super::persistence::PySnapshot> {
+        let hessian: Option<Vec<f64>> = hessian.map(|h| h.as_array().iter().copied().collect());
+        if hessian.is_some() && hessian_optimizer.is_none() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a checkpoint Hessian needs the optimizer that kept it (hessian_optimizer)",
+            ));
+        }
         let inner = py
             .detach(|| {
                 if status_json.len() > mandacaru_core::persistence::MAX_JSON_BYTES {
@@ -702,6 +745,11 @@ impl PyProblem {
                     .reserve(mandacaru_core::product(&[status_json.len() + 1, 32])?)?;
                 let status = serde_json::from_str(status_json)
                     .map_err(|e| mandacaru_core::Error::Invalid(e.to_string()))?;
+                let status = mandacaru_core::persistence::status_with_hessian(
+                    status,
+                    hessian_optimizer.unwrap_or(""),
+                    hessian.as_deref(),
+                )?;
                 let doc = mandacaru_core::persistence::checkpoint(
                     &self.inner.context,
                     &self.inner,
@@ -720,7 +768,61 @@ impl PyProblem {
             inner,
         })
     }
-    #[pyo3(signature=(weights,*,adapt=false,trotter=false,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,initial_parameters=None))]
+    /// A subspace checkpoint: the shared ansatz, the state weights and the sorted energies.
+    #[pyo3(signature=(indices, parameters, *, adapt, product_form, weights, energies_ha, status_json, hessian=None, hessian_optimizer=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn subspace_checkpoint(
+        &self,
+        py: Python<'_>,
+        indices: Vec<usize>,
+        parameters: Vec<f64>,
+        adapt: bool,
+        product_form: bool,
+        weights: Vec<f64>,
+        energies_ha: Vec<f64>,
+        status_json: &str,
+        hessian: Option<PyReadonlyArray2<'_, f64>>,
+        hessian_optimizer: Option<&str>,
+    ) -> PyResult<super::persistence::PySnapshot> {
+        let hessian: Option<Vec<f64>> = hessian.map(|h| h.as_array().iter().copied().collect());
+        if hessian.is_some() && hessian_optimizer.is_none() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a checkpoint Hessian needs the optimizer that kept it (hessian_optimizer)",
+            ));
+        }
+        let inner = py
+            .detach(|| {
+                if status_json.len() > mandacaru_core::persistence::MAX_JSON_BYTES {
+                    return Err(mandacaru_core::Error::Invalid(
+                        "checkpoint status exceeds JSON limit".into(),
+                    ));
+                }
+                let status = serde_json::from_str(status_json)
+                    .map_err(|e| mandacaru_core::Error::Invalid(e.to_string()))?;
+                let status = mandacaru_core::persistence::status_with_hessian(
+                    status,
+                    hessian_optimizer.unwrap_or(""),
+                    hessian.as_deref(),
+                )?;
+                mandacaru_core::persistence::subspace_checkpoint(
+                    &self.inner.context,
+                    &self.inner,
+                    &indices,
+                    &parameters,
+                    adapt,
+                    product_form,
+                    &weights,
+                    &energies_ha,
+                    status,
+                )
+            })
+            .map_err(error)?;
+        Ok(super::persistence::PySnapshot {
+            context: self.inner.context.clone(),
+            inner,
+        })
+    }
+    #[pyo3(signature=(weights,*,adapt=false,trotter=false,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,initial_parameters=None,resume=None))]
     fn solve_subspace<'py>(
         &self,
         py: Python<'py>,
@@ -736,11 +838,23 @@ impl PyProblem {
         gradient_tolerance: Option<f64>,
         energy_tolerance: Option<f64>,
         initial_parameters: Option<Vec<f64>>,
+        resume: Option<&super::persistence::PySnapshot>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let method = optimizer::Method::parse(optimizer).map_err(error)?;
+        if resume.is_some() && initial_parameters.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "choose initial parameters or a resume checkpoint",
+            ));
+        }
+        // The subspace methods always re-optimize every parameter and grow one operator per
+        // step (`quenching=False`, `tetris` and `prune` are refused by the calculator).
         let options = SolveOptions {
             adapt,
             trotter,
+            quenching: true,
+            tetris: false,
+            prune: false,
+            checkpoint: None,
             max_growth,
             gradient_tolerance,
             energy_tolerance,
@@ -753,12 +867,16 @@ impl PyProblem {
                 track_best,
                 ..Default::default()
             },
+            hessian: None,
+            continuation: false,
         };
         let dimension = self.dimension()?;
         let result = py
-            .detach(|| {
-                self.inner
-                    .solve_subspace(&options, &weights, initial_parameters.as_deref())
+            .detach(|| match resume {
+                Some(snapshot) => snapshot.inner.resume_subspace(&self.inner, &options, &weights),
+                None => self
+                    .inner
+                    .solve_subspace(&options, &weights, initial_parameters.as_deref()),
             })
             .map_err(error)?;
         let out = PyDict::new(py);
@@ -780,7 +898,16 @@ impl PyProblem {
                 .map(|&i| self.inner.pool[i].label.clone())
                 .collect::<Vec<_>>(),
         )?;
+        let operators = result.indices.len();
         out.set_item("indices", result.indices)?;
+        out.set_item(
+            "hessian",
+            match result.hessian {
+                Some(h) => Some(array(py, &[operators, operators], h)?),
+                None => None,
+            },
+        )?;
+        out.set_item("notes", result.notes)?;
         out.set_item("reference_indices", result.reference_indices)?;
         out.set_item("history_ha", result.history)?;
         out.set_item("optimizer_failures", result.optimizer_failures)?;
@@ -889,19 +1016,42 @@ impl PyProblem {
         .map_err(error)
     }
     /// The distinct Pauli strings of every pool commutator `[H, A_k]` and how many of the
-    /// commutators are not zero, found in bounded batches (`quantum::pool_measurement`).
-    #[getter]
-    fn pool_paulis<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let paulis = py
+    /// commutators are not zero, found in bounded batches (`quantum::pool_measurement`). With a
+    /// `limit` the walk stops as soon as the distinct strings pass it: `labels` is then empty
+    /// and `over` holds the strings and generators seen (a lower bound of what the pool needs).
+    #[pyo3(signature = (limit=None))]
+    fn pool_paulis<'py>(
+        &self,
+        py: Python<'py>,
+        limit: Option<usize>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        use mandacaru_core::quantum::pool_measurement::{batch_bytes, PoolWalk};
+        let walk = py
             .detach(|| {
-                self.inner.pool_paulis(mandacaru_core::quantum::pool_measurement::batch_bytes(
-                    &self.inner.context,
-                ))
+                self.inner
+                    .pool_paulis_within(batch_bytes(&self.inner.context), limit)
             })
             .map_err(error)?;
         let out = PyDict::new(py);
-        out.set_item("labels", paulis.set.labels())?;
-        out.set_item("measured_operators", paulis.measured)?;
+        out.set_item("pool_size", self.inner.pool.len())?;
+        match walk {
+            PoolWalk::Planned(paulis) => {
+                out.set_item("labels", paulis.set.labels())?;
+                out.set_item("measured_operators", paulis.measured)?;
+                out.set_item("over", py.None())?;
+            }
+            PoolWalk::Over {
+                distinct,
+                generators,
+            } => {
+                out.set_item("labels", Vec::<String>::new())?;
+                out.set_item("measured_operators", 0)?;
+                let over = PyDict::new(py);
+                over.set_item("strings", distinct)?;
+                over.set_item("generators", generators)?;
+                out.set_item("over", over)?;
+            }
+        }
         Ok(out)
     }
     #[getter]
@@ -935,6 +1085,118 @@ impl PyProblem {
             .into_iter()
             .map(|(l, c)| (l, c.re, c.im))
             .collect()
+    }
+    /// The plan that measures the spatial RDMs on a circuit device (`quantum::rdm_measurement`).
+    #[pyo3(signature=(limit=None))]
+    fn rdm_measurement(&self, py: Python<'_>, limit: Option<usize>) -> PyResult<PyRdmMeasurement> {
+        let inner = py
+            .detach(|| {
+                mandacaru_core::quantum::rdm_measurement::RdmMeasurement::of_problem(
+                    &self.inner,
+                    limit,
+                )
+            })
+            .map_err(error)?;
+        Ok(PyRdmMeasurement {
+            context: self.inner.context.clone(),
+            inner,
+        })
+    }
+    /// The (labels, angles) of the ansatz circuit at `indices` and `parameters`
+    /// (`quantum::execution::circuit_rotations`).
+    fn circuit(&self, indices: Vec<usize>, parameters: Vec<f64>) -> PyResult<(Vec<String>, Vec<f64>)> {
+        mandacaru_core::quantum::execution::circuit_rotations(&self.inner, &indices, &parameters)
+            .map_err(error)
+    }
+    /// The cost of the device Hessian before any job: `(rotations, energy evaluations,
+    /// circuits)`, the circuits of a `sampled` device counted in the bases of the energy measured
+    /// with its error (`quantum::execution::device_hessian_plan`).
+    #[pyo3(signature=(indices,parameters,*,sampled=false))]
+    fn device_hessian_plan(&self, indices: Vec<usize>, parameters: Vec<f64>, sampled: bool) -> PyResult<(usize, usize, usize)> {
+        mandacaru_core::quantum::execution::device_hessian_plan(&self.inner, &indices, &parameters, sampled)
+            .map_err(error)
+    }
+    /// The energy, gradient and Hessian measured on the device through `executor` (one call),
+    /// and the Z vector of the native truncated solve (`None` under the gradient floor). On a
+    /// sampled executor (`executor.shots > 0`) every energy carries its standard error, the
+    /// Hessian's eigenvalues are checked against theirs and `z_covariance` is `Cov(z)`
+    /// (`quantum::lagrangian::measured_z`).
+    #[pyo3(signature=(indices,parameters,executor,*,gradient_floor=None))]
+    fn device_hessian<'py>(
+        &self,
+        py: Python<'py>,
+        indices: Vec<usize>,
+        parameters: Vec<f64>,
+        executor: Py<PyAny>,
+        gradient_floor: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        use mandacaru_core::quantum::execution::{CircuitExecution, Request};
+        let mut execution_error = None;
+        let mut options = mandacaru_core::quantum::lagrangian::Options::default();
+        if let Some(floor) = gradient_floor {
+            options.floor = floor;
+        }
+        // The executor's shots per basis (0 for an exact device): read, never assumed, so an
+        // executor without them refuses instead of measuring an exact-device Hessian.
+        let shots: u64 = executor.bind(py).getattr("shots")?.extract()?;
+        let (measured, solved) = py
+            .detach(|| {
+                let mut invoke = |requests: &[Request]| {
+                    call_executor(&self.inner.context, &executor, requests).map_err(|error| {
+                        execution_error = Some(error);
+                        mandacaru_core::Error::Kernel("circuit execution failed".into())
+                    })
+                };
+                let mut execution = CircuitExecution::new(&mut invoke).with_shots(shots);
+                let measured = execution.gradient_and_hessian(&self.inner, &indices, &parameters)?;
+                let solved = mandacaru_core::quantum::lagrangian::measured_z(
+                    &measured.gradient,
+                    &measured.hessian,
+                    &measured.energies,
+                    &options,
+                )?;
+                Ok((measured, solved))
+            })
+            .map_err(|e| execution_error.take().unwrap_or_else(|| error(e)))?;
+        let out = PyDict::new(py);
+        let n = measured.gradient.len();
+        out.set_item("energy", measured.energy)?;
+        out.set_item("gradient", array(py, &[n], measured.gradient.clone())?)?;
+        out.set_item("hessian", array(py, &[n, n], measured.hessian.transpose().iter().copied().collect())?)?;
+        out.set_item("rotations", measured.rotations)?;
+        out.set_item("energy_evaluations", measured.energy_evaluations)?;
+        out.set_item("circuits", measured.circuits)?;
+        out.set_item("hessian_error_unavailable", measured.error_unavailable.clone())?;
+        out.set_item("gradient_norm", solved.gradient_norm)?;
+        match solved.solution {
+            None => out.set_item("z", py.None())?,
+            Some(solution) => {
+                out.set_item("z", array(py, &[n], solution.x.clone())?)?;
+                out.set_item("z_vector_norm", solved.z_norm)?;
+                out.set_item("hessian_cutoff", solution.cutoff)?;
+                out.set_item("hessian_lowest_curvature", solution.eigenvalues[0])?;
+                out.set_item("hessian_highest_curvature", solution.eigenvalues[n - 1])?;
+                out.set_item("z_vector_dropped", solution.dropped)?;
+                out.set_item("z_vector_dropped_gradient_norm", solution.dropped_rhs)?;
+                out.set_item("hessian_lowest_curvature_error", solved.lowest_curvature_error)?;
+                out.set_item("hessian_curvature_significance", solved.curvature_significance)?;
+                match &solved.z_covariance {
+                    None => out.set_item("z_covariance", py.None())?,
+                    Some(cov) => out.set_item("z_covariance", array(py, &[n, n], cov.transpose().iter().copied().collect())?)?,
+                }
+            }
+        }
+        Ok(out)
+    }
+    /// The `2 R` shifted circuits `(labels, angles, parameter, coefficient)` whose energies give
+    /// `z . g = sum z_parameter coefficient E`.
+    fn shifted_circuits(
+        &self,
+        indices: Vec<usize>,
+        parameters: Vec<f64>,
+        z: Vec<f64>,
+    ) -> PyResult<Vec<(Vec<String>, Vec<f64>, usize, f64)>> {
+        mandacaru_core::quantum::execution::shifted_circuits(&self.inner, &indices, &parameters, &z).map_err(error)
     }
     #[pyo3(signature=(state,*,two_body=true))]
     fn rdms<'py>(
@@ -985,13 +1247,16 @@ impl PyProblem {
         out.set_item("state", state_array(py, &[length], value.state)?)?;
         Ok(out)
     }
-    #[pyo3(signature=(*,adapt=false,trotter=false,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_parameters=None,initial_indices=None,optimizer="BFGS",resume=None,callback=None,executor=None))]
+    #[pyo3(signature=(*,adapt=false,trotter=false,quenching=true,tetris=false,prune=false,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_parameters=None,initial_indices=None,initial_hessian=None,optimizer="BFGS",resume=None,callback=None,executor=None,checkpoint_path=None,checkpoint_every=0))]
     #[allow(clippy::too_many_arguments)]
     fn solve<'py>(
         &self,
         py: Python<'py>,
         adapt: bool,
         trotter: bool,
+        quenching: bool,
+        tetris: bool,
+        prune: bool,
         max_growth: usize,
         gradient_tolerance: Option<f64>,
         energy_tolerance: Option<f64>,
@@ -1001,15 +1266,32 @@ impl PyProblem {
         track_best: bool,
         initial_parameters: Option<Vec<f64>>,
         initial_indices: Option<Vec<usize>>,
+        initial_hessian: Option<PyReadonlyArray2<'_, f64>>,
         optimizer: &str,
         resume: Option<&super::persistence::PySnapshot>,
         callback: Option<Py<PyAny>>,
         executor: Option<Py<PyAny>>,
+        checkpoint_path: Option<String>,
+        checkpoint_every: usize,
     ) -> PyResult<Bound<'py, PyDict>> {
         let method = optimizer::Method::parse(optimizer).map_err(error)?;
+        if checkpoint_path.is_some() != (checkpoint_every > 0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a mid-run checkpoint needs both a path and a positive cadence",
+            ));
+        }
+        let checkpoint = checkpoint_path.map(|path| mandacaru_core::quantum::solver::Checkpointing {
+            path: path.into(),
+            every: checkpoint_every,
+            method: if adapt { "adapt-vqe" } else { "vqe" }.into(),
+        });
         let options = SolveOptions {
             adapt,
             trotter,
+            quenching,
+            tetris,
+            prune,
+            checkpoint,
             max_growth,
             gradient_tolerance,
             energy_tolerance,
@@ -1022,6 +1304,8 @@ impl PyProblem {
                 track_best,
                 ..Default::default()
             },
+            hessian: initial_hessian.map(|h| h.as_array().iter().copied().collect()),
+            continuation: false,
         };
         if resume.is_some() && (initial_parameters.is_some() || initial_indices.is_some()) {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1035,6 +1319,13 @@ impl PyProblem {
         }
         let mut callback_error = None;
         let mut execution_error = None;
+        let mut energy_errors: Option<(Option<f64>, Vec<Option<f64>>)> = None;
+        let mut energy_error_reason: Option<String> = None;
+        // Shots per basis of the executor's device (0 for an exact one), for the energy errors.
+        let shots: u64 = match executor.as_ref() {
+            Some(executor) => executor.bind(py).getattr("shots").and_then(|s| s.extract()).unwrap_or(0),
+            None => 0,
+        };
         if executor.is_some() && (resume.is_some() || (!adapt && !trotter)) {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "circuit execution requires a product ansatz and a fresh solve",
@@ -1062,53 +1353,15 @@ impl PyProblem {
                     })
                 };
                 if let Some(executor) = executor.as_ref() {
-                    use mandacaru_core::quantum::execution::{
-                        CircuitExecution, Request, Response,
-                    };
+                    use mandacaru_core::quantum::execution::{CircuitExecution, Request};
                     let mut invoke = |requests: &[Request]| {
-                        Python::attach(|py| {
-                            let invoke = || -> PyResult<Response> {
-                                let batch: Vec<_> = requests
-                                    .iter()
-                                    .map(|r| {
-                                        (r.labels.clone(), r.angles.clone(), r.observables.clone())
-                                    })
-                                    .collect();
-                                let response = executor.bind(py).call1((batch,))?;
-                                if let Ok(stop) = response.get_item("stop") {
-                                    return Ok(Response::Stop(stop.extract()?));
-                                }
-                                if let Ok(states) = response.get_item("states") {
-                                    let states: Vec<PyReadonlyArray1<'_, C64>> = states.extract()?;
-                                    let mut owned = Vec::with_capacity(states.len());
-                                    for state in &states {
-                                        let mut copy = self
-                                            .inner
-                                            .context
-                                            .allocate(state.len())
-                                            .map_err(error)?;
-                                        for (out, value) in
-                                            copy.as_mut_slice().iter_mut().zip(state.as_array())
-                                        {
-                                            *out = *value;
-                                        }
-                                        owned.push(copy);
-                                    }
-                                    Ok(Response::States(owned))
-                                } else {
-                                    Ok(Response::Expectations(
-                                        response.get_item("expectations")?.extract()?,
-                                    ))
-                                }
-                            };
-                            invoke().map_err(|error| {
-                                execution_error = Some(error);
-                                mandacaru_core::Error::Kernel("circuit execution failed".into())
-                            })
+                        call_executor(&self.inner.context, executor, requests).map_err(|error| {
+                            execution_error = Some(error);
+                            mandacaru_core::Error::Kernel("circuit execution failed".into())
                         })
                     };
-                    let mut execution = CircuitExecution::new(&mut invoke);
-                    return self.inner.solve_executed(
+                    let mut execution = CircuitExecution::new(&mut invoke).with_shots(shots);
+                    let solved = self.inner.solve_executed(
                         &options,
                         initial_parameters.as_deref(),
                         if callback.is_some() {
@@ -1118,6 +1371,18 @@ impl PyProblem {
                         },
                         &mut execution,
                     );
+                    if let Ok(result) = &solved {
+                        energy_error_reason = execution.energy_error_reason().map(str::to_owned);
+                        energy_errors = Some((
+                            execution.energy_error(result.energy),
+                            result
+                                .iterations
+                                .iter()
+                                .map(|it| execution.energy_error(it.energy))
+                                .collect::<Vec<_>>(),
+                        ));
+                    }
+                    return solved;
                 }
                 if callback.is_some() {
                     return if let Some(resume) = resume {
@@ -1148,7 +1413,14 @@ impl PyProblem {
                     .or(execution_error)
                     .unwrap_or_else(|| error(e))
             })?;
-        solution_dict(py, result)
+        let out = solution_dict(py, result)?;
+        // A sampled run's standard errors (Hartree): of the final energy and of each iteration's.
+        if let Some((energy, iterations)) = energy_errors {
+            out.set_item("energy_error_ha", energy)?;
+            out.set_item("iteration_energy_errors_ha", iterations)?;
+            out.set_item("energy_error_reason", energy_error_reason)?;
+        }
+        Ok(out)
     }
 }
 
@@ -1171,8 +1443,19 @@ fn solution_dict<'py>(
     out.set_item("success", result.success)?;
     out.set_item("message", result.message)?;
     out.set_item("budget_stopped", result.budget_stopped)?;
+    out.set_item("pruned", result.pruned.clone())?;
     out.set_item("operators", result.labels)?;
+    let operators = result.indices.len();
     out.set_item("indices", result.indices)?;
+    // The final ansatz's Hessian approximation, `(n, n)`, for the next growth, resume or handover.
+    out.set_item(
+        "hessian",
+        match result.hessian {
+            Some(h) => Some(array(py, &[operators, operators], h)?),
+            None => None,
+        },
+    )?;
+    out.set_item("notes", result.notes)?;
     out.set_item("history_ha", result.history)?;
     out.set_item("optimizer_steps", result.optimizer_steps)?;
     out.set_item("final_max_gradient", result.final_gradient)?;
@@ -1185,6 +1468,7 @@ fn solution_dict<'py>(
         details.set_item("message", seed.message)?;
         details.set_item("num_evaluations", seed.evaluations)?;
         details.set_item("optimizer_steps", seed.steps)?;
+        details.set_item("warm_hessian", seed.warm)?;
         out.set_item("seed_relaxation", details)?;
     }
     let iterations: Vec<_> = result
@@ -1393,6 +1677,69 @@ impl PyProblem {
             out.as_mut_slice()[row * n..(row + 1) * n].copy_from_slice(expanded.as_slice());
         }
         Ok(A::wrap(out))
+    }
+}
+/// The Pauli strings of the spatial RDMs and their assembly (`quantum::rdm_measurement`).
+#[pyclass(name = "RdmMeasurement", module = "mandacaru._native", frozen)]
+pub struct PyRdmMeasurement {
+    context: mandacaru_core::Context,
+    inner: mandacaru_core::quantum::rdm_measurement::RdmMeasurement,
+}
+#[pymethods]
+impl PyRdmMeasurement {
+    #[getter]
+    fn n_spatial_orbitals(&self) -> usize {
+        self.inner.m
+    }
+    #[getter]
+    fn observables(&self) -> Vec<String> {
+        self.inner.observables()
+    }
+    #[getter]
+    fn bases(&self) -> usize {
+        self.inner.bases()
+    }
+    /// The number of values `assemble` takes (the strings, then the covariance products).
+    #[getter]
+    fn measured(&self) -> usize {
+        self.inner.measured()
+    }
+    /// One `(rotations, observables)` per measurement basis (`RdmMeasurement::requests`).
+    #[allow(clippy::type_complexity)]
+    fn requests(&self, py: Python<'_>) -> Vec<(Vec<(String, f64)>, Vec<(String, u32)>)> {
+        py.detach(|| self.inner.requests())
+    }
+    /// `(one, two, one_error, two_error)`: real `(m, m)` and `(m, m, m, m)` arrays, the errors
+    /// `None` without `errors`.
+    #[pyo3(signature=(values, errors=None, shots=None))]
+    #[allow(clippy::type_complexity)]
+    fn assemble<'py>(
+        &self,
+        py: Python<'py>,
+        values: Vec<f64>,
+        errors: Option<Vec<f64>>,
+        shots: Option<u64>,
+    ) -> PyResult<(
+        Array<'py, f64>,
+        Array<'py, f64>,
+        Option<Array<'py, f64>>,
+        Option<Array<'py, f64>>,
+    )> {
+        let (rdms, spread) = py
+            .detach(|| self.inner.assemble(&self.context, &values, errors.as_deref(), shots))
+            .map_err(error)?;
+        let m = rdms.m;
+        let real = |v: &[mandacaru_core::quantum::C64]| v.iter().map(|c| c.re).collect::<Vec<_>>();
+        let (one_error, two_error) = match spread {
+            Some((a, b)) => (Some(array(py, &[m, m], a)?), Some(array(py, &[m, m, m, m], b)?)),
+            None => (None, None),
+        };
+        Ok((
+            array(py, &[m, m], real(rdms.one.as_slice()))?,
+            array(py, &[m, m, m, m], real(rdms.two.as_slice()))?,
+            one_error,
+            two_error,
+        ))
     }
 }
 impl PyProblem {

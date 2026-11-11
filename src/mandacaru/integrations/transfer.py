@@ -33,7 +33,7 @@ def capture(driver):
             and previous._model is not None and previous._problem is not None):
         driver._transfer_seed = previous.scf.capture_transfer(
             previous._model, previous._problem, previous._raw["indices"],
-            previous.optimal_parameters.tolist())
+            previous.optimal_parameters.tolist(), previous._raw.get("hessian"))
 
 
 def prepare(driver, reference):

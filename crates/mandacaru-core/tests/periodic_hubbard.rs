@@ -697,7 +697,6 @@ fn the_shell_table_is_bounded_by_the_documented_size() {
             2,
             false,
             mandacaru_core::math::storage::Precision::Float64,
-            0,
         )
     };
     let spec = parse(MAX_SHELLS).unwrap().unwrap();
@@ -776,25 +775,19 @@ fn unsupported_combinations_raise_and_no_full_mesh_crystal_has_a_symmetry_table(
         message.contains("restricted") && message.contains("moment"),
         "{message}"
     );
-    // spin-orbit crystals, and a symmetry table without the shell-occupation map
+    // spin-orbit crystals
     let spec = load(&ctx, "cuh_7").hubbard.unwrap().to_json();
-    let parse = |spinor, permutations| {
+    let parse = |spinor| {
         mandacaru_core::periodic::hubbard::Spec::parse(
             &spec,
             26,
             1,
             spinor,
             mandacaru_core::math::storage::Precision::Float64,
-            permutations,
         )
     };
-    assert!(parse(false, 0).unwrap().is_some());
-    assert!(parse(true, 0).err().unwrap().to_string().contains("spinor"));
-    assert!(parse(false, 2)
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("symmetry"));
+    assert!(parse(false).unwrap().is_some());
+    assert!(parse(true).err().unwrap().to_string().contains("spinor"));
     // the plain entry point would drop the operator
     let mut c = load(&ctx, "cuh_7");
     with_u(&mut c, 4.);

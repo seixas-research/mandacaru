@@ -26,7 +26,68 @@ restricted unless the electron counts differ or you pass `spin=True`
 [Open-shell systems](open_shell.md). Converge both the basis and the grid before
 interpreting energy differences: `HAO` is a generated hydrogenic basis, not a
 claim of basis-set completeness. `scf_options` passes `max_iterations` (300),
-`tolerance` (`1e-9`), `diis` (`True`) and `guesses` (3) to the SCF.
+`tolerance` (`1e-9`), `diis` (`True`) and `guesses` (3) to the SCF. A
+molecule needs a nonzero cell (or an explicit `grid`) on every basis: a zero cell
+raises `ValueError` ("molecular integration requires a nondegenerate cell or an
+explicit grid").
+
+(dft-degenerate-shell)=
+### Occupations: Fermi-Dirac with one Fermi level per spin
+
+A molecular Kohn–Sham run fills each spin channel with Fermi-Dirac occupations,
+one Fermi level per spin. The width is set by `smearing=`, which a molecule takes
+in Fermi-Dirac form only (another scheme raises `NotImplementedError`). The
+default is 1e-4 Ha (2.7 meV). A gapped molecule is unaffected: with a gap above
+about 80 widths (0.008 Ha), every occupation is exactly 0 or 1.
+
+The occupations matter when the frontier shell is degenerate or nearly so. There
+are two cases:
+
+- **An exactly degenerate shell** is shared equally among its members, whatever the
+  width. Spin-restricted O2 is the standard case: its π* pair holds one electron of
+  each spin in each member, which keeps the axial symmetry of the bond. The OH
+  radical on its axis is another: its single β π electron is split half and half.
+- **A nearly degenerate shell**, for example OH with its hydrogen off the bond axis
+  or an O2 bond tilted by 0.02 Angstrom, has no integer state that is aufbau. The
+  doubly occupied member rises above the empty one. Its Fermi-Dirac occupations
+  instead bring the two levels together, near one electron each for tilted O2.
+
+```python
+from ase.build import molecule
+o2 = molecule("O2"); o2.center(vacuum=2.5)
+o2.calc = Mandacaru(method="dft", xc="lda", grid_spacing=0.3,
+                    basis={"name": "PAW-LCAO", "size": "SZ"})
+o2.get_potential_energy()             # the spin-restricted ensemble
+o2.calc.get_occupation_numbers()      # [2, 2, 2, 2, 2, 1, 1, 0]
+o2.get_potential_energy(force_consistent=True)   # the Mermin free energy
+```
+
+With PAW-LCAO SZ and LDA, this state lies 0.778 eV above Hund's triplet. The
+crystal route finds the same 0.778 eV independently. Filling one π* member
+instead breaks the symmetry and lands at least 0.52 eV higher.
+
+**Energies.** `get_potential_energy()` is the Kohn–Sham energy of the fractional
+state. For discrete levels this is its zero-temperature estimate: it is
+second-order in the width, because the energy is stationary in the occupations
+there. Tilted O2 gives the same energy, to 1e-6 eV, at widths of 3e-3, 1e-3 and
+1e-4 Ha. `get_potential_energy(force_consistent=True)` is the Mermin free energy
+`E - width S`.
+
+**Forces.** The analytic forces are the derivative of the free energy, each
+orbital weighted by its occupation, the screened-hybrid exchange included.
+
+**Convergence.** A narrow width can stall the SCF, because the occupations of a
+stiff frontier respond to its splitting as one over the width. The SCF then
+starts at 3e-3 Ha and narrows the width in steps of three, each step started from
+the last (Rabuck and Scuseria, J. Chem. Phys. 110, 695 (1999)).
+
+**What raises.** An active space needs integer occupations, and so does the
+all-electron analytic force. On a fractional state both raise
+`NotImplementedError`; set the spin state explicitly with initial magnetic moments
+or `unrestricted=True`. A spin-orbit (spinor) molecule has integer occupations, and
+`smearing=` raises `NotImplementedError` there; a method other than `dft` refuses
+the option. The run log's `[SCF SUMMARY]` says how
+the state is occupied ([run log](../reference/run_log.md)).
 
 With a PAW-LCAO basis the molecular Kohn–Sham solver runs `lda`, `pbe`, `r2scan`
 and the screened hybrid `hse06` ([Screened hybrid](#dft-screened-hybrid)) and reads
@@ -77,6 +138,22 @@ gradient. The discretized iso-orbital indicator has a smooth floor below zero to
 keep noisy density tails bounded, and points below the grid density threshold are
 excluded from the meta-GGA contribution.
 
+The density gradient differs between the two routes, but the one-orbital identity
+holds on both:
+
+- **Molecular route.** The gradient comes from the orbitals by the product rule,
+  with the same derivatives as τ. A one-orbital density then has τ_W = τ exactly,
+  and the iso-orbital indicator is zero.
+- **Crystal route.** The gradient is the spectral derivative of the sampled
+  density. This keeps the identity to 1e-5 of τ for H₂ in a box at a 0.4 Bohr
+  grid. The r²SCAN energy then lies 8e-6 Ha from that of the same orbitals on a
+  twice finer grid, and 2e-7 Ha at 0.29 Bohr.
+
+For water at the default crystal grid, the two gradients give energies 3e-4 Ha
+apart. Neither is consistently closer to the finer-grid value of the same state,
+and the difference shrinks with the grid. The crystal's analytic r²SCAN forces
+and stress are those of its own energy.
+
 (dft-screened-hybrid)=
 ### Screened hybrid
 
@@ -89,7 +166,12 @@ Evaluating a semilocal point alone is not a hybrid SCF calculation. With a
 PAW-LCAO basis, the hybrid carries the PAW terms of the exchange: the screened
 pair densities include the compensation charges, and each atom's sphere adds its
 one-center screened exchange, the frozen short-range semilocal term that the exact
-exchange replaces, and the constant of that term (once per atom). In an open-shell
+exchange replaces, and the constant of that term (once per atom). The grid evaluates the
+short-range functional on the smooth valence density plus the smooth core of the
+dataset's nonlinear core correction, so each sphere takes that whole smooth side off and
+restores the all-electron valence density: grid and spheres together subtract the
+short-range exchange of the valence electrons only, the part the exact exchange replaces,
+and no per-atom energy offset from the smooth core is left. In an open-shell
 molecule the spheres' semilocal short-range exchange follows the two spin densities
 rather than their sum; closed-shell results are unchanged by that term. A periodic
 crystal carries the same terms in the self-consistent iterations, the bands and the
@@ -193,14 +275,10 @@ option of this periodic path and has [its own guide](dft_u.md).
 
 ## Dispersion correction
 
-A dispersion correction (D4) is not yet available. Native building blocks exist,
-but a complete parameterized model needs reference polarizabilities, fitted
-element parameters, coordination interpolation, charge equilibration with its
-geometry response, pair damping, three-body terms and periodic sums, and a pair
-potential with guessed coefficients is not that model. The calculator does not
-silently replace it with rVV10 or any other correction; the rVV10 choices above
-are independent nonlocal correlation functionals ([open
-items](#not-yet-available)).
+`vdw="ts"` adds the Tkatchenko-Scheffler pairwise dispersion correction, with
+analytic forces. `vdw="rvv10"` is not a correction added afterwards: it selects
+the rVV10 nonlocal correlation functional described above (`pbe+rvv10` or
+`r2scan+rvv10`). Any other `vdw` value raises `ValueError`.
 
 ## Scientific references
 

@@ -291,7 +291,7 @@ impl CachedProblem {
                 let transferred = evaluator.evaluate(initial_indices.to_vec(),initial_parameters.to_vec(),0)?;
                 let kept=transferred.cost<current.cost;
                 seed=Some(crate::quantum::solver::SeedRelaxation {kept,energy:transferred.energy,success:transferred.success,
-                    message:transferred.message.clone(),evaluations:evaluator.history.len()-before,steps:evaluator.optimizer_steps-before_steps});
+                    message:transferred.message.clone(),evaluations:evaluator.history.len()-before,steps:evaluator.optimizer_steps-before_steps,warm:false});
                 if kept {current=transferred;}
             }
             let chain_steps=if seed.as_ref().is_some_and(|s| s.kept) {options.transfer_steps.unwrap_or(options.max_steps)} else {options.max_steps};
@@ -345,7 +345,7 @@ impl CachedProblem {
                     state:final_state,labels:best.sequence.iter().map(|&i|self.pool[i].label.clone()).collect(),indices:best.sequence,
                     iterations:vec![],history:evaluator.history,optimizer_steps:evaluator.optimizer_steps,success:false,
                     message:"architecture search budget completed; no eigenstate convergence certificate".into(),
-                    final_gradient:best.gradients.iter().map(|g|g.abs()).fold(0.,f64::max),budget_stopped:false,elapsed_seconds:started.elapsed().as_secs_f64(),_memory:result_memory},
+                    final_gradient:best.gradients.iter().map(|g|g.abs()).fold(0.,f64::max),budget_stopped:false,elapsed_seconds:started.elapsed().as_secs_f64(),pruned:vec![],hessian:None,notes:vec![],_memory:result_memory},
                 records,steps,acceptance,optimal_cost:best.cost,best_energy:best_energy.energy,
                 best_energy_indices:best_energy.sequence,best_energy_parameters:best_energy.parameters,final_energy:current.energy,
                 final_indices:current.sequence,final_parameters:current.parameters,num_architectures:evaluator.seen.len(),

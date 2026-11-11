@@ -1,7 +1,8 @@
 """The operator pool a quantum method uses when ``pool=`` is left out.
 
 Owner decision 2026-11-09: the growing ADAPT methods default to ``ceo`` (on the 4-cell metallic
-hydrogen chain the fermionic pool stops 0.0196 eV above the exact energy; ``ceo`` reaches it,
+hydrogen chain the fermionic pool stops 0.0169 eV above the exact energy (0.0196 before the
+band-limited supercell of 2026-11-10); ``ceo`` reaches it,
 ``test/migration/test_native_bloch.py``). Every other quantum method keeps ``fermionic``: a fixed
 ansatz and the search methods are built on the fermionic excitations, and ``ansatz="hva"``
 requires it. The one table is ``METHODS[method].default_pool``; an explicit ``pool=`` wins.

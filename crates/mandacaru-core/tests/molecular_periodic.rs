@@ -260,7 +260,9 @@ fn a_metallic_chain_reaches_the_rhf_minimum_not_the_level_shifted_saddle() {
     // cell, the occupied orbital 0.03 Ha above an empty one) and call it converged; the minimum
     // mixes the pair and lies 0.46 eV per cell lower (-9.781445 eV, an independent dense RHF from
     // the same integrals, 2026-11-09). The aufbau gate restarts from the saddle with the pair
-    // mixed.
+    // mixed. Re-pinned 2026-11-10 for the band-limited supercell Hamiltonian (orbitals truncated
+    // at pi / (2h), G-space ion potential): -9.781445 -> -11.114980 eV per cell at h = 0.35 A,
+    // still the aufbau minimum (occupied below empty, checked below).
     const HARTREE_EV: f64 = 27.211386245988;
     let ctx = Context::new(Some(1), 512 << 20).unwrap();
     // vera's cell: 10 A of vacuum transversely.
@@ -273,8 +275,96 @@ fn a_metallic_chain_reaches_the_rhf_minimum_not_the_level_shifted_saddle() {
     )
     .unwrap();
     let integrals = supercell(&ctx, &primitive, [4, 1, 1], 0.35);
-    let reference = integrals.mean_field("rhf", [2, 2], &ScfOptions::default()).unwrap();
+    let reference = integrals
+        .mean_field("rhf", [2, 2], &ScfOptions::default())
+        .unwrap();
     let per_cell = (reference.electronic_energy + integrals.nuclear) / 4. * HARTREE_EV;
     assert!(reference.converged);
-    assert!((per_cell + 9.781445).abs() < 1e-4, "{per_cell} eV per cell");
+    let levels = &reference.energies[0];
+    assert!(levels[1] < levels[2], "not aufbau: {levels:?}");
+    assert!(
+        (per_cell + 11.114980).abs() < 1e-4,
+        "{per_cell} eV per cell"
+    );
+}
+
+/// RHF energy per cell (Hartree) of the H2 chain (a = 3 A, d = 0.74 A, 8 A vacuum, 2 cells) with
+/// every atom shifted by `shift` Angstrom along the chain.
+fn h2_chain_energy(ctx: &Context, h: f64, shift: f64) -> f64 {
+    let primitive = Geometry::new(
+        vec![1, 1],
+        vec![[shift, 0., 0.], [0.74 + shift, 0., 0.]],
+        [[3.0, 0., 0.], [0., 8., 0.], [0., 0., 8.]],
+        [true, false, false],
+        LengthUnit::Angstrom,
+    )
+    .unwrap();
+    let integrals = supercell(ctx, &primitive, [2, 1, 1], h);
+    let options = ScfOptions {
+        tolerance: 1e-12,
+        ..ScfOptions::default()
+    };
+    let rhf = integrals.mean_field("rhf", [2, 2], &options).unwrap();
+    (rhf.electronic_energy + integrals.nuclear) / 2.
+}
+
+#[test]
+fn the_energy_does_not_depend_on_where_the_crystal_sits_on_the_grid() {
+    // Band-limited orbitals and a G-space ion potential: a rigid translation by a fraction of a
+    // grid step changes only phases. Before (point-sampled cusp, softened -Z/r), the same chain
+    // moved by 6 meV per cell at 0.001 A and by up to 0.65 eV at 0.1 A (grid_spacing 0.2).
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    for h in [0.25, 0.15] {
+        let reference = h2_chain_energy(&ctx, h, 0.);
+        for fraction in [0.001 / h, 0.25, 0.5, 0.731] {
+            let moved = h2_chain_energy(&ctx, h, fraction * h);
+            assert!(
+                (moved - reference).abs() < 1e-9,
+                "h = {h}, shift {:.4} A: {:e} Ha",
+                fraction * h,
+                moved - reference
+            );
+        }
+    }
+}
+
+#[test]
+fn the_energy_converges_monotonically_with_the_grid() {
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    let energies: Vec<f64> = [0.3, 0.25, 0.2, 0.15]
+        .iter()
+        .map(|&h| h2_chain_energy(&ctx, h, 0.))
+        .collect();
+    for pair in energies.windows(2) {
+        assert!(pair[1] < pair[0], "not monotone: {energies:?}");
+    }
+    // Successive differences shrink as the band limit grows.
+    let steps: Vec<f64> = energies.windows(2).map(|p| p[0] - p[1]).collect();
+    assert!(steps[2] < steps[0], "not converging: {energies:?}");
+}
+
+#[test]
+fn a_band_limited_orbital_peaks_at_its_center() {
+    // The Fourier synthesis puts each orbital where its atom is (a sign error would mirror it).
+    let ctx = Context::new(Some(1), 256 << 20).unwrap();
+    let primitive = Geometry::new(
+        vec![1],
+        vec![[1.2, 2.0, 2.5]],
+        [[4.0, 0., 0.], [0., 5., 0.], [0., 0., 6.]],
+        [true, true, true],
+        LengthUnit::Angstrom,
+    )
+    .unwrap();
+    let integrals = supercell(&ctx, &primitive, [1, 1, 1], 0.2);
+    let g = integrals.grid.index.points();
+    let mut row = vec![0.; g];
+    integrals.samples.widen_range(0, &mut row).unwrap();
+    let peak = (0..g).max_by(|&a, &b| row[a].total_cmp(&row[b])).unwrap();
+    let point = integrals.grid.point(peak);
+    let center = integrals.basis.orbitals[0].center;
+    let distance = (0..3)
+        .map(|j| (point[j] - center[j]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    assert!(distance < 0.2 / BOHR, "peak {point:?} vs center {center:?}");
 }

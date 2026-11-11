@@ -2,6 +2,7 @@
 
 pub mod basis;
 pub mod context;
+pub mod derived;
 pub mod execution;
 pub mod geometry;
 pub mod kernels;

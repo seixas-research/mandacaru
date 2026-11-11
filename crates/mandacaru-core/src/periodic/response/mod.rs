@@ -29,10 +29,10 @@ use super::{
 };
 use crate::{math::storage::MatrixSource, product, Error, Result};
 
-mod setup;
+pub(in crate::periodic) mod setup;
 use setup::Setup;
 
-fn description(c: &Crystal) -> Result<&Description> {
+pub(in crate::periodic) fn description(c: &Crystal) -> Result<&Description> {
     if let Some(cause) = &c.description_unavailable {
         return Err(Error::Unsupported(format!(
             "crystal forces and stress are not available for this crystal: {cause}"

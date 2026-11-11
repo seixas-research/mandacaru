@@ -148,81 +148,113 @@ def test_dft_crystal_spin_orbit_coupling_forces_and_stress():
 # 3. VQE and ADAPT-VQE Methods: Molecules (Forces)
 # ============================================================================ #
 
-def test_vqe_molecule_unpolarized_variational_forces():
-    """Unpolarized H2 with VQE: variational finite difference forces match numerical difference."""
-    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]], cell=[6.0] * 3)
-    calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.5, resources={"threads": 1})
-    atoms.calc = calc
+def _paw_h2(method, z, grid=None, **options):
+    """H2 on a coarse PAW-LCAO grid in its two lowest orbitals (the analytic variational force)."""
+    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, z]], cell=[5.0] * 3)
+    atoms.calc = Mandacaru(method=method, basis="PAW-LCAO", grid=grid, grid_spacing=0.4,
+                           active_space={"orbitals": 2}, resources={"threads": 1}, **options)
+    return atoms
+
+
+def _check_bond_force(method, **options):
+    atoms = _paw_h2(method, 0.74, **options)
     forces = atoms.get_forces()
     assert forces.shape == (2, 3)
-    assert calc.result.force_details["scheme"] == "Central-reduced-Hamiltonian"
-
+    assert atoms.calc.result.force_details["scheme"] == "analytic"
     h = 0.001
-    grid = calc.integrals.grid
+    grid = atoms.calc.integrals.grid
+
     def energy_at(z):
-        m = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, z]], cell=[6.0] * 3)
-        m.calc = Mandacaru(method="vqe", basis="HAO", grid=grid, grid_spacing=0.5, resources={"threads": 1})
-        return m.get_potential_energy()
+        return _paw_h2(method, z, grid, **options).get_potential_energy()
 
     num_force_z = -(energy_at(0.74 + h) - energy_at(0.74 - h)) / (2 * h)
     assert forces[1, 2] == pytest.approx(num_force_z, abs=1e-3)
 
 
+def test_vqe_molecule_unpolarized_variational_forces():
+    """Unpolarized H2 with VQE: the analytic variational force matches the energy difference."""
+    _check_bond_force("vqe")
+
+
 def test_adapt_vqe_molecule_spin_polarized_variational_forces():
-    """Spin-polarized H2 triplet with ADAPT-VQE: variational forces match numerical difference."""
-    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.2]], cell=[6.0] * 3)
-    atoms.set_initial_magnetic_moments([1.0, 1.0])
-    calc = Mandacaru(method="adapt-vqe", basis="HAO", grid_spacing=0.5, resources={"threads": 1})
-    atoms.calc = calc
+    """Spin-polarized H2 triplet with ADAPT-VQE on an unrestricted reference: the analytic
+    variational force matches the energy difference."""
+    def triplet(z, grid=None):
+        atoms = _paw_h2("adapt-vqe", z, grid)
+        atoms.set_initial_magnetic_moments([1.0, 1.0])
+        return atoms
+
+    atoms = triplet(1.2)
     forces = atoms.get_forces()
-    assert forces.shape == (2, 3)
-    assert calc.native_reference.num_particles == [2, 0]
-
+    assert atoms.calc.native_reference.num_particles == [2, 0]
+    assert atoms.calc.result.force_details["scheme"] == "analytic"
     h = 0.001
-    grid = calc.integrals.grid
-    def energy_at(z):
-        m = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, z]], cell=[6.0] * 3)
-        m.set_initial_magnetic_moments([1.0, 1.0])
-        m.calc = Mandacaru(method="adapt-vqe", basis="HAO", grid=grid, grid_spacing=0.5, resources={"threads": 1})
-        return m.get_potential_energy()
-
-    num_force_z = -(energy_at(1.2 + h) - energy_at(1.2 - h)) / (2 * h)
+    grid = atoms.calc.integrals.grid
+    num_force_z = -(triplet(1.2 + h, grid).get_potential_energy()
+                    - triplet(1.2 - h, grid).get_potential_energy()) / (2 * h)
     assert forces[1, 2] == pytest.approx(num_force_z, abs=1e-3)
 
 
 def test_adapt_vqe_molecule_spin_orbit_pool_variational_forces():
-    """ADAPT-VQE with pool='spin-orbit': variational forces match numerical difference."""
-    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]], cell=[6.0] * 3)
-    calc = Mandacaru(method="adapt-vqe", pool="spin-orbit", basis="HAO", grid_spacing=0.5, resources={"threads": 1})
-    atoms.calc = calc
+    """ADAPT-VQE with pool='spin-orbit': the analytic variational force matches the energy difference."""
+    _check_bond_force("adapt-vqe", pool="spin-orbit")
+
+
+# ============================================================================ #
+# 4. Quantum methods on a crystal: finite-difference forces, stress refused
+# ============================================================================ #
+
+CRYSTAL_METHODS = [("vqe", {}), ("adapt-vqe", {}), ("vasqa", {"seed": 0}), ("valsqa", {"seed": 0})]
+
+
+def _h2_chain(method, options):
+    """H2 chain, a = 3 A, bond tilted off the axis, 2 k-points (4 qubits)."""
+    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.05, 0.0]],
+                  cell=np.diag([3.0, 6.0, 6.0]), pbc=[True, False, False])
+    atoms.calc = Mandacaru(method=method, crystal_orbitals="real-space", basis="HAO",
+                           grid_spacing=0.3, kpts={"size": (2, 1, 1), "gamma": True},
+                           optimizer={"method": "SLSQP", "maxiter": 1000, "tol": 1e-12},
+                           resources={"threads": 1}, trace=False, **options)
+    return atoms
+
+
+@pytest.mark.parametrize("method, options", CRYSTAL_METHODS)
+def test_a_quantum_crystal_force_sums_to_zero(method, options):
+    """The supercell energy is invariant under a rigid translation of the crystal (band-limited
+    orbitals, G-space ion potential), so the finite-difference forces cancel. Measured
+    2026-11-10: net force 1e-10 eV/A; all four methods give F_x = -6.353022 eV/A on atom 0 to
+    1e-5 (each reaches the exact energy at 4 qubits). Before the band limit the forces were grid
+    artifacts summing to -15.5 eV/A."""
+    atoms = _h2_chain(method, options)
     forces = atoms.get_forces()
     assert forces.shape == (2, 3)
-
-    h = 0.001
-    grid = calc.integrals.grid
-    def energy_at(z):
-        m = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, z]], cell=[6.0] * 3)
-        m.calc = Mandacaru(method="adapt-vqe", pool="spin-orbit", basis="HAO", grid=grid, grid_spacing=0.5, resources={"threads": 1})
-        return m.get_potential_energy()
-
-    num_force_z = -(energy_at(0.74 + h) - energy_at(0.74 - h)) / (2 * h)
-    assert forces[1, 2] == pytest.approx(num_force_z, abs=1e-3)
+    assert np.abs(forces.sum(axis=0)).max() < 1e-7
+    assert forces[0, 0] == pytest.approx(-6.353022, abs=5e-5)
+    assert atoms.calc.result.force_details["scheme"] == "Central-finite-difference"
 
 
-# ============================================================================ #
-# 4. Quantum methods on a crystal: forces and stress are refused
-# ============================================================================ #
+def test_a_quantum_crystal_force_is_the_derivative_of_the_reported_energy():
+    """Independent route: central difference of ``get_potential_energy`` itself."""
+    atoms = _h2_chain("vqe", {})
+    forces = atoms.get_forces()
+    step = 2e-3
+    energies = []
+    for sign in (1.0, -1.0):
+        moved = _h2_chain("vqe", {})
+        moved.positions[1, 1] += sign * step
+        energies.append(moved.get_potential_energy())
+    assert forces[1, 1] == pytest.approx(-(energies[0] - energies[1]) / (2 * step), abs=1e-4)
 
-@pytest.mark.parametrize("method, options", [
-    ("vqe", {}), ("adapt-vqe", {}), ("adapt-vqe", {"pool": "spin-orbit"}),
-    ("vasqa", {"seed": 0}), ("valsqa", {"seed": 0})])
-@pytest.mark.parametrize("prop", ["forces", "stress"])
-def test_a_quantum_crystal_refuses_forces_and_stress(method, options, prop):
-    """Only a finite difference of the supercell energy could give them, and that energy moves
-    by meV to 0.65 eV under a rigid translation of the crystal against the grid
-    (``integrations/bloch.py::refuse_derivatives``): a refusal, not a grid artifact."""
-    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]], cell=[4.0, 4.0, 4.0], pbc=True)
-    atoms.calc = Mandacaru(method=method, crystal_orbitals="real-space", basis="HAO",
-                           grid_spacing=0.5, resources={"threads": 1}, trace=False, **options)
-    with pytest.raises(NotImplementedError, match="crystal"):
-        atoms.get_forces() if prop == "forces" else atoms.get_stress()
+
+def test_a_search_force_on_a_crystal_needs_a_seed():
+    atoms = _h2_chain("vasqa", {})
+    with pytest.raises(ValueError, match="seed"):
+        atoms.get_forces()
+
+
+@pytest.mark.parametrize("method, options", CRYSTAL_METHODS)
+def test_a_quantum_crystal_refuses_stress(method, options):
+    """A strain moves the grid's wavevectors against the band limit: E(strain) jumps."""
+    atoms = _h2_chain(method, options)
+    with pytest.raises(NotImplementedError, match="stress"):
+        atoms.get_stress()

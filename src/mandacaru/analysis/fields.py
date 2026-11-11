@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .. import _native
+
 
 @dataclass(frozen=True)
 class NaturalOrbitals:
@@ -39,10 +41,9 @@ class SamplingGrid:
     @cached_property
     def _coordinates(self):
         # Coordinate layout for plotting; field values are sampled in Rust.
-        indices = np.indices(self.shape, dtype=float).reshape(3, -1)
-        return (
-            np.asarray(self.native.origin_bohr)[:, None] + self.step @ indices
-        ).reshape((3,) + self.shape)
+        return _native.grid_coordinates(
+            [float(v) for v in self.native.origin_bohr],
+            np.asarray(self.step, dtype=float).tolist(), [int(n) for n in self.shape])
 
     @property
     def X(self):

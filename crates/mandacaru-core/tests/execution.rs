@@ -394,3 +394,102 @@ fn measurement_cost_counts_jobs_and_shots_as_the_providers_submit_them() {
     assert!(measurement_cost(1, Some(0), false, 1, 1, 1, 0).is_err());
     assert!(measurement_cost(u64::MAX, None, false, 2, 1, 1, 0).is_err());
 }
+
+#[test]
+fn count_statistics_give_each_string_its_mean_and_standard_error() {
+    use mandacaru_core::execution::count_statistics;
+    let ctx = context();
+    let labels: Vec<String> = ["ZZ", "ZI", "II"].iter().map(|s| s.to_string()).collect();
+    let counts = vec![("00".to_string(), 3.), ("11".to_string(), 1.)];
+    let (values, errors) = count_statistics(&ctx, &labels, &counts).unwrap();
+    // ZZ is +1 on both outcomes; ZI is (3 - 1) / 4; the identity is exact.
+    assert_eq!(values, vec![1., 0.5, 1.]);
+    assert_eq!(errors[0], 0.);
+    assert!((errors[1] - (0.75f64 / 4.).sqrt()).abs() < 1e-15);
+    assert_eq!(errors[2], 0.);
+}
+
+#[test]
+fn a_hamiltonian_is_grouped_with_its_identity_counted_once() {
+    use mandacaru_core::execution::qwc_hamiltonian;
+    let ctx = context();
+    let terms = vec![("I".to_string(), 2., 0.), ("Z".to_string(), 1., 0.), ("X".to_string(), 1e-14, 0.)];
+    let dropped = qwc_hamiltonian(&ctx, &terms, true, 1e-12).unwrap();
+    assert_eq!(dropped.identity, 2.);
+    assert_eq!(dropped.groups, vec![("Z".to_string(), vec![("Z".to_string(), 1., 0.)])]);
+    let kept = qwc_hamiltonian(&ctx, &terms, false, 1e-12).unwrap();
+    assert_eq!(kept.identity, 0.);
+    let measured: f64 = kept.groups.iter().flat_map(|(_, members)| members)
+        .filter(|(label, _, _)| label == "I").map(|(_, re, _)| re).sum();
+    assert_eq!(measured, 2.);
+}
+
+#[test]
+fn the_shot_noise_bound_is_the_coefficient_one_norm_over_the_root_shots() {
+    use mandacaru_core::execution::shot_noise;
+    let terms = vec![("II".to_string(), -1., 0.), ("ZI".to_string(), 0.3, 0.), ("XX".to_string(), 0., 0.4)];
+    assert!((shot_noise(&terms, 100, 1e-12).unwrap() - 0.07).abs() < 1e-15);
+    let ratio = shot_noise(&terms, 100, 1e-12).unwrap() / shot_noise(&terms, 400, 1e-12).unwrap();
+    assert!((ratio - 2.).abs() < 1e-12);
+    assert_eq!(shot_noise(&terms, 0, 1e-12).unwrap(), shot_noise(&terms, 1, 1e-12).unwrap());
+}
+
+#[test]
+fn twirled_instances_share_the_shots_by_the_estimator_rule() {
+    use mandacaru_core::execution::twirled_instances;
+    assert_eq!(twirled_instances(1000, None, None).unwrap(), (16, 64));
+    assert_eq!(twirled_instances(4096, None, None).unwrap(), (32, 128));
+    assert_eq!(twirled_instances(1000, None, Some(100)).unwrap(), (10, 100));
+    assert_eq!(twirled_instances(1000, Some(8), None).unwrap(), (8, 125));
+    assert_eq!(twirled_instances(0, None, None).unwrap(), (1, 64));
+    assert!(twirled_instances(10, Some(0), None).is_err());
+}
+
+#[test]
+fn basis_chunks_keep_whole_bases_and_batches_count_strings_and_bases() {
+    use mandacaru_core::execution::{basis_chunks, batch_size};
+    let ctx = context();
+    let labels: Vec<String> = ["ZI", "XI", "IZ", "IX"].iter().map(|s| s.to_string()).collect();
+    // Two bases: ZZ (ZI, IZ) and XX (XI, IX).
+    let chunks = basis_chunks(&ctx, &labels, None, Some(1)).unwrap();
+    assert_eq!(chunks.len(), 2);
+    let mut sorted: Vec<Vec<usize>> = chunks.into_iter().map(|mut c| { c.sort(); c }).collect();
+    sorted.sort();
+    assert_eq!(sorted, vec![vec![0, 2], vec![1, 3]]);
+    assert_eq!(basis_chunks(&ctx, &labels, None, Some(2)).unwrap(), vec![vec![0, 1, 2, 3]]);
+    assert_eq!(basis_chunks(&ctx, &labels, None, None).unwrap(), vec![vec![0, 1, 2, 3]]);
+    assert!(basis_chunks(&ctx, &[], None, Some(1)).unwrap().is_empty());
+    let requests = vec![vec!["ZI".to_string(), "IZ".to_string()], vec!["XX".to_string()], vec![]];
+    assert_eq!(batch_size(&ctx, &requests).unwrap(), (3, 2));
+}
+
+#[test]
+fn the_budget_check_reports_every_limit_a_submission_passes() {
+    use mandacaru_core::execution::{budget_check, estimator_precision, mps_job_gigabytes};
+    let (after, exceeded) = budget_check((1, 100), (2, 50), 3, (Some(6), None)).unwrap();
+    assert_eq!(after, (7, 250));
+    assert_eq!(exceeded, vec![("jobs", 7, 6)]);
+    let (_, both) = budget_check((0, 0), (1, 1000), 2, (Some(1), Some(1500))).unwrap();
+    assert_eq!(both, vec![("jobs", 2, 1), ("total_shots", 2000, 1500)]);
+    assert!(budget_check((u64::MAX, 0), (1, 0), 1, (None, None)).is_err());
+    assert_eq!(estimator_precision(0), 0.);
+    assert_eq!(estimator_precision(100), 0.1);
+    assert!((mps_job_gigabytes(1000) - 0.67).abs() < 1e-12);
+}
+
+#[test]
+fn state_expectations_read_the_exact_value_of_each_string() {
+    use mandacaru_core::{execution::state_expectations, quantum::C64};
+    let ctx = context();
+    // |01>: qubit zero (the most significant bit) empty, qubit one occupied.
+    let mut state = vec![C64::default(); 4];
+    state[1] = C64::new(1., 0.);
+    let labels: Vec<String> = ["ZI", "IZ", "XI", "ZZ", "II"].iter().map(|s| s.to_string()).collect();
+    let values = state_expectations(&ctx, &labels, &state).unwrap();
+    assert_eq!(values, vec![1., -1., 0., -1., 1.]);
+    // |+0>: <XI> = 1.
+    let plus = vec![C64::new(0.5f64.sqrt(), 0.), C64::default(), C64::new(0.5f64.sqrt(), 0.), C64::default()];
+    let values = state_expectations(&ctx, &["XI".to_string()], &plus).unwrap();
+    assert!((values[0] - 1.).abs() < 1e-15);
+    assert!(state_expectations(&ctx, &labels, &state[..2]).is_err());
+}

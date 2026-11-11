@@ -420,6 +420,87 @@ impl MolecularIntegrals {
         electrons: usize,
         options: &super::scf::ScfOptions,
     ) -> Result<super::scf::MeanField> {
+        self.spinor_kohn_sham_from(functional, electrons, options, None)
+    }
+    /// Spinor Kohn-Sham from a noncollinear start: one moment vector per atom (Bohr magneton).
+    /// Collinear unrestricted Kohn-Sham runs first with the moments' lengths (the scalar part of
+    /// a spin-orbit dataset), then each Loewdin function's share of its magnetization is turned
+    /// to its atom's direction and the spinor SCF starts from that density (its first
+    /// diagonalization makes it a projector). Without a spin-orbit term the collinear solution is
+    /// a stable fixed point of the spinor SCF, so a noncollinear state is reached only from such
+    /// a start.
+    pub fn spinor_kohn_sham_noncollinear(
+        &self,
+        functional: &str,
+        charge: i32,
+        moments: &[[f64; 3]],
+        electrons: Option<usize>,
+        options: &super::scf::ScfOptions,
+    ) -> Result<super::scf::MeanField> {
+        let atoms = self.geometry.numbers().len();
+        if moments.len() != atoms || moments.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(invalid("noncollinear initial moments need one finite vector per atom"));
+        }
+        let lengths: Vec<f64> = moments
+            .iter()
+            .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+            .collect();
+        let particles = self.particles_from_moments(charge, &lengths, electrons)?;
+        let collinear = self.collinear_kohn_sham(
+            functional,
+            particles,
+            true,
+            options,
+            "fermi-dirac",
+            super::occupation::DEFAULT_WIDTH,
+        )?;
+        let m = self.m();
+        // The atom of each Loewdin function: the one holding most of its weight.
+        let lowdin = &self.lowdin;
+        let directions: Vec<[f64; 3]> = (0..m)
+            .map(|j| {
+                let mut weights = vec![0f64; atoms];
+                for (mu, orbital) in self.basis.orbitals.iter().enumerate() {
+                    weights[orbital.atom] += lowdin[(mu, j)].powi(2);
+                }
+                let atom = (0..atoms)
+                    .max_by(|&a, &b| weights[a].total_cmp(&weights[b]))
+                    .expect("a molecule has atoms");
+                let length = lengths[atom];
+                if length > 0. {
+                    moments[atom].map(|v| v / length)
+                } else {
+                    [0.; 3]
+                }
+            })
+            .collect();
+        let (p, pm) = (
+            &collinear.densities[0] + &collinear.densities[1],
+            &collinear.densities[0] - &collinear.densities[1],
+        );
+        // m_k = (W_k P_m + P_m W_k) / 2, W_k = diag of the k-th direction component.
+        let channel = |k: usize| {
+            Matrix::from_fn(m, m, |a, b| pm[(a, b)] * C64::new(0.5 * (directions[a][k] + directions[b][k]), 0.))
+        };
+        let (mx, my, mz) = (channel(0), channel(1), channel(2));
+        let half = C64::new(0.5, 0.);
+        let mut start = Matrix::zeros(2 * m, 2 * m);
+        start.view_mut((0, 0), (m, m)).copy_from(&((&p + &mz) * half));
+        start.view_mut((m, m), (m, m)).copy_from(&((&p - &mz) * half));
+        let off = (&mx - &my * C64::new(0., 1.)) * half;
+        start.view_mut((0, m), (m, m)).copy_from(&off);
+        start.view_mut((m, 0), (m, m)).copy_from(&off.adjoint());
+        self.spinor_kohn_sham_from(functional, particles[0] + particles[1], options, Some(start))
+    }
+    /// Spinor Kohn-Sham from the default starts, or from the orbitals of the Fock matrix of
+    /// `density` (a `2m x 2m` start density) when one is given.
+    fn spinor_kohn_sham_from(
+        &self,
+        functional: &str,
+        electrons: usize,
+        options: &super::scf::ScfOptions,
+        density: Option<Matrix>,
+    ) -> Result<super::scf::MeanField> {
         if self.corrections.as_ref().is_some_and(|c| c.dft.is_none()) {
             return Err(invalid("native molecular PAW Kohn-Sham augmentation is not yet implemented"));
         }
@@ -464,12 +545,17 @@ impl MolecularIntegrals {
             }
             let shared = Shared::new(self, functional)?;
             let evaluate = |d: &Matrix| spinor_parts(self, d, functional, spin_orbit.as_ref(), &shared).map(|p| p.0);
+            let starts = match &density {
+                Some(d) => vec![crate::math::linalg::eigen(evaluate(d)?.fock)?.1],
+                None => vec![core, turned],
+            };
             let mut best: Option<(super::scf::Candidate, f64, f64)> = None;
-            for start in [core, turned] {
-                let (c, d, history, converged) = self.iterate_start(&[start], &[electrons], options, |d| {
+            for start in starts {
+                let run = self.iterate_start(&[start], &[electrons], None, options, |d| {
                     let e = evaluate(&d[0])?;
                     Ok((vec![e.fock], e.energy))
                 })?;
+                let (c, d, history, converged) = (run.coefficients, run.densities, run.history, run.converged);
                 let value = evaluate(&d[0])?;
                 let (energies, _) = crate::math::linalg::eigen(value.fock.clone())?;
                 let candidate = super::scf::Candidate {
@@ -480,6 +566,9 @@ impl MolecularIntegrals {
                     densities: d,
                     energies: vec![energies],
                     unstable_pair: None,
+                    occupations: None,
+                    aufbau_inversion: None,
+                    entropy: 0.,
                 };
                 if best.as_ref().is_none_or(|(b, _, _)| {
                     (candidate.converged && !b.converged)
@@ -488,7 +577,7 @@ impl MolecularIntegrals {
                     best = Some((candidate, value.hartree, value.xc));
                 }
             }
-            let (candidate, eh, exc) = best.expect("two starts ran");
+            let (candidate, eh, exc) = best.expect("a start ran");
             self.finish(
                 "ghf",
                 [electrons.div_ceil(2), electrons / 2],

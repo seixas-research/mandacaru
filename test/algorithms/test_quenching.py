@@ -6,13 +6,13 @@
 #
 # Copyright (c) 2026 Leandro Seixas Rocha <leandro.rocha@ilum.cnpem.br>
 
-"""Joint re-optimization across VQE and ADAPT-VQE.
+"""``quenching``: joint re-optimization, or only what changed, in VQE and ADAPT-VQE.
 
-The native engine optimizes every variational parameter at each iteration --
-textbook ADAPT-VQE.  The former ``quenching=False`` policy (freeze the earlier
-parameters, vary only the newest; sweep a fixed ansatz one angle at a time) has
-no native counterpart, so ``Mandacaru`` rejects the keyword.  The invariants
-tested here are structural (which parameters move) and variational.
+``quenching=True`` (default) optimizes every variational parameter at each
+iteration -- textbook ADAPT-VQE.  ``quenching=False`` freezes the earlier
+parameters and varies only the newly appended ones (ADAPT), or sweeps a fixed
+ansatz once, one angle at a time (VQE).  The invariants tested here are
+structural (which parameters move) and variational.
 """
 
 from __future__ import annotations
@@ -44,12 +44,14 @@ def lih_cache(tmp_path_factory):
 # --------------------------------------------------------------------------- #
 
 class TestQuenchingArgument:
-    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
-    @pytest.mark.parametrize("value", [True, False])
-    def test_the_keyword_is_rejected(self, method, value):
-        """No policy selector: an unsupported option raises, never selects."""
-        with pytest.raises(TypeError, match="quenching"):
-            Mandacaru(method=method, quenching=value)
+    def test_it_is_a_boolean(self):
+        with pytest.raises(TypeError, match="quenching must be True or False"):
+            Mandacaru(method="adapt-vqe", quenching=0)
+
+    @pytest.mark.parametrize("method", ["subspace-vqe", "vasqa", "rhf"])
+    def test_a_method_that_always_reoptimizes_refuses_false(self, method):
+        with pytest.raises(ValueError, match="quenching"):
+            Mandacaru(method=method, quenching=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -58,28 +60,39 @@ class TestQuenchingArgument:
 
 class TestADAPTGrowth:
     @staticmethod
-    def _growth(lih_cache):
+    def _growth(lih_cache, quenching=True):
         seen: list[np.ndarray] = []
         driver = Mandacaru(method="adapt-vqe", pool="qeb",
                            load_hamiltonian=lih_cache, trace=False,
-                           max_iterations=6)
-        driver.run(callback=lambda info: seen.append(
+                           max_iterations=6, quenching=quenching)
+        result = driver.run(callback=lambda info: seen.append(
             np.array(info["parameters"], dtype=float)))
-        return seen
+        return seen, result
 
     def test_each_step_appends_exactly_one_parameter(self, lih_cache):
-        seen = self._growth(lih_cache)
+        seen, _ = self._growth(lih_cache)
         assert len(seen) >= 3
         for earlier, later in zip(seen, seen[1:]):
             assert later.size == earlier.size + 1
 
     def test_growth_reoptimizes_earlier_parameters(self, lih_cache):
-        seen = self._growth(lih_cache)
+        seen, _ = self._growth(lih_cache)
         assert len(seen) >= 3
         # At least one growth step moved a previously optimized parameter.
         moved = any(not np.array_equal(later[:earlier.size], earlier)
                     for earlier, later in zip(seen, seen[1:]))
         assert moved
+
+    def test_frozen_growth_keeps_every_earlier_parameter(self, lih_cache):
+        seen, frozen = self._growth(lih_cache, quenching=False)
+        assert len(seen) >= 3
+        for earlier, later in zip(seen, seen[1:]):
+            assert np.array_equal(later[:earlier.size], earlier)
+        # The first step optimizes one parameter either way; past it, the joint
+        # optimization of the same first operator can only be lower.
+        _, joint = self._growth(lih_cache)
+        assert frozen.iterations[0].energy == pytest.approx(joint.iterations[0].energy, abs=1e-9)
+        assert frozen.optimal_energy < frozen.reference_energy
 
 
 # --------------------------------------------------------------------------- #
@@ -93,6 +106,13 @@ class TestVQEJointOptimization:
         assert result.optimal_energy < result.reference_energy
         assert result.num_parameters == vqe.solver.ansatz.num_parameters
         assert result.num_evaluations > 0
+
+    def test_one_sweep_is_an_upper_bound_to_the_joint_minimum(self, lih_cache):
+        joint = Mandacaru(method="vqe", load_hamiltonian=lih_cache, trace=False).run()
+        swept = Mandacaru(method="vqe", load_hamiltonian=lih_cache, trace=False,
+                          quenching=False).run()
+        assert joint.optimal_energy - 1e-10 <= swept.optimal_energy < swept.reference_energy
+        assert swept.num_parameters == joint.num_parameters
 
 
 def test_one_hva_layer_is_refused_loudly_because_it_cannot_beat_hartree_fock():

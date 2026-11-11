@@ -410,6 +410,28 @@ fn verified_symmetric(matrix: DMatrix<f64>) -> Result<(DVector<f64>, DMatrix<f64
     }
     Ok((values, vectors))
 }
+/// The eigen decomposition of a real symmetric matrix in the QR iteration's own order and
+/// signs (unsorted, as `SymmetricEigen::new` returns it), accepted only after its residual and
+/// orthogonality are checked; a decomposition that fails the check is redone by Jacobi
+/// rotations. A matrix the QR iteration decomposes accurately gets its result unchanged.
+pub fn checked_symmetric(matrix: DMatrix<f64>) -> Result<(DVector<f64>, DMatrix<f64>)> {
+    if matrix.iter().any(|v| !v.is_finite()) {
+        return Err(invalid("nonfinite symmetric matrix"));
+    }
+    let accept = acceptance(matrix.nrows());
+    let spectrum = SymmetricEigen::new(matrix.clone());
+    if decomposition_error(&matrix, &spectrum.eigenvalues, &spectrum.eigenvectors) <= accept {
+        return Ok((spectrum.eigenvalues, spectrum.eigenvectors));
+    }
+    let (values, vectors) = jacobi(matrix.clone())
+        .ok_or_else(|| crate::Error::Kernel("symmetric eigensolver failed to converge".into()))?;
+    if decomposition_error(&matrix, &values, &vectors) > accept {
+        return Err(crate::Error::Kernel(
+            "symmetric eigensolver did not reach the requested accuracy".into(),
+        ));
+    }
+    Ok((values, vectors))
+}
 pub fn real_eigen(matrix: DMatrix<f64>) -> Result<(Vec<f64>, DMatrix<f64>)> {
     if matrix.iter().any(|v| !v.is_finite()) {
         return Err(invalid("nonfinite symmetric matrix"));

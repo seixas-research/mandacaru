@@ -71,6 +71,23 @@ fn snapshot_lineage<'py>(
     Ok(out)
 }
 
+/// The two-body record of a qubit-Hamiltonian file, `None` for a dense one
+/// (`persistence::Document::two_body`).
+#[pyfunction]
+fn snapshot_two_body<'py>(
+    py: Python<'py>,
+    snapshot: PyRef<'_, PySnapshot>,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let Some(record) = snapshot.inner.two_body().map_err(error)? else {
+        return Ok(None);
+    };
+    let out = PyDict::new(py);
+    out.set_item("representation", record.representation)?;
+    out.set_item("truncation_ev", record.truncation_ev)?;
+    out.set_item("error_bound_ev", record.error_bound_ev)?;
+    Ok(Some(out))
+}
+
 /// What the ADAPT pool `name` generates. Raises for an unknown pool.
 #[pyfunction]
 fn pool_kind(name: &str) -> PyResult<&'static str> {
@@ -81,6 +98,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(problem_term_count, m)?)?;
     m.add_function(wrap_pyfunction!(integrals_report, m)?)?;
     m.add_function(wrap_pyfunction!(snapshot_lineage, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot_two_body, m)?)?;
     m.add_function(wrap_pyfunction!(pool_kind, m)?)?;
     Ok(())
 }

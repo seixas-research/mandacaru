@@ -48,12 +48,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .. import _native
 from .mapping import PauliSum
 
 #: Identifies a Mandacaru wavefunction checkpoint file.
 FORMAT_TAG = "mandacaru-wavefunction-checkpoint"
 #: Current schema version.
-FORMAT_VERSION = 2          # 2: the `preparation` field (product / sum)
+FORMAT_VERSION = 3          # 2: the `preparation` field (product / sum); 3: `status["hessian"]`
 #: Extension a checkpoint path defaults to.
 FILE_EXTENSION = ".json"
 
@@ -103,12 +104,12 @@ def _pauli_from_payload(payload) -> PauliSum | None:
     if payload is None:
         return None
     n = int(payload["num_qubits"])
-    terms = {}
-    for label, real, imag in payload["terms"]:
+    for label, _real, _imag in payload["terms"]:
         if len(label) != n:
             raise ValueError(f"Pauli string {label!r} is not {n} characters")
-        terms[label] = terms.get(label, 0j) + complex(float(real), float(imag))
-    return PauliSum(terms, num_qubits=n)
+    summed = _native.pauli_term_sum(
+        [(label, float(real), float(imag)) for label, real, imag in payload["terms"]])
+    return PauliSum({label: complex(re, im) for label, re, im in summed}, num_qubits=n)
 
 
 def fingerprint(hamiltonian, atol: float = 1e-10) -> str | None:
@@ -122,7 +123,7 @@ def fingerprint(hamiltonian, atol: float = 1e-10) -> str | None:
     import hashlib
 
     terms = hamiltonian.simplify(atol).terms
-    digits = max(0, int(round(-np.log10(atol))))
+    digits = _native.decimal_digits(float(atol))
     payload = ";".join(
         f"{label}:{complex(coeff).real:.{digits}f}:{complex(coeff).imag:.{digits}f}"
         for label, coeff in sorted(terms.items()))

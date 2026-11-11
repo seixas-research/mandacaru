@@ -323,12 +323,14 @@ fn blocks_out<'py>(
         .collect()
 }
 
-/// `(X0 - V.D0, [(l, V_l)])` of the reference atom's short-range semilocal exchange.
+/// `(X0 - V.D0, [(l, V_l)])` of the reference atom's short-range semilocal exchange: the
+/// all-electron valence density against the smooth valence density plus `smooth_core`.
 #[pyfunction]
 fn paw_frozen_exchange<'py>(
     context: PyRef<'_, PyContext>,
     py: Python<'py>,
     r: PyReadonlyArray1<'py, f64>,
+    smooth_core: PyReadonlyArray1<'py, f64>,
     ls: Vec<usize>,
     ae: Vec<PyReadonlyArray2<'py, f64>>,
     ps: Vec<PyReadonlyArray2<'py, f64>>,
@@ -342,6 +344,7 @@ fn paw_frozen_exchange<'py>(
     let basis = basis(basis_name)?;
     let ctx = &context.inner;
     let (r, _r) = copy(ctx, &r)?;
+    let (core, _core) = copy(ctx, &smooth_core)?;
     let mut keep = Vec::new();
     let channels = Channels {
         ls: &ls,
@@ -356,7 +359,7 @@ fn paw_frozen_exchange<'py>(
     let (constant, blocks) = py
         .detach(|| {
             let occupied = owned.iter().map(Owned::occupied).collect::<Vec<_>>();
-            terms::frozen_exchange_terms(ctx, &r, &occupied, omega, basis)
+            terms::frozen_exchange_terms(ctx, &r, &core, &occupied, omega, basis)
         })
         .map_err(error)?;
     let ls = blocks.iter().map(|b| b.l).collect();

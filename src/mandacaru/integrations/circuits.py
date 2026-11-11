@@ -27,6 +27,20 @@ def budget_refusal(key, count, limit):
         f"pass measurement_budget={{\"{key}\": N}} sized for this run (here N >= {count})")
 
 
+def pool_refusal(pool, size, over, limit):
+    """The ``ValueError`` of an ADAPT pool whose gradient step cannot fit the observable budget,
+    raised after the native walk found the budget crossed (a lower bound: the pool was not
+    walked to its end), with the three ways out."""
+    return ValueError(
+        f"the {pool!r} pool has {size:,} generators and measuring its gradients needs more than "
+        f"{limit:,} Pauli observables (the first {over['generators']:,} commutators already hold "
+        f"{over['strings']:,} distinct strings): measurement observables budget exceeded; the "
+        f"default ceilings are sized for small molecules, so choose a smaller pool, "
+        f"pool=\"fermionic\" or \"qeb\", or pass measurement_budget={{\"observables\": N}} "
+        f"sized for this run (N above {over['strings']:,}; the full count is known only once "
+        f"the whole pool is planned)")
+
+
 def configure(driver, *, provider, device, shots, options, measurement_budget):
     if type(shots) is not int or shots < 0:
         raise ValueError("shots must be a nonnegative integer")
@@ -113,18 +127,95 @@ def preflight_run_budget(driver, opts):
         return
     cost = energy_measurement_cost(driver)
     usage = provider.run_usage()
-    needed = {"jobs": usage["jobs"] + evaluations * cost[0],
-              "total_shots": usage["shots"] + evaluations * cost[1]}
-    over = [f"{key} {needed[key]:,} > {budget[key]:,}" for key in needed
-            if budget.get(key) is not None and needed[key] > budget[key]]
+    _after, exceeded = _native.budget_check(
+        (usage["jobs"], usage["shots"]), tuple(cost), evaluations,
+        job_limit=budget.get("jobs"), shot_limit=budget.get("total_shots"))
+    over = [f"{key} {total:,} > {limit:,}" for key, total, limit in exceeded]
     if over:
-        sized = {key: needed[key] for key in needed
-                 if budget.get(key) is not None and needed[key] > budget[key]}
+        sized = {key: total for key, total, _limit in exceeded}
         raise RunBudgetExceeded(
             f"the optimizer may evaluate the energy {evaluations:,} times on "
             f"{provider!r}, over the run budget ({'; '.join(over)}).  Lower the "
             "optimizer's maxiter (maxfev for COBYLA) or the shots, or pass "
             f"backend_options={{\"run_budget\": {sized!r}}} sized for this run if you mean it.")
+
+
+def measure_rdms(driver):
+    """The spin-summed spatial 1- and 2-RDMs of the optimized circuit, measured on the device.
+
+    Rust lists the Pauli strings of the RDM elements (``QuantumProblem.rdm_measurement``,
+    refused past ``measurement_budget["observables"]``), groups them qubit-wise by their X/Y
+    pattern (polynomial) and builds the ansatz circuit; each basis is one request, rotated so its
+    strings are read as Z strings, and all of them go in one ``expectation_batch`` (one job on a
+    Qiskit device, under the provider's run budget). Rust assembles the matrices. No state vector is
+    formed. Conventions: ``one[p, q] = sum_s <a+_ps a_qs>``, ``two[p, q, r, s] =
+    sum_st <a+_ps a+_qt a_st a_rs>`` over the active spatial orbitals (the index order of the
+    model's two-electron tensor), real parts; the errors propagate the device's standard errors
+    with the covariances of strings read in one basis on the same shots (each pair's product
+    string is measured in that basis), and are ``None`` when the device reports none.
+    """
+    if driver.result is None or driver.problem is None:
+        raise ValueError("measured RDMs need a finished variational run: call get_potential_energy() first")
+    if not driver._execute_circuits:
+        raise ValueError(
+            "measured RDMs need a circuit device (shots > 0 or execute_circuits=True); a "
+            "state-vector run reads its density matrices from the state (natural_orbitals())")
+    if driver.method not in ("vqe", "adapt-vqe"):
+        raise NotImplementedError(
+            f"measured RDMs are implemented for vqe and adapt-vqe, not {driver.method!r}")
+    problem = driver.problem
+    raw = driver.result._raw
+    labels, angles = problem.circuit([int(i) for i in raw.get("indices", ())],
+                                     [float(t) for t in raw.get("parameters", ())])
+    return measure_rdms_of(driver, [(labels, angles)])[0]
+
+
+def rdm_plan(driver):
+    """The RDM measurement plan of the driver's problem, its string and basis counts checked
+    against ``measurement_budget`` before any job."""
+    plan = driver.problem.rdm_measurement(driver._measurement_budget.get("observables"))
+    for key, count in (("observables", len(plan.observables)), ("bases", plan.bases)):
+        limit = driver._measurement_budget.get(key)
+        if limit is not None and count > limit:
+            raise budget_refusal(key, count, limit)
+    return plan
+
+
+def measure_rdms_of(driver, circuits):
+    """The measured RDMs (see :func:`measure_rdms`) of every circuit ``(labels, angles)`` of
+    ``circuits``, all in one ``expectation_batch`` (one job): the plan's bases times the circuits."""
+    problem = driver.problem
+    plan = rdm_plan(driver)
+    # Rust groups the strings (polynomial, by their X/Y pattern) and rotates each basis to Z:
+    # one request per basis, so the SDK reads Z strings and never regroups a million labels.
+    strings, bases = len(plan.observables), plan.bases
+    requests, readers = [], []
+    for labels, angles in circuits:
+        for tail, observables in plan.requests():
+            circuit = [SimpleNamespace(terms={label: 1j}) for label in labels]
+            circuit += [SimpleNamespace(terms={label: 1j}) for label, _angle in tail]
+            requests.append((circuit, list(angles) + [angle for _label, angle in tail],
+                             [label for label, _index in observables]))
+            readers.append(observables)
+    measured = driver.provider.expectation_batch(
+        problem.num_qubits, problem.reference_qubits, requests)
+    results = []
+    per_circuit = len(readers) // max(len(circuits), 1)
+    for c in range(len(circuits)):
+        values, errors = [0.0] * plan.measured, [0.0] * plan.measured
+        reported = True
+        chunk = slice(c * per_circuit, (c + 1) * per_circuit)
+        for observables, (read, spread) in zip(readers[chunk], measured[chunk]):
+            reported = reported and spread is not None
+            for label, index in observables:
+                values[index] = read[label]
+                if spread is not None:
+                    errors[index] = spread[label]
+        one, two, one_error, two_error = plan.assemble(
+            values, errors if reported else None, int(driver._shots) or None)
+        results.append({"one": one, "two": two, "one_error": one_error, "two_error": two_error,
+                        "observables": strings, "bases": bases})
+    return results
 
 
 class CircuitExecutor:
@@ -143,6 +234,9 @@ class CircuitExecutor:
         self.driver = driver
         self.problem = driver.problem
         self.provider = driver.provider
+        #: Shots per basis (0 on an exact device): Rust measures a sampled energy's standard
+        #: error from them.
+        self.shots = int(driver._shots)
         self.stopped = None
         # The measurements of the previous call, by circuit: a call at a point already measured
         # asks the device only for the strings it lacks. Replaced at every call.
@@ -166,7 +260,12 @@ class CircuitExecutor:
             }
             self._check_mps_job(driver._energy_measurement["bases_per_energy"])
         if driver._shots and driver.method.endswith("adapt-vqe"):
-            paulis = self.problem.pool_paulis
+            # The walk stops once the distinct strings pass the budget: an oversized pool is
+            # refused after one batch of commutators, before the gradient plan is built.
+            limit = driver._measurement_budget.get("observables")
+            paulis = self.problem.pool_paulis(limit)
+            if paulis["over"] is not None:
+                raise pool_refusal(driver._pool, paulis["pool_size"], paulis["over"], limit)
             labels = paulis["labels"]
             groups = driver.context.qwc_groups(labels)
             self._check_budget(len(labels), len(groups))
@@ -195,7 +294,7 @@ class CircuitExecutor:
         if per_job > MPS_BASES_PER_JOB:
             raise ValueError(
                 f"the MPS simulator would hold {per_job:,} measurement bases in one job (about "
-                f"{0.67e-3 * per_job:.1f} GB); pass backend_options={{\"max_bases_per_job\": "
+                f"{_native.mps_job_gigabytes(per_job):.1f} GB); pass backend_options={{\"max_bases_per_job\": "
                 f"{MPS_BASES_PER_JOB}}} or fewer")
 
     def _check_budget(self, observables, bases):
@@ -221,7 +320,7 @@ class CircuitExecutor:
 
         if not self.driver._shots:
             states = {}
-            for labels, angles, _observables in requests:
+            for labels, angles, _observables, _priced in requests:
                 point = (tuple(labels), tuple(angles))
                 if point in states:
                     continue
@@ -232,19 +331,20 @@ class CircuitExecutor:
                 states[point] = state
             self._states = states
             return {"states": [states[(tuple(labels), tuple(angles))]
-                               for labels, angles, _observables in requests]}
-        known, pending = [], []
-        for position, (labels, angles, observables) in enumerate(requests):
+                               for labels, angles, _observables, _priced in requests]}
+        known, pending, priced = [], [], []
+        for position, (labels, angles, observables, count) in enumerate(requests):
             point = (tuple(labels), tuple(angles))
             values = self._values.get(point, {})
             known.append((point, values))
             missing = [label for label in observables if label not in values]
             if missing:
                 pending.append((position, labels, angles, missing))
+                # The budget prices what the device is asked for: the leading `count` strings.
+                # The covariance products after them ride on the same shots of the same basis.
+                priced.append([label for label in observables[:count] if label not in values])
         if pending:
-            self._check_budget(
-                sum(len(missing) for *_, missing in pending),
-                sum(len(self.driver.context.qwc_groups(missing)) for *_, missing in pending))
+            self._check_budget(*self.driver.context.batch_size(priced))
             measured = self.provider.expectation_batch(
                 n_qubits, reference,
                 [(*circuit(labels, angles), missing) for _, labels, angles, missing in pending])
@@ -252,5 +352,5 @@ class CircuitExecutor:
                 known[position][1].update(values)
         self._values = dict(known)
         return {"expectations": [[values[label] for label in observables]
-                                 for (_point, values), (_l, _a, observables)
+                                 for (_point, values), (_l, _a, observables, _p)
                                  in zip(known, requests)]}

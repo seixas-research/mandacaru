@@ -55,6 +55,16 @@ from .. import _native
 SIMPLIFY_ATOL = 1e-12
 
 
+def _out(terms) -> list:
+    """``{key: coefficient}`` as the native ``(key, re, im)`` triples."""
+    return [(key, c.real, c.imag) for key, c in terms.items()]
+
+
+def _in(triples, key=lambda k: k) -> dict:
+    """Native ``(key, re, im)`` triples as an insertion-ordered ``{key: coefficient}``."""
+    return {key(k): complex(re, im) for k, re, im in triples}
+
+
 @lru_cache(maxsize=1)
 def _context():
     """The native context of the operator algebra: one thread, shared by every
@@ -97,7 +107,7 @@ class PauliSum:
                 if not cmath.isfinite(value):
                     raise ValueError(
                         f"non-finite coefficient {coeff!r} for term {label!r}")
-                self.terms[label] = self.terms.get(label, 0j) + value
+                self.terms[label] = value
             self._num_qubits = n
 
     @property
@@ -127,12 +137,8 @@ class PauliSum:
     @classmethod
     def _from_native(cls, operator) -> "PauliSum":
         """The simplified :class:`PauliSum` of a native ``PauliOperator``."""
-        terms = {}
-        for label, re, im in operator.terms:
-            value = complex(re, im)
-            if abs(value) > SIMPLIFY_ATOL:
-                terms[label] = value
-        return cls._from_valid_terms(terms, operator.num_qubits)
+        return cls._from_valid_terms(
+            _in(_native.pauli_term_drop(operator.terms, SIMPLIFY_ATOL)), operator.num_qubits)
 
     def _native_operator(self, width: int | None = None):
         """This operator as a native ``PauliOperator`` on ``width`` qubits."""
@@ -150,17 +156,15 @@ class PauliSum:
 
     def __add__(self, other: "PauliSum") -> "PauliSum":
         width = self._shared_width(other, "add")
-        terms = dict(self.terms)
-        for label, coeff in other.terms.items():
-            terms[label] = terms.get(label, 0j) + coeff
-        return PauliSum._from_valid_terms(terms, num_qubits=width)
+        return PauliSum._from_valid_terms(
+            _in(_native.pauli_term_sum(_out(self.terms) + _out(other.terms))), num_qubits=width)
 
     def __mul__(self, scalar: complex) -> "PauliSum":
         value = complex(scalar)
         if not cmath.isfinite(value):
             raise ValueError(f"non-finite scalar {scalar!r}")
         return PauliSum._from_valid_terms(
-            {label: coeff * value for label, coeff in self.terms.items()},
+            _in(_native.pauli_term_scale(_out(self.terms), value.real, value.imag)),
             num_qubits=self._num_qubits)
 
     __rmul__ = __mul__
@@ -196,7 +200,7 @@ class PauliSum:
         if cache is not None and atol in cache:
             return cache[atol]
         res = PauliSum._from_valid_terms(
-            {l: c for l, c in self.terms.items() if abs(c) > atol},
+            _in(_native.pauli_term_drop(_out(self.terms), float(atol))),
             num_qubits=self.num_qubits or None)
         if cache is None:
             self._simplify_cache = {atol: res}
@@ -205,7 +209,7 @@ class PauliSum:
         return res
 
     def is_hermitian(self, atol: float = 1e-9) -> bool:
-        return all(abs(c.imag) < atol for c in self.simplify().terms.values())
+        return _native.pauli_term_hermitian(_out(self.terms), float(atol))
 
     def to_matrix(self) -> np.ndarray:
         """Dense matrix (qubit 0 is the leftmost Kronecker factor)."""
@@ -251,6 +255,16 @@ class PauliSum:
 FermionTerm = tuple[tuple[int, bool], ...]
 
 
+def _fermion_out(terms) -> list:
+    """``{ladder product: coefficient}`` as native ``(ladders, re, im)`` triples."""
+    return [(list(term), c.real, c.imag) for term, c in terms.items()]
+
+
+def _fermion_in(triples) -> dict:
+    """Native ``(ladders, re, im)`` triples as ``{ladder product: coefficient}``."""
+    return _in(triples, key=lambda ladders: tuple(tuple(f) for f in ladders))
+
+
 
 def _integrals(values) -> np.ndarray:
     """``values`` as a C-contiguous float64 or complex128 array, the dtypes the
@@ -279,7 +293,7 @@ class Fermion:
         self.terms: dict[FermionTerm, complex] = {}
         if terms:
             for term, coeff in terms.items():
-                self.terms[term] = self.terms.get(term, 0j) + complex(coeff)
+                self.terms[term] = complex(coeff)
         self._n_modes = n_modes
 
     # -- constructors ------------------------------------------------------ #
@@ -305,10 +319,9 @@ class Fermion:
     # -- algebra ----------------------------------------------------------- #
 
     def __add__(self, other: "Fermion") -> "Fermion":
-        out = Fermion(dict(self.terms),
-                      n_modes=self._merge_modes(other))
-        for term, coeff in other.terms.items():
-            out.terms[term] = out.terms.get(term, 0j) + coeff
+        out = Fermion(n_modes=self._merge_modes(other))
+        out.terms = _fermion_in(_native.fermion_term_sum(
+            _fermion_out(self.terms) + _fermion_out(other.terms)))
         return out
 
     def __sub__(self, other: "Fermion") -> "Fermion":
@@ -317,13 +330,14 @@ class Fermion:
     def __mul__(self, other) -> "Fermion":
         if isinstance(other, Fermion):
             out = Fermion(n_modes=self._merge_modes(other))
-            for t1, c1 in self.terms.items():
-                for t2, c2 in other.terms.items():
-                    term = t1 + t2
-                    out.terms[term] = out.terms.get(term, 0j) + c1 * c2
+            out.terms = _fermion_in(_native.fermion_term_product(
+                _fermion_out(self.terms), _fermion_out(other.terms)))
             return out
-        return Fermion({t: c * other for t, c in self.terms.items()},
-                       n_modes=self._n_modes)
+        value = complex(other)
+        out = Fermion(n_modes=self._n_modes)
+        out.terms = _fermion_in(_native.fermion_term_scale(
+            _fermion_out(self.terms), value.real, value.imag))
+        return out
 
     __rmul__ = __mul__
 
@@ -337,20 +351,14 @@ class Fermion:
     def dagger(self) -> "Fermion":
         """Hermitian conjugate (reverse each product and flip dagger flags)."""
         out = Fermion(n_modes=self._n_modes)
-        for term, coeff in self.terms.items():
-            rev = tuple((i, not d) for (i, d) in reversed(term))
-            out.terms[rev] = out.terms.get(rev, 0j) + coeff.conjugate()
+        out.terms = _fermion_in(_native.fermion_term_dagger(_fermion_out(self.terms)))
         return out
 
     def n_modes(self) -> int:
         """Number of fermionic modes (explicit, or inferred from indices)."""
         if self._n_modes is not None:
             return self._n_modes
-        hi = -1
-        for term in self.terms:
-            for (i, _d) in term:
-                hi = max(hi, i)
-        return hi + 1
+        return _native.fermion_term_modes(_fermion_out(self.terms))
 
     # -- Hamiltonian from integrals --------------------------------------- #
 

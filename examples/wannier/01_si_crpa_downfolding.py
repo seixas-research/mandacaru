@@ -9,7 +9,9 @@ atoms.calc = Mandacaru(method="dft",
                        xc="lda",
                        basis={"name": "PAW-LCAO", "size": "DZP"},
                        grid_spacing=0.25,
-                       kpts={"size": (4, 4, 4), "gamma": True})
+                       kpts={"size": (4, 4, 4), "gamma": True},
+                       # a small smearing: a gapped crystal's screening has no thermal carriers
+                       smearing={"method": "fermi-dirac", "width": 0.01})
 atoms.get_potential_energy()
 fermi = atoms.calc.get_fermi_level()
 

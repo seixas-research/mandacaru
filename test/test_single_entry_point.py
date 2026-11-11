@@ -46,6 +46,41 @@ class TestTheCalculatorIsTheEntryPoint:
         with pytest.raises(ValueError, match="gradient"):
             Mandacaru(method="adapt-vqe", gradient="nope")
 
+    def test_the_cholesky_tolerance_is_set_through_two_body_in_ev(self):
+        """``cholesky_tolerance=`` was removed (owner 2026-11-10): ``two_body`` is the one
+        spelling, in eV, and a non-positive tolerance is refused."""
+        with pytest.raises(TypeError):
+            Mandacaru(method="rhf", cholesky_tolerance=1e-10)
+        for bad in (0.0, -1e-8, float("nan"), "1e-8", True):
+            with pytest.raises(ValueError, match="tolerance"):
+                Mandacaru(method="rhf", two_body={"method": "cholesky", "tolerance": bad})
+        calc = Mandacaru(method="rhf", two_body={"method": "cholesky", "tolerance": 2e-8})
+        assert calc._two_body_tolerance_ev == 2e-8
+        from mandacaru import _native
+        assert calc._cholesky_tolerance == _native.energy_to_hartree(2e-8, "eV")
+        assert Mandacaru(method="rhf")._two_body_tolerance_ev == 1e-8
+
+    def test_the_two_body_representation_is_named_and_its_truncation_given_in_ev(self):
+        """``dense`` is the default and takes no truncation; ``double-factorized`` needs one
+        (eV, owner 2026-11-10), held in Hartree for the engine."""
+        from mandacaru import _native
+        assert Mandacaru(method="rhf")._two_body_representation == "dense"
+        calc = Mandacaru(method="rhf", two_body={
+            "method": "cholesky", "representation": "double-factorized", "truncation": 0.01})
+        assert calc._two_body_representation == "double-factorized"
+        assert calc._two_body_truncation_ev == 0.01
+        assert calc._two_body_truncation_ha == _native.energy_to_hartree(0.01, "eV")
+        for spec, match in (
+                ({"representation": "double-factorized"}, "needs a truncation"),
+                ({"representation": "dense", "truncation": 0.01}, "applies only"),
+                ({"representation": "double-factorized", "truncation": -1.0}, "nonnegative"),
+                ({"representation": "double-factorized", "truncation": "0.01"}, "eV"),
+                ({"representation": "double-factorized", "truncation": True}, "eV"),
+                ({"representation": "low-rank", "truncation": 0.01}, "unknown two_body"),
+                ({"rank": 4}, "representation")):
+            with pytest.raises(ValueError, match=match):
+                Mandacaru(method="rhf", two_body={"method": "cholesky", **spec})
+
 
 class TestTheSolverClassesAreInternal:
     def test_the_removed_algorithms_package_stays_removed(self):

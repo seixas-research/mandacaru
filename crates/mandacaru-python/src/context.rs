@@ -3449,6 +3449,65 @@ impl PyContext {
         py.detach(|| mandacaru_core::execution::expectations(&self.inner, &labels, &counts))
             .map_err(error)
     }
+    /// `(values, standard errors)` of `labels` read off bit-string counts
+    /// (`execution::count_statistics`).
+    fn count_statistics(
+        &self,
+        py: Python<'_>,
+        labels: Vec<String>,
+        counts: Vec<(String, f64)>,
+    ) -> PyResult<(Vec<f64>, Vec<f64>)> {
+        py.detach(|| mandacaru_core::execution::count_statistics(&self.inner, &labels, &counts))
+            .map_err(error)
+    }
+    /// `(groups, identity)`: the qubit-wise-commuting measurement groups of a Hamiltonian's
+    /// strings above `atol`, `[(basis, [(label, re, im)])]`, and its identity coefficient
+    /// (`execution::qwc_hamiltonian`).
+    #[pyo3(signature=(terms, drop_identity=true, atol=1e-12))]
+    #[allow(clippy::type_complexity)]
+    fn qwc_hamiltonian(
+        &self,
+        py: Python<'_>,
+        terms: Vec<(String, f64, f64)>,
+        drop_identity: bool,
+        atol: f64,
+    ) -> PyResult<(Vec<(String, Vec<(String, f64, f64)>)>, f64)> {
+        let out = py
+            .detach(|| mandacaru_core::execution::qwc_hamiltonian(&self.inner, &terms, drop_identity, atol))
+            .map_err(error)?;
+        Ok((out.groups, out.identity))
+    }
+    /// The label positions of each submission of whole commuting bases, `max_bases` to a
+    /// submission (`execution::basis_chunks`).
+    #[pyo3(signature=(labels, max_bases=None, weights=None))]
+    fn basis_chunks(
+        &self,
+        py: Python<'_>,
+        labels: Vec<String>,
+        max_bases: Option<u64>,
+        weights: Option<Vec<f64>>,
+    ) -> PyResult<Vec<Vec<usize>>> {
+        py.detach(|| {
+            mandacaru_core::execution::basis_chunks(&self.inner, &labels, weights.as_deref(), max_bases)
+        })
+        .map_err(error)
+    }
+    /// `(strings, bases)` of a batch of measurement requests, one circuit each
+    /// (`execution::batch_size`).
+    fn batch_size(&self, py: Python<'_>, requests: Vec<Vec<String>>) -> PyResult<(u64, u64)> {
+        py.detach(|| mandacaru_core::execution::batch_size(&self.inner, &requests)).map_err(error)
+    }
+    /// `<psi|P|psi>` of each string on a whole-register state (`execution::state_expectations`).
+    fn state_expectations(
+        &self,
+        py: Python<'_>,
+        labels: Vec<String>,
+        state: numpy::PyReadonlyArray1<'_, mandacaru_core::quantum::C64>,
+    ) -> PyResult<Vec<f64>> {
+        let state = state.as_slice()?.to_vec();
+        py.detach(|| mandacaru_core::execution::state_expectations(&self.inner, &labels, &state))
+            .map_err(error)
+    }
     fn compile_circuit(
         &self,
         py: Python<'_>,

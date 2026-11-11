@@ -34,8 +34,7 @@ from mandacaru.backends.hardware import (available_devices, device_arn,
                                          is_aws_device, is_simulator,
                                          normalize_device, require_runnable,
                                          requires_shots)
-from mandacaru.backends.measurement import (energy_from_group_counts,
-                                            is_qubit_wise_commuting, merge_basis,
+from mandacaru.backends.measurement import (is_qubit_wise_commuting, merge_basis,
                                             pauli_expectation_from_counts,
                                             qubit_wise_commuting_groups,
                                             shot_noise_estimate)
@@ -91,15 +90,6 @@ class TestQubitWiseCommuting:
         assert pauli_expectation_from_counts("IZ", counts) == pytest.approx(-1.0)
         assert pauli_expectation_from_counts("ZZ", counts) == pytest.approx(-1.0)
         assert pauli_expectation_from_counts("II", counts) == pytest.approx(1.0)
-
-    def test_energy_from_counts_reproduces_a_known_state(self):
-        """|01> has a exactly computable energy for a diagonal Hamiltonian."""
-        pauli = PauliSum({"II": 0.5, "ZI": 0.25, "IZ": -0.125})
-        groups, identity = qubit_wise_commuting_groups(pauli)
-        counts = [{"01": 4096} for _ in groups]
-        # <H> = 0.5 + 0.25*(+1) + (-0.125)*(-1) = 0.875
-        assert energy_from_group_counts(groups, identity, counts) == \
-            pytest.approx(0.875)
 
     def test_shot_noise_estimate_scales_as_inverse_sqrt(self):
         pauli = PauliSum({"II": -1.0, "ZI": 0.3, "XX": 0.4})

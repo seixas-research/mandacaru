@@ -16,7 +16,6 @@ from .basis_recipe import basis_entries, basis_tables
 def build(driver, geometry):
     from ase.data import chemical_symbols
     from ..basis.filtering import resolve_filter_cutoff
-    from ..integrals.grid import Grid
     from ..pseudopotentials.families import lookup_family
 
     spec = {"name": driver.basis} if isinstance(driver.basis, str) else driver.basis
@@ -43,15 +42,12 @@ def build(driver, geometry):
         _warn_functional_mismatch(species.values(), driver.xc)
     grid = driver._grid(geometry)
     if grid is None:
-        spacing = (driver._grid_spacing if geometry.units == "angstrom"
-                   else driver._grid_spacing / _native.BOHR_TO_ANGSTROM)
-        view = Grid(center=_native.positions_center(geometry.positions),
-                    cell=geometry.cell, grid_spacing=spacing, units=geometry.units)
-        grid = _native.SpatialGrid(
-            view.shape,
-            [float(view.X.flat[0]), float(view.Y.flat[0]), float(view.Z.flat[0])],
-            np.ascontiguousarray(view.step),
-        )
+        # The box every molecular route uses (the all-electron one too): a zero or
+        # degenerate cell raises "molecular integration requires a nondegenerate cell or
+        # an explicit grid" instead of becoming a 2 x 2 x 2 box.
+        # grid_spacing is in Angstrom whatever the geometry's units.
+        spacing = _native.length_to_bohr(float(driver._grid_spacing), "angstrom")
+        grid = _native.SpatialGrid.from_geometry(geometry.native(), [spacing, spacing, spacing])
     cutoff = resolve_filter_cutoff(
         options.get("filter_cutoff"), _native.grid_step_max_norm(grid.step_bohr)
     )

@@ -124,6 +124,86 @@ fn molecular_transfer_tracks_orbital_signs_and_preserves_the_physical_density() 
     assert_eq!(context.memory_used(), 0);
 }
 
+
+#[test]
+fn a_coupled_exchange_ansatz_follows_orbital_sign_flips() {
+    // The default ADAPT pool is `ceo`: its handover must survive the arbitrary signs of the
+    // displaced geometry's orbitals (2026-11-10: every H2O relaxation step refused it).
+    let context = Context::new(Some(1), 256 << 20).unwrap();
+    {
+        let geometry = Geometry::new(
+            vec![1, 1, 1, 1],
+            vec![[6., 6., 3.6], [6., 6., 5.0], [6., 6., 6.4], [6., 6., 7.8]],
+            [[12., 0., 0.], [0., 12., 0.], [0., 0., 12.]],
+            [false; 3],
+            LengthUnit::Bohr,
+        )
+        .unwrap();
+        let grid = SpatialGrid::from_geometry(&geometry, [0.6; 3], false, false).unwrap();
+        let integrals = MolecularIntegrals::new(
+            &context, geometry, grid, r#"{"name":"HAO"}"#, "spectral", None, Default::default(),
+        )
+        .unwrap();
+        let old = integrals.mean_field("rhf", [2, 2], &Default::default()).unwrap();
+        let mut new = integrals.mean_field("rhf", [2, 2], &Default::default()).unwrap();
+        new.model_orbitals.column_mut(1).scale_mut(-1.);
+        new.model_orbitals.column_mut(2).scale_mut(-1.);
+        let old_model = old.model(&integrals).unwrap();
+        let new_model = new.model(&integrals).unwrap();
+        let mut old_problem = old_model.problem(&context, "jordan_wigner", true, false, true).unwrap();
+        let mut new_problem = new_model.problem(&context, "jordan_wigner", true, false, true).unwrap();
+        old_problem.use_pool("ceo", true).unwrap();
+        new_problem.use_pool("ceo", true).unwrap();
+        let labels: Vec<&str> = old_problem.pool.iter().map(|g| g.label.as_str()).collect();
+        let pick = |pattern: &str, nth: usize| {
+            labels.iter().enumerate().filter(|(_, l)| l.starts_with("CEO[") && l.contains(pattern)).nth(nth).unwrap().0
+        };
+        let indices = [pick("{S(", 1), pick(")+D(", 0), pick(")-D(", 3), pick("{S(", 4), pick(")+D(", 7)];
+        let parameters = [0.21, -0.13, 0.08, 0.05, -0.11];
+        let frame = |reference, model, problem| Frame { integrals: &integrals, reference, model, problem };
+        // A previous Hessian approximation travels with the ansatz, conjugated by the sign each
+        // angle took: the new problem is the old one in flipped orbitals, so its gradient is the
+        // old one times those signs and its Hessian `S H S`.
+        let hessian: Vec<f64> = (0..25).map(|k| 1. + (k / 5 + k % 5) as f64 * 0.1 + if k % 6 == 0 { 2. } else { 0. }).collect();
+        let captured = transfer::capture(frame(&old, &old_model, &old_problem), &indices, &parameters)
+            .unwrap()
+            .with_hessian(hessian.clone())
+            .unwrap();
+        let seed = transfer::carry(&captured, frame(&new, &new_model, &new_problem), 0.9).unwrap();
+        assert!(seed.accepted, "{}", seed.reason);
+        assert_eq!(seed.indices, indices);
+        assert!(seed.parameters.iter().zip(&parameters).any(|(a, b)| (a + b).abs() < 1e-14));
+        let signs: Vec<f64> = seed.parameters.iter().zip(&parameters).map(|(a, b)| (a / b).round()).collect();
+        assert!(signs.iter().all(|s| s.abs() == 1.) && signs.iter().any(|&s| s < 0.));
+        let carried = seed.hessian.as_ref().expect("the previous Hessian is carried");
+        for i in 0..5 {
+            for j in 0..5 {
+                assert_eq!(carried[i * 5 + j], hessian[i * 5 + j] * signs[i] * signs[j]);
+            }
+        }
+        let (g_old, g_new) = (
+            old_problem.evaluate(&indices, &parameters, true).unwrap().gradient,
+            new_problem.evaluate(&seed.indices, &seed.parameters, true).unwrap().gradient,
+        );
+        for i in 0..5 {
+            assert!((g_new[i] - signs[i] * g_old[i]).abs() < 1e-10, "{i}: {} vs {}", g_new[i], signs[i] * g_old[i]);
+        }
+        assert!(transfer::capture(frame(&old, &old_model, &old_problem), &indices, &parameters).unwrap().with_hessian(vec![0.; 24]).is_err());
+        let first = old_problem.evaluate(&indices, &parameters, false).unwrap();
+        let second = new_problem.evaluate(&seed.indices, &seed.parameters, false).unwrap();
+        assert!((first.energy - second.energy).abs() < 1e-11, "{} vs {}", first.energy, second.energy);
+        let rdm = |problem: &mandacaru_core::quantum::CachedProblem, state: &mandacaru_core::quantum::State| {
+            properties::spatial_rdms(&context, &problem.encoding, problem.register("test").unwrap(), state.complex128().unwrap()).unwrap()
+        };
+        let (a, b) = (rdm(&old_problem, &first.state), rdm(&new_problem, &second.state));
+        let density = |reference: &DMatrix<C64>, one: &[C64]| {
+            reference * DMatrix::from_row_slice(4, 4, one).transpose() * reference.adjoint()
+        };
+        assert!((density(&old.model_orbitals, a.one.as_slice()) - density(&new.model_orbitals, b.one.as_slice())).norm() < 1e-11);
+    }
+    assert_eq!(context.memory_used(), 0);
+}
+
 #[test]
 fn captured_handover_releases_the_previous_frame_before_the_next_budgeted_build() {
     use mandacaru_core::{

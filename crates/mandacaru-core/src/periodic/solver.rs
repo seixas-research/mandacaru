@@ -1184,10 +1184,10 @@ impl Crystal {
                     if let Some(rep) = &init.hubbard {
                         rep.occupations.clone()
                     } else {
-                        h.seed(c.spins)?
+                        h.start(c)?
                     }
                 }
-                (Some(h), _) if active => h.seed(c.spins)?,
+                (Some(h), _) if active => h.start(c)?,
                 _ => vec![],
             };
             // Exact exchange of a hybrid: K_in defines the diagonalization, is mixed with the density

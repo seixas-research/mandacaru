@@ -113,6 +113,10 @@ pub struct Model {
     /// Full source-MO rotation, shared by reduced models and density views.
     pub orbital_rotation: Option<std::sync::Arc<OrbitalRotation>>,
     pub orbital_symmetry_sets: Vec<Vec<usize>>,
+    /// The double-factorized two-body representation, when the model holds one instead of the
+    /// dense tensor; `two` is then empty and every reader of it goes through
+    /// [`Model::dense_two`], which refuses by name.
+    pub factorized: Option<std::sync::Arc<super::double_factorized::DoubleFactorized>>,
     _memory: Reservation,
 }
 pub struct OrbitalRotation {
@@ -132,7 +136,10 @@ impl Model {
             .map(|(s, c)| serde_json::json!([s, c.re, c.im]))
             .collect();
         let groups:Vec<_>=operator.decomposition.iter().map(|g|serde_json::json!({"num_qubits":g.n,"terms":g.labels().into_iter().map(|(s,c)|serde_json::json!([s,c.re,c.im])).collect::<Vec<_>>()})).collect();
-        let value = serde_json::json!({"format":"mandacaru-qubit-hamiltonian","version":1,"num_qubits":operator.n,"mapping":mapping,"num_particles":self.particles,"n_spatial_orbitals":self.m,"metadata":{"energy_unit":"Ha","source_engine":"rust","groups":groups},"terms":terms});
+        let mut value = serde_json::json!({"format":"mandacaru-qubit-hamiltonian","version":1,"num_qubits":operator.n,"mapping":mapping,"num_particles":self.particles,"n_spatial_orbitals":self.m,"metadata":{"energy_unit":"Ha","source_engine":"rust","groups":groups},"terms":terms});
+        if let Some(record) = self.two_body_record() {
+            value["metadata"]["two_body"] = record;
+        }
         crate::persistence::Document::from_value(ctx, value, crate::persistence::HAMILTONIAN)
     }
     pub fn save(&self, ctx: &Context, path: &std::path::Path, mapping: &str) -> Result<()> {
@@ -174,7 +181,13 @@ impl Model {
             }
             metadata_json.push_str("]}");
         }
-        metadata_json.push_str(r#"],"source_engine":"rust"}"#);
+        metadata_json.push_str(r#"],"source_engine":"rust""#);
+        if let Some(record) = self.two_body_record() {
+            metadata_json.push_str(r#","two_body":"#);
+            metadata_json
+                .push_str(&serde_json::to_string(&record).map_err(|e| invalid(e.to_string()))?);
+        }
+        metadata_json.push('}');
         let terms = operator
             .labels()
             .into_iter()
@@ -229,8 +242,77 @@ impl Model {
             frozen_indices: vec![],
             orbital_rotation: None,
             orbital_symmetry_sets: Vec::new(),
+            factorized: None,
             _memory: ctx.reserve(product(&[n, n, 64])?)?,
         })
+    }
+    /// A spin-free model whose two-body part is the double factorization `factorized` (no
+    /// `n^4` tensor is held).
+    pub fn double_factorized(
+        ctx: &Context,
+        particles: [usize; 2],
+        one: Buffer<C64>,
+        factorized: super::double_factorized::DoubleFactorized,
+        constant: f64,
+    ) -> Result<Self> {
+        let m = factorized.n;
+        if one.as_slice().len() != product(&[m, m])?
+            || particles.iter().any(|p| *p > m)
+            || !constant.is_finite()
+        {
+            return Err(invalid("invalid molecular model dimensions or occupation"));
+        }
+        Ok(Self {
+            m,
+            particles,
+            one,
+            two: ctx.allocate(0)?,
+            constant,
+            spinor: false,
+            orbital_indices: (0..m).collect(),
+            frozen_indices: vec![],
+            orbital_rotation: None,
+            orbital_symmetry_sets: Vec::new(),
+            factorized: Some(std::sync::Arc::new(factorized)),
+            _memory: ctx.reserve(product(&[m, m, 64])?)?,
+        })
+    }
+    /// The `metadata.two_body` record a saved Hamiltonian carries for a double-factorized
+    /// model (energies in eV, see [`crate::persistence::TwoBodyRecord`]); a dense one has none.
+    fn two_body_record(&self) -> Option<serde_json::Value> {
+        self.factorized.as_ref().map(|f| {
+            serde_json::json!({
+                "representation": "double-factorized",
+                "truncation_ev": f.truncation * crate::units::HARTREE_TO_EV,
+                "error_bound_ev": f.error_bound * crate::units::HARTREE_TO_EV,
+            })
+        })
+    }
+    /// The name of the two-body representation: `"dense"` or `"double-factorized"`.
+    pub fn representation(&self) -> &'static str {
+        if self.factorized.is_some() {
+            "double-factorized"
+        } else {
+            "dense"
+        }
+    }
+    /// Refuses a double-factorized model by name (`what` says who asked): for a reader of
+    /// every tensor element, and for the analytic forces, whose derivative is that of the dense
+    /// Hamiltonian, not of the truncated one.
+    pub fn require_dense(&self, what: &str) -> Result<()> {
+        if self.factorized.is_some() {
+            return Err(crate::Error::Unsupported(format!(
+                "{what} needs the dense two-body representation, and this model holds the \
+                 double-factorized one; use two_body representation 'dense'"
+            )));
+        }
+        Ok(())
+    }
+    /// The dense two-body tensor, for a reader that needs every element; refuses a
+    /// double-factorized model by name rather than densifying it.
+    pub fn dense_two(&self, what: &str) -> Result<&[C64]> {
+        self.require_dense(what)?;
+        Ok(self.two.as_slice())
     }
     /// Frozen doubly occupied spatial orbitals and an explicit active subspace.
     pub fn reduce(&self, ctx: &Context, frozen: &[usize], active: &[usize]) -> Result<Self> {
@@ -242,6 +324,7 @@ impl Model {
                 "spatial frozen-core reduction does not apply to GHF spinors",
             ));
         }
+        let two = self.dense_two("a frozen-core reduction of the model")?;
         let mut seen = vec![false; self.m];
         for &i in frozen.iter().chain(active) {
             if i >= self.m || seen[i] {
@@ -267,7 +350,7 @@ impl Model {
         let m = self.m;
         let n = active.len();
         let h = |p, q| self.one.as_slice()[p * m + q];
-        let g = |p, q, r, s| self.two.as_slice()[((p * m + q) * m + r) * m + s];
+        let g = |p, q, r, s| two[((p * m + q) * m + r) * m + s];
         let mut constant = self.constant;
         for &i in frozen {
             constant += 2. * h(i, i).re;
@@ -314,7 +397,8 @@ impl Model {
         result.orbital_symmetry_sets = self.orbital_symmetry_sets.clone();
         Ok(result)
     }
-    pub fn fermion_terms(&self) -> Vec<(Vec<(usize, bool)>, C64)> {
+    pub fn fermion_terms(&self) -> Result<Vec<(Vec<(usize, bool)>, C64)>> {
+        let two = self.dense_two("the fermion term list")?;
         let mut out = vec![(vec![], C64::new(self.constant, 0.))];
         let n = if self.spinor { 2 * self.m } else { self.m };
         for p in 0..n {
@@ -327,7 +411,7 @@ impl Model {
                 }
                 for r in 0..n {
                     for s in 0..n {
-                        let g = self.two.as_slice()[((p * n + q) * n + r) * n + s];
+                        let g = two[((p * n + q) * n + r) * n + s];
                         if g.norm() > 1e-12 {
                             for alpha in 0..if self.spinor { 1 } else { 2 } {
                                 for beta in 0..if self.spinor { 1 } else { 2 } {
@@ -347,13 +431,16 @@ impl Model {
                 }
             }
         }
-        out
+        Ok(out)
     }
     pub fn operator(&self, ctx: &Context, mapping: &str) -> Result<Operator> {
         if self.spinor && mapping == "parity_reduced" {
             return Err(invalid("GHF spinors do not have a fixed alpha parity"));
         }
         let encoding = Encoding::new(mapping, 2 * self.m, self.particles)?;
+        if let Some(factorized) = &self.factorized {
+            return factorized.operator(ctx, &encoding, self.one.as_slice(), self.constant);
+        }
         // Budget the finite polynomial expansion before constructing it.
         let _terms = ctx.reserve(product(&[
             2 * self.m,
@@ -364,7 +451,7 @@ impl Model {
         ])?)?;
         let mut terms = Vec::new();
         let mut groups = [Vec::new(), Vec::new()];
-        for (ladders, coefficient) in self.fermion_terms() {
+        for (ladders, coefficient) in self.fermion_terms()? {
             let mapped = encoding.monomial(ctx, &ladders)?;
             let entries: Vec<_> = mapped
                 .terms
@@ -397,7 +484,10 @@ impl Model {
                 "the factorized measurement needs a spin-free model; this one is a spinor",
             ));
         }
-        let (one, two) = (self.one.as_slice(), self.two.as_slice());
+        let (one, two) = (
+            self.one.as_slice(),
+            self.dense_two("measurement_scheme='double-factorized'")?,
+        );
         let scale = one.iter().chain(two).fold(1., |a: f64, c| a.max(c.norm()));
         if one.iter().chain(two).any(|c| c.im.abs() > 1e-10 * scale) {
             return Err(invalid(
@@ -434,7 +524,7 @@ impl Model {
     ) -> Result<CachedProblem> {
         if self.spinor {
             return Err(invalid(
-                "the native GHF model needs a spin-orbit excitation pool before a quantum solve",
+                "the native GHF (spinor) model has no quantum handoff: a quantum solve needs an RHF or UHF reference",
             ));
         }
         let encoding = Encoding::new(mapping, 2 * self.m, self.particles)?;

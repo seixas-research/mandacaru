@@ -36,42 +36,60 @@ from __future__ import annotations
 
 import numpy as np
 
-# --- Physical conversion factors (CODATA-consistent) --------------------- #
+# --- Physical conversion factors (CODATA-consistent), defined in Rust ---- #
+from . import _native
 from ._native import BOHR_TO_ANGSTROM, HARTREE_TO_EV
+
+#: The inverse factors, defined in Rust (assigned here so that converting by them reads as a
+#: unit conversion to the numerics gate, ``scripts/numerics_budget.py``).
+ANGSTROM_TO_BOHR = _native.ANGSTROM_TO_BOHR
+EV_TO_HARTREE = _native.EV_TO_HARTREE
+
+__all__ = [
+    "ANGSTROM_TO_BOHR", "AU_DIPOLE_TO_DEBYE", "BOHR_TO_ANGSTROM", "DEFAULT_GRID_SPACING",
+    "EV_TO_HARTREE", "HARTREE_TO_EV", "convert_energy", "energy_unit_label", "from_hartree",
+    "to_angstrom", "to_bohr", "to_hartree",
+]
 #: One atomic unit of electric dipole moment (e Bohr) in debye: CODATA
 #: 8.4783536255e-30 C m over 1 D = 1e-21 / c C m = 3.33564095198e-30 C m.
 AU_DIPOLE_TO_DEBYE = 2.541746473
-ANGSTROM_TO_BOHR = 1.0 / BOHR_TO_ANGSTROM  # 1.8897259886...
-EV_TO_HARTREE = 1.0 / HARTREE_TO_EV
 
 #: Default real-space ``grid_spacing`` (Angstrom) of every entry point -- the
 #: drivers, the calculator, the Bloch driver, the command line and the grid.
 DEFAULT_GRID_SPACING = 0.20
 
-# Accepted spellings for the public ``units`` / ``energy_units`` arguments.
-_LENGTH_TO_BOHR = {"angstrom": ANGSTROM_TO_BOHR, "a": ANGSTROM_TO_BOHR,
-                   "bohr": 1.0, "au": 1.0, "a0": 1.0}
-_ENERGY_FROM_HARTREE = {"ev": HARTREE_TO_EV,
-                        "ha": 1.0, "hartree": 1.0, "au": 1.0}
+# The accepted spellings of the public ``units`` / ``energy_units`` arguments live with the
+# conversions in Rust (``units::energy_factor``, ``units::length_factor_to_bohr``).
+
+
+def _numeric(value):
+    """``value`` as the native conversions take it: a float, a complex or a float/complex array."""
+    if isinstance(value, (bool, int, float, complex, np.floating, np.complexfloating)):
+        return value if isinstance(value, (complex, np.complexfloating)) else float(value)
+    array = np.asarray(value)
+    return np.ascontiguousarray(array, dtype=complex if array.dtype.kind == "c" else float)
 
 
 def to_bohr(length, units: str = "angstrom"):
     """Convert a length (scalar or array) in ``units`` to Bohr."""
-    try:
-        factor = _LENGTH_TO_BOHR[units.lower()]
-    except KeyError:
-        raise ValueError(
-            f"unknown length unit {units!r}; use 'angstrom' or 'bohr'") from None
-    return np.asarray(length, dtype=float) * factor
+    from ._native import length_to_bohr
+    return length_to_bohr(_numeric(length), str(units))
+
+
+def to_angstrom(length_bohr):
+    """Convert a length (float or float array) in Bohr to Angstrom."""
+    from ._native import to_user_units
+    if isinstance(length_bohr, (bool, int, float, np.floating)):
+        return to_user_units(float(length_bohr), "length")
+    return to_user_units(np.ascontiguousarray(length_bohr, dtype=float), "length")
 
 
 def _energy_factor(units: str) -> float:
     """Hartree -> ``units`` factor for an accepted energy-unit spelling."""
-    try:
-        return _ENERGY_FROM_HARTREE[units.lower()]
-    except (KeyError, AttributeError):
-        raise ValueError(
-            f"unknown energy unit {units!r}; use 'eV' or 'Ha'") from None
+    from ._native import energy_unit_factor
+    if not isinstance(units, str):
+        raise ValueError(f"unknown energy unit {units!r}; use 'eV' or 'Ha'")
+    return energy_unit_factor(units)
 
 
 def energy_unit_label(units: str) -> str:
@@ -81,19 +99,27 @@ def energy_unit_label(units: str) -> str:
 
 def from_hartree(energy, units: str = "eV"):
     """Convert an energy (scalar or array, possibly complex) from Hartree to ``units``."""
-    return energy * _energy_factor(units)
+    from ._native import energy_from_hartree
+    _energy_factor(units)
+    return energy_from_hartree(_numeric(energy), units)
 
 
 def to_hartree(energy, units: str = "eV"):
     """Convert an energy (scalar or array) in ``units`` to Hartree."""
-    return energy / _energy_factor(units)
+    from ._native import energy_to_hartree
+    _energy_factor(units)
+    return energy_to_hartree(_numeric(energy), units)
 
 
 def convert_energy(energy, from_units: str, to_units: str):
     """Convert an energy (scalar or array) from ``from_units`` to ``to_units``.
 
     The factor is the ratio of the two Hartree factors, so this never
-    introduces a conversion constant of its own.
+    introduces a conversion constant of its own; equal units return the value.
     """
-    factor = _energy_factor(to_units) / _energy_factor(from_units)
-    return energy if factor == 1.0 else energy * factor
+    from ._native import convert_energy as _convert
+    _energy_factor(from_units)
+    _energy_factor(to_units)
+    if _energy_factor(to_units) == _energy_factor(from_units):
+        return energy
+    return _convert(_numeric(energy), from_units, to_units)

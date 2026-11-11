@@ -724,6 +724,19 @@ impl MolecularIntegrals {
         *cache = Some(factors.clone());
         Ok(factors)
     }
+    /// [`Self::particles`] from the initial magnetic moment of each atom (their sum is the
+    /// total moment).
+    pub fn particles_from_moments(
+        &self,
+        charge: i32,
+        moments: &[f64],
+        electrons: Option<usize>,
+    ) -> Result<[usize; 2]> {
+        if moments.iter().any(|m| !m.is_finite()) {
+            return Err(invalid("initial magnetic moments must be finite"));
+        }
+        self.particles(charge, moments.iter().sum(), electrons)
+    }
     pub fn particles(
         &self,
         charge: i32,

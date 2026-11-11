@@ -92,8 +92,8 @@ def check_atoms(spec, context, atoms, paw, xc):
     the set of the functional ``xc`` unless the basis names a folder, and
     hands its file and reference occupations to Rust, which refuses a spin-orbit dataset, an
     element the option names that ``atoms`` lacks, a dataset without the shell and a shell
-    with no occupied reference wave. What needs the assembled crystal (a k mesh reduced by
-    symmetry) is refused at the first calculation, before any SCF.
+    with no occupied reference wave. What needs the assembled crystal (a symmetry table the
+    shells cannot be completed over) is refused at the first calculation, before any SCF.
     """
     if spec is None or paw is None or not any(atoms.pbc):
         return

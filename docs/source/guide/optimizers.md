@@ -128,6 +128,54 @@ issues one `RuntimeWarning` at the end of the run. Whether the run as a whole
 converged is `result.success`, and the reason it stopped is
 `result.timings["termination"]`.
 
+(quenching)=
+## Which parameters each step optimizes: `quenching`
+
+By default (`quenching=True`) every minimization runs over all the parameters. ADAPT-VQE
+re-optimizes the whole ansatz after each growth step, warm-started with the new angles at
+zero, and VQE minimizes all its parameters jointly. `quenching=False` optimizes only what
+changed, for `vqe` and `adapt-vqe`:
+
+- **ADAPT-VQE:** each growth step varies only the parameters it appended. Every earlier
+  angle stays exactly at the value it had after its own step, so each search is
+  one-dimensional (two or three dimensions for a coupled step of the `ceo` pool).
+- **VQE:** the fixed ansatz is swept once, one parameter at a time in order. Parameter `k`
+  is optimized alone, with the earlier ones at their optimized values and the later ones
+  at their starting values.
+
+Each step costs fewer evaluations, and the energy is an upper bound to the joint
+optimization's. On a three-orbital, two-electron model with the fermionic pool, six frozen
+growth steps end 4.3 mHa above six joint ones. The run log writes the setting as
+`reoptimize_all_parameters` in `[OPTIMIZATION SETUP]`. The subspace methods and the
+searches (`vasqa`, `valsqa`) always re-optimize every parameter, and refuse
+`quenching=False` (`ValueError`).
+
+(growth-strategies)=
+## How the ansatz grows: `tetris` and `prune`
+
+Two refinements of ADAPT-VQE change what a growth step appends or keeps (`adapt-vqe` only,
+off by default):
+
+- **`tetris=True`.** TETRIS-ADAPT-VQE (Anastasiou et al., Phys. Rev. Research 6, 013254,
+  2024). A growth step appends the operator of largest gradient, then every further one,
+  in descending gradient order, whose qubit support is disjoint from those already taken.
+  Their gradients were measured anyway, and they share one circuit layer, so the ansatz
+  grows in fewer steps. On a three-orbital, two-electron model with the fermionic pool it
+  reaches the same converged energy in 6 steps instead of 8. `max_iterations` still counts
+  steps.
+- **`prune=True`.** Pruned-ADAPT-VQE (J. Chem. Theory Comput. 21, 8720, 2025). After each
+  step's optimization, the operator ranked first by `exp(-10 x) / θ²` (`x` its relative
+  position, the newest never) is removed when `|θ|` is below a tenth of the mean amplitude
+  of the last four. The remaining angles are not re-optimized, and the step's energy is that
+  of the shorter ansatz. Pruning removes what an under-converged inner optimization left
+  behind. With two optimizer iterations per step, the same model keeps 21 operators
+  instead of 30 at the same energy. Against a tightly converged optimizer there is usually
+  nothing to remove. `result.pruned_operators` lists `(step, label)` of each removal.
+
+`[OPTIMIZATION SETUP]` writes `growth` and `pruning`, and a pruned run's `[VARIATIONAL QUANTUM SUMMARY]` writes
+`pruned_operators`. Neither option applies to a resumed or transferred ansatz
+(`ValueError`).
+
 ## A rule of thumb
 
 * **State-vector simulation:** the SLSQP default, or any other gradient method.

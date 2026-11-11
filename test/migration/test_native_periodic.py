@@ -477,9 +477,10 @@ def test_periodic_pbe_and_collinear_spin_match_python_on_skew_cells(spin):
     assert atoms.calc.result.snapshot()["magnetic_moment"]==pytest.approx(py.calc.result.snapshot()["magnetic_moment"],abs=1e-5)
     assert atoms.calc.result.snapshot()["n_spins"]==(2 if spin else 1)
     if spin:
-        # Magnetic initial states must not be projected onto a nonmagnetic
-        # spatial symmetry group during density assembly.
-        assert atoms.calc.periodic_problem.symmetry is None
+        # A magnetic initial state keeps only the operations that preserve its moment pattern (the
+        # setup labels atoms by element and signed moment): the group of one atom is not empty, and
+        # it is never the group of the pattern without moments.
+        assert atoms.calc.periodic_problem.symmetry is not None
     assert atoms.calc.results['free_energy']==pytest.approx(py.calc.results['free_energy'],abs=3e-6)
     expected_levels=np.asarray(py.calc.result.snapshot()["eigenvalues"])
     actual_levels=np.asarray(atoms.calc.result.snapshot()["eigenvalues"])

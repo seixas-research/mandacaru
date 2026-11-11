@@ -25,6 +25,25 @@ impl Method {
         "Nelder-Mead",
         "SPSA",
     ];
+    /// The method's name as `NAMES` and [`Self::parse`] spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Slsqp => "SLSQP",
+            Self::Bfgs => "BFGS",
+            Self::Lbfgs => "L-BFGS",
+            Self::Cg => "CG",
+            Self::Cobyla => "COBYLA",
+            Self::NelderMead => "Nelder-Mead",
+            Self::Spsa => "SPSA",
+        }
+    }
+    /// Whether the method keeps a dense curvature estimate that [`minimize_from`] can start
+    /// from and [`Outcome::hessian`] returns: SLSQP (a Hessian approximation) and BFGS (an
+    /// inverse Hessian approximation). L-BFGS keeps ten correction pairs that cover a growing
+    /// ansatz poorly (measured: no gain), so it starts cold.
+    pub fn carries_curvature(self) -> bool {
+        matches!(self, Self::Slsqp | Self::Bfgs)
+    }
     pub fn parse(name: &str) -> Result<Self> {
         match name {
             "BFGS" => Ok(Self::Bfgs),
@@ -109,6 +128,13 @@ pub struct Outcome {
     /// Set by [`minimize_interruptible`] when the objective ended the run;
     /// `parameters`, `energy` and `history` are then the best point reached.
     pub interrupted: Option<String>,
+    /// The final curvature estimate of the ansatz parameters, row-major `n x n`, for the two
+    /// quasi-Newton methods that keep a dense one: SLSQP its Hessian approximation, BFGS its
+    /// INVERSE Hessian approximation (the two are not interchangeable, see
+    /// [`Method::carries_curvature`]); `None` for every other method and for an interrupted
+    /// run. A caller that re-optimizes the same parameters after growing them hands it back
+    /// through [`minimize_from`] instead of starting from the identity.
+    pub hessian: Option<Vec<f64>>,
 }
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(a, b)| a * b).sum()
@@ -131,11 +157,21 @@ pub fn minimize_interruptible(
     ctx: &Context,
     initial: &[f64],
     options: &Options,
+    objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> Result<Outcome> {
+    minimize_interruptible_from(ctx, initial, options, None, objective)
+}
+/// [`minimize_interruptible`] starting from a Hessian approximation (see [`minimize_from`]).
+pub fn minimize_interruptible_from(
+    ctx: &Context,
+    initial: &[f64],
+    options: &Options,
+    hessian: Option<&[f64]>,
     mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
 ) -> Result<Outcome> {
     let mut best: Option<(Vec<f64>, f64)> = None;
     let mut history = Vec::new();
-    let result = minimize(ctx, initial, options, |x| {
+    let result = minimize_from(ctx, initial, options, hessian, |x| {
         let value = objective(x)?;
         if value.0.is_finite() {
             history.push(value.0);
@@ -153,6 +189,7 @@ pub fn minimize_interruptible(
             steps: 0,
             success: false,
             message: format!("run budget exhausted: {message}"),
+            hessian: None,
             interrupted: Some(message),
         }),
         (result, _) => result,
@@ -162,14 +199,32 @@ pub fn minimize(
     ctx: &Context,
     initial: &[f64],
     options: &Options,
+    objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> Result<Outcome> {
+    minimize_from(ctx, initial, options, None, objective)
+}
+/// [`minimize`] from a given curvature estimate, row-major `n x n` with `n = initial.len()` (an
+/// [`Outcome::hessian`] of the same method, extended by the caller for any parameter it
+/// appended). Only SLSQP (Hessian) and BFGS (inverse Hessian) keep one: another method given
+/// one raises rather than ignoring it.
+pub fn minimize_from(
+    ctx: &Context,
+    initial: &[f64],
+    options: &Options,
+    hessian: Option<&[f64]>,
     mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
 ) -> Result<Outcome> {
     options.validate()?;
     if initial.iter().any(|t| !t.is_finite()) {
         return Err(Error::Invalid("initial parameters must be finite".into()));
     }
+    if hessian.is_some() && !options.method.carries_curvature() {
+        return Err(Error::Invalid(
+            "only SLSQP and BFGS carry a curvature estimate between optimizations".into(),
+        ));
+    }
     match options.method {
-        Method::Slsqp => return sequential::minimize(ctx, initial, options, objective),
+        Method::Slsqp => return sequential::minimize(ctx, initial, options, hessian, objective),
         Method::Cg => return conjugate::minimize(ctx, initial, options, objective),
         Method::NelderMead | Method::Cobyla => {
             return derivative_free::minimize(ctx, initial, options, objective);
@@ -188,8 +243,20 @@ pub fn minimize(
     })?;
     let mut corrections: Vec<(Vec<f64>, Vec<f64>, f64)> = Vec::new();
     let mut inverse = ctx.allocate::<f64>(if limited_memory { 0 } else { product(&[n, n])? })?;
-    for k in 0..if limited_memory { 0 } else { n } {
-        inverse.as_mut_slice()[k * n + k] = 1.;
+    match hessian {
+        Some(values) => {
+            if values.len() != n * n || values.iter().any(|v| !v.is_finite()) {
+                return Err(Error::Invalid(
+                    "the carried inverse Hessian must be finite and n x n for the n parameters".into(),
+                ));
+            }
+            inverse.as_mut_slice().copy_from_slice(values);
+        }
+        None => {
+            for k in 0..if limited_memory { 0 } else { n } {
+                inverse.as_mut_slice()[k * n + k] = 1.;
+            }
+        }
     }
     let mut x = initial.to_vec();
     let (mut energy, mut gradient) = objective(&x)?;
@@ -208,6 +275,7 @@ pub fn minimize(
                 steps,
                 success: true,
                 message: "gradient converged".into(),
+                hessian: (!limited_memory).then(|| inverse.as_slice().to_vec()),
                 interrupted: None,
             });
         }
@@ -363,6 +431,7 @@ pub fn minimize(
         steps,
         success: false,
         message,
+        hessian: (!limited_memory).then(|| inverse.as_slice().to_vec()),
         interrupted: None,
     })
 }

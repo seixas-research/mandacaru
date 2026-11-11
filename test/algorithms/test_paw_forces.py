@@ -153,11 +153,12 @@ def test_forces_are_the_derivative_of_the_energy(h2):
     assert h2.raw[1, 2] == pytest.approx(numerical, abs=5e-3)
 
 
-def test_the_force_is_the_energy_derivative_of_a_displaced_hamiltonian(h2):
-    """Native details: the gradient is the central difference of the reduced
-    Hamiltonian with the orbitals re-solved at each displacement."""
-    assert h2.details["scheme"] == "Central-reduced-Hamiltonian"
-    assert h2.details["orbital_response"] == "displaced-SCF-and-selector"
+def test_the_force_is_analytic_with_the_orbital_response(h2):
+    """Native details: the gradient is analytic, the orbitals' response solved by CPHF and
+    the natural-orbital Lagrangian, not by displaced SCF solutions."""
+    assert h2.details["scheme"] == "analytic"
+    assert h2.details["orbital_response"] == "CPHF-and-natural-orbital-Lagrangian"
+    assert h2.details["cphf_residual"] < 1e-10
     assert h2.details["energy_ha"] == pytest.approx(h2.energy, abs=1e-10)
 
 
@@ -285,7 +286,7 @@ def test_reduced_active_space_force_tracks_optimized_energy(mapping):
         max_iterations=20, convergence={"gradient": 1e-6},
         project_translation=False, profile=False)
     force = atoms.get_forces()[1, 2]
-    assert atoms.calc.result.force_details["orbital_response"] == "displaced-SCF-and-selector"
+    assert atoms.calc.result.force_details["orbital_response"] == "CPHF-and-natural-orbital-Lagrangian"
 
     assert force == pytest.approx(energy_derivative(atoms, 1, 2, 0.005), abs=0.02)
 

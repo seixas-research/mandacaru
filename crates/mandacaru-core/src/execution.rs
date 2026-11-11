@@ -307,6 +307,229 @@ pub fn measurement_cost(
     Ok((jobs, total))
 }
 
+/// `(values, standard errors)` of Pauli strings read off bit-string counts: the values of
+/// [`expectations`], and for each the standard error `sqrt(max(1 - v^2, 0) / N)` of a +-1 outcome
+/// averaged over the `N` counted shots (zero for an identity string or no shots).
+pub fn count_statistics(
+    ctx: &Context,
+    labels: &[String],
+    counts: &[(String, f64)],
+) -> Result<(Vec<f64>, Vec<f64>)> {
+    let values = expectations(ctx, labels, counts)?;
+    let total: f64 = counts.iter().map(|(_, c)| c).sum();
+    let errors = labels
+        .iter()
+        .zip(&values)
+        .map(|(label, v)| {
+            if total <= 0. || label.bytes().all(|c| c == b'I') {
+                0.
+            } else {
+                ((1. - v * v).max(0.) / total).sqrt()
+            }
+        })
+        .collect();
+    Ok((values, errors))
+}
+
+/// A Hamiltonian's measurement plan: its non-identity strings in qubit-wise-commuting groups
+/// (`(basis, [(label, re, im)])`, largest coefficient first, as [`qwc`] groups them) and the
+/// identity coefficient, which needs no measurement.
+pub struct HamiltonianGroups {
+    pub groups: Vec<(String, Vec<(String, f64, f64)>)>,
+    pub identity: f64,
+}
+
+/// Group the strings of `terms` whose magnitude exceeds `atol`. Every all-`I` string adds the real
+/// part of its coefficient to the identity; with `drop_identity` false that sum is measured as a
+/// string of its own (in a group) instead, so the constant counts exactly once either way.
+pub fn qwc_hamiltonian(
+    ctx: &Context,
+    terms: &[(String, f64, f64)],
+    drop_identity: bool,
+    atol: f64,
+) -> Result<HamiltonianGroups> {
+    if !atol.is_finite() || atol < 0. {
+        return Err(invalid("the drop tolerance must be finite and nonnegative"));
+    }
+    let labels: Vec<String> = terms.iter().map(|(l, _, _)| l.clone()).collect();
+    let n = labels_width(&labels)?;
+    if terms.iter().any(|(_, re, im)| !re.is_finite() || !im.is_finite()) {
+        return Err(invalid("Pauli coefficients must be finite"));
+    }
+    let mut identity = 0.;
+    let mut kept: Vec<(String, f64, f64)> = Vec::new();
+    for (label, re, im) in terms {
+        if re.hypot(*im) <= atol {
+            continue;
+        }
+        if label.bytes().all(|c| c == b'I') {
+            identity += re;
+        } else {
+            kept.push((label.clone(), *re, *im));
+        }
+    }
+    if !drop_identity && identity != 0. {
+        kept.push(("I".repeat(n), identity, 0.));
+        identity = 0.;
+    }
+    let names: Vec<String> = kept.iter().map(|(l, _, _)| l.clone()).collect();
+    let weights: Vec<f64> = kept.iter().map(|(_, re, im)| re.hypot(*im)).collect();
+    let grouped = qwc(ctx, &names, Some(&weights))?;
+    Ok(HamiltonianGroups {
+        groups: grouped
+            .groups
+            .iter()
+            .map(|(basis, members)| (basis.clone(), members.iter().map(|&i| kept[i].clone()).collect()))
+            .collect(),
+        identity,
+    })
+}
+
+/// The coefficient one-norm bound on the standard error of a shot-based energy at `shots` per
+/// group: `sum |c_j| / sqrt(shots)` over the non-identity strings above `atol` (each `<P_j>` has
+/// variance at most one). `shots` below one counts as one.
+pub fn shot_noise(terms: &[(String, f64, f64)], shots: u64, atol: f64) -> Result<f64> {
+    if terms.iter().any(|(_, re, im)| !re.is_finite() || !im.is_finite()) {
+        return Err(invalid("Pauli coefficients must be finite"));
+    }
+    let norm: f64 = terms
+        .iter()
+        .filter(|(label, re, im)| re.hypot(*im) > atol && !label.bytes().all(|c| c == b'I'))
+        .map(|(_, re, im)| re.hypot(*im))
+        .sum();
+    Ok(norm / (shots.max(1) as f64).sqrt())
+}
+
+/// `(randomizations, shots per randomization)` of twirled circuit instances sharing `shots`, by
+/// the Runtime estimator's rule: both unset, `max(64, ceil(shots / 32))` shots per randomization
+/// and `ceil(shots / that)` randomizations; one given, the other `ceil(shots / given)`. Each is
+/// at least one.
+pub fn twirled_instances(
+    shots: u64,
+    randomizations: Option<u64>,
+    shots_per_randomization: Option<u64>,
+) -> Result<(u64, u64)> {
+    if randomizations == Some(0) || shots_per_randomization == Some(0) {
+        return Err(invalid("twirling needs at least one randomization and one shot per randomization"));
+    }
+    let (count, per) = match (randomizations, shots_per_randomization) {
+        (None, None) => {
+            let per = shots.div_ceil(32).max(64);
+            (shots.div_ceil(per), per)
+        }
+        (None, Some(per)) => (shots.div_ceil(per), per),
+        (Some(count), None) => (count, shots.div_ceil(count)),
+        (Some(count), Some(per)) => (count, per),
+    };
+    Ok((count.max(1), per.max(1)))
+}
+
+/// The positions in `labels` of each submission when their qubit-wise-commuting bases ([`qwc`])
+/// are split `max_bases` to a submission, whole bases only. No limit (`None` or zero), or one
+/// the bases fit in, gives one submission of every label in its order; no labels give none.
+pub fn basis_chunks(
+    ctx: &Context,
+    labels: &[String],
+    weights: Option<&[f64]>,
+    max_bases: Option<u64>,
+) -> Result<Vec<Vec<usize>>> {
+    if labels.is_empty() {
+        return Ok(Vec::new());
+    }
+    let whole = || vec![(0..labels.len()).collect::<Vec<_>>()];
+    let Some(limit) = max_bases.filter(|&v| v > 0) else {
+        labels_width(labels)?;
+        return Ok(whole());
+    };
+    let partition = qwc(ctx, labels, weights)?;
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    if partition.groups.len() <= limit {
+        return Ok(whole());
+    }
+    Ok(partition
+        .groups
+        .chunks(limit)
+        .map(|bases| bases.iter().flat_map(|(_, members)| members.iter().copied()).collect::<Vec<_>>())
+        .filter(|chunk| !chunk.is_empty())
+        .collect())
+}
+
+/// `(strings, bases)` of one batch of measurement requests: the Pauli strings of every request
+/// and the qubit-wise-commuting bases each request's strings need, summed over the requests (each
+/// request is its own circuit).
+pub fn batch_size(ctx: &Context, requests: &[Vec<String>]) -> Result<(u64, u64)> {
+    let mut strings = 0u64;
+    let mut bases = 0u64;
+    for labels in requests {
+        strings = strings.checked_add(labels.len() as u64).ok_or(Error::Overflow)?;
+        let groups = if labels.is_empty() { 0 } else { qwc(ctx, labels, None)?.groups.len() };
+        bases = bases.checked_add(groups as u64).ok_or(Error::Overflow)?;
+    }
+    Ok((strings, bases))
+}
+
+/// The run-budget check of `times` submissions of `per = (jobs, shots)` each after `used`:
+/// `(after, exceeded)`, `after` the totals once they are queued and `exceeded` every limit they
+/// pass as `(name, total, limit)` with the names `"jobs"` and `"total_shots"`. Nothing is
+/// recorded; a caller queues them only when `exceeded` is empty.
+#[allow(clippy::type_complexity)]
+pub fn budget_check(
+    used: (u64, u64),
+    per: (u64, u64),
+    times: u64,
+    limits: (Option<u64>, Option<u64>),
+) -> Result<((u64, u64), Vec<(&'static str, u64, u64)>)> {
+    let add = |base: u64, each: u64| {
+        each.checked_mul(times).and_then(|v| v.checked_add(base)).ok_or(Error::Overflow)
+    };
+    let after = (add(used.0, per.0)?, add(used.1, per.1)?);
+    let exceeded = [("jobs", after.0, limits.0), ("total_shots", after.1, limits.1)]
+        .into_iter()
+        .filter_map(|(name, total, limit)| limit.filter(|&l| total > l).map(|l| (name, total, l)))
+        .collect();
+    Ok((after, exceeded))
+}
+
+/// The standard error an Estimator targets at `shots` per circuit, `1 / sqrt(shots)`, and zero
+/// (exact) without shots.
+pub fn estimator_precision(shots: u64) -> f64 {
+    if shots == 0 { 0. } else { 1. / (shots as f64).sqrt() }
+}
+
+/// The memory, in GB, a matrix-product-state simulator holds for one job of `bases` measurement
+/// bases: measured 2026-11-09 at about 0.67 MB a basis (a 13,000-basis job of a 50-qubit register
+/// took 8.7 GB, against 0.35 GB at 100 bases).
+pub fn mps_job_gigabytes(bases: u64) -> f64 {
+    0.67e-3 * bases as f64
+}
+
+/// `<psi| P |psi>` of every Pauli string on a state of the whole `n`-qubit register (qubit zero
+/// the most significant bit of an amplitude's index): the exact values a state-vector simulator
+/// returns in place of shots.
+pub fn state_expectations(
+    ctx: &Context,
+    labels: &[String],
+    state: &[crate::quantum::C64],
+) -> Result<Vec<f64>> {
+    use crate::quantum::{Basis, Operator, C64};
+    let n = labels_width(labels)?;
+    if labels.is_empty() {
+        return Ok(Vec::new());
+    }
+    let basis = Basis::register(ctx, n)?;
+    if state.len() != basis.len() {
+        return Err(invalid("the state must cover the whole register of the strings"));
+    }
+    labels
+        .iter()
+        .map(|label| {
+            let operator = Operator::new(ctx, n, &[(label.clone(), C64::new(1., 0.))])?;
+            let image = operator.apply(ctx, &basis, state)?;
+            Ok(state.iter().zip(image.as_slice()).map(|(a, b)| (a.conj() * b).re).sum())
+        })
+        .collect()
+}
+
 pub struct RunLedger {
     pub usage: Usage,
     context: Context,

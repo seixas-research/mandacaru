@@ -387,9 +387,10 @@ class TestPBEDiracLibrary:
     def test_protactinium_is_built_on_bound_branches(self):
         """One 5f branch of Pa's scalar configuration is unbound in the Dirac
         atom; ``pbe-fr/`` builds it on 5f2 6d1 7s2, with a d channel and both
-        5f branches bound."""
+        5f branches bound. Since 2026-11-09 the file has the partition of its
+        scalar twin (6s6p semicore in valence, so a p channel too)."""
         pp = get_paw("Pa", paw_dataset=_pbe_dirac_library())
-        assert sorted(pp.channels) == [0, 2, 3]
+        assert sorted(pp.channels) == [0, 1, 2, 3]
         assert all(energy[0] < 0.0
                    for energy in pp.spin_orbit[3]["reference_energies"])
 

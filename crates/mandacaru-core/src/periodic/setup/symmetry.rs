@@ -355,12 +355,12 @@ fn grid_shift(t: &[f64; 3], geometry: &Geometry) -> Option<[i64; 3]> {
 }
 
 /// Integers `q` with `k = q / (2 N)` of the mesh points of `spectrum::mesh`.
-struct MeshIntegers {
+pub(crate) struct MeshIntegers {
     size: [i64; 3],
     points: HashSet<[i64; 3]>,
 }
 impl MeshIntegers {
-    fn new(size: [usize; 3], gamma: bool) -> Result<Self> {
+    pub(crate) fn new(size: [usize; 3], gamma: bool) -> Result<Self> {
         if size.contains(&0) {
             return Err(invalid("k-mesh dimensions must be positive"));
         }
@@ -379,7 +379,7 @@ impl MeshIntegers {
         Ok(Self { size: n, points })
     }
     /// Whether `k -> k W` sends every mesh point to a mesh point (modulo a reciprocal vector).
-    fn preserved_by(&self, w: &Matrix3<i32>) -> bool {
+    pub(crate) fn preserved_by(&self, w: &Matrix3<i32>) -> bool {
         let n = self.size;
         let common = n.iter().fold(1i128, |l, &v| lcm(l, v as i128));
         self.points.iter().all(|q| {

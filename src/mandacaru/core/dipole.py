@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from .. import _native
 from .mapping import Fermion, PauliSum, resolve_mapping
 
 
@@ -20,13 +21,11 @@ def electric_field_vector(direction: ArrayLike, strength: float) -> NDArray[np.f
     if (unit.shape != (3,) or not np.isrealobj(unit)
             or not np.all(np.isfinite(unit))):
         raise ValueError("field_direction must be a finite real Cartesian unit vector")
-    unit = unit.astype(float)
-    if not np.isclose(np.linalg.norm(unit), 1.0, rtol=0, atol=1e-8):
-        raise ValueError("field_direction must have unit norm")
     if (np.ndim(strength) != 0 or not np.isrealobj(strength)
             or not np.isfinite(strength) or strength < 0):
         raise ValueError("field_strength must be finite and nonnegative")
-    return float(strength) * unit
+    return np.array(_native.electric_field_vector(
+        [float(v) for v in unit], float(strength)), dtype=float)
 
 
 def electric_dipole_potential(
@@ -87,13 +86,10 @@ def electric_dipole_potential(
         field = electric_field_vector(field_direction, field_strength)
     elif field is None:
         field = (0.0, 0.0, 1.0)
-    positions = np.asarray(position_integrals, dtype=complex)
+    positions = np.ascontiguousarray(position_integrals, dtype=complex)
     if (positions.ndim != 3 or positions.shape[0] != 3
             or positions.shape[1] == 0 or positions.shape[1] != positions.shape[2]):
         raise ValueError("position_integrals must have shape (3, m, m), m > 0")
-    if not np.all(np.isfinite(positions)) or not np.allclose(
-            positions, positions.conj().swapaxes(1, 2), rtol=0, atol=1e-12):
-        raise ValueError("position_integrals must be finite and Hermitian")
     vectors = []
     for name, value in (("field", field), ("nuclear_dipole", nuclear_dipole)):
         array = np.asarray(value)
@@ -101,12 +97,13 @@ def electric_dipole_potential(
             raise ValueError(f"{name} must be a finite real Cartesian vector")
         vectors.append(array.astype(float))
     electric_field, nuclear = vectors
-    one_body = np.einsum("a,apq->pq", electric_field, positions)
-    if spatial_orbitals:
-        one_body = np.kron(np.eye(2), one_body)
+    # E . <p|r|q> (in alpha and beta blocks for spatial orbitals) and -E . mu_nuc, in Rust.
+    one_body, constant = _native.dipole_one_body(
+        positions, [float(v) for v in electric_field], [float(v) for v in nuclear],
+        spatial_orbitals=bool(spatial_orbitals))
     mapping = resolve_mapping(mapping)
     fermion = Fermion.from_integrals(one_body, tol=0)
-    fermion = fermion + Fermion({(): -float(electric_field @ nuclear)})
+    fermion = fermion + Fermion({(): constant})
     qubit = fermion.map_to_qubits(mapping, num_particles=num_particles)
     # Mapping an identically zero operator otherwise loses its register width.
     width = one_body.shape[0] - (2 if mapping == "parity_reduced" else 0)

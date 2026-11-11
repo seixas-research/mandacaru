@@ -363,9 +363,10 @@ def load_hamiltonian(path, format: str | None = None, *,
     snapshot = Context(**dict(resources or {})).read_snapshot(path, FORMAT_TAG)
     payload = json.loads(snapshot.json)
     n_qubits = int(payload["num_qubits"])
-    terms: dict[str, complex] = {}
-    for label, real, imag in payload["terms"]:
-        terms[label] = terms.get(label, 0j) + complex(float(real), float(imag))
+    from .._native import pauli_term_sum
+    summed = pauli_term_sum(
+        [(label, float(real), float(imag)) for label, real, imag in payload["terms"]])
+    terms = {label: complex(re, im) for label, re, im in summed}
     return HamiltonianRecord(
         hamiltonian=PauliSum(terms, num_qubits=n_qubits),
         mapping=payload["mapping"],

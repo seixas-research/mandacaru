@@ -118,13 +118,24 @@ class TestRefusals:
             calc.get_potential_energy()
             yield calc.native_reference
 
-    def test_an_open_shell_mp2_selection_is_refused(self, hydroxyl):
-        with pytest.raises(ValueError, match="closed-shell"):
-            hydroxyl.active_model(json.dumps(MP2_SPEC))
-        assert not hydroxyl.has_model
+    def test_an_open_shell_mp2_selection_ranks_the_true_virtuals(self, hydroxyl):
+        """Open-shell MP2 (the reference determinant in the UHF natural orbitals,
+        semicanonical spin partition; pinned against exact perturbation theory in
+        ``crates/mandacaru-core/tests/correlation_open_shell.rs``)."""
+        chosen = hydroxyl.active_model(json.dumps(MP2_SPEC))
+        n_alpha, n_beta = hydroxyl.num_particles
+        virtual = chosen.selection_occupations[max(n_alpha, n_beta):]
+        assert np.all(np.diff(virtual) <= 1e-14)
+        assert chosen.mp2_correlation_energy < 0
+        assert list(chosen.num_particles) == [n_alpha, n_beta]
+        with pytest.raises(ValueError, match="closed-shell only"):
+            hydroxyl.active_model(json.dumps({"orbitals": 6, "method": "dlpno-mp2"}))
 
-    def test_correlating_pairs_are_refused(self, system):
+    def test_correlating_pairs_keep_each_active_pair_together(self, system):
         _kind, reference, _selected, _no_tensor = system
-        with pytest.raises(ValueError, match="correlating_pairs"):
+        chosen = reference.active_model(json.dumps(
+            {"orbitals": 8, "correlating_pairs": True}))
+        assert len(chosen.orbital_indices) == 8
+        with pytest.raises(NotImplementedError, match="correlating_pairs together with symmetry"):
             reference.active_model(json.dumps(
-                {"orbitals": 8, "correlating_pairs": True}))
+                {"orbitals": 8, "correlating_pairs": True, "symmetry": True}))

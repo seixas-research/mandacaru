@@ -59,16 +59,29 @@ pub(crate) fn nodes_inside(r: &[f64], radius: f64) -> usize {
 
 /// `(X0 - V.D0, {l: V_l})`: the reference atom's one-center short-range semilocal
 /// exchange, linearized, in the hole model with screening `omega`
-/// (unpolarized valence densities). `X0 = E[n1] - E[n1~]`, `V_ij` the matrix
-/// elements of the exchange potentials of the all-electron and smooth densities.
+/// (unpolarized densities). `X0 = E[n1] - E[n1~ + n~_c]`, `V_ij` the matrix
+/// elements of the exchange potentials of the all-electron valence density and of the smooth
+/// valence density plus `smooth_core`.
+///
+/// The grid evaluates the short-range functional on the smooth valence density plus the smooth
+/// core of the nonlinear core correction, while the exact exchange it replaces is the valence
+/// electrons' only. The sphere therefore takes the whole smooth side off, core included, and
+/// restores the all-electron VALENCE density: grid plus spheres is then the valence short-range
+/// exchange `E[n_v]`, with no core self or core-valence term left over. (Putting the frozen core
+/// on the all-electron side would subtract core exchange nothing adds back.) `smooth_core` is
+/// the core the grid places: zeros without a nonlinear core correction.
 pub fn frozen_exchange_terms(
     ctx: &Context,
     r: &[f64],
+    smooth_core: &[f64],
     channels: &[Occupied<'_>],
     omega: f64,
     basis: Basis,
 ) -> Result<(f64, Vec<Block>)> {
     let grid = r.len();
+    if smooth_core.len() != grid {
+        return Err(invalid("the smooth core does not match the radial grid"));
+    }
     let channels = sorted(channels, grid)?;
     let shell = r.iter().map(|r| 4. * PI * r * r).collect::<Vec<_>>();
     let mut energy = [0.; 2];
@@ -85,6 +98,11 @@ pub fn frozen_exchange_terms(
                 for (n, w) in n.iter_mut().zip(wave) {
                     *n += occupation * w * w / (4. * PI);
                 }
+            }
+        }
+        if side == 1 {
+            for (n, core) in n.iter_mut().zip(smooth_core) {
+                *n += core;
             }
         }
         let slope = gradient_first_edge(r, &n)?;

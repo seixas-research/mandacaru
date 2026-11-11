@@ -18,12 +18,12 @@ def geometry_from_atoms(atoms):
 
 def atoms_from_geometry(geometry):
     native = geometry.native()
-    from ..units import BOHR_TO_ANGSTROM
+    from ..units import to_angstrom
 
     atoms = Atoms(
         numbers=native.numbers,
-        positions=native.positions_bohr * BOHR_TO_ANGSTROM,
-        cell=native.cell_bohr * BOHR_TO_ANGSTROM,
+        positions=to_angstrom(native.positions_bohr),
+        cell=to_angstrom(native.cell_bohr),
         pbc=native.pbc,
     )
     atoms.set_initial_magnetic_moments(geometry.magnetic_moments)

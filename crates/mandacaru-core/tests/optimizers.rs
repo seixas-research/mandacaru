@@ -377,3 +377,91 @@ fn convergence_needs_patience_calm_steps_a_finite_cost_and_works_without_paramet
     assert!(result.success && result.history.len() == 1, "{}", result.message);
     assert_eq!(ctx.memory_used(), 0);
 }
+
+/// `f = 0.5 x' A x + b' x` on three parameters, `A` coupled.
+fn coupled_quadratic(x: &[f64]) -> mandacaru_core::Result<(f64, Vec<f64>)> {
+    const A: [[f64; 3]; 3] = [[4., 1., 0.5], [1., 3., -0.4], [0.5, -0.4, 2.]];
+    const B: [f64; 3] = [1., -2., 0.5];
+    let gradient: Vec<f64> = (0..3)
+        .map(|i| (0..3).map(|j| A[i][j] * x[j]).sum::<f64>() + B[i])
+        .collect();
+    let energy = 0.5 * x.iter().zip(&gradient).map(|(x, g)| x * g).sum::<f64>()
+        + 0.5 * x.iter().zip(&B).map(|(x, b)| x * b).sum::<f64>();
+    Ok((energy, gradient))
+}
+
+#[test]
+fn slsqp_returns_its_hessian_and_restarts_from_it() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let options = Options {
+        method: Method::Slsqp,
+        tolerance: Some(1e-12),
+        ..Default::default()
+    };
+    let cold = optimizer::minimize(&ctx, &[0.3, -0.2, 0.1], &options, coupled_quadratic).unwrap();
+    let hessian = cold.hessian.clone().expect("SLSQP returns its Hessian approximation");
+    assert_eq!(hessian.len(), 9);
+    for i in 0..3 {
+        for j in 0..i {
+            assert_eq!(hessian[i * 3 + j], hessian[j * 3 + i], "the approximation is symmetric");
+        }
+    }
+    // Started at a displaced point with the learned curvature, the quadratic is solved in the
+    // fewest steps; from the identity it takes more.
+    let start = [1.1, 0.7, -0.9];
+    let warm = optimizer::minimize_from(&ctx, &start, &options, Some(&hessian), coupled_quadratic).unwrap();
+    let identity = optimizer::minimize(&ctx, &start, &options, coupled_quadratic).unwrap();
+    assert!(warm.success && identity.success);
+    assert!(warm.history.len() < identity.history.len(), "{} vs {}", warm.history.len(), identity.history.len());
+    assert!((warm.energy - identity.energy).abs() < 1e-10);
+    // The identity is the default: an explicit one is the same run, bit for bit.
+    let explicit: Vec<f64> = (0..9).map(|k| if k % 4 == 0 { 1. } else { 0. }).collect();
+    let same = optimizer::minimize_from(&ctx, &start, &options, Some(&explicit), coupled_quadratic).unwrap();
+    assert_eq!(same.history, identity.history);
+    assert_eq!(same.parameters, identity.parameters);
+    // No other method but BFGS keeps one, and one given to it is refused, not ignored.
+    for method in [Method::Lbfgs, Method::Cg, Method::Cobyla, Method::NelderMead, Method::Spsa] {
+        let other = Options { method, ..options.clone() };
+        let out = optimizer::minimize(&ctx, &start, &other, coupled_quadratic).unwrap();
+        assert!(out.hessian.is_none(), "{method:?}");
+        assert!(optimizer::minimize_from(&ctx, &start, &other, Some(&hessian), coupled_quadratic).is_err(), "{method:?}");
+    }
+    // A Hessian of the wrong size or with a nonfinite entry is refused.
+    assert!(optimizer::minimize_from(&ctx, &start, &options, Some(&hessian[..4]), coupled_quadratic).is_err());
+    let mut bad = hessian.clone();
+    bad[1] = f64::NAN;
+    assert!(optimizer::minimize_from(&ctx, &start, &options, Some(&bad), coupled_quadratic).is_err());
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn bfgs_returns_its_inverse_hessian_and_restarts_from_it() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let options = Options {
+        method: Method::Bfgs,
+        tolerance: Some(1e-12),
+        max_iterations: 2000,
+        ..Default::default()
+    };
+    let cold = optimizer::minimize(&ctx, &[0.3, -0.2, 0.1], &options, coupled_quadratic).unwrap();
+    let inverse = cold.hessian.clone().expect("BFGS returns its inverse Hessian approximation");
+    assert_eq!(inverse.len(), 9);
+    // The estimate is symmetric with a positive diagonal (an inverse Hessian approximation).
+    for i in 0..3 {
+        assert!(inverse[i * 3 + i] > 0.);
+        for j in 0..i {
+            assert!((inverse[i * 3 + j] - inverse[j * 3 + i]).abs() < 1e-12);
+        }
+    }
+    let start = [1.1, 0.7, -0.9];
+    let warm = optimizer::minimize_from(&ctx, &start, &options, Some(&inverse), coupled_quadratic).unwrap();
+    let identity = optimizer::minimize(&ctx, &start, &options, coupled_quadratic).unwrap();
+    assert!(warm.success && identity.success);
+    assert!(warm.history.len() < identity.history.len(), "{} vs {}", warm.history.len(), identity.history.len());
+    let explicit: Vec<f64> = (0..9).map(|k| if k % 4 == 0 { 1. } else { 0. }).collect();
+    let same = optimizer::minimize_from(&ctx, &start, &options, Some(&explicit), coupled_quadratic).unwrap();
+    assert_eq!(same.history, identity.history);
+    assert_eq!(same.parameters, identity.parameters);
+    assert!(optimizer::minimize_from(&ctx, &start, &options, Some(&inverse[..4]), coupled_quadratic).is_err());
+    assert_eq!(ctx.memory_used(), 0);
+}

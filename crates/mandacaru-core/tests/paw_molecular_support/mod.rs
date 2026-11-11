@@ -154,7 +154,17 @@ pub fn molecule(
     basis_kind: &str,
     shells: &[Shell],
 ) -> MolecularIntegrals {
-    molecule_with(ctx, numbers, positions, cell, spacing, parts, basis_kind, shells, &[])
+    molecule_with(
+        ctx,
+        numbers,
+        positions,
+        cell,
+        spacing,
+        parts,
+        basis_kind,
+        shells,
+        &[],
+    )
 }
 
 /// [`molecule`] with `extra` metadata keys (for example `("spin_orbit", true)`).

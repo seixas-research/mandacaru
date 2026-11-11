@@ -49,6 +49,7 @@ pub(super) fn minimize(
                 "iteration budget exhausted"
             }
             .into(),
+            hessian: None,
             interrupted: None,
         });
     }
@@ -256,6 +257,7 @@ pub(super) fn minimize(
         steps,
         success,
         message,
+        hessian: None,
         interrupted: None,
     })
 }

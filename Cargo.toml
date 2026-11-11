@@ -4,7 +4,7 @@ default-members = ["crates/mandacaru-core", "crates/mandacaru-kernels"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "26.11.17"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -18,6 +18,9 @@ serde_json = { version = "1.0", features = ["float_roundtrip"] }
 nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 rustfft = "6.4"
 libm = "0.2"
+# The persistent worker pool of a calculation context (`Context::pool`): the threaded state-vector
+# kernels of the variational methods (owner decision 2026-11-10).
+rayon = "1.10"
 ruzstd = { version = "=0.8.1", default-features = false, features = ["std"] }
 pyo3 = { version = "0.30", features = ["extension-module"] }
 numpy = "0.30"

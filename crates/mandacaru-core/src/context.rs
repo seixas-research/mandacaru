@@ -37,6 +37,8 @@ pub struct Context {
     workers: Arc<WorkerStats>,
     execution: Arc<Mutex<()>>,
     scratch: Arc<ScratchDir>,
+    /// The persistent worker pool of the threaded kernels, built on first use ([`Context::pool`]).
+    pool: Arc<std::sync::OnceLock<Option<rayon::ThreadPool>>>,
 }
 
 #[derive(Debug)]
@@ -145,7 +147,26 @@ impl Context {
             workers: Arc::default(),
             execution: Arc::default(),
             scratch: Arc::new(ScratchDir::with_base(scratch_parent)),
+            pool: Arc::default(),
         })
+    }
+    /// The calculation's persistent pool of `threads` workers, built on its first parallel action
+    /// and shared by every clone of this context; `None` for a one-thread context, or when the
+    /// operating system refuses the threads. A kernel then runs on the calling thread, with the
+    /// same numbers: every threaded kernel computes each row or block in a fixed order.
+    pub(crate) fn pool(&self) -> Option<&rayon::ThreadPool> {
+        if self.threads == 1 {
+            return None;
+        }
+        self.pool
+            .get_or_init(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(self.threads)
+                    .thread_name(|i| format!("mandacaru-worker-{i}"))
+                    .build()
+                    .ok()
+            })
+            .as_ref()
     }
     pub fn threads(&self) -> usize {
         self.threads

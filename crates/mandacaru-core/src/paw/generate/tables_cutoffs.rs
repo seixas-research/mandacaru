@@ -68,8 +68,11 @@ const BY_DATASET: &[(&str, &str, Radii)] = &[
     ("Bi", "pbe", &[(0, 2.294), (1, 3.183), (2, 2.2), (3, 3.183)]),
     ("Br", "lda", &[(0, 1.829), (1, 2.159), (2, 1.006)]),
     ("Br", "pbe", &[(0, 1.839), (1, 2.171), (2, 1.009)]),
-    ("Cr", "lda", &[(0, 3.376), (2, 1.062)]),
-    ("Cr", "pbe", &[(0, 3.409), (2, 1.068)]),
+    // Cr (2026-11-10): the 1.06 Bohr d sphere kept 1.15 Ha above q_cut and left no working grid
+    // spacing; the 3.38-3.41 Bohr s sphere held the H of a 1.70 Angstrom Cr-H bond. At s 2.9 and
+    // d 2.0 Bohr every gate passes (d 0.016 Ha, working spacing 0.12 Angstrom).
+    ("Cr", "lda", &[(0, 2.9), (2, 2.0)]),
+    ("Cr", "pbe", &[(0, 2.9), (2, 2.0)]),
     ("Cs", "lda", &[(0, 3.0), (1, 3.0), (2, 3.0), (3, 3.0)]),
     ("Cs", "pbe", &[(0, 3.0), (1, 3.0), (2, 3.0), (3, 3.0)]),
     ("Ga", "lda", &[(0, 2.4425), (1, 3.2799), (2, 2.6)]),

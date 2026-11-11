@@ -65,20 +65,20 @@ class TestTheSupercellHamiltonian:
 
     @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
     def test_the_two_cell_energy_is_pinned(self, method):
-        """Measured 2026-11-09: -12.422242881249 eV per cell for both solvers.
-
-        The old periodic engine (removed in the Rust cutover) pinned -12.4222428989 on this
-        case; the native supercell reproduces it to 2e-8 eV (`test/migration`).
+        """Measured 2026-11-10: -13.382786723210 eV per cell for both solvers, the exact
+        ground state of the band-limited supercell Hamiltonian. It was -12.422242881249 on
+        the point-sampled Hamiltonian, which reproduced the removed periodic engine and depended
+        on where the atom sat on the grid; see ``test/migration/test_native_bloch.py``.
         """
         energy = solved(method).get_potential_energy()
-        assert energy == pytest.approx(-12.422242881249, abs=1e-7)
+        assert energy == pytest.approx(-13.382786723210, abs=1e-7)
 
     def test_the_variational_energy_is_the_exact_ground_state_at_four_qubits(self):
         calc = solved().calc
         assert calc.results["energy"] == pytest.approx(exact_per_cell(calc, 2, 2), abs=1e-8)
 
     def test_it_is_not_the_isolated_cluster(self):
-        """The lattice sums differ from the box: the cluster gave -12.0319 eV per cell."""
+        """The lattice sums differ from the box: the isolated cluster gave -12.0319 eV per cell."""
         assert abs(solved().get_potential_energy() - -12.031915584357828) > 0.3
 
 
@@ -177,14 +177,15 @@ class TestTheArchitectureSearches:
     the chain with a learned proposal. Measured 2026-11-10 on seeds 0-4: every run of both
     methods reaches the exact ground state of the 2-cell (4 qubits) and the 3-cell (6 qubits)
     chain; at 4 cells (8 qubits, fermionic pool) all ten runs give -11.26294664 eV per cell, a
-    spread of 1.8e-15 eV."""
+    spread of 1.8e-15 eV. Re-measured on the band-limited Hamiltonian (2026-11-10): VASQA seeds
+    0-4 give -12.382599787021714 eV per cell at 4 cells, spread 1e-15 eV."""
 
     @pytest.mark.parametrize("method", ["vasqa", "valsqa"])
     @pytest.mark.parametrize("seed", [0, 3])
     def test_the_two_cell_chain_reaches_the_exact_ground_state(self, method, seed):
         calc = solved(method, seed=seed).calc
         assert calc.results["energy"] == pytest.approx(exact_per_cell(calc, 2, 2), abs=1e-8)
-        assert calc.results["energy"] == pytest.approx(-12.422242881249, abs=1e-7)
+        assert calc.results["energy"] == pytest.approx(-13.382786723210, abs=1e-7)
 
     @pytest.mark.parametrize("method", ["vasqa", "valsqa"])
     def test_the_three_cell_chain_reaches_the_exact_ground_state(self, method):

@@ -135,8 +135,9 @@ It is opt-in and sampled:
 * An ADAPT-VQE step measures every pool gradient in one batch, and the Estimator builds a
   circuit per basis. At 50 qubits with one alpha and one beta electron the `"fermionic"` pool
   needs about 13,000 bases (the default `"ceo"` pool is generalized over every spin-orbital
-  quadruple and needs millions of observables there; name `pool="fermionic"` or `"qeb"` for a
-  register this wide): one job of them took 124 s and 8.7 GB, and `max_bases_per_job=100` brought the same
+  quadruple and needs millions of observables there: the default budget refuses it in seconds,
+  before it plans anything, naming the pool, its size and the way out; name `pool="fermionic"`
+  or `"qeb"` for a register this wide): one job of them took 124 s and 8.7 GB, and `max_bases_per_job=100` brought the same
   run to 17 s and 0.35 GB with the same energy. A job of more than 1,000 bases (about
   0.7 GB) is therefore refused before anything is simulated: pass
   `backend_options={"max_bases_per_job": 100}` or similar. Pass `measurement_budget`
