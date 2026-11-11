@@ -10,6 +10,8 @@ pub mod index;
 pub mod isosurface;
 pub mod lattice;
 pub mod linalg;
+pub mod numpy_rules;
+pub mod peaks;
 pub mod projection;
 pub mod radial;
 pub mod random;
@@ -22,6 +24,7 @@ pub mod spline;
 pub mod symmetric_solve;
 pub mod storage;
 pub mod symmetry;
+pub mod viewer;
 pub mod wigner_seitz;
 
 pub use grid::SpatialGrid;

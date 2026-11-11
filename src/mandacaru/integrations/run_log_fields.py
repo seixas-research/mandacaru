@@ -231,19 +231,67 @@ def scf_rows(driver, snapshot):
             for iteration, energy, delta, residual in snapshot["history"]]
 
 
-def lineage(driver):
-    """``(fields, start_energy)`` of a resumed run; ``({}, None)`` for a fresh one."""
+#: Operator labels a ``start_operators`` line names before it counts the rest.
+START_OPERATORS_SHOWN = 8
+
+
+def lineage(driver, result=None):
+    """``(fields, start_energy)`` of a run that did not start from the reference.
+
+    A resumed run says what it was restored from, and its first ``dE`` is measured
+    from the restored energy (``start_energy``). A search with ``transfer=True`` says
+    whether its chain started from the previous geometry's ansatz or from the empty
+    sequence, and why; its table measures nothing from that energy, so the second item
+    is ``None``. A fresh run, or a search without ``transfer``, has no lineage.
+    """
     resumed = driver._resume_lineage
-    if resumed is None:
+    if resumed is not None:
+        unit = "Ha" if driver._atomic_units else "eV"
+        energy = _native.energy_from_hartree(float(resumed["energy_ha"]), unit)
+        return ({"resumed_from": str(driver._resume_path),
+                 "restored_operators": resumed["num_operators"],
+                 "restored_parameters": resumed["num_parameters"],
+                 f"restored_energy_{unit}": f"{energy:.10f}",
+                 # The native resume raises on any mismatch, so this is a checked fact.
+                 "resume_same_hamiltonian": True}, energy)
+    if driver._search is None or result is None:
         return {}, None
-    unit = "Ha" if driver._atomic_units else "eV"
-    energy = _native.energy_from_hartree(float(resumed["energy_ha"]), unit)
-    return ({"resumed_from": str(driver._resume_path),
-             "restored_operators": resumed["num_operators"],
-             "restored_parameters": resumed["num_parameters"],
-             f"restored_energy_{unit}": f"{energy:.10f}",
-             # The native resume raises on any mismatch, so this is a checked fact.
-             "resume_same_hamiltonian": True}, energy)
+    return _transfer_start(driver, result), None
+
+
+def _transfer_start(driver, result):
+    """The ``start`` lines of a search that asked for ``transfer=True``.
+
+    ``result.transfer`` already says whether the carried ansatz survived its
+    relaxation (``accepted``) and why it did not (``reason``). The overlap confidence
+    is a measurement, so it is written whenever the native comparison ran; the
+    placeholder of a first geometry has no ``indices`` and writes none. The start
+    energy is the relaxed energy of the carried ansatz: an empty start's energy is the
+    reference energy, which the block already owns.
+    """
+    carried = result.transfer
+    if not carried:
+        return {}
+    fields = {}
+    if carried["accepted"]:
+        count = len(carried["indices"])
+        fields["start"] = f"transferred ansatz ({count} operator{'' if count == 1 else 's'})"
+    else:
+        fields["start"] = f"empty ({' '.join(str(carried['reason']).split())})"
+    if "indices" in carried:
+        fields["transfer_confidence"] = f"{carried['confidence']:.10f}"
+    relaxation = result._raw.get("seed_relaxation")
+    if carried["accepted"]:
+        if relaxation is not None:
+            unit = result.energy_unit
+            fields[f"start_energy_{unit}"] = (
+                f"{_native.energy_from_hartree(float(relaxation['energy_ha']), unit):.10f}")
+        labels = result._problem.pool_labels
+        names = [labels[i] for i in carried["indices"]]
+        shown = " ".join(names[:START_OPERATORS_SHOWN])
+        more = len(names) - START_OPERATORS_SHOWN
+        fields["start_operators"] = shown + (f" (+{more} more)" if more > 0 else "")
+    return fields
 
 
 def backend_text(driver, problem):
@@ -259,7 +307,7 @@ def backend_text(driver, problem):
 
 
 def optimizer_setup(driver, result):
-    """The pool, the state-vector backend and the device lines of ``[OPTIMIZATION SETUP]``."""
+    """The pool, the search or growth lines, the backend and the device lines of ``[OPTIMIZATION SETUP]``."""
     problem = driver.problem
     extra = {"pool": driver._pool,
              "pool_class": _native.pool_kind(driver._pool),
@@ -267,11 +315,14 @@ def optimizer_setup(driver, result):
     if (driver._precision == "float32" and driver._optimizer.get("tol") is not None
             and not driver._execute_circuits):
         extra["optimizer_tolerance"] = f"{driver._optimizer['tol']:g} Ha"
-    # `quenching=False` is accepted by vqe and adapt-vqe only; every other method re-optimizes all.
-    extra["reoptimize_all_parameters"] = driver._quenching
-    extra["growth"] = ("tetris (disjoint-support operators per step)" if driver._tetris
-                       else "single (largest gradient)")
-    extra["pruning"] = "on" if driver._prune else "off"
+    if driver._search is not None:
+        extra.update(search_setup(driver, result))
+    else:
+        # `quenching=False` is accepted by vqe and adapt-vqe only; every other method re-optimizes all.
+        extra["reoptimize_all_parameters"] = driver._quenching
+        extra["growth"] = ("tetris (disjoint-support operators per step)" if driver._tetris
+                           else "single (largest gradient)")
+        extra["pruning"] = "on" if driver._prune else "off"
     extra["state_vector_backend"] = backend_text(driver, problem)
     extra["device"] = driver._device
     extra["backend_provider"] = "none" if driver.provider is None else driver.provider.name
@@ -279,3 +330,62 @@ def optimizer_setup(driver, result):
     extra["shots"] = (f"{driver._shots} (sampled expectation values)" if driver._shots
                       else "0 (exact expectation values)")
     return extra
+
+
+def search_setup(driver, result):
+    """The controls of a ``vasqa`` or ``valsqa`` chain, as the native search received them.
+
+    Each is read from ``driver._search`` (the validated options, with the seed the run
+    drew when none was given) and written in the log's energy unit; the search runs in
+    Hartree. ``transfer_threshold`` and ``transfer_steps`` are the options of a run that
+    asked for ``transfer=True``: what the transfer did is the lineage's.
+    """
+    search = driver._search
+    unit = result.energy_unit
+
+    def convert(value):
+        return _native.energy_from_hartree(float(value), unit)
+
+    weights = ", ".join(f"{name} {weight:g}" for name, weight
+                        in zip(("insert", "delete", "replace"), search["move_weights"]))
+    initial, final = search["temperatures"]
+    extra = {"max_steps": search["max_steps"],
+             "max_length": search["max_length"],
+             "move_weights": weights,
+             f"temperature_initial_{unit}": f"{convert(initial):.10g}",
+             f"temperature_final_{unit}": f"{convert(final):.10g}",
+             f"length_penalty_{unit}": f"{convert(search['length_penalty']):.10g}",
+             "proposal": search["proposal"],
+             "proposal_temperature": f"{search['proposal_temperature']:g}"}
+    if driver.method == "valsqa":
+        extra["proposal_model"] = (
+            f"{'ready' if result.proposal_ready else 'not used'} ({result.proposal_reason})")
+        update = result._raw.get("model_update")
+        if update is not None:
+            extra["proposal_model_update"] = update
+    extra["warm_start"] = search["warm_start"]
+    extra["replace_start"] = search["replace_start"]
+    extra["screen_insertions"] = search["screen_insertions"]
+    if driver._search_record is not None:
+        extra["record_directory"] = str(driver._search_record)
+    extra["seed"] = search["seed"]
+    if driver._transfer:
+        extra["transfer_threshold"] = f"{driver._transfer_threshold:g}"
+        if driver._transfer_steps is not None:
+            extra["transfer_steps"] = driver._transfer_steps
+    return extra
+
+
+def search_summary(result):
+    """The lines a search adds to the summary: what the chain did, not how it was set.
+
+    ``final_energy`` is the energy of the state the chain ended on, which is not the
+    ``optimal_energy`` when the best ansatz came earlier (or when ``length_penalty``
+    made a shorter one the optimum). ``acceptance_by_move`` is accepted over proposed.
+    """
+    unit = result.energy_unit
+    moves = ", ".join(f"{name} {taken}/{tried}"
+                      for name, (taken, tried) in result.acceptance_by_move.items())
+    return {f"final_energy_{unit}": f"{result.final_energy:.10f}",
+            "acceptance_by_move": moves,
+            "num_architectures": result.num_architectures}

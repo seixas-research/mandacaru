@@ -73,7 +73,8 @@ references. Its thread setting never changes a global worker pool or BLAS
 setting. The variational methods use it too: on a large state vector the
 Hamiltonian action, the excitation rotations and adjoint gradients of the
 product ansatz, and the ADAPT-VQE pool screening split across that many
-threads, and every number they return is the same whatever the thread count. Scratch is created lazily in a unique temporary directory, optionally
+threads, and every number they return is the same whatever the thread count.
+Scratch is created lazily in a unique temporary directory, optionally
 beneath `resources={"scratch_dir": ...}`, and closing the calculator deletes only
 that directory. There is no automatic `.mandacaru/` workspace.
 
@@ -93,7 +94,7 @@ retains its original context, so configure that context at its origin.
 | --- | --- | --- |
 | Molecular mean field | RHF, UHF, GHF | Gradients need real collinear orbitals and spectral kinetic energy; none for GHF |
 | Molecular PAW | HF, semilocal Kohn–Sham and variational methods, exact valence one-center terms, RHF/UHF/KS forces, smooth fields and augmentation-charge accounting; on a spin-orbit dataset (`lda-fr`, `pbe-fr`), spinor (noncollinear) Kohn–Sham with the PAW spin-orbit projector term for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`, with analytic forces; the reference state is a `ghf`-shaped spinor state carrying the functional | Frozen-core exchange for an empty or single closed-1s core only; a molecule on a spin-orbit dataset needs `method="dft"` (every other method raises `NotImplementedError`) and takes no DFT+U; no PAW forces for spinor Hartree–Fock; no stress for a molecule |
-| Molecular DFT | `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10`, `r2scan+rvv10` | Forces: analytic for all-electron bases, a fixed-density finite difference for PAW-LCAO (including HSE06, [Forces](forces_relaxation.md)) |
+| Molecular DFT | `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10`, `r2scan+rvv10` | Forces: analytic for all-electron and PAW-LCAO bases (HSE06 and the rVV10 pairings included, [Forces](forces_relaxation.md)) |
 | Periodic DFT | LDA, PBE, r²SCAN, HSE06 (always on the whole k mesh) and rVV10 pairings, occupations, spectra, analytic forces and stress (Rust, rVV10 included); DFT+U on one `d` or `f` shell per element (Dudarev or Liechtenstein, fully localized limit, linear-response U, on a symmetry-reduced k mesh; analytic forces and stress; [DFT+U](dft_u.md)) | The crystal is built entirely in Rust; DFT+U needs a scalar-relativistic dataset and a semilocal functional, and its forces and stress raise for a hybrid |
 | Quantum methods | UCCSD and HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspace searches, VASQA and VALSQA with their ranker and graph proposal models, Z2 tapering and the double-factorized two-body representation | Other ansätze and the GHF quantum handoff remain unported |
 | Correlation | Closed-shell and open-shell MP2/FNO active spaces, thresholds, frozen cores and correlating-pair constraints | `dlpno-mp2` is closed shell only; correlating pairs do not combine with symmetry-preserving selection |
@@ -102,8 +103,10 @@ retains its original context, so configure that context at its origin.
 Unsupported combinations raise errors. What is planned but not yet available is
 collected in [not yet available](#not-yet-available), and the
 [audit](../development/native_cutover.md) records the remaining scientific Python
-modules. A complete exchange–correlation catalog is not enabled. A checkpoint supplies a compatible warm start; it does not restore an
-optimizer Hessian or a partially completed iteration.
+modules. A complete exchange–correlation catalog is not enabled. A checkpoint
+supplies a compatible warm start and, for SLSQP and BFGS, the optimizer's
+curvature estimate ([checkpoints](checkpoints_qpe.md)); it does not restore a
+partially completed iteration.
 
 (native-parquet)=
 ## Parquet files

@@ -207,8 +207,11 @@ fn the_hybrid_force_follows_the_scf_residual() {
         misses[0] > 2. * PLAN_GATE && misses[0] > 100. * misses[2],
         "the loose state is not outside the gate: {misses:?}"
     );
-    assert!(misses[0] > misses[1] && misses[1] > misses[2], "{misses:?}");
-    assert!(misses[2] < PLAN_GATE);
+    // The two tight states are at the floor of the oracle (re-frozen 2026-11-10: 3.4e-6, 4.1e-9,
+    // 7.0e-9 Ha/Bohr, the last two the same to the oracle's accuracy), so only the loose state
+    // is ordered against them.
+    assert!(misses[0] > 100. * misses[1].max(misses[2]), "{misses:?}");
+    assert!(misses[1] < PLAN_GATE && misses[2] < PLAN_GATE, "{misses:?}");
 }
 
 /// The hybrid Si miss at the oracle tolerances (1.4e-8 Ha/Bohr, 0.07 gates) against a state

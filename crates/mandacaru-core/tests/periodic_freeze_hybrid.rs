@@ -18,6 +18,10 @@
 //!     analytic stress by a term proportional to the strain derivative of that step, 4e-6 eV/A^3
 //!     in the zz stress of the skew LiH cell.
 //!
+//! The base `free_energy_ha` is the SCF of the frozen SNAPSHOT (what the tests solve and compare
+//! with at 1e-9 Ha); the live setup differs from a snapshot frozen on an earlier day by a
+//! constant of a few 1e-9 Ha (LiH 3.3e-9), which cancels in every difference.
+//!
 //! Every SCF energy is appended to `<case>.energies.jsonl` in `MANDACARU_FREEZE_WORK` as it is
 //! found, so an interrupted run resumes; the manifest is rewritten (its keys sorted) when all are
 //! in. One SCF at a time, one thread.
@@ -28,6 +32,9 @@
 //!   cargo test --profile release-test -p mandacaru-core --test periodic_freeze_hybrid -- --ignored --nocapture
 //! ```
 //! `KIND` is `gradient` or `strain`; `CASE` the manifest name (`si_hsefr_tr3_b`, ...).
+mod periodic_gradient_crystals_support;
+mod periodic_stress_crystals_support;
+
 use mandacaru_core::{
     paw::{digest::sha256_file, record::PawDataset},
     periodic::{
@@ -261,8 +268,27 @@ fn refreeze_a_hybrid_crystal_oracle() {
     let start = Instant::now();
     let old_energy = manifest["free_energy_ha"].as_f64().unwrap();
     let base = case.setup(None);
-    let energy = ledger.get("base", &|| free_energy(&case, &base, &options));
-    println!("{name}: free energy {old_energy:.12} -> {energy:.12}");
+    // The frozen snapshot, built by the setup of the day it was frozen, differs from the live
+    // setup by a constant at the 1e-9 Ha level (3.3e-9 for LiH): the SCF-energy gate of the tests
+    // solves the snapshot, so the base free energy is the snapshot's, and the displaced and
+    // strained energies (which only the live setup can build) carry the constant, which cancels
+    // in every difference.
+    let live = ledger.get("base", &|| free_energy(&case, &base, &options));
+    let energy = ledger.get("base_snapshot", &|| {
+        let leaked: &'static str = Box::leak(name.clone().into_boxed_str());
+        let data = if kind == "gradient" {
+            periodic_gradient_crystals_support::Data::load(leaked)
+        } else {
+            periodic_stress_crystals_support::load(leaked)
+        };
+        let result = data.crystal.solve(&options).unwrap();
+        assert!(result.converged, "the snapshot SCF does not converge");
+        result.free_energy
+    });
+    println!(
+        "{name}: free energy {old_energy:.12} -> {energy:.12} (live setup {live:.12}, {:+.3e})",
+        live - energy
+    );
     manifest["free_energy_ha"] = json!(energy);
 
     if kind == "gradient" {
@@ -336,9 +362,11 @@ fn refreeze_a_hybrid_crystal_oracle() {
         iso["floor_extrapolated"] = json!(extrapolated);
         iso["free_energies_ha"] = energies;
     }
-    manifest["seconds"] = json!(start.elapsed().as_secs_f64());
+    // The wall time of a run resumed from its ledger says nothing about the oracle: not recorded.
+    manifest.as_object_mut().unwrap().remove("seconds");
     manifest["refrozen_2026_11_10"] = json!(format!(
-        "HSE06 smooth-core offset fix: re-frozen on the Rust energy by periodic_freeze_hybrid.rs; free energy {old_energy} -> {energy}"
+        "HSE06 smooth-core offset fix: re-frozen on the Rust energy by periodic_freeze_hybrid.rs; free energy {old_energy} -> {energy} (snapshot SCF; the live setup is {:+.3e} Ha from it)",
+        live - energy
     ));
     std::fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
     println!("{name}: written, {:.0} s", start.elapsed().as_secs_f64());

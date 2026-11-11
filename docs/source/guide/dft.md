@@ -230,14 +230,22 @@ two-component spinor calculations with spin-orbit coupling). The exact exchange 
 the listed $k$-points, so a hybrid crystal always runs on the **whole** $k$ mesh: the setup
 neither reduces it by space-group symmetry (whatever `symmetry` says) nor halves it by time
 reversal, with or without spin-orbit coupling. A wedge costs fewer points, so a hybrid on a
-crystal with symmetry takes more k-points than the same semilocal run. PAW geometry
-and dataset assembly still go through a Python adapter. Forces and stress of crystals are computed via `atoms.get_forces()` and
+crystal with symmetry takes more k-points than the same semilocal run. The crystal
+setup (PAW geometry and dataset assembly) is built in Rust. Forces and stress of crystals are computed via `atoms.get_forces()` and
 `atoms.get_stress()` as analytic Rust gradients of the converged Kohn–Sham state: forces for LDA,
 PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling, and stress
 for the same functionals (for a hybrid the analytic force and stress carry the one-center
 screened and compensation terms; the rVV10 stress adds the strain derivative of the nonlocal
 kernel's wave numbers to the semilocal terms). The forces and stress of a DFT+U crystal with a
 hybrid or a spin-orbit dataset raise `NotImplementedError` naming the cause.
+
+The stress is the strain derivative of the energy at the discretization of the
+unstrained cell: the grid node counts, the ion width (1.4 times the coarsest grid
+step) and the basis stay fixed. A variable-cell relaxation re-meshes each strained
+cell from `grid_spacing`, so the energy surface it follows differs from the one the
+stress differentiates by that re-meshing: 5e-6 eV/Å³ measured on Si with HSE06 and
+2.8e-5 eV/Å³ on a skew AlH cell. Converge `grid_spacing` until that is small next to
+the stress you want to resolve.
 
 A hybrid crystal is built from its PAW spheres. The setup records the atom centers,
 the projector basis and, per atom, the dataset file with its SHA-256 digest; Rust

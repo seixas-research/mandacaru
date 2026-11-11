@@ -556,9 +556,11 @@ class Logger:
         is: the **classical optimizer** and its budget, the **convergence
         criteria** and the **screening gradient** -- how it is computed,
         against which threshold and in which unit -- then the driver's own
-        settings (``extra``: the operator pool, the fixed ansatz), the **loop's
+        settings (``extra``: the operator pool, the fixed ansatz, a search's
+        controls), the **loop's
         starting point** with the energy threshold in its unit, and last the
-        run's **lineage** (``lineage``; what a resumed run was restored from).
+        run's **lineage** (``lineage``; what a resumed run was restored from, or
+        whether a search started from the previous geometry's ansatz).
 
         ``convergence`` is the calculator's dict: ``"gradient"`` in Hartree per
         radian and ``"energy"`` in eV, either absent or ``None`` for a criterion

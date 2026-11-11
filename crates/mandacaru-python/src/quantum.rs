@@ -184,6 +184,12 @@ pub fn state_norm_squared(state: &Bound<'_, PyAny>) -> PyResult<f64> {
     read_state!(state, values => Ok(mandacaru_core::quantum::amplitude::norm_squared(values)))
 }
 
+/// `sqrt(<psi|psi>)` of a stored state, summed in float64 whatever its dtype.
+#[pyfunction]
+pub fn state_norm(state: &Bound<'_, PyAny>) -> PyResult<f64> {
+    read_state!(state, values => Ok(mandacaru_core::quantum::amplitude::norm(values)))
+}
+
 /// Raise `ValueError` unless `|<psi|psi> - 1|` is within the dtype's input
 /// tolerance (1e-10 for complex128, 1e-5 for complex64), summed in float64.
 #[pyfunction]
@@ -441,7 +447,7 @@ pub struct PyProblem {
 }
 #[pymethods]
 impl PyProblem {
-    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.2,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None))]
+    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.1,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None))]
     fn search<'py>(
         &self,
         py: Python<'py>,

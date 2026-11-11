@@ -28,11 +28,12 @@ relax: a converged optimizer is not evidence that the model has a minimum.
 | Calculation | Forces |
 | --- | --- |
 | `rhf`, `uhf`, `dft` with an all-electron basis | analytic stationary gradient (converged, real, collinear state; `kinetic="spectral"`) |
-| `rhf`, `uhf`, `dft` with a PAW-LCAO basis | [finite difference of the energy at fixed densities](#forces-paw-lcao) |
-| `vqe`, `adapt-vqe`, `vasqa`, `valsqa` on the local state-vector simulator | [displaced energies of the converged state](#forces-variational) |
+| `rhf`, `uhf`, `dft` with a PAW-LCAO basis | [analytic stationary gradient](#forces-paw-lcao) (real, collinear state; fractional occupations and `hubbard_u` included) |
+| `vqe`, `adapt-vqe`, `vasqa`, `valsqa` on the local state-vector simulator, PAW-LCAO basis | [analytic, with the orbital response and the Z-vector correction](#forces-variational) |
 | `dft` with a spin-orbit PAW-LCAO dataset (`lda-fr`, `pbe-fr`) on a molecule | analytic spinor gradient in Rust for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`; stress raises `PropertyNotImplementedError` |
 | `ghf`, `subspace-vqe`, `subspace-adapt-vqe` | not available |
-| any run with `shots > 0` or a device other than `AER_simulator` | not available |
+| `vqe`, `adapt-vqe` with `shots > 0` or `execute_circuits=True` | [analytic, on the density matrices measured on the device](#forces-variational), with a propagated statistical error |
+| `vasqa`, `valsqa` on a circuit device; a tapered register on a device | not available |
 | `dft` on periodic structures (crystals) | analytic Rust gradient for LDA, PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling; stress tensor via `get_stress()` for the same functionals; a DFT+U crystal with a hybrid or a spin-orbit dataset raises `NotImplementedError` |
 
 Forces require the default `kinetic="spectral"`. Asking for forces where they are not available raises ASE's
@@ -43,8 +44,9 @@ listed in the [methods table](#methods-table).
 (forces-paw-lcao)=
 ## PAW-LCAO forces for Hartree–Fock and Kohn–Sham states
 
-For `method="rhf"`, `"uhf"` or `"dft"` (LDA, PBE, r²SCAN, HSE06 and the rVV10 pairings) on a PAW-LCAO basis
-the force comes from the converged state without a displaced SCF:
+For `method="rhf"`, `"uhf"` or `"dft"` (LDA, PBE, r²SCAN, HSE06 and the rVV10
+pairings) on a PAW-LCAO basis the force is the analytic gradient of the
+converged state, in Rust, with no displaced SCF:
 
 ```python
 from ase import Atoms
@@ -56,34 +58,36 @@ atoms.calc = Mandacaru(method="rhf",
                        basis={"name": "PAW-LCAO", "size": "SZ"},
                        grid_spacing=0.25)
 forces = atoms.get_forces()                  # eV / angstrom
-details = atoms.calc.result.force_details    # scheme, step_bohr, step_error_estimate
+details = atoms.calc.result.force_details    # scheme, stationarity
 ```
 
-The orbitals are orthonormal in a Löwdin frame that is rebuilt at every
-geometry, so at a converged SCF the force is the partial derivative of the total
-energy (electronic plus ion–ion) at fixed densities in that frame. The overlap
-(Pulay) term is carried by the geometry dependence of the Löwdin matrix inside
-the rebuilt integrals, and no separate term is needed for GGA, meta-GGA or open
-shells.
+At a converged state the gradient is the partial derivative of the energy at
+fixed atomic-orbital densities minus the Pulay term `-tr[W dS]`, with `W` the
+energy-weighted density of the occupied orbitals. It is a sum of named terms,
+each the derivative of one energy term of the model:
 
-Mandacaru takes the derivative as a Richardson difference of that energy on the
-same fixed grid, with the retained PAW setup:
+- the terms that act on the grid orbitals (kinetic, long-range ionic potential,
+  Hartree, exchange–correlation with its gradient and kinetic-density parts,
+  compensation potential, exact exchange, overlap) are contracted with the
+  derivative of the basis functions;
+- the terms on the atoms' spheres (projections, short-range local potential,
+  compensation charges, ionic potentials) and the potentials centered on an
+  atom (long-range ionic, partial core) are differentiated with the setup's
+  own quadrature;
+- the ion–ion repulsion is added analytically.
 
-- the step is `1e-3` Bohr, combined with the half step; the truncation error is
-  fourth order in the step, and `step_error_estimate` is `|fine - coarse| / 3`
-  (the largest over all coordinates);
-- each Cartesian coordinate needs four energies, so one force evaluation
-  rebuilds the integrals `12 N` times for `N` atoms. No SCF is repeated;
-- Hartree–Fock keeps the pivots of the reference Coulomb factorization, so the
-  truncation of the factors is a smooth function of the positions;
-- the basis and projector centers, the overlap and compensation augmentation,
-  the compensation charges and core densities on the grid, the one-center
-  Coulomb and exchange–correlation terms, the frozen-core exchange, the local
-  potential, the kinetic energy and the ion–ion repulsion are differentiated
-  together.
+rVV10 needs no term of its own: its kernel depends on the positions only
+through the density. A state with Fermi-Dirac occupations
+([Occupations](#dft-degenerate-shell)) is differentiated at fixed occupations,
+which is the derivative of the free energy `E - width S` that the SCF
+minimizes. A molecule with `hubbard_u` adds the derivative of the +U energy
+through the shell projections of the moving atom ([DFT+U](dft_u.md)).
 
-`atoms.calc.result.force_details` holds `scheme`, `step_bohr` and
-`step_error_estimate`; they are also written to the run log ([run-log
+Before contracting, the force checks the state: its density must be built from
+its own occupations, and the largest element of `(1 - D) F D` (the
+`stationarity` in `force_details`) must stay below `1e-6` (`1e-5` with
+`precision="float32"`). `force_details` holds `scheme` (`"analytic"`) and
+`stationarity`; they are also written to the run log ([run-log
 reference](#run-log-reference)).
 
 (forces-variational)=
@@ -269,13 +273,15 @@ resolve.
 (forces-unsupported)=
 ## What raises
 
-PAW-LCAO mean-field forces raise for:
+Molecular forces raise for:
 
 - generalized Hartree–Fock (`ghf`) states, and anything that is not real and
   collinear (the spinor Kohn–Sham state of a spin-orbit dataset has its own
   gradient, above);
-- `precision="float32"`, because the difference needs `float64` samples;
 - a state that does not reproduce its own energy on the rebuilt integrals;
+- the force of a quantum method with `precision="float32"` (`ValueError`, before
+  any SCF): the analytic variational force is implemented in `float64` only,
+  while the mean-field PAW-LCAO gradient takes `float32`;
 - a variational state whose parameters and operator sequence do not prepare the
   state they accompany, a parameter Hessian with a negative curvature beyond its
   noise (or with none above it), and more than 1500 parameters

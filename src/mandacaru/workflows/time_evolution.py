@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, TypeAlias
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from ..core.checkpoint import WavefunctionCheckpoint
-from .._native import require_normalized_state
+from .._native import real_pauli_terms, require_normalized_state
 from ..core.mapping import PauliSum
 
 if TYPE_CHECKING:
@@ -133,18 +133,12 @@ class SuzukiTrotter:
         self.order = order
         self._resources = dict(resources or {})
         self._native = None
-        terms: list[tuple[str, float]] = []
-        for label, coefficient in hamiltonian.terms.items():
-            if len(label) != self.n_qubits or label.strip("IXYZ"):
-                raise ValueError("invalid Pauli label")
-            if not np.isfinite(coefficient) or abs(complex(coefficient).imag) > 1e-12:
-                raise ValueError("hamiltonian must be finite and Hermitian")
-            if coefficient.real != 0:
-                terms.append((label, float(coefficient.real)))
+        terms, self.norm_bound = real_pauli_terms(
+            self.n_qubits,
+            [(label, complex(c).real, complex(c).imag)
+             for label, c in hamiltonian.terms.items()],
+        )
         self._terms = tuple(terms)
-        self.norm_bound = float(sum((abs(c) for _, c in terms)))
-        if not np.isfinite(self.norm_bound):
-            raise ValueError("sum of absolute Pauli coefficients must be finite")
         from .._native import Context
 
         self._context = Context(**dict(resources or {}))

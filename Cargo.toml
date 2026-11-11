@@ -4,7 +4,7 @@ default-members = ["crates/mandacaru-core", "crates/mandacaru-kernels"]
 resolver = "2"
 
 [workspace.package]
-version = "26.11.17"
+version = "26.11.18"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"

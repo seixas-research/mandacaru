@@ -40,6 +40,7 @@ mod run_log;
 mod symmetry;
 mod sparse;
 mod viewer;
+mod workflows;
 mod downfold;
 mod wannier;
 mod xc_grid;
@@ -101,6 +102,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(derived::length_to_bohr, m)?)?;
     m.add_function(wrap_pyfunction!(derived::energy_unit_factor, m)?)?;
     m.add_function(wrap_pyfunction!(derived::total, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::mesh_fractions, m)?)?;
     m.add_function(wrap_pyfunction!(derived::vector_norm, m)?)?;
     m.add_function(wrap_pyfunction!(derived::distance, m)?)?;
     m.add_function(wrap_pyfunction!(derived::gaps, m)?)?;
@@ -114,6 +116,16 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(derived::grid_coordinates, m)?)?;
     m.add_function(wrap_pyfunction!(derived::decimal_digits, m)?)?;
     m.add_function(wrap_pyfunction!(derived::rounded, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::descending_weights, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::max_abs, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::array_minimum, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::array_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::sample_times, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::fourier_bin_spacing, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::nyquist_frequency, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::squared, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::modulus_squared, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::pulse_bound, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::pauli_term_sum, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::pauli_term_scale, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::pauli_term_drop, m)?)?;
@@ -130,6 +142,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(measurement::estimator_precision, m)?)?;
     m.add_function(wrap_pyfunction!(measurement::mps_job_gigabytes, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::state_norm_squared, m)?)?;
+    m.add_function(wrap_pyfunction!(quantum::state_norm, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::state_inner, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::require_normalized_state, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_fd, m)?)?;
@@ -160,6 +173,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     symmetry::register(m)?;
     finite_size::register(m)?;
     viewer::register(m)?;
+    workflows::register(m)?;
     angular::register(m)?;
     models::register(m)?;
     geometry::register(m)?;
@@ -175,7 +189,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Workspace>()?;
     m.add_class::<quantum::PyOperator>()?;
     m.add_class::<advanced::PyPropagator>()?;
-    m.add_function(wrap_pyfunction!(advanced::find_peaks_1d, m)?)?;
     m.add_function(wrap_pyfunction!(advanced::fourier_spectrum, m)?)?;
     m.add_function(wrap_pyfunction!(advanced::qpe_memory, m)?)?;
     m.add_function(wrap_pyfunction!(advanced::givens_decomposition, m)?)?;

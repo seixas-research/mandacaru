@@ -67,7 +67,7 @@ fn silicon_with_spin_orbit_matches_the_reconverged_free_energy() {
         "time reversal halves the mesh"
     );
     print_share(&stress, &want);
-    let weak = weak_terms(&stress, &want);
+    let weak = weak_terms(&stress, &want, &data.crystal.functional);
     println!("  terms below 100 gates when removed: {weak:?}");
 }
 

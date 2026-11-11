@@ -405,10 +405,10 @@ class Mandacaru(ASEProperties, Calculator):
         extension; an optimizer ``tol`` left unset resolves to the energy floor
         (it is ``1e-12`` in float64) and is written in the optimization setup
         of the run log. Refused with
-        ``ValueError``: forces of a quantum method (the 1e-3 Bohr
-        finite-difference step turns float32 rounding into force noise; the
-        analytic forces of the classical methods, all-electron and PAW-LCAO,
-        are allowed), the forces and stress of a crystal (the
+        ``ValueError``: forces of a quantum method (the analytic variational
+        force, with its orbital response and Z-vector correction, is
+        implemented and gated in float64 only; the analytic forces of the
+        classical methods, all-electron and PAW-LCAO, are allowed), the forces and stress of a crystal (the
         analytic derivative engines read float64 data only), ``load_crystal`` with a precision other than
         the one stored in the file, and ``hamiltonian``,
         ``load_hamiltonian`` or ``native_model`` on a circuit device
@@ -851,7 +851,7 @@ class Mandacaru(ASEProperties, Calculator):
         a ``record`` directory (``ValueError`` without one). Used with the
         search methods; for any other method a nonzero value raises
         ``ValueError``.
-    proposal_temperature : float, default 0.2
+    proposal_temperature : float, default 0.1
         Temperature of the gradient-weighted proposal distribution. Ignored
         outside the search methods.
     proposal : {"gradient", "uniform"}, default "gradient"
@@ -1114,7 +1114,7 @@ class Mandacaru(ASEProperties, Calculator):
         warm_start=True,
         replace_start="zero",
         screen_insertions=0,
-        proposal_temperature=0.2,
+        proposal_temperature=0.1,
         proposal="gradient",
         proposal_model=None,
         record=None,
@@ -1467,7 +1467,7 @@ class Mandacaru(ASEProperties, Calculator):
         if type(num_states) is not int or num_states < 1:
             raise ValueError("num_states must be a positive integer")
         self._weights = (
-            np.arange(num_states, 0, -1, dtype=float)
+            _native.descending_weights(num_states)
             if weights is None
             else np.asarray(weights, dtype=float).copy()
         )
@@ -1946,7 +1946,7 @@ class Mandacaru(ASEProperties, Calculator):
             V = (None if integrals.mo_coefficients is None
                  else np.ascontiguousarray(integrals.mo_coefficients, dtype=complex))
             density = _native.rotated_density(
-                self.context, psi, X, V, np.ascontiguousarray(np.real(D), dtype=float))
+                self.context, psi, X, V, np.ascontiguousarray(D.real, dtype=float))
             return kzk_correction(
                 density,
                 integrals.grid.dV,
@@ -2701,16 +2701,14 @@ class Mandacaru(ASEProperties, Calculator):
                 and not periodic_geometry
                 and self.capabilities.quantum
             ):
-                # Refused before any SCF or cached-result lookup: the variational
-                # forces difference the energy over a 1e-3 Bohr (Richardson) step,
-                # which float32 rounding turns into force noise of several meV/A;
-                # the analytic gradients of the mean-field methods, all-electron
-                # and PAW-LCAO, difference nothing.
+                # Refused before any SCF or cached-result lookup: the analytic
+                # variational force (CPHF and MP2 orbital response, the Z-vector
+                # correction) is implemented and gated in float64 only. The
+                # mean-field gradients, all-electron and PAW-LCAO, take float32.
                 raise ValueError(
-                    "precision='float32' does not support quantum-method forces: they "
-                    "difference the energy over a 1e-3 Bohr step (Richardson "
-                    "extrapolation), which float32 rounding turns into force "
-                    "noise of several meV/A; use precision='float64'"
+                    "precision='float32' does not support quantum-method forces: the "
+                    "analytic variational force (orbital response and Z-vector "
+                    "correction) is implemented in float64 only; use precision='float64'"
                 )
             # Cleared ASE results never serve a property: the result is rerun.
             reusable = (

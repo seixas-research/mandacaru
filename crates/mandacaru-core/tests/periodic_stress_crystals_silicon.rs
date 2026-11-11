@@ -24,7 +24,7 @@ const SMALL: [&str; 3] = ["hats", "linear", "xc_gradient"];
 fn the_stress_of_a_converged_displaced_silicon_state() {
     let (data, stress, want) = check("si", true);
     equation_of_state(&data.manifest, &stress);
-    let weak = weak_terms(&stress, &want);
+    let weak = weak_terms(&stress, &want, &data.crystal.functional);
     assert!(
         weak.iter().all(|w| SMALL.contains(w)),
         "terms the oracle cannot discriminate: {weak:?}"
@@ -37,7 +37,7 @@ fn the_stress_of_undisplaced_silicon_is_isotropic() {
     let (data, stress, want) = check("si_ideal", false);
     equation_of_state(&data.manifest, &stress);
     isotropy(&data.manifest, &stress);
-    let weak = weak_terms(&stress, &want);
+    let weak = weak_terms(&stress, &want, &data.crystal.functional);
     assert!(
         weak.iter().all(|w| SMALL.contains(w)),
         "terms the oracle cannot discriminate: {weak:?}"

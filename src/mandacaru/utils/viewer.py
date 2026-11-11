@@ -112,34 +112,6 @@ def enclosing_level(weights, fraction: float) -> float:
     return _native.enclosing_level(np.ascontiguousarray(weights, dtype=float).ravel(), float(fraction))
 
 
-def _ease(t):
-    """Cosine ease-in-out on ``[0, 1]``: a keyframe is approached and left smoothly."""
-    return 0.5 - 0.5 * np.cos(np.pi * np.asarray(t, dtype=float))
-
-
-def _keyframe_values(keyframes, t, log=False):
-    """Interpolate evenly spaced ``keyframes`` at times ``t`` in ``[0, 1]``.
-
-    Each segment is eased, so the camera slows into and out of every keyframe
-    instead of turning a corner.  ``log=True`` interpolates geometrically,
-    which is how a zoom is perceived.
-    """
-    keys = np.asarray(keyframes, dtype=float)
-    if keys.ndim == 1:
-        keys = keys[:, None]
-    if log:
-        keys = np.log(keys)
-    t = np.clip(np.asarray(t, dtype=float), 0.0, 1.0)
-    if len(keys) == 1:
-        out = np.repeat(keys, len(t), axis=0)
-    else:
-        position = t * (len(keys) - 1)
-        segment = np.minimum(position.astype(int), len(keys) - 2)
-        local = _ease(position - segment)[:, None]
-        out = keys[segment] + local * (keys[segment + 1] - keys[segment])
-    return np.exp(out) if log else out
-
-
 # --------------------------------------------------------------------------- #
 # The camera.
 # --------------------------------------------------------------------------- #
@@ -309,15 +281,16 @@ class Viewer3D:
         """Exponent of the probability weight: 2 for an orbital, 1 for a density."""
         return 2 if self.field.quantity in AMPLITUDE_QUANTITIES else 1
 
-    def _weights(self) -> np.ndarray:
-        return np.abs(self.field.data) ** self.power
+    def _field_values(self) -> np.ndarray:
+        """The field as one flat float64 vector, the layout the native routines read."""
+        return np.ascontiguousarray(self.field.data, dtype=float).ravel()
 
     @property
     def isovalue(self) -> float:
         """The isovalue in the field's units, given or fitted to ``enclosed``."""
         if self._isovalue is None:
-            level = enclosing_level(self._weights(), self.enclosed)
-            self._isovalue = float(level ** (1.0 / self.power))
+            self._isovalue = _native.field_isovalue(
+                self._field_values(), self.power, self.enclosed)
         return self._isovalue
 
     def _nodes(self) -> np.ndarray:
@@ -340,7 +313,7 @@ class Viewer3D:
             seed = secrets.randbits(64) if self.seed is None else self.seed
             step = to_angstrom(self.field.grid.step)
             picked, positions = _native.weighted_cloud(
-                np.ascontiguousarray(self._weights(), dtype=float).ravel(),
+                _native.field_weights(self._field_values(), self.power),
                 np.ascontiguousarray(self._nodes()), step, int(self.points), seed)
             self._cloud = (positions,
                            np.asarray(self.field.data, dtype=float)
@@ -352,20 +325,16 @@ class Viewer3D:
         ``+1`` / ``-1`` per triangle for the lobe it belongs to."""
         if self._surface is None:
             grid = self.field.grid
-            data = np.asarray(self.field.data, dtype=float)
-            X, Y, Z = (to_angstrom(a) for a in (grid.X, grid.Y, grid.Z))
-            level = self.isovalue
-            lobes = [marching_tetrahedra(data, X, Y, Z, level)]
-            if self.signed:
-                lobes.append(marching_tetrahedra(-data, X, Y, Z, level))
-            signs = np.concatenate([np.full(len(t), s, dtype=int)
-                                    for t, s in zip(lobes, (1, -1))])
-            self._surface = (np.concatenate(lobes, axis=0), signs)
+            data = np.ascontiguousarray(self.field.data, dtype=float)
+            flat = [np.ascontiguousarray(to_angstrom(a), dtype=float).ravel()
+                    for a in (grid.X, grid.Y, grid.Z)]
+            self._surface = _native.signed_isosurface(
+                data.shape, data.ravel(), *flat, self.isovalue, self.signed)
         return self._surface
 
     def _focus_point(self, focus) -> np.ndarray:
         if focus is None:
-            return self.nuclei.mean(axis=0)
+            return np.asarray(_native.mean_point(np.ascontiguousarray(self.nuclei, dtype=float)))
         if isinstance(focus, (int, np.integer)) and not isinstance(focus, bool):
             n = len(self.nuclei)
             if not -n <= int(focus) < n:
@@ -386,14 +355,12 @@ class Viewer3D:
                 shown = self.cloud()[0]
             else:
                 shown = self.surface()[0].reshape(-1, 3)
-            reach = [np.abs(self.nuclei - center).max() + 0.5]
-            if len(shown):
-                # A percentile, not the maximum: a handful of points in a
-                # far tail must not shrink the whole picture.
-                reach.append(np.percentile(np.abs(shown - center).max(axis=1),
-                                           99.5 if self.mode == "scatter"
-                                           else 100.0))
-            self._extent = 1.05 * float(max(reach))
+            # A percentile, not the maximum: a handful of points in a far tail
+            # must not shrink the whole picture.
+            self._extent = _native.view_extent(
+                np.ascontiguousarray(self.nuclei, dtype=float), center.tolist(),
+                np.ascontiguousarray(shown, dtype=float),
+                99.5 if self.mode == "scatter" else 100.0)
         return self._extent
 
     # -- drawing ------------------------------------------------------------ #
@@ -429,10 +396,11 @@ class Viewer3D:
         def update(camera: Camera, focus_point=None):
             center = (self._focus_point(camera.focus) if focus_point is None
                       else focus_point)
-            half = extent / float(camera.zoom)
-            ax.set_xlim(center[0] - half, center[0] + half)
-            ax.set_ylim(center[1] - half, center[1] + half)
-            ax.set_zlim(center[2] - half, center[2] + half)
+            x, y, z = _native.view_limits(
+                np.asarray(center, dtype=float).tolist(), extent, float(camera.zoom))
+            ax.set_xlim(*x)
+            ax.set_ylim(*y)
+            ax.set_zlim(*z)
             ax.view_init(elev=camera.elev, azim=camera.azim)
             if relight is not None:
                 relight(camera.elev, camera.azim)
@@ -443,12 +411,12 @@ class Viewer3D:
         from matplotlib.colors import LinearSegmentedColormap
 
         positions, values = self.cloud()
-        weights = np.abs(values) ** self.power
-        brightness = np.sqrt(weights / weights.max())
+        brightness, positive_phase = _native.cloud_shading(
+            np.ascontiguousarray(values, dtype=float), self.power)
         positive = LinearSegmentedColormap.from_list("positive", POSITIVE_COLORS)
         negative = LinearSegmentedColormap.from_list("negative", NEGATIVE_COLORS)
-        colors = np.where((values >= 0.0)[:, None], positive(brightness),
-                          negative(brightness))
+        colors = positive(brightness)
+        colors[~positive_phase] = negative(brightness)[~positive_phase]
         # Both phases in one scatter, so they are depth-sorted together.
         ax.scatter(*positions.T, c=colors, s=self.point_size, alpha=self.alpha,
                    edgecolors="none", depthshade=False, zorder=1)
@@ -461,11 +429,9 @@ class Viewer3D:
         triangles, signs = self.surface()
         if not len(triangles):
             return None
-        normals = np.cross(triangles[:, 1] - triangles[:, 0],
-                           triangles[:, 2] - triangles[:, 0])
-        normals /= np.maximum(np.linalg.norm(normals, axis=1), 1e-300)[:, None]
-        base = np.where((signs > 0)[:, None], to_rgb(POSITIVE_SURFACE),
-                        to_rgb(NEGATIVE_SURFACE))
+        normals = _native.surface_normals(np.ascontiguousarray(triangles, dtype=float))
+        base = _native.surface_colors(np.ascontiguousarray(signs, dtype=np.int64),
+                                      to_rgb(POSITIVE_SURFACE), to_rgb(NEGATIVE_SURFACE))
         # Both lobes in one collection: Matplotlib depth-sorts the faces of a
         # collection, but not one collection against another.
         surface = Poly3DCollection(triangles, edgecolors="none", zorder=1)
@@ -475,13 +441,8 @@ class Viewer3D:
         def relight(elev, azim):
             # A headlight slightly above and to the left of the eye; both sides
             # of a face are lit, since the winding is not consistent.
-            e, a = np.radians(elev + 25.0), np.radians(azim - 30.0)
-            light = np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a),
-                              np.sin(e)])
-            shade = 0.35 + 0.65 * np.abs(normals @ light)
-            rgba = np.concatenate([base * shade[:, None],
-                                   np.full((len(shade), 1), alpha)], axis=1)
-            surface.set_facecolor(rgba)
+            surface.set_facecolor(
+                _native.surface_rgba(normals, base, float(elev), float(azim), alpha))
 
         return relight
 
@@ -493,16 +454,13 @@ class Viewer3D:
 
         numbers = np.asarray(self.field.numbers, dtype=int)
         nuclei = self.nuclei
-        radii = covalent_radii[numbers]
+        radii = np.ascontiguousarray(covalent_radii[numbers], dtype=float)
         if self.show_bonds and len(nuclei) > 1:
-            for a in range(len(nuclei)):
-                for b in range(a + 1, len(nuclei)):
-                    if np.linalg.norm(nuclei[a] - nuclei[b]) \
-                            < 1.2 * (radii[a] + radii[b]):
-                        ax.plot(*np.stack([nuclei[a], nuclei[b]]).T,
-                                color="#6b7280", linewidth=2.5, zorder=2)
+            for a, b in _native.bonded_pairs(np.ascontiguousarray(nuclei, dtype=float), radii):
+                ax.plot(*np.stack([nuclei[a], nuclei[b]]).T,
+                        color="#6b7280", linewidth=2.5, zorder=2)
         ax.scatter(*nuclei.T, color=jmol_colors[numbers],
-                   s=60.0 * (radii / radii.max()) ** 2 + 20.0,
+                   s=_native.marker_sizes(radii),
                    edgecolors="#1f2937", linewidths=0.6, depthshade=False,
                    zorder=3)
 
@@ -548,22 +506,16 @@ class Viewer3D:
             raise ValueError("trajectory must be a non-empty sequence of Camera")
         if any(not k.zoom > 0.0 for k in keyframes):
             raise ValueError("every Camera of a trajectory needs zoom > 0")
-        t = np.linspace(0.0, 1.0, frames) if frames > 1 else np.zeros(1)
-        angles = _keyframe_values([[k.elev, k.azim] for k in keyframes], t)
-        zooms = _keyframe_values([k.zoom for k in keyframes], t, log=True)[:, 0]
-        focus = _keyframe_values([self._focus_point(k.focus)
-                                  for k in keyframes], t)
+        poses = np.array([[k.elev, k.azim, k.zoom, *self._focus_point(k.focus)]
+                          for k in keyframes], dtype=float)
+        factors = None
         if zoom is not None:
-            factors = np.atleast_1d(np.asarray(zoom, dtype=float))
+            factors = np.atleast_1d(np.asarray(zoom, dtype=float)).reshape(-1)
             if np.any(factors <= 0.0):
                 raise ValueError(f"zoom must be positive, got {zoom!r}")
-            zooms = zooms * _keyframe_values(factors, t, log=True)[:, 0]
-        if rotate is not None:
-            sweep = 360.0 * float(turns) * np.arange(frames) / frames
-            angles[:, 0 if rotate == "elevation" else 1] += sweep
-        return [Camera(elev=float(e), azim=float(a), zoom=float(z),
-                       focus=tuple(float(c) for c in f))
-                for (e, a), z, f in zip(angles, zooms, focus)]
+        rows = _native.camera_path(poses, frames, factors, rotate, float(turns))
+        return [Camera(elev=e, azim=a, zoom=z, focus=(x, y, w))
+                for e, a, z, x, y, w in rows.tolist()]
 
     def animate(self, path, frames: int = 120, *, fps: float = 12.0,
                 rotate="azimuth", turns: float = 1.0, zoom=None,
@@ -607,7 +559,7 @@ class Viewer3D:
             image = Image.fromarray(rgba.copy(), "RGBA")
             images.append(image if transparent else image.convert("RGB"))
         images[0].save(path, save_all=True, append_images=images[1:],
-                       duration=max(int(round(1000.0 / fps)), 20), loop=0,
+                       duration=_native.frame_duration(fps), loop=0,
                        disposal=2)
         return path
 

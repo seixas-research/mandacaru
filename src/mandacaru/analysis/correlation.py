@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
+from .. import _native
 IMAGINARY_TOLERANCE=1e-8
 def _real(array, what: str) -> np.ndarray:
     """``array`` as a real array, refusing a non-negligible imaginary part.
@@ -14,7 +15,7 @@ def _real(array, what: str) -> np.ndarray:
     array = np.asarray(array)
     if not np.iscomplexobj(array):
         return array
-    imaginary = float(np.max(np.abs(array.imag))) if array.size else 0.0
+    imaginary = _native.max_abs(np.asarray(array.imag, dtype=float))
     if imaginary > IMAGINARY_TOLERANCE:
         raise ValueError(
             f"the {what} has an imaginary part of {imaginary:.2e} Ha: the "

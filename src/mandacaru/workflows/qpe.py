@@ -57,7 +57,6 @@ from ..core.mapping import PauliSum
 from ..units import energy_unit_label, from_hartree, to_hartree
 from ..utils import memory
 from .. import _native
-from .._native import state_norm_squared
 from .time_evolution import state_dtype
 
 MEMORY_POLICIES = ("abort", "prompt", "ignore")
@@ -223,13 +222,11 @@ class QPEResult:
         """Probability in the ground eigenspace, including degeneracy."""
         if self.overlaps is None:
             return None
-        energies = (
-            np.asarray(self.exact_energies)
-            if self.energy_unit == "Ha"
-            else to_hartree(np.asarray(self.exact_energies), "eV")
+        return _native.qpe_ground_overlap(
+            np.ascontiguousarray(self.exact_energies, dtype=float),
+            np.ascontiguousarray(self.overlaps, dtype=float),
+            self.energy_unit == "Ha",
         )
-        ground = np.isclose(energies, np.min(energies), rtol=0.0, atol=1e-10)
-        return float(np.sum(self.overlaps[ground]))
 
     def collapsed_state(self, index: int | None = None) -> np.ndarray:
         """System-register state after reading evaluation bin ``index``.
@@ -241,12 +238,12 @@ class QPEResult:
         if self._amplitudes is None:
             raise ValueError("amplitudes were not kept")
         if index is None:
-            index = int(np.argmax(self.probabilities))
-        row = self._amplitudes[int(index)]
-        norm = float(np.sqrt(state_norm_squared(row)))
+            index = _native.array_argmax(self.probabilities)
+        row = np.ascontiguousarray(self._amplitudes[int(index)])
+        norm = _native.state_norm(row)
         if norm == 0:
             raise ValueError(f"evaluation bin {index} has zero probability")
-        return row / norm
+        return _native.divide_state(row, norm)
 
     def in_units(self, units: str) -> "QPEResult":
         """A copy with every energy in ``units`` (``"eV"`` or ``"Ha"``)."""
@@ -284,7 +281,7 @@ class QPEResult:
         for e, p in self.peaks[:n_peaks]:
             lines.append(f"    E = {e:+.8f} {u}   P = {p:.4f}")
         if self.exact_energies is not None:
-            e0 = float(np.min(self.exact_energies))
+            e0 = _native.array_minimum(np.asarray(self.exact_energies, dtype=float))
             lines.append(
                 f"  exact ground state: {e0:+.8f} {u} (|<E0|Psi>|^2 = {self.ground_state_overlap:.4f}; reading error {self.energy - e0:+.3e} {u})"
             )
@@ -424,17 +421,17 @@ class QuantumPhaseEstimation:
                 (int(n), list(ref), list(gens), theta),
             )
         psi = np.asarray(initial_state, dtype=self._dtype).ravel()
-        n = int(round(np.log2(psi.size)))
-        if 2**n != psi.size:
+        n = psi.size.bit_length() - 1
+        if n < 0 or 2**n != psi.size:
             raise ValueError(f"a state vector needs 2^n amplitudes, got {psi.size}")
         if self.hamiltonian is None:
             raise ValueError(
                 "pass hamiltonian= when the initial state is a state vector"
             )
-        norm = float(np.sqrt(state_norm_squared(psi)))
+        norm = _native.state_norm(psi)
         if norm == 0:
             raise ValueError("the initial state is zero")
-        return (psi / norm, n, self.hamiltonian, None)
+        return (_native.divide_state(psi, norm), n, self.hamiltonian, None)
 
     def _operator(self, hamiltonian: PauliSum):
         return self._context.pauli_operator(
@@ -484,8 +481,6 @@ class QuantumPhaseEstimation:
         operator = self._operator(hamiltonian)
         lo, hi = operator.qpe_window(
             t, None if self.energy_window is None else tuple(map(float, self.energy_window)))
-        width = hi - lo
-        N = 2**t
         exact = overlaps = None
         native = operator.qpe(
             np.ascontiguousarray(psi, dtype=self._dtype),
@@ -504,24 +499,19 @@ class QuantumPhaseEstimation:
         )
         amplitudes = native["amplitudes"]
         probabilities = native["probabilities"]
-        phases = np.arange(N) / N
-        energies_ha = lo + width * phases
-        order = np.argsort(probabilities)[::-1]
-        peaks = [
-            (float(energies_ha[m]), float(probabilities[m]))
-            for m in order[: max(8, 2 ** min(t, 4))]
-            if probabilities[m] > 0
-        ]
+        readout = _native.qpe_readout(
+            np.ascontiguousarray(probabilities, dtype=float), t, lo, hi
+        )
         unit = "Ha" if self.atomic_units else "eV"
         result = QPEResult(
-            energies=energies_ha,
+            energies=readout["energies"],
             probabilities=probabilities,
-            phases=phases,
-            resolution=width / N,
+            phases=readout["phases"],
+            resolution=readout["resolution"],
             energy_window=(lo, hi),
             n_system_qubits=n,
             n_evaluation_qubits=t,
-            peaks=peaks,
+            peaks=readout["peaks"],
             exact_energies=exact,
             overlaps=overlaps,
             energy_unit="Ha",

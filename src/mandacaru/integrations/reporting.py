@@ -160,15 +160,17 @@ def _write_variational(log, driver, result, log_expressivity):
         log.write_block("ENERGY MEASUREMENT", driver._energy_measurement, framed=True)
     if driver._gradient_measurement is not None:
         log.write_block("GRADIENT MEASUREMENT", driver._gradient_measurement, framed=True)
-    lineage, start_energy = run_log_fields.lineage(driver)
-    # The thresholds belong to the growth loop of the ADAPT methods.
-    grows = driver.method.endswith("adapt-vqe") and driver._search is None
+    lineage, start_energy = run_log_fields.lineage(driver, result)
+    # The thresholds belong to the growth loop of the ADAPT methods; a search has no growth
+    # budget, its `max_steps` is one of the search lines of `extra`.
+    searching = driver._search is not None
+    grows = driver.method.endswith("adapt-vqe") and not searching
     log.write_optimizer_setup(
         driver._optimizer["method"],
         result.reference_energy,
         result.energy_unit,
         convergence=driver._convergence if grows else None,
-        max_iterations=driver._max_growth if driver._search is None else driver._search["max_steps"],
+        max_iterations=None if searching else driver._max_growth,
         start_energy=start_energy,
         extra=run_log_fields.optimizer_setup(driver, result),
         gradient_method="analytic",
@@ -209,7 +211,8 @@ def _write_variational(log, driver, result, log_expressivity):
         num_evaluations=result.num_evaluations,
         optimizer_steps=result.optimizer_steps,
         optimizer=driver._optimizer["method"],
-        extra={"termination": result.timings["termination"],
+        extra={**(run_log_fields.search_summary(result) if searching else {}),
+               "termination": result.timings["termination"],
                **({"pruned_operators": len(result.pruned_operators)} if driver._prune else {})},
     )
 

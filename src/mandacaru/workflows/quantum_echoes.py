@@ -73,7 +73,8 @@ class EchoSpectrum:
     @property
     def intensities(self) -> NDArray[np.float64]:
         """Magnitude of the Fourier transform in Hartree."""
-        return np.abs(self.amplitudes)
+        return _native.spectrum_magnitudes(
+            np.ascontiguousarray(self.amplitudes, dtype=complex))
 
     @property
     def energies_ev(self) -> NDArray[np.float64]:
@@ -83,12 +84,12 @@ class EchoSpectrum:
     @property
     def resolution(self) -> float:
         """Fourier-bin spacing in Hartree (before window broadening)."""
-        return 2*np.pi / (self.times.size * self.time_step)
+        return _native.fourier_bin_spacing(self.times.size, self.time_step)
 
     @property
     def nyquist_energy(self) -> float:
         """Nyquist energy pi/dt in Hartree; larger gaps alias."""
-        return np.pi / self.time_step
+        return _native.nyquist_frequency(self.time_step)
 
     def peaks(self, relative_threshold: float = 0.05) -> NDArray[np.int64]:
         """Indices of positive-energy local maxima in increasing energy order.
@@ -96,18 +97,11 @@ class EchoSpectrum:
         Keep maxima at least ``relative_threshold`` times the largest positive
         spectral magnitude. These are sampled bins without peak fitting.
         """
-        from .._native import find_peaks_1d
-
         threshold = _finite_real(relative_threshold, "relative_threshold")
         if not 0 <= threshold <= 1:
             raise ValueError("relative_threshold must lie in [0, 1]")
-        intensity = self.intensities
-        positive = self.energies > 0
-        scale = float(np.max(intensity[positive]))
-        if scale == 0:
-            return np.empty(0, dtype=np.int64)
-        indices = find_peaks_1d(intensity, height=threshold * scale)
-        return indices[self.energies[indices] > 0]
+        return _native.echo_peaks(
+            np.ascontiguousarray(self.energies, dtype=float), self.intensities, threshold)
 
     def to_csv(self, path: str | PathLike[str] = "spectrum.csv") -> Path:
         """Write the complete signed spectrum to CSV and return its path.
@@ -118,8 +112,8 @@ class EchoSpectrum:
         Existing files are replaced; the parent directory must already exist.
         """
         destination = Path(path)
-        data = np.column_stack((self.energies, self.energies_ev, self.intensities,
-                                self.amplitudes.real, self.amplitudes.imag))
+        data = np.stack((self.energies, self.energies_ev, self.intensities,
+                         self.amplitudes.real, self.amplitudes.imag), axis=1)
         np.savetxt(destination, data, delimiter=",", fmt="%.12e", comments="",
                    header="energy_ha,energy_ev,magnitude_ha,fft_real_ha,fft_imag_ha")
         return destination
@@ -147,7 +141,7 @@ def fourier_spectrum(correlation: ArrayLike, time_step: float, *,
         raise ValueError("window must be 'hann' or 'none'")
     energies, transformed = _native.fourier_spectrum(signal, dt, elastic=elastic, window=window)
     return EchoSpectrum(energies=energies, amplitudes=transformed,
-                        correlation=signal, times=np.arange(signal.size)*dt,
+                        correlation=signal, times=_native.sample_times(signal.size, dt),
                         time_step=dt, window=window, elastic=elastic)
 
 
@@ -229,7 +223,7 @@ class QuantumEchoes:
         state = _state_vector(initial_state, self._evolution.n_qubits,
                               precision=self.precision)
         perturbed = self._kick._apply_operator(state)
-        elastic = state_inner(state, perturbed)[0]**2 if remove_elastic else 0.0
+        elastic = _native.squared(state_inner(state, perturbed)[0]) if remove_elastic else 0.0
         correlation = self._evolution._native.echo_correlation(
             self._kick._native, np.ascontiguousarray(state, dtype=self._evolution._dtype),
             dt, n, steps)
@@ -251,9 +245,9 @@ class QuantumEchoes:
         tau_p = _finite_real(tau_p, "tau_p")
         steps = _positive_integer(steps, "steps")
         kick_steps = _positive_integer(kick_steps, "kick_steps")
-        bound = abs(tau_p) * self._kick.norm_bound
+        bound = _native.pulse_bound(tau_p, self._kick.norm_bound)
         if bound > self.max_perturbation:
-            allowed = self.max_perturbation / self._kick.norm_bound
+            allowed = _native.ratio(self.max_perturbation, self._kick.norm_bound)
             raise ValueError(f"pulse is not small: |tau_p| sum|v_P| = {bound:g} "
                              f"> {self.max_perturbation:g}; use |tau_p| <= {allowed:g}")
         psi = _state_vector(initial_state, self._evolution.n_qubits,
@@ -268,7 +262,7 @@ class QuantumEchoes:
         response = (state_inner(echo, self._kick._apply_operator(echo))[0]
                     - state_inner(psi, v_psi)[0])
         return QuantumEchoesResult(
-            state=echo, amplitude=amplitude, fidelity=float(abs(amplitude)**2),
+            state=echo, amplitude=amplitude, fidelity=_native.modulus_squared(amplitude.real, amplitude.imag),
             response=response, correlation=complex(*state_inner(v_psi, vt_psi)),
             time=time, tau_p=tau_p, perturbation_bound=bound)
 

@@ -9,6 +9,7 @@ use mandacaru_core::{
     },
     Context,
 };
+use serde_json::json;
 use std::collections::BTreeMap;
 
 fn architectures(pool: usize, maximum: usize) -> Vec<Vec<usize>> {
@@ -165,7 +166,31 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
         options.record = true;
         options.screen_insertions = 1;
         let recorded = problem.search(&options, &[], &[]).unwrap();
-        assert_eq!(first.steps, recorded.steps);
+        // A chain that records nothing does not copy the four source vectors into its step rows;
+        // the other fields, and so the chain, are the recorded chain's.
+        let vectors = [
+            "source_gradients",
+            "source_probabilities",
+            "source_importances",
+            "source_removal",
+        ];
+        assert!(first
+            .steps
+            .iter()
+            .all(|row| vectors.iter().all(|name| row.get(*name).is_none())));
+        let stripped: Vec<_> = recorded
+            .steps
+            .iter()
+            .map(|row| {
+                assert!(vectors.iter().all(|name| row.get(*name).is_some()));
+                let mut row = row.clone();
+                for name in vectors {
+                    row.as_object_mut().unwrap().remove(name);
+                }
+                row
+            })
+            .collect();
+        assert_eq!(first.steps, stripped);
         assert!(recorded.records.iter().any(|r| r["screened"] == true));
         assert_eq!(
             recorded
@@ -190,6 +215,21 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
             .unwrap();
         assert!(carried.solution.seed.as_ref().unwrap().kept);
         assert_eq!(carried.steps.len(), 3);
+        // With `warm_start = false` a sequence's cost and removal weights are the optimum from
+        // zeros, a function of the sequence alone: the transferred seed's rows equal the rows of a
+        // chain that was never transferred. (The seed used to be cached at its transferred-start
+        // optimum.)
+        let seed_sequence = json!(first.solution.indices);
+        let mut compared = 0;
+        for carried_row in carried.records.iter().filter(|r| r["source"] == seed_sequence) {
+            for cold_row in recorded.records.iter().filter(|r| r["source"] == seed_sequence) {
+                assert_eq!(carried_row["source_cost"], cold_row["source_cost"]);
+                assert_eq!(carried_row["source_removal"], cold_row["source_removal"]);
+                assert_eq!(carried_row["source_importances"], cold_row["source_importances"]);
+                compared += 1;
+            }
+        }
+        assert!(compared > 0, "the seed sequence is not a source in both chains");
         options.length_penalty = 1.;
         let refused = problem
             .search(

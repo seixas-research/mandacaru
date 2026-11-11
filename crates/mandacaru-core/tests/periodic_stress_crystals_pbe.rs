@@ -25,7 +25,7 @@ fn the_stress_of_a_converged_pbe_state() {
     let bite = bites(&without, &want);
     println!("  control without the gradient term: bites {bite:.2e} gates");
     assert!(bite > 100.);
-    let weak = weak_terms(&stress, &want);
+    let weak = weak_terms(&stress, &want, &data.crystal.functional);
     assert!(
         weak.is_empty(),
         "terms the oracle cannot discriminate: {weak:?}"

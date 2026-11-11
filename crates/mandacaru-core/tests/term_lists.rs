@@ -44,3 +44,30 @@ fn a_fermion_product_concatenates_left_outer_and_dagger_reverses() {
     assert_eq!(term_lists::fermion_modes(&product), 2);
     assert_eq!(term_lists::fermion_modes(&[(vec![], c(1., 0.))]), 0);
 }
+
+#[test]
+fn a_propagator_keeps_the_real_terms_and_sums_their_magnitudes() {
+    let terms = vec![
+        ("XX".to_string(), c(0.5, 0.)),
+        ("ZI".to_string(), c(0., 0.)),
+        ("IZ".to_string(), c(-0.25, 1e-13)),
+    ];
+    let (real, bound) = term_lists::real_pauli_terms(2, &terms).unwrap();
+    assert_eq!(real, vec![("XX".to_string(), 0.5), ("IZ".to_string(), -0.25)]);
+    assert_eq!(bound, 0.75);
+    // The bound is added as Python's `sum` adds floats (compensated): 0.0005 + 0.5 + 1.25 + 0.5
+    // is 2.2505, where a running sum gives 2.2504999999999997.
+    let four = [("Z", 0.0005), ("Y", 0.5), ("I", -1.25), ("X", 0.5)]
+        .map(|(label, value)| (label.to_string(), c(value, 0.)));
+    assert_eq!(term_lists::real_pauli_terms(1, &four).unwrap().1, 2.2505);
+    // No term left: the bound is a positive zero.
+    let (none, zero) = term_lists::real_pauli_terms(1, &[("Z".to_string(), c(0., 0.))]).unwrap();
+    assert!(none.is_empty() && zero == 0. && zero.is_sign_positive());
+    let refused = |label: &str, value: C64| term_lists::real_pauli_terms(2, &[(label.to_string(), value)]);
+    assert!(refused("XQ", c(1., 0.)).is_err());
+    assert!(refused("X", c(1., 0.)).is_err());
+    assert!(refused("XX", c(1., 1e-9)).is_err());
+    assert!(refused("XX", c(f64::INFINITY, 0.)).is_err());
+    let overflow = [("XX".to_string(), c(f64::MAX, 0.)), ("YY".to_string(), c(f64::MAX, 0.))];
+    assert!(term_lists::real_pauli_terms(2, &overflow).is_err());
+}

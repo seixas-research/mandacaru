@@ -19,8 +19,6 @@
 zero_sloc = 3822
 
 [module]
-"analysis/correlation.py" = { np = 2 }
-"analysis/expressibility.py" = { np = 1 }
 "analysis/proposals.py" = { dloops = 2 }
 "backends/providers.py" = { dyn = 1, dloops = 1, dcomp = 2 }
 "basis/__init__.py" = { sloc = 30, category = "hand-off" }
@@ -31,7 +29,6 @@ zero_sloc = 3822
 "basis/filtering.py" = { bi = 2, arith = 1, arithmax = 1, sloc = 123, wave = "W4", dies = "2027-07-16" }
 "basis/multizeta.py" = { dloops = 1, bi = 2, arith = 1, arithmax = 1, sloc = 131, wave = "BF", dies = "2027-07-16" }
 "basis/relativity.py" = { bi = 4, arith = 4, arithmax = 3, sloc = 130, wave = "W4", dies = "2027-07-16" }
-"calculation.py" = { np = 2 }
 "core/checkpoint.py" = { dcomp = 2 }
 "core/mapping.py" = { dcomp = 1 }
 "core/serialization.py" = { dcomp = 1 }
@@ -63,13 +60,7 @@ zero_sloc = 3822
 "pseudopotentials/paw.py" = { bi = 1, sloc = 320, wave = "3a/3b", dies = "2027-05-07" }
 "pseudopotentials/record.py" = { sloc = 190, category = "hand-off" }
 "utils/banner.py" = { dyn = 3 }
-"utils/bxsf.py" = { np = 1 }
 "utils/logging.py" = { dloops = 7, dcomp = 3 }
-"utils/viewer.py" = { np = 28, matmul = 1, meth = 5, dloops = 2 }
-"workflows/nested_otoc.py" = { np = 3 }
-"workflows/qpe.py" = { np = 9, dcomp = 1 }
-"workflows/quantum_echoes.py" = { np = 4 }
-"workflows/time_evolution.py" = { dloops = 1, dcomp = 1 }
 
 [[exception]]
 module = "basis/__init__.py"

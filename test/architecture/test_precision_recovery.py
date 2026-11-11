@@ -92,7 +92,7 @@ class TestRouteRefusals:
         ran = []
         monkeypatch.setattr(calc, "run", lambda *a, **k: ran.append(a))
         monkeypatch.setattr(calc, "_mean_field", lambda *a, **k: ran.append(a))
-        with pytest.raises(ValueError, match="quantum-method forces.*1e-3 Bohr"):
+        with pytest.raises(ValueError, match="quantum-method forces.*float64 only"):
             calc.calculate(atoms, properties=("energy", "forces"))
         assert not ran
         assert calc.result is None and calc.integrals is None and calc.results == {}

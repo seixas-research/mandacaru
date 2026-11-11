@@ -202,11 +202,23 @@ pub fn equation_of_state(manifest: &Value, stress: &Stress) -> (f64, f64, f64) {
 
 /// A stress without one of its terms must miss the oracle by more than 100 gates; returns the
 /// terms whose removal does not (their bite is printed either way).
-pub fn weak_terms(stress: &Stress, want: &[[Entry; 3]; 3]) -> Vec<&'static str> {
+///
+/// A term the crystal does not have is zero by construction, not weak, and is skipped only then:
+/// the spin-orbit term of a crystal without that coupling, the exchange term of a functional
+/// without exact exchange (anything but `hse06`), the kinetic-density terms of one that is not
+/// r2SCAN, the nonlocal term of one without rVV10. A zero term that `functional` has is weak (the
+/// empty gradient term of LDA is reported, and its callers name it).
+pub fn weak_terms(stress: &Stress, want: &[[Entry; 3]; 3], functional: &str) -> Vec<&'static str> {
+    let absent = |name: &str| match name {
+        "spin_orbit" => true,
+        "exchange" => functional != "hse06",
+        "kinetic_density" | "xc_core_kinetic" => !functional.starts_with("r2scan"),
+        "xc_nonlocal" => !functional.contains("rvv10"),
+        _ => false,
+    };
     let mut weak = Vec::new();
     for (name, term) in stress.breakdown.terms() {
-        // The spin-orbit and exchange terms of a crystal that has none are zero by construction, not weak.
-        if matches!(name, "spin_orbit" | "exchange") && term.iter().flatten().all(|x| *x == 0.) {
+        if absent(name) && term.iter().flatten().all(|x| *x == 0.) {
             continue;
         }
         let without: Tensor =

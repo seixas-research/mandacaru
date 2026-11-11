@@ -1,6 +1,6 @@
 //! The echo correlation and its spectrum (`quantum::dynamics`).
 use mandacaru_core::{
-    quantum::{dynamics::{fourier_spectrum, Propagator}, C64},
+    quantum::{dynamics::{echo_peaks, fourier_spectrum, qpe_ground_overlap, qpe_readout, Propagator}, C64},
     Context,
 };
 
@@ -97,4 +97,58 @@ fn the_qpe_memory_counts_the_full_register() {
     assert!(!big.dense && big.unitary == 0 && big.working > 1 << 50);
     assert!(qpe_memory(0, 4, None, 16).is_err());
     assert!(qpe_memory(100, 100, None, 16).is_err());
+}
+
+#[test]
+fn the_qpe_readout_lists_the_most_probable_bins_in_numpys_order() {
+    // t = 2, window [-1, 1]: bin m sits at -1 + 2 m / 4, a bin is 0.5 wide.
+    let readout = qpe_readout(&[0.1, 0.4, 0., 0.5], 2, [-1., 1.]).unwrap();
+    assert_eq!(readout.phases, vec![0., 0.25, 0.5, 0.75]);
+    assert_eq!(readout.energies, vec![-1., -0.5, 0., 0.5]);
+    assert_eq!(readout.resolution, 0.5);
+    // Most probable first; the bin of zero probability is left out.
+    assert_eq!(readout.peaks, vec![(0.5, 0.5), (-0.5, 0.4), (-1., 0.1)]);
+    // Equal probabilities: NumPy's sort keeps equal values in order below sixteen bins, so reading
+    // it backward lists the highest bin first.
+    let tied = qpe_readout(&[0.25; 4], 2, [0., 4.]).unwrap();
+    assert_eq!(tied.peaks.iter().map(|p| p.0).collect::<Vec<_>>(), vec![3., 2., 1., 0.]);
+    assert!(qpe_readout(&[0.5, 0.5, 0.], 2, [0., 1.]).is_err());
+    assert!(qpe_readout(&[1.], 0, [0., 1.]).is_err());
+    // t = 5 keeps the max(8, 2^min(t, 4)) = 16 most probable of 32 bins; t = 2 keeps all 4.
+    let many = qpe_readout(&(0..32).map(|i| i as f64 + 1.).collect::<Vec<_>>(), 5, [0., 1.]).unwrap();
+    assert_eq!(many.peaks.len(), 16);
+    assert_eq!(many.peaks[0].1, 32.);
+}
+
+#[test]
+fn the_ground_overlap_sums_the_levels_within_the_tolerance_of_the_lowest() {
+    let exact = [-1., -1. + 1e-11, 0.2, -1. + 2e-10];
+    let overlaps = [0.5, 0.25, 0.125, 0.0625];
+    assert_eq!(qpe_ground_overlap(&exact, &overlaps, true).unwrap(), 0.75);
+    // The same levels in eV give the same sum.
+    let ev: Vec<f64> = exact.iter().map(|e| e * mandacaru_core::units::HARTREE_TO_EV).collect();
+    assert_eq!(qpe_ground_overlap(&ev, &overlaps, false).unwrap(), 0.75);
+    assert!(qpe_ground_overlap(&exact, &overlaps[..3], true).is_err());
+    assert!(qpe_ground_overlap(&[], &[], true).is_err());
+}
+
+#[test]
+fn the_echo_peaks_are_the_positive_energy_maxima_above_the_threshold() {
+    let energies = [-2., -1., 0., 1., 2.];
+    let intensities = [0.2, 0.9, 0.1, 0.5, 0.3];
+    // The negative-energy maximum at index 1 is not reported; the positive side's largest is 0.5.
+    assert_eq!(echo_peaks(&energies, &intensities, 0.5).unwrap(), vec![3]);
+    assert_eq!(echo_peaks(&energies, &intensities, 1.0).unwrap(), vec![3]);
+    assert!(echo_peaks(&energies, &[0.2, 0.9, 0.1, 0., 0.], 0.5).unwrap().is_empty());
+    assert!(echo_peaks(&[-1., -2.], &[1., 2.], 0.5).is_err());
+    assert!(echo_peaks(&energies, &intensities[..4], 0.5).is_err());
+}
+
+#[test]
+fn the_norm_of_a_stored_state_is_the_root_of_its_float64_inner_product() {
+    use mandacaru_core::quantum::amplitude::norm;
+    // |3 + 4i|^2 + |12i|^2 = 25 + 144, so the norm is 13; a complex64 state sums in float64 too.
+    assert_eq!(norm(&[C64::new(3., 4.), C64::new(0., 12.)]), 13.);
+    assert_eq!(norm(&[num_complex::Complex32::new(3., 4.), num_complex::Complex32::new(0., 12.)]), 13.);
+    assert_eq!(norm::<C64>(&[]), 0.);
 }

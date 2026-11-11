@@ -788,3 +788,19 @@ fn mixed_channel_moments_match_the_existing_silicon_builder() {
         }
     }
 }
+
+#[test]
+fn the_crystal_setup_and_build_run_on_the_context_threads() {
+    // A kernel outside a context's policy takes `available_parallelism()` workers, and the context
+    // records none of them: the build's kernels must be counted, and bounded by its two threads.
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let dataset = Arc::new(PawDataset::read(&ctx, &PathBuf::from(root).join("lda-sr/H.parquet")).unwrap());
+    let mut raw = request();
+    raw["grid_shape"] = json!([24, 24, 24]);
+    let setup = create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]).unwrap();
+    let before = ctx.workers_total();
+    setup.build(&ctx).unwrap();
+    assert!(ctx.workers_total() > before, "no kernel of the build ran on the context's workers");
+    assert!(ctx.workers_peak() <= 2, "the setup used {} workers on a 2-thread context", ctx.workers_peak());
+}

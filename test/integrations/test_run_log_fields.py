@@ -29,7 +29,8 @@ def driver(**options):
         _two_body_truncation_ev=None, _loaded_two_body=None, _grid_spacing=0.35,
         _kinetic="spectral", _charge=0, _kpts_spec={"size": (1, 1, 1), "gamma": True},
         _mapping="jordan_wigner", _atomic_units=False, _scf_options={}, _quenching=True, _tetris=False, _prune=False,
-        _resume_lineage=None, _resume_path=None, _shots=0, _sparse=False, _sector=True, _taper=False,
+        method="adapt-vqe", _resume_lineage=None, _resume_path=None, _search=None, _search_record=None, _transfer=False,
+        _transfer_threshold=0.9, _transfer_steps=None, _shots=0, _sparse=False, _sector=True, _taper=False,
         n_qubits=4, integrals=SimpleNamespace(grid=grid((18, 18, 18), np.eye(3) * 0.6614)))
     values.update(options)
     return SimpleNamespace(**values)
@@ -264,6 +265,128 @@ class TestTheLineage:
         assert block["resume_same_hamiltonian"] is True
         assert start == pytest.approx(-HARTREE_TO_EV)
         assert "initial_ansatz" not in block
+
+
+def search(**options):
+    """The validated search options a ``vasqa`` driver holds (Hartree inside)."""
+    values = dict(max_steps=40, max_length=6, move_weights=[1., 0.2, 3.],
+                  temperatures=[0.1 / HARTREE_TO_EV, 0.001 / HARTREE_TO_EV],
+                  length_penalty=0.5 / HARTREE_TO_EV, warm_start=True, replace_start="zero",
+                  screen_insertions=0, proposal_temperature=0.1, proposal="gradient",
+                  record=False, seed=7)
+    values.update(options)
+    return values
+
+
+def search_result(unit="eV", **raw):
+    return SimpleNamespace(energy_unit=unit, _raw=raw, transfer=raw.get("transfer", {}),
+                           proposal_ready=False, proposal_reason="none",
+                           _problem=SimpleNamespace(pool_labels=[f"op{i}" for i in range(12)]))
+
+
+class TestTheSearchSetup:
+    """The search branch of ``[OPTIMIZATION SETUP]``: the controls the native chain received."""
+
+    def test_the_controls_are_written_in_the_log_unit_without_the_growth_lines(self):
+        block = fields.search_setup(driver(_search=search()), search_result())
+        assert list(block) == [
+            "max_steps", "max_length", "move_weights", "temperature_initial_eV",
+            "temperature_final_eV", "length_penalty_eV", "proposal", "proposal_temperature",
+            "warm_start", "replace_start", "screen_insertions", "seed"]
+        assert block["move_weights"] == "insert 1, delete 0.2, replace 3"
+        assert block["temperature_initial_eV"] == "0.1" and block["temperature_final_eV"] == "0.001"
+        assert block["length_penalty_eV"] == "0.5"
+        assert block["seed"] == 7
+
+    def test_an_atomic_unit_run_keeps_hartree(self):
+        block = fields.search_setup(driver(_search=search(), _atomic_units=True),
+                                    search_result(unit="Ha"))
+        assert float(block["temperature_initial_Ha"]) == pytest.approx(0.1 / HARTREE_TO_EV)
+        assert "temperature_initial_eV" not in block
+
+    def test_the_transfer_options_are_written_only_for_a_run_that_asked_for_a_transfer(self):
+        plain = fields.search_setup(driver(_search=search(), _transfer_steps=None), search_result())
+        assert "transfer_threshold" not in plain and "transfer_steps" not in plain
+        asked = fields.search_setup(driver(_search=search(), _transfer=True), search_result())
+        assert asked["transfer_threshold"] == "0.9" and "transfer_steps" not in asked
+        short = fields.search_setup(driver(_search=search(), _transfer=True, _transfer_steps=3),
+                                    search_result())
+        assert short["transfer_steps"] == 3
+
+    def test_a_proposal_model_is_written_for_valsqa_only(self):
+        assert "proposal_model" not in fields.search_setup(
+            driver(_search=search(), method="vasqa"), search_result())
+        result = search_result(model_update="none (model is not ready)")
+        block = fields.search_setup(driver(_search=search(), method="valsqa"), result)
+        assert block["proposal_model"] == "not used (none)"
+        assert block["proposal_model_update"] == "none (model is not ready)"
+
+    def test_a_recorded_run_names_its_directory(self):
+        block = fields.search_setup(
+            driver(_search=search(record=True), _search_record="store"), search_result())
+        assert block["record_directory"] == "store"
+
+    def test_the_summary_lines_are_the_chains_outcome(self):
+        result = SimpleNamespace(
+            energy_unit="eV", final_energy=-1.5, num_architectures=9,
+            acceptance_by_move={"insert": (2, 5), "delete": (0, 3), "replace": (1, 2)})
+        assert fields.search_summary(result) == {
+            "final_energy_eV": "-1.5000000000",
+            "acceptance_by_move": "insert 2/5, delete 0/3, replace 1/2",
+            "num_architectures": 9}
+
+
+class TestTheSearchLineage:
+    """Where a search chain started: the transferred ansatz or the empty sequence, and why."""
+
+    @staticmethod
+    def kept(count=2):
+        return dict(accepted=True, confidence=0.9999, reason="matched", indices=list(range(count)),
+                    parameters=[0.1] * count, hessian=None)
+
+    def block(self, **raw):
+        return fields.lineage(driver(_search=search()), search_result(**raw))
+
+    def test_a_run_without_a_transfer_has_no_lineage(self):
+        assert self.block() == ({}, None)
+
+    def test_a_kept_transfer_names_its_ansatz_confidence_and_relaxed_energy(self):
+        block, start = self.block(
+            transfer=self.kept(1),
+            seed_relaxation=dict(kept=True, energy_ha=-1.0, success=True, message="ok"))
+        assert list(block) == ["start", "transfer_confidence", "start_energy_eV", "start_operators"]
+        assert block["start"] == "transferred ansatz (1 operator)"
+        assert block["transfer_confidence"] == "0.9999000000"
+        assert block["start_energy_eV"] == f"{-HARTREE_TO_EV:.10f}"
+        assert block["start_operators"] == "op0"
+        # The chain's table is measured from the proposals, not from this energy.
+        assert start is None
+
+    def test_a_long_transferred_ansatz_is_capped(self):
+        block, _ = self.block(
+            transfer=self.kept(11),
+            seed_relaxation=dict(kept=True, energy_ha=-1.0, success=True, message="ok"))
+        assert block["start"] == "transferred ansatz (11 operators)"
+        assert block["start_operators"] == "op0 op1 op2 op3 op4 op5 op6 op7 (+3 more)"
+
+    def test_a_transfer_that_did_not_survive_its_relaxation_starts_empty_with_the_reason(self):
+        rejected = dict(self.kept(), accepted=False,
+                        reason="the carried state did not improve\nthe reference objective")
+        block, _ = self.block(transfer=rejected,
+                              seed_relaxation=dict(kept=False, energy_ha=-1.0, success=True,
+                                                   message="ok"))
+        assert block == {
+            "start": "empty (the carried state did not improve the reference objective)",
+            "transfer_confidence": "0.9999000000"}
+
+    def test_a_first_geometry_has_no_confidence_to_report(self):
+        block, _ = self.block(transfer=dict(accepted=False, confidence=0.,
+                                            reason="no previous molecular ansatz"))
+        assert block == {"start": "empty (no previous molecular ansatz)"}
+
+    def test_an_adapt_run_with_a_transfer_is_left_to_its_own_rows(self):
+        block = fields.lineage(driver(), search_result(transfer=self.kept()))
+        assert block == ({}, None)
 
 
 class TestTheStateVectorBackend:

@@ -40,7 +40,7 @@ pub fn run(case: &'static str, second: bool, allowed: &[&str]) {
     equation_of_state(&data.manifest, &stress);
     let mut weak = exchange_controls(&stress, &want);
     weak.extend(
-        weak_terms(&stress, &want)
+        weak_terms(&stress, &want, &data.crystal.functional)
             .into_iter()
             .filter(|name| !name.starts_with("exchange") && *name != "spin_orbit")
             .map(|name| (name, f64::NAN)),
@@ -125,7 +125,7 @@ pub fn run_enveloped(
     let want = entries(&data.manifest, volume);
     let mut weak = exchange_controls(&stress, &want);
     weak.extend(
-        weak_terms(&stress, &want)
+        weak_terms(&stress, &want, &data.crystal.functional)
             .into_iter()
             .filter(|name| !name.starts_with("exchange") && *name != "spin_orbit")
             .map(|name| (name, f64::NAN)),

@@ -84,6 +84,13 @@ fn cell_parameters_lengths_relative_energies_and_electron_counts() {
     assert_eq!(derived::gaps(&[-3., -2.5, -1.]), vec![0.5, 1.5]);
     assert_eq!(derived::difference_to_user(-1.2, -1.0, Quantity::Energy, true).unwrap(), -1.2 - -1.0);
     assert_eq!(derived::total(&[1., 2., 3.]), 6.);
+    // Python's `sum([1e16, 1.0, -1e16])` is 1.0 (compensated, Python 3.12+); added in order it is 0.0.
+    assert_eq!(derived::total(&[1e16, 1., -1e16]), 1.);
+    let mesh = derived::mesh_fractions([2, 1, 3]).unwrap();
+    assert_eq!(mesh.len(), 6);
+    assert_eq!(mesh[1], [0., 0., 1. / 3.]);
+    assert_eq!(mesh[5], [0.5, 0., 2. / 3.]);
+    assert!(derived::mesh_fractions([2, 0, 3]).is_err());
     assert_eq!(derived::norm(&[3., 4.]), 5.);
     assert_eq!(derived::distance(&[1., 1., 1.], &[1., 4., 5.]).unwrap(), 5.);
     // Two k-points of weight 1/2, two bands; restricted splits its total in halves.
@@ -150,4 +157,26 @@ fn free_particle_relations_invert_each_other() {
         assert!(derived::nyquist_wavevector(0.5, bad).is_err());
     }
     assert!(derived::free_energy_ev(f64::INFINITY).is_err());
+}
+
+#[test]
+fn workflow_values_are_the_numbers_a_spectrum_and_an_echo_report() {
+    assert_eq!(derived::descending_weights(3).unwrap(), vec![3., 2., 1.]);
+    assert!(derived::descending_weights(0).is_err());
+    assert_eq!(derived::max_abs(&[0.5, -2., 1.]), 2.);
+    assert_eq!(derived::max_abs(&[]), 0.);
+    assert!(derived::max_abs(&[1., f64::NAN]).is_nan());
+    assert_eq!(derived::sample_times(3, 0.5), vec![0., 0.5, 1.]);
+    // 2 pi / (4 * 0.5) = pi and pi / 0.5 = 2 pi.
+    assert_eq!(derived::fourier_bin_spacing(4, 0.5), std::f64::consts::PI);
+    assert_eq!(derived::nyquist_frequency(0.5), 2. * std::f64::consts::PI);
+    let amplitudes = [num_complex::Complex64::new(3., 4.), num_complex::Complex64::new(0., -2.)];
+    assert_eq!(derived::magnitudes(&amplitudes), vec![5., 2.]);
+    assert_eq!(derived::squared(3.), 9.);
+    assert_eq!(derived::modulus_squared(3., 4.), 25.);
+    assert_eq!(derived::pulse_bound(-0.5, 4.), 2.);
+    // Python's sum is compensated: it recovers the 1.0 a running sum loses against 1e16.
+    assert_eq!(derived::python_sum(&[1e16, 1., 1., -1e16]), 2.);
+    assert_eq!([1e16, 1., 1., -1e16].iter().sum::<f64>(), 0.);
+    assert_eq!(derived::python_sum(&[]), 0.);
 }

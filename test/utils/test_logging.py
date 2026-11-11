@@ -668,6 +668,72 @@ class TestOptimizationSetupBlock:
         assert setup["classical_optimizer"] == "COBYLA"
 
 
+class TestSearchOptimizationSetup:
+    """``[OPTIMIZATION SETUP]`` of ``vasqa`` and ``valsqa`` says how the chain was configured.
+
+    A search has no growth loop: the ADAPT lines (``max_iterations``, ``growth``,
+    ``pruning``, ``reoptimize_all_parameters``, the convergence thresholds) are not
+    written for it, and the controls that decide its chain are.
+    """
+
+    #: The block's lines in the order they are written, for a direct-mode ``vasqa`` run.
+    FIELDS = ("classical_optimizer", "gradient_method", "gradient_units",
+              "pool", "pool_class", "pool_size",
+              # The chain: its budget, its moves, its acceptance temperature, its proposals.
+              "max_steps", "max_length", "move_weights",
+              "temperature_initial_Ha", "temperature_final_Ha", "length_penalty_Ha",
+              "proposal", "proposal_temperature", "warm_start", "replace_start",
+              "screen_insertions", "seed",
+              "state_vector_backend", "device", "backend_provider", "circuit_execution",
+              "shots", "energy_unit", "reference_energy_Ha")
+
+    @pytest.fixture(scope="class")
+    def text(self, tmp_path_factory):
+        out = str(tmp_path_factory.mktemp("search") / "output.txt")
+        context = _native.Context(threads=1)
+        operator = context.pauli_operator(
+            4, [("ZIII", .3, 0.), ("XXII", .2, 0.), ("YYII", .2, 0.)])
+        with Mandacaru(method="vasqa", hamiltonian=operator, n_spatial_orbitals=2,
+                       num_particles=(1, 0), max_steps=12, max_length=4, seed=7,
+                       move_weights={"insert": 1., "delete": .2, "replace": 3.},
+                       length_penalty=.001, atomic_units=True, profile=False,
+                       resources={"threads": 1}, txt=out, trace=False) as calc:
+            calc.run()
+        return out
+
+    def test_the_block_is_the_search_branch(self, text):
+        setup = parse_output(text)["setup"]
+        assert tuple(setup) == self.FIELDS
+        for growth in ("max_iterations", "growth", "pruning", "reoptimize_all_parameters",
+                       "convergence"):
+            assert growth not in setup
+
+    def test_the_controls_read_back_as_they_were_given(self, text):
+        setup = parse_output(text)["setup"]
+        assert setup["max_steps"] == "12" and setup["max_length"] == "4"
+        assert setup["move_weights"] == "insert 1, delete 0.2, replace 3"
+        assert float(setup["length_penalty_Ha"]) == pytest.approx(.001)
+        # The default schedule is 0.1 eV down to 0.001 eV, written in the result unit.
+        assert float(setup["temperature_initial_Ha"]) == pytest.approx(.1 / HARTREE_TO_EV)
+        assert float(setup["temperature_final_Ha"]) == pytest.approx(.001 / HARTREE_TO_EV)
+        assert setup["proposal"] == "gradient" and float(setup["proposal_temperature"]) == .1
+        assert setup["warm_start"] == "True" and setup["replace_start"] == "zero"
+        assert setup["seed"] == "7"
+
+    def test_the_summary_owns_what_the_chain_did(self, text):
+        parsed = parse_output(text)
+        summary = parsed["summary"]
+        moves = dict(item.split() for item in summary["acceptance_by_move"].split(", "))
+        taken = sum(int(value.split("/")[0]) for value in moves.values())
+        tried = sum(int(value.split("/")[1]) for value in moves.values())
+        assert set(moves) == {"insert", "delete", "replace"} and tried == 12
+        assert 0 <= taken <= tried
+        assert int(summary["num_architectures"]) >= 1
+        assert float(summary["final_energy_Ha"]) <= 0.
+        # One row per proposal: the table and the summary count the same chain.
+        assert len(parsed["markov_chain"]) == tried
+
+
 class TestNothingIsSaidTwice:
     """Each fact has one owner: a value written in two blocks can disagree
     with itself, and a reader has to decide which one to believe."""
@@ -702,6 +768,26 @@ class TestNothingIsSaidTwice:
             or "sector" in setup["state_vector_backend"]
         for key in ("device", "backend_provider", "circuit_execution"):
             assert key in setup
+
+
+    def test_a_search_says_each_fact_once(self, transferred_search_log):
+        """The chain's controls, its start and its outcome each have one owner, and the
+        energies of the setup are not repeated in the summary."""
+        # From the setup to the summary: the step counter heads [SYSTEM] and [PERFORMANCE] alike.
+        text = "[OPTIMIZATION SETUP]" + last_step(transferred_search_log).split(
+            "[OPTIMIZATION SETUP]", 1)[1].split("[PERFORMANCE]", 1)[0]
+        keys = body_keys(text)
+        assert len(keys) == len(set(keys)), sorted(k for k in set(keys) if keys.count(k) > 1)
+        setup, _, summary = text.partition("[VARIATIONAL QUANTUM SUMMARY]")
+        setup_keys, summary_keys = body_keys(setup), body_keys(summary)
+        for key in ("max_steps", "seed", "start", "start_energy_eV", "reference_energy_eV",
+                    "classical_optimizer", "temperature_initial_eV"):
+            assert key in setup_keys and key not in summary_keys
+        for key in ("optimal_energy_eV", "final_energy_eV", "acceptance_by_move",
+                    "num_architectures"):
+            assert key in summary_keys and key not in setup_keys
+        # The search owns the budget as `max_steps`; the ADAPT name is not a second spelling.
+        assert "max_iterations" not in keys
 
 
     def test_the_two_wall_times_are_adjacent(self, text):
@@ -1440,6 +1526,70 @@ class TestAResumedRunLineage:
         assert float(parsed["setup"]["restored_energy_eV"]) == pytest.approx(restored, abs=1e-9)
         first = parsed["iterations"][0]
         assert first["energy"] - first["delta_energy"] == pytest.approx(restored, abs=1e-8)
+
+
+@pytest.fixture(scope="module")
+def transferred_search_log(tmp_path_factory):
+    """One ``vasqa`` log over two H2 geometries, the second started from the first's ansatz.
+
+    Returns the log's path; its two steps are the empty start (nothing to carry yet)
+    and the transferred one.
+    """
+    out = str(tmp_path_factory.mktemp("transfer") / "output.txt")
+    atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
+    with Mandacaru(method="vasqa", atoms=atoms, basis="HAO", pool="qeb", grid_spacing=.5,
+                   transfer=True, transfer_steps=2, max_steps=6, seed=7, record=False,
+                   resources={"threads": 1}, profile=False, txt=out, trace=False):
+        atoms.get_potential_energy()
+        atoms.positions[1, 2] += .001
+        atoms.get_potential_energy()
+    return out
+
+
+def last_step(path):
+    """The text of the log's last geometry step."""
+    return open(path, encoding="utf-8").read().rsplit("[SYSTEM]", 1)[1]
+
+
+def body_keys(text):
+    """Every ``KEY:`` line of a block body, in order (table rows carry clock times and are not keys)."""
+    import re
+
+    return re.findall(r"^    ([A-Za-z_][A-Za-z_0-9]*):", text, flags=re.MULTILINE)
+
+
+class TestASearchLineage:
+    """A search chain says where it started: the carried ansatz or the empty sequence."""
+
+    def test_the_first_geometry_starts_empty_and_says_why(self, transferred_search_log):
+        first = parse_output(transferred_search_log)["steps"][0]["setup"]
+        assert first["start"] == "empty (no previous molecular ansatz)"
+        for key in ("transfer_confidence", "start_energy_eV", "start_operators"):
+            assert key not in first
+
+    def test_the_second_geometry_starts_from_the_relaxed_carried_ansatz(self, transferred_search_log):
+        parsed = parse_output(transferred_search_log)
+        setup = parsed["steps"][1]["setup"]
+        assert setup["start"].startswith("transferred ansatz (")
+        assert 0.9 <= float(setup["transfer_confidence"]) <= 1.0
+        assert setup["start_operators"].split()[0] == "QD(0,2->1,3)"
+        # The relaxed energy of the carried ansatz is below the reference energy it came from.
+        assert float(setup["start_energy_eV"]) < float(setup["reference_energy_eV"])
+        # The setup owns the option; the chain after a kept transfer is that long.
+        assert setup["transfer_steps"] == "2" and setup["max_steps"] == "6"
+        assert len(parsed["steps"][1]["markov_chain"]) == 2
+        assert len(parsed["steps"][0]["markov_chain"]) == 6
+
+    def test_a_run_without_transfer_writes_no_start_line(self, tmp_path):
+        out = str(tmp_path / "output.txt")
+        atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
+        with Mandacaru(method="vasqa", atoms=atoms, basis="HAO", pool="qeb", grid_spacing=.5,
+                       max_steps=2, seed=7, record=False, resources={"threads": 1},
+                       profile=False, txt=out, trace=False):
+            atoms.get_potential_energy()
+        setup = parse_output(out)["setup"]
+        for key in ("start", "transfer_confidence", "transfer_threshold", "transfer_steps"):
+            assert key not in setup
 
 
 class TestExpressivityColumn:

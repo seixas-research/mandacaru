@@ -98,7 +98,7 @@ P(\mu) = \frac{\exp\!\left(\dfrac{|g_\mu|}{\tau\, g_{\max}}\right)}
 \quad g_{\max} = \max_\nu |g_\nu| ,
 ```
 
-where $\tau$ is `proposal_temperature` (default 0.2), relative to the largest
+where $\tau$ is `proposal_temperature` (default 0.1), relative to the largest
 gradient. A small $\tau$ approaches ADAPT's greedy choice, a large one the
 uniform draw, and every operator keeps a positive probability. `proposal="uniform"`
 draws every operator with probability $1/M$. Most pool operators have zero

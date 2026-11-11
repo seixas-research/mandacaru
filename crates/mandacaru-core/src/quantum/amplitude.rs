@@ -219,6 +219,11 @@ impl State {
 pub fn norm_squared<A: Amplitude>(a: &[A]) -> f64 {
     a.iter().map(|c| c.widen().norm_sqr()).sum()
 }
+
+/// `sqrt(<a|a>)`, the inner product summed in float64 whatever the stored dtype.
+pub fn norm<A: Amplitude>(a: &[A]) -> f64 {
+    norm_squared(a).sqrt()
+}
 /// `sum conj(a) b` in float64.
 pub fn inner<A: Amplitude>(a: &[A], b: &[A]) -> C64 {
     a.iter()

@@ -64,9 +64,7 @@ def calculate(calculation, n_functions, *, guess, windows, bands, kpts,
             for name, pair in windows.items()
         }
     setup = calculation.result.periodic.wannier_setup(json.dumps(spec, allow_nan=False))
-    sx, sy, sz = spec["size"]
-    setup.add_points_at([[i / sx, j / sy, k / sz]
-                         for i in range(sx) for j in range(sy) for k in range(sz)])
+    setup.add_points_at(_native.mesh_fractions(spec["size"]))
     native = setup.localize(max_iterations=max_iterations, tolerance=tolerance, step=step)
     return (WannierResult(native, 0) if native.n_spins == 1 else SpinWannierResult(native))
 

@@ -1,6 +1,6 @@
 //! Values the run log and the ASE results derive from a calculation's numbers: force norms and
 //! their summary, the rows of the ADAPT iteration table, a cell's lengths and angles.
-use crate::{Error, Result};
+use crate::{math::numpy_rules, Error, Result};
 
 /// The norms of the per-atom forces and their summary, as the `[FORCES]` block and the
 /// optimization history report them.
@@ -110,9 +110,32 @@ pub fn electron_counts(occupations: &[f64], spins: usize, kpoints: usize, bands:
     Ok(if spins == 2 { [count(0), count(1)] } else { let half = count(0) / 2.; [half, half] })
 }
 
-/// The sum of `values`, added in order (a run's wall times, for one).
+/// The sum of `values` as Python's `sum` of floats computes it (a run's wall times, for one): the
+/// compensated [`python_sum`], which differs from an ordered sum in the last bit for three or more terms.
 pub fn total(values: &[f64]) -> f64 {
-    values.iter().sum()
+    python_sum(values)
+}
+
+/// The fractional coordinates of a Gamma-centered `shape` mesh, `[i / n0, j / n1, k / n2]` with `k`
+/// running fastest (the order of the Wannier setup's points). Each entry is the correctly rounded
+/// quotient of two exactly representable integers, as Python's `i / n` is.
+pub fn mesh_fractions(shape: [usize; 3]) -> Result<Vec<[f64; 3]>> {
+    if shape.iter().any(|&n| n == 0) {
+        return Err(Error::Invalid("every mesh dimension must be positive".into()));
+    }
+    let mut points = Vec::with_capacity(shape[0] * shape[1] * shape[2]);
+    for i in 0..shape[0] {
+        for j in 0..shape[1] {
+            for k in 0..shape[2] {
+                points.push([
+                    i as f64 / shape[0] as f64,
+                    j as f64 / shape[1] as f64,
+                    k as f64 / shape[2] as f64,
+                ]);
+            }
+        }
+    }
+    Ok(points)
 }
 
 /// The Euclidean norm of `vector`.
@@ -304,4 +327,69 @@ pub fn nyquist_wavevector(fraction: f64, spacing_bohr: f64) -> Result<f64> {
         return Err(Error::Invalid("the Nyquist fraction must be finite and positive".into()));
     }
     Ok(fraction * std::f64::consts::PI / spacing_bohr)
+}
+
+/// The weights `n, n - 1, ..., 1`: the default weights of `n` states in a subspace search.
+pub fn descending_weights(n: usize) -> Result<Vec<f64>> {
+    if n == 0 {
+        return Err(Error::Invalid("a subspace holds at least one state".into()));
+    }
+    Ok((0..n).map(|i| (n - i) as f64).collect())
+}
+
+/// `max |v|` (NaN when a value is NaN), zero for no values.
+pub fn max_abs(values: &[f64]) -> f64 {
+    let magnitudes: Vec<f64> = values.iter().map(|v| v.abs()).collect();
+    numpy_rules::maximum(&magnitudes).unwrap_or(0.)
+}
+
+/// The times `i dt` of `n` uniform samples.
+pub fn sample_times(n: usize, dt: f64) -> Vec<f64> {
+    (0..n).map(|i| i as f64 * dt).collect()
+}
+
+/// The spacing `2 pi / (n dt)` of the Fourier bins of `n` samples a time step `dt` apart.
+pub fn fourier_bin_spacing(samples: usize, dt: f64) -> f64 {
+    2. * std::f64::consts::PI / (samples as f64 * dt)
+}
+
+/// The Nyquist frequency `pi / dt` of samples a time step `dt` apart.
+pub fn nyquist_frequency(dt: f64) -> f64 {
+    std::f64::consts::PI / dt
+}
+
+/// `np.abs` of complex128 values (see [`numpy_rules::complex_abs`]).
+pub fn magnitudes(values: &[crate::quantum::C64]) -> Vec<f64> {
+    values.iter().map(|&z| numpy_rules::complex_abs(z)).collect()
+}
+
+/// `x ** 2` as Python evaluates it for a float, through the C library's `pow`: it can differ
+/// from `x * x` in the last bit.
+pub fn squared(x: f64) -> f64 {
+    x.powf(std::hint::black_box(2.))
+}
+
+/// `abs(z) ** 2` of a Python complex (`hypot`, then [`squared`]): the fidelity of an amplitude.
+pub fn modulus_squared(re: f64, im: f64) -> f64 {
+    squared(re.hypot(im))
+}
+
+/// `|tau| * norm_bound`: the strength bound of a pulse of signed strength `tau`.
+pub fn pulse_bound(tau: f64, norm_bound: f64) -> f64 {
+    tau.abs() * norm_bound
+}
+
+/// Python's `sum` of floats, added in order with Neumaier's compensation (the algorithm of
+/// CPython 3.12 and later), not the running sum: the norm bound of a Pauli sum, for one.
+pub fn python_sum(values: &[f64]) -> f64 {
+    let (mut total, mut compensation) = (0.0f64, 0.0f64);
+    for &x in values {
+        let t = total + x;
+        compensation += if total.abs() >= x.abs() { (total - t) + x } else { (x - t) + total };
+        total = t;
+    }
+    if compensation != 0. && compensation.is_finite() {
+        total += compensation;
+    }
+    total
 }

@@ -84,7 +84,9 @@ def read_bxsf(path) -> BandGrid:
     shape = tuple(int(n) for n in tokens[start + 2].split())
     cell = np.array([[float(x) for x in tokens[start + 4 + i].split()]
                      for i in range(3)])
-    count = int(np.prod(shape))
+    count = 1
+    for n in shape:
+        count *= n
     bands = []
     line = start + 7
     for _band in range(n_bands):

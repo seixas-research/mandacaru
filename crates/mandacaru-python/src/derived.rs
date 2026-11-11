@@ -167,10 +167,15 @@ pub fn energy_unit_factor(unit: &str) -> PyResult<f64> {
     units::energy_factor(unit).map_err(error)
 }
 
-/// The sum of `values` in order (`derived::total`).
+/// The sum of `values` as Python's `sum` computes it (`derived::total`).
 #[pyfunction]
 pub fn total(values: Vec<f64>) -> f64 {
     derived::total(&values)
+}
+/// The fractional points of a Gamma-centered mesh, `k` fastest (`derived::mesh_fractions`).
+#[pyfunction]
+pub fn mesh_fractions(shape: [usize; 3]) -> PyResult<Vec<[f64; 3]>> {
+    derived::mesh_fractions(shape).map_err(error)
 }
 /// The Euclidean norm of `vector` (`derived::norm`).
 #[pyfunction]
@@ -278,4 +283,68 @@ pub fn energy_shift_radius(shift_ev: f64) -> PyResult<f64> {
 #[pyfunction]
 pub fn nyquist_wavevector(fraction: f64, spacing_bohr: f64) -> PyResult<f64> {
     derived::nyquist_wavevector(fraction, spacing_bohr).map_err(error)
+}
+
+/// The weights `n, n - 1, ..., 1` (`derived::descending_weights`).
+#[pyfunction]
+pub fn descending_weights<'py>(py: Python<'py>, n: usize) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+    Ok(derived::descending_weights(n).map_err(error)?.into_pyarray(py))
+}
+
+/// `max |v|` of an array of any shape, zero when empty (`derived::max_abs`).
+#[pyfunction]
+pub fn max_abs(values: PyReadonlyArrayDyn<'_, f64>) -> f64 {
+    derived::max_abs(&values.as_array().iter().copied().collect::<Vec<_>>())
+}
+
+/// `np.min(values)` of a nonempty array (`numpy_rules::minimum`).
+#[pyfunction]
+pub fn array_minimum(values: PyReadonlyArrayDyn<'_, f64>) -> PyResult<f64> {
+    let data: Vec<f64> = values.as_array().iter().copied().collect();
+    mandacaru_core::math::numpy_rules::minimum(&data)
+        .ok_or_else(|| error(mandacaru_core::Error::Invalid("the minimum of no values".into())))
+}
+
+/// `np.argmax(values)` of a nonempty one-dimensional array (`numpy_rules::argmax`).
+#[pyfunction]
+pub fn array_argmax(values: PyReadonlyArrayDyn<'_, f64>) -> PyResult<usize> {
+    let data: Vec<f64> = values.as_array().iter().copied().collect();
+    mandacaru_core::math::numpy_rules::argmax(&data)
+        .ok_or_else(|| error(mandacaru_core::Error::Invalid("the argmax of no values".into())))
+}
+
+/// `i dt` for `i` in `0..n` (`derived::sample_times`).
+#[pyfunction]
+pub fn sample_times<'py>(py: Python<'py>, n: usize, dt: f64) -> Bound<'py, numpy::PyArray1<f64>> {
+    derived::sample_times(n, dt).into_pyarray(py)
+}
+
+/// `2 pi / (n dt)` (`derived::fourier_bin_spacing`).
+#[pyfunction]
+pub fn fourier_bin_spacing(samples: usize, dt: f64) -> f64 {
+    derived::fourier_bin_spacing(samples, dt)
+}
+
+/// `pi / dt` (`derived::nyquist_frequency`).
+#[pyfunction]
+pub fn nyquist_frequency(dt: f64) -> f64 {
+    derived::nyquist_frequency(dt)
+}
+
+/// `x ** 2` through the C library's `pow`, as Python's float power (`derived::squared`).
+#[pyfunction]
+pub fn squared(x: f64) -> f64 {
+    derived::squared(x)
+}
+
+/// `abs(complex(re, im)) ** 2` (`derived::modulus_squared`).
+#[pyfunction]
+pub fn modulus_squared(re: f64, im: f64) -> f64 {
+    derived::modulus_squared(re, im)
+}
+
+/// `|tau| * norm_bound` (`derived::pulse_bound`).
+#[pyfunction]
+pub fn pulse_bound(tau: f64, norm_bound: f64) -> f64 {
+    derived::pulse_bound(tau, norm_bound)
 }

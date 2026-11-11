@@ -148,7 +148,8 @@ optimization's. On a three-orbital, two-electron model with the fermionic pool, 
 growth steps end 4.3 mHa above six joint ones. The run log writes the setting as
 `reoptimize_all_parameters` in `[OPTIMIZATION SETUP]`. The subspace methods and the
 searches (`vasqa`, `valsqa`) always re-optimize every parameter, and refuse
-`quenching=False` (`ValueError`).
+`quenching=False` (`ValueError`); a search's `[OPTIMIZATION SETUP]` writes its own chain
+controls instead of this line.
 
 (growth-strategies)=
 ## How the ansatz grows: `tetris` and `prune`
@@ -172,7 +173,7 @@ off by default):
   instead of 30 at the same energy. Against a tightly converged optimizer there is usually
   nothing to remove. `result.pruned_operators` lists `(step, label)` of each removal.
 
-`[OPTIMIZATION SETUP]` writes `growth` and `pruning`, and a pruned run's `[VARIATIONAL QUANTUM SUMMARY]` writes
+An ADAPT-VQE `[OPTIMIZATION SETUP]` writes `growth` and `pruning`, and a pruned run's `[VARIATIONAL QUANTUM SUMMARY]` writes
 `pruned_operators`. Neither option applies to a resumed or transferred ansatz
 (`ValueError`).
 

@@ -55,7 +55,7 @@ fn the_stress_of_a_converged_fermi_dirac_metal() {
         "the smearing check is vacuous: {partial} partially occupied bands"
     );
     equation_of_state(&data.manifest, &stress);
-    let weak = weak_terms(&stress, &want);
+    let weak = weak_terms(&stress, &want, &data.crystal.functional);
     assert!(
         weak.iter().all(|w| SMALL.contains(w)),
         "terms the oracle cannot discriminate: {weak:?}"
@@ -85,7 +85,7 @@ fn the_stress_of_cubic_aluminum_on_a_full_mesh_is_isotropic() {
     // Cubic: sigma = p I, up to the egg-box floor of the grid terms (the 6x6x6 grid and the mesh
     // keep the 48 operations).
     isotropy(&data.manifest, &stress);
-    let weak = weak_terms(&stress, &want);
+    let weak = weak_terms(&stress, &want, &data.crystal.functional);
     assert!(
         weak.iter().all(|w| SMALL.contains(w)),
         "terms the oracle cannot discriminate: {weak:?}"

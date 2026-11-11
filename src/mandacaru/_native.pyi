@@ -313,8 +313,10 @@ def length_to_bohr(values: Any, unit: str) -> Any:
     """A length in ``unit`` (float or array) in Bohr."""
 def energy_unit_factor(unit: str) -> float:
     """The Hartree-to-``unit`` factor of an accepted energy spelling (``units::energy_factor``)."""
+def mesh_fractions(shape: Sequence[int]) -> list[list[float]]:
+    """The fractional points ``[i/n0, j/n1, k/n2]`` of a Gamma-centered mesh, ``k`` fastest (``derived::mesh_fractions``)."""
 def total(values: Sequence[float]) -> float:
-    """The sum of ``values`` in order (``derived::total``)."""
+    """The sum of ``values`` as Python's ``sum`` computes it, compensated (``derived::total``)."""
 def vector_norm(vector: Sequence[float]) -> float:
     """The Euclidean norm of ``vector`` (``derived::norm``)."""
 def distance(a: Sequence[float], b: Sequence[float]) -> float:
@@ -339,6 +341,26 @@ def grid_coordinates(origin: Sequence[float], step: Sequence[Sequence[float]], s
     """The points of a grid, ``(3, nx, ny, nz)``: ``origin + step . (i, j, k)`` (``derived::grid_coordinates``)."""
 def decimal_digits(atol: float) -> int:
     """``max(0, round(-log10(atol)))``, ties to even (``derived::decimal_digits``)."""
+def descending_weights(n: int) -> NDArray[np.float64]:
+    """``n, n - 1, ..., 1`` (``derived::descending_weights``)."""
+def max_abs(values: NDArray[np.float64]) -> float:
+    """``max |v|`` of an array of any shape; zero when empty, NaN when a value is NaN (``derived::max_abs``)."""
+def array_minimum(values: NDArray[np.float64]) -> float:
+    """``np.min`` of a nonempty array (``numpy_rules::minimum``)."""
+def array_argmax(values: NDArray[np.float64]) -> int:
+    """``np.argmax`` of a nonempty array (``numpy_rules::argmax``)."""
+def sample_times(n: int, dt: float) -> NDArray[np.float64]:
+    """``i * dt`` for ``i`` in ``range(n)`` (``derived::sample_times``)."""
+def fourier_bin_spacing(samples: int, dt: float) -> float:
+    """``2 pi / (samples dt)`` (``derived::fourier_bin_spacing``)."""
+def nyquist_frequency(dt: float) -> float:
+    """``pi / dt`` (``derived::nyquist_frequency``)."""
+def squared(x: float) -> float:
+    """``x ** 2`` through the C library's ``pow``, as Python's float power (``derived::squared``)."""
+def modulus_squared(re: float, im: float) -> float:
+    """``abs(complex(re, im)) ** 2`` (``derived::modulus_squared``)."""
+def pulse_bound(tau: float, norm_bound: float) -> float:
+    """``abs(tau) * norm_bound`` (``derived::pulse_bound``)."""
 def rounded(values: Sequence[float], decimals: int) -> list[float]:
     """``values`` rounded to ``decimals`` places as numpy does, ties to even (``derived::rounded``)."""
 def electric_field_vector(direction: Sequence[float], strength: float) -> list[float]:
@@ -416,6 +438,34 @@ def paw_basis(context: Context, payload: str, tables: dict[str, NDArray], recipe
 def isosurface_triangles(shape: tuple[int, int, int], values: NDArray[np.float64], x: NDArray[np.float64], y: NDArray[np.float64], z: NDArray[np.float64], level: float) -> NDArray[np.float64]: ...
 def enclosing_level(weights: NDArray[np.float64], fraction: float) -> float: ...
 def weighted_cloud(weights: NDArray[np.float64], nodes: NDArray[np.float64], step: NDArray[np.float64], count: int, seed: int) -> tuple[NDArray[np.uint64], NDArray[np.float64]]: ...
+def field_weights(values: NDArray[np.float64], power: int) -> NDArray[np.float64]:
+    """``|f| ** power`` of a flat field, ``power`` 1 or 2 (``viewer::weights``)."""
+def field_isovalue(values: NDArray[np.float64], power: int, fraction: float) -> float:
+    """The isovalue enclosing ``fraction`` of the field's weight, ``level ** (1 / power)`` (``viewer::isovalue``)."""
+def signed_isosurface(shape: tuple[int, int, int], values: NDArray[np.float64], x: NDArray[np.float64], y: NDArray[np.float64], z: NDArray[np.float64], level: float, signed: bool) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
+    """``(triangles (n, 3, 3), signs (n,))`` of the lobes ``f = level`` and, when ``signed``, ``-f = level`` (``viewer::signed_surface``)."""
+def cloud_shading(values: NDArray[np.float64], power: int) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    """``(brightness, non-negative)`` of a cloud's field values (``viewer::cloud_shading``)."""
+def surface_normals(triangles: NDArray[np.float64]) -> NDArray[np.float64]:
+    """The ``(n, 3)`` unit normal of every ``(n, 3, 3)`` triangle (``viewer::surface_normals``)."""
+def surface_colors(signs: NDArray[np.int64], positive: Sequence[float], negative: Sequence[float]) -> NDArray[np.float64]:
+    """The ``(n, 3)`` flat color of every triangle by the sign of its lobe (``viewer::surface_colors``)."""
+def surface_rgba(normals: NDArray[np.float64], base: NDArray[np.float64], elevation: float, azimuth: float, alpha: float) -> NDArray[np.float64]:
+    """The ``(n, 4)`` face colors of a surface lit by a headlight (``viewer::surface_rgba``)."""
+def bonded_pairs(nuclei: NDArray[np.float64], radii: NDArray[np.float64]) -> list[tuple[int, int]]:
+    """The nuclei pairs closer than ``1.2 (r_a + r_b)`` (``viewer::bonded_pairs``)."""
+def marker_sizes(radii: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``60 (r / max r)^2 + 20`` (``viewer::marker_sizes``)."""
+def mean_point(points: NDArray[np.float64]) -> list[float]:
+    """``points.mean(axis=0)`` of ``(n, 3)`` points (``viewer::mean_point``)."""
+def view_extent(nuclei: NDArray[np.float64], center: Sequence[float], shown: NDArray[np.float64], percentile: float) -> float:
+    """The half-width of the view at zoom one (``viewer::view_extent``)."""
+def view_limits(center: Sequence[float], extent: float, zoom: float) -> list[list[float]]:
+    """The ``[[lo, hi]] * 3`` axis limits ``center -+ extent / zoom`` (``viewer::view_limits``)."""
+def frame_duration(fps: float) -> int:
+    """The delay of one animation frame in milliseconds, ``max(round(1000 / fps), 20)`` with ties to even (``viewer::frame_duration``)."""
+def camera_path(poses: NDArray[np.float64], frames: int, zoom: NDArray[np.float64] | None = None, rotate: str | None = None, turns: float = 1.0) -> NDArray[np.float64]:
+    """``(frames, 6)`` rows ``(elevation, azimuth, zoom, fx, fy, fz)`` from ``(k, 6)`` keyframes; ``rotate`` is ``"azimuth"``, ``"elevation"`` or ``None`` (``viewer::camera_path``)."""
     """The PAW-LCAO basis of one element (``paw::basis_recipe``, the crystal setup's own recipe): ``shells`` as ``(n, l, zeta, polarization, diffuse, r, values)`` (a diffuse shell on its own, longer grid), ``confined`` (each confined state's ``r_c``, ``energy``, ``free_energy``), ``polarization`` (the Gaussian shell, or ``None``) and ``diffuse`` (every diffuse shell built, accepted or not)."""
 def paw_diagnose(context: Context, payload: str, tables: dict[str, NDArray[np.float64]], *, levels: bool = False) -> PawDiagnosis: ...
 def paw_quality(context: Context, payload: str, tables: dict[str, NDArray[np.float64]], *, bond: float | None = None, twin: tuple[str, dict[str, NDArray[np.float64]]] | None = None) -> PawQuality: ...
@@ -684,7 +734,7 @@ class RdmMeasurement:
         """``(one, two, one_error, two_error)`` from the ``measured`` values in request index order; with ``shots`` the errors include the covariances of strings read in one basis on the same shots."""
 
 class QuantumProblem:
-    def search(self, *, max_steps: int = 200, max_length: int = 20, move_weights: Sequence[float] = ..., temperatures: Sequence[float] = ..., length_penalty: float = 0., proposal_temperature: float = .2, proposal: str = "gradient", warm_start: bool = True, replace_start: str = "zero", screen_insertions: int = 0, record: bool = False, seed: int = 0, optimizer: str = "BFGS", max_iterations: int = 300, max_evaluations: int = 5000, tolerance: float | None = 1e-9, track_best: bool = True, initial_indices: Sequence[int] | None = None, initial_parameters: Sequence[float] | None = None, proposal_model: str | None = None, transfer_steps: int | None = None) -> QuantumResult: ...
+    def search(self, *, max_steps: int = 200, max_length: int = 20, move_weights: Sequence[float] = ..., temperatures: Sequence[float] = ..., length_penalty: float = 0., proposal_temperature: float = .1, proposal: str = "gradient", warm_start: bool = True, replace_start: str = "zero", screen_insertions: int = 0, record: bool = False, seed: int = 0, optimizer: str = "BFGS", max_iterations: int = 300, max_evaluations: int = 5000, tolerance: float | None = 1e-9, track_best: bool = True, initial_indices: Sequence[int] | None = None, initial_parameters: Sequence[float] | None = None, proposal_model: str | None = None, transfer_steps: int | None = None) -> QuantumResult: ...
     def sample_fidelities(self, indices: Sequence[int], *, pairs: int = 3000, seed: int = 0, product_form: bool = True) -> NDArray[np.float64]: ...
     def hva(self, *, layers: int = 2, evolution: str = "exact", order: int = 2, steps: int = 1, seed_angle: float = 0.1) -> QuantumProblem: ...
     @property
@@ -1189,7 +1239,20 @@ def xc_gradient_term_derivative(orbitals: NDArray[Any], orbital_gradients: NDArr
 def xc_place_radial_densities(x: NDArray[np.float64], y: NDArray[np.float64], z: NDArray[np.float64], tables: list[tuple[Sequence[float], Sequence[float], tuple[float, float, float]]]) -> NDArray[np.float64]: ...
 def xc_valence_terms(r: NDArray[np.float64], valence: NDArray[np.float64], core: NDArray[np.float64], e_xc: NDArray[np.float64], v_xc: NDArray[np.float64]) -> float: ...
 
-def find_peaks_1d(x: NDArray[np.float64], height: float | None = None) -> NDArray[np.int64]: ...
+def spectrum_magnitudes(amplitudes: NDArray[np.complex128]) -> NDArray[np.float64]:
+    """``np.abs`` of complex128 amplitudes, by NumPy's own magnitude formula (``derived::magnitudes``)."""
+def echo_peaks(energies: NDArray[np.float64], intensities: NDArray[np.float64], relative_threshold: float) -> NDArray[np.int64]:
+    """The positive-energy local maxima at least ``relative_threshold`` times the largest positive-side value (``dynamics::echo_peaks``)."""
+def qpe_readout(probabilities: NDArray[np.float64], evaluation: int, lo: float, hi: float) -> dict[str, Any]:
+    """``{"phases", "energies", "peaks", "resolution"}`` of a QPE register, the peaks ordered as ``np.argsort(p)[::-1]`` (``dynamics::qpe_readout``)."""
+def qpe_ground_overlap(exact: NDArray[np.float64], overlaps: NDArray[np.float64], hartree: bool) -> float:
+    """The overlap in the ground eigenspace; ``exact`` in Hartree, or eV when ``hartree`` is false (``dynamics::qpe_ground_overlap``)."""
+def state_norm(state: NDArray[np.complex64] | NDArray[np.complex128]) -> float:
+    """``sqrt(<psi|psi>)`` of a stored state, summed in float64."""
+def divide_state(state: NDArray[np.complex64] | NDArray[np.complex128], divisor: float) -> NDArray[np.complex64] | NDArray[np.complex128]:
+    """``state / divisor`` by NumPy's complex quotient, in the state's own dtype (``numpy_rules::divide_by_real``)."""
+def real_pauli_terms(n_qubits: int, terms: Sequence[tuple[str, float, float]]) -> tuple[list[tuple[str, float]], float]:
+    """The real terms of a Hermitian Pauli sum and the sum of their magnitudes; raises ``ValueError`` for a bad label, a non-finite or non-Hermitian coefficient (``term_lists::real_pauli_terms``)."""
 def qpe_memory(system: int, evaluation: int, dense: bool | None = None, precision: str = "float64") -> tuple[int, int, int, bool]:
     """``(statevector, working, unitary, dense)`` bytes of a QPE simulation; ``dense=None`` is ``system <= 12`` (``dynamics::qpe_memory``)."""
 def fourier_spectrum(signal: NDArray[np.complex128], dt: float, *, elastic: float = 0.0, window: str = "hann") -> tuple[NDArray[np.float64], NDArray[np.complex128]]:

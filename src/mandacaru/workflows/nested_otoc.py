@@ -71,17 +71,18 @@ class OTOCSpectrum:
     @property
     def intensities(self) -> NDArray[np.float64]:
         """Fourier magnitudes in atomic-time units, not absorption strengths."""
-        return np.abs(self.amplitudes)
+        return _native.spectrum_magnitudes(
+            np.ascontiguousarray(self.amplitudes, dtype=complex))
 
     @property
     def resolution(self) -> float:
         """Angular-frequency bin spacing, in atomic units."""
-        return 2 * np.pi / (self.times.size * self.time_step)
+        return _native.fourier_bin_spacing(self.times.size, self.time_step)
 
     @property
     def nyquist_frequency(self) -> float:
         """Nyquist angular frequency, in atomic units."""
-        return np.pi / self.time_step
+        return _native.nyquist_frequency(self.time_step)
 
     def to_csv(self, path: str | PathLike[str] = "otoc_spectrum.csv") -> Path:
         """Write every signed frequency bin, overwriting an existing file.
@@ -91,9 +92,9 @@ class OTOCSpectrum:
         from the Hartree amplitudes in the dipole-correlation spectrum.
         """
         destination = Path(path)
-        data = np.column_stack((self.frequencies, self.frequencies_ev,
-                                self.intensities, self.amplitudes.real,
-                                self.amplitudes.imag))
+        data = np.stack((self.frequencies, self.frequencies_ev,
+                         self.intensities, self.amplitudes.real,
+                         self.amplitudes.imag), axis=1)
         np.savetxt(destination, data, delimiter=",", fmt="%.12e", comments="",
                    header="angular_frequency_ha,angular_frequency_ev,"
                           "magnitude_au_time,fft_real_au_time,fft_imag_au_time")
@@ -203,7 +204,7 @@ class NestedOTOC:
             raise ValueError("window must be 'hann' or 'none'")
         psi = _state_vector(initial_state, self._evolution.n_qubits,
                             precision=self.precision)
-        times = np.arange(n) * dt
+        times = _native.sample_times(n, dt)
         correlation = self._evolution._native.nested_otoc_series(
             self._b._native, self._m._native,
             np.ascontiguousarray(psi, dtype=self._evolution._dtype), dt, n, steps, k,

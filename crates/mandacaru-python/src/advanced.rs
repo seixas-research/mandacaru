@@ -270,38 +270,6 @@ pub fn mp2<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, height=None))]
-pub fn find_peaks_1d<'py>(
-    py: Python<'py>,
-    x: numpy::PyReadonlyArray1<'py, f64>,
-    height: Option<f64>,
-) -> PyResult<crate::arrays::Array<'py, i64>> {
-    let s = x.as_slice()?;
-    let min_h = height.unwrap_or(f64::NEG_INFINITY);
-    let mut peaks = Vec::new();
-    let n = s.len();
-    if n >= 3 {
-        let mut i = 1;
-        while i < n - 1 {
-            if s[i] > s[i - 1] {
-                let mut j = i;
-                while j < n - 1 && s[j + 1] == s[i] {
-                    j += 1;
-                }
-                if j < n - 1 && s[j + 1] < s[i] && s[i] >= min_h {
-                    peaks.push(i as i64);
-                }
-                i = j + 1;
-            } else {
-                i += 1;
-            }
-        }
-    }
-    let len = peaks.len();
-    array(py, &[len], peaks)
-}
-
-#[pyfunction]
 #[pyo3(signature = (unitary, tol=1e-12))]
 pub fn givens_decomposition<'py>(
     py: Python<'py>,

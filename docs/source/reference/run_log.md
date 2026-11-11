@@ -412,9 +412,10 @@ coupled-operator labels are too long for a row, so its `operator` column reads `
 
 - `classical_optimizer` is the `optimizer["method"]` actually used (SPSA by default
   when `shots > 0`).
-- `max_iterations` is the growth budget (`max_iterations=`) for the ADAPT methods and
-  `max_steps` for `vasqa` and `valsqa`. A fixed-ansatz `vqe` run still prints the
-  growth budget, which it does not use.
+- `max_iterations` is the growth budget (`max_iterations=`) for the ADAPT methods. A
+  fixed-ansatz `vqe` run still prints the growth budget, which it does not use. `vasqa`
+  and `valsqa` have no growth loop and write no `max_iterations`: their budget is
+  `max_steps`, in the search lines below.
 - `gradient_method` reads `analytic` in every run, including a shot-based one; the
   measured gradient is described by `[GRADIENT MEASUREMENT]`. `gradient_units` is the
   unit of the screening gradient, Ha/rad.
@@ -424,6 +425,8 @@ coupled-operator labels are too long for a row, so its `operator` column reads `
   `*`, and so does `final_max_gradient` in the summary.
 - `pool` and `pool_size` name the operator pool and its size; `pool_class` is what the
   native engine says that pool generates.
+- `growth`, `pruning` and `reoptimize_all_parameters` describe the ADAPT growth loop, so
+  a `vasqa` or `valsqa` run does not write them; it writes the search lines below.
 - `growth` is `single (largest gradient)`, or `tetris (disjoint-support operators per step)`
   with `tetris=True`. `pruning` is `on` with `prune=True`, and the summary of such a run
   then counts its `pruned_operators`.
@@ -442,6 +445,80 @@ coupled-operator labels are too long for a row, so its `operator` column reads `
   and `resume_same_hamiltonian: True`. The native resume raises when the Hamiltonian
   differs, so `True` is a checked fact. The first `dE` of the table is measured from
   the restored energy.
+
+### Search runs (`vasqa`, `valsqa`)
+
+The architecture-search methods replace the ADAPT lines with the controls of their chain,
+each read from the options the native search received, in the energy unit of the log (the
+search itself runs in Hartree):
+
+```text
+[OPTIMIZATION SETUP]
+    classical_optimizer: SLSQP
+    gradient_method: analytic
+    gradient_units: Ha/rad
+    pool: qeb
+    pool_class: qubit excitations
+    pool_size: 3
+    max_steps: 6
+    max_length: 20
+    move_weights: insert 1, delete 1, replace 1
+    temperature_initial_eV: 0.1
+    temperature_final_eV: 0.001
+    length_penalty_eV: 0
+    proposal: gradient
+    proposal_temperature: 0.1
+    warm_start: True
+    replace_start: zero
+    screen_insertions: 0
+    seed: 7
+    transfer_threshold: 0.9
+    transfer_steps: 2
+    state_vector_backend: particle-number sector, 4 states of 2^4
+    device: AER_simulator
+    backend_provider: none
+    circuit_execution: False
+    shots: 0 (exact expectation values)
+    energy_unit: eV
+    reference_energy_eV: -23.9562119779
+    start: transferred ansatz (1 operator)
+    transfer_confidence: 0.9999993814
+    start_energy_eV: -24.4828813782
+    start_operators: QD(0,2->1,3)
+```
+
+- `max_steps` is the length of the chain, in proposals (the `[MARKOV CHAIN]` rows), and
+  `max_length` the largest ansatz it may hold. After a transferred start that was kept, the
+  chain runs `transfer_steps` proposals instead (all `max_steps` when that option is unset).
+- `move_weights` is the relative frequency of each move; a move left out of the option has
+  weight 0. `temperature_initial_<unit>` and `temperature_final_<unit>` are the acceptance
+  temperature at the first and the last proposal (equal for a constant temperature), and
+  `length_penalty_<unit>` is the cost added per operator. The `T` column of the table
+  is the temperature each proposal used.
+- `proposal` is `gradient` or `uniform`, `proposal_temperature` the temperature of the
+  gradient-weighted distribution (a number, used as given), `warm_start` and `replace_start`
+  how a re-optimization starts, and `screen_insertions` the number of insertions screened
+  before one is tried. `record_directory` appears only for a run that records its proposals.
+- `seed` is the seed the chain ran with: the one given, or the one the run drew when
+  `seed=None`. Rerun with it to repeat the chain.
+- `valsqa` adds `proposal_model`: `ready (<reason>)` when a trained model drove the proposals,
+  `not used (<reason>)` when the chain fell back to gradient proposals. With
+  `update_between_geometries=True` it adds `proposal_model_update`.
+- `transfer_threshold` and `transfer_steps` are written only for a run with `transfer=True`
+  (`transfer_steps` only when set).
+
+The lineage of a search with `transfer=True` says where the chain started, and it is the
+only owner of that fact. A start from the previous geometry's ansatz writes the lines above:
+`start: transferred ansatz (L operators)`, `transfer_confidence` (the overlap with the
+previous state in the new geometry, checked against `transfer_threshold`), `start_energy_<unit>`
+(the carried ansatz after its relaxation in the new geometry), and `start_operators`, its
+operator labels separated by spaces (the first eight, then `(+N more)`). A chain that starts
+from the empty sequence writes `start: empty (<reason>)` instead, with the reason the
+transfer reports: no previous ansatz (the first geometry), an overlap below the threshold,
+or a carried state that did not improve the reference energy after its relaxation. It writes
+`transfer_confidence` whenever the overlap was computed, and no `start_energy`, since the
+energy of the empty start is the `reference_energy`. A search without `transfer=True` writes
+no lineage line. (An ADAPT-VQE run with `transfer=True` writes none either.)
 
 ## `[ITERATIONS]`
 
@@ -485,7 +562,7 @@ For `vasqa` and `valsqa`, one row per proposal, accepted or not:
         2           18:59:58    replace      1        -26.056005     +0.433007        -26.489012     2.154e-02      -19.412      no          -    replace@0
 ```
 
-`move` is the edit proposed (`insert`, `delete`, `replace`, `swap`), `L` the length of
+`move` is the edit proposed (`insert`, `delete`, `replace`), `L` the length of
 the proposed ansatz, `energy` its relaxed energy, `dE` the change from the chain's
 current state, `current` the chain's energy after the decision, `T` the temperature,
 `ln(a)` the log acceptance ratio, and `acc` the decision. `steps` is always `-`:
@@ -520,6 +597,13 @@ threshold. `termination` is the reason the optimizer or the growth loop stopped
 (`pool gradients converged`, `growth budget exhausted`, ...), as the native solver
 reports it. `cost_evaluations` counts optimizer objective calls, and
 `optimizer_steps` the parameter updates summed over the run.
+
+A search (`vasqa`, `valsqa`) adds, before `termination`, what its chain did, which no other
+block says: `final_energy_<unit>` is the energy of the state the chain ended on (the
+`optimal_energy` is the state with the lowest objective, the energy plus `length_penalty`
+per operator, wherever the chain met it), `acceptance_by_move` the accepted over the proposed
+count of each move (`insert 2/5, delete 0/3, replace 1/2`), and `num_architectures` the
+number of distinct ansatz sequences the chain evaluated.
 
 A run with `shots > 0` adds `energy_standard_error_<unit>` right after `optimal_energy`, the
 one line that states it (`result.energy_error`). It is computed in Rust from the device's
@@ -637,7 +721,7 @@ Other schemes add their own lines after `scheme`:
 | `scheme` | Method | Extra lines |
 | --- | --- | --- |
 | `Analytic-Hellmann-Feynman-Pulay` | all-electron HF and Kohn-Sham | none |
-| `Richardson-fixed-density-PAW` | PAW-LCAO RHF, UHF and semilocal Kohn-Sham | `step_bohr`, `step_error_estimate` |
+| `analytic` (mean field) | PAW-LCAO RHF, UHF and Kohn-Sham | `stationarity` |
 | `analytic` (variational) | quantum methods, PAW-LCAO | `energy_ha`, `directions`, `orbital_response` (`CPHF-and-natural-orbital-Lagrangian`), `reference_stationarity`, `cphf_residual`, `coulomb_forms`, `stationarity`, `parameter_gradient_norm` (a variational state) and, for a corrected one, `z_vector_norm` and the Hessian solve (`hessian_parameters`, `hessian_exact`, `hessian_hamiltonian_actions`, `hessian_noise`, `hessian_cutoff`, the curvature extremes, `z_vector_dropped` and what it left out; see [the Z-vector correction](#forces-lagrangian)) |
 
 `net_force` is the sum of the force vectors, which a free molecule should not feel:
@@ -711,10 +795,12 @@ owner.
 | What the mean-field reference stops on, and its iterations | `[SCF SETUP]`, `[SCF ITERATIONS]` |
 | Which orbitals were frozen, active or deleted | `[ACTIVE SPACE]` |
 | Optimizer, thresholds, growth budget, pool, device, shots, reference energy, lineage of a resumed run | `[OPTIMIZATION SETUP]` |
+| A search's controls (`max_steps`, moves, temperatures, proposals, seed) and where its chain started | `[OPTIMIZATION SETUP]` |
 | Cost of measuring the pool gradients | `[GRADIENT MEASUREMENT]` |
 | Per-step energy, gradient and circuit cost | `[ITERATIONS]` |
 | Per-proposal energy and decision | `[MARKOV CHAIN]` |
 | Final variational energy, operator and parameter counts, termination reason | `[VARIATIONAL QUANTUM SUMMARY]` |
+| A search's final chain energy, acceptance by move, number of architectures | `[VARIATIONAL QUANTUM SUMMARY]` |
 | Final mean-field energy and convergence | `[SCF SUMMARY]` |
 | The DFT+U correction (`hubbard_u=`): its energy, and `U`, `J` and `U_eff` per element | `[SCF SUMMARY]` |
 | Force vectors and their convention | `[FORCES]` |
@@ -731,8 +817,9 @@ in `[ELECTRONS]`, and the fate of each orbital in `[ACTIVE SPACE]`.
 The older manual described blocks and lines that the calculator does not write. Do
 not look for them in a log, and do not parse for them:
 
-- The screening lines of `[OPTIMIZATION SETUP]`: the native solver has no such options.
-  (The `growth` and `pruning` lines are written, as the `[OPTIMIZATION SETUP]` section says.)
+- Pool-screening lines in an ADAPT-VQE `[OPTIMIZATION SETUP]`: ADAPT-VQE measures the
+  gradient of every pool operator at every step and has no screening option. (The
+  `growth` and `pruning` lines are written, as the `[OPTIMIZATION SETUP]` section says.)
 - A crystal's `[BASIS]` states only the precision: the resolved recipe, the datasets
   and the orbitals are written for a molecule.
 - The `time` column of `[SCF ITERATIONS]`: the native SCF records no clock. Likewise

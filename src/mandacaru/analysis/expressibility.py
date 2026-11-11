@@ -1,5 +1,7 @@
 """Thin parameter and array adapters to native expressibility calculations."""
 
+import secrets
+
 import numpy as np
 from .. import _native
 
@@ -9,8 +11,7 @@ def active_space_dimension(n_qubits, num_particles=None):
 
 
 def sample_pqc_fidelities(ansatz, num_pairs=3000, rng=None):
-    rng = np.random.default_rng() if rng is None else rng
-    seed = int(rng.integers(0, 2**63))
+    seed = secrets.randbits(63) if rng is None else int(rng.integers(0, 2**63))
     return ansatz.problem.sample_fidelities(
         ansatz.indices, pairs=num_pairs, seed=seed, product_form=ansatz.product_form
     )

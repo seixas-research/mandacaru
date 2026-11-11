@@ -44,7 +44,7 @@ impl Default for Options {
             move_weights: [1.; 3],
             temperatures: [0.1 / 27.211386245988, 0.001 / 27.211386245988],
             length_penalty: 0.,
-            proposal_temperature: 0.2,
+            proposal_temperature: 0.1,
             uniform: false,
             warm_start: true,
             replace_inherit: false,
@@ -125,6 +125,8 @@ struct Evaluator<'a> {
     failures: Vec<(usize, String)>,
 }
 impl Evaluator<'_> {
+    /// The relaxed state of `sequence`. With `warm_start=false` the result is a function of the
+    /// sequence alone (the relaxation starts from zeros), so it is memoized.
     fn evaluate(
         &mut self,
         sequence: Vec<usize>,
@@ -137,6 +139,29 @@ impl Evaluator<'_> {
                 return Ok(cached.clone());
             }
         }
+        let result = self.compute(sequence, initial, step)?;
+        if !self.options.warm_start {
+            self.cache.insert(result.sequence.clone(), result.clone());
+        }
+        Ok(result)
+    }
+    /// Relax `sequence` from `initial` without reading or writing the cache: a start that is not
+    /// the zero start is not a function of the sequence, so it must never be stored as one.
+    fn evaluate_uncached(
+        &mut self,
+        sequence: Vec<usize>,
+        initial: Vec<f64>,
+        step: usize,
+    ) -> Result<Evaluated> {
+        self.seen.insert(sequence.clone());
+        self.compute(sequence, initial, step)
+    }
+    fn compute(
+        &mut self,
+        sequence: Vec<usize>,
+        initial: Vec<f64>,
+        step: usize,
+    ) -> Result<Evaluated> {
         let (parameters, energy, success, message) = if sequence.is_empty() {
             (
                 vec![],
@@ -166,11 +191,22 @@ impl Evaluator<'_> {
                 result.message,
             )
         };
-        let state = self.problem.prepare_state(&sequence, &parameters, true)?;
-        let gradients = self.problem.pool_gradients(&state, true)?;
-        self.screenings += 1;
+        // The pool screen feeds the gradient proposal, a ready learned model, the recorded rows and
+        // the final gradient (computed once at the end when no state screens it): a uniform chain
+        // that records nothing needs none of it per proposal.
+        let screen = !self.options.uniform
+            || self.options.record
+            || (self.learned.is_some_and(|m| m.ready) && self.graph.is_some());
+        let gradients = if screen {
+            let state = self.problem.prepare_state(&sequence, &parameters, true)?;
+            self.screenings += 1;
+            self.problem.pool_gradients(&state, true)?
+        } else {
+            vec![]
+        };
         let mut probabilities = if self.options.uniform {
-            vec![1. / gradients.len() as f64; gradients.len()]
+            let pool = self.problem.pool.len();
+            vec![1. / pool as f64; pool]
         } else {
             kernel::softmax(&gradients, self.options.proposal_temperature)?
         };
@@ -222,9 +258,6 @@ impl Evaluator<'_> {
             success,
             message,
         };
-        if !self.options.warm_start {
-            self.cache.insert(result.sequence.clone(), result.clone());
-        }
         Ok(result)
     }
 }
@@ -235,17 +268,25 @@ fn record(
     proposed: &Evaluated,
     temperature: f64,
     outcome: Option<(f64, f64, f64, bool)>,
+    vectors: bool,
 ) -> Value {
-    json!({"step":step,"move":action.kind.name(),"position":action.position,
+    let mut row = json!({"step":step,"move":action.kind.name(),"position":action.position,
         "operator":if matches!(action.kind,Move::Insert|Move::Replace) {Some(action.operator)} else {None},
         "source":source.sequence,"proposed":proposed.sequence,"source_parameters":source.parameters,"parameters":proposed.parameters,
         "source_energy":source.energy,"energy":proposed.energy,"source_cost":source.cost,"cost":proposed.cost,
         "delta_energy":proposed.energy-source.energy,"delta_cost":proposed.cost-source.cost,
-        "source_gradients":source.gradients,"source_probabilities":source.probabilities,
-        "source_importances":source.importances,"source_removal":source.removal,
         "temperature":temperature,"log_q_forward":outcome.map(|v|v.0),"log_q_reverse":outcome.map(|v|v.1),
         "log_acceptance":outcome.map(|v|v.2),"accepted":outcome.map(|v|v.3),"screened":outcome.is_none(),
-        "optimizer_success":proposed.success,"optimizer_message":proposed.message})
+        "optimizer_success":proposed.success,"optimizer_message":proposed.message});
+    // The four source vectors (pool and sequence long) are the recorded edit's training data: a
+    // step row of a chain that records nothing does not copy them.
+    if vectors {
+        row["source_gradients"] = json!(source.gradients);
+        row["source_probabilities"] = json!(source.probabilities);
+        row["source_importances"] = json!(source.importances);
+        row["source_removal"] = json!(source.removal);
+    }
+    row
 }
 impl CachedProblem {
     pub fn search(
@@ -277,7 +318,7 @@ impl CachedProblem {
         self.context.run(|| {
             let started = Instant::now();
             let ctx: &Context = &self.context;
-            let evaluations = options.max_steps.max(options.transfer_steps.unwrap_or(0)).checked_mul(options.screen_insertions.min(self.pool.len())+1).and_then(|v|v.checked_add(2)).ok_or(Error::Overflow)?;
+            let evaluations = options.max_steps.max(options.transfer_steps.unwrap_or(0)).checked_mul(options.screen_insertions.min(self.pool.len())+1).and_then(|v|v.checked_add(3)).ok_or(Error::Overflow)?;
             let memory = ctx.reserve(product(&[evaluations,self.pool.len()+options.max_length+32,256])?)?;
             let result_memory = ctx.reserve(product(&[evaluations,options.optimizer.max_evaluations,8])?)?;
             let graph = if learned.is_some_and(|m| m.ready) {Some(Graph::from_problem(self)?)} else {None};
@@ -286,17 +327,33 @@ impl CachedProblem {
             let reference_energy = reference.energy;
             let mut current = reference;
             let mut seed=None;
+            let mut transferred_start=None;
             if !initial_indices.is_empty() {
                 let before=evaluator.history.len();let before_steps=evaluator.optimizer_steps;
-                let transferred = evaluator.evaluate(initial_indices.to_vec(),initial_parameters.to_vec(),0)?;
+                // With `warm_start=false` every state's cost is the optimum reached from zeros. The
+                // transferred start is another start: it is evaluated apart (never cached under the
+                // sequence) and only decides `kept` and the returned candidate, while the chain starts
+                // from the zero-start state of the same sequence.
+                let transferred = if options.warm_start {evaluator.evaluate(initial_indices.to_vec(),initial_parameters.to_vec(),0)?}
+                    else {evaluator.evaluate_uncached(initial_indices.to_vec(),initial_parameters.to_vec(),0)?};
                 let kept=transferred.cost<current.cost;
                 seed=Some(crate::quantum::solver::SeedRelaxation {kept,energy:transferred.energy,success:transferred.success,
                     message:transferred.message.clone(),evaluations:evaluator.history.len()-before,steps:evaluator.optimizer_steps-before_steps,warm:false});
-                if kept {current=transferred;}
+                if kept {
+                    if options.warm_start {current=transferred;}
+                    else {
+                        current=evaluator.evaluate(initial_indices.to_vec(),vec![0.;initial_indices.len()],0)?;
+                        transferred_start=Some(transferred);
+                    }
+                }
             }
             let chain_steps=if seed.as_ref().is_some_and(|s| s.kept) {options.transfer_steps.unwrap_or(options.max_steps)} else {options.max_steps};
             let mut best = current.clone();
             let mut best_energy = current.clone();
+            if let Some(start) = transferred_start {
+                if start.cost<best.cost {best=start.clone();}
+                if start.energy<best_energy.energy {best_energy=start;}
+            }
             let kernel = if self.pool.is_empty() {None} else {Some(Kernel::new(self.pool.len(),options.max_length,options.move_weights)?)};
             let mut random = Rng(options.seed);
             let mut screening_random = Rng(options.seed ^ 0xd1b54a32d192ed03);
@@ -318,7 +375,7 @@ impl CachedProblem {
                         let sequence = action.apply(&current.sequence);
                         let initial = if options.warm_start {action.transfer(&current.parameters,options.replace_inherit)} else {vec![0.;sequence.len()]};
                         let proposed = evaluator.evaluate(sequence,initial,step+1)?;
-                        records.push(record(step+1,action,&current,&proposed,temperature,None));
+                        records.push(record(step+1,action,&current,&proposed,temperature,None,true));
                     }
                 }
                 let action = kernel.draw(ctx,&current.sequence,&current.probabilities,&current.removal,&mut random)?;
@@ -329,7 +386,7 @@ impl CachedProblem {
                 let reverse = kernel.log_q(ctx,&current.sequence,&proposed.sequence,&proposed.probabilities,&proposed.removal)?;
                 let ratio = kernel::log_acceptance(temperature,current.cost,proposed.cost,forward,reverse);
                 let accepted = ratio>=0. || random.uniform().ln()<ratio;
-                let row = record(step+1,action,&current,&proposed,temperature,Some((forward,reverse,ratio,accepted)));
+                let row = record(step+1,action,&current,&proposed,temperature,Some((forward,reverse,ratio,accepted)),options.record);
                 if options.record {records.push(row.clone());}
                 steps.push(row);
                 let move_index = match action.kind {Move::Insert=>0,Move::Delete=>1,Move::Replace=>2};
@@ -340,12 +397,14 @@ impl CachedProblem {
                 if accepted {current=proposed;}
             }
             let final_state = self.prepare_state(&best.sequence,&best.parameters,true)?;
+            // A state that was not screened (a uniform chain that records nothing) is screened once.
+            let final_gradients = if best.gradients.len()==self.pool.len() {best.gradients.clone()} else {evaluator.screenings+=1;self.pool_gradients(&final_state,true)?};
             Ok(SearchResult {
                 solution: SolveResult {seed,energy:best.energy,reference:reference_energy,parameters:best.parameters,
                     state:final_state,labels:best.sequence.iter().map(|&i|self.pool[i].label.clone()).collect(),indices:best.sequence,
                     iterations:vec![],history:evaluator.history,optimizer_steps:evaluator.optimizer_steps,success:false,
                     message:"architecture search budget completed; no eigenstate convergence certificate".into(),
-                    final_gradient:best.gradients.iter().map(|g|g.abs()).fold(0.,f64::max),budget_stopped:false,elapsed_seconds:started.elapsed().as_secs_f64(),pruned:vec![],hessian:None,notes:vec![],_memory:result_memory},
+                    final_gradient:final_gradients.iter().map(|g|g.abs()).fold(0.,f64::max),budget_stopped:false,elapsed_seconds:started.elapsed().as_secs_f64(),pruned:vec![],hessian:None,notes:vec![],_memory:result_memory},
                 records,steps,acceptance,optimal_cost:best.cost,best_energy:best_energy.energy,
                 best_energy_indices:best_energy.sequence,best_energy_parameters:best_energy.parameters,final_energy:current.energy,
                 final_indices:current.sequence,final_parameters:current.parameters,num_architectures:evaluator.seen.len(),

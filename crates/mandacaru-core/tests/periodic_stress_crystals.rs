@@ -20,7 +20,7 @@ use periodic_stress_crystals_support::{
 fn the_stress_of_a_converged_lih_state() {
     let (data, stress, want) = check("lih", true);
     equation_of_state(&data.manifest, &stress);
-    let weak = weak_terms(&stress, &want);
+    let weak = weak_terms(&stress, &want, &data.crystal.functional);
     assert_eq!(
         weak,
         ["xc_gradient"],
